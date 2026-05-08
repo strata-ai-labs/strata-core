@@ -103,7 +103,9 @@ edge:
 - storage-specific tests, benches, fuzz targets, and format/recovery tools
 - future `storage-next` migration or validation tools whose purpose is to test
   or build the storage substrate
-- temporary migration shims named in this plan and deleted by closeout
+
+No temporary engine-consolidation migration shim remains after `EG9`. Future
+exceptions belong in a new design document, not in this consolidation plan.
 
 Executor, intelligence, CLI, and product code are not storage
 tests. If they need a storage fact, engine must expose a semantic API or a
@@ -192,16 +194,16 @@ It should not mix large behavior redesigns into ownership moves.
 
 ### 5. Temporary Shims Must Have Deletion Criteria
 
-Short-lived compatibility modules are acceptable when they reduce risk, but they
-must state:
+During implementation, short-lived compatibility modules were acceptable when
+they reduced risk, but they had to state:
 
 - what old path they preserve
 - which downstream callers still need it
 - which `EG` slice deletes it
 - which guard fails if it becomes permanent by accident
 
-Do not introduce broad facades that hide storage access. That recreates the
-problem in a new location.
+No compatibility shell or broad facade is allowed to survive closeout unless a
+new active architecture document names it explicitly.
 
 ### 6. Engine Must Expose The Right Storage-Backed Endpoints
 
@@ -1232,16 +1234,37 @@ reintroduction.
 Record the final filesystem, workspace metadata, lockfile, dependency graph,
 and production import state before tightening the last guards.
 
+Current status: complete as of 2026-05-08. The closeout ledger is recorded in
+[eg9-implementation-plan.md](./eg9-implementation-plan.md) and confirms deleted
+crate directories are absent, retired packages are absent from metadata and
+lockfile state, the default graph matches the target, `embed` adds inference
+only through intelligence, and remaining active-doc inconsistencies are queued
+for `EG9D`.
+
 ### EG9B - Final Graph And Retired-Crate Guards
 
 Make the final graph fail closed. Retired crates must stay deleted, direct
 storage access above engine must fail, inference must stay behind
 intelligence, and upper layers must not assemble engine subsystems.
 
+Current status: complete as of 2026-05-08. `tests/storage_surface_imports.rs`
+now includes final closeout guards for retired crate directories, active
+manifest and lockfile package references, production direct storage bypasses,
+engine upward dependency markers, direct inference imports outside
+intelligence, and upper-layer product runtime assembly.
+
 ### EG9C - Optional Edge Policy And Feature Surface
 
 Document and enforce the remaining optional edges, especially CLI's optional
 `embed` edge to intelligence and intelligence's optional inference edge.
+
+Current status: complete as of 2026-05-08. The guard suite now enforces the
+feature-routing policy: root `embed`/provider features forward only through
+executor, the root package does not add intelligence as a normal dependency,
+CLI's direct intelligence dependency is optional and enabled only by CLI
+`embed`, executor reaches intelligence directly but forwards provider features
+through intelligence, and `strata-inference` remains referenced only by
+`strata-intelligence`.
 
 ### EG9D - Active Architecture Document Refresh
 
@@ -1249,10 +1272,27 @@ Update the engine crate map, storage consumption contract, and active
 architecture docs so they describe the consolidated graph rather than the
 migration.
 
+Current status: complete as of 2026-05-08. Active engine/storage architecture
+docs now describe the consolidated graph, the final storage-consumer rule, the
+retired peer-crate state, and the handoff to future v1 architecture documents.
+Temporary engine-consolidation migration shims are no longer listed as allowed
+storage consumers.
+
 ### EG9E - Final Verification And Closeout
 
 Run the full required test matrix, record known residual risks, and explicitly
-name any temporary compatibility shell that survives closeout.
+confirm that no temporary compatibility shell survives closeout.
+
+Current status: complete as of 2026-05-08. The final closeout ledger is recorded
+in [eg9-implementation-plan.md](./eg9-implementation-plan.md). The storage
+boundary, retired-crate, optional-edge, and product-runtime assembly guards
+passed; executor and intelligence package gates passed; feature-enabled
+`embed` check gates passed with the documented native inference build skip.
+The raw workspace check is blocked by the missing local
+`crates/inference/vendor/llama.cpp/CMakeLists.txt` prerequisite, and
+`cargo test -p strata-engine` still has 10 named shutdown/fault-injection and
+branch cleanup/classification failures outside the EG9 graph closeout. No
+temporary engine-consolidation compatibility shell survives.
 
 ## Guard Commands
 
@@ -1264,7 +1304,7 @@ Current graph inspection:
 cargo metadata --format-version 1 --no-deps \
   | jq -r '.packages[]
       | select((.name|test("^strata-(storage|engine|search|intelligence|executor|cli)$")) or .name=="stratadb")
-      | "\(.name) -> \([.dependencies[] | select(.kind == null and .path != null) | .name] | join(", "))"'
+      | "\(.name) -> \([.dependencies[] | select(.kind == null and .path != null and (.optional|not)) | .name] | join(", "))"'
 ```
 
 Current production direct storage bypass inventory:
@@ -1366,12 +1406,13 @@ Search orchestration belongs in engine, but model execution belongs in
 intelligence/inference. The move must preserve that direction. Engine should
 accept model-backed adapters; it should not depend on inference providers.
 
-### Executor Has Accumulated Primitive Runtime Knowledge
+### Executor Had Accumulated Primitive Runtime Knowledge
 
-Executor currently performs some operations by directly constructing storage
-keys or calling primitive stores. That is too much runtime knowledge for the
-command layer. Removing those paths may require new engine APIs, not just import
-renames.
+Before `EG7`, executor performed some operations by directly constructing
+storage keys or calling primitive stores. That was too much runtime knowledge
+for the command layer. `EG7` removed those direct storage paths by adding
+engine-owned APIs; future command-layer work should preserve that direction
+rather than reintroducing raw storage access.
 
 ### Compatibility Shells Can Hide In The Graph
 
@@ -1389,25 +1430,29 @@ before any major rebuild begins.
 
 ## Follow-Up Documents
 
-Each `EG` phase should have one implementation plan when implementation starts.
-The lettered sections for that phase live inside the phase plan. Likely phase
-plans:
+Each `EG` phase has one implementation plan. The lettered sections for that
+phase live inside the phase plan.
+
+Completed phase plans:
 
 - `eg1-implementation-plan.md`
 - `eg2-implementation-plan.md`
-- `eg3-product-open-bootstrap-plan.md`
-- `eg4-graph-absorption-plan.md`
-- `eg5-vector-absorption-plan.md`
-- `eg6-search-absorption-plan.md`
-- `eg7-executor-storage-bypass-removal-plan.md`
-- `eg8-intelligence-dependency-cleanup-plan.md`
-- `eg9-crate-deletion-workspace-closeout-plan.md`
+- `eg3-implementation-plan.md`
+- `eg4-implementation-plan.md`
+- `eg5-implementation-plan.md`
+- `eg6-implementation-plan.md`
+- `eg7-implementation-plan.md`
+- `eg8-implementation-plan.md`
+- `eg9-implementation-plan.md`
+
+Future v1 architecture documents should be written after consolidation
+closeout:
+
 - `strata-v1-target-architecture.md`
 - `storage-next-target-architecture.md`
 - `engine-next-target-architecture.md`
 - `strata-v1-testing-strategy.md`
 - `storage-engine-product-experience.md`
 
-The phase plans should keep the same storage-access rule: no crate above engine
-talks to storage directly unless the exception is explicit, narrow, and
-temporary.
+Those future plans should keep the same storage-access rule: no normal
+production crate above engine talks to storage directly.

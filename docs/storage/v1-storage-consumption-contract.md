@@ -7,9 +7,9 @@ allowed to consume.
 
 It is intentionally narrower than the full public Rust surface of
 `strata-storage`. The storage crate exposes many implementation types because
-the current crate is still mid-consolidation and because storage has its own
-tests. That does not mean upper layers should treat every exported type as a
-supported engine boundary.
+storage has internal modules, tests, diagnostics, and fault-injection surfaces.
+That does not mean upper layers should treat every exported type as a supported
+engine boundary.
 
 The target stack is:
 
@@ -22,8 +22,8 @@ storage that may depend on `strata-storage`. Graph, vector, search, security,
 legacy bootstrap, executor, intelligence, CLI, and product code must consume
 storage-backed behavior through engine-owned APIs.
 
-This contract is a V1 boundary. It should be tightened as engine consolidation
-and storage-next proceed.
+This contract is the post-consolidation V1 boundary. It should be tightened
+during the v1 architecture design and any future storage-next work.
 
 Read this with:
 
@@ -54,8 +54,8 @@ Allowed does not mean:
 
 Anything not named in this document is not part of the engine/storage
 consumption contract. It may still be public for storage tests, storage-local
-modules, or transitional compatibility, but engine code should not add new use
-without updating this document.
+modules, diagnostics, or fault-injection, but engine code should not add new
+use without updating this document.
 
 ## Direct Consumer Rule
 
@@ -67,7 +67,6 @@ Allowed exceptions:
 - storage tests, benches, fuzz targets, and diagnostic tools
 - engine tests that intentionally inspect storage behavior
 - future storage-next migration or verification tools
-- documented temporary migration shims during engine consolidation
 
 Not allowed:
 
@@ -77,6 +76,7 @@ Not allowed:
 - `stratadb`
 - consolidated graph/vector/search/product code after it has moved out of peer
   crates
+- temporary engine-consolidation migration shims after `EG9`
 
 Upper crates should not call `Database::storage()` or import
 `strata_storage::*`. If they need a storage-backed fact, engine should expose a
@@ -343,8 +343,8 @@ Allowed usage:
 Rules:
 
 - product code should not receive raw `TransactionManager`
-- raw `TransactionContext` exposure above engine should be treated as
-  transitional unless a public engine transaction API explicitly needs it
+- raw `TransactionContext` exposure above engine must be through an
+  engine-owned public API, not direct storage imports
 - engine primitive code should prefer transactional reads through
   `TransactionContext` when OCC tracking matters
 
@@ -954,24 +954,20 @@ contract revision names them:
 - raw format constants in production engine code except where the engine is
   decoding or validating storage-owned durability format in recovery or tests
 
-## Current Transitional Notes
+## Closeout Notes
 
-The current codebase still has storage exposure that should be tightened during
-engine consolidation:
+The engine-consolidation cleanup has closed the production storage bypasses
+above engine:
 
-- `Database::storage()` exposes `Arc<SegmentedStore>` and is still used by some
-  upper-layer migration code. After the executor storage bypass is removed,
-  this should be narrowed or documented as an engine-internal/testing escape
-  hatch. Graph moved into engine during `EG4`; vector moved into engine and the
-  peer crate was deleted during `EG5`; search moved into engine and the peer
-  crate was deleted during `EG6`.
+- `Database::storage()` still exposes `Arc<SegmentedStore>` from engine. That
+  is an engine/testing escape hatch, not permission for executor,
+  intelligence, CLI, or product code to import storage directly.
 - Engine currently re-exports a small number of storage types. Each re-export
   should either become an engine-owned type or remain documented as an explicit
   public engine contract.
-- Executor currently imports storage directly. Those imports are migration
-  debt, not an extension of this contract. Graph storage use moved into engine
-  during `EG4`; vector storage use moved into engine during `EG5`; search
-  storage use moved into engine during `EG6`.
+- Graph storage use moved into engine during `EG4`; vector storage use moved
+  into engine during `EG5`; search storage use moved into engine during `EG6`;
+  executor's direct storage dependency and imports were removed during `EG7`.
 - Engine tests may inspect storage format details. That is acceptable when the
   test is explicitly characterizing recovery, checkpoint, manifest, snapshot,
   WAL, or storage-runtime behavior.
@@ -1009,11 +1005,12 @@ This should return only test-module matches.
 Storage inverse dependency guard:
 
 ```bash
-cargo tree -i strata-storage --workspace --edges normal --depth 2
+cargo tree -i strata-storage --workspace --edges normal --depth 1
 ```
 
-At closeout, normal production dependents should be storage-specific tools/tests
-and `strata-engine`; product/runtime crates above engine should not appear.
+At closeout, the only direct normal production dependent should be
+`strata-engine`. A deeper inverse tree will show ordinary engine consumers
+under the engine branch; that is not a storage bypass.
 
 Manifest/runtime helper drift guard:
 

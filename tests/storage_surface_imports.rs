@@ -74,6 +74,19 @@ struct AllowedEngineConsolidationStorageUse {
     removal_epic: &'static str,
 }
 
+#[derive(Debug)]
+struct ManifestDependencyEntry {
+    line_no: usize,
+    text: String,
+}
+
+#[derive(Debug)]
+struct ManifestFeatureEntry {
+    line_no: usize,
+    name: String,
+    values: Vec<String>,
+}
+
 const ENGINE_CONSOLIDATION_PRODUCTION_SCAN_ROOTS: &[&str] = &[
     "src",
     "crates/executor",
@@ -120,6 +133,56 @@ const RETIRED_SEARCH_PACKAGE: &str = concat!("strata", "-", "search");
 const RETIRED_SEARCH_IMPORT: &str = concat!("strata", "_", "search");
 const RETIRED_SEARCH_RELATIVE_PATHS: &[&str] =
     &[concat!("../", "search"), concat!("crates/", "search")];
+const RETIRED_CORE_LEGACY_PACKAGE: &str = concat!("strata", "-", "core", "-", "legacy");
+const RETIRED_CORE_LEGACY_IMPORT: &str = concat!("strata", "_", "core", "_", "legacy");
+const RETIRED_CONCURRENCY_PACKAGE: &str = concat!("strata", "-", "concurrency");
+const RETIRED_CONCURRENCY_IMPORT: &str = concat!("strata", "_", "concurrency");
+const RETIRED_DURABILITY_PACKAGE: &str = concat!("strata", "-", "durability");
+const RETIRED_DURABILITY_IMPORT: &str = concat!("strata", "_", "durability");
+const RETIRED_CRATE_DIRECTORIES: &[&str] = &[
+    concat!("crates/", "security"),
+    concat!("crates/", "executor", "-", "legacy"),
+    concat!("crates/", "graph"),
+    concat!("crates/", "vector"),
+    concat!("crates/", "search"),
+    concat!("crates/", "core", "-", "legacy"),
+    concat!("crates/", "concurrency"),
+    concat!("crates/", "durability"),
+];
+const RETIRED_CRATE_MARKERS: &[&str] = &[
+    RETIRED_SECURITY_PACKAGE,
+    RETIRED_SECURITY_IMPORT,
+    concat!("../", "security"),
+    concat!("crates/", "security"),
+    RETIRED_EXECUTOR_LEGACY_PACKAGE,
+    RETIRED_EXECUTOR_LEGACY_IMPORT,
+    concat!("../", "executor", "-", "legacy"),
+    concat!("crates/", "executor", "-", "legacy"),
+    RETIRED_GRAPH_PACKAGE,
+    RETIRED_GRAPH_IMPORT,
+    concat!("../", "graph"),
+    concat!("crates/", "graph"),
+    RETIRED_VECTOR_PACKAGE,
+    RETIRED_VECTOR_IMPORT,
+    concat!("../", "vector"),
+    concat!("crates/", "vector"),
+    RETIRED_SEARCH_PACKAGE,
+    RETIRED_SEARCH_IMPORT,
+    concat!("../", "search"),
+    concat!("crates/", "search"),
+    RETIRED_CORE_LEGACY_PACKAGE,
+    RETIRED_CORE_LEGACY_IMPORT,
+    concat!("../", "core", "-", "legacy"),
+    concat!("crates/", "core", "-", "legacy"),
+    RETIRED_CONCURRENCY_PACKAGE,
+    RETIRED_CONCURRENCY_IMPORT,
+    concat!("../", "concurrency"),
+    concat!("crates/", "concurrency"),
+    RETIRED_DURABILITY_PACKAGE,
+    RETIRED_DURABILITY_IMPORT,
+    concat!("../", "durability"),
+    concat!("crates/", "durability"),
+];
 
 const INTELLIGENCE_BOUNDARY_SCAN_ROOT: &str = "crates/intelligence";
 const INTELLIGENCE_FORBIDDEN_DEPENDENCY_MARKERS: &[&str] = &[
@@ -163,6 +226,22 @@ const ENGINE_FORBIDDEN_UPPER_LAYER_MARKERS: &[&str] = &[
     "strata_inference",
 ];
 const UPPER_FORBIDDEN_INFERENCE_MARKERS: &[&str] = &["strata-inference", "strata_inference"];
+const DIRECT_INFERENCE_FEATURE_MARKERS: &[&str] = &["strata-inference", "dep:strata-inference"];
+const UPPER_FORBIDDEN_RUNTIME_ASSEMBLY_MARKERS: &[&str] = &[
+    "OpenSpec",
+    "GraphSubsystem",
+    "VectorSubsystem",
+    "SearchSubsystem",
+    ".with_subsystem",
+    ".with_subsystems",
+];
+const UPPER_RUNTIME_ASSEMBLY_SCAN_ROOTS: &[&str] = &[
+    "src",
+    "crates/executor/src",
+    "crates/intelligence/src",
+    "crates/intelligence/tests",
+    "crates/cli/src",
+];
 
 #[test]
 fn storage_facing_types_are_not_imported_from_strata_core() {
@@ -453,6 +532,47 @@ fn engine_consolidation_search_crate_is_retired() {
 }
 
 #[test]
+fn engine_consolidation_retired_crates_are_closed_out() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut violations = Vec::new();
+
+    for retired_dir in RETIRED_CRATE_DIRECTORIES {
+        let path = repo_root.join(retired_dir);
+        if path.exists() {
+            violations.push(format!(
+                "{}: retired crate directory still exists",
+                path.display()
+            ));
+        }
+    }
+
+    let mut files = vec![repo_root.join("Cargo.toml"), repo_root.join("Cargo.lock")];
+    collect_rust_files(&repo_root.join("src"), &mut files);
+    collect_manifest_files(&repo_root.join("src"), &mut files);
+    collect_rust_files(&repo_root.join("benchmarks"), &mut files);
+    collect_manifest_files(&repo_root.join("benchmarks"), &mut files);
+    collect_rust_files(&repo_root.join("crates"), &mut files);
+    collect_manifest_files(&repo_root.join("crates"), &mut files);
+
+    for file in files {
+        if should_skip(&file) || should_skip_manifest(&file) {
+            continue;
+        }
+
+        let rel = repo_relative_path(&repo_root, &file);
+        let contents =
+            fs::read_to_string(&file).expect("read active source, manifest, or lockfile");
+        violations.extend(find_retired_crate_marker_violations(&rel, &contents));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "retired engine/storage consolidation crates must stay absent from active directories, manifests, lockfile, and production source:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn engine_consolidation_vector_consumers_use_engine_surface() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
@@ -526,6 +646,36 @@ fn engine_consolidation_executor_vector_transaction_surface_is_engine_owned() {
 }
 
 #[test]
+fn engine_consolidation_upper_layers_do_not_assemble_product_runtime() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for root in UPPER_RUNTIME_ASSEMBLY_SCAN_ROOTS {
+        collect_rust_files(&repo_root.join(root), &mut files);
+    }
+
+    let mut violations = Vec::new();
+    for file in files {
+        if should_skip(&file) {
+            continue;
+        }
+
+        let rel = repo_relative_path(&repo_root, &file);
+        if is_test_source_path(&rel) && !rel.starts_with("crates/intelligence/tests/") {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&file).expect("read production source file");
+        violations.extend(find_upper_runtime_assembly_violations(&rel, &contents));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "production crates above engine must use engine-owned product open helpers, not `OpenSpec`/`Subsystem` runtime assembly:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn engine_consolidation_vector_storage_key_layout_is_engine_owned() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
@@ -558,8 +708,7 @@ fn engine_consolidation_vector_storage_key_layout_is_engine_owned() {
 #[test]
 fn storage_surface_manifests_do_not_regress_to_deleted_or_transitional_crates() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut manifests = Vec::new();
-    manifests.push(repo_root.join("Cargo.toml"));
+    let mut manifests = vec![repo_root.join("Cargo.toml"), repo_root.join("Cargo.lock")];
     collect_manifest_files(&repo_root.join("benchmarks"), &mut manifests);
     collect_manifest_files(&repo_root.join("crates"), &mut manifests);
 
@@ -731,6 +880,213 @@ fn engine_consolidation_inference_boundary_stays_above_intelligence() {
     );
 }
 
+#[test]
+fn engine_consolidation_optional_embed_edges_are_policy_bound() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root_manifest = read_repo_manifest(&repo_root, "Cargo.toml");
+    let cli_manifest = read_repo_manifest(&repo_root, "crates/cli/Cargo.toml");
+    let executor_manifest = read_repo_manifest(&repo_root, "crates/executor/Cargo.toml");
+    let intelligence_manifest = read_repo_manifest(&repo_root, "crates/intelligence/Cargo.toml");
+
+    let mut violations = Vec::new();
+
+    expect_feature_values(
+        "Cargo.toml",
+        &root_manifest,
+        "embed",
+        &["strata-executor/embed"],
+        &mut violations,
+    );
+    for (provider, expected) in [
+        ("anthropic", &["strata-executor/anthropic"][..]),
+        ("openai", &["strata-executor/openai"][..]),
+        ("google", &["strata-executor/google"][..]),
+    ] {
+        expect_feature_values(
+            "Cargo.toml",
+            &root_manifest,
+            provider,
+            expected,
+            &mut violations,
+        );
+    }
+    reject_feature_markers(
+        "Cargo.toml",
+        &root_manifest,
+        DIRECT_INFERENCE_FEATURE_MARKERS,
+        &mut violations,
+    );
+    reject_feature_markers(
+        "Cargo.toml",
+        &root_manifest,
+        &["strata-intelligence", "dep:strata-intelligence"],
+        &mut violations,
+    );
+    reject_normal_dependency(
+        "Cargo.toml",
+        &root_manifest,
+        "strata-intelligence",
+        "root package default graph must reach intelligence through executor only",
+        &mut violations,
+    );
+
+    expect_feature_values(
+        "crates/cli/Cargo.toml",
+        &cli_manifest,
+        "default",
+        &[],
+        &mut violations,
+    );
+    expect_feature_values(
+        "crates/cli/Cargo.toml",
+        &cli_manifest,
+        "embed",
+        &["strata-executor/embed", "dep:strata-intelligence"],
+        &mut violations,
+    );
+    for (provider, expected) in [
+        ("anthropic", &["embed", "strata-executor/anthropic"][..]),
+        ("openai", &["embed", "strata-executor/openai"][..]),
+        ("google", &["embed", "strata-executor/google"][..]),
+    ] {
+        expect_feature_values(
+            "crates/cli/Cargo.toml",
+            &cli_manifest,
+            provider,
+            expected,
+            &mut violations,
+        );
+    }
+    reject_feature_markers(
+        "crates/cli/Cargo.toml",
+        &cli_manifest,
+        DIRECT_INFERENCE_FEATURE_MARKERS,
+        &mut violations,
+    );
+    reject_feature_markers_outside_features(
+        "crates/cli/Cargo.toml",
+        &cli_manifest,
+        &["dep:strata-intelligence", "strata-intelligence"],
+        &["embed"],
+        &mut violations,
+    );
+    expect_dependency_line_contains(
+        "crates/cli/Cargo.toml",
+        &cli_manifest,
+        "strata-executor",
+        &["path = \"../executor\""],
+        &mut violations,
+    );
+    expect_dependency_line_contains(
+        "crates/cli/Cargo.toml",
+        &cli_manifest,
+        "strata-intelligence",
+        &[
+            "path = \"../intelligence\"",
+            "features = [\"embed\"]",
+            "optional = true",
+        ],
+        &mut violations,
+    );
+
+    expect_feature_values(
+        "crates/executor/Cargo.toml",
+        &executor_manifest,
+        "default",
+        &[],
+        &mut violations,
+    );
+    expect_feature_values(
+        "crates/executor/Cargo.toml",
+        &executor_manifest,
+        "embed",
+        &["strata-intelligence/embed", "strata-engine/embed"],
+        &mut violations,
+    );
+    for (provider, expected) in [
+        ("anthropic", &["embed", "strata-intelligence/anthropic"][..]),
+        ("openai", &["embed", "strata-intelligence/openai"][..]),
+        ("google", &["embed", "strata-intelligence/google"][..]),
+    ] {
+        expect_feature_values(
+            "crates/executor/Cargo.toml",
+            &executor_manifest,
+            provider,
+            expected,
+            &mut violations,
+        );
+    }
+    reject_feature_markers(
+        "crates/executor/Cargo.toml",
+        &executor_manifest,
+        DIRECT_INFERENCE_FEATURE_MARKERS,
+        &mut violations,
+    );
+    expect_dependency_line_contains(
+        "crates/executor/Cargo.toml",
+        &executor_manifest,
+        "strata-intelligence",
+        &["path = \"../intelligence\""],
+        &mut violations,
+    );
+    reject_dependency_line_markers(
+        "crates/executor/Cargo.toml",
+        &executor_manifest,
+        "strata-intelligence",
+        &["optional = true"],
+        &mut violations,
+    );
+
+    expect_feature_values(
+        "crates/intelligence/Cargo.toml",
+        &intelligence_manifest,
+        "default",
+        &[],
+        &mut violations,
+    );
+    expect_feature_values(
+        "crates/intelligence/Cargo.toml",
+        &intelligence_manifest,
+        "embed",
+        &[
+            "dep:strata-inference",
+            "strata-inference/local",
+            "strata-inference/download",
+        ],
+        &mut violations,
+    );
+    for (provider, expected) in [
+        ("anthropic", &["embed", "strata-inference/anthropic"][..]),
+        ("openai", &["embed", "strata-inference/openai"][..]),
+        ("google", &["embed", "strata-inference/google"][..]),
+    ] {
+        expect_feature_values(
+            "crates/intelligence/Cargo.toml",
+            &intelligence_manifest,
+            provider,
+            expected,
+            &mut violations,
+        );
+    }
+    expect_dependency_line_contains(
+        "crates/intelligence/Cargo.toml",
+        &intelligence_manifest,
+        "strata-inference",
+        &[
+            "path = \"../inference\"",
+            "optional = true",
+            "default-features = false",
+        ],
+        &mut violations,
+    );
+
+    assert!(
+        violations.is_empty(),
+        "optional embed/provider edges must keep inference behind intelligence and CLI's direct intelligence edge feature-gated:\n{}",
+        violations.join("\n")
+    );
+}
+
 fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     if !dir.exists() {
         return;
@@ -782,6 +1138,10 @@ fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
         .expect("path should be under repository root")
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn read_repo_manifest(repo_root: &Path, rel: &str) -> String {
+    fs::read_to_string(repo_root.join(rel)).expect("read cargo manifest")
 }
 
 fn contains_direct_storage_reference(line: &str) -> bool {
@@ -896,6 +1256,465 @@ fn parse_toml_section(trimmed: &str) -> Option<&str> {
 fn is_normal_dependency_section(section: &str) -> bool {
     section == "dependencies"
         || (section.starts_with("target.") && section.ends_with(".dependencies"))
+}
+
+fn normal_dependency_table_name(section: &str) -> Option<&str> {
+    if let Some(name) = section.strip_prefix("dependencies.") {
+        return Some(name);
+    }
+
+    if !section.starts_with("target.") {
+        return None;
+    }
+
+    let marker = ".dependencies.";
+    section
+        .find(marker)
+        .map(|index| &section[index + marker.len()..])
+}
+
+fn manifest_normal_dependency_entries(
+    contents: &str,
+    dependency: &str,
+) -> Vec<ManifestDependencyEntry> {
+    let lines = contents.lines().collect::<Vec<_>>();
+    let mut section = String::new();
+    let mut entries = Vec::new();
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        let line = lines[index];
+        let code = toml_code_only_line(line);
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        if let Some(next_section) = parse_toml_section(trimmed) {
+            if let Some(table_name) = normal_dependency_table_name(next_section) {
+                let start_line = index + 1;
+                let mut text = trimmed.to_string();
+                index += 1;
+                while index < lines.len() {
+                    let next_code = toml_code_only_line(lines[index]);
+                    let next_trimmed = next_code.trim();
+                    if parse_toml_section(next_trimmed).is_some() {
+                        break;
+                    }
+                    if !next_trimmed.is_empty() {
+                        text.push(' ');
+                        text.push_str(next_trimmed);
+                    }
+                    index += 1;
+                }
+                if dependency_entry_targets_dependency(table_name, &text, dependency) {
+                    entries.push(ManifestDependencyEntry {
+                        line_no: start_line,
+                        text,
+                    });
+                }
+                continue;
+            }
+
+            section.clear();
+            section.push_str(next_section);
+            index += 1;
+            continue;
+        }
+
+        if is_normal_dependency_section(&section) {
+            if let Some(key) = toml_assignment_key(trimmed) {
+                let start_line = index + 1;
+                let (text, next_index) = collect_toml_assignment_text(&lines, index);
+                if dependency_entry_targets_dependency(key, &text, dependency) {
+                    entries.push(ManifestDependencyEntry {
+                        line_no: start_line,
+                        text,
+                    });
+                }
+                index = next_index;
+                continue;
+            }
+        }
+
+        index += 1;
+    }
+
+    entries
+}
+
+fn dependency_entry_targets_dependency(key: &str, text: &str, dependency: &str) -> bool {
+    toml_key_matches(key, dependency)
+        || dependency_text_contains_marker(text, &format!("package = \"{dependency}\""))
+        || dependency_text_contains_marker(text, &format!("package = '{dependency}'"))
+}
+
+fn toml_key_matches(key: &str, expected: &str) -> bool {
+    let key = key.trim();
+    key == expected
+        || key
+            .strip_prefix('"')
+            .and_then(|key| key.strip_suffix('"'))
+            .is_some_and(|key| key == expected)
+        || key
+            .strip_prefix('\'')
+            .and_then(|key| key.strip_suffix('\''))
+            .is_some_and(|key| key == expected)
+}
+
+fn collect_toml_assignment_text(lines: &[&str], start_index: usize) -> (String, usize) {
+    let code = toml_code_only_line(lines[start_index]);
+    let trimmed = code.trim();
+    let mut text = trimmed.to_string();
+    let mut balance = toml_collection_balance(trimmed);
+    let mut index = start_index + 1;
+
+    while balance > 0 && index < lines.len() {
+        let next_code = toml_code_only_line(lines[index]);
+        let next_trimmed = next_code.trim();
+        if parse_toml_section(next_trimmed).is_some() {
+            break;
+        }
+        if !next_trimmed.is_empty() {
+            text.push(' ');
+            text.push_str(next_trimmed);
+            balance += toml_collection_balance(next_trimmed);
+        }
+        index += 1;
+    }
+
+    (text, index)
+}
+
+fn toml_collection_balance(line: &str) -> isize {
+    let mut balance = 0isize;
+    let mut in_string = false;
+    let mut quote = '\0';
+    let mut escaped = false;
+
+    for ch in line.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            if quote == '"' && ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' || ch == '\'' {
+            in_string = true;
+            quote = ch;
+            continue;
+        }
+
+        match ch {
+            '{' | '[' => balance += 1,
+            '}' | ']' => balance -= 1,
+            _ => {}
+        }
+    }
+
+    balance
+}
+
+fn manifest_dependency_text(contents: &str, dependency: &str) -> Option<String> {
+    manifest_normal_dependency_entries(contents, dependency)
+        .into_iter()
+        .next()
+        .map(|entry| entry.text)
+}
+
+fn manifest_feature_values(contents: &str, feature: &str) -> Option<Vec<String>> {
+    manifest_feature_entries(contents)
+        .into_iter()
+        .find(|entry| entry.name == feature)
+        .map(|entry| entry.values)
+}
+
+fn manifest_feature_entries(contents: &str) -> Vec<ManifestFeatureEntry> {
+    let mut section = String::new();
+    let mut pending_feature = None::<String>;
+    let mut pending_line_no = 0usize;
+    let mut pending_value = String::new();
+    let mut entries = Vec::new();
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = toml_code_only_line(line);
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(next_section) = parse_toml_section(trimmed) {
+            section.clear();
+            section.push_str(next_section);
+            pending_feature = None;
+            pending_line_no = 0;
+            pending_value.clear();
+            continue;
+        }
+
+        if section != "features" {
+            continue;
+        }
+
+        if let Some(pending) = pending_feature.as_ref() {
+            pending_value.push(' ');
+            pending_value.push_str(trimmed);
+            if trimmed.contains(']') {
+                let values = parse_toml_string_array(&pending_value);
+                entries.push(ManifestFeatureEntry {
+                    line_no: pending_line_no,
+                    name: pending.clone(),
+                    values,
+                });
+                pending_feature = None;
+                pending_line_no = 0;
+                pending_value.clear();
+            }
+            continue;
+        }
+
+        let Some((key, value)) = toml_assignment(trimmed) else {
+            continue;
+        };
+        if !value.contains('[') {
+            continue;
+        }
+
+        if value.contains(']') {
+            entries.push(ManifestFeatureEntry {
+                line_no: line_no + 1,
+                name: key.to_string(),
+                values: parse_toml_string_array(value),
+            });
+            continue;
+        }
+
+        pending_feature = Some(key.to_string());
+        pending_line_no = line_no + 1;
+        pending_value.clear();
+        pending_value.push_str(value);
+    }
+
+    entries
+}
+
+fn toml_assignment(trimmed: &str) -> Option<(&str, &str)> {
+    let (key, value) = trimmed.split_once('=')?;
+    Some((key.trim(), value.trim()))
+}
+
+fn toml_assignment_key(trimmed: &str) -> Option<&str> {
+    toml_assignment(trimmed).map(|(key, _)| key)
+}
+
+fn parse_toml_string_array(value: &str) -> Vec<String> {
+    let array = value
+        .split_once('[')
+        .and_then(|(_, rest)| rest.rsplit_once(']').map(|(body, _)| body))
+        .unwrap_or(value);
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut quote = '\0';
+    let mut escaped = false;
+
+    for ch in array.chars() {
+        if in_string {
+            if escaped {
+                current.push(ch);
+                escaped = false;
+                continue;
+            }
+
+            if quote == '"' && ch == '\\' {
+                escaped = true;
+                continue;
+            }
+
+            if ch == quote {
+                values.push(std::mem::take(&mut current));
+                in_string = false;
+                continue;
+            }
+
+            current.push(ch);
+            continue;
+        }
+
+        if ch == '"' || ch == '\'' {
+            quote = ch;
+            in_string = true;
+        }
+    }
+
+    values
+}
+
+fn expect_feature_values(
+    rel: &str,
+    contents: &str,
+    feature: &str,
+    expected: &[&str],
+    violations: &mut Vec<String>,
+) {
+    match manifest_feature_values(contents, feature) {
+        Some(actual) if feature_values_match(&actual, expected) => {}
+        Some(actual) => violations.push(format!(
+            "{}: feature `{}` expected {:?}, found {:?}",
+            rel, feature, expected, actual
+        )),
+        None => violations.push(format!("{}: missing feature `{}`", rel, feature)),
+    }
+}
+
+fn feature_values_match(actual: &[String], expected: &[&str]) -> bool {
+    let actual = actual.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    actual == expected
+}
+
+fn reject_feature_markers(
+    rel: &str,
+    contents: &str,
+    forbidden: &[&str],
+    violations: &mut Vec<String>,
+) {
+    let mut section = String::new();
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = toml_code_only_line(line);
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(next_section) = parse_toml_section(trimmed) {
+            section.clear();
+            section.push_str(next_section);
+            continue;
+        }
+
+        if section == "features" {
+            for marker in forbidden {
+                if trimmed.contains(marker) {
+                    violations.push(format!(
+                        "{}:{}: feature value must not reference `{}` directly: {}",
+                        rel,
+                        line_no + 1,
+                        marker,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn reject_feature_markers_outside_features(
+    rel: &str,
+    contents: &str,
+    forbidden: &[&str],
+    allowed_features: &[&str],
+    violations: &mut Vec<String>,
+) {
+    let allowed_features = allowed_features.iter().copied().collect::<BTreeSet<_>>();
+
+    for entry in manifest_feature_entries(contents) {
+        if allowed_features.contains(entry.name.as_str()) {
+            continue;
+        }
+
+        for value in &entry.values {
+            if let Some(marker) = forbidden.iter().find(|marker| value.contains(**marker)) {
+                violations.push(format!(
+                    "{}:{}: feature `{}` must not reference `{}` directly: {:?}",
+                    rel, entry.line_no, entry.name, marker, entry.values
+                ));
+            }
+        }
+    }
+}
+
+fn reject_normal_dependency(
+    rel: &str,
+    contents: &str,
+    dependency: &str,
+    reason: &str,
+    violations: &mut Vec<String>,
+) {
+    for entry in manifest_normal_dependency_entries(contents, dependency) {
+        violations.push(format!(
+            "{}:{}: {}: {}",
+            rel, entry.line_no, reason, entry.text
+        ));
+    }
+}
+
+fn expect_dependency_line_contains(
+    rel: &str,
+    contents: &str,
+    dependency: &str,
+    expected_markers: &[&str],
+    violations: &mut Vec<String>,
+) {
+    let Some(text) = manifest_dependency_text(contents, dependency) else {
+        violations.push(format!(
+            "{}: missing normal dependency `{}`",
+            rel, dependency
+        ));
+        return;
+    };
+
+    for marker in expected_markers {
+        if !dependency_text_contains_marker(&text, marker) {
+            violations.push(format!(
+                "{}: dependency `{}` must contain `{}`: {}",
+                rel, dependency, marker, text
+            ));
+        }
+    }
+}
+
+fn reject_dependency_line_markers(
+    rel: &str,
+    contents: &str,
+    dependency: &str,
+    forbidden_markers: &[&str],
+    violations: &mut Vec<String>,
+) {
+    let Some(text) = manifest_dependency_text(contents, dependency) else {
+        violations.push(format!(
+            "{}: missing normal dependency `{}`",
+            rel, dependency
+        ));
+        return;
+    };
+
+    for marker in forbidden_markers {
+        if dependency_text_contains_marker(&text, marker) {
+            violations.push(format!(
+                "{}: dependency `{}` must not contain `{}`: {}",
+                rel, dependency, marker, text
+            ));
+        }
+    }
+}
+
+fn dependency_text_contains_marker(text: &str, marker: &str) -> bool {
+    normalize_toml_dependency_text(text).contains(&normalize_toml_dependency_text(marker))
+}
+
+fn normalize_toml_dependency_text(text: &str) -> String {
+    text.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
 fn manifest_line_mentions_storage_dependency(trimmed: &str) -> bool {
@@ -1097,6 +1916,48 @@ fn find_forbidden_marker_violations(
     violations
 }
 
+fn find_retired_crate_marker_violations(rel: &str, contents: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    if rel.ends_with(".rs") {
+        let mut lex_state = RustCodeLexState::default();
+        for (line_no, line) in contents.lines().enumerate() {
+            let code = rust_code_only_line(line, &mut lex_state);
+            if let Some(marker) = RETIRED_CRATE_MARKERS
+                .iter()
+                .find(|marker| rust_code_contains_marker(&code, marker))
+            {
+                violations.push(format!(
+                    "{}:{}: active Rust source references retired crate marker `{}`: {}",
+                    rel,
+                    line_no + 1,
+                    marker,
+                    line.trim()
+                ));
+            }
+        }
+        return violations;
+    }
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = toml_code_only_line(line);
+        if let Some(marker) = RETIRED_CRATE_MARKERS
+            .iter()
+            .find(|marker| text_contains_marker_token(&code, marker))
+        {
+            violations.push(format!(
+                "{}:{}: active manifest/lockfile references retired crate marker `{}`: {}",
+                rel,
+                line_no + 1,
+                marker,
+                line.trim()
+            ));
+        }
+    }
+
+    violations
+}
+
 fn rust_code_contains_marker(code: &str, marker: &str) -> bool {
     if marker.starts_with('.') {
         return contains_method_marker(code, marker);
@@ -1110,6 +1971,30 @@ fn rust_code_contains_marker(code: &str, marker: &str) -> bool {
     }
 
     contains_rust_identifier_token(code, marker)
+}
+
+fn text_contains_marker_token(text: &str, marker: &str) -> bool {
+    let mut offset = 0usize;
+    while let Some(relative) = text[offset..].find(marker) {
+        let start = offset + relative;
+        let end = start + marker.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+
+        let before_is_boundary = before.is_none_or(|ch| !is_manifest_marker_continue(ch));
+        let after_is_boundary = after.is_none_or(|ch| !is_manifest_marker_continue(ch));
+        if before_is_boundary && after_is_boundary {
+            return true;
+        }
+
+        offset = end;
+    }
+
+    false
+}
+
+fn is_manifest_marker_continue(ch: char) -> bool {
+    ch == '-' || ch == '_' || ch.is_ascii_alphanumeric()
 }
 
 fn contains_method_marker(code: &str, marker: &str) -> bool {
@@ -1263,28 +2148,98 @@ fn find_upper_subsystem_violations(rel: &str, contents: &str, subsystem_name: &s
     violations
 }
 
-fn is_cfg_test_attr(trimmed_code: &str) -> bool {
-    let compact = trimmed_code
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect::<String>();
+fn find_upper_runtime_assembly_violations(rel: &str, contents: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut pending_cfg_test = false;
+    let mut skipped_cfg_test_depth = None;
+    let mut lex_state = RustCodeLexState::default();
 
-    compact.starts_with("#[cfg(")
-        && !compact.contains("not(test)")
-        && contains_cfg_atom(&compact, "test")
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = rust_code_only_line(line, &mut lex_state);
+
+        if let Some(depth) = skipped_cfg_test_depth.as_mut() {
+            update_brace_depth(depth, &code);
+            if *depth == 0 {
+                skipped_cfg_test_depth = None;
+            }
+            continue;
+        }
+
+        let trimmed = code.trim();
+        if is_cfg_test_attr(trimmed) {
+            pending_cfg_test = true;
+            continue;
+        }
+
+        if pending_cfg_test {
+            if trimmed.is_empty() || trimmed.starts_with("#[") {
+                continue;
+            }
+
+            if line_declares_inline_module(trimmed) {
+                let mut depth = 0usize;
+                update_brace_depth(&mut depth, &code);
+                if depth > 0 {
+                    skipped_cfg_test_depth = Some(depth);
+                }
+                pending_cfg_test = false;
+                continue;
+            }
+
+            pending_cfg_test = false;
+        }
+
+        if let Some(marker) = find_upper_runtime_assembly_marker(&code) {
+            violations.push(format!(
+                "{}:{}: production upper crate assembles engine runtime via `{}`: {}",
+                rel,
+                line_no + 1,
+                marker,
+                line.trim()
+            ));
+        }
+    }
+
+    violations
 }
 
-fn contains_cfg_atom(compact_cfg_attr: &str, atom: &str) -> bool {
-    let mut offset = 0usize;
-    while let Some(relative) = compact_cfg_attr[offset..].find(atom) {
-        let start = offset + relative;
-        let end = start + atom.len();
-        let before = compact_cfg_attr[..start].chars().next_back();
-        let after = compact_cfg_attr[end..].chars().next();
+fn find_upper_runtime_assembly_marker(code: &str) -> Option<&'static str> {
+    if let Some(marker) = UPPER_FORBIDDEN_RUNTIME_ASSEMBLY_MARKERS
+        .iter()
+        .find(|marker| rust_code_contains_marker(code, marker))
+    {
+        return Some(marker);
+    }
 
+    if contains_method_call_token(code, "with_subsystem") {
+        return Some("with_subsystem");
+    }
+
+    if contains_method_call_token(code, "with_subsystems") {
+        return Some("with_subsystems");
+    }
+
+    if contains_dyn_subsystem_trait(code) {
+        return Some("dyn Subsystem");
+    }
+
+    if contains_engine_subsystem_trait_path(code) {
+        return Some("recovery::Subsystem");
+    }
+
+    None
+}
+
+fn contains_method_call_token(code: &str, method: &str) -> bool {
+    let mut offset = 0usize;
+    while let Some(relative) = code[offset..].find(method) {
+        let start = offset + relative;
+        let end = start + method.len();
+        let before = code[..start].chars().next_back();
+        let after = code[end..].chars().next();
         let before_is_boundary = before.is_none_or(|ch| !is_rust_identifier_continue(ch));
         let after_is_boundary = after.is_none_or(|ch| !is_rust_identifier_continue(ch));
-        if before_is_boundary && after_is_boundary {
+        if before_is_boundary && after_is_boundary && has_dot_before_method(code, start) {
             return true;
         }
 
@@ -1292,6 +2247,52 @@ fn contains_cfg_atom(compact_cfg_attr: &str, atom: &str) -> bool {
     }
 
     false
+}
+
+fn has_dot_before_method(code: &str, method_start: usize) -> bool {
+    code[..method_start]
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch == '.')
+}
+
+fn contains_dyn_subsystem_trait(code: &str) -> bool {
+    let tokens = code
+        .split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .filter(|token| !token.is_empty());
+
+    let mut previous_was_dyn = false;
+    for token in tokens {
+        if previous_was_dyn && token == "Subsystem" {
+            return true;
+        }
+
+        previous_was_dyn = token == "dyn";
+    }
+
+    false
+}
+
+fn contains_engine_subsystem_trait_path(code: &str) -> bool {
+    let tokens = code
+        .split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    tokens.contains(&"strata_engine")
+        && tokens
+            .windows(2)
+            .any(|window| window == ["recovery", "Subsystem"])
+}
+
+fn is_cfg_test_attr(trimmed_code: &str) -> bool {
+    let compact = trimmed_code
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+
+    compact == "#[cfg(test)]"
 }
 
 fn line_declares_inline_module(trimmed_code: &str) -> bool {
@@ -1597,93 +2598,8 @@ fn find_violations(contents: &str) -> Vec<String> {
 }
 
 fn find_manifest_violations(path: &Path, contents: &str) -> Vec<String> {
-    let mut violations = Vec::new();
     let rel = path.to_string_lossy();
-
-    for (line_no, line) in contents.lines().enumerate() {
-        if line.contains("strata-concurrency")
-            || line.contains("path = \"../concurrency\"")
-            || line.contains("path = \"crates/concurrency\"")
-        {
-            violations.push(format!(
-                "{}:{}: manifest references deleted `strata-concurrency` surface",
-                rel,
-                line_no + 1
-            ));
-        }
-
-        if line.contains("strata-durability")
-            || line.contains("path = \"../durability\"")
-            || line.contains("path = \"crates/durability\"")
-        {
-            violations.push(format!(
-                "{}:{}: manifest references deleted `strata-durability` surface",
-                rel,
-                line_no + 1
-            ));
-        }
-
-        if line.contains(RETIRED_EXECUTOR_LEGACY_PACKAGE)
-            || RETIRED_EXECUTOR_LEGACY_RELATIVE_PATHS
-                .iter()
-                .any(|path| line.contains(path))
-        {
-            violations.push(format!(
-                "{}:{}: manifest references retired `strata-executor-legacy` bootstrap crate",
-                rel,
-                line_no + 1
-            ));
-        }
-
-        if line.contains(RETIRED_GRAPH_PACKAGE)
-            || RETIRED_GRAPH_RELATIVE_PATHS
-                .iter()
-                .any(|path| line.contains(path))
-        {
-            violations.push(format!(
-                "{}:{}: manifest references retired `{}` crate",
-                rel,
-                line_no + 1,
-                RETIRED_GRAPH_PACKAGE
-            ));
-        }
-
-        if line.contains(RETIRED_VECTOR_PACKAGE)
-            || RETIRED_VECTOR_RELATIVE_PATHS
-                .iter()
-                .any(|path| line.contains(path))
-        {
-            violations.push(format!(
-                "{}:{}: manifest references retired `{}` crate",
-                rel,
-                line_no + 1,
-                RETIRED_VECTOR_PACKAGE
-            ));
-        }
-
-        if line.contains(RETIRED_SEARCH_PACKAGE)
-            || RETIRED_SEARCH_RELATIVE_PATHS
-                .iter()
-                .any(|path| line.contains(path))
-        {
-            violations.push(format!(
-                "{}:{}: manifest references retired `{}` crate",
-                rel,
-                line_no + 1,
-                RETIRED_SEARCH_PACKAGE
-            ));
-        }
-
-        if line.contains("strata-core-legacy") || line.contains("core-legacy") {
-            violations.push(format!(
-                "{}:{}: manifest references retired `strata-core-legacy` crate",
-                rel,
-                line_no + 1
-            ));
-        }
-    }
-
-    violations
+    find_retired_crate_marker_violations(&rel, contents)
 }
 
 fn scan_import_blocks(contents: &str, marker: &str, forbidden_tokens: &[&str]) -> Vec<String> {
@@ -2073,6 +2989,275 @@ strata-engine = { path = "../engine" }
 }
 
 #[test]
+fn retired_crate_guard_detects_manifests_lockfiles_and_rust_imports() {
+    let manifest = r#"
+[dependencies]
+strata-security = { path = "../security" }
+graph = { package = "strata-graph", path = "../graph" }
+"#;
+    let manifest_violations =
+        find_retired_crate_marker_violations("crates/example/Cargo.toml", manifest);
+    assert_eq!(manifest_violations.len(), 2, "{manifest_violations:?}");
+
+    let lockfile = r#"
+[[package]]
+name = "strata-core-legacy"
+"#;
+    let lockfile_violations = find_retired_crate_marker_violations("Cargo.lock", lockfile);
+    assert_eq!(lockfile_violations.len(), 1, "{lockfile_violations:?}");
+
+    let source = r#"
+use strata_concurrency::TransactionManager;
+use strata_durability::wal::WalWriter;
+"#;
+    let source_violations =
+        find_retired_crate_marker_violations("crates/example/src/lib.rs", source);
+    assert_eq!(source_violations.len(), 2, "{source_violations:?}");
+}
+
+#[test]
+fn retired_crate_guard_ignores_comments_literals_and_substrings() {
+    let manifest = r#"
+[dependencies]
+# strata-security = { path = "../security" }
+strata-graphical = "0.1"
+"#;
+    let manifest_violations =
+        find_retired_crate_marker_violations("crates/example/Cargo.toml", manifest);
+    assert!(manifest_violations.is_empty(), "{manifest_violations:?}");
+
+    let source = r###"
+const TEXT: &str = "strata_durability";
+const RAW: &str = r#"strata_concurrency"#;
+
+// use strata_concurrency::TransactionManager;
+/* use strata_durability::wal::WalWriter; */
+
+fn product_runtime() {
+    let _ = strata_concurrent_runtime;
+}
+"###;
+    let source_violations =
+        find_retired_crate_marker_violations("crates/example/src/lib.rs", source);
+    assert!(source_violations.is_empty(), "{source_violations:?}");
+}
+
+#[test]
+fn upper_runtime_assembly_guard_detects_runtime_assembly_patterns() {
+    let contents = r#"
+use strata_engine::database::OpenSpec;
+use strata_engine::SearchSubsystem;
+use strata_engine::recovery::Subsystem;
+use strata_engine::recovery::Subsystem as RuntimeSubsystem;
+
+fn product_runtime() {
+    let _spec = OpenSpec::cache();
+    let _spec = _spec . with_subsystem(SearchSubsystem);
+    let _spec = _spec . with_subsystems(Vec::new());
+    let _subsystems: Vec<Box<dyn Subsystem>> = Vec::new();
+    let _qualified: Box<dyn strata_engine::recovery::Subsystem>;
+    let _aliased: Box<dyn RuntimeSubsystem>;
+    let _search = SearchSubsystem;
+}
+"#;
+
+    let violations = find_upper_runtime_assembly_violations("crates/example/src/lib.rs", contents);
+    assert!(
+        violations.len() >= 7,
+        "expected OpenSpec, whitespace with_subsystem(s), Subsystem import/alias variants, and SearchSubsystem violations: {violations:?}"
+    );
+}
+
+#[test]
+fn upper_runtime_assembly_guard_ignores_literals_comments_cfg_tests_and_substrings() {
+    let contents = r###"
+const TEXT: &str = "OpenSpec";
+const RAW: &str = r#"SearchSubsystem"#;
+
+// OpenSpec::cache().with_subsystem(SearchSubsystem);
+/* let _: Box<dyn Subsystem>; */
+
+#[cfg(test)]
+mod tests {
+    use strata_engine::database::OpenSpec;
+    use strata_engine::SearchSubsystem;
+
+    fn test_runtime() {
+        let _spec = OpenSpec::cache().with_subsystem(SearchSubsystem);
+    }
+}
+
+fn product_runtime() {
+    let _ = OpenSpeculativeRuntime;
+    let _ = search.with_subsystematic();
+}
+"###;
+
+    let violations = find_upper_runtime_assembly_violations("crates/example/src/lib.rs", contents);
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn upper_runtime_assembly_guard_requires_adjacent_dyn_subsystem_trait() {
+    let contents = r#"
+fn product_runtime() {
+    let _: Box<dyn std::fmt::Debug>;
+    let Subsystem = 1usize;
+    let _ = Subsystem;
+}
+"#;
+
+    let violations = find_upper_runtime_assembly_violations("crates/example/src/lib.rs", contents);
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn upper_runtime_assembly_guard_does_not_skip_feature_enabled_cfg_modules() {
+    let contents = r#"
+#[cfg(any(test, feature = "embed"))]
+mod runtime {
+    use strata_engine::database::OpenSpec;
+
+    fn product_runtime() {
+        let _spec = OpenSpec::cache();
+    }
+}
+"#;
+
+    let violations = find_upper_runtime_assembly_violations("crates/example/src/lib.rs", contents);
+    assert_eq!(violations.len(), 2, "{violations:?}");
+}
+
+#[test]
+fn optional_edge_guard_parses_feature_arrays_and_dependency_lines() {
+    let contents = r#"
+[features]
+default = []
+embed = [
+    "strata-executor/embed",
+    "dep:strata-intelligence",
+]
+openai = ["embed", "strata-executor/openai"]
+
+[dependencies]
+strata-executor = { path = "../executor" }
+strata-intelligence = { path = "../intelligence", features = ["embed"], optional = true }
+"#;
+
+    assert_eq!(
+        manifest_feature_values(contents, "embed").as_deref(),
+        Some(
+            &[
+                "strata-executor/embed".to_string(),
+                "dep:strata-intelligence".to_string()
+            ][..]
+        )
+    );
+    assert_eq!(
+        manifest_feature_values(contents, "openai").as_deref(),
+        Some(&["embed".to_string(), "strata-executor/openai".to_string()][..])
+    );
+    let text =
+        manifest_dependency_text(contents, "strata-intelligence").expect("parse dependency line");
+    assert!(dependency_text_contains_marker(&text, "optional = true"));
+    assert!(dependency_text_contains_marker(
+        &text,
+        "features = [\"embed\"]"
+    ));
+
+    let dotted = r#"
+[dependencies.strata-intelligence]
+path="../intelligence"
+features=["embed"]
+optional=true
+"#;
+    let text =
+        manifest_dependency_text(dotted, "strata-intelligence").expect("parse dotted dependency");
+    assert!(dependency_text_contains_marker(
+        &text,
+        "path = \"../intelligence\""
+    ));
+    assert!(dependency_text_contains_marker(
+        &text,
+        "features = [\"embed\"]"
+    ));
+    assert!(dependency_text_contains_marker(&text, "optional = true"));
+
+    let alias = r#"
+[target.'cfg(unix)'.dependencies.ai]
+package = "strata-intelligence"
+path = "../intelligence"
+features = [
+    "embed",
+]
+optional = true
+"#;
+    let text =
+        manifest_dependency_text(alias, "strata-intelligence").expect("parse aliased dependency");
+    assert!(dependency_text_contains_marker(
+        &text,
+        "package = \"strata-intelligence\""
+    ));
+    assert!(dependency_text_contains_marker(&text, "features = ["));
+    assert!(dependency_text_contains_marker(&text, "\"embed\""));
+
+    let quoted_inline = r#"
+[dependencies]
+"strata-intelligence" = { path = "../intelligence", features = ["embed"], optional = true }
+"#;
+    let text = manifest_dependency_text(quoted_inline, "strata-intelligence")
+        .expect("parse quoted inline dependency key");
+    assert!(dependency_text_contains_marker(&text, "optional = true"));
+
+    let quoted_dotted = r#"
+[dependencies."strata-intelligence"]
+path = "../intelligence"
+optional = true
+"#;
+    let text = manifest_dependency_text(quoted_dotted, "strata-intelligence")
+        .expect("parse quoted dotted dependency key");
+    assert!(dependency_text_contains_marker(&text, "optional = true"));
+}
+
+#[test]
+fn optional_edge_guard_detects_root_intelligence_and_cli_feature_leaks() {
+    let root = r#"
+[dependencies]
+"strata-intelligence" = { path = "crates/intelligence" }
+ai = { package = "strata-intelligence", path = "crates/intelligence" }
+
+[dev-dependencies]
+strata-intelligence = { path = "crates/intelligence" }
+"#;
+    let mut violations = Vec::new();
+    reject_normal_dependency(
+        "Cargo.toml",
+        root,
+        "strata-intelligence",
+        "root package default graph must reach intelligence through executor only",
+        &mut violations,
+    );
+    assert_eq!(violations.len(), 2, "{violations:?}");
+
+    let cli = r#"
+[features]
+default = []
+embed = ["strata-executor/embed", "dep:strata-intelligence"]
+experimental = ["dep:strata-intelligence"]
+provider = ["strata-intelligence/openai"]
+"#;
+    let mut violations = Vec::new();
+    reject_feature_markers_outside_features(
+        "crates/cli/Cargo.toml",
+        cli,
+        &["dep:strata-intelligence", "strata-intelligence"],
+        &["embed"],
+        &mut violations,
+    );
+    assert_eq!(violations.len(), 2, "{violations:?}");
+}
+
+#[test]
 fn root_storage_dependency_guard_allows_dev_dependency() {
     let contents = r#"
 [dependencies]
@@ -2159,7 +3344,7 @@ fn product_runtime() {
 }
 
 #[test]
-fn graph_subsystem_guard_ignores_cfg_test_modules_with_nonstandard_names() {
+fn graph_subsystem_guard_does_not_ignore_feature_enabled_cfg_modules() {
     let contents = r#"
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod graph_tests {
@@ -2173,7 +3358,7 @@ pub(crate) mod graph_tests {
 
     let violations =
         find_upper_subsystem_violations("crates/example/src/lib.rs", contents, "GraphSubsystem");
-    assert!(violations.is_empty(), "{violations:?}");
+    assert_eq!(violations.len(), 2, "{violations:?}");
 }
 
 #[test]

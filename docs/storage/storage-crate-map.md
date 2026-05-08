@@ -5,8 +5,7 @@
 This document maps `crates/storage` after the storage consolidation and the
 storage-boundary normalization.
 
-It describes the settled lower-runtime substrate that engine and the current
-upper crates build on.
+It describes the settled lower-runtime substrate that engine builds on.
 
 For the target boundary of the clean storage layer, see
 [storage-charter.md](./storage-charter.md).
@@ -18,11 +17,11 @@ consume, see
 For the cross-boundary ownership question with engine, see
 [storage-engine-ownership-audit.md](./storage-engine-ownership-audit.md).
 
-The important takeaway is that `strata-storage` is the real lower runtime
-anchor of the system. Engine consolidation has absorbed security/open options,
-product open/bootstrap, graph, vector, and search. Storage should remain the
-generic persistence substrate while the remaining upper-layer cleanup removes
-executor's direct storage bypass.
+The important takeaway is that `strata-storage` is the lower runtime anchor of
+the system. Engine consolidation has absorbed security/open options, product
+open/bootstrap, graph, vector, and search, and removed executor's direct
+storage bypass. Storage remains the generic persistence substrate; normal
+production storage consumption above storage goes through `strata-engine`.
 
 ## High-Level Shape
 
@@ -111,16 +110,16 @@ That is the clean shape we wanted from the earlier storage boundary cleanup.
 
 ### Incoming Workspace Dependents
 
-The internal incoming graph today is:
+The internal normal production incoming graph today is:
 
 - `strata-engine`
-- `strata-executor`
 
-The root `stratadb` package also depends on storage in dev/test paths.
+The root `stratadb` package still depends on storage in dev/test paths for
+storage-facing integration tests. That is not a product/runtime storage
+consumer.
 
-This confirms that storage is already the effective substrate node of the
-workspace. The direct upper-crate storage edges are current transitional
-workspace shape, not permission for upper layers to drive database recovery,
+This confirms that storage is the effective substrate node of the workspace.
+No production crate above engine is allowed to drive database recovery,
 checkpoint, open, retention, or product policy below engine.
 
 `EG4` removed `strata-graph` as a separate storage consumer by moving the graph
