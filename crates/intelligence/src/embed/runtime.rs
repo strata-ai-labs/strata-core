@@ -705,17 +705,13 @@ fn serde_json_to_value(json: SerdeValue) -> StrataResult<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strata_engine::database::OpenSpec;
-    use strata_engine::{SearchSubsystem, VectorSubsystem};
+    use strata_engine::database::{open_product_cache, ProductOpenOutcome};
 
     fn test_db() -> Arc<Database> {
-        let db = Database::open_runtime(
-            OpenSpec::cache()
-                .with_subsystem(strata_engine::GraphSubsystem)
-                .with_subsystem(VectorSubsystem)
-                .with_subsystem(SearchSubsystem),
-        )
-        .unwrap();
+        let db = match open_product_cache().unwrap() {
+            ProductOpenOutcome::Local { db, .. } => db,
+            _ => panic!("product cache should always open locally"),
+        };
         db.set_auto_embed(true);
         db
     }

@@ -56,22 +56,26 @@ This plan should be read with:
 
 ## Current Verified Starting Point
 
-The verified normal workspace dependency graph for the engine-adjacent crates
-is:
+The verified default normal workspace dependency graph for the engine-adjacent
+crates is:
 
 ```text
 strata-storage         -> strata-core
 strata-engine          -> strata-core, strata-storage
-strata-intelligence    -> strata-core, strata-engine, strata-inference
+strata-intelligence    -> strata-core, strata-engine
 strata-executor        -> strata-core, strata-engine, strata-intelligence
-strata-cli             -> strata-executor, strata-intelligence
+strata-cli             -> strata-executor
 stratadb               -> strata-executor
 ```
 
 There is no normal production direct storage bypass above engine after `EG7`.
+With `embed` enabled, `strata-intelligence` adds the optional
+`strata-inference` edge and `strata-cli` reaches intelligence through its
+optional embed feature.
 
 `strata-intelligence` does not currently have direct normal storage imports,
-and it no longer depends on a search peer crate after `EG6`.
+and it no longer depends on graph, vector, search, security, executor-legacy, or
+storage peer crates.
 
 `EG4` removed graph from this list by moving graph runtime, storage-key mapping,
 transaction extension behavior, merge behavior, and branch DAG behavior into
@@ -280,8 +284,9 @@ The consolidation is complete when:
 6. `strata-executor` no longer depends on `strata-storage`, `strata-graph`,
    `strata-vector`, `strata-search`, `strata-security`, or
    `strata-executor-legacy`.
-7. `strata-intelligence` depends on `strata-engine` and `strata-inference`, not
-   `strata-search` or `strata-vector`.
+7. `strata-intelligence` depends on `strata-engine` by default and reaches
+   `strata-inference` only through optional embed/provider features. It does
+   not depend on `strata-search` or `strata-vector`.
 8. The only normal production path into storage is `strata-engine`.
 9. The crate graph is enforceable with tests and `cargo metadata` guards.
 10. No production crate above engine instantiates engine subsystem structs or
@@ -302,9 +307,11 @@ strata-core
 `strata-inference` remains below or beside `strata-intelligence` as the model
 provider/inference crate. Engine must not depend on it.
 
-The CLI should also stop depending on intelligence directly by closeout. It is
-not a storage bypass today, but the target stack is easier to enforce if CLI
-commands enter through executor rather than selectively bypassing it.
+The CLI should also stop depending on intelligence directly by closeout unless
+there is a documented command-surface reason to bypass executor. The current
+documented exception is the optional `embed` feature, which exposes
+intelligence-backed commands while still keeping direct inference imports out of
+CLI.
 
 ## Non-Goals
 
@@ -1059,6 +1066,8 @@ empty for production crates above engine.
 
 ## EG8 - Intelligence Dependency Cleanup
 
+Detailed plan: [eg8-implementation-plan.md](./eg8-implementation-plan.md)
+
 **Goal:**
 
 Make intelligence depend on engine for search/vector types and on inference for
@@ -1107,23 +1116,60 @@ Re-run intelligence dependency and import inventories after vector and search
 absorption. Confirm no direct storage access exists and no graph, vector,
 search, security, or storage peer-crate imports remain.
 
-### EG8B - Cut Over Search Imports And Preserve Vector Cutover
+Current status: complete. The default intelligence graph is
+`strata-core + strata-engine` plus support crates; `--features embed` adds only
+direct optional `strata-inference`. Engine has no intelligence or inference
+edge, and executor/CLI consume inference-facing types through intelligence
+rather than directly importing inference.
+
+### EG8B - Preserve Engine-Owned Search, Vector, And Graph Contracts
 
 Confirm intelligence uses engine-owned search traits, DTOs, and runtime surfaces
-while vector imports still come from engine.
+while vector and graph imports still come from engine.
+
+Current status: complete. Production intelligence modules use engine-owned
+search DTOs, recipes, database handles, and primitive facades. Expansion-cache
+serialization remains intelligence-local only as a compatibility bridge around
+engine-owned `ExpandedQuery`/`QueryType`; subsystem assembly cleanup remains
+scoped to `EG8D`.
 
 ### EG8C - Preserve The Inference Boundary
 
 Keep model execution, provider wiring, and inference-specific configuration in
 intelligence/inference. Confirm engine still has no inference dependency.
 
-### EG8D - Tighten Intelligence Dependency Guard
+Current status: complete. `strata-inference` remains optional and is reached
+only through `strata-intelligence`; intelligence forwards local/download and
+cloud-provider inference features explicitly, while executor and CLI consume
+inference-facing public types through the intelligence facade.
+
+### EG8D - Remove Intelligence Subsystem Assembly
+
+Remove intelligence test/runtime helper usage of direct engine subsystem
+construction. Intelligence should ask engine for an intended runtime shape, not
+name `GraphSubsystem`, `VectorSubsystem`, `SearchSubsystem`, or
+`OpenSpec::with_subsystem`.
+
+Current status: complete. Intelligence tests now use engine product-open
+helpers for disk-backed and ephemeral runtime setup; direct subsystem
+construction is no longer present under `crates/intelligence`.
+
+### EG8E - Guard And Documentation Closeout
 
 Rebaseline intelligence manifest/import guards for the already-removed search
 and storage edges. Remove stale allowlist entries if any remain, and keep the
-existing graph/vector/security absence enforced.
+existing graph/vector/security absence enforced. Add guards for the inference
+direction and intelligence subsystem-instantiation boundary.
+
+Current status: complete. `tests/storage_surface_imports.rs` now rejects
+intelligence storage/retired-runtime dependencies, intelligence source/test
+subsystem assembly, engine imports of intelligence/inference, and direct
+executor/CLI/root imports of inference. The crate map documents the default
+normal graph and the optional embed/inference edges separately.
 
 ## EG9 - Crate Deletion And Workspace Closeout
+
+Detailed plan: [eg9-implementation-plan.md](./eg9-implementation-plan.md)
 
 **Goal:**
 
@@ -1141,7 +1187,9 @@ by `EG3D`. `crates/graph` was deleted by `EG4G`. `crates/vector` was deleted by
 Remove workspace dependency entries and feature plumbing for deleted crates.
 
 Remove direct CLI dependencies on intelligence unless there is a documented
-reason for a CLI command to bypass executor.
+reason for a CLI command to bypass executor. The current documented exception
+is the optional `embed` feature, which exposes intelligence-backed commands
+while still keeping direct inference imports out of CLI.
 
 Tighten guard tests from transitional allowlists to final allowlists.
 
@@ -1152,11 +1200,14 @@ The final normal workspace graph should satisfy:
 ```text
 strata-storage      -> strata-core
 strata-engine       -> strata-core, strata-storage
-strata-intelligence -> strata-core, strata-engine, strata-inference
+strata-intelligence -> strata-core, strata-engine
 strata-executor     -> strata-core, strata-engine, strata-intelligence
 strata-cli          -> strata-executor
 stratadb            -> strata-executor
 ```
+
+With `embed` enabled, `strata-intelligence` adds optional `strata-inference` and
+`strata-cli` may depend on `strata-intelligence` as an optional command surface.
 
 There should be no normal production dependency on:
 
@@ -1176,23 +1227,29 @@ reintroduction.
 - do not perform broad engine-next modular redesign in this closeout
 - do not start storage-next in this closeout
 
-### EG9A - Delete Absorbed Crates And Workspace Metadata
+### EG9A - Baseline Closeout Ledger
 
-Remove absorbed crates from `crates/`, workspace members, dependency manifests,
-feature lists, and CI/test configuration after normal dependents are gone.
+Record the final filesystem, workspace metadata, lockfile, dependency graph,
+and production import state before tightening the last guards.
 
-### EG9B - Tighten Final Storage And Dependency Guards
+### EG9B - Final Graph And Retired-Crate Guards
 
-Make direct storage access above engine fail by default. The only normal
-production storage dependent should be engine.
+Make the final graph fail closed. Retired crates must stay deleted, direct
+storage access above engine must fail, inference must stay behind
+intelligence, and upper layers must not assemble engine subsystems.
 
-### EG9C - Refresh Architecture Documents
+### EG9C - Optional Edge Policy And Feature Surface
+
+Document and enforce the remaining optional edges, especially CLI's optional
+`embed` edge to intelligence and intelligence's optional inference edge.
+
+### EG9D - Active Architecture Document Refresh
 
 Update the engine crate map, storage consumption contract, and active
 architecture docs so they describe the consolidated graph rather than the
 migration.
 
-### EG9D - Full Verification And Closeout Ledger
+### EG9E - Final Verification And Closeout
 
 Run the full required test matrix, record known residual risks, and explicitly
 name any temporary compatibility shell that survives closeout.
@@ -1262,10 +1319,12 @@ Final intelligence dependency guard:
 
 ```bash
 cargo tree -p strata-intelligence --edges normal --depth 1
+cargo tree -p strata-intelligence --features embed --edges normal --depth 1
 ```
 
-At closeout, intelligence should depend on engine and inference, not graph,
-vector, search, security, or storage.
+At closeout, intelligence should depend on engine by default. With `embed`
+enabled, it may add inference. It must not depend on graph, vector, search,
+security, or storage in either graph.
 
 ## Testing Strategy
 

@@ -14,7 +14,7 @@ workspace = true
 
 [features]
 default = []
-embed = ["dep:strata-inference"]
+embed = ["dep:strata-inference", "strata-inference/local", "strata-inference/download"]
 # Cloud generation providers — each enables the corresponding
 # strata-inference feature. Requires 'embed' to be useful.
 anthropic = ["embed", "strata-inference/anthropic"]
@@ -28,7 +28,7 @@ tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-strata-inference = { path = "../inference", optional = true, features = ["local", "download"] }
+strata-inference = { path = "../inference", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -121,6 +121,49 @@ const RETIRED_SEARCH_IMPORT: &str = concat!("strata", "_", "search");
 const RETIRED_SEARCH_RELATIVE_PATHS: &[&str] =
     &[concat!("../", "search"), concat!("crates/", "search")];
 
+const INTELLIGENCE_BOUNDARY_SCAN_ROOT: &str = "crates/intelligence";
+const INTELLIGENCE_FORBIDDEN_DEPENDENCY_MARKERS: &[&str] = &[
+    "strata-storage",
+    "strata_storage",
+    concat!("../", "storage"),
+    concat!("crates/", "storage"),
+    RETIRED_SECURITY_PACKAGE,
+    RETIRED_SECURITY_IMPORT,
+    concat!("../", "security"),
+    concat!("crates/", "security"),
+    RETIRED_EXECUTOR_LEGACY_PACKAGE,
+    RETIRED_EXECUTOR_LEGACY_IMPORT,
+    concat!("../", "executor", "-", "legacy"),
+    concat!("crates/", "executor", "-", "legacy"),
+    RETIRED_GRAPH_PACKAGE,
+    RETIRED_GRAPH_IMPORT,
+    concat!("../", "graph"),
+    concat!("crates/", "graph"),
+    RETIRED_VECTOR_PACKAGE,
+    RETIRED_VECTOR_IMPORT,
+    concat!("../", "vector"),
+    concat!("crates/", "vector"),
+    RETIRED_SEARCH_PACKAGE,
+    RETIRED_SEARCH_IMPORT,
+    concat!("../", "search"),
+    concat!("crates/", "search"),
+];
+const INTELLIGENCE_FORBIDDEN_RUNTIME_MARKERS: &[&str] = &[
+    "OpenSpec",
+    "GraphSubsystem",
+    "VectorSubsystem",
+    "SearchSubsystem",
+    ".with_subsystems",
+    ".with_subsystem",
+];
+const ENGINE_FORBIDDEN_UPPER_LAYER_MARKERS: &[&str] = &[
+    "strata-intelligence",
+    "strata_intelligence",
+    "strata-inference",
+    "strata_inference",
+];
+const UPPER_FORBIDDEN_INFERENCE_MARKERS: &[&str] = &["strata-inference", "strata_inference"];
+
 #[test]
 fn storage_facing_types_are_not_imported_from_strata_core() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -596,6 +639,98 @@ fn engine_consolidation_direct_storage_bypasses_are_allowlisted() {
     );
 }
 
+#[test]
+fn engine_consolidation_intelligence_boundary_is_engine_consuming() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let intelligence_root = repo_root.join(INTELLIGENCE_BOUNDARY_SCAN_ROOT);
+    let mut files = Vec::new();
+    collect_rust_files(&intelligence_root, &mut files);
+    collect_manifest_files(&intelligence_root, &mut files);
+
+    let mut violations = Vec::new();
+    for file in files {
+        if should_skip(&file) || should_skip_manifest(&file) {
+            continue;
+        }
+
+        let rel = repo_relative_path(&repo_root, &file);
+        let contents = fs::read_to_string(&file).expect("read intelligence boundary file");
+        violations.extend(find_forbidden_marker_violations(
+            &rel,
+            &contents,
+            INTELLIGENCE_FORBIDDEN_DEPENDENCY_MARKERS,
+            "intelligence must consume engine surfaces instead of storage or retired runtime crates",
+        ));
+        if rel.ends_with(".rs") {
+            violations.extend(find_forbidden_marker_violations(
+                &rel,
+                &contents,
+                INTELLIGENCE_FORBIDDEN_RUNTIME_MARKERS,
+                "intelligence source/tests must not assemble engine product subsystems directly",
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "intelligence must remain an engine consumer with no storage, retired runtime-crate, or subsystem-assembly bypasses:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn engine_consolidation_inference_boundary_stays_above_intelligence() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut engine_files = vec![repo_root.join("crates/engine/Cargo.toml")];
+    collect_rust_files(&repo_root.join("crates/engine/src"), &mut engine_files);
+
+    let mut upper_files = vec![
+        repo_root.join("Cargo.toml"),
+        repo_root.join("crates/executor/Cargo.toml"),
+        repo_root.join("crates/cli/Cargo.toml"),
+    ];
+    collect_rust_files(&repo_root.join("src"), &mut upper_files);
+    collect_rust_files(&repo_root.join("crates/executor/src"), &mut upper_files);
+    collect_rust_files(&repo_root.join("crates/cli/src"), &mut upper_files);
+
+    let mut violations = Vec::new();
+    for file in engine_files {
+        if should_skip(&file) || should_skip_manifest(&file) {
+            continue;
+        }
+
+        let rel = repo_relative_path(&repo_root, &file);
+        let contents = fs::read_to_string(&file).expect("read engine boundary file");
+        violations.extend(find_forbidden_marker_violations(
+            &rel,
+            &contents,
+            ENGINE_FORBIDDEN_UPPER_LAYER_MARKERS,
+            "engine must not depend on intelligence or inference",
+        ));
+    }
+
+    for file in upper_files {
+        if should_skip(&file) || should_skip_manifest(&file) {
+            continue;
+        }
+
+        let rel = repo_relative_path(&repo_root, &file);
+        let contents = fs::read_to_string(&file).expect("read upper boundary file");
+        violations.extend(find_forbidden_marker_violations(
+            &rel,
+            &contents,
+            UPPER_FORBIDDEN_INFERENCE_MARKERS,
+            "executor/CLI/root package must reach inference through intelligence only",
+        ));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "inference must remain optional behind `strata-intelligence`; lower or sibling crates may not import it directly:\n{}",
+        violations.join("\n")
+    );
+}
+
 fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     if !dir.exists() {
         return;
@@ -914,6 +1049,103 @@ fn find_retired_search_violations(rel: &str, contents: &str) -> Vec<String> {
     }
 
     violations
+}
+
+fn find_forbidden_marker_violations(
+    rel: &str,
+    contents: &str,
+    markers: &[&str],
+    reason: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    if rel.ends_with(".rs") {
+        let mut lex_state = RustCodeLexState::default();
+        for (line_no, line) in contents.lines().enumerate() {
+            let code = rust_code_only_line(line, &mut lex_state);
+            if let Some(marker) = markers
+                .iter()
+                .find(|marker| rust_code_contains_marker(&code, marker))
+            {
+                violations.push(format!(
+                    "{}:{}: {} (`{}`): {}",
+                    rel,
+                    line_no + 1,
+                    reason,
+                    marker,
+                    line.trim()
+                ));
+            }
+        }
+        return violations;
+    }
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = toml_code_only_line(line);
+        if let Some(marker) = markers.iter().find(|marker| code.contains(**marker)) {
+            violations.push(format!(
+                "{}:{}: {} (`{}`): {}",
+                rel,
+                line_no + 1,
+                reason,
+                marker,
+                line.trim()
+            ));
+        }
+    }
+
+    violations
+}
+
+fn rust_code_contains_marker(code: &str, marker: &str) -> bool {
+    if marker.starts_with('.') {
+        return contains_method_marker(code, marker);
+    }
+
+    if marker
+        .chars()
+        .any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric()))
+    {
+        return code.contains(marker);
+    }
+
+    contains_rust_identifier_token(code, marker)
+}
+
+fn contains_method_marker(code: &str, marker: &str) -> bool {
+    let mut offset = 0usize;
+    while let Some(relative) = code[offset..].find(marker) {
+        let start = offset + relative;
+        let end = start + marker.len();
+        let after = code[end..].chars().next();
+        if after.is_none_or(|ch| !is_rust_identifier_continue(ch)) {
+            return true;
+        }
+
+        offset = end;
+    }
+
+    false
+}
+
+fn contains_rust_identifier_token(code: &str, token: &str) -> bool {
+    let mut offset = 0usize;
+    while let Some(relative) = code[offset..].find(token) {
+        let start = offset + relative;
+        let end = start + token.len();
+        let before = code[..start].chars().next_back();
+        let after = code[end..].chars().next();
+
+        let before_is_boundary = before.is_none_or(|ch| !is_rust_identifier_continue(ch));
+        let after_is_boundary = after.is_none_or(|ch| !is_rust_identifier_continue(ch));
+        if before_is_boundary && after_is_boundary {
+            return true;
+        }
+
+        offset = end;
+    }
+
+    false
 }
 
 const VECTOR_STORAGE_KEY_LAYOUT_MARKERS: &[&str] = &[
@@ -1759,6 +1991,85 @@ fn product_runtime() {
     let references = find_direct_storage_references("crates/example/src/lib.rs", contents);
     assert_eq!(references.len(), 1, "{references:?}");
     assert!(references[0].1.contains("strata_storage::TypeTag"));
+}
+
+#[test]
+fn forbidden_marker_guard_detects_rust_code_markers() {
+    let contents = r#"
+use strata_storage::Key;
+use strata_engine::database::OpenSpec;
+
+fn product_runtime() {
+    let _ = OpenSpec::cache().with_subsystem(SearchSubsystem);
+    let _ = runtime.with_subsystem(SearchSubsystem);
+}
+"#;
+
+    let violations = find_forbidden_marker_violations(
+        "crates/example/src/lib.rs",
+        contents,
+        &["strata_storage", "OpenSpec", ".with_subsystem"],
+        "test marker",
+    );
+    assert_eq!(violations.len(), 4, "{violations:?}");
+}
+
+#[test]
+fn forbidden_marker_guard_ignores_rust_literals_comments_and_substrings() {
+    let contents = r###"
+const TEXT: &str = "OpenSpec";
+const RAW: &str = r#"strata_storage"#;
+
+// use strata_storage::Key;
+/* OpenSpec::cache().with_subsystem(SearchSubsystem); */
+
+fn product_runtime() {
+    let _ = OpenSpeculativeRuntime;
+    let _ = runtime.with_subsystematic();
+}
+"###;
+
+    let violations = find_forbidden_marker_violations(
+        "crates/example/src/lib.rs",
+        contents,
+        &["strata_storage", "OpenSpec", ".with_subsystem"],
+        "test marker",
+    );
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn forbidden_marker_guard_detects_toml_dependency_markers() {
+    let contents = r#"
+[dependencies]
+strata-storage = { path = "../storage" }
+inference = { package = "strata-inference", path = "../inference" }
+"#;
+
+    let violations = find_forbidden_marker_violations(
+        "crates/example/Cargo.toml",
+        contents,
+        &["strata-storage", "strata-inference"],
+        "test marker",
+    );
+    assert_eq!(violations.len(), 2, "{violations:?}");
+}
+
+#[test]
+fn forbidden_marker_guard_ignores_toml_comments() {
+    let contents = r#"
+[dependencies]
+# strata-storage = { path = "../storage" }
+strata-engine = { path = "../engine" }
+"#;
+
+    let violations = find_forbidden_marker_violations(
+        "crates/example/Cargo.toml",
+        contents,
+        &["strata-storage"],
+        "test marker",
+    );
+    assert!(violations.is_empty(), "{violations:?}");
 }
 
 #[test]
