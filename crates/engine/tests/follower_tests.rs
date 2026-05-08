@@ -13,7 +13,7 @@ use strata_engine::database::OpenSpec;
 use strata_engine::search::Searchable;
 use strata_engine::{
     Database, JsonStore, JsonValue, NoopPreparedRefresh, PreparedRefresh, RefreshHook,
-    RefreshHookError, RefreshHooks, SearchRequest, SearchSubsystem, Subsystem,
+    RefreshHookError, RefreshHooks, SearchRequest, SearchSubsystem, Subsystem, TransactionOps,
 };
 use strata_storage::{Key, Namespace};
 use tempfile::tempdir;
@@ -44,13 +44,14 @@ fn primary_del(db: &Database, branch: BranchId, key: &str) {
 
 /// Helper: read a key-value pair via a read-only transaction.
 fn read_kv(db: &Database, branch: BranchId, key: &str) -> Option<String> {
-    let k = Key::new_kv(ns(branch), key);
     let mut txn = db
         .begin_read_only_transaction(branch)
         .expect("begin_read_only_transaction");
-    match txn.get(&k) {
-        Ok(Some(Value::String(s))) => Some(s),
-        Ok(Some(other)) => Some(format!("{:?}", other)),
+    match txn.scoped_space("default").kv_get(key) {
+        Ok(Some(versioned)) => match versioned.value {
+            Value::String(s) => Some(s),
+            other => Some(format!("{:?}", other)),
+        },
         Ok(None) => None,
         Err(e) => panic!("read_kv failed unexpectedly: {}", e),
     }
@@ -675,7 +676,6 @@ fn test_issue_1707_refresh_atomic_visibility() {
             let found = found_partial.clone();
             let stop_flag = stop.clone();
             std::thread::spawn(move || {
-                let n = ns(branch);
                 while !stop_flag.load(Ordering::Relaxed) {
                     // Take a snapshot read
                     let mut txn = match f.begin_read_only_transaction(branch) {
@@ -687,12 +687,14 @@ fn test_issue_1707_refresh_atomic_visibility() {
                     let mut new_visible = 0u32;
                     let mut old_visible = 0u32;
                     for i in 0..50 {
-                        let nk = Key::new_kv(n.clone(), format!("new_{}", i));
-                        if let Ok(Some(_)) = txn.get(&nk) {
+                        if let Ok(Some(_)) =
+                            txn.scoped_space("default").kv_get(&format!("new_{}", i))
+                        {
                             new_visible += 1;
                         }
-                        let ok = Key::new_kv(n.clone(), format!("old_{}", i));
-                        if let Ok(Some(_)) = txn.get(&ok) {
+                        if let Ok(Some(_)) =
+                            txn.scoped_space("default").kv_get(&format!("old_{}", i))
+                        {
                             old_visible += 1;
                         }
                     }
@@ -792,7 +794,6 @@ fn test_issue_1707_refresh_atomic_concurrent() {
             let found = found_partial.clone();
             let stop_flag = stop.clone();
             std::thread::spawn(move || {
-                let n = ns(branch);
                 while !stop_flag.load(Ordering::Relaxed) {
                     let mut txn = match f.begin_read_only_transaction(branch) {
                         Ok(t) => t,
@@ -806,19 +807,21 @@ fn test_issue_1707_refresh_atomic_concurrent() {
                     let mut mismatch = false;
 
                     for k in 0..20u32 {
-                        let key = Key::new_kv(n.clone(), format!("batch_{}", k));
-                        match txn.get(&key) {
-                            Ok(Some(Value::String(s))) => {
-                                all_none = false;
-                                if let Some(ref expected) = first_val {
-                                    if *expected != s {
-                                        mismatch = true;
-                                        break;
+                        match txn.scoped_space("default").kv_get(&format!("batch_{}", k)) {
+                            Ok(Some(versioned)) => match versioned.value {
+                                Value::String(s) => {
+                                    all_none = false;
+                                    if let Some(ref expected) = first_val {
+                                        if *expected != s {
+                                            mismatch = true;
+                                            break;
+                                        }
+                                    } else {
+                                        first_val = Some(s);
                                     }
-                                } else {
-                                    first_val = Some(s);
                                 }
-                            }
+                                _ => continue,
+                            },
                             Ok(None) => {
                                 // Key not yet visible — fine if ALL are none
                                 if first_val.is_some() {
@@ -826,7 +829,7 @@ fn test_issue_1707_refresh_atomic_concurrent() {
                                     break;
                                 }
                             }
-                            _ => continue,
+                            Err(_) => continue,
                         }
                     }
 

@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use strata_engine::{AccessMode, Database, Transaction};
-use strata_storage::Namespace;
 
 use crate::bridge::{
     access_denied, bypasses_active_transaction, is_read_only, json_to_value,
@@ -106,7 +105,7 @@ impl LocalSession {
 
     fn txn_info(&self) -> Output {
         Output::TxnInfo(self.txn.as_ref().map(|txn| TransactionInfo {
-            id: txn.txn_id.to_string(),
+            id: txn.id_string(),
             status: TxnStatus::Active,
             started_at: 0,
         }))
@@ -146,27 +145,13 @@ impl LocalSession {
             _ => {}
         }
 
-        let branch_id = self
-            .txn
-            .as_ref()
-            .expect("transaction should be active while dispatching in-transaction commands")
-            .branch_id();
         let space = command_space(&command);
-        let namespace = Arc::new(Namespace::for_branch_space(branch_id, &space));
         let txn = self
             .txn
             .as_mut()
             .expect("transaction should be active while dispatching in-transaction commands");
 
-        dispatch_in_txn(
-            executor,
-            txn,
-            namespace,
-            branch_id,
-            &space,
-            command,
-            &mut self.effects,
-        )
+        dispatch_in_txn(executor, txn, &space, command, &mut self.effects)
     }
 }
 
@@ -512,8 +497,6 @@ fn command_space(command: &Command) -> String {
 fn dispatch_in_txn(
     executor: &Executor,
     txn: &mut Transaction,
-    namespace: Arc<Namespace>,
-    branch_id: strata_core::BranchId,
     space: &str,
     command: Command,
     effects: &mut TxnSideEffects,
@@ -541,10 +524,7 @@ fn dispatch_in_txn(
         | other @ Command::KvBatchDelete { .. }
         | other @ Command::KvBatchExists { .. }
         | other @ Command::KvExists { .. } => {
-            let ctx = txn
-                .context_mut()
-                .expect("transaction context should be available until commit or rollback");
-            kv::execute_in_txn(executor.primitives(), ctx, namespace, space, other, effects)
+            kv::execute_in_txn(executor.primitives(), txn, space, other, effects)
         }
         other @ Command::JsonGet { .. }
         | other @ Command::JsonSet { .. }
@@ -554,7 +534,7 @@ fn dispatch_in_txn(
         | other @ Command::JsonBatchSet { .. }
         | other @ Command::JsonBatchGet { .. }
         | other @ Command::JsonBatchDelete { .. } => {
-            json::execute_in_txn(executor.primitives(), txn, namespace, space, other, effects)
+            json::execute_in_txn(executor.primitives(), txn, space, other, effects)
         }
         other @ Command::EventAppend { .. }
         | other @ Command::EventGet { .. }
@@ -562,10 +542,7 @@ fn dispatch_in_txn(
         | other @ Command::EventGetByType { .. }
         | other @ Command::EventLen { .. }
         | other @ Command::EventBatchAppend { .. } => {
-            let ctx = txn
-                .context_mut()
-                .expect("transaction context should be available until commit or rollback");
-            event::execute_in_txn(executor.primitives(), ctx, namespace, space, other, effects)
+            event::execute_in_txn(executor.primitives(), txn, space, other, effects)
         }
         other @ Command::GraphCreate { .. }
         | other @ Command::GraphAddNode { .. }
@@ -577,19 +554,13 @@ fn dispatch_in_txn(
         | other @ Command::GraphAddEdge { .. }
         | other @ Command::GraphRemoveEdge { .. }
         | other @ Command::GraphNeighbors { .. } => {
-            let ctx = txn
-                .context_mut()
-                .expect("transaction context should be available until commit or rollback");
-            graph::execute_in_txn(executor.primitives(), ctx, branch_id, space, other)
+            graph::execute_in_txn(executor.primitives(), txn, space, other)
         }
         other @ Command::VectorUpsert { .. }
         | other @ Command::VectorDelete { .. }
         | other @ Command::VectorGet { .. }
         | other @ Command::VectorExists { .. } => {
-            let ctx = txn
-                .context_mut()
-                .expect("transaction context should be available until commit or rollback");
-            vector::execute_in_txn(executor.primitives(), ctx, branch_id, space, other)
+            vector::execute_in_txn(executor.primitives(), txn, space, other)
         }
 
         other => executor.execute(other),
@@ -833,7 +804,6 @@ mod tests {
 
     use strata_core::Value;
     use strata_engine::AccessMode;
-    use strata_storage::{Key, Namespace};
 
     use super::SessionBackend;
     use crate::{Command, Error, Output, Session, Strata};
@@ -1037,14 +1007,12 @@ mod tests {
         let branch_id =
             crate::bridge::to_core_branch_id(&branch).expect("default branch should parse");
 
-        let corrupt_json_key = Key::new_json(
-            Arc::new(Namespace::for_branch_space(branch_id, "default")),
+        db.inject_corrupt_json_bytes_for_test(
+            branch_id,
+            "default",
             "corrupt-json",
-        );
-        db.transaction(branch_id, |txn| {
-            txn.put(corrupt_json_key.clone(), Value::Bytes(vec![0xff, 0x00]))?;
-            Ok(())
-        })
+            vec![0xff, 0x00],
+        )
         .expect("corrupt fixture should be written directly");
 
         let mut session = Session::new(db.clone());

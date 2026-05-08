@@ -2486,6 +2486,28 @@ impl From<serde_json::Error> for StrataError {
     }
 }
 
+/// Convert a storage-local transaction failure into the engine product
+/// boundary shape expected by executor-visible command handlers.
+///
+/// This adapter is intentionally narrower than the blanket
+/// `From<StorageError>` conversion: raw transaction contexts still surface a
+/// few storage mechanics directly while the executor is being collapsed into
+/// engine, and those calls must preserve the historical product-facing error
+/// categories.
+pub fn storage_error_for_product_boundary(value: StorageError) -> StrataError {
+    match value {
+        StorageError::Io(inner) => StrataError::storage_with_source("storage I/O error", inner),
+        StorageError::InvalidInput { message } => StrataError::invalid_input(message),
+        StorageError::CapacityExceeded {
+            resource,
+            limit,
+            requested,
+        } => StrataError::capacity_exceeded(resource, limit, requested),
+        StorageError::Corruption { message } => StrataError::serialization(message),
+        other => StrataError::from(other),
+    }
+}
+
 impl From<StorageError> for StrataError {
     fn from(value: StorageError) -> Self {
         match value {
@@ -3693,6 +3715,67 @@ mod storage_error_bridge_tests {
             StrataError::Corruption { ref message }
             if message == "segment block truncated"
         ));
+    }
+
+    #[test]
+    fn product_boundary_storage_invalid_input_preserves_invalid_input_category() {
+        let parent =
+            storage_error_for_product_boundary(StorageError::invalid_input("inactive transaction"));
+
+        assert!(matches!(
+            parent,
+            StrataError::InvalidInput { ref message }
+            if message == "inactive transaction"
+        ));
+    }
+
+    #[test]
+    fn product_boundary_storage_capacity_preserves_constraint_category() {
+        let parent = storage_error_for_product_boundary(StorageError::capacity_exceeded(
+            "transaction writes",
+            10,
+            11,
+        ));
+
+        assert!(matches!(
+            parent,
+            StrataError::CapacityExceeded {
+                ref resource,
+                limit: 10,
+                requested: 11,
+            } if resource == "transaction writes"
+        ));
+    }
+
+    #[test]
+    fn product_boundary_storage_corruption_preserves_serialization_category() {
+        let parent =
+            storage_error_for_product_boundary(StorageError::corruption("malformed row payload"));
+
+        assert!(matches!(
+            parent,
+            StrataError::Serialization { ref message }
+            if message == "malformed row payload"
+        ));
+    }
+
+    #[test]
+    fn product_boundary_storage_io_preserves_io_source() {
+        let parent = storage_error_for_product_boundary(StorageError::Io(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "permission denied",
+        )));
+
+        match parent {
+            StrataError::Storage {
+                message,
+                source: Some(source),
+            } => {
+                assert_eq!(message, "storage I/O error");
+                assert!(source.to_string().contains("permission denied"));
+            }
+            other => panic!("expected storage error with source, got {other:?}"),
+        }
     }
 
     #[test]

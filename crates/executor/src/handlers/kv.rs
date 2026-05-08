@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use strata_engine::transaction::context::Transaction as ScopedTransaction;
 use strata_engine::transaction_ops::TransactionOps as _;
-use strata_engine::TransactionContext;
-use strata_storage::{Key, Namespace, TypeTag};
+use strata_engine::Transaction as EngineTransaction;
 
 use crate::bridge::{
     extract_version, require_branch_exists, to_core_branch_id, to_versioned_value, validate_key,
@@ -478,8 +476,7 @@ pub(crate) fn sample(
 
 pub(crate) fn execute_in_txn(
     primitives: &Arc<Primitives>,
-    ctx: &mut TransactionContext,
-    namespace: Arc<Namespace>,
+    ctx: &mut EngineTransaction,
     space: &str,
     command: crate::Command,
     effects: &mut TxnSideEffects,
@@ -487,8 +484,8 @@ pub(crate) fn execute_in_txn(
     match command {
         crate::Command::KvGet { key, .. } => {
             convert_result(validate_key(&key))?;
-            let full_key = Key::new_kv(namespace, &key);
-            let result = ctx.get(&full_key).map_err(crate::Error::from)?;
+            let mut txn = ctx.scoped_space(space);
+            let result = txn.kv_get_value(&key).map_err(crate::Error::from)?;
             Ok(Output::Maybe(result))
         }
         crate::Command::KvList {
@@ -502,42 +499,24 @@ pub(crate) fn execute_in_txn(
                     convert_result(validate_key(prefix))?;
                 }
             }
-            let prefix_key = match prefix {
-                Some(ref prefix) => Key::new_kv(namespace.clone(), prefix),
-                None => Key::new(namespace.clone(), TypeTag::KV, vec![]),
-            };
-            let entries = ctx.scan_prefix(&prefix_key).map_err(crate::Error::from)?;
-            let mut keys: Vec<String> = entries
-                .into_iter()
-                .filter_map(|(key, _)| key.user_key_string())
-                .collect();
-            keys.sort();
-            keys.dedup();
+            let mut txn = ctx.scoped_space(space);
+            let keys = txn.kv_list(prefix.as_deref()).map_err(crate::Error::from)?;
             Ok(page_keys(keys, cursor.as_deref(), limit))
         }
         crate::Command::KvScan { start, limit, .. } => {
             if let Some(start) = &start {
                 convert_result(validate_key(start))?;
             }
-            let prefix_key = Key::new(namespace, TypeTag::KV, vec![]);
-            let entries = ctx.scan_prefix(&prefix_key).map_err(crate::Error::from)?;
-            let mut pairs: Vec<(String, strata_core::Value)> = entries
-                .into_iter()
-                .filter_map(|(key, value)| key.user_key_string().map(|key| (key, value)))
-                .collect();
-            pairs.sort_by(|left, right| left.0.cmp(&right.0));
-            if let Some(start) = start {
-                pairs.retain(|(key, _)| key.as_str() >= start.as_str());
-            }
-            if let Some(limit) = limit {
-                pairs.truncate(limit as usize);
-            }
+            let mut txn = ctx.scoped_space(space);
+            let pairs = txn
+                .kv_scan(start.as_deref(), limit.map(|limit| limit as usize))
+                .map_err(crate::Error::from)?;
             Ok(Output::KvScanResult(pairs))
         }
         crate::Command::KvPut { key, value, .. } => {
             convert_result(validate_key(&key))?;
             convert_result(validate_value(&value, &primitives.limits))?;
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             let version = txn.kv_put(&key, value).map_err(crate::Error::from)?;
             effects.record_kv(space, &key);
             Ok(Output::WriteResult {
@@ -547,16 +526,12 @@ pub(crate) fn execute_in_txn(
         }
         crate::Command::KvDelete { key, .. } => {
             convert_result(validate_key(&key))?;
-            let full_key = Key::new_kv(namespace, &key);
-            let existed = ctx.exists(&full_key).map_err(crate::Error::from)?;
-            ctx.delete(full_key).map_err(crate::Error::from)?;
-            if existed {
+            let mut txn = ctx.scoped_space(space);
+            let deleted = txn.kv_delete(&key).map_err(crate::Error::from)?;
+            if deleted {
                 effects.record_kv(space, &key);
             }
-            Ok(Output::DeleteResult {
-                key,
-                deleted: existed,
-            })
+            Ok(Output::DeleteResult { key, deleted })
         }
         crate::Command::KvBatchPut { entries, .. } => {
             let mut results = vec![
@@ -566,7 +541,7 @@ pub(crate) fn execute_in_txn(
                 };
                 entries.len()
             ];
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             for (index, entry) in entries.into_iter().enumerate() {
                 if let Err(error) = validate_key(&entry.key) {
                     results[index].error = Some(error.to_string());
@@ -594,14 +569,13 @@ pub(crate) fn execute_in_txn(
                 };
                 keys.len()
             ];
+            let mut txn = ctx.scoped_space(space);
             for (index, key) in keys.into_iter().enumerate() {
                 if let Err(error) = validate_key(&key) {
                     results[index].error = Some(error.to_string());
                     continue;
                 }
-                let full_key = Key::new_kv(namespace.clone(), &key);
-                let value = ctx.get(&full_key).map_err(crate::Error::from)?;
-                results[index].value = value;
+                results[index].value = txn.kv_get_value(&key).map_err(crate::Error::from)?;
             }
             Ok(Output::BatchGetResults(results))
         }
@@ -613,17 +587,17 @@ pub(crate) fn execute_in_txn(
                 };
                 keys.len()
             ];
+            let mut txn = ctx.scoped_space(space);
             for (index, key) in keys.into_iter().enumerate() {
                 if let Err(error) = validate_key(&key) {
                     results[index].error = Some(error.to_string());
                     continue;
                 }
-                let full_key = Key::new_kv(namespace.clone(), &key);
-                let existed = ctx.exists(&full_key).map_err(crate::Error::from)?;
-                if let Err(error) = ctx.delete(full_key) {
-                    results[index].error = Some(error.to_string());
-                } else if existed {
-                    effects.record_kv(space, &key);
+                let existed = txn.kv_exists(&key).map_err(crate::Error::from)?;
+                match txn.kv_delete_without_existence_check(&key) {
+                    Ok(_) if existed => effects.record_kv(space, &key),
+                    Ok(_) => {}
+                    Err(error) => results[index].error = Some(error.to_string()),
                 }
             }
             Ok(Output::BatchResults(results))
@@ -633,17 +607,17 @@ pub(crate) fn execute_in_txn(
             for key in &keys {
                 convert_result(validate_key(key))?;
             }
+            let mut txn = ctx.scoped_space(space);
             for key in keys {
-                let full_key = Key::new_kv(namespace.clone(), &key);
-                values.push(ctx.exists(&full_key).map_err(crate::Error::from)?);
+                values.push(txn.kv_exists(&key).map_err(crate::Error::from)?);
             }
             Ok(Output::BoolList(values))
         }
         crate::Command::KvExists { key, .. } => {
             convert_result(validate_key(&key))?;
-            let full_key = Key::new_kv(namespace, &key);
+            let mut txn = ctx.scoped_space(space);
             Ok(Output::Bool(
-                ctx.exists(&full_key).map_err(crate::Error::from)?,
+                txn.kv_exists(&key).map_err(crate::Error::from)?,
             ))
         }
         other => Err(crate::Error::Internal {

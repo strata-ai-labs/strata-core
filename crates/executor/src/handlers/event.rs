@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use strata_engine::transaction::context::Transaction as ScopedTransaction;
 use strata_engine::transaction_ops::TransactionOps as _;
-use strata_engine::TransactionContext;
-use strata_storage::{Key, Namespace};
+use strata_engine::Transaction as EngineTransaction;
 
 use crate::bridge::{
     extract_version, require_branch_exists, to_core_branch_id, validate_value, Primitives,
@@ -96,8 +94,7 @@ pub(crate) fn batch_append(
 
 pub(crate) fn execute_in_txn(
     primitives: &Arc<Primitives>,
-    ctx: &mut TransactionContext,
-    namespace: Arc<Namespace>,
+    ctx: &mut EngineTransaction,
     space: &str,
     command: crate::Command,
     effects: &mut TxnSideEffects,
@@ -111,7 +108,7 @@ pub(crate) fn execute_in_txn(
             convert_result(validate_value(&payload, &primitives.limits))?;
             validate_event_type_input(&event_type)?;
             validate_event_payload_input(&payload)?;
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             let version = txn
                 .event_append(&event_type, payload)
                 .map_err(crate::Error::from)?;
@@ -123,7 +120,7 @@ pub(crate) fn execute_in_txn(
             })
         }
         crate::Command::EventGet { sequence, .. } => {
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             let result = txn.event_get(sequence).map_err(crate::Error::from)?;
             Ok(Output::MaybeVersioned(result.map(|value| {
                 crate::bridge::to_versioned_value(strata_core::Versioned::new(
@@ -133,7 +130,7 @@ pub(crate) fn execute_in_txn(
             })))
         }
         crate::Command::EventExists { sequence, .. } => {
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             let result = txn.event_get(sequence).map_err(crate::Error::from)?;
             Ok(Output::Bool(result.is_some()))
         }
@@ -143,48 +140,25 @@ pub(crate) fn execute_in_txn(
             after_sequence,
             ..
         } => {
-            let prefix = Key::new_event_type_idx_prefix(namespace.clone(), &event_type);
-            let index_entries = ctx.scan_prefix(&prefix).map_err(crate::Error::from)?;
-            let mut events = Vec::new();
-            for (index_key, _) in index_entries {
-                let user_key = &index_key.user_key;
-                if user_key.len() < 8 {
-                    continue;
-                }
-                let bytes: [u8; 8] = user_key[user_key.len() - 8..]
-                    .try_into()
-                    .expect("sequence suffix should be eight bytes");
-                let sequence = u64::from_be_bytes(bytes);
-                if after_sequence.is_some_and(|after| sequence <= after) {
-                    continue;
-                }
-                let event_key = Key::new_event(namespace.clone(), sequence);
-                if let Some(strata_core::Value::String(json)) =
-                    ctx.get(&event_key).map_err(crate::Error::from)?
-                {
-                    let event: strata_engine::Event =
-                        serde_json::from_str(&json).map_err(|error| {
-                            crate::Error::Serialization {
-                                reason: format!(
-                                    "corrupt event at sequence {}: {}",
-                                    sequence, error
-                                ),
-                            }
-                        })?;
-                    events.push(VersionedValue {
-                        value: event.payload.clone(),
-                        version: sequence,
-                        timestamp: event.timestamp.into(),
-                    });
-                }
-                if limit.is_some_and(|limit| events.len() >= limit as usize) {
-                    break;
-                }
-            }
+            let mut txn = ctx.scoped_space(space);
+            let events = txn
+                .event_get_by_type(
+                    &event_type,
+                    limit.map(|limit| limit as usize),
+                    after_sequence,
+                )
+                .map_err(crate::Error::from)?
+                .into_iter()
+                .map(|event| VersionedValue {
+                    version: extract_version(&event.version),
+                    timestamp: event.value.timestamp.into(),
+                    value: event.value.payload,
+                })
+                .collect();
             Ok(Output::VersionedValues(events))
         }
         crate::Command::EventLen { .. } => {
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             let len = txn.event_len().map_err(crate::Error::from)?;
             Ok(Output::Uint(len))
         }
@@ -196,7 +170,7 @@ pub(crate) fn execute_in_txn(
                 };
                 entries.len()
             ];
-            let mut txn = ScopedTransaction::new(ctx, namespace);
+            let mut txn = ctx.scoped_space(space);
             for (index, entry) in entries.into_iter().enumerate() {
                 if let Err(error) = validate_value(&entry.payload, &primitives.limits) {
                     results[index].error = Some(error.to_string());

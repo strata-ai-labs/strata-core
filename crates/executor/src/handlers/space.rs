@@ -26,6 +26,7 @@ pub(crate) fn exists(
     branch: BranchId,
     space: String,
 ) -> Result<Output> {
+    validate_session_space(&space)?;
     let branch_id = to_core_branch_id(&branch)?;
     let exists = convert_result(primitives.space.exists(branch_id, &space))?;
     Ok(Output::Bool(exists))

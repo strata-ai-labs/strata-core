@@ -1,12 +1,18 @@
 //! Owned transaction handle for manual transaction lifecycle.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use serde_json::Value as JsonValue;
+
 use super::context::Transaction as ScopedTransaction;
 use super::json_state::JsonTxnState;
+use crate::graph::types::{EdgeData, GraphMeta, Neighbor, NodeData};
+use crate::graph::{GraphStore, GraphStoreExt};
+use crate::vector::{VectorRecord, VectorStore};
 use crate::{StrataError, StrataResult};
-use strata_core::BranchId;
+use strata_core::{BranchId, Version};
 use strata_storage::{Namespace, TransactionContext};
 
 use crate::Database;
@@ -67,14 +73,28 @@ impl Transaction {
             .branch_id
     }
 
-    /// Get a mutable reference to the underlying context.
-    pub fn context_mut(&mut self) -> Option<&mut TransactionContext> {
+    /// Return the transaction ID as an engine-owned display string.
+    pub fn id_string(&self) -> String {
+        self.context()
+            .expect("id_string() requires an active transaction")
+            .txn_id
+            .to_string()
+    }
+
+    fn active_context_mut(&mut self) -> StrataResult<&mut TransactionContext> {
+        self.ctx
+            .as_mut()
+            .ok_or_else(|| StrataError::transaction_not_active("finished"))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn context_mut(&mut self) -> Option<&mut TransactionContext> {
         self.ctx.as_mut()
     }
 
     /// Create a scoped primitive wrapper that shares this manual transaction's
     /// engine-owned JSON state.
-    pub fn scoped(&mut self, namespace: Arc<Namespace>) -> ScopedTransaction<'_> {
+    pub(crate) fn scoped(&mut self, namespace: Arc<Namespace>) -> ScopedTransaction<'_> {
         let ctx = self
             .ctx
             .as_mut()
@@ -87,11 +107,224 @@ impl Transaction {
         )
     }
 
+    /// Create a scoped primitive wrapper for a product space without exposing
+    /// storage namespaces above engine.
+    pub fn scoped_space(&mut self, space: &str) -> ScopedTransaction<'_> {
+        let namespace = Arc::new(Namespace::for_branch_space(self.branch_id(), space));
+        self.scoped(namespace)
+    }
+
+    /// Create graph metadata inside this transaction.
+    pub fn graph_create_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        meta: GraphMeta,
+    ) -> StrataResult<()> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?
+            .graph_create(branch_id, space, graph, meta)
+    }
+
+    /// Add or update a graph node inside this transaction.
+    pub fn graph_add_node_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        node_id: &str,
+        data: &NodeData,
+    ) -> StrataResult<bool> {
+        let branch_id = self.branch_id();
+        let backend_state = GraphStore::new(self.db.clone()).state()?;
+        self.active_context_mut()?.graph_add_node(
+            branch_id,
+            space,
+            graph,
+            node_id,
+            data,
+            &backend_state,
+        )
+    }
+
+    /// Get graph node data inside this transaction.
+    pub fn graph_get_node_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        node_id: &str,
+    ) -> StrataResult<Option<NodeData>> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?
+            .graph_get_node(branch_id, space, graph, node_id)
+    }
+
+    /// Remove a graph node inside this transaction.
+    pub fn graph_remove_node_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        node_id: &str,
+    ) -> StrataResult<()> {
+        let branch_id = self.branch_id();
+        let backend_state = GraphStore::new(self.db.clone()).state()?;
+        self.active_context_mut()?.graph_remove_node(
+            branch_id,
+            space,
+            graph,
+            node_id,
+            &backend_state,
+        )
+    }
+
+    /// List graph nodes inside this transaction.
+    pub fn graph_list_nodes_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+    ) -> StrataResult<Vec<String>> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?
+            .graph_list_nodes(branch_id, space, graph)
+    }
+
+    /// Get graph metadata inside this transaction.
+    pub fn graph_get_meta_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+    ) -> StrataResult<Option<GraphMeta>> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?
+            .graph_get_meta(branch_id, space, graph)
+    }
+
+    /// List graph names inside this transaction.
+    pub fn graph_list_in_space(&mut self, space: &str) -> StrataResult<Vec<String>> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?.graph_list(branch_id, space)
+    }
+
+    /// Add or update a graph edge inside this transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn graph_add_edge_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        src: &str,
+        dst: &str,
+        edge_type: &str,
+        data: &EdgeData,
+    ) -> StrataResult<bool> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?
+            .graph_add_edge(branch_id, space, graph, src, dst, edge_type, data)
+    }
+
+    /// Remove a graph edge inside this transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn graph_remove_edge_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        src: &str,
+        dst: &str,
+        edge_type: &str,
+    ) -> StrataResult<()> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?
+            .graph_remove_edge(branch_id, space, graph, src, dst, edge_type)
+    }
+
+    /// Get outgoing graph neighbors inside this transaction.
+    pub fn graph_outgoing_neighbors_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        node_id: &str,
+        edge_type_filter: Option<&str>,
+    ) -> StrataResult<Vec<Neighbor>> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?.graph_outgoing_neighbors(
+            branch_id,
+            space,
+            graph,
+            node_id,
+            edge_type_filter,
+        )
+    }
+
+    /// Get incoming graph neighbors inside this transaction.
+    pub fn graph_incoming_neighbors_in_space(
+        &mut self,
+        space: &str,
+        graph: &str,
+        node_id: &str,
+        edge_type_filter: Option<&str>,
+    ) -> StrataResult<Vec<Neighbor>> {
+        let branch_id = self.branch_id();
+        self.active_context_mut()?.graph_incoming_neighbors(
+            branch_id,
+            space,
+            graph,
+            node_id,
+            edge_type_filter,
+        )
+    }
+
+    /// Insert a vector inside this transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn vector_insert_in_space(
+        &mut self,
+        store: &VectorStore,
+        space: &str,
+        collection: &str,
+        key: &str,
+        embedding: &[f32],
+        metadata: Option<JsonValue>,
+    ) -> StrataResult<Version> {
+        let branch_id = self.branch_id();
+        let ctx = self.active_context_mut()?;
+        store
+            .insert_in_transaction(ctx, branch_id, space, collection, key, embedding, metadata)
+            .map_err(|error| error.into_strata_error(branch_id))
+    }
+
+    /// Get a vector record inside this transaction.
+    pub fn vector_get_in_space(
+        &mut self,
+        store: &VectorStore,
+        space: &str,
+        collection: &str,
+        key: &str,
+    ) -> StrataResult<Option<VectorRecord>> {
+        let branch_id = self.branch_id();
+        let ctx = self.active_context_mut()?;
+        store
+            .get_in_transaction(ctx, branch_id, space, collection, key)
+            .map_err(|error| error.into_strata_error(branch_id))
+    }
+
+    /// Delete a vector inside this transaction.
+    pub fn vector_delete_in_space(
+        &mut self,
+        store: &VectorStore,
+        space: &str,
+        collection: &str,
+        key: &str,
+    ) -> StrataResult<bool> {
+        let branch_id = self.branch_id();
+        let ctx = self.active_context_mut()?;
+        store
+            .delete_in_transaction(ctx, branch_id, space, collection, key)
+            .map_err(|error| error.into_strata_error(branch_id))
+    }
+
     fn context(&self) -> Option<&TransactionContext> {
         self.ctx.as_ref()
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Deref for Transaction {
     type Target = TransactionContext;
 
@@ -101,6 +334,7 @@ impl Deref for Transaction {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl DerefMut for Transaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.context_mut()

@@ -430,10 +430,7 @@ pub fn delete_shadow_embeddings_for_space(
     branch_id: BranchId,
     target_space: &str,
 ) -> usize {
-    if let Ok(buffer) = db.extension::<EmbedBuffer>() {
-        let mut pending = buffer.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.retain(|entry| !(entry.branch_id == branch_id && entry.space == target_space));
-    }
+    clear_pending_shadow_embeddings_for_space(db, branch_id, target_space);
 
     let prefix = format!("{target_space}\x1f");
     let vector = VectorStore::new(db.clone());
@@ -475,6 +472,20 @@ pub fn delete_shadow_embeddings_for_space(
     }
 
     total
+}
+
+pub fn clear_pending_shadow_embeddings_for_space(
+    db: &Arc<Database>,
+    branch_id: BranchId,
+    target_space: &str,
+) -> usize {
+    let Ok(buffer) = db.extension::<EmbedBuffer>() else {
+        return 0;
+    };
+    let mut pending = buffer.pending.lock().unwrap_or_else(|e| e.into_inner());
+    let before = pending.len();
+    pending.retain(|entry| !(entry.branch_id == branch_id && entry.space == target_space));
+    before - pending.len()
 }
 
 pub fn reindex_embeddings(db: &Arc<Database>, branch_id: BranchId) -> StrataResult<ReindexStats> {
@@ -750,5 +761,37 @@ mod tests {
         let status = embed_status(&db);
         assert_eq!(status.pending, 0);
         assert_eq!(status.total_queued, 1);
+    }
+
+    #[test]
+    fn clearing_pending_shadow_embeddings_for_space_preserves_sibling_space() {
+        let db = test_db();
+        let branch_id = BranchId::default();
+
+        maybe_embed_text(
+            &db,
+            branch_id,
+            "alpha",
+            SHADOW_KV,
+            "queued",
+            "hello alpha",
+            EntityRef::kv(branch_id, "alpha", "queued"),
+        );
+        maybe_embed_text(
+            &db,
+            branch_id,
+            "beta",
+            SHADOW_KV,
+            "queued",
+            "hello beta",
+            EntityRef::kv(branch_id, "beta", "queued"),
+        );
+
+        let removed = clear_pending_shadow_embeddings_for_space(&db, branch_id, "alpha");
+
+        let status = embed_status(&db);
+        assert_eq!(removed, 1);
+        assert_eq!(status.pending, 1);
+        assert_eq!(status.total_queued, 2);
     }
 }

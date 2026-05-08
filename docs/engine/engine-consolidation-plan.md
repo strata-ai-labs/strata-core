@@ -13,9 +13,10 @@ layer.
 
 The next problem is above that boundary. Several crates were engine concepts in
 practice but still existed as peer crates and, in some cases, reached directly
-into storage. `EG2` through `EG6` have now collapsed security, product open,
-graph, vector, and search ownership into engine. The remaining production
-storage bypass above engine is executor.
+into storage. `EG2` through `EG7` have now collapsed security, product open,
+graph, vector, and search ownership into engine and removed executor's direct
+storage bypass. No normal production crate above engine reaches directly into
+storage.
 
 `EG2` has already absorbed and deleted `strata-security`; it remains in this
 plan only as a completed phase record.
@@ -27,6 +28,8 @@ a completed phase record.
 a completed phase record.
 `EG6` has absorbed and deleted `strata-search`; it remains in this plan only as
 a completed phase record.
+`EG7` has removed executor's direct storage dependency and storage imports; it
+remains in this plan only as a completed phase record.
 
 This plan consolidates those responsibilities into `strata-engine` so the
 workspace can settle into the intended stack:
@@ -60,16 +63,12 @@ is:
 strata-storage         -> strata-core
 strata-engine          -> strata-core, strata-storage
 strata-intelligence    -> strata-core, strata-engine, strata-inference
-strata-executor        -> strata-core, strata-engine, strata-intelligence,
-                          strata-storage
+strata-executor        -> strata-core, strata-engine, strata-intelligence
 strata-cli             -> strata-executor, strata-intelligence
 stratadb               -> strata-executor
 ```
 
-The direct storage bypass above engine is:
-
-- `strata-executor`
-  - storage keys, namespaces, type tags, validation helpers, and storage errors
+There is no normal production direct storage bypass above engine after `EG7`.
 
 `strata-intelligence` does not currently have direct normal storage imports,
 and it no longer depends on a search peer crate after `EG6`.
@@ -955,6 +954,8 @@ reintroduction. Intelligence and executor no longer depend on `strata-search`.
 
 ## EG7 - Executor Storage Bypass Removal
 
+Detailed plan: [eg7-implementation-plan.md](./eg7-implementation-plan.md)
+
 **Goal:**
 
 Remove direct storage access from executor after engine owns the primitives and
@@ -980,10 +981,10 @@ At minimum, engine should expose domain-level operations for:
 - converting storage-origin errors into public engine errors before executor
   sees them
 
-`handlers/space_delete.rs` is the clearest starting example. It currently loops
-over storage `TypeTag` families directly, then separately purges search,
-vector, embedding, and space metadata. That orchestration should become an
-engine operation because it is a primitive/runtime consistency operation.
+`handlers/space_delete.rs` was the clearest starting example: it looped over
+storage `TypeTag` families directly, then separately purged search, vector,
+embedding, and space metadata. EG7D moved that orchestration into engine
+because it is a primitive/runtime consistency operation.
 
 **Acceptance:**
 
@@ -991,6 +992,8 @@ engine operation because it is a primitive/runtime consistency operation.
 - `strata-executor` no longer re-exports `Key` or `Namespace` from storage
 - executor behavior tests still pass through engine-owned APIs
 - no executor production file imports `strata_storage`
+- executor production code no longer uses raw storage transaction context as
+  the runtime for product commands
 
 **Non-goals:**
 
@@ -999,28 +1002,60 @@ engine operation because it is a primitive/runtime consistency operation.
 - do not redesign user-facing error enums beyond the minimum needed for engine
   error conversion
 
-### EG7A - Executor Storage Import Rebaseline
+### EG7A - Rebaseline And Characterize
 
 Re-run the executor storage import inventory after graph, vector, search,
-security, and product open movement. Separate dead imports from missing engine
-API cases.
+security, and product open movement. Add or identify characterization coverage
+for transaction commands, space validation, and space deletion before moving
+behavior.
 
-### EG7B - Add Engine Runtime APIs For Executor-Owned Commands
+Current status: complete. The direct storage bypass list is current, raw
+transaction-context product-command usage is recorded, and EG7 characterization
+tests now cover validation, session-space transaction dispatch, and forced
+space deletion behavior.
 
-Add semantic engine operations for space validation, space deletion, primitive
-side-effect cleanup, and storage-origin error conversion. The APIs should not
-expose raw storage keys or type tags.
+### EG7B - Engine Space And Error Surface
 
-### EG7C - Cut Over Executor Handlers
+Add engine-owned space validation and storage-origin error conversion surfaces.
+Cut executor over so it no longer imports `validate_space_name` or
+`StorageError` from storage.
 
-Route executor handlers and session code through engine-owned APIs. Preserve
-command behavior and public response shapes unless a bug fix is explicitly
-called out.
+Current status: complete. `strata_engine::validate_space_name` is the
+executor-facing validation boundary, executor no longer imports storage
+`validate_space_name` or `StorageError`, and the remaining raw transaction
+storage calls convert storage-local failures through engine errors until EG7C
+removes those raw calls.
 
-### EG7D - Remove Executor Storage Surface
+### EG7C - Engine Transaction Session Surface
 
-Delete executor storage imports, storage re-exports, and direct storage error
-conversion paths. Tighten the direct-storage guard for executor to zero.
+Add engine-owned transaction/session APIs so executor no longer constructs
+storage namespaces, storage keys, storage type tags, or raw storage transaction
+contexts while dispatching product commands.
+
+Current status: complete. Executor transaction dispatch now uses
+engine-owned scoped transaction methods for KV, JSON, event, graph, and vector
+commands; production `Transaction` no longer exposes raw storage context access
+above engine.
+
+### EG7D - Engine Space Deletion Ownership
+
+Move space deletion orchestration into engine, including primitive data
+deletion, vector/search side-effect cleanup, a product-layer post-data cleanup
+hook, and space metadata removal.
+
+Current status: complete. Executor `SpaceDelete` now calls
+`SpaceIndex::delete_user_space_with_post_data_cleanup`; storage row scans,
+vector purge, search cleanup, and metadata deletion are owned by engine.
+Intelligence-owned persisted shadow embeddings and the feature-gated pending
+embed queue are still cleaned above engine through the generic fallible
+post-data/pre-metadata hook because engine must not depend on intelligence
+shadow-key internals.
+
+### EG7E - Dependency Removal And Guard Closeout
+
+Status: complete. Executor storage imports, storage re-exports, and the normal
+`strata-storage` dependency are gone. The direct-storage guard allowlist is
+empty for production crates above engine.
 
 ## EG8 - Intelligence Dependency Cleanup
 
@@ -1207,7 +1242,7 @@ storage. Root dev-dependencies and storage-facing tests need their own explicit
 Final inverse dependency guard:
 
 ```bash
-cargo tree -i strata-storage --workspace --edges normal --depth 2
+cargo tree -i strata-storage --workspace --edges normal --depth 1
 ```
 
 At closeout, normal production dependents of storage should be engine only.

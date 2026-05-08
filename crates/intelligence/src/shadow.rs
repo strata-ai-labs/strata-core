@@ -33,7 +33,7 @@ pub fn delete_shadow_embeddings_for_space(
     branch_id: BranchId,
     target_space: &str,
 ) -> usize {
-    let prefix = format!("{target_space}\x1f");
+    let prefix = format!("{target_space}{SHADOW_KEY_SEP}");
     let vector = VectorStore::new(db.clone());
     let mut total = 0usize;
     for shadow in [SHADOW_KV, SHADOW_JSON, SHADOW_EVENT] {

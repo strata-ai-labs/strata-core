@@ -65,8 +65,8 @@ pub use database::{
     SubsystemHealth, SubsystemStatus, SystemMetrics, WalWriterHealth,
 };
 pub use error::{
-    ConstraintReason, DetailValue, ErrorCode, ErrorDetails, PrimitiveDegradedReason, StrataError,
-    StrataResult,
+    storage_error_for_product_boundary, ConstraintReason, DetailValue, ErrorCode, ErrorDetails,
+    PrimitiveDegradedReason, StrataError, StrataResult,
 };
 pub use graph::{GraphStore, GraphSubsystem, PrimitiveGraphStore};
 pub use instrumentation::PerfTrace;
@@ -88,7 +88,7 @@ pub use strata_storage::durability::wal::DurabilityMode;
 pub use strata_storage::durability::WalCounters;
 pub use strata_storage::StorageIterator;
 pub use strata_storage::VersionedEntry;
-pub use strata_storage::{DegradationClass, RecoveryHealth, TransactionContext};
+pub use strata_storage::{DegradationClass, RecoveryHealth};
 pub use transaction::{ScopedTransaction, Transaction, TransactionPool, MAX_POOL_SIZE};
 pub use transaction_ops::TransactionOps;
 pub use vector::{
@@ -131,6 +131,8 @@ pub use primitives::{
     build_search_response,
     build_search_response_with_index,
     build_search_response_with_scorer,
+    is_user_space_delete_constraint,
+    validate_space_name,
     BM25LiteScorer,
     // Handles
     BranchHandle,

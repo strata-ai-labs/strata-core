@@ -293,6 +293,93 @@ impl<'a> Transaction<'a> {
 
         Ok(keys.into_iter().collect())
     }
+
+    /// Read a KV value through the transaction view without exposing storage
+    /// keys to callers above engine.
+    pub fn kv_get_value(&mut self, key: &str) -> Result<Option<Value>, StrataError> {
+        Ok(<Self as TransactionOps>::kv_get(self, key)?.map(|value| value.value))
+    }
+
+    /// Delete a KV key after the caller has already performed any needed
+    /// transaction-view existence read.
+    pub fn kv_delete_without_existence_check(&mut self, key: &str) -> Result<(), StrataError> {
+        let full_key = self.kv_key(key);
+        self.ctx.delete(full_key)?;
+        Ok(())
+    }
+
+    /// Scan KV entries visible in the transaction view, sorted by user key.
+    pub fn kv_scan(
+        &mut self,
+        start: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<(String, Value)>, StrataError> {
+        let prefix_key = Key::new(self.namespace.clone(), TypeTag::KV, vec![]);
+        let mut pairs: Vec<(String, Value)> = self
+            .ctx
+            .scan_prefix(&prefix_key)?
+            .into_iter()
+            .filter_map(|(key, value)| {
+                if key.type_tag == TypeTag::KV && key.namespace == self.namespace {
+                    key.user_key_string().map(|key| (key, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        pairs.sort_by(|left, right| left.0.cmp(&right.0));
+        if let Some(start) = start {
+            pairs.retain(|(key, _)| key.as_str() >= start);
+        }
+        if let Some(limit) = limit {
+            pairs.truncate(limit);
+        }
+        Ok(pairs)
+    }
+
+    /// Read events by type through the transaction view.
+    pub fn event_get_by_type(
+        &mut self,
+        event_type: &str,
+        limit: Option<usize>,
+        after_sequence: Option<u64>,
+    ) -> Result<Vec<Versioned<Event>>, StrataError> {
+        let prefix = Key::new_event_type_idx_prefix(self.namespace.clone(), event_type);
+        let index_entries = self.ctx.scan_prefix(&prefix)?;
+        let mut events = Vec::new();
+
+        for (index_key, _) in index_entries {
+            let user_key = &index_key.user_key;
+            if user_key.len() < 8 {
+                continue;
+            }
+            let bytes: [u8; 8] = user_key[user_key.len() - 8..]
+                .try_into()
+                .expect("sequence suffix should be eight bytes");
+            let sequence = u64::from_be_bytes(bytes);
+            if after_sequence.is_some_and(|after| sequence <= after) {
+                continue;
+            }
+
+            let event_key = self.event_key(sequence);
+            if let Some(Value::String(json)) = self.ctx.get(&event_key)? {
+                let event: Event = serde_json::from_str(&json).map_err(|error| {
+                    StrataError::serialization(format!(
+                        "corrupt event at sequence {}: {}",
+                        sequence, error
+                    ))
+                })?;
+                events.push(Versioned::new(event, Version::seq(sequence)));
+            }
+
+            if limit.is_some_and(|limit| events.len() >= limit) {
+                break;
+            }
+        }
+
+        Ok(events)
+    }
 }
 
 impl<'a> TransactionOps for Transaction<'a> {
@@ -330,13 +417,11 @@ impl<'a> TransactionOps for Transaction<'a> {
     }
 
     fn kv_delete(&mut self, key: &str) -> Result<bool, StrataError> {
-        let full_key = self.kv_key(key);
-
         // Check if key exists (for return value)
         let existed = self.kv_exists(key)?;
 
         // Use the ctx.delete() method
-        self.ctx.delete(full_key)?;
+        self.kv_delete_without_existence_check(key)?;
 
         Ok(existed)
     }

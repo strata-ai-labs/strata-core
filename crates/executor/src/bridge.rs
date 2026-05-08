@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use strata_core::{Value, VersionedValue as CoreVersionedValue};
 use strata_engine::{
-    AccessMode, BranchStatus as EngineBranchStatus, Database,
+    validate_space_name, AccessMode, BranchStatus as EngineBranchStatus, Database,
     DistanceMetric as EngineDistanceMetric, EventLog as PrimitiveEventLog,
     FilterCondition as EngineFilterCondition, FilterOp as EngineFilterOp, JsonPath,
     JsonScalar as EngineJsonScalar, JsonStore as PrimitiveJsonStore, JsonValue,
@@ -10,7 +10,6 @@ use strata_engine::{
     PrimitiveGraphStore, SpaceIndex as PrimitiveSpaceIndex, StrataError, StrataResult,
     VectorStore as PrimitiveVectorStore,
 };
-use strata_storage::validate_space_name;
 
 use crate::{
     BranchId, BranchStatus, Command, DatabaseInfo, DistanceMetric, Error, FilterOp, MetadataFilter,
@@ -479,7 +478,7 @@ pub(crate) fn require_branch_exists(p: &Arc<Primitives>, branch: &BranchId) -> R
 }
 
 pub(crate) fn validate_session_space(space: &str) -> Result<()> {
-    validate_space_name(space).map_err(|reason| Error::InvalidInput { reason, hint: None })
+    validate_space_name(space).map_err(Error::from)
 }
 
 pub(crate) fn database_info(db: &Arc<Database>, default_branch: &BranchId) -> DatabaseInfo {

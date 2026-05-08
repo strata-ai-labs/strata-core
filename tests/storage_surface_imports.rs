@@ -96,48 +96,7 @@ const ENGINE_CONSOLIDATION_VECTOR_CONSUMER_SCAN_ROOTS: &[&str] = &[
     "crates/cli",
 ];
 
-const ALLOWED_ENGINE_CONSOLIDATION_STORAGE_USES: &[AllowedEngineConsolidationStorageUse] = &[
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/Cargo.toml",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/bridge.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/compat.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/convert.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/handlers/event.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/handlers/json.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/handlers/kv.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/handlers/space_delete.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/lib.rs",
-        removal_epic: "EG7",
-    },
-    AllowedEngineConsolidationStorageUse {
-        path: "crates/executor/src/session.rs",
-        removal_epic: "EG7",
-    },
-];
+const ALLOWED_ENGINE_CONSOLIDATION_STORAGE_USES: &[AllowedEngineConsolidationStorageUse] = &[];
 
 const RETIRED_SECURITY_PACKAGE: &str = concat!("strata", "-", "security");
 const RETIRED_SECURITY_IMPORT: &str = concat!("strata", "_", "security");
@@ -592,6 +551,12 @@ fn engine_consolidation_direct_storage_bypasses_are_allowlisted() {
 
     let mut violations = Vec::new();
     let mut observed = BTreeSet::new();
+    let root_manifest = repo_root.join("Cargo.toml");
+    let root_manifest_contents = fs::read_to_string(&root_manifest).expect("read root manifest");
+    violations.extend(find_root_normal_storage_dependency_violations(
+        &root_manifest,
+        &root_manifest_contents,
+    ));
 
     for file in files {
         if should_skip(&file) {
@@ -600,20 +565,14 @@ fn engine_consolidation_direct_storage_bypasses_are_allowlisted() {
         let rel = repo_relative_path(&repo_root, &file);
         let contents = fs::read_to_string(&file).expect("read source or manifest");
 
-        for (line_no, line) in contents.lines().enumerate() {
-            if !contains_direct_storage_reference(line) {
-                continue;
-            }
-
+        for (line_no, line) in find_direct_storage_references(&rel, &contents) {
             match allowed_engine_consolidation_storage_use(&rel) {
                 Some(allowed) => {
                     observed.insert(allowed.path);
                 }
                 None => violations.push(format!(
-                    "{}:{}: direct `strata-storage` use is not in the EG1D allowlist: {}",
-                    rel,
-                    line_no + 1,
-                    line.trim()
+                    "{}:{}: direct `strata-storage` use is not in the engine-consolidation allowlist: {}",
+                    rel, line_no, line
                 )),
             }
         }
@@ -632,7 +591,7 @@ fn engine_consolidation_direct_storage_bypasses_are_allowlisted() {
     );
     assert!(
         stale.is_empty(),
-        "EG1D storage bypass allowlist contains stale entries. Remove these entries when their epic lands:\n{}",
+        "engine-consolidation storage bypass allowlist contains stale entries. Remove these entries when their epic lands:\n{}",
         stale.join("\n")
     );
 }
@@ -695,6 +654,156 @@ fn contains_direct_storage_reference(line: &str) -> bool {
         || line.contains("strata-storage")
         || line.contains("use strata_storage")
         || line.contains("pub use strata_storage")
+}
+
+fn find_direct_storage_references(rel: &str, contents: &str) -> Vec<(usize, String)> {
+    if !rel.ends_with(".rs") {
+        return contents
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| contains_direct_storage_reference(line))
+            .map(|(line_no, line)| (line_no + 1, line.trim().to_string()))
+            .collect();
+    }
+
+    let mut references = Vec::new();
+    let mut pending_cfg_test = false;
+    let mut skipped_cfg_test_depth = None;
+    let mut lex_state = RustCodeLexState::default();
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = rust_code_only_line(line, &mut lex_state);
+
+        if let Some(depth) = skipped_cfg_test_depth.as_mut() {
+            update_brace_depth(depth, &code);
+            if *depth == 0 {
+                skipped_cfg_test_depth = None;
+            }
+            continue;
+        }
+
+        let trimmed = code.trim();
+        if is_cfg_test_attr(trimmed) {
+            pending_cfg_test = true;
+            continue;
+        }
+
+        if pending_cfg_test {
+            if trimmed.is_empty() || trimmed.starts_with("#[") {
+                continue;
+            }
+
+            if line_declares_inline_module(trimmed) {
+                let mut depth = 0usize;
+                update_brace_depth(&mut depth, &code);
+                if depth > 0 {
+                    skipped_cfg_test_depth = Some(depth);
+                }
+                pending_cfg_test = false;
+                continue;
+            }
+
+            pending_cfg_test = false;
+        }
+
+        if contains_direct_storage_reference(&code) {
+            references.push((line_no + 1, line.trim().to_string()));
+        }
+    }
+
+    references
+}
+
+fn find_root_normal_storage_dependency_violations(path: &Path, contents: &str) -> Vec<String> {
+    let rel = path.to_string_lossy();
+    let mut violations = Vec::new();
+    let mut section = String::new();
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let code = toml_code_only_line(line);
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(next_section) = parse_toml_section(trimmed) {
+            section.clear();
+            section.push_str(next_section);
+            continue;
+        }
+
+        if is_normal_dependency_section(&section)
+            && manifest_line_mentions_storage_dependency(trimmed)
+        {
+            violations.push(format!(
+                "{}:{}: root package has a normal `strata-storage` dependency above engine: {}",
+                rel,
+                line_no + 1,
+                line.trim()
+            ));
+        }
+    }
+
+    violations
+}
+
+fn parse_toml_section(trimmed: &str) -> Option<&str> {
+    if trimmed.starts_with("[[") || !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return None;
+    }
+
+    trimmed
+        .strip_prefix('[')
+        .and_then(|section| section.strip_suffix(']'))
+        .map(str::trim)
+}
+
+fn is_normal_dependency_section(section: &str) -> bool {
+    section == "dependencies"
+        || (section.starts_with("target.") && section.ends_with(".dependencies"))
+}
+
+fn manifest_line_mentions_storage_dependency(trimmed: &str) -> bool {
+    trimmed.contains("strata-storage")
+        || trimmed.contains("package = \"strata-storage\"")
+        || trimmed.contains("package='strata-storage'")
+}
+
+fn toml_code_only_line(line: &str) -> String {
+    let mut code = String::with_capacity(line.len());
+    let mut in_string = false;
+    let mut quote = '\0';
+    let mut escaped = false;
+
+    for ch in line.chars() {
+        if in_string {
+            code.push(ch);
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            if quote == '"' && ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '#' {
+            break;
+        }
+
+        if ch == '"' || ch == '\'' {
+            in_string = true;
+            quote = ch;
+        }
+
+        code.push(ch);
+    }
+
+    code
 }
 
 fn find_retired_security_surface_violations(rel: &str, contents: &str) -> Vec<String> {
@@ -1608,6 +1717,81 @@ fn product_runtime() {
     let violations =
         find_upper_subsystem_violations("crates/example/src/lib.rs", contents, "GraphSubsystem");
     assert_eq!(violations.len(), 2);
+}
+
+#[test]
+fn direct_storage_guard_detects_production_use() {
+    let contents = r#"
+use strata_storage::{Key, Namespace};
+
+fn product_runtime() {
+    let _ = strata_storage::TypeTag::KV;
+}
+"#;
+
+    let references = find_direct_storage_references("crates/example/src/lib.rs", contents);
+    assert_eq!(references.len(), 2, "{references:?}");
+}
+
+#[test]
+fn direct_storage_guard_ignores_literals_comments_and_cfg_test_modules() {
+    let contents = r###"
+const PACKAGE_TEXT: &str = "strata-storage";
+const IMPORT_TEXT: &str = r#"strata_storage"#;
+
+// use strata_storage::{Key, Namespace};
+/* strata-storage */
+
+#[cfg(test)]
+mod tests {
+    use strata_storage::{Key, Namespace};
+
+    fn fixture() {
+        let _key = Key::new_json(namespace, "doc");
+    }
+}
+
+fn product_runtime() {
+    let _ = strata_storage::TypeTag::KV;
+}
+"###;
+
+    let references = find_direct_storage_references("crates/example/src/lib.rs", contents);
+    assert_eq!(references.len(), 1, "{references:?}");
+    assert!(references[0].1.contains("strata_storage::TypeTag"));
+}
+
+#[test]
+fn root_storage_dependency_guard_allows_dev_dependency() {
+    let contents = r#"
+[dependencies]
+strata-executor = { path = "crates/executor" }
+
+[dev-dependencies]
+strata-storage = { path = "crates/storage" }
+"#;
+
+    let violations =
+        find_root_normal_storage_dependency_violations(Path::new("Cargo.toml"), contents);
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn root_storage_dependency_guard_detects_normal_dependency() {
+    let contents = r#"
+[dependencies]
+strata-storage = { path = "crates/storage" }
+
+[target.'cfg(unix)'.dependencies]
+storage = { package = "strata-storage", path = "crates/storage" }
+
+[target.'cfg(unix)'.dev-dependencies]
+strata-storage = { path = "crates/storage" }
+"#;
+
+    let violations =
+        find_root_normal_storage_dependency_violations(Path::new("Cargo.toml"), contents);
+    assert_eq!(violations.len(), 2, "{violations:?}");
 }
 
 #[test]
