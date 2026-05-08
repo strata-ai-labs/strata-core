@@ -5,8 +5,7 @@
 This document maps `crates/engine` after the storage-boundary normalization.
 
 It describes the settled engine responsibilities at the storage boundary and
-the remaining higher-layer consolidation work that will happen above that
-boundary.
+the post-consolidation workspace graph.
 
 For the broader engine cleanup ledger, see
 [engine-pending-items.md](./archive/engine-pending-items.md).
@@ -23,7 +22,7 @@ orchestration layer. It is currently:
 
 - the database open/runtime/bootstrap layer
 - the branch-domain and primitive-semantics owner
-- the subsystem composition host
+- the internal runtime composition host
 - the search/runtime behavior host
 - the branch-bundle import/export host
 - the adapter layer that turns raw storage facts into engine policy and public
@@ -173,9 +172,9 @@ above engine.
 ### Current Normal Workspace Graph
 
 The verified default normal dependency graph for engine-adjacent crates is
-below. `EG8E` re-verified this graph on 2026-05-07 after closing the
-intelligence boundary and adding dependency-direction guards. The phase
-tracking plans include
+below. `EG9D` refreshed this active map on 2026-05-08 after closing the
+optional-edge policy and final storage-bypass guards. The phase tracking plans
+include
 [eg1-implementation-plan.md](./eg1-implementation-plan.md),
 [eg3-implementation-plan.md](./eg3-implementation-plan.md),
 [eg7-implementation-plan.md](./eg7-implementation-plan.md), and
@@ -194,12 +193,28 @@ With `embed` enabled, `strata-intelligence` adds the optional
 `strata-inference` edge and `strata-cli` reaches intelligence only through its
 optional embed feature.
 
+The feature-enabled policy is intentionally narrow:
+
+```text
+stratadb --features embed   -> strata-executor/embed
+strata-cli --features embed -> strata-executor/embed, strata-intelligence/embed
+strata-executor embed       -> strata-intelligence/embed, strata-engine/embed
+strata-intelligence embed   -> strata-inference/local, strata-inference/download
+```
+
+Provider features follow the same direction. Root and CLI provider features
+forward to executor; executor provider features forward to intelligence; only
+intelligence provider features reference `strata-inference`. CLI's direct
+`strata-intelligence` dependency is optional command-surface wiring, not part
+of the default normal graph.
+
 Security/open options are engine-owned after `EG2`, product open/bootstrap is
 engine-owned after `EG3`, graph is engine-owned after `EG4`, vector is
 engine-owned after `EG5`, search is engine-owned after `EG6`, and executor's
 direct storage bypass is closed after `EG7`. `EG8` keeps intelligence as an
 engine consumer and guards inference as an optional dependency behind
-intelligence.
+intelligence. `EG9` closes the retired-crate and optional-edge guard policy; no
+temporary engine-consolidation compatibility shell remains active.
 
 The current inverse normal storage graph is:
 
@@ -362,6 +377,10 @@ If you describe the crate honestly as it exists today, `strata-engine` is:
 
 The next cleanup should treat the storage boundary as settled but keep
 engine's internal domain/runtime boundaries explicit.
+
+The next architecture work is not another `EG` migration phase. It should be a
+v1 design pass for the target engine, storage, testing, and product experience
+before any engine-next or storage-next implementation begins.
 
 The important ownership question is not whether engine is too large. It is
 whether code in the crate is:

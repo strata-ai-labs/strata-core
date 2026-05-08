@@ -7,8 +7,10 @@ This document records the settled storage/engine boundary between
 
 The original audit existed because crate location was not reliable evidence of
 rightful ownership: lower-runtime checkpoint, recovery, snapshot, and config
-mechanics were still hosted in engine. The storage-boundary normalization corrected those targeted
-surfaces without flattening the architecture.
+mechanics were still hosted in engine. The storage-boundary normalization
+corrected those targeted surfaces without flattening the architecture. The
+later engine consolidation closed the remaining production direct-storage
+bypasses above engine.
 
 The current rule is:
 
@@ -31,9 +33,9 @@ This audit should be read together with:
 ## Current Verdict
 
 The targeted storage/engine ownership split is documented and guarded for the
-storage-boundary normalization surfaces. This closeout record does not replace
-the final broad regression gate in the main normalization plan; the full
-workstream is complete only after that gate is run and recorded.
+storage-boundary normalization surfaces. Engine consolidation has also made
+`strata-engine` the only normal production crate above storage that may depend
+on `strata-storage`.
 
 That does not mean engine has no storage calls. The intended architecture is a
 layered call direction:
@@ -244,20 +246,17 @@ The following residue is intentional after boundary closeout:
 - block-cache capacity is process-global storage runtime state. Sequential
   applications overwrite earlier values; concurrent database opens race and do
   not promise a deterministic winner.
-- upper crates still have some direct storage dependencies for current
-  transitional primitive/runtime crates. They must not bypass engine to drive
-  checkpoint, recovery, open, retention, or database policy. The next engine
-  consolidation phase is expected to absorb graph, vector, search,
-  executor-legacy, and security responsibilities into engine.
+- root dev-dependencies and storage-facing integration tests may still import
+  storage directly. Normal production crates above engine may not.
 
 ## Regression Guards
 
 Useful closeout checks:
 
 ```bash
-cargo tree -p strata-storage --depth 2
-cargo tree -p strata-engine --depth 1
-cargo tree -i strata-storage --workspace --depth 2
+cargo tree -p strata-storage --edges normal --depth 2
+cargo tree -p strata-engine --edges normal --depth 1
+cargo tree -i strata-storage --workspace --edges normal --depth 2
 rg -n 'use strata_engine|strata_engine::|strata-engine' crates/storage/src crates/storage/Cargo.toml
 rg -n 'JsonPath|JsonPatch|SearchSubsystem|Recipe|VectorConfig|DistanceMetric|ChainVerification|BranchLifecycle|RetentionReport|HealthReport|StrataConfig|StrataError|executor' crates/storage/src
 rg -n 'fn apply_storage_config|apply_storage_config' crates/engine/src
