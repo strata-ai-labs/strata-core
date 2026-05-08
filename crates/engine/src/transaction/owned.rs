@@ -1,6 +1,6 @@
 //! Owned transaction handle for manual transaction lifecycle.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -87,7 +87,7 @@ impl Transaction {
             .ok_or_else(|| StrataError::transaction_not_active("finished"))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn context_mut(&mut self) -> Option<&mut TransactionContext> {
         self.ctx.as_mut()
     }
@@ -324,7 +324,7 @@ impl Transaction {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Deref for Transaction {
     type Target = TransactionContext;
 
@@ -334,7 +334,7 @@ impl Deref for Transaction {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl DerefMut for Transaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.context_mut()
