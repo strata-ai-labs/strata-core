@@ -831,6 +831,33 @@ impl Database {
         Ok(())
     }
 
+    /// Write invalid raw JSON bytes for downstream product-boundary tests.
+    ///
+    /// This is intentionally exposed only through the `test-support` feature so
+    /// crates above engine can keep corruption fixtures without importing
+    /// storage keys or namespaces.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn inject_corrupt_json_bytes_for_test(
+        &self,
+        branch_id: BranchId,
+        space: &str,
+        doc_id: &str,
+        bytes: Vec<u8>,
+    ) -> StrataResult<()> {
+        let key = Key::new_json(
+            Arc::new(strata_storage::Namespace::for_branch_space(
+                branch_id, space,
+            )),
+            doc_id,
+        );
+        let value = strata_core::Value::Bytes(bytes);
+        self.transaction(branch_id, move |txn| {
+            txn.put(key, value)?;
+            Ok(())
+        })
+    }
+
     pub(crate) fn clear_branch_storage_result(&self, branch_id: &BranchId) -> StorageResult<()> {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(inner) =

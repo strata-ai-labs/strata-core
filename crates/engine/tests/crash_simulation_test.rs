@@ -6,16 +6,11 @@ use std::sync::Arc;
 
 use strata_core::{BranchId, Value};
 use strata_engine::database::OpenSpec;
-use strata_engine::{Database, EventLog, KVStore, SearchSubsystem};
-use strata_storage::{Key, Namespace};
+use strata_engine::{Database, EventLog, KVStore, SearchSubsystem, TransactionOps};
 use tempfile::TempDir;
 
 fn open_primary(path: &Path) -> Arc<Database> {
     Database::open_runtime(OpenSpec::primary(path).with_subsystem(SearchSubsystem)).unwrap()
-}
-
-fn kv_key(branch_id: BranchId, key: &str) -> Key {
-    Key::new_kv(Arc::new(Namespace::for_branch(branch_id)), key)
 }
 
 #[test]
@@ -78,7 +73,8 @@ fn dropped_manual_transaction_does_not_publish_partial_writes() {
     {
         let db = open_primary(temp_dir.path());
         let mut txn = db.begin_transaction(branch_id).unwrap();
-        txn.put(kv_key(branch_id, "pending"), Value::Int(5))
+        txn.scoped_space("default")
+            .kv_put("pending", Value::Int(5))
             .unwrap();
         drop(txn);
         db.flush().unwrap();

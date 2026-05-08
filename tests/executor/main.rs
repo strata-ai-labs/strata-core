@@ -12,6 +12,7 @@ mod common;
 mod adversarial;
 mod branch_invariants;
 mod command_dispatch;
+mod eg7_characterization;
 mod error_handling;
 mod ex10_commands;
 mod ex11_commands;

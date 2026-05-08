@@ -3,7 +3,6 @@
 use crate::Error;
 use strata_core::EntityRef;
 use strata_engine::{StrataError, StrataResult};
-use strata_storage::StorageError;
 
 pub(crate) fn convert_result<T>(result: StrataResult<T>) -> crate::Result<T> {
     result.map_err(Error::from)
@@ -156,36 +155,6 @@ impl From<StrataError> for Error {
     }
 }
 
-impl From<StorageError> for Error {
-    fn from(err: StorageError) -> Self {
-        match err {
-            StorageError::Io(inner) => Error::Io {
-                reason: inner.to_string(),
-                hint: None,
-            },
-            StorageError::InvalidInput { message } => Error::InvalidInput {
-                reason: message,
-                hint: None,
-            },
-            StorageError::CapacityExceeded {
-                resource,
-                limit,
-                requested,
-            } => Error::ConstraintViolation {
-                reason: format!(
-                    "Capacity exceeded for {}: limit {}, requested {}",
-                    resource, limit, requested
-                ),
-            },
-            StorageError::Corruption { message } => Error::Serialization { reason: message },
-            other => Error::Internal {
-                reason: other.to_string(),
-                hint: None,
-            },
-        }
-    }
-}
-
 fn io_hint(reason: &str) -> Option<String> {
     let lower = reason.to_lowercase();
     if lower.contains("permission denied") {
@@ -253,5 +222,43 @@ mod tests {
             }
             other => panic!("expected Error::Io, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn product_boundary_invalid_input_maps_to_legacy_executor_shape() {
+        let err = Error::from(StrataError::invalid_input("inactive transaction"));
+
+        assert_eq!(
+            err,
+            Error::InvalidInput {
+                reason: "inactive transaction".to_string(),
+                hint: None,
+            }
+        );
+    }
+
+    #[test]
+    fn product_boundary_capacity_maps_to_legacy_executor_shape() {
+        let err = Error::from(StrataError::capacity_exceeded("transaction writes", 10, 11));
+
+        assert_eq!(
+            err,
+            Error::ConstraintViolation {
+                reason: "Capacity exceeded for transaction writes: limit 10, requested 11"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn product_boundary_serialization_maps_to_legacy_executor_shape() {
+        let err = Error::from(StrataError::serialization("malformed row payload"));
+
+        assert_eq!(
+            err,
+            Error::Serialization {
+                reason: "malformed row payload".to_string(),
+            }
+        );
     }
 }

@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use strata_engine::graph::types::{CascadePolicy, Direction, EdgeData, GraphMeta, NodeData};
-use strata_engine::graph::GraphStoreExt;
-use strata_engine::TransactionContext;
+use strata_engine::Transaction as EngineTransaction;
 
 use crate::bridge::{
     require_branch_exists, serde_json_to_value_public, to_core_branch_id,
@@ -432,9 +431,8 @@ fn prepare_space_write(primitives: &Arc<Primitives>, branch: &BranchId, space: &
 }
 
 pub(crate) fn execute_in_txn(
-    primitives: &Arc<Primitives>,
-    ctx: &mut TransactionContext,
-    branch_id: strata_core::BranchId,
+    _primitives: &Arc<Primitives>,
+    ctx: &mut EngineTransaction,
     space: &str,
     command: crate::Command,
 ) -> Result<Output> {
@@ -449,7 +447,7 @@ pub(crate) fn execute_in_txn(
                 cascade_policy: policy,
                 ..Default::default()
             };
-            convert_result(ctx.graph_create(branch_id, space, &graph, meta))?;
+            convert_result(ctx.graph_create_in_space(space, &graph, meta))?;
             Ok(Output::Unit)
         }
         crate::Command::GraphAddNode {
@@ -469,19 +467,12 @@ pub(crate) fn execute_in_txn(
                 properties,
                 object_type,
             };
-            let backend_state = convert_result(primitives.graph.state())?;
-            let created = convert_result(ctx.graph_add_node(
-                branch_id,
-                space,
-                &graph,
-                &node_id,
-                &data,
-                &backend_state,
-            ))?;
+            let created =
+                convert_result(ctx.graph_add_node_in_space(space, &graph, &node_id, &data))?;
             Ok(Output::GraphWriteResult { node_id, created })
         }
         crate::Command::GraphGetNode { graph, node_id, .. } => {
-            let node = convert_result(ctx.graph_get_node(branch_id, space, &graph, &node_id))?;
+            let node = convert_result(ctx.graph_get_node_in_space(space, &graph, &node_id))?;
             match node {
                 Some(data) => {
                     let json = serde_json::to_value(&data).map_err(|error| {
@@ -497,22 +488,15 @@ pub(crate) fn execute_in_txn(
             }
         }
         crate::Command::GraphRemoveNode { graph, node_id, .. } => {
-            let backend_state = convert_result(primitives.graph.state())?;
-            convert_result(ctx.graph_remove_node(
-                branch_id,
-                space,
-                &graph,
-                &node_id,
-                &backend_state,
-            ))?;
+            convert_result(ctx.graph_remove_node_in_space(space, &graph, &node_id))?;
             Ok(Output::Unit)
         }
         crate::Command::GraphListNodes { graph, .. } => {
-            let nodes = convert_result(ctx.graph_list_nodes(branch_id, space, &graph))?;
+            let nodes = convert_result(ctx.graph_list_nodes_in_space(space, &graph))?;
             Ok(Output::Keys(nodes))
         }
         crate::Command::GraphGetMeta { graph, .. } => {
-            let meta = convert_result(ctx.graph_get_meta(branch_id, space, &graph))?;
+            let meta = convert_result(ctx.graph_get_meta_in_space(space, &graph))?;
             match meta {
                 Some(meta) => {
                     let json = serde_json::to_value(&meta).map_err(|error| {
@@ -528,7 +512,7 @@ pub(crate) fn execute_in_txn(
             }
         }
         crate::Command::GraphList { .. } => {
-            let graphs = convert_result(ctx.graph_list(branch_id, space))?;
+            let graphs = convert_result(ctx.graph_list_in_space(space))?;
             Ok(Output::Keys(graphs))
         }
         crate::Command::GraphAddEdge {
@@ -549,7 +533,7 @@ pub(crate) fn execute_in_txn(
                 properties,
             };
             let created = convert_result(
-                ctx.graph_add_edge(branch_id, space, &graph, &src, &dst, &edge_type, &data),
+                ctx.graph_add_edge_in_space(space, &graph, &src, &dst, &edge_type, &data),
             )?;
             Ok(Output::GraphEdgeWriteResult {
                 src,
@@ -565,9 +549,7 @@ pub(crate) fn execute_in_txn(
             edge_type,
             ..
         } => {
-            convert_result(
-                ctx.graph_remove_edge(branch_id, space, &graph, &src, &dst, &edge_type),
-            )?;
+            convert_result(ctx.graph_remove_edge_in_space(space, &graph, &src, &dst, &edge_type))?;
             Ok(Output::Unit)
         }
         crate::Command::GraphNeighbors {
@@ -579,30 +561,26 @@ pub(crate) fn execute_in_txn(
         } => {
             let direction = parse_direction(direction.as_deref())?;
             let neighbors = match direction {
-                Direction::Outgoing => convert_result(ctx.graph_outgoing_neighbors(
-                    branch_id,
+                Direction::Outgoing => convert_result(ctx.graph_outgoing_neighbors_in_space(
                     space,
                     &graph,
                     &node_id,
                     edge_type.as_deref(),
                 ))?,
-                Direction::Incoming => convert_result(ctx.graph_incoming_neighbors(
-                    branch_id,
+                Direction::Incoming => convert_result(ctx.graph_incoming_neighbors_in_space(
                     space,
                     &graph,
                     &node_id,
                     edge_type.as_deref(),
                 ))?,
                 Direction::Both => {
-                    let mut outgoing = convert_result(ctx.graph_outgoing_neighbors(
-                        branch_id,
+                    let mut outgoing = convert_result(ctx.graph_outgoing_neighbors_in_space(
                         space,
                         &graph,
                         &node_id,
                         edge_type.as_deref(),
                     ))?;
-                    let incoming = convert_result(ctx.graph_incoming_neighbors(
-                        branch_id,
+                    let incoming = convert_result(ctx.graph_incoming_neighbors_in_space(
                         space,
                         &graph,
                         &node_id,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use strata_core::{BranchId, Value};
 use strata_engine::database::OpenSpec;
 use strata_engine::StrataError;
+use strata_engine::TransactionOps;
 use strata_engine::{Database, KVStore, SearchSubsystem};
 use strata_storage::{Key, Namespace};
 use tempfile::TempDir;
@@ -72,18 +73,20 @@ fn manual_transaction_commit_and_abort_follow_public_contract() {
     let temp_dir = TempDir::new().unwrap();
     let db = open_primary(temp_dir.path());
     let branch_id = BranchId::new();
-    let committed = kv_key(branch_id, "committed");
-    let aborted = kv_key(branch_id, "aborted");
 
     {
         let mut txn = db.begin_transaction(branch_id).unwrap();
-        txn.put(committed.clone(), Value::Int(7)).unwrap();
+        txn.scoped_space("default")
+            .kv_put("committed", Value::Int(7))
+            .unwrap();
         txn.commit().unwrap();
     }
 
     {
         let mut txn = db.begin_transaction(branch_id).unwrap();
-        txn.put(aborted.clone(), Value::Int(9)).unwrap();
+        txn.scoped_space("default")
+            .kv_put("aborted", Value::Int(9))
+            .unwrap();
         txn.abort();
     }
 

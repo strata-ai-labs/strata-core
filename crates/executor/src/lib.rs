@@ -40,7 +40,6 @@ pub use strata_engine::{
     ModelConfig, OpenOptions, Profile, RevertInfo, SpaceDiff, StorageConfig, StorageIterator,
     StrataConfig, SystemMetrics, WalCounters,
 };
-pub use strata_storage::{Key, Namespace};
 
 /// Result type for executor operations.
 pub type Result<T> = std::result::Result<T, Error>;

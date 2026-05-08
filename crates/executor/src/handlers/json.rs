@@ -3,7 +3,6 @@ use std::sync::Arc;
 use strata_engine::primitives::json::index::IndexType;
 use strata_engine::transaction_ops::TransactionOps as _;
 use strata_engine::Transaction as EngineTransaction;
-use strata_storage::Namespace;
 
 use crate::bridge::{
     extract_version, json_to_value, parse_path, require_branch_exists, to_core_branch_id,
@@ -425,7 +424,6 @@ pub(crate) fn batch_delete(
 pub(crate) fn execute_in_txn(
     primitives: &Arc<Primitives>,
     ctx: &mut EngineTransaction,
-    namespace: Arc<Namespace>,
     space: &str,
     command: crate::Command,
     effects: &mut TxnSideEffects,
@@ -433,7 +431,7 @@ pub(crate) fn execute_in_txn(
     match command {
         crate::Command::JsonGet { key, path, .. } => {
             convert_result(validate_key(&key))?;
-            let mut txn = ctx.scoped(namespace);
+            let mut txn = ctx.scoped_space(space);
             let path = convert_result(parse_path(&path))?;
             let result = txn.json_get(&key).map_err(crate::Error::from)?;
             Ok(Output::MaybeVersioned(match result {
@@ -450,7 +448,7 @@ pub(crate) fn execute_in_txn(
         }
         crate::Command::JsonExists { key, .. } => {
             convert_result(validate_key(&key))?;
-            let mut txn = ctx.scoped(namespace);
+            let mut txn = ctx.scoped_space(space);
             Ok(Output::Bool(
                 txn.json_get(&key).map_err(crate::Error::from)?.is_some(),
             ))
@@ -460,7 +458,7 @@ pub(crate) fn execute_in_txn(
         } => {
             convert_result(validate_key(&key))?;
             convert_result(validate_value(&value, &primitives.limits))?;
-            let mut txn = ctx.scoped(namespace);
+            let mut txn = ctx.scoped_space(space);
             let path = convert_result(parse_path(&path))?;
             let value = convert_result(value_to_json(value))?;
             let version = txn
@@ -476,14 +474,14 @@ pub(crate) fn execute_in_txn(
             convert_result(validate_key(&key))?;
             let path = convert_result(parse_path(&path))?;
             if path.is_root() {
-                let mut txn = ctx.scoped(namespace);
+                let mut txn = ctx.scoped_space(space);
                 let deleted = txn.json_delete(&key).map_err(crate::Error::from)?;
                 if deleted {
                     effects.record_json(space, &key);
                 }
                 Ok(Output::DeleteResult { key, deleted })
             } else {
-                let mut txn = ctx.scoped(namespace);
+                let mut txn = ctx.scoped_space(space);
                 let Some(mut doc) = txn
                     .json_get_path(&key, &strata_engine::JsonPath::root())
                     .map_err(crate::Error::from)?
@@ -525,7 +523,7 @@ pub(crate) fn execute_in_txn(
                     convert_result(validate_key(prefix))?;
                 }
             }
-            let mut txn = ctx.scoped(namespace);
+            let mut txn = ctx.scoped_space(space);
             let mut keys = txn
                 .json_list_keys(prefix.as_deref())
                 .map_err(crate::Error::from)?;
@@ -549,7 +547,7 @@ pub(crate) fn execute_in_txn(
                 };
                 entries.len()
             ];
-            let mut txn = ctx.scoped(namespace);
+            let mut txn = ctx.scoped_space(space);
             for (index, entry) in entries.into_iter().enumerate() {
                 if let Err(error) = validate_key(&entry.key) {
                     results[index].error = Some(error.to_string());
@@ -601,7 +599,6 @@ pub(crate) fn execute_in_txn(
                 let output = match execute_in_txn(
                     primitives,
                     ctx,
-                    namespace.clone(),
                     space,
                     crate::Command::JsonGet {
                         branch: None,
@@ -652,7 +649,6 @@ pub(crate) fn execute_in_txn(
                 let output = match execute_in_txn(
                     primitives,
                     ctx,
-                    namespace.clone(),
                     space,
                     crate::Command::JsonDelete {
                         branch: None,

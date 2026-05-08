@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use strata_engine::{
-    open_product_cache, open_product_database, AccessMode, Database, HealthReport, MergeInfo,
-    MergeStrategy, OpenOptions, ProductOpenError, ProductOpenOutcome, SystemMetrics, WalCounters,
+    open_product_cache, open_product_database, validate_space_name, AccessMode, Database,
+    HealthReport, MergeInfo, MergeStrategy, OpenOptions, ProductOpenError, ProductOpenOutcome,
+    SystemMetrics, WalCounters,
 };
-use strata_storage::validate_space_name;
 
 use crate::ipc::IpcClient;
 use crate::{
@@ -261,7 +261,7 @@ impl Strata {
 
     /// Switch the current space for this handle.
     pub fn set_space(&mut self, space: &str) -> Result<()> {
-        validate_space_name(space).map_err(|reason| Error::InvalidInput { reason, hint: None })?;
+        validate_space_name(space).map_err(Error::from)?;
         self.current_space = space.to_string();
         Ok(())
     }

@@ -52,7 +52,7 @@ pub use branch::{BranchHandle, BranchTransaction, EventHandle, JsonHandle, KvHan
 pub use event::{Event, EventLog};
 pub use json::{JsonDoc, JsonStore};
 pub use kv::KVStore;
-pub use space::SpaceIndex;
+pub use space::{is_user_space_delete_constraint, validate_space_name, SpaceIndex};
 
 // Re-export search types for convenience (from search module)
 pub use crate::search::{

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use strata_engine::{
-    TransactionContext, VectorConfig, VectorEntry, VectorMatch as EngineVectorMatch,
+    Transaction as EngineTransaction, VectorConfig, VectorEntry, VectorMatch as EngineVectorMatch,
 };
 
 use crate::bridge::{
@@ -604,8 +604,7 @@ pub(crate) fn sample(
 
 pub(crate) fn execute_in_txn(
     primitives: &Arc<Primitives>,
-    ctx: &mut TransactionContext,
-    branch_id: strata_core::BranchId,
+    ctx: &mut EngineTransaction,
     space: &str,
     command: crate::Command,
 ) -> Result<Output> {
@@ -624,10 +623,16 @@ pub(crate) fn execute_in_txn(
                 .map(value_to_serde_json_public)
                 .transpose()
                 .map_err(Error::from)?;
-            let version = primitives
-                .vector
-                .insert_in_transaction(ctx, branch_id, space, &collection, &key, &vector, metadata)
-                .map_err(|error| Error::from(error.into_strata_error(branch_id)))?;
+            let version = ctx
+                .vector_insert_in_space(
+                    &primitives.vector,
+                    space,
+                    &collection,
+                    &key,
+                    &vector,
+                    metadata,
+                )
+                .map_err(Error::from)?;
             Ok(Output::VectorWriteResult {
                 collection,
                 key,
@@ -639,10 +644,9 @@ pub(crate) fn execute_in_txn(
         } => {
             convert_result(validate_not_internal_collection(&collection))?;
             convert_result(validate_key(&key))?;
-            let deleted = primitives
-                .vector
-                .delete_in_transaction(ctx, branch_id, space, &collection, &key)
-                .map_err(|error| Error::from(error.into_strata_error(branch_id)))?;
+            let deleted = ctx
+                .vector_delete_in_space(&primitives.vector, space, &collection, &key)
+                .map_err(Error::from)?;
             Ok(Output::VectorDeleteResult {
                 collection,
                 key,
@@ -654,10 +658,9 @@ pub(crate) fn execute_in_txn(
         } => {
             convert_result(validate_not_internal_collection(&collection))?;
             convert_result(validate_key(&key))?;
-            let record = primitives
-                .vector
-                .get_in_transaction(ctx, branch_id, space, &collection, &key)
-                .map_err(|error| Error::from(error.into_strata_error(branch_id)))?;
+            let record = ctx
+                .vector_get_in_space(&primitives.vector, space, &collection, &key)
+                .map_err(Error::from)?;
             match record {
                 Some(record) => {
                     let version = extract_version(&strata_core::Version::counter(record.version));
@@ -684,10 +687,9 @@ pub(crate) fn execute_in_txn(
         } => {
             convert_result(validate_not_internal_collection(&collection))?;
             convert_result(validate_key(&key))?;
-            let record = primitives
-                .vector
-                .get_in_transaction(ctx, branch_id, space, &collection, &key)
-                .map_err(|error| Error::from(error.into_strata_error(branch_id)))?;
+            let record = ctx
+                .vector_get_in_space(&primitives.vector, space, &collection, &key)
+                .map_err(Error::from)?;
             Ok(Output::Bool(record.is_some()))
         }
         other => Err(Error::Internal {

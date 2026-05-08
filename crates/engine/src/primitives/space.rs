@@ -18,12 +18,23 @@
 //! - Key format: `<branch_namespace>:<TypeTag::Space>:<space_name>`
 
 use crate::database::Database;
-use crate::StrataResult;
+use crate::{StrataError, StrataResult};
 use std::sync::Arc;
 use strata_core::BranchId;
+use strata_core::EntityRef;
 use strata_core::Value;
 use strata_storage::{Key, Namespace, TypeTag};
 use tracing::info;
+
+/// Validate a user-visible space name.
+///
+/// This is the engine-owned validation boundary for product callers. The
+/// underlying naming rules still mirror storage's physical namespace rules, but
+/// callers above engine should receive a normal [`StrataError::InvalidInput`]
+/// instead of a storage-local error/string.
+pub fn validate_space_name(name: &str) -> StrataResult<()> {
+    strata_storage::validate_space_name(name).map_err(StrataError::invalid_input)
+}
 
 /// Space lifecycle management primitive.
 ///
@@ -102,6 +113,63 @@ impl SpaceIndex {
             info!(target: "strata::space", space, branch_id = %branch_id, "Space deleted");
             Ok(())
         })
+    }
+
+    /// Delete a user-visible space and all primitive data owned by it.
+    ///
+    /// This is the product boundary for space deletion: callers above engine
+    /// provide the branch name, space name, and force policy, while engine owns
+    /// branch validation, storage row cleanup, primitive runtime cleanup, search
+    /// index cleanup, and metadata removal.
+    ///
+    /// This method only runs engine-owned cleanup. Product layers with
+    /// additional feature-local state, such as intelligence shadow embeddings,
+    /// must call [`Self::delete_user_space_with_post_data_cleanup`] instead.
+    pub fn delete_user_space(
+        &self,
+        branch_name: &str,
+        space: &str,
+        force: bool,
+    ) -> StrataResult<()> {
+        self.delete_user_space_with_post_data_cleanup(branch_name, space, force, |_, _| Ok(()))
+    }
+
+    /// Delete a user-visible space, invoking `post_data_cleanup` after user
+    /// data/search/vector cleanup and before metadata deletion.
+    ///
+    /// This preserves the engine-owned storage boundary while letting product
+    /// layers drain feature-local runtime state before the space metadata
+    /// disappears. The hook is fallible so product-layer cleanup failures do
+    /// not get silently hidden behind a successful metadata delete.
+    pub fn delete_user_space_with_post_data_cleanup<F>(
+        &self,
+        branch_name: &str,
+        space: &str,
+        force: bool,
+        post_data_cleanup: F,
+    ) -> StrataResult<()>
+    where
+        F: FnOnce(BranchId, &str) -> StrataResult<()>,
+    {
+        let branch_id = BranchId::from_user_name(branch_name);
+
+        if space == "default" || space == crate::system_space::SYSTEM_SPACE {
+            return Err(protected_space_delete_constraint(branch_id, space));
+        }
+
+        validate_space_name(space)?;
+        self.require_branch_exists_for_delete(branch_name)?;
+        let branch_id = product_branch_id(branch_name)?;
+
+        if !force && !self.is_empty(branch_id, space)? {
+            return Err(non_empty_space_delete_constraint(branch_id, space));
+        }
+
+        self.delete_space_data_rows(branch_id, space)?;
+        self.remove_search_documents_in_space(branch_id, space);
+        self.purge_vector_collections_in_space(branch_id, space);
+        post_data_cleanup(branch_id, space)?;
+        self.delete(branch_id, space)
     }
 
     /// Check if a space has any data.
@@ -236,6 +304,117 @@ impl SpaceIndex {
     fn has_any_data(&self, branch_id: BranchId, space: &str) -> StrataResult<bool> {
         Ok(!self.is_empty(branch_id, space)?)
     }
+
+    fn require_branch_exists_for_delete(&self, branch_name: &str) -> StrataResult<()> {
+        let default_branch = self
+            .db
+            .default_branch_name()
+            .unwrap_or_else(|| "default".to_string());
+        if default_branch == branch_name {
+            return Ok(());
+        }
+
+        if self.db.branches().exists(branch_name)? {
+            Ok(())
+        } else {
+            Err(StrataError::branch_not_found_by_name(branch_name))
+        }
+    }
+
+    fn delete_space_data_rows(&self, branch_id: BranchId, space: &str) -> StrataResult<()> {
+        let vector = crate::vector::VectorStore::new(self.db.clone());
+        let namespace = Arc::new(Namespace::for_branch_space(branch_id, space));
+
+        self.db.transaction(branch_id, |txn| {
+            vector
+                .delete_space_data_in_transaction(txn, branch_id, space)
+                .map_err(|error| error.into_strata_error(branch_id))?;
+
+            for type_tag in [TypeTag::KV, TypeTag::Event, TypeTag::Json, TypeTag::Graph] {
+                let prefix = Key::new(namespace.clone(), type_tag, Vec::new());
+                let entries = txn.scan_prefix(&prefix)?;
+                for (key, _) in entries {
+                    txn.delete(key)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn remove_search_documents_in_space(&self, branch_id: BranchId, space: &str) {
+        if let Ok(index) = self.db.extension::<crate::search::InvertedIndex>() {
+            let removed = index.remove_documents_in_space(branch_id, space);
+            if removed > 0 {
+                tracing::info!(
+                    target: "strata::space",
+                    branch_id = %branch_id,
+                    space = space,
+                    removed,
+                    "Removed search documents during space delete"
+                );
+            }
+        }
+    }
+
+    fn purge_vector_collections_in_space(&self, branch_id: BranchId, space: &str) {
+        let vector = crate::vector::VectorStore::new(self.db.clone());
+        if let Err(error) = vector.purge_collections_in_space(branch_id, space) {
+            tracing::warn!(
+                target: "strata::space",
+                branch_id = %branch_id,
+                space = space,
+                error = %error,
+                "Failed to purge vector collections during space delete"
+            );
+        }
+    }
+}
+
+fn product_branch_id(branch_name: &str) -> StrataResult<BranchId> {
+    if crate::branch_domain::aliases_default_branch_sentinel(branch_name) {
+        return Err(StrataError::invalid_input(
+            "branch name aliases reserved default-branch sentinel",
+        ));
+    }
+
+    Ok(BranchId::from_user_name(branch_name))
+}
+
+fn space_delete_constraint(branch_id: BranchId, reason: String) -> StrataError {
+    StrataError::invalid_operation(EntityRef::Branch { branch_id }, reason)
+}
+
+fn protected_space_delete_reason(space: &str) -> String {
+    format!("Cannot delete the '{space}' space")
+}
+
+fn non_empty_space_delete_reason(space: &str) -> String {
+    format!("Space '{space}' is not empty. Use force=true to delete anyway.")
+}
+
+fn protected_space_delete_constraint(branch_id: BranchId, space: &str) -> StrataError {
+    space_delete_constraint(branch_id, protected_space_delete_reason(space))
+}
+
+fn non_empty_space_delete_constraint(branch_id: BranchId, space: &str) -> StrataError {
+    space_delete_constraint(branch_id, non_empty_space_delete_reason(space))
+}
+
+/// Return true when an engine error should surface as a product-level space
+/// delete constraint violation above engine.
+///
+/// This keeps executor and future product facades from depending directly on
+/// engine's user-facing error strings. `StrataError` does not currently carry
+/// typed invalid-operation reasons, so the string classification remains
+/// intentionally local to the primitive that produces these errors.
+pub fn is_user_space_delete_constraint(error: &StrataError) -> bool {
+    let StrataError::InvalidOperation { reason, .. } = error else {
+        return false;
+    };
+
+    (reason.starts_with("Cannot delete the '") && reason.ends_with("' space"))
+        || (reason.starts_with("Space '")
+            && reason.ends_with("' is not empty. Use force=true to delete anyway."))
 }
 
 /// Atomically ensure a space's metadata key exists within an open
@@ -271,7 +450,15 @@ pub fn ensure_space_registered_in_txn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::types::NodeData;
+    use crate::graph::GraphStore;
+    use crate::primitives::event::EventLog;
+    use crate::primitives::json::JsonStore;
     use crate::primitives::KVStore;
+    use crate::semantics::json::{JsonPath, JsonValue};
+    use crate::semantics::vector::{DistanceMetric, VectorConfig};
+    use crate::vector::VectorStore;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn setup() -> (TempDir, Arc<Database>, SpaceIndex) {
@@ -283,6 +470,23 @@ mod tests {
 
     fn default_branch() -> BranchId {
         BranchId::from_bytes([0u8; 16])
+    }
+
+    #[test]
+    fn validate_space_name_accepts_product_space_names() {
+        validate_space_name("default").unwrap();
+        validate_space_name("tenant_a-1").unwrap();
+    }
+
+    #[test]
+    fn validate_space_name_returns_engine_invalid_input() {
+        let err = validate_space_name("not allowed").unwrap_err();
+
+        assert!(matches!(
+            err,
+            StrataError::InvalidInput { ref message }
+                if message == "Space name can only contain lowercase letters, digits, hyphens, and underscores"
+        ));
     }
 
     #[test]
@@ -350,6 +554,232 @@ mod tests {
 
         si.delete(bid, "alpha").unwrap();
         assert!(!si.exists(bid, "alpha").unwrap());
+    }
+
+    #[test]
+    fn delete_user_space_rejects_protected_and_non_empty_spaces() {
+        let (_temp, db, si) = setup();
+        let bid = default_branch();
+        let kv = KVStore::new(db);
+
+        let protected = si
+            .delete_user_space("default", "default", true)
+            .unwrap_err();
+        assert!(matches!(
+            protected,
+            StrataError::InvalidOperation { ref reason, .. }
+                if reason == "Cannot delete the 'default' space"
+        ));
+
+        kv.put(&bid, "alpha", "key", Value::Int(1)).unwrap();
+
+        let non_empty = si.delete_user_space("default", "alpha", false).unwrap_err();
+        assert!(matches!(
+            non_empty,
+            StrataError::InvalidOperation { ref reason, .. }
+                if reason == "Space 'alpha' is not empty. Use force=true to delete anyway."
+        ));
+    }
+
+    #[test]
+    fn delete_user_space_force_cleans_primitive_rows_and_runtime_side_effects() {
+        let (_temp, db, si) = setup();
+        let bid = default_branch();
+        let kv = KVStore::new(db.clone());
+        let json = JsonStore::new(db.clone());
+        let events = EventLog::new(db.clone());
+        let graph = GraphStore::new(db.clone());
+        let vector = VectorStore::new(db.clone());
+        let index = db.extension::<crate::search::InvertedIndex>().unwrap();
+
+        kv.put(
+            &bid,
+            "alpha",
+            "key",
+            Value::String("searchable text".into()),
+        )
+        .unwrap();
+        kv.put(&bid, "beta", "key", Value::String("sibling text".into()))
+            .unwrap();
+        json.create(&bid, "alpha", "doc", JsonValue::from("json alpha"))
+            .unwrap();
+        json.create(&bid, "beta", "doc", JsonValue::from("json beta"))
+            .unwrap();
+        events
+            .append(
+                &bid,
+                "alpha",
+                "space.delete.test",
+                Value::object(HashMap::new()),
+            )
+            .unwrap();
+        events
+            .append(
+                &bid,
+                "beta",
+                "space.delete.test",
+                Value::object(HashMap::new()),
+            )
+            .unwrap();
+        graph.create_graph(bid, "alpha", "links", None).unwrap();
+        graph
+            .add_node(bid, "alpha", "links", "n1", NodeData::default())
+            .unwrap();
+        graph.create_graph(bid, "beta", "links", None).unwrap();
+        graph
+            .add_node(bid, "beta", "links", "n1", NodeData::default())
+            .unwrap();
+
+        let doc = EntityRef::kv(bid, "alpha", "key");
+        index.index_document(&doc, "searchable text", None);
+        assert!(index.has_document(&doc));
+
+        let config = VectorConfig::new(4, DistanceMetric::Cosine).unwrap();
+        vector
+            .create_collection(bid, "alpha", "embeddings", config.clone())
+            .unwrap();
+        vector
+            .insert(
+                bid,
+                "alpha",
+                "embeddings",
+                "v1",
+                &[1.0, 0.0, 0.0, 0.0],
+                None,
+            )
+            .unwrap();
+        vector
+            .create_collection(bid, "beta", "embeddings", config)
+            .unwrap();
+        vector
+            .insert(bid, "beta", "embeddings", "v1", &[0.0, 1.0, 0.0, 0.0], None)
+            .unwrap();
+
+        let hook_observed_metadata = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hook_observed_metadata_clone = hook_observed_metadata.clone();
+        let db_for_hook = db.clone();
+        si.delete_user_space_with_post_data_cleanup(
+            "default",
+            "alpha",
+            true,
+            move |branch_id, space| {
+                assert_eq!(space, "alpha");
+
+                let space_index = SpaceIndex::new(db_for_hook.clone());
+                hook_observed_metadata_clone.store(
+                    space_index.exists(branch_id, space).unwrap(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(hook_observed_metadata.load(std::sync::atomic::Ordering::SeqCst));
+
+        assert_eq!(kv.get(&bid, "alpha", "key").unwrap(), None);
+        assert_eq!(
+            kv.get(&bid, "beta", "key").unwrap(),
+            Some(Value::String("sibling text".into()))
+        );
+        assert_eq!(
+            json.get(&bid, "alpha", "doc", &JsonPath::root()).unwrap(),
+            None
+        );
+        assert_eq!(
+            json.get(&bid, "beta", "doc", &JsonPath::root()).unwrap(),
+            Some(JsonValue::from("json beta"))
+        );
+        assert_eq!(events.len(&bid, "alpha").unwrap(), 0);
+        assert_eq!(events.len(&bid, "beta").unwrap(), 1);
+        assert!(graph.list_graphs(bid, "alpha").unwrap().is_empty());
+        assert_eq!(graph.list_graphs(bid, "beta").unwrap(), vec!["links"]);
+        assert!(!si.exists(bid, "alpha").unwrap());
+        assert!(!index.has_document(&doc));
+        assert!(vector.list_collections(bid, "alpha").unwrap().is_empty());
+        let beta_collections: Vec<_> = vector
+            .list_collections(bid, "beta")
+            .unwrap()
+            .into_iter()
+            .map(|collection| collection.name)
+            .collect();
+        assert_eq!(beta_collections, vec!["embeddings"]);
+    }
+
+    #[test]
+    fn delete_user_space_force_cleans_only_requested_branch() {
+        let (_temp, db, si) = setup();
+        let default_bid = default_branch();
+        db.branches().create("feature").unwrap();
+        let feature_bid = BranchId::from_user_name("feature");
+        let kv = KVStore::new(db);
+
+        kv.put(
+            &default_bid,
+            "alpha",
+            "key",
+            Value::String("default".into()),
+        )
+        .unwrap();
+        kv.put(
+            &feature_bid,
+            "alpha",
+            "key",
+            Value::String("feature".into()),
+        )
+        .unwrap();
+
+        si.delete_user_space("feature", "alpha", true).unwrap();
+
+        assert_eq!(
+            kv.get(&default_bid, "alpha", "key").unwrap(),
+            Some(Value::String("default".into()))
+        );
+        assert_eq!(kv.get(&feature_bid, "alpha", "key").unwrap(), None);
+        assert!(si.exists(default_bid, "alpha").unwrap());
+        assert!(!si.exists(feature_bid, "alpha").unwrap());
+    }
+
+    #[test]
+    fn delete_user_space_propagates_post_data_cleanup_failure() {
+        let (_temp, db, si) = setup();
+        let bid = default_branch();
+        let kv = KVStore::new(db);
+
+        kv.put(&bid, "alpha", "key", Value::Int(1)).unwrap();
+
+        let error = si
+            .delete_user_space_with_post_data_cleanup("default", "alpha", true, |_, _| {
+                Err(StrataError::internal("post-data cleanup failed"))
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StrataError::Internal { ref message } if message == "post-data cleanup failed"
+        ));
+        assert_eq!(kv.get(&bid, "alpha", "key").unwrap(), None);
+        assert!(si.exists(bid, "alpha").unwrap());
+    }
+
+    #[test]
+    fn user_space_delete_constraint_classifier_is_engine_owned() {
+        let bid = default_branch();
+        let protected = protected_space_delete_constraint(bid, "default");
+        let non_empty = non_empty_space_delete_constraint(bid, "alpha");
+        let unrelated = StrataError::invalid_operation(
+            EntityRef::Branch { branch_id: bid },
+            "some other invalid operation",
+        );
+
+        assert!(is_user_space_delete_constraint(&protected));
+        assert!(is_user_space_delete_constraint(&non_empty));
+        assert!(!is_user_space_delete_constraint(&unrelated));
+        assert!(!is_user_space_delete_constraint(
+            &StrataError::invalid_input(
+                "Space 'alpha' is not empty. Use force=true to delete anyway."
+            )
+        ));
     }
 
     #[test]
