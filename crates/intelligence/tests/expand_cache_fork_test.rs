@@ -1,16 +1,18 @@
 //! Integration test: forking a branch inherits the parent's expansion cache
-//! via the storage layer's COW semantics.
+//! through engine branch/version semantics.
 //!
 //! This test must use a disk-backed runtime because branch fork goes through
-//! `BranchService` and the storage-layer COW path, which an in-memory
+//! `BranchService` and durable engine branch state, which an in-memory
 //! `Database::cache()` runtime does not exercise.
 
 #![cfg(feature = "embed")]
 
-use strata_engine::database::search_only_primary_spec;
+use strata_engine::database::{
+    open_product_database, OpenOptions, ProductOpenError, ProductOpenOutcome,
+};
 use strata_engine::primitives::branch::resolve_branch_name;
 use strata_engine::search::expand::{ExpandedQuery, QueryType};
-use strata_engine::{Database, GraphSubsystem};
+use strata_engine::Database;
 use strata_intelligence::expand_cache;
 use tempfile::TempDir;
 
@@ -21,12 +23,21 @@ fn lex(text: &str) -> ExpandedQuery {
     }
 }
 
+fn open_product_test_database(dir: &TempDir) -> std::sync::Arc<Database> {
+    match open_product_database(dir.path(), OpenOptions::default()) {
+        Ok(ProductOpenOutcome::Local { db, .. }) => db,
+        Ok(_) => panic!("fresh product test database should open locally"),
+        Err(ProductOpenError::LockedWithoutIpcSocket { .. }) => {
+            panic!("fresh product test database should not be locked")
+        }
+        Err(error) => panic!("failed to open product test database: {error}"),
+    }
+}
+
 #[test]
 fn test_fork_branch_inherits_cache() {
     let dir = TempDir::new().unwrap();
-    let db =
-        Database::open_runtime(search_only_primary_spec(dir.path()).with_subsystem(GraphSubsystem))
-            .unwrap();
+    let db = open_product_test_database(&dir);
 
     // Create the parent branch and warm its cache with one entry.
     db.branches().create("parent").unwrap();
@@ -54,11 +65,11 @@ fn test_fork_branch_inherits_cache() {
         .expect("fork should succeed");
     let child_id = resolve_branch_name("child");
 
-    // Child should see the inherited cache entry via COW — no model call needed
-    // and no explicit cache copy. This is the free-win the per-branch storage
-    // design buys.
+    // Child should see the inherited cache entry with no model call and no
+    // explicit cache copy. This is the free-win the per-branch engine
+    // versioning design buys.
     let child_variants = expand_cache::get(&db, child_id, &key)
-        .expect("child should inherit parent's cache entry via COW");
+        .expect("child should inherit parent's cache entry after fork");
 
     assert_eq!(child_variants.len(), 2);
     assert_eq!(child_variants[0].text, "ssh keygen");
@@ -69,11 +80,9 @@ fn test_fork_branch_inherits_cache() {
 #[test]
 fn test_fork_child_writes_isolated_from_parent() {
     // After fork, writes on the child must not leak into the parent.
-    // This proves the COW path is doing copy-on-write, not aliasing.
+    // This proves child writes remain branch-local after fork.
     let dir = TempDir::new().unwrap();
-    let db =
-        Database::open_runtime(search_only_primary_spec(dir.path()).with_subsystem(GraphSubsystem))
-            .unwrap();
+    let db = open_product_test_database(&dir);
 
     db.branches().create("p").unwrap();
     let parent_id = resolve_branch_name("p");

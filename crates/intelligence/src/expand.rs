@@ -2,8 +2,7 @@
 //!
 //! Generates typed query variants (lex/vec/hyde) using a generation model
 //! with grammar constraints, then filters via a hallucination guard.
-//! The caller (search handler) routes each variant to the appropriate
-//! substrate retrieval pass.
+//! The caller routes each variant through engine-owned search retrieval.
 
 use strata_core::BranchId;
 use strata_engine::search::expand::parser::parse_expansion_with_filter;

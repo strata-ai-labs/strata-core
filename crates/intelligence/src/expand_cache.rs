@@ -1,10 +1,11 @@
 //! Persistent FIFO cache for query expansion results.
 //!
-//! Cache lives in `_system_` space on the branch using the same KV-write-via-
-//! transaction pattern as `recipe_store`. Per-branch storage means a branch
-//! fork inherits the parent's warm cache for free via the existing COW path.
+//! Cache lives in engine-owned `_system_` space on the branch using the same
+//! KV-write-via-transaction pattern as `recipe_store`. Per-branch engine
+//! versioning means a branch fork inherits the parent's warm cache without an
+//! explicit cache copy.
 //!
-//! # Storage layout
+//! # Engine system-space layout
 //!
 //! Two key shapes in `_system_` space, both per-branch:
 //!

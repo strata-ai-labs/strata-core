@@ -1,6 +1,6 @@
 //! RAG (retrieval-augmented generation) for Strata search.
 //!
-//! Takes the top-N hits from the substrate, builds a prompt
+//! Takes the top-N engine search hits, builds a prompt
 //! (sandwich-ordered, type-tagged — see `prompt.rs` and the v0.6 plan),
 //! calls the generation model specified by `recipe.models.generate`, and
 //! parses citations from the result. Returns `None` on any failure

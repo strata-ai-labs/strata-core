@@ -162,8 +162,9 @@ And then, above those:
 - `strata-cli`
 - `stratadb`
 
-`strata-intelligence` also depends on `strata-inference`, which is currently
-outside the engine stack and supplies model/inference support.
+`strata-intelligence` can optionally depend on `strata-inference` behind its
+`embed` feature. That crate remains outside the engine stack and supplies
+model/inference support.
 
 This confirms that engine is now the main semantic/runtime hub of the
 workspace. After `EG7`, there is no normal production direct storage bypass
@@ -171,27 +172,34 @@ above engine.
 
 ### Current Normal Workspace Graph
 
-The verified normal dependency graph for engine-adjacent crates is below.
-`EG7E` re-verified this graph on 2026-05-07 after deleting executor's direct
-storage dependency and storage re-exports. The phase tracking
-plans are
+The verified default normal dependency graph for engine-adjacent crates is
+below. `EG8E` re-verified this graph on 2026-05-07 after closing the
+intelligence boundary and adding dependency-direction guards. The phase
+tracking plans include
 [eg1-implementation-plan.md](./eg1-implementation-plan.md),
-[eg3-implementation-plan.md](./eg3-implementation-plan.md), and
-[eg7-implementation-plan.md](./eg7-implementation-plan.md).
+[eg3-implementation-plan.md](./eg3-implementation-plan.md),
+[eg7-implementation-plan.md](./eg7-implementation-plan.md), and
+[eg8-implementation-plan.md](./eg8-implementation-plan.md).
 
 ```text
 strata-storage       -> strata-core
 strata-engine        -> strata-core, strata-storage
-strata-intelligence  -> strata-core, strata-engine, strata-inference
+strata-intelligence  -> strata-core, strata-engine
 strata-executor      -> strata-core, strata-engine, strata-intelligence
-strata-cli           -> strata-executor, strata-intelligence
+strata-cli           -> strata-executor
 stratadb             -> strata-executor
 ```
+
+With `embed` enabled, `strata-intelligence` adds the optional
+`strata-inference` edge and `strata-cli` reaches intelligence only through its
+optional embed feature.
 
 Security/open options are engine-owned after `EG2`, product open/bootstrap is
 engine-owned after `EG3`, graph is engine-owned after `EG4`, vector is
 engine-owned after `EG5`, search is engine-owned after `EG6`, and executor's
-direct storage bypass is closed after `EG7`.
+direct storage bypass is closed after `EG7`. `EG8` keeps intelligence as an
+engine consumer and guards inference as an optional dependency behind
+intelligence.
 
 The current inverse normal storage graph is:
 
@@ -224,7 +232,10 @@ There are no normal production direct storage dependencies above engine after
 `EG7`.
 
 `strata-intelligence`, `strata-cli`, and the root `stratadb` package do not
-have direct normal storage dependencies.
+have direct normal storage dependencies. Guard tests also reject intelligence
+regressing to retired graph/vector/search/security/executor-legacy crate edges,
+direct subsystem assembly, engine imports of intelligence/inference, and direct
+executor/CLI imports of inference.
 Root dev-dependencies and storage-facing tests do import storage directly; those
 are tracked separately in the `EG1` implementation plan for the `EG1D` guard
 policy.
