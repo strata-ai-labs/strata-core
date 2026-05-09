@@ -1,4 +1,4 @@
-//! EG5 vector absorption characterization.
+//! Vector runtime characterization.
 //!
 //! These tests pin vector behavior through the engine-owned vector runtime and
 //! product-open composition.
@@ -68,7 +68,7 @@ fn vector_graph_dir(
 }
 
 #[test]
-fn eg5c_cache_product_open_installs_engine_owned_vector_runtime() {
+fn cache_product_open_installs_engine_owned_vector_runtime() {
     let outcome = open_product_cache().expect("cache product open should succeed");
 
     let ProductOpenOutcome::Local { db, .. } = outcome else {
@@ -78,7 +78,7 @@ fn eg5c_cache_product_open_installs_engine_owned_vector_runtime() {
     assert_eq!(
         db.installed_subsystem_names(),
         ["graph", "vector", "search"],
-        "EG5C product open must compose the engine-owned vector runtime"
+        "product open must compose the engine-owned vector runtime"
     );
 
     let branch_id = BranchId::default();
@@ -87,7 +87,7 @@ fn eg5c_cache_product_open_installs_engine_owned_vector_runtime() {
         .create_collection(
             branch_id,
             "default",
-            "eg5c_cache_runtime",
+            "vector_product_cache_runtime",
             VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
         )
         .expect("vector collection should be creatable through product open");
@@ -95,7 +95,7 @@ fn eg5c_cache_product_open_installs_engine_owned_vector_runtime() {
         .insert(
             branch_id,
             "default",
-            "eg5c_cache_runtime",
+            "vector_product_cache_runtime",
             "v1",
             &[1.0, 0.0, 0.0],
             None,
@@ -106,7 +106,7 @@ fn eg5c_cache_product_open_installs_engine_owned_vector_runtime() {
         .search(
             branch_id,
             "default",
-            "eg5c_cache_runtime",
+            "vector_product_cache_runtime",
             &[1.0, 0.0, 0.0],
             1,
             None,
@@ -120,7 +120,7 @@ fn eg5c_cache_product_open_installs_engine_owned_vector_runtime() {
 }
 
 #[test]
-fn eg5c_disk_product_open_installs_engine_owned_vector_runtime() {
+fn disk_product_open_installs_engine_owned_vector_runtime() {
     let temp = tempdir().expect("tempdir should succeed");
     let db = open_local_product_db(temp.path(), OpenOptions::default());
 
@@ -136,7 +136,7 @@ fn eg5c_disk_product_open_installs_engine_owned_vector_runtime() {
         .create_collection(
             branch_id,
             "default",
-            "eg5c_disk_runtime",
+            "vector_product_disk_runtime",
             VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
         )
         .expect("vector collection should be creatable through disk product open");
@@ -144,7 +144,7 @@ fn eg5c_disk_product_open_installs_engine_owned_vector_runtime() {
         .insert(
             branch_id,
             "default",
-            "eg5c_disk_runtime",
+            "vector_product_disk_runtime",
             "v1",
             &[1.0, 0.0, 0.0],
             None,
@@ -155,7 +155,7 @@ fn eg5c_disk_product_open_installs_engine_owned_vector_runtime() {
         .search(
             branch_id,
             "default",
-            "eg5c_disk_runtime",
+            "vector_product_disk_runtime",
             &[1.0, 0.0, 0.0],
             1,
             None,
@@ -169,7 +169,7 @@ fn eg5c_disk_product_open_installs_engine_owned_vector_runtime() {
 }
 
 #[test]
-fn eg5c_disk_product_open_recovers_vector_state_after_shutdown_reopen() {
+fn disk_product_open_recovers_vector_state_after_shutdown_reopen() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::default();
 
@@ -180,7 +180,7 @@ fn eg5c_disk_product_open_recovers_vector_state_after_shutdown_reopen() {
             .create_collection(
                 branch_id,
                 "default",
-                "eg5c_product_reopen",
+                "vector_product_reopen",
                 VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
             )
             .expect("vector collection should be creatable through product open");
@@ -188,7 +188,7 @@ fn eg5c_disk_product_open_recovers_vector_state_after_shutdown_reopen() {
             .insert(
                 branch_id,
                 "default",
-                "eg5c_product_reopen",
+                "vector_product_reopen",
                 "v1",
                 &[0.0, 1.0, 0.0],
                 None,
@@ -211,7 +211,7 @@ fn eg5c_disk_product_open_recovers_vector_state_after_shutdown_reopen() {
             .search(
                 branch_id,
                 "default",
-                "eg5c_product_reopen",
+                "vector_product_reopen",
                 &[0.0, 1.0, 0.0],
                 1,
                 None,
@@ -225,7 +225,7 @@ fn eg5c_disk_product_open_recovers_vector_state_after_shutdown_reopen() {
 }
 
 #[test]
-fn eg5c_follower_product_open_recovers_primary_vector_state() {
+fn follower_product_open_recovers_primary_vector_state() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::default();
 
@@ -235,7 +235,7 @@ fn eg5c_follower_product_open_recovers_primary_vector_state() {
         .create_collection(
             branch_id,
             "default",
-            "eg5c_follower_runtime",
+            "vector_product_follower_runtime",
             VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
         )
         .expect("primary should create vector collection");
@@ -243,7 +243,7 @@ fn eg5c_follower_product_open_recovers_primary_vector_state() {
         .insert(
             branch_id,
             "default",
-            "eg5c_follower_runtime",
+            "vector_product_follower_runtime",
             "v1",
             &[0.0, 0.0, 1.0],
             None,
@@ -269,7 +269,7 @@ fn eg5c_follower_product_open_recovers_primary_vector_state() {
         .search(
             branch_id,
             "default",
-            "eg5c_follower_runtime",
+            "vector_product_follower_runtime",
             &[0.0, 0.0, 1.0],
             1,
             None,
@@ -287,7 +287,7 @@ fn eg5c_follower_product_open_recovers_primary_vector_state() {
 }
 
 #[test]
-fn eg5a_recovery_rebuilds_non_default_and_system_vector_state_from_kv() {
+fn vector_recovery_rebuilds_non_default_and_system_vector_state_from_kv() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::default();
     let source_ref = EntityRef::json(branch_id, "tenant_a", "doc-1");
@@ -367,10 +367,15 @@ fn eg5a_recovery_rebuilds_non_default_and_system_vector_state_from_kv() {
 }
 
 #[test]
-fn eg5e_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
+fn vector_sidecar_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::default();
-    let vec_path = vector_mmap_path(temp.path(), branch_id, "default", "eg5e_primary_sidecar");
+    let vec_path = vector_mmap_path(
+        temp.path(),
+        branch_id,
+        "default",
+        "vector_sidecar_primary_sidecar",
+    );
 
     {
         let db = open_vector_product_db(temp.path());
@@ -379,7 +384,7 @@ fn eg5e_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
             .create_collection(
                 branch_id,
                 "default",
-                "eg5e_primary_sidecar",
+                "vector_sidecar_primary_sidecar",
                 VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
             )
             .expect("collection should be created");
@@ -387,7 +392,7 @@ fn eg5e_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
             .insert(
                 branch_id,
                 "default",
-                "eg5e_primary_sidecar",
+                "vector_sidecar_primary_sidecar",
                 "v1",
                 &[1.0, 0.0, 0.0],
                 None,
@@ -408,7 +413,11 @@ fn eg5e_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
         let state = db
             .extension::<VectorBackendState>()
             .expect("vector backend state should be installed");
-        let cid = strata_engine::CollectionId::new(branch_id, "default", "eg5e_primary_sidecar");
+        let cid = strata_engine::CollectionId::new(
+            branch_id,
+            "default",
+            "vector_sidecar_primary_sidecar",
+        );
         let backend = state
             .backends
             .get(&cid)
@@ -423,7 +432,7 @@ fn eg5e_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
             .search(
                 branch_id,
                 "default",
-                "eg5e_primary_sidecar",
+                "vector_sidecar_primary_sidecar",
                 &[1.0, 0.0, 0.0],
                 1,
                 None,
@@ -436,10 +445,15 @@ fn eg5e_primary_reopen_uses_vector_sidecar_cache_as_accelerator() {
 }
 
 #[test]
-fn eg5e_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
+fn vector_sidecar_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::default();
-    let vec_path = vector_mmap_path(temp.path(), branch_id, "default", "eg5e_corrupt_sidecar");
+    let vec_path = vector_mmap_path(
+        temp.path(),
+        branch_id,
+        "default",
+        "vector_sidecar_corrupt_sidecar",
+    );
 
     {
         let db = open_vector_product_db(temp.path());
@@ -448,7 +462,7 @@ fn eg5e_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
             .create_collection(
                 branch_id,
                 "default",
-                "eg5e_corrupt_sidecar",
+                "vector_sidecar_corrupt_sidecar",
                 VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
             )
             .expect("collection should be created");
@@ -456,7 +470,7 @@ fn eg5e_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
             .insert(
                 branch_id,
                 "default",
-                "eg5e_corrupt_sidecar",
+                "vector_sidecar_corrupt_sidecar",
                 "v1",
                 &[0.0, 1.0, 0.0],
                 None,
@@ -480,7 +494,11 @@ fn eg5e_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
         let state = db
             .extension::<VectorBackendState>()
             .expect("vector backend state should be installed");
-        let cid = strata_engine::CollectionId::new(branch_id, "default", "eg5e_corrupt_sidecar");
+        let cid = strata_engine::CollectionId::new(
+            branch_id,
+            "default",
+            "vector_sidecar_corrupt_sidecar",
+        );
         let backend = state
             .backends
             .get(&cid)
@@ -495,7 +513,7 @@ fn eg5e_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
             .search(
                 branch_id,
                 "default",
-                "eg5e_corrupt_sidecar",
+                "vector_sidecar_corrupt_sidecar",
                 &[0.0, 1.0, 0.0],
                 1,
                 None,
@@ -508,11 +526,11 @@ fn eg5e_corrupt_vector_sidecar_falls_back_to_kv_without_data_loss() {
 }
 
 #[test]
-fn eg5e_space_delete_force_purges_orphan_vector_sidecars_before_lazy_reload() {
+fn vector_sidecar_space_delete_force_purges_orphan_vector_sidecars_before_lazy_reload() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::from_user_name("default");
     let space = "tenant_gone";
-    let collection = "eg5e_space_sidecar";
+    let collection = "vector_sidecar_space_sidecar";
     let vec_path = vector_mmap_path(temp.path(), branch_id, space, collection);
     let graph_dir = vector_graph_dir(temp.path(), branch_id, space, collection);
     let graph_path = graph_dir.join("seg_0.hgr");
@@ -621,11 +639,11 @@ fn eg5e_space_delete_force_purges_orphan_vector_sidecars_before_lazy_reload() {
 }
 
 #[test]
-fn eg5a_collection_delete_purges_vector_sidecar_cache_before_reopen() {
+fn vector_recovery_collection_delete_purges_vector_sidecar_cache_before_reopen() {
     let temp = tempdir().expect("tempdir should succeed");
     let branch_id = BranchId::default();
-    let vec_path = vector_mmap_path(temp.path(), branch_id, "default", "eg5a_sidecar");
-    let graph_dir = vector_graph_dir(temp.path(), branch_id, "default", "eg5a_sidecar");
+    let vec_path = vector_mmap_path(temp.path(), branch_id, "default", "vector_recovery_sidecar");
+    let graph_dir = vector_graph_dir(temp.path(), branch_id, "default", "vector_recovery_sidecar");
     let graph_path = graph_dir.join("seg_0.hgr");
 
     {
@@ -636,7 +654,7 @@ fn eg5a_collection_delete_purges_vector_sidecar_cache_before_reopen() {
             .create_collection(
                 branch_id,
                 "default",
-                "eg5a_sidecar",
+                "vector_recovery_sidecar",
                 VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
             )
             .expect("collection should be created");
@@ -644,7 +662,7 @@ fn eg5a_collection_delete_purges_vector_sidecar_cache_before_reopen() {
             .insert(
                 branch_id,
                 "default",
-                "eg5a_sidecar",
+                "vector_recovery_sidecar",
                 "stale-if-recovered",
                 &[1.0, 0.0, 0.0],
                 None,
@@ -667,7 +685,7 @@ fn eg5a_collection_delete_purges_vector_sidecar_cache_before_reopen() {
         );
 
         store
-            .delete_collection(branch_id, "default", "eg5a_sidecar")
+            .delete_collection(branch_id, "default", "vector_recovery_sidecar")
             .expect("collection delete should succeed");
         assert!(
             !vec_path.exists(),
@@ -682,7 +700,7 @@ fn eg5a_collection_delete_purges_vector_sidecar_cache_before_reopen() {
             .create_collection(
                 branch_id,
                 "default",
-                "eg5a_sidecar",
+                "vector_recovery_sidecar",
                 VectorConfig::new(3, DistanceMetric::Cosine).unwrap(),
             )
             .expect("same-name collection should be recreatable after delete");
@@ -697,7 +715,7 @@ fn eg5a_collection_delete_purges_vector_sidecar_cache_before_reopen() {
             .search(
                 branch_id,
                 "default",
-                "eg5a_sidecar",
+                "vector_recovery_sidecar",
                 &[1.0, 0.0, 0.0],
                 10,
                 None,

@@ -14,6 +14,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::primitives::branch::resolve_branch_name;
 use crate::search::recipe::{builtin_defaults, get_builtin_recipe, Recipe, BUILTIN_RECIPE_NAMES};
 use crate::system_space::system_kv_key;
+#[cfg(any(test, feature = "test-support"))]
+use crate::test_path_key::hook_path_key;
 use crate::SYSTEM_BRANCH;
 use crate::{Database, StrataError, StrataResult};
 use strata_core::BranchId;
@@ -36,27 +38,44 @@ pub(crate) fn inject_seed_builtin_recipes_failure_for_test(
     path: &Path,
     message: impl Into<String>,
 ) {
+    let key = hook_path_key(path);
     seed_builtin_recipes_failure_slot()
         .lock()
         .expect("seed recipe failure slot should not be poisoned")
-        .insert(path.to_path_buf(), message.into());
+        .insert(key, message.into());
 }
 
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub(crate) fn clear_seed_builtin_recipes_failure_for_test(path: &Path) {
+    if seed_builtin_recipes_failure_slot()
+        .lock()
+        .expect("seed recipe failure slot should not be poisoned")
+        .is_empty()
+    {
+        return;
+    }
+    let key = hook_path_key(path);
     seed_builtin_recipes_failure_slot()
         .lock()
         .expect("seed recipe failure slot should not be poisoned")
-        .remove(path);
+        .remove(&key);
 }
 
 #[cfg(any(test, feature = "test-support"))]
 fn take_seed_builtin_recipes_failure_for_test(path: &Path) -> Option<String> {
+    if seed_builtin_recipes_failure_slot()
+        .lock()
+        .expect("seed recipe failure slot should not be poisoned")
+        .is_empty()
+    {
+        return None;
+    }
+    let key = hook_path_key(path);
     seed_builtin_recipes_failure_slot()
         .lock()
         .expect("seed recipe failure slot should not be poisoned")
-        .remove(path)
+        .remove(&key)
 }
 
 /// Seed all built-in recipes onto the `_system_` branch.
@@ -207,6 +226,28 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Database::open(dir.path()).unwrap();
         (dir, db)
+    }
+
+    #[test]
+    fn seed_builtin_recipe_failure_hook_reaches_canonical_aliases() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let db_dir = temp_dir.path().join("db");
+        std::fs::create_dir_all(&db_dir).expect("create db dir");
+        let raw_alias = db_dir.join("..").join("db");
+        let canonical = raw_alias.canonicalize().expect("canonical db dir");
+
+        clear_seed_builtin_recipes_failure_for_test(&raw_alias);
+        clear_seed_builtin_recipes_failure_for_test(&canonical);
+        inject_seed_builtin_recipes_failure_for_test(&raw_alias, "seed failed");
+        assert_eq!(
+            take_seed_builtin_recipes_failure_for_test(&canonical).as_deref(),
+            Some("seed failed")
+        );
+        assert!(take_seed_builtin_recipes_failure_for_test(&raw_alias).is_none());
+
+        inject_seed_builtin_recipes_failure_for_test(&canonical, "clear me");
+        clear_seed_builtin_recipes_failure_for_test(&raw_alias);
+        assert!(take_seed_builtin_recipes_failure_for_test(&canonical).is_none());
     }
 
     #[test]

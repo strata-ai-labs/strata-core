@@ -10,7 +10,6 @@ core -> storage -> engine
 engine -> intelligence -> executor -> cli
 inference -> intelligence
 engine -> executor -> stratadb
-storage -> executor (temporary EG7 bypass)
 ```
 
 The `engine` crate is the authority layer. The `executor` crate is a thin transport/session

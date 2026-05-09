@@ -47,7 +47,7 @@ This plan should be read together with:
 - [../storage/storage-charter.md](../../storage/storage-charter.md)
 - [../storage/storage-crate-map.md](../../storage/storage-crate-map.md)
 - [../storage/storage-engine-ownership-audit.md](../../storage/storage-engine-ownership-audit.md)
-- [../storage/storage-minimal-surface-implementation-plan.md](../../storage/storage-minimal-surface-implementation-plan.md)
+- [../storage/storage-minimal-surface-implementation-plan.md](../../storage/archive/storage-minimal-surface-implementation-plan.md)
 - [../storage/st2-primitive-transaction-semantics-extraction-plan.md](../../storage/st2-primitive-transaction-semantics-extraction-plan.md)
 - [../storage/st3-generic-transaction-runtime-absorption-plan.md](../../storage/st3-generic-transaction-runtime-absorption-plan.md)
 - [storage-runtime-boundary-api-sketch.md](./storage-runtime-boundary-api-sketch.md)

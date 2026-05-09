@@ -1,4 +1,4 @@
-//! Characterization tests for the security/open surface before EG2 absorption.
+//! Characterization tests for the engine-owned security/open surface.
 
 use strata_engine::{AccessMode, OpenOptions, SensitiveString, StrataConfig};
 use strata_executor::{AccessMode as ExecutorAccessMode, OpenOptions as ExecutorOpenOptions};

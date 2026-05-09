@@ -30,7 +30,7 @@ Read this with:
 - [eg1-implementation-plan.md](./eg1-implementation-plan.md)
 - [eg2-implementation-plan.md](./eg2-implementation-plan.md)
 - [eg3-implementation-plan.md](./eg3-implementation-plan.md)
-- [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
 
 ## Scope
 

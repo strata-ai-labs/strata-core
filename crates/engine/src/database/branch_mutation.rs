@@ -1085,6 +1085,11 @@ mod tests {
                 || error_chain_contains(&err, "injected"),
             "expected storage cleanup failure in error chain, got {err}",
         );
+        assert!(
+            crate::database::test_hooks::maybe_inject_clear_branch_storage_failure(temp_dir.path())
+                .is_none(),
+            "clear_storage=true rollback must consume the storage-cleanup hook"
+        );
 
         let branch_index = BranchIndex::new(db.clone());
         assert!(!branch_index.exists("abort-with-storage").unwrap());

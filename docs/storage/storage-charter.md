@@ -25,7 +25,6 @@ the consolidation work.
 
 It should be read together with:
 
-- [storage-minimal-surface-implementation-plan.md](./storage-minimal-surface-implementation-plan.md)
 - [storage-engine-ownership-audit.md](./storage-engine-ownership-audit.md)
 - [v1-storage-consumption-contract.md](./v1-storage-consumption-contract.md)
 - [../core/core-charter.md](../core/core-charter.md)

@@ -10,7 +10,7 @@ the post-consolidation workspace graph.
 For the broader engine cleanup ledger, see
 [engine-pending-items.md](./archive/engine-pending-items.md).
 
-For the consolidation record for security/open options, product bootstrap,
+For the consolidation closeout for security/open options, product bootstrap,
 graph, vector, and search ownership into engine, see
 [engine-consolidation-plan.md](./engine-consolidation-plan.md).
 
@@ -143,8 +143,8 @@ now:
 strata-core -> strata-storage -> strata-engine
 ```
 
-`EG2` absorbed the old security/open-options surface into engine, so
-`AccessMode`, `OpenOptions`, and `SensitiveString` are now engine-owned types.
+The old security/open-options surface has been absorbed into engine, so
+`AccessMode`, `OpenOptions`, and `SensitiveString` are engine-owned types.
 
 The old `core-legacy` compat crate is no longer in engine's dependency graph at
 all.
@@ -165,20 +165,14 @@ And then, above those:
 `embed` feature. That crate remains outside the engine stack and supplies
 model/inference support.
 
-This confirms that engine is now the main semantic/runtime hub of the
-workspace. After `EG7`, there is no normal production direct storage bypass
-above engine.
+This confirms that engine is the main semantic/runtime hub of the workspace.
+There is no normal production direct storage bypass above engine.
 
 ### Current Normal Workspace Graph
 
 The verified default normal dependency graph for engine-adjacent crates is
-below. `EG9D` refreshed this active map on 2026-05-08 after closing the
-optional-edge policy and final storage-bypass guards. The phase tracking plans
-include
-[eg1-implementation-plan.md](./eg1-implementation-plan.md),
-[eg3-implementation-plan.md](./eg3-implementation-plan.md),
-[eg7-implementation-plan.md](./eg7-implementation-plan.md), and
-[eg8-implementation-plan.md](./eg8-implementation-plan.md).
+below. This active map was refreshed on 2026-05-08 after the retired-crate,
+optional-edge, and final storage-bypass guard policies were closed.
 
 ```text
 strata-storage       -> strata-core
@@ -208,13 +202,11 @@ intelligence provider features reference `strata-inference`. CLI's direct
 `strata-intelligence` dependency is optional command-surface wiring, not part
 of the default normal graph.
 
-Security/open options are engine-owned after `EG2`, product open/bootstrap is
-engine-owned after `EG3`, graph is engine-owned after `EG4`, vector is
-engine-owned after `EG5`, search is engine-owned after `EG6`, and executor's
-direct storage bypass is closed after `EG7`. `EG8` keeps intelligence as an
-engine consumer and guards inference as an optional dependency behind
-intelligence. `EG9` closes the retired-crate and optional-edge guard policy; no
-temporary engine-consolidation compatibility shell remains active.
+Security/open options, product open/bootstrap, graph, vector, search, and every
+production storage access path above storage are engine-owned. Intelligence is
+a model/provider layer above engine; inference remains optional behind
+intelligence. No temporary engine-consolidation compatibility shell remains
+active.
 
 The current inverse normal storage graph is:
 
@@ -225,16 +217,12 @@ strata-storage
 |   `-- strata-intelligence
 ```
 
-`strata-engine` is the intended permanent production dependent of storage.
-`EG4` removed `strata-graph` by moving graph implementation, storage-key
-mapping, transaction extension, runtime hooks, and branch DAG behavior into
-engine. `EG5` moved vector implementation, storage-key mapping, transaction
-extension, recovery hooks, merge behavior, and sidecar-cache policy into
-engine, then deleted the retired `strata-vector` package. `EG6` moved search
-runtime, retrieval substrate, manifest behavior, and subsystem assembly into
-engine, then deleted the retired `strata-search` package. `EG7` removed
-executor's storage imports, storage re-exports, raw transaction-context product
-dispatch, space-delete storage loops, and normal storage dependency.
+`strata-engine` is the intended permanent production dependent of storage. The
+retired graph/vector/search peer crates were removed after their implementation,
+storage-key mapping, transaction/runtime hooks, recovery/search/sidecar
+behavior, and subsystem assembly moved into engine. Executor's storage imports,
+storage re-exports, raw transaction-context product dispatch, space-delete
+storage loops, and normal storage dependency were removed.
 
 Because most upper crates also depend on engine, the full inverse tree shows
 executor and intelligence under the engine branch as ordinary engine consumers.
@@ -243,8 +231,7 @@ direct normal storage edges above engine.
 
 ### Direct Storage Bypasses Above Engine
 
-There are no normal production direct storage dependencies above engine after
-`EG7`.
+There are no normal production direct storage dependencies above engine.
 
 `strata-intelligence`, `strata-cli`, and the root `stratadb` package do not
 have direct normal storage dependencies. Guard tests also reject intelligence
@@ -252,8 +239,7 @@ regressing to retired graph/vector/search/security/executor-legacy crate edges,
 direct subsystem assembly, engine imports of intelligence/inference, and direct
 executor/CLI imports of inference.
 Root dev-dependencies and storage-facing tests do import storage directly; those
-are tracked separately in the `EG1` implementation plan for the `EG1D` guard
-policy.
+are allowed by the storage surface guard policy and are not production bypasses.
 
 ## What Engine Owns Today
 
@@ -378,8 +364,8 @@ If you describe the crate honestly as it exists today, `strata-engine` is:
 The next cleanup should treat the storage boundary as settled but keep
 engine's internal domain/runtime boundaries explicit.
 
-The next architecture work is not another `EG` migration phase. It should be a
-v1 design pass for the target engine, storage, testing, and product experience
+The next architecture work is not another cleanup migration. It should be a v1
+design pass for the target engine, storage, testing, and product experience
 before any engine-next or storage-next implementation begins.
 
 The important ownership question is not whether engine is too large. It is

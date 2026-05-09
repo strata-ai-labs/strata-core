@@ -728,6 +728,18 @@ impl WalWriter {
         self.last_inline_sync_time = Instant::now();
     }
 
+    /// Mark the background-sync deadline as elapsed without touching the
+    /// inline-sync deadline.
+    #[cfg(feature = "fault-injection")]
+    pub(crate) fn mark_background_sync_due_for_test(&mut self) {
+        let DurabilityMode::Standard { interval_ms, .. } = self.durability else {
+            return;
+        };
+        let overdue_by = std::time::Duration::from_millis(interval_ms.saturating_add(1));
+        let now = Instant::now();
+        self.last_sync_time = now.checked_sub(overdue_by).unwrap_or(now);
+    }
+
     /// Get the current durability mode.
     pub fn durability_mode(&self) -> DurabilityMode {
         self.durability

@@ -439,7 +439,7 @@ fn engine_legacy_core_compat_use_is_fully_removed() {
             }
             if line.contains(LEGACY_CORE_COMPAT_ALIAS) {
                 violations.push(format!(
-                    "{}:{}: engine source references deleted legacy compat alias after ST7",
+                    "{}:{}: engine source references deleted legacy compat alias",
                     file.display(),
                     line_no + 1
                 ));
@@ -449,7 +449,7 @@ fn engine_legacy_core_compat_use_is_fully_removed() {
 
     assert!(
         violations.is_empty(),
-        "engine source must not retain legacy-compat seams after ST6E:\n{}",
+        "engine source must not retain deleted legacy-core compatibility seams:\n{}",
         violations.join("\n")
     );
 }

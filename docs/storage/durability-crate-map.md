@@ -16,8 +16,8 @@ The canonical durability runtime now lives entirely in
 
 ## Historical Note
 
-Before `ST5`, `strata-durability` survived only as the temporary host of the
-branch-oriented bundle workflow.
+Near the end of storage consolidation, `strata-durability` survived only as
+the temporary host of the branch-oriented bundle workflow.
 
 That workflow now lives under:
 
