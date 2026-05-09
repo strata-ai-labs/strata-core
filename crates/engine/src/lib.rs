@@ -38,6 +38,8 @@ pub mod limits;
 pub mod recovery;
 pub mod semantics;
 mod sensitive;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_path_key;
 pub mod transaction;
 pub mod transaction_ops; // TransactionOps Trait Definition
 pub mod vector;

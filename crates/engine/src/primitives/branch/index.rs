@@ -1004,7 +1004,10 @@ mod tests {
                 dispatch_best_effort_delete_hook: false,
             },
         );
-        Database::clear_clear_default_branch_marker_failure_for_test(temp_dir.path());
+        assert!(
+            Database::take_clear_default_branch_marker_failure_for_test(temp_dir.path()).is_none(),
+            "default marker cleanup must consume the marker-clear failure hook"
+        );
 
         match completion {
             DeleteBranchCompletion::PostCommitError(err) => {

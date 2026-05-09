@@ -597,6 +597,11 @@ fn test_set_durability_mode_spawn_failure_rolls_back_state() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("durability_spawn_failure_db");
     let db = Database::open_with_durability(&db_path, DurabilityMode::standard_default()).unwrap();
+    let old_mode = DurabilityMode::Standard {
+        interval_ms: 60_000,
+        batch_size: 64,
+    };
+    db.set_durability_mode(old_mode).unwrap();
 
     super::test_hooks::clear_flush_thread_spawn_failure(&db_path);
     super::test_hooks::inject_flush_thread_spawn_failure(&db_path);
@@ -617,26 +622,71 @@ fn test_set_durability_mode_spawn_failure_rolls_back_state() {
     );
     assert_eq!(
         *db.durability_mode.read(),
-        DurabilityMode::standard_default(),
+        old_mode,
         "spawn failure must roll database durability state back"
     );
     assert_eq!(
         db.wal_writer.as_ref().unwrap().lock().durability_mode(),
-        DurabilityMode::standard_default(),
+        old_mode,
         "spawn failure must roll WAL writer durability mode back"
     );
     assert_eq!(
         db.runtime_signature().unwrap().durability_mode,
-        DurabilityMode::standard_default(),
+        old_mode,
         "spawn failure must roll registry compatibility state back"
     );
-    assert!(
-        db.flush_handle
-            .lock()
+    {
+        let guard = db.flush_handle.lock();
+        let handle = guard
             .as_ref()
-            .is_some_and(|handle| !handle.is_finished()),
-        "spawn failure must restore the prior standard-mode flush thread"
+            .expect("spawn failure must restore the prior standard-mode flush thread");
+        assert!(
+            !handle.is_finished(),
+            "spawn failure must leave the prior standard-mode flush thread running"
+        );
+    }
+
+    let branch_id = BranchId::new();
+    let trigger_key = Key::new_kv(
+        create_test_namespace(branch_id),
+        "restored_flush_thread_key",
     );
+    super::test_hooks::clear_sync_failure(&db_path);
+    super::test_hooks::inject_sync_failure(&db_path, std::io::ErrorKind::Other);
+    {
+        let mut wal = db.wal_writer.as_ref().unwrap().lock();
+        wal.refresh_inline_sync_deadline();
+        let payload = TransactionPayload {
+            version: 1,
+            puts: vec![(trigger_key.clone(), Value::Int(1))],
+            deletes: vec![],
+            put_ttls: vec![],
+        };
+        let record = WalRecord::new(
+            TxnId(1),
+            *branch_id.as_bytes(),
+            now_micros(),
+            payload.to_bytes(),
+        );
+        wal.append(&record).unwrap();
+        wal.mark_background_sync_due_for_test();
+    }
+    {
+        let guard = db.flush_handle.lock();
+        let handle = guard
+            .as_ref()
+            .expect("rollback must leave a flush thread to unpark");
+        handle.thread().unpark();
+    }
+    wait_until(Duration::from_secs(2), || {
+        matches!(
+            db.wal_writer_health(),
+            super::WalWriterHealth::Halted { .. }
+        )
+    });
+    super::test_hooks::clear_sync_failure(&db_path);
+    db.resume_wal_writer("test cleared restored flush thread sync failure")
+        .unwrap();
 
     db.shutdown().unwrap();
 }
@@ -1242,7 +1292,7 @@ fn test_explicit_flush_waits_for_inflight_background_sync() {
     let db_path = temp_dir.path().join("flush_waits_for_sync_db");
     let db = Database::open_with_durability(&db_path, DurabilityMode::standard_default()).unwrap();
     db.set_durability_mode(DurabilityMode::Standard {
-        interval_ms: 1,
+        interval_ms: 60_000,
         batch_size: 64,
     })
     .unwrap();
@@ -1250,16 +1300,23 @@ fn test_explicit_flush_waits_for_inflight_background_sync() {
 
     let branch_id = BranchId::new();
     let key = Key::new_kv(create_test_namespace(branch_id), "flush_wait_key");
-    db.transaction(branch_id, |txn| {
-        txn.put(key.clone(), Value::Int(11))?;
-        Ok(())
-    })
-    .unwrap();
-
-    std::thread::sleep(Duration::from_millis(10));
-
     let handle = {
         let mut wal = db.wal_writer.as_ref().unwrap().lock();
+        wal.refresh_inline_sync_deadline();
+        let payload = TransactionPayload {
+            version: 1,
+            puts: vec![(key.clone(), Value::Int(11))],
+            deletes: vec![],
+            put_ttls: vec![],
+        };
+        let record = WalRecord::new(
+            TxnId(1),
+            *branch_id.as_bytes(),
+            now_micros(),
+            payload.to_bytes(),
+        );
+        wal.append(&record).unwrap();
+        wal.mark_background_sync_due_for_test();
         wal.begin_background_sync()
             .unwrap()
             .expect("expected an in-flight background sync")

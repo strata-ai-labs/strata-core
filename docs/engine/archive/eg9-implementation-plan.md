@@ -39,7 +39,7 @@ Read this with:
 - [engine-crate-map.md](./engine-crate-map.md)
 - [eg7-implementation-plan.md](./eg7-implementation-plan.md)
 - [eg8-implementation-plan.md](./eg8-implementation-plan.md)
-- [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
 
 ## Scope
 
@@ -305,10 +305,10 @@ root manifest are expected:
 
 Active document scan findings for `EG9D`:
 
-- [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
   still has current-tense transitional notes about executor importing storage
   directly and documented temporary migration shims.
-- [../storage/storage-crate-map.md](../storage/storage-crate-map.md) still says
+- [../storage/storage-crate-map.md](../../storage/storage-crate-map.md) still says
   the incoming storage graph includes `strata-executor` as a current
   transitional storage dependent.
 - [engine-consolidation-plan.md](./engine-consolidation-plan.md) still has
@@ -436,7 +436,7 @@ Leave active docs in the consolidated state and archive migration details.
   `EG9` is the closeout phase, not a future migration bucket
 - update [engine-crate-map.md](./engine-crate-map.md) with the final verified
   graph and a short closeout ledger
-- review [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- review [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
   for stale "temporary migration shim" wording and clarify that normal
   production consumption is engine-only after EG9
 - remove closeout-incompatible temporary migration shim permission from active
@@ -458,14 +458,14 @@ Leave active docs in the consolidated state and archive migration details.
 - refreshed [engine-crate-map.md](./engine-crate-map.md) so it describes the
   post-`EG9` graph, optional-edge policy, retired compatibility-shell state, and
   v1 architecture handoff
-- refreshed [../storage/storage-crate-map.md](../storage/storage-crate-map.md)
+- refreshed [../storage/storage-crate-map.md](../../storage/storage-crate-map.md)
   so `strata-engine` is the only normal production storage consumer and the
   root storage dependency is explicitly test/dev-only
-- refreshed [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- refreshed [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
   so engine-consolidation migration shims are no longer allowed consumers,
   executor is no longer described as a direct storage importer, and the closeout
   notes match the completed graph/vector/search/executor cleanup
-- refreshed [../storage/storage-engine-ownership-audit.md](../storage/storage-engine-ownership-audit.md)
+- refreshed [../storage/storage-engine-ownership-audit.md](../../storage/storage-engine-ownership-audit.md)
   so accepted residue no longer claims upper crates have transitional direct
   storage dependencies
 - updated [engine-consolidation-plan.md](./engine-consolidation-plan.md) to
@@ -649,7 +649,9 @@ Compile and test gates:
 - `STRATA_INFERENCE_SKIP_LLAMA_CPP_BUILD_FOR_CHECK=1 cargo check --workspace --all-targets`:
   passed
 - `cargo test -p stratadb --test storage_surface_imports`: passed, 44 tests
-- `cargo test -p strata-engine`: failed with 2553 passed, 10 failed, 8 ignored
+- `cargo test -p strata-engine`: passed after STAB1 stabilization; the main
+  engine lib gate reported 2570 passed and 8 ignored; all integration tests
+  passed; doc-tests reported 69 passed and 1 ignored
 - `cargo test -p strata-executor`: passed, 116 tests
 - `cargo test -p strata-intelligence`: passed; default-feature intelligence
   test targets currently contain no enabled tests
@@ -664,23 +666,14 @@ Compile and test gates:
 - `STRATA_INFERENCE_SKIP_LLAMA_CPP_BUILD_FOR_CHECK=1 cargo check -p strata-cli --features embed --tests`:
   passed
 
-The `strata-engine` failures were:
-
-- `database::branch_mutation::tests::test_rollback_delete_true_surfaces_storage_cleanup_failure`
-- `database::tests::shutdown::shutdown_timeout_halt_interleaving_preserves_invariant`
-- `database::tests::shutdown::shutdown_timeout_preserves_writer_halt_signal`
-- `database::tests::shutdown::test_background_sync_failure_halts_writer_and_rejects_manual_commit`
-- `database::tests::shutdown::test_begin_sync_failure_halts_writer_and_rejects_manual_commit`
-- `database::tests::shutdown::test_commit_sync_failure_halts_writer_and_rejects_manual_commit`
-- `database::tests::shutdown::test_resume_waits_for_inflight_halt_publication_before_restoring_accepting`
-- `database::tests::shutdown::test_resume_while_still_failing_increments_failed_sync_count`
-- `database::tests::shutdown::test_set_durability_mode_spawn_failure_rolls_back_state`
-- `primitives::branch::index::tests::test_complete_delete_post_commit_classifies_default_marker_clear_failure`
-
-Those failures are outside the EG9 closeout graph/storage-boundary guards. They
-remain named here so a reviewer can distinguish closeout verification from the
-separate engine shutdown/fault-injection and branch cleanup/classification
-queue.
+The initial EG9 closeout run exposed 10 shutdown/fault-injection and branch
+cleanup/classification failures outside the graph/storage-boundary guards.
+STAB1 fixed those failures by normalizing private engine fault-injection path
+keys and tightening deterministic WAL/branch cleanup test control; the focused
+shutdown suite, the two focused branch cleanup tests, and the full
+`cargo test -p strata-engine` gate now pass. See
+[engine-stabilization-implementation-history.md](./engine-stabilization-implementation-history.md) for the failure
+ledger and fix audit trail.
 
 Graph checks passed:
 

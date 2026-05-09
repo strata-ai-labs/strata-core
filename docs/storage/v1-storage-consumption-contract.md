@@ -30,7 +30,6 @@ Read this with:
 - [storage-charter.md](./storage-charter.md)
 - [storage-crate-map.md](./storage-crate-map.md)
 - [storage-engine-ownership-audit.md](./storage-engine-ownership-audit.md)
-- [storage-minimal-surface-implementation-plan.md](./storage-minimal-surface-implementation-plan.md)
 - [../engine/engine-consolidation-plan.md](../engine/engine-consolidation-plan.md)
 - [../engine/archive/engine-storage-boundary-normalization-plan.md](../engine/archive/engine-storage-boundary-normalization-plan.md)
 
@@ -76,7 +75,7 @@ Not allowed:
 - `stratadb`
 - consolidated graph/vector/search/product code after it has moved out of peer
   crates
-- temporary engine-consolidation migration shims after `EG9`
+- temporary engine-consolidation migration shims after consolidation closeout
 
 Upper crates should not call `Database::storage()` or import
 `strata_storage::*`. If they need a storage-backed fact, engine should expose a
@@ -965,9 +964,8 @@ above engine:
 - Engine currently re-exports a small number of storage types. Each re-export
   should either become an engine-owned type or remain documented as an explicit
   public engine contract.
-- Graph storage use moved into engine during `EG4`; vector storage use moved
-  into engine during `EG5`; search storage use moved into engine during `EG6`;
-  executor's direct storage dependency and imports were removed during `EG7`.
+- Graph, vector, and search storage usage now lives inside engine. Executor's
+  direct storage dependency and imports have been removed.
 - Engine tests may inspect storage format details. That is acceptable when the
   test is explicitly characterizing recovery, checkpoint, manifest, snapshot,
   WAL, or storage-runtime behavior.

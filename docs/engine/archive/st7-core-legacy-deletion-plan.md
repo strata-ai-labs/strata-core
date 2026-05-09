@@ -19,7 +19,7 @@ Read this together with:
 
 - [st6-legacy-core-dependency-severance-plan.md](./st6-legacy-core-dependency-severance-plan.md)
 - [engine-pending-items.md](./engine-pending-items.md)
-- [../storage/storage-minimal-surface-implementation-plan.md](../../storage/storage-minimal-surface-implementation-plan.md)
+- [../storage/storage-minimal-surface-implementation-plan.md](../../storage/archive/storage-minimal-surface-implementation-plan.md)
 - [../core/core-minimal-surface-implementation-plan.md](../../core/core-minimal-surface-implementation-plan.md)
 
 ## Goal
@@ -121,7 +121,7 @@ The primary live docs to update are:
 
 - [docs/engine/archive/engine-pending-items.md](./engine-pending-items.md)
 - [docs/engine/archive/st6-legacy-core-dependency-severance-plan.md](./st6-legacy-core-dependency-severance-plan.md)
-- [docs/storage/storage-minimal-surface-implementation-plan.md](../../storage/storage-minimal-surface-implementation-plan.md)
+- [docs/storage/storage-minimal-surface-implementation-plan.md](../../storage/archive/storage-minimal-surface-implementation-plan.md)
 
 Historical baseline docs under `docs/core/` can continue to mention
 `strata-core-legacy` where they are clearly describing the old state.

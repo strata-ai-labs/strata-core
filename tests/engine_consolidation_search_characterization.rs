@@ -133,12 +133,12 @@ fn insert_all_bm25_primitives(db: &Arc<Database>, branch_id: BranchId) {
             &branch_id,
             "default",
             "kv-doc",
-            Value::String("eg6a sentinel kv document".into()),
+            Value::String("search sentinel kv document".into()),
         )
         .expect("kv put should succeed");
 
     let json: JsonValue = serde_json::json!({
-        "body": "eg6a sentinel json document"
+        "body": "search sentinel json document"
     })
     .into();
     JsonStore::new(db.clone())
@@ -149,9 +149,9 @@ fn insert_all_bm25_primitives(db: &Arc<Database>, branch_id: BranchId) {
         .append(
             &branch_id,
             "default",
-            "eg6a_event",
+            "search_runtime_event",
             serde_json::json!({
-                "body": "eg6a sentinel event document"
+                "body": "search sentinel event document"
             })
             .into(),
         )
@@ -161,12 +161,12 @@ fn insert_all_bm25_primitives(db: &Arc<Database>, branch_id: BranchId) {
         .add_node(
             branch_id,
             "default",
-            "eg6a-graph",
+            "search-runtime-graph",
             "graph-doc",
             NodeData {
                 entity_ref: None,
                 properties: Some(serde_json::json!({
-                    "body": "eg6a sentinel graph document"
+                    "body": "search sentinel graph document"
                 })),
                 object_type: None,
             },
@@ -310,25 +310,25 @@ fn segment_bytes_by_id(
 }
 
 #[test]
-fn eg6a_product_open_installs_graph_vector_search_order() {
+fn search_runtime_product_open_installs_graph_vector_search_order() {
     let db = local_db(open_product_cache().expect("product cache should open"));
 
     assert_eq!(
         db.installed_subsystem_names(),
         vec!["graph", "vector", "search"],
-        "product open must preserve runtime order for EG6 movement"
+        "product open must preserve runtime order for search runtime composition"
     );
 
     db.shutdown().expect("database should shut down");
 }
 
 #[test]
-fn eg6a_substrate_bm25_fans_out_across_kv_json_event_and_graph() {
+fn search_runtime_substrate_bm25_fans_out_across_kv_json_event_and_graph() {
     let db = local_db(open_product_cache().expect("product cache should open"));
     let branch_id = default_branch_id();
     insert_all_bm25_primitives(&db, branch_id);
 
-    let response = retrieve_query(&db, branch_id, bm25_recipe(20), "eg6a sentinel", None);
+    let response = retrieve_query(&db, branch_id, bm25_recipe(20), "search sentinel", None);
     let kinds = hit_kinds(&response.hits);
 
     assert_eq!(
@@ -353,7 +353,7 @@ fn eg6a_substrate_bm25_fans_out_across_kv_json_event_and_graph() {
 }
 
 #[test]
-fn eg6a_substrate_hybrid_reads_vector_shadow_sources() {
+fn search_runtime_substrate_hybrid_reads_vector_shadow_sources() {
     let db = local_db(open_product_cache().expect("product cache should open"));
     let branch_id = default_branch_id();
     KVStore::new(db.clone())
@@ -411,7 +411,7 @@ fn eg6a_substrate_hybrid_reads_vector_shadow_sources() {
 }
 
 #[test]
-fn eg6a_product_reopen_preserves_search_cache_files_and_results() {
+fn search_runtime_product_reopen_preserves_search_cache_files_and_results() {
     let dir = tempdir().expect("tempdir should succeed");
     let branch_id = default_branch_id();
 
@@ -421,7 +421,7 @@ fn eg6a_product_reopen_preserves_search_cache_files_and_results() {
     );
     insert_all_bm25_primitives(&db, branch_id);
 
-    let before = retrieve_query(&db, branch_id, bm25_recipe(20), "eg6a sentinel", None);
+    let before = retrieve_query(&db, branch_id, bm25_recipe(20), "search sentinel", None);
     let before_refs: Vec<_> = before.hits.iter().map(|hit| hit.doc_ref.clone()).collect();
     assert_eq!(
         hit_kinds(&before.hits),
@@ -456,7 +456,13 @@ fn eg6a_product_reopen_preserves_search_cache_files_and_results() {
         "reopen should preserve product runtime composition"
     );
 
-    let after = retrieve_query(&reopened, branch_id, bm25_recipe(20), "eg6a sentinel", None);
+    let after = retrieve_query(
+        &reopened,
+        branch_id,
+        bm25_recipe(20),
+        "search sentinel",
+        None,
+    );
     let after_refs: Vec<_> = after.hits.iter().map(|hit| hit.doc_ref.clone()).collect();
     assert_eq!(
         after_refs, before_refs,

@@ -20,7 +20,7 @@ Read this together with:
 
 - [engine-pending-items.md](./engine-pending-items.md)
 - [engine-error-architecture.md](./engine-error-architecture.md)
-- [../storage/storage-minimal-surface-implementation-plan.md](../../storage/storage-minimal-surface-implementation-plan.md)
+- [../storage/storage-minimal-surface-implementation-plan.md](../../storage/archive/storage-minimal-surface-implementation-plan.md)
 - [../core/co5-engine-domain-and-primitive-eviction-plan.md](../../core/co5-engine-domain-and-primitive-eviction-plan.md)
 
 ## Goal

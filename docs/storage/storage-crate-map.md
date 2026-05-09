@@ -122,12 +122,9 @@ This confirms that storage is the effective substrate node of the workspace.
 No production crate above engine is allowed to drive database recovery,
 checkpoint, open, retention, or product policy below engine.
 
-`EG4` removed `strata-graph` as a separate storage consumer by moving the graph
-implementation into `strata-engine`. `EG5` removed `strata-vector` as a separate
-storage consumer by moving vector implementation into `strata-engine` and
-deleting the retired vector crate. `EG6` removed `strata-search` as a separate
-storage consumer by moving search implementation into `strata-engine` and
-deleting the retired search crate.
+The retired graph, vector, and search crates are no longer separate storage
+consumers. Their implementations now live in `strata-engine`, and the retired
+packages have been deleted.
 
 ## What Storage Already Owns
 

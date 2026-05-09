@@ -11,11 +11,11 @@ mod common;
 
 mod adversarial;
 mod branch_invariants;
+mod branch_metadata_commands;
 mod command_dispatch;
-mod eg7_characterization;
 mod error_handling;
-mod ex10_commands;
-mod ex11_commands;
-mod ex5_commands;
+mod indexing_auto_embed_commands;
+mod product_surface_commands;
 mod serialization;
 mod session_transactions;
+mod storage_boundary_characterization;

@@ -1,8 +1,7 @@
-//! EG7 characterization for removing executor's direct storage bypasses.
+//! Executor storage-boundary characterization.
 //!
-//! These tests lock the command/session behavior that currently depends on
-//! executor-side storage imports. Later EG7 phases should move the internals
-//! into engine without changing these public outcomes.
+//! These tests lock public executor behavior at the engine storage boundary.
+//! Executor must preserve these outcomes without importing storage directly.
 
 use crate::common::*;
 use strata_core::Value;
@@ -66,7 +65,7 @@ fn assert_batch_success(output: Output, expected_len: usize) -> Vec<u64> {
 }
 
 #[test]
-fn eg7_space_validation_is_executor_visible_for_handle_and_session() {
+fn storage_boundary_space_validation_is_executor_visible_for_handle_and_session() {
     let mut db = Strata::cache().expect("cache database should open");
     let expected_reason =
         "Space name can only contain lowercase letters, digits, hyphens, and underscores";
@@ -102,7 +101,7 @@ fn eg7_space_validation_is_executor_visible_for_handle_and_session() {
 }
 
 #[test]
-fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
+fn storage_boundary_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
     let db = create_db();
     let mut session = Session::new(db.clone());
     session
@@ -168,8 +167,8 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
         .execute(Command::EventAppend {
             branch: None,
             space: None,
-            event_type: "eg7.audit".into(),
-            payload: event_payload("phase", Value::String("eg7".into())),
+            event_type: "storage_boundary.audit".into(),
+            payload: event_payload("phase", Value::String("storage-boundary".into())),
         })
         .expect("event append should use session space");
     let event_sequence = match event_output {
@@ -191,11 +190,11 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
                 space: None,
                 entries: vec![
                     BatchEventEntry {
-                        event_type: "eg7.batch".into(),
+                        event_type: "storage_boundary.batch".into(),
                         payload: event_payload("item", Value::Int(1)),
                     },
                     BatchEventEntry {
-                        event_type: "eg7.batch".into(),
+                        event_type: "storage_boundary.batch".into(),
                         payload: event_payload("item", Value::Int(2)),
                     },
                 ],
@@ -218,7 +217,7 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
         .execute(Command::EventGetByType {
             branch: None,
             space: None,
-            event_type: "eg7.audit".into(),
+            event_type: "storage_boundary.audit".into(),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -278,7 +277,7 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
         .execute(Command::EventGetByType {
             branch: None,
             space: Some("default".into()),
-            event_type: "eg7.audit".into(),
+            event_type: "storage_boundary.audit".into(),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -290,7 +289,7 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
         .execute(Command::EventGetByType {
             branch: None,
             space: Some("default".into()),
-            event_type: "eg7.batch".into(),
+            event_type: "storage_boundary.batch".into(),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -302,7 +301,7 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
         .execute(Command::EventGetByType {
             branch: None,
             space: Some("analytics".into()),
-            event_type: "eg7.audit".into(),
+            event_type: "storage_boundary.audit".into(),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -314,7 +313,7 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
         .execute(Command::EventGetByType {
             branch: None,
             space: Some("analytics".into()),
-            event_type: "eg7.batch".into(),
+            event_type: "storage_boundary.batch".into(),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -324,7 +323,7 @@ fn eg7_transaction_omitted_space_uses_session_space_for_kv_json_and_events() {
 }
 
 #[test]
-fn eg7_space_delete_force_clears_target_space_and_preserves_sibling_space() {
+fn storage_boundary_space_delete_force_clears_target_space_and_preserves_sibling_space() {
     let executor = create_executor();
 
     for space in ["tenant_x", "tenant_y"] {
@@ -349,7 +348,7 @@ fn eg7_space_delete_force_clears_target_space_and_preserves_sibling_space() {
             .execute(Command::EventAppend {
                 branch: None,
                 space: Some(space.into()),
-                event_type: "eg7.delete".into(),
+                event_type: "storage_boundary.delete".into(),
                 payload: event_payload("space", Value::String(space.into())),
             })
             .expect("event append should succeed");
@@ -438,7 +437,7 @@ fn eg7_space_delete_force_clears_target_space_and_preserves_sibling_space() {
         .execute(Command::EventGetByType {
             branch: None,
             space: Some("tenant_x".into()),
-            event_type: "eg7.delete".into(),
+            event_type: "storage_boundary.delete".into(),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -493,7 +492,7 @@ fn eg7_space_delete_force_clears_target_space_and_preserves_sibling_space() {
         .execute(Command::EventGetByType {
             branch: None,
             space: Some("tenant_y".into()),
-            event_type: "eg7.delete".into(),
+            event_type: "storage_boundary.delete".into(),
             limit: None,
             after_sequence: None,
             as_of: None,

@@ -176,6 +176,9 @@ pub mod __internal {
         fn sync_in_flight(&self) -> bool;
         /// Refreshes the Standard-mode inline-sync deadline without clearing dirty state.
         fn refresh_inline_sync_deadline(&mut self);
+        /// Marks the background-sync deadline as due without moving the inline deadline.
+        #[cfg(feature = "fault-injection")]
+        fn mark_background_sync_due_for_test(&mut self);
     }
 
     impl BackgroundSyncError {
@@ -232,6 +235,11 @@ pub mod __internal {
 
         fn refresh_inline_sync_deadline(&mut self) {
             crate::durability::wal::writer::WalWriter::refresh_inline_sync_deadline(self)
+        }
+
+        #[cfg(feature = "fault-injection")]
+        fn mark_background_sync_due_for_test(&mut self) {
+            crate::durability::wal::writer::WalWriter::mark_background_sync_due_for_test(self)
         }
     }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-`strata-concurrency` was deleted in `ST4D`.
+`strata-concurrency` has been deleted.
 
 This document remains only as a historical marker in the storage
 consolidation workstream. The generic transaction runtime, durability

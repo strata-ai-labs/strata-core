@@ -14,7 +14,7 @@ Read this with:
 
 - [engine-consolidation-plan.md](./engine-consolidation-plan.md)
 - [engine-crate-map.md](./engine-crate-map.md)
-- [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
 
 ## Scope
 

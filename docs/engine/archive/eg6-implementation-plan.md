@@ -33,7 +33,7 @@ Read this with:
 - [eg3-implementation-plan.md](./eg3-implementation-plan.md)
 - [eg4-implementation-plan.md](./eg4-implementation-plan.md)
 - [eg5-implementation-plan.md](./eg5-implementation-plan.md)
-- [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
 
 ## Scope
 
@@ -767,7 +767,7 @@ Make the documentation reflect the post-search graph before starting `EG7`.
 - update [engine-crate-map.md](./engine-crate-map.md)
 - update [engine-consolidation-plan.md](./engine-consolidation-plan.md) if
   EG6 details drifted during implementation
-- update [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- update [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
   only if engine's allowed storage use changed
 - update search-related comments in engine, executor, intelligence, and tests
 - record that the remaining direct storage bypass above engine is executor
@@ -785,8 +785,8 @@ Make the documentation reflect the post-search graph before starting `EG7`.
   workspace graph and executor-only direct storage bypass.
 - [engine-consolidation-plan.md](./engine-consolidation-plan.md) records `EG6`
   as complete and `strata-search` as retired.
-- [../storage/storage-crate-map.md](../storage/storage-crate-map.md) and
-  [../storage/v1-storage-consumption-contract.md](../storage/v1-storage-consumption-contract.md)
+- [../storage/storage-crate-map.md](../../storage/storage-crate-map.md) and
+  [../storage/v1-storage-consumption-contract.md](../../storage/v1-storage-consumption-contract.md)
   no longer list search as a direct storage consumer.
 - Search characterization comments describe completed engine ownership instead
   of transition-era ownership wording.
