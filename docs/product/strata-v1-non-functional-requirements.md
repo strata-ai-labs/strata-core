@@ -24,10 +24,14 @@ Strata must preserve committed data according to the selected runtime mode.
 
 1. Durable databases must recover after ordinary process crashes.
 2. Cache databases must be explicitly non-durable.
-3. Recovery must be deterministic and must not silently lose committed data.
-4. Open must distinguish corruption, lock conflict, unsupported backend,
+3. Standard durability must define its bounded sync/loss window.
+4. Always durability must force the required durability barrier before
+   acknowledging a commit.
+5. Recovery must be deterministic and must not silently lose committed data
+   outside the selected mode's documented guarantees.
+6. Open must distinguish corruption, lock conflict, unsupported backend,
    invalid configuration, and IO failure.
-5. Users should not need to run manual flush, compact, checkpoint, or retention
+7. Users should not need to run manual flush, compact, checkpoint, or retention
    commands during normal use.
 
 ## Correctness
@@ -66,7 +70,13 @@ premature benchmark promises before architecture work is complete.
 3. Background maintenance should avoid surprising user-visible stalls where
    possible.
 4. Memory budgets should be explicit and respected.
-5. Benchmarks should cover local filesystem reference behavior before broader
+5. The same binary should adapt from constrained edge devices to server-class
+   machines through runtime resource profiling.
+6. Auto-derived resource defaults must not clobber explicit user configuration.
+7. Low-memory behavior should return typed resource errors, bounded pagination,
+   or graceful derived-state degradation before uncontrolled out-of-memory
+   behavior.
+8. Benchmarks should cover local filesystem reference behavior before broader
    backend claims.
 
 ## Security And Privacy
@@ -85,6 +95,9 @@ Strata must avoid accidental data exposure.
 ## Observability And Diagnostics
 
 Users must be able to understand what Strata is doing without reading internals.
+The V1 error taxonomy, stable code rules, retry policy, commit outcome model,
+and diagnostic testing obligations are defined in
+`docs/architecture/v1-error-and-diagnostics-contract.md`.
 
 1. Open, recovery, health, metrics, search, indexing, and model operations
    should return structured status.
@@ -97,6 +110,8 @@ Users must be able to understand what Strata is doing without reading internals.
 ## Testability
 
 Strata's architecture must make the implementation testable at multiple levels.
+The top-level storage and product testing roadmap is defined in
+`docs/architecture/v1-testing-and-conformance-plan.md`.
 
 1. Core contracts should have focused unit tests.
 2. Storage should support deterministic fault injection, crash recovery tests,
@@ -118,7 +133,8 @@ become stricter.
    maintenance commands.
 2. V1 public data formats and command/API behavior should be documented before
    stabilization.
-3. Format changes must have explicit migration, rejection, or clone/export
+3. Pre-V1 development formats may be rejected by default. After V1 stabilizes,
+   format changes must have explicit migration, rejection, or clone/export
    behavior.
 4. Architecture should preserve room for storage-next, engine-next, core-next,
    and future StrataHub workflows.

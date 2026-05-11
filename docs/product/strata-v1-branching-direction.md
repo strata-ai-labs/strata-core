@@ -148,9 +148,10 @@ V1 direction:
    not "fork" as the primary term.
 2. If an empty branch remains supported, document it separately as "create empty
    branch." It should not be confused with branching from existing data.
-3. Branch creation from an earlier version is a useful future capability, but
-   V1 only needs it if the implementation can make branch points and derived
-   state precise.
+3. Branch creation from a retained version and from a timestamp resolved to a
+   retained version is V1 required because it is part of the time-travel product
+   promise. It must fail before visible branch metadata is published if Strata
+   cannot prove the retained branch point or derived-state status.
 
 ### Inspect Branches
 
@@ -445,6 +446,11 @@ Minimum V1 strategies:
 Any additional strategies should wait until the data-capability-specific rules
 are well tested.
 
+V1 does not require a total CRDT merge contract, HLC-stamped rows, replica IDs,
+or per-branch sync tombstone GC. Those may be useful for a future explicit sync
+design, but V1 local branch promotion should remain engine-owned product
+behavior over retained storage history.
+
 ## Relationship To StrataHub
 
 Local branches and StrataHub dataset forks are related but distinct:
@@ -467,27 +473,28 @@ should be reserved for StrataHub or dataset-publication workflows.
 V1 should require:
 
 1. Create branch from existing branch state.
-2. Create or inspect ordinary branch metadata.
-3. Select branch context for reads and writes.
-4. Compare branches with summaries and filters.
-5. Preview promotion conflicts.
-6. Promote a branch into another branch with explicit conflict strategy.
-7. Copy selected records or selected changes between branches.
-8. Undo a version range by writing a compensating change.
-9. Delete branches safely.
-10. Document data-capability coverage and limitations.
+2. Create branch from a retained commit version.
+3. Create branch from a timestamp resolved to a retained commit version.
+4. Create or inspect ordinary branch metadata.
+5. Select branch context for reads and writes.
+6. Compare branches with summaries and filters.
+7. Preview promotion conflicts.
+8. Promote a branch into another branch with explicit conflict strategy.
+9. Copy selected records or selected changes between branches.
+10. Undo a version range by writing a compensating change.
+11. Delete branches safely.
+12. Document data-capability coverage and limitations.
 
 ### Optional For V1
 
 V1 may include:
 
-1. Create branch from a historical version.
-2. Create an empty branch.
-3. Rename branch.
-4. Archive branch instead of deleting it.
-5. Paginated large-diff browsing.
-6. Conflict-resolution assistance.
-7. Rich selective copy by entity reference, graph, vector collection, event
+1. Create an empty branch.
+2. Rename branch.
+3. Archive branch instead of deleting it.
+4. Paginated large-diff browsing beyond bounded V1 comparison output.
+5. Conflict-resolution assistance.
+6. Rich selective copy by entity reference, graph, vector collection, event
    type, or JSON path.
 
 ### Remove Before V1
@@ -518,7 +525,8 @@ provenance, StrataHub publishing, or collaboration workflows need them.
 ## Open Questions
 
 1. Should V1 expose empty branch creation, or only branch-from-existing-state?
-2. Should branch-from-version be required for V1?
+2. What user-facing syntax should represent current, version, and timestamp
+   branch points?
 3. Is strict conflict handling the default for promotion?
 4. Should source-wins be renamed and exposed as an advanced strategy?
 5. How should event-log divergence be resolved or rejected?

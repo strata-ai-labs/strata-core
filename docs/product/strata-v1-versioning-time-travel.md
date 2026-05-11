@@ -193,7 +193,7 @@ Current evidence:
 1. `crates/engine/src/branch_ops/mod.rs`
 2. `crates/engine/src/database/branch_service.rs`
 
-The strongest future capability, "create a branch from this moment in history,"
+The signature V1 capability, "create a branch from this moment in history,"
 should build on this branch substrate rather than materializing a full copy of
 the database.
 
@@ -549,7 +549,8 @@ Required work:
 
 1. Persist a per-branch commit timeline.
 2. Make commit timestamps monotonic per branch.
-3. Resolve timestamp to latest retained commit version at or before the point.
+3. Resolve timestamp to latest retained commit version at or before the point
+   when the requested timestamp is inside retained timeline bounds.
 4. Use branch-from-version after resolution.
 5. Return clear history-unavailable errors when no retained commit satisfies the
    request.
@@ -665,11 +666,22 @@ Required test classes:
 The product promise is only credible if tests cover normal, degraded, lossy,
 and recovery paths.
 
+## Resolved Architecture Decisions
+
+1. Event-domain time is distinct from commit timeline time. Current append paths
+   may populate event timestamps from the same clock used near commit time, but
+   temporal visibility is still resolved through the branch commit timeline.
+2. Version selectors name retained commit versions. Row reads at a selected
+   version use normal MVCC visibility at or before that branch frontier.
+3. Timestamp selectors are branch-local and must resolve through the commit
+   timeline before whole-branch, multi-row, or branch-creation operations.
+4. User-supplied timestamps after the latest retained commit produce a typed
+   after-latest diagnostic instead of silently clamping to current state.
+
 ## Open Questions
 
-1. Should V1 expose both `version` and `timestamp` selectors everywhere, or
-   should timestamp be the default user selector with version as an advanced
-   selector?
+1. Which product surfaces expose version selectors prominently, and which keep
+   version as an advanced selector behind timestamp-first UX?
 
 2. Should history be retained forever by default for V1, or should Strata define
    a bounded default with explicit user configuration?
@@ -680,16 +692,13 @@ and recovery paths.
 4. Should search temporal correctness be strict in V1, or can some retrieval
    modes be labeled approximate while exact modes are added later?
 
-5. Should event timestamps be treated as event occurrence time, commit time, or
-   both? The answer affects temporal event queries and search filtering.
-
-6. Should graph relationship edges be allowed to pin entity references to a
+5. Should graph relationship edges be allowed to pin entity references to a
    version or timestamp, or should relationships always resolve against the
    active temporal view?
 
-7. How should clone/import/export preserve commit timelines and branch points?
+6. How should clone/import/export preserve commit timelines and branch points?
 
-8. How should object-storage and browser/WASM backends prove commit timeline
+7. How should object-storage and browser/WASM backends prove commit timeline
    atomicity and recovery semantics?
 
 ## V1 Position

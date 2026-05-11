@@ -37,6 +37,14 @@ Read this with:
 
 This is an allowlist for consolidated engine consumption.
 
+This document describes the current consolidated engine/storage boundary. It
+still names follower-mode operations where current code has not yet been
+excised. Those references are transitional current-code allowances only.
+Product and V1 architecture documents supersede them: follower mode is not a
+V1 target, and new work must not add storage consumption for follower refresh
+or follower recovery. The removal plan is
+[../engine/follower-mode-removal-plan.md](../engine/follower-mode-removal-plan.md).
+
 Allowed means:
 
 - engine production code may call the operation directly
@@ -224,8 +232,9 @@ Allowed storage types and functions:
 
 Allowed usage:
 
-- engine open/recovery may create the store for cache, primary, and follower
-  modes
+- engine open/recovery may create the store for cache and primary modes
+- existing follower-mode store creation is transitional current-code behavior
+  covered by the follower removal plan; do not add new follower consumption
 - engine may adapt public `StrataConfig.storage` into `StorageRuntimeConfig`
 - engine may apply process-global storage runtime state before exposing an
   opened database
@@ -406,15 +415,17 @@ Allowed usage:
   storage trait methods
 - engine branch operations may use version-scoped listings for diff, merge,
   cherry-pick, revert, checkpoint, and bundle workflows
-- engine recovery and follower refresh may apply recovered writes through
-  recovery-specific atomic paths
+- engine recovery may apply recovered writes through recovery-specific atomic
+  paths
+- existing follower-refresh writes are transitional current-code behavior
+  covered by the follower removal plan; do not add new follower consumption
 - engine diagnostic/report code may use read-only listing and counting helpers
 
 Rules:
 
 - normal writes should go through engine transaction orchestration
 - recovery-specific writes must only be used by recovery, snapshot install, or
-  follower refresh code
+  transitional follower refresh code while follower removal is incomplete
 - direct store reads must not replace transaction reads when read tracking is
   required
 
@@ -463,8 +474,10 @@ Allowed layout and codec types/functions:
 - `DatabaseLayout::segments_dir`
 - `DatabaseLayout::snapshots_dir`
 - `DatabaseLayout::manifest_path`
-- `DatabaseLayout::follower_state_path`
-- `DatabaseLayout::follower_audit_path`
+- `DatabaseLayout::follower_state_path` (transitional; remove with follower
+  mode)
+- `DatabaseLayout::follower_audit_path` (transitional; remove with follower
+  mode)
 - `DatabaseLayout::create_dirs`
 - `DatabaseLayout::create_non_segment_dirs`
 - `DatabaseLayout::create_segments_dir`
@@ -556,7 +569,8 @@ Allowed usage:
 - engine commit path may use storage's WAL-aware commit adapter
 - engine shutdown and background sync may use the engine-internal WAL writer
   extension
-- engine follower refresh may read WAL after watermarks
+- existing follower refresh may read WAL after watermarks only while follower
+  removal is incomplete
 - engine health/metrics may read WAL counters, disk usage, and writer health
 
 Rules:
@@ -611,7 +625,9 @@ Allowed recovery facts and errors:
 
 Allowed usage:
 
-- engine open may call `run_storage_recovery` for primary and follower modes
+- engine open may call `run_storage_recovery` for primary mode
+- existing follower recovery is transitional current-code behavior covered by
+  the follower removal plan; do not add new follower consumption
 - engine may provide a primitive snapshot-install callback
 - engine may convert storage recovery errors into `RecoveryError` and
   `StrataError`

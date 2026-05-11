@@ -74,6 +74,7 @@ collapsed into another feature, or redesigned before V1.
 | S3-compatible object storage target | V1 Required Substrate |
 | Browser/WASM cache target | V1 Required Substrate |
 | Every OpenDAL backend production-ready | Remove Or Redesign |
+| Adaptive runtime resource profiling | V1 Required |
 | Dataset bundle and clone workflow | V1 Required |
 | StrataHub Library | Post-V1 product, V1 substrate required |
 | StrataHub Fleet | Post-V1 product, V1 substrate required |
@@ -152,6 +153,31 @@ V1 notes:
 2. Cache mode should not create WAL, manifest, or durable files.
 3. Cache mode should still support the same data and branch model where
    possible.
+4. Cache is a storage mode, not a durable commit policy.
+
+### Standard And Always Durability
+
+Decision: V1 Required
+
+Required user outcome:
+
+1. Use `standard` durability for normal durable databases with WAL-backed crash
+   recovery and a bounded sync window.
+2. Use `always` durability when each acknowledged commit must pass a durability
+   barrier.
+3. Understand that both modes are durable storage modes, unlike cache.
+
+Current evidence:
+
+1. `DurabilityMode::Standard`
+2. `DurabilityMode::Always`
+3. `Database::set_durability_mode`
+
+V1 notes:
+
+1. `standard` and `always` are durability policies inside durable storage mode.
+2. Runtime switching may be supported between `standard` and `always`.
+3. Runtime switching into or out of cache should not be supported.
 
 ### Disk-Backed Cache
 

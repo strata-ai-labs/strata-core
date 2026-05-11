@@ -130,6 +130,12 @@ The exact encoding should be designed in the architecture phase. The important
 V1 product rule is that the reference is typed and validated enough to avoid
 being just an opaque note.
 
+Storage should not need to decode this reference. Engine-next owns the
+`EntityRef` type, encodes references into storage rows or values where needed,
+and maintains any reverse lookup indexes as engine-owned rows. This lets graph
+traversal return typed entity references without making storage understand KV,
+JSON, events, vectors, graph nodes, or search records.
+
 Possible examples:
 
 ```text
@@ -433,4 +439,3 @@ The relationship-layer direction is working when all of these are true:
 6. Branch, space, and version context are not ambiguous.
 7. Clone and export do not break relationship identity.
 8. Storage remains a primitive-agnostic persistence layer.
-

@@ -6,6 +6,10 @@ This document defines the product direction for StrataHub so the rest of the
 Strata product and architecture documents can refer to a stable target. It is
 not an implementation plan, launch plan, pricing plan, or protocol spec.
 
+The architecture substrate that lets this direction exist without hard-coding a
+hosted service into Strata lives in
+`docs/architecture/stratahub-substrate-architecture.md`.
+
 StrataHub should be understood as the optional network and coordination layer
 around embedded Strata databases. Strata itself must remain useful without
 StrataHub.
@@ -59,7 +63,7 @@ object storage, browser targets, agent sandboxes, and other environments.
 
 6. Strata owns the data model.
    StrataHub can expose, index, and coordinate Strata datasets, but it should
-   not define storage correctness, branch semantics, primitive semantics, or
+   not define storage correctness, branch semantics, data capability semantics, or
    backend capability rules.
 
 ## GitHub Analogy
@@ -252,6 +256,21 @@ V1 should define:
 9. Export, import, and bundle validation.
 10. A storage backend contract that can support local filesystem, browser/cache,
     object storage, and OpenDAL-backed adapters where semantics allow.
+
+Stage 0 does not include live sync. The V1 substrate should make sync possible
+later by defining identity, provenance, capabilities, health, bundles, and clone
+semantics. Actual branch push/pull/sync data movement is Stage 4.
+
+Architectural home for future sync:
+
+1. Sync should be an optional layer above engine-owned branch and dataset
+   semantics.
+2. Sync should not consume storage directly in normal production code.
+3. Storage may expose raw bundle, capability, and health facts through engine,
+   but engine owns branch merge, conflict, access, and product diagnostics.
+4. If a future sync tool needs direct storage access for verification or
+   migration, that exception must be documented as tooling, not normal product
+   architecture.
 
 ### Stage 1: Dataset Library
 

@@ -31,6 +31,7 @@ These documents refine this product anchor:
 1. `docs/product/strata-v1-feature-inventory.md`
 2. `docs/product/strata-v1-user-pathways.md`
 3. `docs/product/strata-v1-non-functional-requirements.md`
+4. `docs/product/strata-v1-architecture-support-matrix.md`
 
 Focused product direction documents:
 
@@ -132,6 +133,11 @@ V1 product requirement.
    Storage, engine, core, executor, intelligence, inference, and CLI boundaries
    should exist because they make product behavior easier to satisfy, test, and
    evolve.
+
+10. Runtime adaptation is a product feature.
+    The same Strata binary should scale from constrained edge devices to
+    server-class machines by detecting the runtime envelope, respecting explicit
+    user budgets, and choosing safe resource defaults.
 
 ## Core Product Concepts
 
@@ -367,6 +373,11 @@ Users must be able to understand a database through bounded product surfaces:
 4. Metrics.
 5. Durability counters.
 6. Structured errors.
+
+Runtime resource profiling should be visible through these surfaces. Users
+should be able to see the selected resource profile, effective memory budgets,
+cache and maintenance settings, and whether values were auto-derived or
+user-specified.
 
 These surfaces should help users understand state without exposing internal
 crate history or requiring manual maintenance.
