@@ -70,9 +70,9 @@ core-next ownership:
 3. `TxnId`
    - Current role: transaction-start identifier used by WAL records, watermark
      tracking, segment metadata, recovery, and engine coordination.
-   - Verdict: core-next candidate while transaction identity is shared between
-     storage-next and engine-next. Revisit if storage-next fully owns
-     transaction runtime identity.
+   - Updated V1 verdict: storage-next owns transaction/runtime identifiers.
+     Public manual transaction sessions are removed, and engine-next should not
+     expose storage transaction identity as product vocabulary.
 
 4. `Timestamp`
    - Current role: microsecond timestamp representation used by storage TTL and
@@ -83,10 +83,8 @@ core-next ownership:
 5. `Value`
    - Current role: canonical user value enum used by engine, executor,
      intelligence, CLI, and storage persistence.
-   - Verdict: core-next candidate as the canonical user value model. Storage-next
-     should still avoid semantic dependence on `Value`; preserving durability
-     should not require understanding JSON paths, graph properties, search
-     text, embeddings, or product validation limits.
+   - Updated V1 verdict: engine-next owns the user value model. Storage-next
+     stores opaque row bytes and must not inspect product `Value` semantics.
 
 ### Product Vocabulary In Core Today
 
@@ -161,6 +159,41 @@ them in production Rust:
 They should not be added to core-next speculatively. Add one only when a later
 storage-next, engine-next, sync, backend, or product-addressing document proves
 that the same parsed/serialized concept must exist below engine.
+
+## Resolved V1 Core Surface
+
+After the storage-next and engine-next contracts, core-next should be smaller
+than the first draft implied.
+
+The V1 core-next surface should start with only these owned concepts:
+
+| Concept | Core-next decision | Why it belongs below storage and engine |
+|---|---|---|
+| `BranchId` | Keep | Storage encodes branch identity in physical row keys and branch visibility; engine owns branch product behavior over the same opaque identity. |
+| `CommitVersion` | Keep | Storage assigns and stores commit versions; engine exposes version reads, history, branch operations, and product diagnostics over the same ordering token. |
+| `Timestamp` representation | Keep | Storage stamps commits and owns the commit timeline substrate; engine resolves `as_of` and branch-from-time using the same serialized timestamp representation. |
+| Type-local validation errors | Keep only as needed | Parse/display/serde errors for core-owned transparent types are inseparable from those types. |
+
+Core-next should not contain the following V1 concepts:
+
+| Concept | V1 owner | Reason |
+|---|---|---|
+| `TxnId` | storage-next | Transaction identity is storage commit/WAL machinery. Public transaction sessions are not V1 product API. Engine may observe recovery facts without owning the type. |
+| `Value` | engine-next | It is user/product data vocabulary used by executor, CLI, SDKs, intelligence, and engine. Storage-next stores bytes and should not know product value semantics. |
+| `EntityRef` | engine-next | It is product identity across KV, JSON, events, vectors, graph, search, and RAG provenance. |
+| `Versioned<T>`, `VersionedHistory<T>`, `VersionedValue` | engine-next | These are product read-result DTOs. Storage-next exposes storage row/history facts. |
+| `Version` enum | engine-next | Product-facing version taxonomy belongs with temporal context and read APIs. |
+| `BranchName` | engine-next | User-facing branch naming and validation are branch product policy. |
+| `DatabaseId` / storage database UUID | storage-next for physical identity; engine-next for product identity | Storage may own a physical database UUID. Engine owns instance, dataset, provenance, and hub-facing identity. |
+| `ReplicaId` | post-V1 sync layer | Sync is post-V1 and must not shape V1 core speculatively. |
+| `SpaceName` | engine-next | Space semantics are product/data-capability vocabulary. |
+| `DatabaseAddress` / `BackendAddress` | storage-next or engine-next, depending on open API | Backend parsing/capability belongs to storage/open policy, not foundational core by default. |
+| `StorageSpaceId` | storage-next public boundary plus engine registry | It is a storage physical family byte consumed through the persistence adapter, not a universal core concept. |
+| Global error code registry | engine/storage/inference owning layers; maybe a later tiny diagnostics crate | Core-next should not become a database-wide error crate unless the final wire protocol proves the exact type must be shared below engine. |
+
+This keeps core-next to identity and ordering atoms. Higher layers can still
+re-export these atoms as part of product APIs, but core-next does not own the
+product behavior attached to them.
 
 ## Layer Position
 
@@ -244,10 +277,7 @@ architecture document to justify itself, it probably belongs higher.
 Core-next may own identifiers that are cross-layer facts:
 
 1. `BranchId`
-2. `DatabaseId`, if V1 needs a stable database identity below engine
-3. `ReplicaId`, if sync or backend identity requires a lower-layer concept
-4. `TxnId`, if storage and engine both need the same transaction identifier
-5. `CommitVersion`, if storage and engine both need the same commit/version
+2. `CommitVersion`, because storage and engine both need the same commit/version
    ordering newtype
 
 Rules:
@@ -289,12 +319,16 @@ Not allowed:
 Engine-next owns the meaning of timestamp selectors, retained history, and
 time-travel failures.
 
-### Canonical Value Model
+### User Value Model
 
-Core-next may own the canonical user value model if the architecture keeps one
-shared value type across engine, executor, SDKs, and intelligence.
+Core-next does not own the V1 user value model.
 
-The value model may define:
+The canonical value type belongs in engine-next because it is product/API
+vocabulary. Executor, CLI, SDKs, intelligence, and Strata AI may consume or
+re-export the engine-owned value type. Storage-next stores opaque row bytes and
+does not need to inspect value semantics to preserve durability.
+
+Engine-next may define:
 
 1. Null.
 2. Boolean.
@@ -305,24 +339,9 @@ The value model may define:
 7. Array.
 8. Object.
 
-The value model may define type equality and simple type accessors.
-
-The value model must not define:
-
-1. JSON path mutation.
-2. JSON merge-patch behavior.
-3. Search extraction.
-4. Embedding extraction.
-5. Graph property interpretation.
-6. Storage encoding policy.
-7. Product validation limits.
-
-Storage-next should not need to inspect `Value` to preserve durability.
-Storage-next may store opaque bytes or encoded values; engine-next owns the
-meaning of those bytes.
-
-JSON interop is allowed only if it is a pure representation adapter. If it
-starts to encode JSON product semantics, it belongs in engine-next or executor.
+Engine-next also owns JSON path mutation, JSON merge behavior, search
+extraction, embedding extraction, graph property interpretation, product
+validation limits, and value encoding for engine-owned rows.
 
 ### Address And Name Vocabulary
 
@@ -332,10 +351,7 @@ contracts.
 Candidates:
 
 1. `BranchId`
-2. `SpaceName`, if storage and engine both need identical namespace validation
-3. `DatabaseAddress`, if storage and engine both need a shared parsed address
-   syntax
-4. `BackendAddress`, if backend selection needs a cross-layer syntax contract
+2. No other V1 address/name type is currently approved for core-next.
 
 Default ownership:
 
@@ -393,15 +409,12 @@ four groups.
 
 ### Keep In Core
 
-Likely core-owned:
+V1 core-owned:
 
 1. `BranchId`
 2. `CommitVersion`
-3. `TxnId`
-4. Canonical `Value`, if V1 keeps one shared user value model
-5. Minimal timestamp representation
-6. Minimal lower-layer version wrappers, only where they are not product
-   capability vocabulary
+3. `Timestamp` representation
+4. Type-local parse/validation errors for those types
 
 ### Keep Only If Proven Cross-Layer
 
@@ -409,12 +422,13 @@ Possible core-owned, but not automatic:
 
 1. `DatabaseId`
 2. `ReplicaId`
-3. `SpaceName`
-4. `DatabaseAddress`
-5. `BackendAddress`
-6. Branch-name validation, if storage-next and engine-next both require exactly
+3. `TxnId`
+4. `SpaceName`
+5. `DatabaseAddress`
+6. `BackendAddress`
+7. Branch-name validation, if storage-next and engine-next both require exactly
    the same validated user-facing name
-7. Versioned result wrappers, only if storage-next and engine-next explicitly
+8. Versioned result wrappers, only if storage-next and engine-next explicitly
    choose the same lower-boundary DTO
 
 These require explicit proof that storage-next and engine-next both need the
@@ -433,6 +447,9 @@ Default engine-owned:
 6. Time-travel selectors.
 7. Relationship-layer references.
 8. Graph, vector, search, JSON, event, and KV product DTOs.
+9. Canonical user `Value`.
+10. Dataset identity, instance identity, provenance identity, and hub-facing
+    identity.
 
 The current `PrimitiveType` and `EntityRef` shapes are useful evidence, but
 they are data-capability product vocabulary. They should move to engine-next
@@ -460,12 +477,15 @@ Do not put these in core-next:
 1. Storage traits.
 2. Storage `Key`, `Namespace`, or physical `TypeTag`.
 3. Global `StrataError`.
-4. Limits and validation policy.
-5. JSON path and patch helpers.
-6. Event-chain verification.
-7. Vector model presets.
-8. Search text extraction.
-9. Runtime, filesystem, or network helpers.
+4. Storage-owned transaction/runtime IDs unless a later boundary proves engine
+   must own the exact same type.
+5. `StorageSpaceId`.
+6. Limits and validation policy.
+7. JSON path and patch helpers.
+8. Event-chain verification.
+9. Vector model presets.
+10. Search text extraction.
+11. Runtime, filesystem, or network helpers.
 
 ## Error And Result Vocabulary
 
@@ -549,40 +569,38 @@ Required tests:
 
 1. Transparent newtype serialization tests.
 2. Stable ID parse/display/round-trip tests.
-3. Deterministic ID derivation tests where derivation is part of the contract.
-4. Timestamp and version boundary tests.
-5. Value equality and conversion tests.
-6. Public error display/source tests for type-local errors.
-7. Compile-time or guard tests proving no Strata-crate dependencies.
-8. Public surface snapshot tests or equivalent review guard.
+3. Timestamp and version boundary tests.
+4. Public error display/source tests for type-local errors.
+5. Compile-time or guard tests proving no Strata-crate dependencies.
+6. Public surface snapshot tests or equivalent review guard.
 
 Property tests should cover:
 
 1. ID round trips.
 2. Timestamp arithmetic.
-3. Value serialization and equality edge cases.
-4. Name/address parsing if those types remain in core-next.
+3. Name/address parsing only if a later approved core-owned type requires it.
 
 Core-next tests must not require filesystem, network, model providers,
 background runtimes, or a database instance.
 
-## Open Design Questions
+## Closed Design Questions
 
-The `core-next` architecture pass must resolve:
+The storage-next and engine-next contracts close the first core ownership pass:
 
-1. Does `Value` remain in core-next, or does engine-next own the user value
-   model while storage-next stores opaque bytes?
-2. Does storage-next need `TxnId` and `CommitVersion` from core-next, or should
-   storage-next own storage-local commit identifiers and engine map them into
-   product versions?
-3. Is `Timestamp` only a representation type, or should the clock source be
-   entirely engine-owned?
-4. Does backend address syntax belong in core-next, storage-next, or engine-next?
-5. Which serialization formats are core contracts versus adapters owned by
-   higher layers?
+1. `Value` moves to engine-next.
+2. `TxnId` defaults to storage-next.
+3. `CommitVersion` remains core-next.
+4. `Timestamp` is a core representation type only; clock acquisition is not
+   core behavior.
+5. Backend address syntax is not core-next for V1. Storage-next owns backend
+   capability/address mechanics exposed through its open boundary, and
+   engine-next owns product open policy.
+6. `DatabaseId` is not core-next for V1. Storage may own a physical database
+   UUID; engine owns product instance/dataset/provenance identity.
 
-Until these questions are answered, the current core crate should not be copied
-forward wholesale.
+The current core crate must not be copied forward wholesale. Core-next should
+start from the resolved V1 surface above and add nothing without a written
+owner justification.
 
 ## Acceptance Criteria
 
@@ -603,13 +621,11 @@ Core-next is correctly designed when:
 
 ## Next Documents
 
-After this document is stable, write:
+This document now feeds:
 
 1. `docs/architecture/storage-next-architecture.md`
 2. `docs/architecture/engine-next-architecture.md`
-3. `docs/architecture/v1-command-boundary-contract.md`
-4. `docs/architecture/v1-error-and-diagnostics-contract.md`
+3. `docs/architecture/strata-v1-implementation-roadmap.md`
 
-The storage-next document should explicitly state which core-next types it
-needs. The engine-next document should explicitly state which current core types
-it absorbs as product vocabulary.
+The first core-next implementation plan should use the resolved V1 surface as
+its starting checklist and reject convenience additions by default.

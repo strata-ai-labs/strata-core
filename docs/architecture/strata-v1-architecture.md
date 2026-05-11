@@ -54,8 +54,11 @@ Cross-cutting V1 contracts:
 
 1. `docs/architecture/v1-error-and-diagnostics-contract.md`
 2. `docs/architecture/v1-testing-and-conformance-plan.md`
-3. `docs/architecture/stratahub-substrate-architecture.md`
-4. `docs/architecture/runtime-resource-profile-architecture.md`
+3. `docs/architecture/v1-engineering-standards.md`
+4. `docs/architecture/stratahub-substrate-architecture.md`
+5. `docs/architecture/runtime-resource-profile-architecture.md`
+6. `docs/architecture/strata-v1-implementation-roadmap.md`
+7. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
 
 The product documents are authoritative for user outcomes. This architecture
 document is authoritative for the first-pass V1 layering model. Lower-level
@@ -812,12 +815,16 @@ This document should be followed by focused architecture documents:
 3. `docs/architecture/engine-next-architecture.md`
 4. `docs/architecture/inference-next-architecture.md`
 5. `docs/architecture/intelligence-next-architecture.md`
-6. `docs/architecture/v1-backend-capability-contract.md`
-7. `docs/architecture/v1-ipc-runtime-contract.md`
+6. `docs/architecture/storage-next/l1-backend-io.md`
+7. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
 8. `docs/architecture/v1-testing-and-conformance-plan.md`
 9. `docs/architecture/v1-error-and-diagnostics-contract.md`
-10. `docs/architecture/v1-command-boundary-contract.md`
-11. `docs/architecture/v1-cutover-plan.md`
+10. `docs/architecture/engine-next/public-api-and-cli-surface-cleanup-checklist.md`
+11. `docs/architecture/strata-v1-implementation-roadmap.md`
+12. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
+13. `docs/architecture/v1-engineering-standards.md`
+14. `docs/architecture/v1-removed-surfaces.md`
+15. `docs/architecture/v1-cutover-pr-series.md`
 
 Each follow-up document should state which product requirement it serves, which
 layer owns the behavior, which lower layers it may call, how failures surface,

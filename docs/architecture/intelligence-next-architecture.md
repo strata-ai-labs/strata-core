@@ -679,18 +679,23 @@ The V1 intelligence minimum is:
 11. Structured stage diagnostics.
 12. Fake provider/testkit support.
 
-## Open Questions
+## Open Questions And Closed Ownership
 
-These should be closed before intelligence-next implementation plans:
+The open questions below should be closed before intelligence-next
+implementation plans:
 
-1. What is the exact `StageOutcome` shape shared by expansion, rerank, RAG, and
-   future Autosearch?
-2. Which stage diagnostics become part of public search stats versus internal
+1. Which stage diagnostics become part of public search stats versus internal
    trace/log context?
-3. What is the first Autosearch substrate we preserve without shipping the full
+2. What is the first Autosearch substrate we preserve without shipping the full
    optimizer?
-4. What post-V1 endpoint capability schema should external on-prem model
+3. What post-V1 endpoint capability schema should external on-prem model
    runtimes expose to intelligence stages?
+
+Closed ownership:
+
+1. The exact `StageOutcome` shape shared by expansion, rerank, RAG, and future
+   Autosearch is owned by M6E in engine-next before intelligence-next consumes
+   it.
 
 ## Implementation Stance
 
