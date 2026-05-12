@@ -1,0 +1,23 @@
+[package]
+name = "strata-core-next"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+proptest = { workspace = true }
+serde_json = { workspace = true }

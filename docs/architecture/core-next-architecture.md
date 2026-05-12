@@ -195,6 +195,124 @@ This keeps core-next to identity and ordering atoms. Higher layers can still
 re-export these atoms as part of product APIs, but core-next does not own the
 product behavior attached to them.
 
+## Implemented M1 Boundary
+
+The M1 implementation establishes the first concrete `strata-core-next` public
+surface. It is intentionally narrower than the current `strata-core` crate.
+
+Crate-level rules:
+
+1. `strata-core-next` has `#![deny(unsafe_code)]`.
+2. The only normal dependency is `serde`.
+3. Test-only dependencies are `bincode`, `proptest`, and `serde_json`.
+4. The crate has no dependency on any other workspace or Strata crate.
+5. The dependency guard rejects both named `strata-*` dependencies and any
+   workspace-local package dependency other than `strata-core-next` itself.
+
+### Public Exports
+
+| Export | Shape | Ownership reason | Explicit non-ownership |
+|---|---|---|---|
+| `BranchId` | Opaque sixteen-byte identity | Storage needs the bytes for branch-scoped physical keys and visibility. Engine needs the same identity for branch product behavior. | Core does not create branch IDs, derive IDs from names, define default-branch policy, own branch lifecycle, or know branch DAG semantics. |
+| `BranchIdError` | Type-local validation error | Byte and text decoding are inseparable from `BranchId`. Callers need a stable failure type without depending on engine or storage errors. | Core does not map this into product/database error codes. Engine/storage wrap it at their boundaries. |
+| `CommitVersion` | Transparent `u64` ordering atom | Storage assigns and stores commit versions. Engine exposes version reads, history, diff/merge inputs, and diagnostics over the same token. | Core does not allocate commit versions, manage transactions, define public transaction sessions, or decide visibility policy. |
+| `ParseCommitVersionError` | Type-local parse error | Decimal text parsing is part of `CommitVersion`'s public encoding contract. | Core does not own global error classes, retry policy, or user-facing command errors. |
+| `Timestamp` | Transparent `u64` microseconds-since-Unix-epoch representation | Storage stamps commits and stores timeline substrate facts. Engine resolves `as_of`, history, TTL-facing metadata, and branch-from-time over the same representation. | Core does not read clocks, schedule retention, resolve time-travel selectors, or define wall-clock policy. |
+| `ParseTimestampError` | Type-local parse error | Decimal text parsing is part of `Timestamp`'s public encoding contract. | Core does not own product time validation, global diagnostics, or command rendering. |
+
+### Public Associated Items
+
+`BranchId` exposes only representation and encoding operations:
+
+1. `BYTE_LEN`
+2. `from_bytes`
+3. `try_from_slice`
+4. `as_bytes`
+5. `parse_str`
+6. `Display`
+7. `FromStr`
+8. `Serialize` and `Deserialize`
+9. `TryFrom<&[u8]>`
+
+`BranchId` display and human-readable serde use canonical lowercase UUID text.
+Parsing accepts uppercase or lowercase hex. Durable storage must use
+`as_bytes()` or `try_from_slice()`, not display strings.
+
+`CommitVersion` exposes only ordering and representation operations:
+
+1. `ZERO`
+2. `MAX`
+3. `new`
+4. `as_u64`
+5. `checked_next`
+6. Ordering traits
+7. `Display`
+8. `FromStr`
+9. Transparent serde
+
+`CommitVersion` display and parsing use unsigned decimal text. A leading `+`
+or any non-decimal decoration is rejected. Commit version allocation and commit
+ordering are storage/engine responsibilities, not core responsibilities.
+
+`Timestamp` exposes only representation and deterministic arithmetic:
+
+1. `EPOCH`
+2. `MAX`
+3. `from_micros`
+4. `from_millis`
+5. `from_secs`
+6. `from_duration_since_epoch`
+7. `as_micros`
+8. `as_millis`
+9. `as_secs`
+10. `duration_since`
+11. `saturating_add`
+12. `saturating_sub`
+13. Ordering traits
+14. `Display`
+15. `FromStr`
+16. Transparent serde
+
+`Timestamp` display and parsing use unsigned decimal microseconds. A leading
+`+` or any non-decimal decoration is rejected. Core does not expose `now()` or
+any ambient clock source.
+
+### Public Trait Surface
+
+The following trait implementations are part of the M1 public boundary. New
+public trait implementations require the same review as new inherent methods.
+
+| Type | Allowed public trait surface | Boundary note |
+|---|---|---|
+| `BranchId` | `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`, `Hash`, `Display`, `FromStr`, `TryFrom<&[u8]>`, `Serialize`, `Deserialize` | Equality and hashing use the opaque bytes. There is intentionally no `Default` implementation because core-next must not create a sentinel or default branch identity. |
+| `BranchIdError` | `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`, `Display`, `std::error::Error` | Comparison is allowed because the error vocabulary is closed and type-local. |
+| `CommitVersion` | `Clone`, `Copy`, `Debug`, `Default`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `Display`, `FromStr`, `Serialize`, `Deserialize` | `Default` is intentionally `CommitVersion::ZERO`; it is representation defaulting only, not commit allocation policy. |
+| `ParseCommitVersionError` | `Debug`, `Display`, `std::error::Error` | The parse source is private; callers should use the local error type or wrap it at a higher boundary. |
+| `Timestamp` | `Clone`, `Copy`, `Debug`, `Default`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `Display`, `FromStr`, `Serialize`, `Deserialize` | `Default` is intentionally `Timestamp::EPOCH`; it is representation defaulting only, not a clock or product timestamp policy. |
+| `ParseTimestampError` | `Debug`, `Display`, `std::error::Error` | The parse source is private; callers should use the local error type or wrap it at a higher boundary. |
+
+### Explicitly Rejected From M1
+
+The following candidates remain out of `strata-core-next` after M1:
+
+| Candidate | Owner for V1 | Reason it stays out of core-next |
+|---|---|---|
+| `TxnId` | storage-next | It is commit/WAL machinery. Public transaction sessions are removed from the V1 product surface. |
+| `Value` | engine-next | It is user/product data vocabulary. Storage-next stores opaque row bytes. |
+| `EntityRef` | engine-next | It is product identity across capabilities and relationship/search surfaces. |
+| `Version`, `Versioned<T>`, `VersionedHistory<T>`, `VersionedValue` | engine-next | These are product read-result DTOs, not storage/core atoms. |
+| `BranchName` | engine-next | User-facing branch naming, validation, and alias policy are branch product behavior. |
+| `StorageSpaceId` | storage-next boundary plus engine registry | It is a physical storage-family byte and registry concern, not a universal core atom. |
+| `DatabaseId` / `ReplicaId` | storage-next, engine-next, or post-V1 sync depending on use | V1 does not need one shared below-engine identity type. |
+| `DatabaseAddress` / `BackendAddress` | storage-next or engine-next open policy | Backend parsing and capability checks are not foundational core behavior. |
+| `StrataError`, `StorageError`, global error-code registry | owning higher layers | Core owns only errors inseparable from core-owned types. |
+| Runtime, filesystem, networking, model-provider, OpenDAL, async, lock, or IPC types | owning higher layers | These carry deployment or product behavior and would pollute the bottom of the crate graph. |
+
+M1 is complete only while this table and the Rust public surface stay aligned.
+M1TD's `public_api_snapshot.rs` and `tests/snapshots/public_api.txt` snapshot
+the public API and fail on drift so later additions require an explicit
+architecture update.
+
 ## Layer Position
 
 The V1 target stack is:

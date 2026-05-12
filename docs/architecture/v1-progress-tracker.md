@@ -67,14 +67,14 @@ M6TD2: Cover recipe freshness degradation
 
 | Milestone | Title | Implementation status | Test status | Gate status | Next action |
 |---|---|---|---|---|---|
-| `M0` | Architecture freeze and tracking | Complete | Complete | Complete | Start `M1A` and `M1TA` planning slices. |
-| `M1` | Core-next | Ready | Ready | Ready | Implement core-next skeleton and atom tests. |
+| `M0` | Architecture freeze and tracking | Complete | Complete | Complete | M0 closed. |
+| `M1` | Core-next | Complete | Complete | Complete | M1 closed; start `M2A` and `M2TA` when storage-next implementation begins. |
 | `M2` | Storage-next testkit and crate skeleton | Planned | Planned | Planned | Start after core-next atoms exist. |
 | `M3` | Storage-next backend, layout, format, and durable services | Planned | Planned | Planned | Start after storage-next skeleton and harness exist. |
 | `M4` | Storage-next table, branch, commit, recovery, and L9 API | Planned | Planned | Planned | Start after durable bytes and services are stable. |
 | `M5` | Engine-next persistence adapter and control plane | Planned | Planned | Planned | Start after L9 is consumable. |
 | `M6` | Engine-next product semantics | Planned | Planned | Planned | Start after engine persistence/control plane are stable. |
-| `M7` | Inference-next hardening | Planned | Planned | Planned | Can start after `M1` and run parallel with storage path. |
+| `M7` | Inference-next hardening | Planned | Planned | Planned | May start now if inference-next should run parallel with storage path. |
 | `M8` | Intelligence-next orchestration | Planned | Planned | Planned | Start after engine surfaces and inference task contracts are ready. |
 | `M9` | Executor, CLI, SDK, tests, benches, and docs cutover | Planned | Planned | Planned | Start after product surfaces stabilize. |
 | `M10` | V1 readiness hardening | Planned | Planned | Planned | Start after cutover. |
@@ -84,11 +84,15 @@ M6TD2: Cover recipe freshness degradation
 | Epic | Title | Track | Status | Blocks | Next action |
 |---|---|---|---|---|---|
 | `M0D` | Tracking setup | Implementation | Complete | none | M0 can close and M1 can start. |
-| `M1A` | Core-next crate skeleton | Implementation | Ready | none | Start first M1 implementation slice. |
-| `M1TA` | Core atom unit tests | Test | Ready | none | Start first M1 test slice with or before `M1A`. |
-| `M1B` | Core atoms | Implementation | Planned | `M1A` | Start after core-next skeleton exists. |
-| `M1TB` | Core atom property tests | Test | Planned | `M1B` | Start with core atom implementations. |
-| `M7A` | Inference task traits | Implementation | Planned | `M1` | May start after M1 if parallel inference work is scheduled. |
+| `M1A` | Core-next crate skeleton | Implementation | Complete | none | `M1A1` complete; continue M1 atom work. |
+| `M1TA` | Core atom unit tests | Test | Complete | none | Atom tests cover construction, validation, ordering, parsing, display, and serde behavior through `M1C`. |
+| `M1B` | Core atoms | Implementation | Complete | none | `M1B1` through `M1B4` complete. |
+| `M1C` | Core atom encodings | Implementation | Complete | none | Parse, display, and serde behavior complete. |
+| `M1TB` | Core atom property tests | Test | Complete | none | Generated ordering, boundary, invalid-input, and parse/display/serde round-trip coverage complete. |
+| `M1TC` | Core-next dependency guard | Test | Complete | none | Guard fails if core-next declares or resolves a dependency on any other Strata crate. |
+| `M1D` | Core-next boundary documentation | Implementation | Complete | none | Implemented public exports and rejected candidates are documented. |
+| `M1TD` | Core-next API audit | Test | Complete | none | Public API snapshot guard is checked in and runs with the core-next test suite. |
+| `M7A` | Inference task traits | Implementation | Planned | none | May start now if parallel inference work is scheduled. |
 
 ## M0 Closure Record
 
@@ -128,6 +132,21 @@ historical context, or classified as intentional evidence. During M0, the only
 domain anti-pattern hits in target crate-shape documents were explicit negative
 examples that say not to create production types or modules named `Helper`.
 
+## M1 Closure Record
+
+M1 is closed by the following artifacts and verification gates:
+
+| Code | Status | Artifact |
+|---|---|---|
+| `M1A` | Complete | `crates/core-next` crate skeleton and workspace membership. |
+| `M1TA` | Complete | `crates/core-next/tests/atom_contract.rs` plus module-local atom tests. |
+| `M1B` | Complete | `crates/core-next/src/branch.rs`, `crates/core-next/src/version.rs`, and `crates/core-next/src/time.rs`. |
+| `M1C` | Complete | Core atom parse, display, serde, and durable representation tests. |
+| `M1TB` | Complete | `crates/core-next/tests/atom_properties.rs`. |
+| `M1TC` | Complete | `crates/core-next/tests/dependency_guard.rs`. |
+| `M1D` | Complete | `docs/architecture/core-next-architecture.md` Implemented M1 Boundary section. |
+| `M1TD` | Complete | `crates/core-next/tests/public_api_snapshot.rs` and `crates/core-next/tests/snapshots/public_api.txt`. |
+
 ## Slice Update Protocol
 
 When a slice starts:
@@ -147,10 +166,10 @@ When a slice closes:
 
 ## Next Work
 
-The next implementation milestone is `M1`, starting with:
+The current implementation milestone is `M2`. The next slices are:
 
-1. `M1A`: core-next crate skeleton.
-2. `M1TA`: core atom unit test plan and initial test scaffolding.
+1. `M2A`: storage-next crate skeleton.
+2. `M2TA`: storage-next testkit scaffold.
 
-`M7` can begin after `M1` if inference-next work should run in parallel with the
+`M7` may also begin now if inference-next work should run in parallel with the
 storage path.
