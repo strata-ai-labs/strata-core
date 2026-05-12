@@ -26,6 +26,10 @@ domain model, not as if it accumulated cleanup phases.
 7. `docs/architecture/storage-next/implementation-patterns.md`
 8. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
 9. `docs/architecture/engine-next/target-crate-shape-and-test-harness.md`
+10. `docs/architecture/inference-next-architecture.md`
+11. `docs/architecture/intelligence-next-architecture.md`
+12. `docs/architecture/v1-open-question-register.md`
+13. `docs/architecture/v1-engineering-standards-baseline.md`
 
 ## Requirement Language
 

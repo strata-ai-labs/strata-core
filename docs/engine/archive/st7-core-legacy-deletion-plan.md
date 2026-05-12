@@ -20,7 +20,7 @@ Read this together with:
 - [st6-legacy-core-dependency-severance-plan.md](./st6-legacy-core-dependency-severance-plan.md)
 - [engine-pending-items.md](./engine-pending-items.md)
 - [../storage/storage-minimal-surface-implementation-plan.md](../../storage/archive/storage-minimal-surface-implementation-plan.md)
-- [../core/core-minimal-surface-implementation-plan.md](../../core/core-minimal-surface-implementation-plan.md)
+- [../core/core-minimal-surface-implementation-plan.md](../../core/archive/core-minimal-surface-implementation-plan.md)
 
 ## Goal
 

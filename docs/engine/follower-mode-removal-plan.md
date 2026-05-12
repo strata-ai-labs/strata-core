@@ -101,7 +101,8 @@ Refresh and derived-state surface:
 Tests and docs:
 
 - `crates/engine/tests/follower_tests.rs`
-- follower sections in `docs/architecture/durability-and-recovery.md`
+- follower-related recovery language in
+  `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
 - follower allowances in `docs/storage/v1-storage-consumption-contract.md`
 - follower mentions in `docs/engine/engine-crate-map.md`
 - follower entry in `docs/product/strata-v1-feature-inventory.md`
@@ -358,7 +359,7 @@ Required changes:
 3. `docs/engine/engine-consolidation-plan.md`
 4. `docs/engine/engine-crate-map.md`
 5. `docs/storage/v1-storage-consumption-contract.md`
-6. `docs/architecture/durability-and-recovery.md`
+6. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
 
 The final docs should describe:
 

@@ -34,7 +34,7 @@ This plan should be read together with:
 - [concurrency-crate-map.md](./concurrency-crate-map.md)
 - [durability-crate-map.md](./durability-crate-map.md)
 - [../engine/engine-crate-map.md](../engine/engine-crate-map.md)
-- [../core/core-minimal-surface-implementation-plan.md](../core/core-minimal-surface-implementation-plan.md)
+- [../core/core-minimal-surface-implementation-plan.md](../../core/archive/core-minimal-surface-implementation-plan.md)
 - [../engine/archive/engine-pending-items.md](../engine/archive/engine-pending-items.md)
 - [../architecture/architecture-recovery-target.md](../architecture/architecture-recovery-target.md)
 

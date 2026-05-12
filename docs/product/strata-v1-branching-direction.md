@@ -522,22 +522,24 @@ provenance, StrataHub publishing, or collaboration workflows need them.
 6. Testing must cover branch lifecycle, comparison, promotion, selected copy,
    undo, deletion races, derived-state cleanup, and same-name recreation.
 
-## Open Questions
+## Resolved And Owned Questions
 
-1. Should V1 expose empty branch creation, or only branch-from-existing-state?
-2. What user-facing syntax should represent current, version, and timestamp
-   branch points?
-3. Is strict conflict handling the default for promotion?
-4. Should source-wins be renamed and exposed as an advanced strategy?
-5. How should event-log divergence be resolved or rejected?
-6. Which derived system-space records are visible in branch comparison?
-7. Should selective copy operate on current records, changes since base, or two
-   explicitly separate modes?
-8. How should relationship-layer entity references behave when copied across
-   branches?
-9. Should delete be permanent in V1, or should archive be the user-facing safe
-   operation?
-10. What branch metadata is required for StrataHub publishing later?
+M0B assigns these questions in
+`docs/architecture/v1-open-question-register.md` under `V1Q-020`.
+
+1. Empty branch creation is required for V1.
+2. User-facing branch-point syntax is owned by M9C.
+3. Strict conflict handling is the V1 promotion default.
+4. Source-wins naming is owned by M9C as public API and CLI wording.
+5. Event-log divergence is refused under source-wins for V1.
+6. Derived system-space comparison coverage is owned by M6D and M6E.
+7. Selective copy distinguishes current-record copy from selected-change apply.
+   Public syntax is owned by M9C.
+8. Relationship-layer entity refs remain branch/space-relative in V1; copy
+   behavior is owned by M6C and M6D.
+9. Branch delete is destructive in V1. Archive is a later product workflow.
+10. StrataHub branch metadata is V1 substrate only unless M6G explicitly pulls
+    a product-facing publish flow forward.
 
 ## Acceptance Criteria
 

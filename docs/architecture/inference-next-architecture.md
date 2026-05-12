@@ -26,6 +26,7 @@ Architecture anchors:
 3. [runtime-resource-profile-architecture.md](./runtime-resource-profile-architecture.md)
 4. [v1-error-and-diagnostics-contract.md](./v1-error-and-diagnostics-contract.md)
 5. [v1-testing-and-conformance-plan.md](./v1-testing-and-conformance-plan.md)
+6. [v1-engineering-standards.md](./v1-engineering-standards.md)
 
 Engine and product contracts that consume inference:
 
@@ -375,6 +376,12 @@ tree. The important target is conceptual:
 4. Cloud provider adapters are isolated.
 5. Registry and download mechanics are isolated.
 6. Test fixtures do not leak into the production API.
+
+The target shape follows the V1 engineering standards. Roadmap labels and
+cleanup-era labels must not become inference module names, feature flags, test
+names, errors, telemetry fields, or public APIs. Temporary `inference-next`
+package naming is build-branch scaffolding only; code inside the crate should
+use permanent model/provider vocabulary.
 
 ## Public API Boundary
 

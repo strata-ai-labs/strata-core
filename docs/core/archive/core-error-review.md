@@ -1,5 +1,9 @@
 # Core Error Review
 
+Status: historical cleanup-era ownership review; V1 error ownership is governed
+by `docs/architecture/v1-error-and-diagnostics-contract.md` and
+`docs/architecture/core-next-architecture.md`.
+
 ## Purpose
 
 This document is the error-ownership review for `CO3`.
@@ -19,7 +23,7 @@ ownership model under a smaller file.
 This review should be read together with:
 
 - [error-research.md](./error-research.md)
-- [../engine/archive/engine-error-architecture.md](../engine/archive/engine-error-architecture.md)
+- [../engine/archive/engine-error-architecture.md](../../engine/archive/engine-error-architecture.md)
 
 That research memo is the external and cross-project justification for the
 direction below. The engine document is the target implementation home for the
@@ -34,18 +38,18 @@ The new core currently has no global system error type.
 
 Its only real error type today is local and type-specific:
 
-- [crates/core/src/contract/branch_name.rs](../../crates/core/src/contract/branch_name.rs)
+- [crates/core/src/contract/branch_name.rs](../../../crates/core/src/contract/branch_name.rs)
   - `BranchNameError`
 
 This is a strong signal that the clean core boundary should remain nearly
 error-free. Foundational types may have local parse/validation errors, but the
 new core should not become the owner of the database/runtime parent error.
 
-### 2. Legacy core still owns the monolith
+### 2. Legacy core owned the monolith
 
-The legacy shell still exports:
+The legacy shell exported:
 
-- [crates/core-legacy/src/error.rs](../../crates/core-legacy/src/error.rs)
+- `crates/core-legacy/src/error.rs`
   - `PrimitiveDegradedReason`
   - `ErrorCode`
   - `ErrorDetails`
@@ -66,25 +70,25 @@ That is far beyond the proper scope of `core`.
 
 Representative examples:
 
-- [crates/storage/src/error.rs](../../crates/storage/src/error.rs)
+- [crates/storage/src/error.rs](../../../crates/storage/src/error.rs)
   - `StorageError`
   - `StorageResult<T>`
-- [crates/engine/src/database/recovery_error.rs](../../crates/engine/src/database/recovery_error.rs)
+- [crates/engine/src/database/recovery_error.rs](../../../crates/engine/src/database/recovery_error.rs)
   - `RecoveryError`
-- [crates/concurrency/src/transaction.rs](../../crates/concurrency/src/transaction.rs)
+- `crates/concurrency/src/transaction.rs`
   - `CommitError`
-- [crates/concurrency/src/payload.rs](../../crates/concurrency/src/payload.rs)
+- `crates/concurrency/src/payload.rs`
   - `PayloadError`
-- [crates/vector/src/error.rs](../../crates/vector/src/error.rs)
+- `crates/vector/src/error.rs`
   - `VectorError`
   - `VectorResult<T>`
-- [crates/executor/src/error.rs](../../crates/executor/src/error.rs)
+- [crates/executor/src/error.rs](../../../crates/executor/src/error.rs)
   - executor-facing `Error`
-- [crates/engine/src/search/expand/error.rs](../../crates/engine/src/search/expand/error.rs)
+- [crates/engine/src/search/expand/error.rs](../../../crates/engine/src/search/expand/error.rs)
   - `ExpandError`
-- [crates/engine/src/search/rerank/error.rs](../../crates/engine/src/search/rerank/error.rs)
+- [crates/engine/src/search/rerank/error.rs](../../../crates/engine/src/search/rerank/error.rs)
   - `RerankError`
-- [crates/inference/src/error.rs](../../crates/inference/src/error.rs)
+- [crates/inference/src/error.rs](../../../crates/inference/src/error.rs)
   - `InferenceError`
 
 So the workspace already knows how to define crate-owned typed errors. The
@@ -135,12 +139,12 @@ use it directly.
 
 Storage already has a crate-local error model:
 
-- [crates/storage/src/error.rs](../../crates/storage/src/error.rs)
+- [crates/storage/src/error.rs](../../../crates/storage/src/error.rs)
 
 But storage still exports `StrataResult` heavily in core implementations:
 
-- [crates/storage/src/segmented/mod.rs](../../crates/storage/src/segmented/mod.rs)
-- [crates/storage/src/segment.rs](../../crates/storage/src/segment.rs)
+- [crates/storage/src/segmented/mod.rs](../../../crates/storage/src/segmented/mod.rs)
+- [crates/storage/src/segment.rs](../../../crates/storage/src/segment.rs)
 
 That means `StorageError` exists, but storage is not consistently using its own
 error surface as the normal public result type.
@@ -153,23 +157,23 @@ The same pattern exists in engine:
 
 Representative examples:
 
-- [crates/engine/src/primitives/kv.rs](../../crates/engine/src/primitives/kv.rs)
-- [crates/engine/src/primitives/json/mod.rs](../../crates/engine/src/primitives/json/mod.rs)
-- [crates/engine/src/primitives/event.rs](../../crates/engine/src/primitives/event.rs)
-- [crates/engine/src/database/open.rs](../../crates/engine/src/database/open.rs)
-- [crates/engine/src/database/transaction.rs](../../crates/engine/src/database/transaction.rs)
+- [crates/engine/src/primitives/kv.rs](../../../crates/engine/src/primitives/kv.rs)
+- [crates/engine/src/primitives/json/mod.rs](../../../crates/engine/src/primitives/json/mod.rs)
+- [crates/engine/src/primitives/event.rs](../../../crates/engine/src/primitives/event.rs)
+- [crates/engine/src/database/open.rs](../../../crates/engine/src/database/open.rs)
+- [crates/engine/src/database/transaction.rs](../../../crates/engine/src/database/transaction.rs)
 
 ### 4. Conversions back into `StrataError` are often lossy or policy-bearing
 
 Representative examples:
 
-- [crates/storage/src/error.rs](../../crates/storage/src/error.rs)
+- [crates/storage/src/error.rs](../../../crates/storage/src/error.rs)
   converts `StorageError` back into `StrataError`
-- [crates/engine/src/database/recovery_error.rs](../../crates/engine/src/database/recovery_error.rs)
+- [crates/engine/src/database/recovery_error.rs](../../../crates/engine/src/database/recovery_error.rs)
   converts `RecoveryError` back into `StrataError`
-- [crates/vector/src/error.rs](../../crates/vector/src/error.rs)
+- `crates/vector/src/error.rs`
   converts `VectorError` into `StrataError`
-- [crates/concurrency/src/transaction.rs](../../crates/concurrency/src/transaction.rs)
+- `crates/concurrency/src/transaction.rs`
   converts `CommitError` into `StrataError`
 
 This creates two recurring problems:
@@ -181,11 +185,11 @@ This creates two recurring problems:
 
 Executor has its own public `Error`:
 
-- [crates/executor/src/error.rs](../../crates/executor/src/error.rs)
+- [crates/executor/src/error.rs](../../../crates/executor/src/error.rs)
 
 and a single explicit conversion layer:
 
-- [crates/executor/src/convert.rs](../../crates/executor/src/convert.rs)
+- [crates/executor/src/convert.rs](../../../crates/executor/src/convert.rs)
 
 That part of the architecture is directionally correct: the public boundary
 owns its own error shape and converts from lower-layer failures. The problem is
@@ -415,7 +419,7 @@ in `core-legacy`, especially:
 
 Executor should keep owning:
 
-- [crates/executor/src/error.rs](../../crates/executor/src/error.rs)
+- [crates/executor/src/error.rs](../../../crates/executor/src/error.rs)
 
 If canonical wire codes remain necessary, they should live with the public
 boundary, not in `core`.

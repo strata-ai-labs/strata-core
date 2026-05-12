@@ -41,9 +41,12 @@ Architecture anchors:
 9. `docs/architecture/v1-error-and-diagnostics-contract.md`
 10. `docs/architecture/v1-testing-and-conformance-plan.md`
 11. `docs/architecture/v1-engineering-standards.md`
-12. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
-13. `docs/architecture/v1-removed-surfaces.md`
-14. `docs/architecture/v1-cutover-pr-series.md`
+12. `docs/architecture/v1-document-inventory.md`
+13. `docs/architecture/v1-open-question-register.md`
+14. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
+15. `docs/architecture/v1-removed-surfaces.md`
+16. `docs/architecture/v1-cutover-pr-series.md`
+17. `docs/architecture/v1-progress-tracker.md`
 
 Engine contracts:
 
@@ -154,45 +157,29 @@ post-V1 once V1 engine and CLI APIs are stable.
    optimizer is post-V1.
 8. The surfaces listed in `docs/architecture/v1-removed-surfaces.md`.
 
-## Resolved And Remaining Architecture Inputs
+## Open Question Ownership
 
-These items either were resolved during integration review or still need a
-stable owner before large implementation starts. Unresolved items do not block
-small spike code or test harnesses, but they block stable crate construction.
+`docs/architecture/v1-open-question-register.md` is the canonical M0B owner map
+for active architecture questions. This roadmap keeps the high-level summary;
+the register owns the detailed source coverage, owner milestones, and closure
+points.
 
-1. Core-next public surface.
-   Resolved.
-   First-pass ownership is now resolved in `core-next-architecture.md`:
-   core-next starts with `BranchId`, `CommitVersion`, timestamp
-   representation, and type-local validation errors. `Value` and `EntityRef`
-   move to engine-next; `TxnId` and physical database identity move to
-   storage-next; backend/address vocabulary is not core-owned for V1.
+1. Core-next public surface is closed as the V1 baseline.
+   See `V1Q-001`.
+2. Storage durable bytes are owned by `M3C` and `M3TA`.
+   See `V1Q-002`.
+3. Storage test harness names and invocation are owned by `M2D`, `M2E`,
+   `M2TB`, and `M2TD`.
+   See `V1Q-003`.
+4. Engine `StageOutcome` shape is owned by `M6E` and `M6TD`.
+   See `V1Q-004`.
+5. Cutover PR series is owned by `M9G`.
+   See `V1Q-005`.
+6. Layer-specific storage, engine, inference, intelligence, product, and spec
+   questions map to `V1Q-006` through `V1Q-037`.
 
-2. Storage durable bytes.
-   Remaining.
-   Freeze the storage V1 format spec before table/WAL/manifest/snapshot bytes
-   become hard to change.
-
-3. Storage test harness names and invocation.
-   Remaining.
-   The target crate shape defines the harness strategy. The first storage
-   implementation plan should name the actual commands and feature gates.
-
-4. Engine `StageOutcome` shape.
-   Assigned to M6E.
-   Intelligence and retrieval both need a common stage outcome vocabulary. The
-   exact Rust shape is finalized with the engine retrieval and derived-state
-   epic before intelligence-next consumes it.
-
-5. Cutover PR series.
-   Assigned to M9G.
-   This roadmap defines order. `docs/architecture/v1-cutover-pr-series.md`
-   owns the exact workspace member changes, crate renames, dependency updates,
-   promotion steps, and retirement guards.
-
-Layer-specific architecture documents may still contain local open questions.
-M0B must consolidate those questions into milestone owners before stable crate
-construction starts.
+No stable V1 crate construction should start from an unowned architecture
+question. Each milestone begins by filtering the register for its owner code.
 
 ## Implementation Principles
 
@@ -294,6 +281,13 @@ Examples:
 The code is only an identifier. Every plan, issue, PR, and commit message
 should include the plain-English title next to it.
 
+These identifiers are planning metadata only. They must not appear in
+production crate names, module names, file names, type names, function names,
+test names, feature flags, error codes, metric names, telemetry fields, CLI
+commands, config keys, or user-facing text. Implementation code should use the
+domain vocabulary from the target architecture documents and
+`docs/architecture/v1-engineering-standards.md`.
+
 Recommended use:
 
 1. Milestone codes are stable and map to the roadmap phases below.
@@ -355,6 +349,11 @@ Each test epic should define test slices:
 This gives the project a stable way to say "we are in `M3B2`" without
 requiring anyone to remember cleanup-era names or read historical docs.
 
+`docs/architecture/v1-progress-tracker.md` is the current execution ledger. It
+records milestone status, issue/PR label shapes, and the update protocol for
+slice status. The roadmap defines the order and gate rules; the tracker records
+where execution currently stands.
+
 ## Phase 0: Architecture Freeze And Tracking
 
 Goal: make the document set implementation-ready.
@@ -366,11 +365,11 @@ Work:
    engine-next implementation plans.
 3. Mark `next-charter.md` as historical context only wherever needed.
 4. Confirm every engine-next contract listed in `engine-next/README.md` exists
-   and has no unresolved load-bearing decisions.
+   and has no unowned load-bearing decisions.
 5. Confirm storage-next L1-L9 documents agree with the format spec, L9
    boundary, runtime profiles, errors, and testing plan.
-6. Create a lightweight implementation tracking convention for phases and
-   subplans.
+6. Create `docs/architecture/v1-progress-tracker.md` as the lightweight
+   milestone, epic, slice, issue/PR label, and test-track execution ledger.
 
 Exit criteria:
 
@@ -378,6 +377,8 @@ Exit criteria:
 2. Each remaining open question is either assigned to a phase or explicitly
    post-V1.
 3. The first implementation phase can start without guessing ownership.
+4. The progress tracker identifies the current milestone status and next ready
+   work.
 
 ## Phase 1: Core-Next
 
@@ -800,7 +801,7 @@ Before each phase starts, write a short phase implementation plan with:
 
 The milestone plans live under `docs/architecture/implementation-plans/`. Each
 plan pairs the implementation track and matching test track, for example
-`m4-m4t-implementation-plan.md`.
+`docs/architecture/implementation-plans/m4-m4t-implementation-plan.md`.
 
 The milestone plan should be much smaller than the architecture documents. Its
 job is to keep each implementation slice honest.

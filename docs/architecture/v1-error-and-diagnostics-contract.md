@@ -27,8 +27,8 @@ conformance plan.
 3. `docs/architecture/storage-next-architecture.md`
 4. `docs/architecture/storage-next/l9-storage-api-boundary.md`
 5. `docs/product/strata-v1-non-functional-requirements.md`
-6. `docs/core/error-research.md`
-7. `docs/core/core-error-review.md`
+6. `docs/core/archive/error-research.md`
+7. `docs/core/archive/core-error-review.md`
 8. `docs/engine/archive/engine-error-architecture.md`
 
 The historical error documents remain useful evidence. This document is the V1

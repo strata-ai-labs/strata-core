@@ -35,6 +35,7 @@ Architecture anchors:
 4. [runtime-resource-profile-architecture.md](./runtime-resource-profile-architecture.md)
 5. [v1-error-and-diagnostics-contract.md](./v1-error-and-diagnostics-contract.md)
 6. [v1-testing-and-conformance-plan.md](./v1-testing-and-conformance-plan.md)
+7. [v1-engineering-standards.md](./v1-engineering-standards.md)
 
 Engine contracts consumed by intelligence:
 
@@ -148,7 +149,7 @@ Current files and responsibilities:
     - answer metadata
 
 11. `src/shadow.rs`
-    - legacy shadow-vector cleanup helpers without the full runtime queue
+    - older shadow-vector cleanup support without the full runtime queue
 
 Current executor touchpoints:
 
@@ -404,6 +405,13 @@ new named struct family for every retrieval option.
 Future modules should be added only when they own shipped behavior.
 `autosearch/` is the expected post-V1 home for branch-based recipe tuning, but
 the V1 tree should not contain an empty module for it.
+
+The target shape follows the V1 engineering standards. Roadmap labels and
+cleanup-era labels must not become intelligence module names, feature flags,
+test names, errors, telemetry fields, public APIs, recipe names, or stage
+diagnostics. Temporary `intelligence-next` package naming is build-branch
+scaffolding only; code inside the crate should use permanent retrieval,
+embedding, model, diagnostics, and derived-state vocabulary.
 
 ## Repeatable Stage Pattern
 
@@ -694,8 +702,8 @@ implementation plans:
 Closed ownership:
 
 1. The exact `StageOutcome` shape shared by expansion, rerank, RAG, and future
-   Autosearch is owned by M6E in engine-next before intelligence-next consumes
-   it.
+   Autosearch is owned by the engine retrieval and derived-state work tracked
+   by `V1Q-004` before intelligence-next consumes it.
 
 ## Implementation Stance
 

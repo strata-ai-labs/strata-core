@@ -1,5 +1,8 @@
 # CO5 Engine Domain And Primitive Eviction Plan
 
+Status: historical cleanup-era implementation plan; V1 engine ownership is
+governed by `docs/architecture/engine-next-architecture.md`.
+
 ## Purpose
 
 `CO5` is the second major subtraction epic in the core cleanup.
@@ -13,12 +16,12 @@ or partial cleanup that leaves core with hidden engine authority.
 
 Read this together with:
 
-- [core-charter.md](./core-charter.md)
-- [core-crate-map.md](./core-crate-map.md)
+- [core-charter.md](../core-charter.md)
+- [core-crate-map.md](../core-crate-map.md)
 - [core-minimal-surface-implementation-plan.md](./core-minimal-surface-implementation-plan.md)
 - [core-error-review.md](./core-error-review.md)
-- [../engine/archive/engine-error-architecture.md](../engine/archive/engine-error-architecture.md)
-- [../engine/archive/engine-pending-items.md](../engine/archive/engine-pending-items.md)
+- [../engine/archive/engine-error-architecture.md](../../engine/archive/engine-error-architecture.md)
+- [../engine/archive/engine-pending-items.md](../../engine/archive/engine-pending-items.md)
 
 ## CO5 Verdict
 
@@ -53,14 +56,14 @@ database-runtime semantics.
 The authoritative definitions and helper logic move out of these legacy-core
 areas:
 
-- [crates/core-legacy/src/branch.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/branch.rs)
-- [crates/core-legacy/src/branch_dag.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/branch_dag.rs)
-- [crates/core-legacy/src/branch_types.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/branch_types.rs)
-- [crates/core-legacy/src/limits.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/limits.rs)
-- [crates/core-legacy/src/primitives/event.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/primitives/event.rs)
-- [crates/core-legacy/src/primitives/json.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/primitives/json.rs)
-- [crates/core-legacy/src/primitives/vector.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/primitives/vector.rs)
-- [crates/core-legacy/src/value.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/value.rs)
+- `crates/core-legacy/src/branch.rs`
+- `crates/core-legacy/src/branch_dag.rs`
+- `crates/core-legacy/src/branch_types.rs`
+- `crates/core-legacy/src/limits.rs`
+- `crates/core-legacy/src/primitives/event.rs`
+- `crates/core-legacy/src/primitives/json.rs`
+- `crates/core-legacy/src/primitives/vector.rs`
+- `crates/core-legacy/src/value.rs`
 
 ### Engine-Owned Surface After CO5
 

@@ -1,5 +1,8 @@
 # Core Minimal Surface Implementation Plan
 
+Status: historical cleanup-era implementation plan; V1 core ownership is
+governed by `docs/architecture/core-next-architecture.md`.
+
 ## Purpose
 
 This document turns the core charter into a concrete rewrite plan.
@@ -20,12 +23,11 @@ removable.
 
 This plan should be read together with:
 
-- [core-charter.md](./core-charter.md)
-- [core-crate-map.md](./core-crate-map.md)
+- [core-charter.md](../core-charter.md)
+- [core-crate-map.md](../core-crate-map.md)
 - [core-error-review.md](./core-error-review.md)
 - [co4-storage-boundary-eviction-plan.md](./co4-storage-boundary-eviction-plan.md)
-- [../storage/storage-charter.md](../storage/storage-charter.md)
-- [../architecture/architecture-recovery-target.md](../architecture/architecture-recovery-target.md)
+- [../storage/storage-charter.md](../../storage/storage-charter.md)
 
 ## Rewrite Rules
 
@@ -223,7 +225,7 @@ error.
 
 - use [core-error-review.md](./core-error-review.md) as the ownership baseline
 - use [error-research.md](./error-research.md) as the external design basis
-- use [../engine/archive/engine-error-architecture.md](../engine/archive/engine-error-architecture.md)
+- use [../engine/archive/engine-error-architecture.md](../../engine/archive/engine-error-architecture.md)
   as the future engine-side implementation target
 - audit the current `StrataError` and supporting error types
 - identify which families belong in:

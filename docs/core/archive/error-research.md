@@ -1,5 +1,8 @@
 # Strata error architecture: one engine-owned parent, layered beneath
 
+Status: historical cleanup-era research memo; V1 error ownership is governed by
+`docs/architecture/v1-error-and-diagnostics-contract.md`.
+
 ## 1. Executive recommendation
 
 **Strata should keep one canonical parent error type, but it should not live in `core` and it should not be a junk-drawer.** The parent — call it `StrataError` — belongs in **`engine`**, because `engine` is the layer that owns the database kernel, transactions, snapshots, recovery, and the canonical runtime semantics that every higher layer ultimately reasons about. `core` should be reduced to small, type-local validation/parse errors. `storage` should keep `StorageError` and never depend on `StrataError`. `executor` should keep its own boundary error (`executor::Error`), shaped like a stable wire-protocol code set, and convert from `StrataError` at the boundary. `cli` does presentation only and is the only layer permitted to use `anyhow`.

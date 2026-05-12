@@ -32,6 +32,7 @@ not a Rust API spec. Exact signatures belong in the layer implementation plans.
 5. `docs/architecture/storage-next/l9-storage-api-boundary.md`
 6. `docs/architecture/storage-next/storage-space-id-registry.md`
 7. `docs/architecture/storage-next/commit-timeline-substrate.md`
+8. `docs/architecture/v1-engineering-standards.md`
 
 ## Package Naming
 
@@ -62,6 +63,31 @@ return to `strata-storage` in the cutover PR series.
 9. Commit runtime should not expose public user transaction sessions.
 10. Lifecycle should orchestrate lower services without owning product policy.
 11. Test harnesses should be reusable, deterministic, and explicitly invoked.
+
+## Standards Application
+
+This crate-shape document applies
+`docs/architecture/v1-engineering-standards.md` to storage-next.
+
+Rules:
+
+1. L1-L9 labels are architecture-reading aids only. They must not become
+   module names, file names, type names, feature flags, tests, metrics, errors,
+   or comments inside production code.
+2. The target module names in this document are permanent storage-domain names:
+   `backend`, `object`, `layout`, `row`, `format`, `service`, `table`,
+   `branch`, `commit`, `lifecycle`, `observability`, `error`, `config`, `api`,
+   `test_support`, and `testkit`.
+3. Temporary `strata-storage-next` and `crates/storage-next` names are
+   build-branch scaffolding only. Cutover removes the suffix; code inside the
+   crate should already use permanent domain vocabulary.
+4. Public and crate-wide types should use the standards suffixes such as
+   `Id`, `Address`, `Key`, `Options`, `Config`, `Plan`, `Record`, `Entry`,
+   `Facts`, `Outcome`, `Stats`, `Report`, and `Error`.
+5. Test target names must describe behavior or conformance families, not
+   roadmap labels.
+6. The word "helper" may appear only as generic prose for private or test
+   support. Do not create production types or modules named `Helper`.
 
 ## Crate-Level Policy
 
@@ -1057,8 +1083,8 @@ The crate shape is ready for implementation planning when:
 2. `lib.rs` has a small engine-facing public surface.
 3. Backend, object layout, format, service, table, branch, commit, lifecycle,
    and API responsibilities are distinct.
-4. The dependency direction has no cycles that require facades or temporary
-   connectors.
+4. The dependency direction has no cycles that require hidden compatibility
+   layers or temporary connector modules.
 5. The testkit is explicit and unavailable in normal production builds.
 6. Backend conformance, fault-window, crash, fuzz, golden, property, and stress
    tests have documented invocation paths.

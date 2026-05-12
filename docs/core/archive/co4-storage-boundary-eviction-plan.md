@@ -1,5 +1,8 @@
 # CO4 Storage Boundary Eviction Plan
 
+Status: historical cleanup-era implementation plan; V1 storage ownership is
+governed by `docs/architecture/storage-next-architecture.md`.
+
 ## Purpose
 
 `CO4` is the first core cleanup epic that changes the architectural ownership
@@ -15,8 +18,8 @@ incremental import fixes with no stable definition of done.
 
 Read this together with:
 
-- [core-charter.md](./core-charter.md)
-- [core-crate-map.md](./core-crate-map.md)
+- [core-charter.md](../core-charter.md)
+- [core-crate-map.md](../core-crate-map.md)
 - [core-minimal-surface-implementation-plan.md](./core-minimal-surface-implementation-plan.md)
 
 ## CO4 Verdict
@@ -50,8 +53,8 @@ As long as these symbols live in `core`, the architecture remains unstable:
 
 The authoritative definitions move out of:
 
-- [crates/core-legacy/src/traits.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/traits.rs)
-- [crates/core-legacy/src/types.rs](/home/anibjoshi/Documents/GitHub/strata-core/crates/core-legacy/src/types.rs)
+- `crates/core-legacy/src/traits.rs`
+- `crates/core-legacy/src/types.rs`
 
 And into `crates/storage`.
 

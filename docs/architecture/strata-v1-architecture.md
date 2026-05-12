@@ -50,7 +50,7 @@ Current architecture evidence:
 2. `docs/storage/v1-storage-consumption-contract.md`
 3. `docs/storage/storage-engine-ownership-audit.md`
 
-Cross-cutting V1 contracts:
+Cross-cutting V1 documents:
 
 1. `docs/architecture/v1-error-and-diagnostics-contract.md`
 2. `docs/architecture/v1-testing-and-conformance-plan.md`
@@ -58,7 +58,9 @@ Cross-cutting V1 contracts:
 4. `docs/architecture/stratahub-substrate-architecture.md`
 5. `docs/architecture/runtime-resource-profile-architecture.md`
 6. `docs/architecture/strata-v1-implementation-roadmap.md`
-7. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
+7. `docs/architecture/v1-document-inventory.md`
+8. `docs/architecture/v1-open-question-register.md`
+9. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
 
 The product documents are authoritative for user outcomes. This architecture
 document is authoritative for the first-pass V1 layering model. Lower-level
@@ -825,6 +827,8 @@ This document should be followed by focused architecture documents:
 13. `docs/architecture/v1-engineering-standards.md`
 14. `docs/architecture/v1-removed-surfaces.md`
 15. `docs/architecture/v1-cutover-pr-series.md`
+16. `docs/architecture/v1-document-inventory.md`
+17. `docs/architecture/v1-open-question-register.md`
 
 Each follow-up document should state which product requirement it serves, which
 layer owns the behavior, which lower layers it may call, how failures surface,

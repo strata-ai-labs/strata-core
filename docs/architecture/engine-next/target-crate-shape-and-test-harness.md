@@ -20,6 +20,7 @@ not a Rust API spec. Exact signatures belong in implementation plans.
 4. `docs/architecture/engine-next/primitive-implementation-contract.md`
 5. `docs/architecture/engine-next/persistence-adapter-contract.md`
 6. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
+7. `docs/architecture/v1-engineering-standards.md`
 
 ## Package Naming
 
@@ -45,6 +46,33 @@ package names return to `strata-engine` in the cutover PR series.
 8. Runtime should own open/lifecycle/resource policy, not data semantics.
 9. Diagnostics should be a shared pattern, not one error type per helper.
 10. Test harnesses should be reusable, deterministic, and explicitly invoked.
+
+## Standards Application
+
+This crate-shape document applies
+`docs/architecture/v1-engineering-standards.md` to engine-next.
+
+Rules:
+
+1. Milestone and cleanup labels are planning metadata only. They must not
+   appear in engine module names, file names, type names, feature flags, tests,
+   public APIs, errors, metrics, command names, or production comments.
+2. The target module names in this document are permanent engine-domain names:
+   `api`, `runtime`, `commit`, `branch`, `data`, `entity`, `control`,
+   `orchestration`, `retrieval`, `persistence`, `diagnostics`, `command`,
+   `clone`, `config`, `test_support`, and `testkit`.
+3. Temporary `strata-engine-next` and `crates/engine-next` names are
+   build-branch scaffolding only. Cutover removes the suffix; code inside the
+   crate should already use permanent domain vocabulary.
+4. New public or crate-wide concepts should fit the standards suffixes such as
+   `Id`, `Name`, `Key`, `Options`, `Config`, `Plan`, `Record`, `Facts`,
+   `Outcome`, `Stats`, `Report`, and `Error`.
+5. The word "helper" may appear only as generic prose for private or test
+   support. Do not create production types or modules named `Helper`.
+6. `Runtime` and `Context` are review-sensitive names under the standards.
+   Engine may keep `runtime` as a top-level product-lifecycle module, but new
+   types should use more specific names unless they truly own runtime policy or
+   request state.
 
 ## Crate-Level Policy
 
@@ -179,7 +207,7 @@ data/
   graph/
 ```
 
-Each capability should use the same internal pattern: facade, semantic types,
+Each capability should use the same internal pattern: public surface, semantic types,
 entity addressing, key/value codec, read path, write path, branch adapter,
 retrieval adapter, relationship adapter where applicable, and diagnostics.
 

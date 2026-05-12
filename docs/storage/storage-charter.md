@@ -29,7 +29,7 @@ It should be read together with:
 - [v1-storage-consumption-contract.md](./v1-storage-consumption-contract.md)
 - [../core/core-charter.md](../core/core-charter.md)
 - [../engine/engine-crate-map.md](../engine/engine-crate-map.md)
-- [../core/co4-storage-boundary-eviction-plan.md](../core/co4-storage-boundary-eviction-plan.md)
+- [../core/archive/co4-storage-boundary-eviction-plan.md](../core/archive/co4-storage-boundary-eviction-plan.md)
 - [../engine/archive/engine-pending-items.md](../engine/archive/engine-pending-items.md)
 - [storage-crate-map.md](./storage-crate-map.md)
 - [concurrency-crate-map.md](./concurrency-crate-map.md)
@@ -274,8 +274,8 @@ The intended dependency direction is:
 
 The following shapes should disappear:
 
-- `engine -> core-legacy`
-- `concurrency -> core-legacy`
+- engine depending on a temporary core compatibility shell
+- lower runtime crates depending on a temporary core compatibility shell
 - `durability` as a peer runtime crate beside storage
 - lower-layer dependence on engine-owned primitive semantics
 
@@ -292,10 +292,10 @@ true:
    now-deleted `strata-durability` crate.
 4. JSON path semantics no longer live below `engine`.
 5. Branch bundle no longer lives below `engine`.
-6. `engine` no longer depends on `core-legacy` in order to reach lower runtime
-   machinery.
-7. The former `core-legacy` surface has been deleted rather than preserved as a
-   compatibility shell.
+6. `engine` no longer depends on a temporary core compatibility shell in order
+   to reach lower runtime machinery.
+7. The former temporary core compatibility surface has been deleted rather than
+   preserved as an alternate authority.
 
 ## Design Guardrails
 
