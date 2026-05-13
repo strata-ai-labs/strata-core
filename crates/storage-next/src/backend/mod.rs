@@ -18,6 +18,11 @@ mod conformance;
 pub(crate) mod local_fs;
 
 pub(crate) mod memory;
+mod publish;
+
+pub(crate) use publish::{
+    PublishDurability, PublishError, PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
+};
 
 pub(crate) type BackendResult<T> = Result<T, BackendError>;
 
@@ -30,15 +35,16 @@ pub(crate) enum BackendCapability {
     DeleteObject = 3,
     ListPrefix = 4,
     ObjectMetadata = 5,
-    ConditionalCreate = 6,
-    ConditionalUpdate = 7,
-    DurablePublish = 8,
-    ConditionalPublish = 9,
-    DurableSync = 10,
-    SingleWriterLock = 11,
-    Lease = 12,
-    ConsistentList = 13,
-    MonotonicMetadata = 14,
+    AppendObject = 6,
+    ConditionalCreate = 7,
+    ConditionalUpdate = 8,
+    DurablePublish = 9,
+    ConditionalPublish = 10,
+    DurableSync = 11,
+    SingleWriterLock = 12,
+    Lease = 13,
+    ConsistentList = 14,
+    MonotonicMetadata = 15,
 }
 
 impl BackendCapability {
@@ -50,6 +56,7 @@ impl BackendCapability {
             Self::DeleteObject => "delete_object",
             Self::ListPrefix => "list_prefix",
             Self::ObjectMetadata => "object_metadata",
+            Self::AppendObject => "append_object",
             Self::ConditionalCreate => "conditional_create",
             Self::ConditionalUpdate => "conditional_update",
             Self::DurablePublish => "durable_publish",
@@ -114,9 +121,11 @@ impl BackendCapabilities {
 
 pub(crate) const CACHE_MODE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::ReadObject,
+    BackendCapability::ReadRange,
     BackendCapability::WriteObject,
     BackendCapability::DeleteObject,
     BackendCapability::ListPrefix,
+    BackendCapability::ObjectMetadata,
 ];
 
 pub(crate) const BASIC_OBJECT_BACKEND_CAPABILITIES: &[BackendCapability] = &[
@@ -135,20 +144,19 @@ pub(crate) const DURABLE_LOCAL_MODE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::DeleteObject,
     BackendCapability::ListPrefix,
     BackendCapability::ObjectMetadata,
+    BackendCapability::AppendObject,
     BackendCapability::DurablePublish,
     BackendCapability::DurableSync,
     BackendCapability::SingleWriterLock,
 ];
 
-pub(crate) const OBJECT_DURABLE_CANDIDATE_REQUIREMENTS: &[BackendCapability] = &[
+pub(crate) const OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::ReadObject,
     BackendCapability::ReadRange,
     BackendCapability::WriteObject,
     BackendCapability::DeleteObject,
     BackendCapability::ListPrefix,
     BackendCapability::ObjectMetadata,
-    BackendCapability::ConditionalCreate,
-    BackendCapability::ConditionalUpdate,
     BackendCapability::ConsistentList,
     BackendCapability::MonotonicMetadata,
 ];
@@ -183,6 +191,39 @@ impl BackendMetadata {
 
     pub(crate) const fn fence(&self) -> Option<&BackendFence> {
         self.fence.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BackendAppend {
+    start_offset: u64,
+    bytes_written: u64,
+    metadata: BackendMetadata,
+}
+
+impl BackendAppend {
+    pub(crate) const fn new(
+        start_offset: u64,
+        bytes_written: u64,
+        metadata: BackendMetadata,
+    ) -> Self {
+        Self {
+            start_offset,
+            bytes_written,
+            metadata,
+        }
+    }
+
+    pub(crate) const fn start_offset(&self) -> u64 {
+        self.start_offset
+    }
+
+    pub(crate) const fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+
+    pub(crate) const fn metadata(&self) -> &BackendMetadata {
+        &self.metadata
     }
 }
 
@@ -276,6 +317,14 @@ pub(crate) trait Backend: Send + Sync {
 
     fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata>;
 
+    fn append_object(&self, _name: &ObjectName, _bytes: &[u8]) -> BackendResult<BackendAppend> {
+        Err(BackendError::unsupported(BackendCapability::AppendObject))
+    }
+
+    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+        Err(BackendError::unsupported(BackendCapability::DurableSync))
+    }
+
     fn conditional_create(
         &self,
         _name: &ObjectName,
@@ -296,15 +345,27 @@ pub(crate) trait Backend: Send + Sync {
             BackendCapability::ConditionalUpdate,
         ))
     }
+
+    fn publish_object(
+        &self,
+        name: &ObjectName,
+        _bytes: &[u8],
+        _mode: PublishMode,
+    ) -> PublishResult<PublishOutcome> {
+        Err(PublishError::unsupported(
+            name,
+            BackendError::unsupported(BackendCapability::DurablePublish),
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Backend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
-        BackendFence, BackendMetadata, BackendRange, BASIC_OBJECT_BACKEND_CAPABILITIES,
-        CACHE_MODE_REQUIREMENTS, DURABLE_LOCAL_MODE_REQUIREMENTS,
-        OBJECT_DURABLE_CANDIDATE_REQUIREMENTS,
+        Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError,
+        BackendErrorKind, BackendFence, BackendMetadata, BackendRange,
+        BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
+        DURABLE_LOCAL_MODE_REQUIREMENTS, OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS,
     };
     use crate::object::{ObjectName, ObjectPrefix};
 
@@ -372,6 +433,7 @@ mod tests {
             (BackendCapability::DeleteObject, "delete_object"),
             (BackendCapability::ListPrefix, "list_prefix"),
             (BackendCapability::ObjectMetadata, "object_metadata"),
+            (BackendCapability::AppendObject, "append_object"),
             (BackendCapability::ConditionalCreate, "conditional_create"),
             (BackendCapability::ConditionalUpdate, "conditional_update"),
             (BackendCapability::DurablePublish, "durable_publish"),
@@ -390,22 +452,17 @@ mod tests {
     }
 
     #[test]
-    fn cache_mode_requirement_is_smaller_than_memory_backend_capabilities() {
+    fn cache_mode_requirement_matches_basic_object_backend_capabilities() {
         let memory = BackendCapabilities::from_slice(BASIC_OBJECT_BACKEND_CAPABILITIES);
         let cache_mode = BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS);
 
         assert!(memory.supports(CACHE_MODE_REQUIREMENTS));
         assert!(memory.supports(BASIC_OBJECT_BACKEND_CAPABILITIES));
-        assert_eq!(
-            cache_mode.missing(BASIC_OBJECT_BACKEND_CAPABILITIES),
-            vec![
-                BackendCapability::ReadRange,
-                BackendCapability::ObjectMetadata,
-            ]
-        );
+        assert!(cache_mode.supports(BASIC_OBJECT_BACKEND_CAPABILITIES));
         assert_eq!(
             memory.missing(DURABLE_LOCAL_MODE_REQUIREMENTS),
             vec![
+                BackendCapability::AppendObject,
                 BackendCapability::DurablePublish,
                 BackendCapability::DurableSync,
                 BackendCapability::SingleWriterLock,
@@ -414,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn object_durable_candidate_requires_conditional_metadata() {
+    fn object_durable_candidate_base_requires_consistent_metadata() {
         let candidate = BackendCapabilities::from_slice(&[
             BackendCapability::ReadObject,
             BackendCapability::ReadRange,
@@ -428,7 +485,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            candidate.missing(OBJECT_DURABLE_CANDIDATE_REQUIREMENTS),
+            candidate.missing(OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS),
             vec![BackendCapability::MonotonicMetadata]
         );
     }
@@ -457,6 +514,16 @@ mod tests {
     }
 
     #[test]
+    fn backend_append_reports_offsets_and_metadata() {
+        let metadata = BackendMetadata::new(12, None);
+        let append = BackendAppend::new(4, 8, metadata.clone());
+
+        assert_eq!(append.start_offset(), 4);
+        assert_eq!(append.bytes_written(), 8);
+        assert_eq!(append.metadata(), &metadata);
+    }
+
+    #[test]
     fn conditional_operations_default_to_unsupported() {
         let backend = EmptyBackend;
         let name = ObjectName::new("manifest/current").expect("valid object name");
@@ -468,10 +535,26 @@ mod tests {
         let update_error = backend
             .conditional_update(&name, &fence, b"payload")
             .expect_err("conditional update should be unsupported");
+        let publish_error = backend
+            .publish_object(&name, b"payload", super::PublishMode::Replace)
+            .expect_err("publish should be unsupported");
+        let append_error = backend
+            .append_object(&name, b"payload")
+            .expect_err("append should be unsupported");
+        let sync_error = backend
+            .sync_object(&name)
+            .expect_err("sync should be unsupported");
 
         assert_eq!(backend.capabilities(), BackendCapabilities::empty());
         assert_eq!(create_error.kind(), BackendErrorKind::UnsupportedOperation);
         assert_eq!(update_error.kind(), BackendErrorKind::UnsupportedOperation);
+        assert_eq!(append_error.kind(), BackendErrorKind::UnsupportedOperation);
+        assert_eq!(sync_error.kind(), BackendErrorKind::UnsupportedOperation);
+        assert_eq!(publish_error.kind(), super::PublishFailureKind::Unsupported);
+        assert_eq!(
+            publish_error.source_error().kind(),
+            BackendErrorKind::UnsupportedOperation
+        );
     }
 
     #[test]

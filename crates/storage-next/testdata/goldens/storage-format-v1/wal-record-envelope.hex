@@ -1,0 +1,8 @@
+# format: wal_record_envelope
+# encoded_record_len: 52
+# encoded_len_crc32: 0x5e0db0ea
+# encoded_record: identity-encoded wal-record-payload.hex
+34 00 00 00 ea b0 0d 5e 30 00 00 00 01 bd 27 6f
+d1 2a 00 00 00 00 00 00 00 10 11 12 13 14 15 16
+17 18 19 1a 1b 1c 1d 1e 1f 41 22 20 18 24 0a 06
+00 70 61 79 6c 6f 61 64 19 a3 24 cf

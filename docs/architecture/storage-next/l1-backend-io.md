@@ -37,6 +37,8 @@ Backend IO owns:
 - reading an object
 - reading an object byte range
 - writing a full object
+- appending bytes to an existing object when the backend supports WAL segment
+  append
 - deleting an object
 - listing objects by prefix
 - reading object metadata
@@ -90,7 +92,12 @@ fallback path.
 
 ### Local Filesystem Backend
 
-The local filesystem backend is the reference durable backend.
+The local filesystem backend is the reference durable backend. The first V1
+implementation treats Unix-like local filesystems as the durable reference
+because the required publish sequence depends on atomic rename/link behavior
+and durable parent-directory sync. Non-Unix local filesystem builds may compile,
+but they must not advertise durable publish/sync capabilities until they provide
+equivalent backend-owned primitives.
 
 V1 minimum:
 
@@ -137,6 +144,7 @@ Initial capability vocabulary:
 - `delete_object`
 - `list_prefix`
 - `object_metadata`
+- `append_object`
 - `conditional_create`
 - `conditional_update`
 - `durable_publish`
@@ -172,11 +180,12 @@ Where `publish_mode` can express:
 - conditional update against an opaque backend fence
 - non-durable cache write
 
-The local filesystem backend may implement this with temporary files, file
-sync, rename, and parent directory sync. An object backend may implement it
-with conditional writes, generations, etags, or multipart/object-specific
-publish rules. L4 consumes the `PublishOutcome` and applies service meaning
-such as "manifest publish" or "snapshot publish."
+The local filesystem backend may implement this with unique temporary files,
+file sync, atomic no-clobber link for create, atomic replace rename, and parent
+directory sync. An object backend may implement it with conditional writes,
+generations, etags, or multipart/object-specific publish rules. L4 consumes the
+`PublishOutcome` and applies service meaning such as "manifest publish" or
+"snapshot publish."
 
 Higher storage layers should not call POSIX-shaped primitives directly.
 
@@ -207,6 +216,7 @@ Durable local mode requires:
 - read object
 - read range
 - write object
+- append object
 - delete object
 - list prefix
 - object metadata

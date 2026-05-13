@@ -1,6 +1,6 @@
 # V1 Progress Tracker
 
-Status: M2TC1 complete; tracker active
+Status: M3TE1E complete; tracker active
 
 ## Purpose
 
@@ -59,7 +59,7 @@ PR and issue titles should start with the slice or epic code followed by a short
 domain title, for example:
 
 ```text
-M3C1: Add manifest codec golden vectors
+M3C1: Add storage row golden vectors
 M6TD2: Cover recipe freshness degradation
 ```
 
@@ -69,8 +69,8 @@ M6TD2: Cover recipe freshness degradation
 |---|---|---|---|---|---|
 | `M0` | Architecture freeze and tracking | Complete | Complete | Complete | M0 closed. |
 | `M1` | Core-next | Complete | Complete | Complete | M1 closed; start `M2A` and `M2TA` when storage-next implementation begins. |
-| `M2` | Storage-next testkit and crate skeleton | Complete | Complete | Review | `M2TC1` complete; run M2 milestone review. |
-| `M3` | Storage-next backend, layout, format, and durable services | Planned | Planned | Planned | Start after storage-next skeleton and harness exist. |
+| `M2` | Storage-next testkit and crate skeleton | Complete | Complete | Complete | M2 closed. |
+| `M3` | Storage-next backend, layout, format, and durable services | In Progress | In Progress | In Progress | `M3TE1E` complete; continue with `M3TC2` WAL hardening and `M3E3` snapshot/checkpoint services. |
 | `M4` | Storage-next table, branch, commit, recovery, and L9 API | Planned | Planned | Planned | Start after durable bytes and services are stable. |
 | `M5` | Engine-next persistence adapter and control plane | Planned | Planned | Planned | Start after L9 is consumable. |
 | `M6` | Engine-next product semantics | Planned | Planned | Planned | Start after engine persistence/control plane are stable. |
@@ -101,6 +101,16 @@ M6TD2: Cover recipe freshness degradation
 | `M2TB` | Feature matrix | Test | Complete | none | `cargo-hack` feature powerset gate passes for storage-next. |
 | `M2TC` | WASM cache compile | Test | Complete | none | wasm32 memory/cache compile gate passes with localfs excluded. |
 | `M2TD` | Testkit boundary guards | Test | Complete | none | Compile probes prove testkit and fault APIs stay feature-gated. |
+| `M3A` | Backend operations | Implementation | Complete | none | `M3A1` complete; backend mode capability validation is in place. |
+| `M3B` | Object layout | Implementation | Complete | none | `M3B1` and `M3B2` complete; continue with format codec work. |
+| `M3C` | Format codec | Implementation | Complete | none | `M3C1` through `M3C5` complete; durable service work now continues in `M3E`. |
+| `M3D` | Durable publisher | Implementation | Complete | none | Durable publisher implementation and publish fault-window tests are complete. |
+| `M3E` | Durable services | Implementation | In Progress | none | `M3E1` adds manifest services and `M3E2` adds WAL service mechanics; `M3TE1` is complete and `M3TC2` hardens WAL before snapshot, checkpoint, and sidecar mechanics in `M3E3`. |
+| `M3TA` | Format golden tests | Test | In Progress | none | `M3C1` adds internal-key and storage-row goldens; `M3C2` adds manifest, watermark, and segment metadata goldens; `M3C3` adds WAL segment, envelope, and record goldens; `M3C4` adds snapshot header, section, and container goldens. Remaining service/object-family goldens land with M3E or M4 slices when those durable objects exist. |
+| `M3TB` | Format fuzz tests | Test | In Progress | none | `M3C5` adds the first cargo-fuzz package and initial parser targets for manifest, snapshot envelope, storage row, and WAL record bytes. `M3TB2` is optional and will be decided by `M3TC2` service-level WAL coverage. |
+| `M3TC` | Durable fault-window tests | Test | In Progress | none | `M3TC1` covers durable-publish fault windows; `M3TC2` expands WAL tests to reference-grade durability coverage. Later slices cover snapshot and quarantine service windows. |
+| `M3TE` | Manifest service tests | Test | Complete | none | `M3TE1A` through `M3TE1E` closed; manifest services have reference-grade load, update, publish-failure, opacity, and error-precision coverage. |
+| `M3TF` | Backend conformance | Test | In Progress | none | `M3A1` extended private backend conformance with storage-mode validation; full M3TF closes after durable services exist. |
 | `M7A` | Inference task traits | Implementation | Planned | none | May start now if parallel inference work is scheduled. |
 
 ## M0 Closure Record
@@ -156,10 +166,9 @@ M1 is closed by the following artifacts and verification gates:
 | `M1D` | Complete | `docs/architecture/core-next-architecture.md` Implemented M1 Boundary section. |
 | `M1TD` | Complete | `crates/core-next/tests/public_api_snapshot.rs` and `crates/core-next/tests/snapshots/public_api.txt`. |
 
-## M2 Execution Record
+## M2 Closure Record
 
-M2 is active. Closed work is recorded here until the full milestone gate can
-move to Complete.
+M2 is closed by the following artifacts and verification gates:
 
 | Code | Status | Artifact |
 |---|---|---|
@@ -172,6 +181,31 @@ move to Complete.
 | `M2E` | Complete | Storage harness scaffolding under `crates/storage-next/tests/`, `tests/common/mod.rs`, `tests/README.md`, `testdata/goldens/storage-format-v1/README.md`, and `fuzz/`, with smoke entry points for conformance, properties, goldens, fault windows, crash recovery, stress, and API harnesses without durable-behavior claims. |
 | `M2TB` | Complete | `cargo hack -p strata-storage-next --feature-powerset --depth 2 --locked check --all-targets` covers no-default, default, each feature, and pairwise combinations. `cargo test -p strata-storage-next --no-default-features --features testkit --test backend_conformance --locked` proves unavailable backend selections report a targeted `localfs` feature requirement. |
 | `M2TC` | Complete | `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked` proves the memory/cache build compiles on wasm with `localfs` excluded. `cargo test -p strata-storage-next --test testkit_boundary --locked localfs_feature_is_rejected_for_wasm_builds` proves default-feature wasm builds fail with a targeted `localfs` unsupported message. |
+
+## M3 Execution Record
+
+M3 is active. Closed work is recorded here until the full milestone gate can
+move to Complete.
+
+| Code | Status | Artifact |
+|---|---|---|
+| `M3A1` | Complete | `crates/storage-next/src/config/mode.rs` adds cache, durable-local standard, durable-local always, and object-durable-candidate backend capability validation. `crates/storage-next/src/backend/conformance.rs` proves current memory and local filesystem basic object backends accept cache mode and reject durable modes until durable publish, sync, writer-lock, and object-fencing capabilities are implemented. `docs/architecture/implementation-plans/m3-porting-log.md` records the source-map and retirement disposition. |
+| `M3B1` | Complete | `crates/storage-next/src/layout/mod.rs` adds reserved object families and constructors for manifest, WAL segment, table, snapshot, temporary, quarantine, lock, and metadata object names and prefixes. Layout tests prove fixed-width ordered IDs, prefix ownership, component validation, quarantine separation, and follower-state path exclusion. `docs/architecture/implementation-plans/m3-porting-log.md` records the source-map and retirement disposition. |
+| `M3B2` | Complete | `crates/storage-next/src/layout/tests.rs` adds property-style tests for WAL/snapshot ordering, table/temporary/quarantine prefix ownership, and invalid component rejection while keeping the production layout module under the V1 file-size threshold. `crates/storage-next/tests/object_layout_properties.rs` adds a source guard proving reserved durable layout names stay owned by layout/object/local-fs boundary code. `docs/architecture/implementation-plans/m3-porting-log.md` records the source-map and retirement disposition. |
+| `M3C1` | Complete | `crates/storage-next/src/row/mod.rs` adds storage-space id, physical key, internal key, and storage row records. `crates/storage-next/src/format/key.rs` and `crates/storage-next/src/format/storage_row.rs` add strict V1 internal-key and storage-row encoders/decoders. `crates/storage-next/testdata/goldens/storage-format-v1/` adds golden vectors for ordinary internal keys, zero-byte escaped internal keys, put rows, and tombstone rows. `docs/spec/strata-storage-format-v1.md` records the frozen row format and internal-key ordering exception. |
+| `M3C2` | Complete | `crates/storage-next/src/format/manifest.rs`, `crates/storage-next/src/format/watermark.rs`, and `crates/storage-next/src/format/segment_metadata.rs` add strict V1 encoders/decoders for database manifest bytes, snapshot watermark bytes, and WAL segment metadata sidecars, including invalid recovery-fact rejection. `crates/storage-next/testdata/goldens/storage-format-v1/` adds identity-codec manifest, empty/present watermark, and segment metadata golden vectors. `docs/spec/strata-storage-format-v1.md` records the exact V1 manifest, watermark, and sidecar byte formats. |
+| `M3C3` | Complete | `crates/storage-next/src/format/wal.rs` adds strict V1 encoders/decoders for WAL segment headers, codec-aware outer record envelopes, and inner WAL records. `crates/storage-next/testdata/goldens/storage-format-v1/` adds segment header, empty-payload record, non-empty-payload record, and envelope golden vectors. `docs/spec/strata-storage-format-v1.md` records the exact V1 WAL header, envelope, and record byte formats. |
+| `M3C4` | Complete | `crates/storage-next/src/format/snapshot.rs` adds strict V1 encoders/decoders for snapshot headers, section envelopes, and whole containers with footer CRC validation. `crates/storage-next/testdata/goldens/storage-format-v1/` adds identity-codec header, empty-section envelope, and single-section container golden vectors. `docs/spec/strata-storage-format-v1.md` records the exact V1 snapshot container and section envelope byte formats. |
+| `M3C5` | Complete | `crates/storage-next/fuzz/` is now a cargo-fuzz package with initial targets for manifest, snapshot envelope, storage row, and WAL record decoder families. `crates/storage-next/src/testkit/format_fuzz.rs` exposes a hidden testkit routing surface for fuzz targets without making format internals production API. |
+| `M3D1` | Complete | `crates/storage-next/src/backend/publish.rs` adds the backend publish contract and classified publish-failure windows. `crates/storage-next/src/backend/local_fs.rs` implements Unix durable publication with unique temporary files, temp file sync, atomic no-clobber create, atomic replace, and parent-directory sync; non-Unix local filesystem builds do not advertise durable publish/sync yet. `crates/storage-next/src/backend/memory.rs` implements explicit non-durable cache publication. `crates/storage-next/src/service/publish.rs` exposes the thin L4 publisher wrapper over layout-owned object names. `crates/storage-next/src/testkit/mod.rs` can now observe and fault publish operations. |
+| `M3TC1` | Complete | `crates/storage-next/src/backend/local_fs.rs` adds backend-local Unix fault hooks and tests for temporary creation, temporary write, temporary sync, final publish, and parent-directory sync. The tests assert classified publish errors, final object visibility, and generated temporary object cleanup without exposing the hooks through the public testkit. |
+| `M3E1` | Complete | `crates/storage-next/src/service/manifest.rs` adds database manifest service mechanics over V1 manifest bytes and payload-opaque table manifest publication over layout-owned table manifest object names. The service distinguishes missing, corrupt, codec-mismatch, invalid-recovery-fact, and publish-window failures without importing branch/table semantics. `crates/storage-next/src/format/manifest.rs` now rejects present-but-zero snapshot recovery facts before bytes can be persisted. `docs/architecture/implementation-plans/m3e1-manifest-test-suite-plan.md` defines the follow-up `M3TE1` reference-grade manifest test suite. |
+| `M3E2` | Complete | `crates/storage-next/src/backend/mod.rs` adds object-name based append/sync backend primitives and `crates/storage-next/src/backend/local_fs.rs` implements them for local durable WAL segments. `crates/storage-next/src/service/wal.rs` adds the durable-local WAL service: segment create/open, append, standard/always durability policy, rotation, strict reads, partial-tail facts, and covered-segment deletion. `crates/storage-next/src/service/wal/tests.rs` covers cache backend rejection, header validation, append/read roundtrip, policy sync behavior, rotation, corruption, partial tails, and active segment protection. `docs/architecture/implementation-plans/m3e2-wal-test-suite-plan.md` defines the follow-up `M3TC2` reference-grade WAL test suite. |
+| `M3TE1A` | Complete | `crates/storage-next/src/service/manifest.rs` adds adversarial load/capability hardening for manifest services: non-`NotFound` read failures stay typed as `ManifestServiceError::Read`, codec-validating load preserves backend read failures, memory durable publish failures assert object and source kind, localfs database and table manifest publication assert exact stored bytes, and the publish-fault backend can emit all five `PublishFailureKind` values. Suite cases covered include M3E1 manifest test-suite construction/capability cases, load cases for missing and backend failure, codec-load missing/backend-failure routing, and localfs durable publication byte checks. Sensitivity probe: temporarily routed non-`NotFound` read failures to `Ok(None)`; `database_manifest_load_current_preserves_backend_read_failure` failed, then the mutation was reverted. Narrow verification: `cargo test -p strata-storage-next --locked database_manifest_load_current_preserves_backend_read_failure` and `cargo test -p strata-storage-next --locked service::manifest`. Broad verification: `cargo test -p strata-storage-next --no-default-features --locked service::manifest`, `cargo test -p strata-storage-next --locked`, and `cargo clippy -p strata-storage-next --all-targets --locked -- -D warnings`. |
+| `M3TE1B` | Complete | `crates/storage-next/src/service/manifest.rs` adds a durable recording backend for manifest tests, a database manifest model, a host-only `proptest` update-sequence property over 1 to 64 operations, and a raw `publish_current` test proving caller-supplied manifests replace current facts without preservation. The model asserts returned write facts, stored bytes, fresh loads, active WAL segment, snapshot facts, flush watermark, database id, and codec id after every successful update; rejected zero-fact updates assert exact `InvalidRecoveryFact` fields and byte preservation. The `proptest` dev-dependency is gated off wasm so the cache-only wasm compile path remains clean. Sensitivity probe: temporarily changed flush-watermark persistence to drop snapshot facts; `database_manifest_state_machine_preserves_recovery_facts` failed with the minimal sequence snapshot-facts then flush-watermark, then the mutation and probe-only regression seed were removed. Narrow verification: `PROPTEST_CASES=2048 cargo test -p strata-storage-next --locked database_manifest_state_machine_preserves_recovery_facts`, `cargo test -p strata-storage-next --locked service::manifest`, and `cargo test -p strata-storage-next --no-default-features --locked service::manifest`. Broad verification: `cargo test -p strata-storage-next --locked`, `cargo clippy -p strata-storage-next --all-targets --locked -- -D warnings`, `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked`, and `cargo hack -p strata-storage-next --feature-powerset --depth 2 --locked check --all-targets`. |
+| `M3TE1C` | Complete | `crates/storage-next/src/service/manifest.rs` adds recovery-fact and codec-validation hardening for manifest services. New tests route invalid codec ids through `ManifestServiceError::Encode` before publish, reject malformed recovery fact bytes as `Decode` with the exact `FormatError::InvalidValue` field, accept valid boundary recovery facts at `1` and `u64::MAX`, prove invalid recovery facts fail before backend access, and distinguish matching codec loads, codec mismatches, corrupt bytes, missing manifests, and backend read failures. Sensitivity probes: temporarily mapped invalid codec errors to `InvalidRecoveryFact`, rejected `u64::MAX` active WAL segments, and mapped corrupt codec-validating loads to `CodecMismatch`; the targeted tests failed under each mutation and passed after revert. Narrow verification: `cargo test -p strata-storage-next --locked service::manifest` and `cargo test -p strata-storage-next --no-default-features --locked service::manifest`. Broad verification: `cargo test -p strata-storage-next --locked`, `cargo clippy -p strata-storage-next --all-targets --locked -- -D warnings`, `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked`, and `cargo hack -p strata-storage-next --feature-powerset --depth 2 --locked check --all-targets`. |
+| `M3TE1D` | Complete | `crates/storage-next/src/service/manifest.rs` adds the manifest publish-failure matrix for database/table roles, create/replace intents, and all five `PublishFailureKind` values. The matrix asserts exact `ManifestServiceError::Publish` role, object name, failure kind, and backend source kind; replace-path cases use a stored-byte fault backend to prove prior bytes remain authoritative for no-visible-replacement failures. Sensitivity probes: temporarily collapsed database publish failures to `Unsupported`, wrote replacement bytes before returning `FailedBeforeVisibility`, and mislabeled table publish failures as database errors; the targeted tests failed under each mutation and passed after revert. Narrow verification: `cargo test -p strata-storage-next --locked publish`, `cargo test -p strata-storage-next --locked service::manifest`, and `cargo test -p strata-storage-next --no-default-features --locked service::manifest`. Broad verification: `cargo test -p strata-storage-next --locked`, `cargo clippy -p strata-storage-next --all-targets --locked -- -D warnings`, `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked`, and `cargo hack -p strata-storage-next --feature-powerset --depth 2 --locked check --all-targets`. |
+| `M3TE1E` | Complete | `crates/storage-next/src/service/manifest.rs` adds the table-manifest opacity matrix, create/replace opaque-byte semantics, invalid branch-id layout matrix, and role/object/field precision coverage for reachable manifest service error families. Table payload tests cover empty bytes, arbitrary binary bytes, corrupt database-manifest-looking bytes, WAL-looking bytes, embedded NUL bytes, and large payloads without decoding. Layout tests distinguish component-too-long from assembled-object-too-long and prove invalid branch IDs fail before backend access. Sensitivity probes: temporarily decoded table payloads as database manifests, mislabeled table layout errors as database role, and collapsed assembled object-name overflow into component overflow; the targeted tests failed under each mutation and passed after revert. Narrow verification: `cargo test -p strata-storage-next --locked table`, `cargo test -p strata-storage-next --locked service::manifest`, and `cargo test -p strata-storage-next --no-default-features --locked service::manifest`. Broad verification: `cargo test -p strata-storage-next --locked`, `cargo clippy -p strata-storage-next --all-targets --locked -- -D warnings`, `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked`, and `cargo hack -p strata-storage-next --feature-powerset --depth 2 --locked check --all-targets`. |
 
 ## Slice Update Protocol
 
@@ -192,10 +226,11 @@ When a slice closes:
 
 ## Next Work
 
-The current implementation milestone is `M2`. The next slices are:
+The current implementation milestone is `M3`. The next slices are:
 
-1. M2 milestone review.
-2. M2 closeout fixes if the milestone review finds issues.
+1. `M3TC2`: implement the comprehensive WAL service test suite using the adversarial test implementation plan.
+2. `M3E3`: implement snapshot, checkpoint, and sidecar service mechanics.
+3. `M3E4`: implement quarantine service mechanics and recovery integration.
 
 `M7` may also begin now if inference-next work should run in parallel with the
 storage path.

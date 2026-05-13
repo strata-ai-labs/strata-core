@@ -233,7 +233,10 @@ fn public_type_attr(source_lines: &[&str], index: usize) -> Option<(String, usiz
             next_index += 1;
         }
 
-        return Some((format!("#[derive({})]", normalize_commas(&content)), next_index + 1));
+        return Some((
+            format!("#[derive({})]", normalize_commas(&content)),
+            next_index + 1,
+        ));
     }
 
     if line.starts_with("#[") {
@@ -252,9 +255,10 @@ fn module_name_from_decl(line: &str) -> Option<String> {
 }
 
 fn public_type_name(line: &str, prefix: &str) -> Option<String> {
-    let name = line.strip_prefix(prefix)?.split(|char: char| {
-        !(char.is_ascii_alphanumeric() || char == '_')
-    }).next()?;
+    let name = line
+        .strip_prefix(prefix)?
+        .split(|char: char| !(char.is_ascii_alphanumeric() || char == '_'))
+        .next()?;
     if name.is_empty() {
         None
     } else {
@@ -303,14 +307,13 @@ fn normalize_impl_header(line: &str) -> String {
 }
 
 fn normalize_impl_item(line: &str) -> String {
-    line.trim_end_matches(" {").trim_end_matches(" {}").to_owned()
+    line.trim_end_matches(" {")
+        .trim_end_matches(" {}")
+        .to_owned()
 }
 
 fn is_struct_field_api_line(line: &str) -> bool {
-    !line.is_empty()
-        && line != "}"
-        && !line.starts_with("///")
-        && !line.starts_with("#[")
+    !line.is_empty() && line != "}" && !line.starts_with("///") && !line.starts_with("#[")
 }
 
 fn is_enum_api_line(line: &str) -> bool {
@@ -353,10 +356,6 @@ fn trim_semicolon(line: &str) -> String {
 }
 
 fn read_source(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| {
-        panic!(
-            "failed to read source file {}: {error}",
-            path.display()
-        )
-    })
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("failed to read source file {}: {error}", path.display()))
 }

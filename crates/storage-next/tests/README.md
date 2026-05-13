@@ -52,6 +52,23 @@ excludes the local filesystem backend. The boundary test proves a wasm build
 with default features fails clearly because `localfs` is not supported on
 `wasm32`.
 
+Fuzz package compile gate:
+
+```bash
+cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bins
+```
+
+Run cargo-fuzz targets locally with nightly:
+
+```bash
+cd crates/storage-next
+cargo install cargo-fuzz --locked
+cargo +nightly fuzz run format_manifest
+cargo +nightly fuzz run format_snapshot_envelope
+cargo +nightly fuzz run format_storage_row
+cargo +nightly fuzz run format_wal_record
+```
+
 Supported local environment variables:
 
 | Variable | Purpose |

@@ -1,13 +1,14 @@
 use super::{
-    Backend, BackendCapability, BackendErrorKind, BASIC_OBJECT_BACKEND_CAPABILITIES,
-    CACHE_MODE_REQUIREMENTS, DURABLE_LOCAL_MODE_REQUIREMENTS,
+    Backend, BackendErrorKind, BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
 };
+use crate::config::mode::{DurabilityPolicy, StorageModeRequest};
 use crate::test_support::{
     assert_backend_error_kind, assert_backend_list, object_name as name, range,
 };
 
 fn assert_basic_object_conformance(backend: &dyn Backend) {
     assert_basic_capabilities(backend);
+    assert_storage_mode_validation(backend);
     assert_missing_object_behavior(backend);
     assert_write_read_metadata_and_ranges(backend);
     assert_prefix_listing_and_delete(backend);
@@ -19,14 +20,30 @@ fn assert_basic_capabilities(backend: &dyn Backend) {
 
     assert!(capabilities.supports(CACHE_MODE_REQUIREMENTS));
     assert!(capabilities.supports(BASIC_OBJECT_BACKEND_CAPABILITIES));
-    assert_eq!(
-        capabilities.missing(DURABLE_LOCAL_MODE_REQUIREMENTS),
-        vec![
-            BackendCapability::DurablePublish,
-            BackendCapability::DurableSync,
-            BackendCapability::SingleWriterLock,
-        ]
-    );
+}
+
+fn assert_storage_mode_validation(backend: &dyn Backend) {
+    let capabilities = backend.capabilities();
+
+    StorageModeRequest::cache()
+        .validate_backend(capabilities)
+        .expect("basic object backend should satisfy cache mode");
+
+    for request in [
+        StorageModeRequest::durable_local(DurabilityPolicy::Standard),
+        StorageModeRequest::durable_local(DurabilityPolicy::Always),
+        StorageModeRequest::object_durable_candidate(),
+    ] {
+        let error = request
+            .validate_backend(capabilities)
+            .expect_err("basic object backend should not satisfy durable modes");
+
+        assert_eq!(error.kind(), BackendErrorKind::CapabilityMismatch);
+        assert!(
+            !request.missing_capabilities(capabilities).is_empty(),
+            "capability mismatch should report at least one missing capability"
+        );
+    }
 }
 
 fn assert_missing_object_behavior(backend: &dyn Backend) {

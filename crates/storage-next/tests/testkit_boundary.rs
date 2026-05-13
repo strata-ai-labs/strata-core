@@ -128,11 +128,17 @@ fn probe_cases<'a>() -> Vec<ProbeCase<'a>> {
             default_features: false,
             features: &["testkit"],
             source: r#"
-                use strata_storage_next::testkit::TestBackendKind;
+                use strata_storage_next::testkit::{
+                    FormatDecodeOutcome, FormatDecoder, TestBackendKind, decode_format_bytes,
+                };
 
                 fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let backend = TestBackendKind::parse("memory")?;
                     assert_eq!(backend.name(), "memory");
+                    assert_eq!(
+                        decode_format_bytes(FormatDecoder::Manifest, &[]),
+                        FormatDecodeOutcome::Rejected
+                    );
                     Ok(())
                 }
             "#,

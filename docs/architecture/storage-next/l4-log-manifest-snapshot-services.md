@@ -332,6 +332,12 @@ It should define WAL as a service that can be implemented as:
 The first implementation only needs cache/browser and local filesystem, but the
 contract should not prevent the object-store path.
 
+M3E2 implementation decision: V1 local filesystem WAL uses an object-name based
+backend append/sync primitive for existing WAL segment objects. The primitive
+does not expose paths, file descriptors, or append streams above L1. L4 exposes
+WAL append as a service operation; future object-store WAL can satisfy that
+service with immutable chunks plus fencing instead of POSIX append.
+
 ## Target Service Set
 
 ### Durable Publisher
@@ -592,6 +598,7 @@ Local durable mode requires:
 - read object
 - range read where WAL/table readers need it
 - write object
+- append object
 - delete object
 - list prefix
 - metadata
@@ -763,8 +770,9 @@ The first implementation does not need:
 
 ## Open Questions
 
-1. Is WAL append a stable L4 operation, or should storage-next model WAL as
-   immutable chunks even on local filesystem?
+1. Closed by M3E2 for V1 local filesystem: WAL append is a stable L4 service
+   operation backed by object-name based backend append/sync. Future object
+   durable mode may implement the same service as immutable WAL chunks.
 2. Does the database manifest become a generationed object with history, or a
    single current object?
 3. Should table/branch manifests share the same manifest service type as the

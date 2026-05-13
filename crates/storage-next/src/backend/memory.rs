@@ -2,7 +2,8 @@
 
 use super::{
     Backend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata, BackendRange,
-    BackendResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
+    BackendResult, PublishDurability, PublishError, PublishFailureKind, PublishMode,
+    PublishOutcome, PublishResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use std::collections::HashMap;
@@ -110,14 +111,42 @@ impl Backend for MemoryBackend {
             |bytes| Ok(BackendMetadata::new(bytes.len() as u64, None)),
         )
     }
+
+    fn publish_object(
+        &self,
+        name: &ObjectName,
+        bytes: &[u8],
+        mode: PublishMode,
+    ) -> PublishResult<PublishOutcome> {
+        if mode != PublishMode::NonDurableReplace {
+            return Err(PublishError::unsupported(
+                name,
+                BackendError::unsupported(super::BackendCapability::DurablePublish),
+            ));
+        }
+
+        let metadata = self.write_object(name, bytes).map_err(|error| {
+            PublishError::new(
+                name.clone(),
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            )
+        })?;
+        Ok(PublishOutcome::new(
+            name.clone(),
+            metadata,
+            PublishDurability::NonDurable,
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::MemoryBackend;
     use crate::backend::{
-        Backend, BackendCapability, BackendErrorKind, BackendRange,
-        BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
+        Backend, BackendCapability, BackendErrorKind, BackendRange, PublishDurability,
+        PublishFailureKind, PublishMode, BASIC_OBJECT_BACKEND_CAPABILITIES,
+        CACHE_MODE_REQUIREMENTS,
     };
     use crate::object::{ObjectName, ObjectPrefix};
 
@@ -224,5 +253,38 @@ mod tests {
             backend.read_object(&name).expect_err("deleted").kind(),
             BackendErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn memory_backend_publishes_non_durable_objects() {
+        let backend = MemoryBackend::new();
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        let outcome = backend
+            .publish_object(&name, b"manifest", PublishMode::NonDurableReplace)
+            .expect("publish");
+
+        assert_eq!(outcome.object(), &name);
+        assert_eq!(outcome.metadata().size_bytes(), 8);
+        assert_eq!(outcome.durability(), PublishDurability::NonDurable);
+        assert_eq!(backend.read_object(&name).expect("read"), b"manifest");
+    }
+
+    #[test]
+    fn memory_backend_rejects_durable_publish_modes() {
+        let backend = MemoryBackend::new();
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        for mode in [PublishMode::Create, PublishMode::Replace] {
+            let error = backend
+                .publish_object(&name, b"manifest", mode)
+                .expect_err("durable publish should be unsupported");
+
+            assert_eq!(error.kind(), PublishFailureKind::Unsupported);
+            assert_eq!(
+                error.source_error().kind(),
+                BackendErrorKind::UnsupportedOperation
+            );
+        }
     }
 }

@@ -152,6 +152,12 @@ Storage-next should preserve the idea of explicit segment headers and framed
 records. Whether the exact bytes remain identical is an implementation
 decision, but any change must be a deliberate format-version decision.
 
+M3C3 implementation note: storage-next keeps the current CRC/framing mechanics
+but starts stable V1 WAL segment and inner-record format versions at `1`.
+Pre-launch development segment versions `2` and `3`, and inner-record version
+`2`, are rejected by the normal V1 decoders. Inner WAL records carry
+`commit_version` rather than reintroducing a public transaction id atom.
+
 ### Manifest Format
 
 Current manifest bytes are storage-physical metadata:
@@ -173,22 +179,37 @@ used during lifecycle and recovery.
 
 ### Snapshot Container Format
 
-Current snapshot files have:
+Current snapshot files provide evidence for:
 
 - magic: `SNAP`
 - current snapshot format version: `2`
 - minimum supported snapshot format version: `2`
 - 64-byte snapshot header
 - snapshot id
-- watermark transaction
+- recovery watermark
 - created-at timestamp
-- database UUID
+- database id
 - codec ID length and codec ID string
 - section headers
 - footer CRC
 
 Storage-next should keep the distinction between a storage-owned snapshot
 container and the payload meaning inside sections.
+
+M3C4 implementation note: storage-next preserves the proven snapshot container
+mechanics from current storage: `SNAP` magic, a 64-byte header, codec id bytes
+immediately after the header, repeated section envelopes, and a footer CRC32
+over all bytes before the footer. V1 changes the stable snapshot format version
+to `1`, treats current snapshot format version `2` as pre-V1 development
+evidence, records the recovery watermark as a commit version, and validates
+only mechanical section shape in L3. Primitive snapshot section DTOs are not
+ported into storage-next.
+
+The materialized snapshot decoder is intentionally bounded so malformed or
+hostile containers cannot force unbounded payload copies. Large snapshot
+services should use the borrowed section visitor and decide their own install
+chunking policy rather than requiring L3 to allocate the complete container
+payload set.
 
 L3 may own:
 
@@ -436,6 +457,12 @@ The row model should support:
 - expiry timestamp, with zero meaning no expiry
 - optional row flags reserved for storage mechanics
 
+M3C1 freezes the first storage-row payload bytes in
+`docs/spec/strata-storage-format-v1.md`: row format version `1`, length-prefixed
+physical key bytes, little-endian commit version and timestamps, zero-only
+reserved flags, explicit tombstone byte, and length-prefixed value bytes.
+Tombstone rows must not carry value bytes or an expiry timestamp.
+
 The row model should not contain:
 
 - JSON document ids as a storage concept
@@ -593,8 +620,9 @@ These decisions should be reflected in the stable format spec:
 7. Required stable V1 codec support is identity only; AES-GCM is deferred from
    required V1.
 8. Durable identifier encodings are raw bytes or little-endian integers:
-   `BranchId` as 16 UUID bytes, `CommitVersion` as `u64`, `TxnId` as `u64`,
-   and timestamp as `u64` microseconds since Unix epoch.
+   `BranchId` as 16 UUID bytes, `CommitVersion` as `u64`, and timestamp as
+   `u64` microseconds since Unix epoch. V1 storage does not define a durable
+   transaction-id atom.
 
 ## Next Layer Dependency
 

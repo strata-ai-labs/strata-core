@@ -1,10 +1,23 @@
 # Storage-Next Fuzz Targets
 
-This directory reserves the storage-next fuzz harness location.
+This directory contains the storage-next cargo-fuzz package.
 
-The initial scaffold does not create a cargo-fuzz package because no durable
-byte codecs are implemented yet. Once byte-oriented parsers exist, add a
-cargo-fuzz package here with targets named for durable inputs such as
-`object_name_parse`, `format_wal_record`, `format_manifest`,
-`format_snapshot_envelope`, `format_commit_payload`, `format_table_block`,
-`format_timeline_row`, and `recovery_object_inventory`.
+The first targets exercise the current durable byte decoders through the hidden
+`testkit` surface. They are fail-closed parser fuzzers: arbitrary bytes may
+decode or reject, but they must not panic, allocate without decoder limits, or
+accept malformed checksums as valid.
+
+Useful local commands:
+
+```bash
+cargo install cargo-fuzz --locked
+cargo +nightly fuzz run format_manifest
+cargo +nightly fuzz run format_snapshot_envelope
+cargo +nightly fuzz run format_storage_row
+cargo +nightly fuzz run format_wal_record
+```
+
+The fuzz package uses `default-features = false` so parser fuzzing also covers
+the memory/cache-compatible build surface. Future targets should stay named for
+the byte-oriented durable input they fuzz, such as `object_name_parse`,
+`format_table_block`, `format_timeline_row`, and `recovery_object_inventory`.

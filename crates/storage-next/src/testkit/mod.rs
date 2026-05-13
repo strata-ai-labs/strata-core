@@ -4,6 +4,10 @@
 
 use std::fmt;
 
+mod format_fuzz;
+
+pub use format_fuzz::{decode_format_bytes, FormatDecodeOutcome, FormatDecoder};
+
 /// Test-only backend selector used by external conformance tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestBackendKind {
@@ -65,7 +69,8 @@ impl std::error::Error for TestkitError {}
 mod fault {
     use crate::backend::{
         Backend, BackendCapabilities, BackendError, BackendErrorKind, BackendFence,
-        BackendMetadata, BackendRange, BackendResult,
+        BackendMetadata, BackendRange, BackendResult, PublishError, PublishFailureKind,
+        PublishMode, PublishOutcome, PublishResult,
     };
     use crate::object::{ObjectName, ObjectPrefix};
     use std::collections::HashMap;
@@ -82,8 +87,11 @@ mod fault {
         DeleteObject,
         ListPrefix,
         ObjectMetadata,
+        AppendObject,
+        SyncObject,
         ConditionalCreate,
         ConditionalUpdate,
+        PublishObject,
     }
 
     impl BackendOperation {
@@ -95,8 +103,11 @@ mod fault {
                 Self::DeleteObject => "delete_object",
                 Self::ListPrefix => "list_prefix",
                 Self::ObjectMetadata => "object_metadata",
+                Self::AppendObject => "append_object",
+                Self::SyncObject => "sync_object",
                 Self::ConditionalCreate => "conditional_create",
                 Self::ConditionalUpdate => "conditional_update",
+                Self::PublishObject => "publish_object",
             }
         }
     }
@@ -339,6 +350,20 @@ mod fault {
             self.inner.object_metadata(name)
         }
 
+        fn append_object(
+            &self,
+            name: &ObjectName,
+            bytes: &[u8],
+        ) -> BackendResult<crate::backend::BackendAppend> {
+            self.observe(BackendOperation::AppendObject)?;
+            self.inner.append_object(name, bytes)
+        }
+
+        fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+            self.observe(BackendOperation::SyncObject)?;
+            self.inner.sync_object(name)
+        }
+
         fn conditional_create(
             &self,
             name: &ObjectName,
@@ -357,13 +382,36 @@ mod fault {
             self.observe(BackendOperation::ConditionalUpdate)?;
             self.inner.conditional_update(name, expected, bytes)
         }
+
+        fn publish_object(
+            &self,
+            name: &ObjectName,
+            bytes: &[u8],
+            mode: PublishMode,
+        ) -> PublishResult<PublishOutcome> {
+            self.before_operation(BackendOperation::PublishObject)
+                .map_err(|kind| {
+                    PublishError::new(
+                        name.clone(),
+                        PublishFailureKind::FailedBeforeVisibility,
+                        BackendError::new(
+                            kind.backend_kind(),
+                            format!(
+                                "test fault injected for {}",
+                                BackendOperation::PublishObject
+                            ),
+                        ),
+                    )
+                })?;
+            self.inner.publish_object(name, bytes, mode)
+        }
     }
 
     #[cfg(test)]
     mod tests {
         use super::{BackendOperation, FaultKind, FaultRule, FaultScript, FaultingBackend};
         use crate::backend::memory::MemoryBackend;
-        use crate::backend::{Backend, BackendErrorKind};
+        use crate::backend::{Backend, BackendErrorKind, PublishFailureKind, PublishMode};
         use crate::test_support::{assert_backend_error_kind, object_name};
         use std::num::NonZeroU64;
 
@@ -373,8 +421,11 @@ mod fault {
             let name = object_name("fault/delegate");
 
             backend.write_object(&name, b"abc").expect("write");
+            backend
+                .publish_object(&name, b"publish", PublishMode::NonDurableReplace)
+                .expect("publish");
 
-            assert_eq!(backend.read_object(&name).expect("read"), b"abc");
+            assert_eq!(backend.read_object(&name).expect("read"), b"publish");
             assert_eq!(
                 backend
                     .calls()
@@ -383,6 +434,7 @@ mod fault {
                     .collect::<Vec<_>>(),
                 vec![
                     (BackendOperation::WriteObject, 1),
+                    (BackendOperation::PublishObject, 1),
                     (BackendOperation::ReadObject, 1),
                 ]
             );
@@ -416,6 +468,31 @@ mod fault {
             assert_backend_error_kind(
                 backend.conditional_create(&name, b"bytes"),
                 BackendErrorKind::PermissionDenied,
+            );
+        }
+
+        #[test]
+        fn faulting_backend_can_fail_publish_before_delegate() {
+            let script = FaultScript::new([FaultRule::new(
+                BackendOperation::PublishObject,
+                NonZeroU64::new(1).expect("non-zero"),
+                FaultKind::Interrupted,
+            )]);
+            let backend = FaultingBackend::new(MemoryBackend::new(), script);
+            let name = object_name("fault/publish");
+
+            let error = backend
+                .publish_object(&name, b"bytes", PublishMode::NonDurableReplace)
+                .expect_err("publish fault");
+
+            assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+            assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+            assert_eq!(
+                backend
+                    .read_object(&name)
+                    .expect_err("not delegated")
+                    .kind(),
+                BackendErrorKind::NotFound
             );
         }
 

@@ -154,7 +154,7 @@ locks/
 meta/
 ```
 
-Provisional canonical layout:
+Canonical V1 layout:
 
 ```text
 manifest/current
@@ -180,9 +180,12 @@ Object names MUST be database-relative. They MUST NOT contain absolute paths,
 empty path components, `.` components, `..` components, backend URL syntax, or
 platform path separators other than `/`.
 
-The V1 object namespace SHOULD use ASCII-only names. The stable spec will
-define exact ID encodings for `branch-id`, `segment-id`, `snapshot-id`, and
-`table-id`.
+The V1 object namespace uses ASCII-only names. Segment and snapshot IDs are
+encoded as 16-character fixed-width lowercase hex. Table levels are encoded as
+`l` plus four fixed-width decimal digits, such as `l0000`, and must be in the
+range `0..=9999`. Branch and table IDs must use validated database-relative
+object-name components; the final durable ID source is owned by the
+storage/branch implementation work that allocates those IDs.
 
 ## 7. Codec Registry
 
@@ -244,30 +247,30 @@ implicitly applied to an object family without this specification saying so.
 
 The manifest stores physical database metadata.
 
-Current manifest evidence:
+V1 manifest format:
 
 ```text
 magic                         4 bytes   "STRM"
-format_version                u32 LE
-database_uuid                 16 bytes
+format_version                u32 LE, MUST be 1
+database_id                   16 bytes
 codec_id_len                  u32 LE
 codec_id                      codec_id_len bytes, UTF-8
-active_wal_segment            u64 LE
+active_wal_segment            u64 LE, MUST be nonzero
 snapshot_watermark            u64 LE, 0 means none
 snapshot_id                   u64 LE, 0 means none
 flushed_through_commit_id     u64 LE, 0 means none
 crc32                         u32 LE over all preceding bytes
 ```
 
-Current manifest constants:
+V1 manifest constants:
 
 ```text
 MANIFEST_MAGIC                  "STRM"
-MANIFEST_FORMAT_VERSION         2
-MIN_SUPPORTED_MANIFEST_VERSION  2
+MANIFEST_FORMAT_VERSION         1
+MAX_CODEC_ID_LEN                256 bytes
 ```
 
-Draft V1 requirements:
+Requirements:
 
 1. The stable V1 manifest format version is `1`.
 2. The manifest MUST identify the database.
@@ -278,46 +281,48 @@ Draft V1 requirements:
 6. The manifest decoder MUST reject invalid magic, pre-v1 development formats,
    future formats, invalid codec strings, insufficient data, and checksum
    mismatch.
-7. The manifest database identity is a storage-local physical database
+7. `active_wal_segment` MUST be nonzero. WAL segment ids are one-based in
+   durable manifests.
+8. `snapshot_watermark` and `snapshot_id` MUST either both be zero or both be
+   nonzero. A manifest with only one snapshot recovery field present is invalid.
+9. The manifest database identity is a storage-local physical database
    identity and recovery fact. It is not a StrataHub fleet, instance, dataset,
    or bundle identity. StrataHub must compose its own identifiers and
    provenance above the storage format.
+10. Pre-V1 development manifest version `2` is rejected by the normal V1
+   decoder. Strata is pre-launch; old development databases are not a stable
+   migration target.
 
 ## 9. WAL Segment Format
 
 The WAL segment format stores committed records.
 
-Current WAL segment evidence:
+V1 WAL segment header format:
 
 ```text
 segment_magic          4 bytes   "STRA"
-format_version         u32 LE
+format_version         u32 LE, MUST be 1
 segment_number         u64 LE
-database_uuid          16 bytes
+database_id            16 bytes
 header_crc             u32 LE over first 32 bytes
-records                repeated WAL segment records
 ```
 
-Current WAL segment constants:
+V1 WAL segment constants:
 
 ```text
 SEGMENT_MAGIC                    "STRA"
-SEGMENT_FORMAT_VERSION           3
-MIN_SUPPORTED_SEGMENT_VERSION    3
-SEGMENT_HEADER_SIZE              32 bytes
-SEGMENT_HEADER_SIZE_V2_V3        36 bytes
+SEGMENT_FORMAT_VERSION           1
+SEGMENT_HEADER_SIZE              36 bytes
+SEGMENT_BASE_HEADER_SIZE         32 bytes
 ```
 
-Segment version history from the current implementation:
+Pre-launch development version history from the current implementation:
 
 1. v1: original 32-byte header, no CRC.
 2. v2: 36-byte header with CRC32 over the first 32 bytes.
 3. v3: per-record outer envelope for codec-aware reads.
 
-Current v3 segments reject pre-v3 segment headers as unsupported development
-formats.
-
-Draft V1 requirements:
+Requirements:
 
 1. The stable V1 WAL segment format version is `1`.
 2. Each WAL segment MUST have a self-identifying header.
@@ -326,24 +331,40 @@ Draft V1 requirements:
 5. The header MUST have an integrity check.
 6. Segment number mismatch between object name and header MUST be rejected
    when the object name provides an expected segment number.
-7. Future segment versions MUST be rejected.
-8. Pre-v1 development segment versions MUST produce a typed unsupported-format
+7. Segment header versions `0`, `2`, and `3` are pre-V1 development formats
+   rejected by the normal V1 decoder. Versions greater than `1` other than
+   known pre-V1 development versions are future formats.
+8. Pre-V1 development segment versions MUST produce a typed unsupported-format
    failure.
-9. The current v3 outer envelope is retained as the V1 design idea, but the
-   stable public version starts at segment format version 1.
-
-Open issue: The stable V1 spec must decide whether WAL segments remain
-file-like append logs or become object-published immutable log chunks.
+9. The V1 header decoder returns the exact bytes consumed so L4 can parse
+   repeated record envelopes after the header. Trailing segment bytes are not
+   header-level trailing data.
+10. The byte header is stable in V1. Whether L4 implements segments as append
+    logs or object-published immutable chunks remains a service-level decision.
 
 ## 10. WAL Record Format
 
-Current WAL record evidence uses a v2 inner record format.
+V1 WAL records are two-layer frames:
+
+1. Outer codec-aware envelope: stored in WAL segments.
+2. Inner logical record: decoded from the outer envelope payload after the WAL
+   service applies the configured storage codec.
+
+V1 outer WAL record envelope:
+
+```text
+encoded_record_len     u32 LE
+encoded_len_crc32      u32 LE, CRC32 over encoded_record_len bytes
+encoded_record         encoded_record_len bytes
+```
+
+V1 inner WAL record format:
 
 ```text
 record_len             u32 LE, number of bytes after this field
-format_version         u8, currently 2
+format_version         u8, MUST be 1
 record_len_crc32       u32 LE, CRC32 over record_len bytes
-txn_id                 u64 LE
+commit_version         u64 LE
 branch_id              16 bytes
 timestamp_micros       u64 LE
 commit_payload         variable bytes
@@ -353,28 +374,36 @@ payload_crc32          u32 LE
 `payload_crc32` covers:
 
 ```text
-format_version || record_len_crc32 || txn_id || branch_id ||
+format_version || record_len_crc32 || commit_version || branch_id ||
 timestamp_micros || commit_payload
 ```
 
-Current parser behavior:
+V1 WAL record constants:
 
-1. v2 verifies `record_len_crc32` before trusting `record_len`.
-2. v2 verifies `payload_crc32` before parsing fields.
-3. v1 records lack `record_len_crc32` and remain parseable in the record parser
-   even though v3 segments reject pre-v3 segment headers.
-4. Unknown record versions are rejected.
+```text
+WAL_RECORD_FORMAT_VERSION          1
+WAL_RECORD_MIN_LEN_AFTER_PREFIX    41 bytes
+WAL_RECORD_ENVELOPE_HEADER_SIZE    8 bytes
+```
 
-Draft V1 requirements:
+Requirements:
 
 1. WAL records MUST be self-delimiting.
 2. WAL records MUST detect torn writes to the length field.
 3. WAL records MUST detect payload corruption.
-4. WAL records MUST carry commit identity, branch identity, commit timestamp,
-   and commit payload bytes.
+4. WAL records MUST carry commit version, branch identity, commit timestamp,
+   and opaque commit payload bytes.
 5. WAL record decode MUST return the exact byte count consumed.
-6. The codec-aware outer envelope is WAL segment framing. The logical WAL
-   record begins after the segment frame payload has been decoded.
+6. The outer envelope length MUST be nonzero and protected by CRC before the
+   WAL service trusts the encoded payload length.
+7. The inner record decoder MUST verify `record_len_crc32` before trusting
+   `record_len`.
+8. The inner record decoder MUST verify `payload_crc32` before parsing fields.
+9. Inner record version `0` and pre-launch development version `2` are pre-V1
+   formats rejected by the normal V1 decoder. Versions greater than `1` other
+   than known pre-V1 development versions are future formats.
+10. The codec-aware outer envelope is WAL segment framing. The logical WAL
+    record begins after the segment frame payload has been decoded.
 
 ## 11. Commit Payload Format
 
@@ -424,15 +453,15 @@ Draft V1 requirements:
 
 The snapshot container stores checkpoint data at a recovery watermark.
 
-Current snapshot evidence:
+V1 snapshot byte layout:
 
 ```text
 snapshot_magic         4 bytes   "SNAP"
 format_version         u32 LE
 snapshot_id            u64 LE
-watermark_txn          u64 LE
+watermark_commit_version u64 LE
 created_at_micros      u64 LE
-database_uuid          16 bytes
+database_id            16 bytes
 codec_id_len           u8
 reserved               15 bytes
 codec_id               codec_id_len bytes, UTF-8
@@ -440,35 +469,44 @@ sections               repeated snapshot sections
 footer_crc32           u32 LE
 ```
 
-Current snapshot constants:
+V1 snapshot constants:
 
 ```text
 SNAPSHOT_MAGIC                    "SNAP"
-SNAPSHOT_FORMAT_VERSION           2
-MIN_SUPPORTED_SNAPSHOT_VERSION    2
+SNAPSHOT_FORMAT_VERSION           1
 SNAPSHOT_HEADER_SIZE              64 bytes
+SNAPSHOT_FOOTER_SIZE              4 bytes
 ```
 
-Draft V1 requirements:
+V1 requirements:
 
 1. The stable V1 snapshot container format version is `1`.
-2. A snapshot MUST identify the database.
-3. A snapshot MUST identify its snapshot id.
+2. Snapshot id MUST be nonzero.
+3. A snapshot MUST identify the database.
 4. A snapshot MUST identify the recovery watermark it covers.
-5. A snapshot MUST record or validate the database codec identity.
-6. A snapshot MUST have an integrity check over the container.
+5. The recovery watermark is a storage commit version encoded as `u64 LE`.
+6. A snapshot MUST record or validate the database codec identity.
 7. A snapshot MUST consist of zero or more length-delimited sections.
-8. Snapshot decode MUST fail before install if any section is corrupt.
-
-Open issue: The stable spec must decide whether snapshot `watermark_txn` is a
-transaction id, a commit version, or a unified storage recovery watermark.
+8. `codec_id_len` MUST be in `1..=255`; the codec id bytes MUST be valid UTF-8
+   and MUST NOT contain NUL.
+9. Reserved header bytes MUST be zero.
+10. `footer_crc32` is CRC32 over every byte before the footer, including header,
+    codec id, and all section envelope/payload bytes.
+11. Snapshot decode MUST fail before install if the header, footer checksum, or
+    any section envelope is corrupt.
+12. Pre-V1 development snapshot format version `2` is rejected by the V1
+    decoder rather than migrated.
+13. Implementations MUST validate section lengths before allocating payload
+    buffers. A materializing decoder MAY enforce implementation-defined
+    section-count and total-payload limits; large snapshot install paths SHOULD
+    use borrowed or streaming section iteration.
 
 ## 13. Snapshot Section Format
 
-Current section header evidence:
+V1 section envelope layout:
 
 ```text
-section_type           u8
+section_kind           u8
 section_data_len       u64 LE
 section_data           section_data_len bytes
 ```
@@ -486,18 +524,25 @@ Graph    0x06
 
 These primitive tags are current-format evidence, not target storage ownership.
 
-Draft V1 direction:
+V1 direction:
 
 1. Storage owns the section envelope.
-2. Committed storage state uses row-native storage snapshot sections.
-3. Engine owns opaque derived-state section payload semantics if such sections
+2. `section_kind = 0x00` is invalid and reserved.
+3. L3 validates only mechanical envelope shape. It does not map section kinds
+   to KV, JSON, event, vector, graph, search, or any product primitive.
+4. Committed storage state uses row-native storage snapshot sections.
+5. Engine owns opaque derived-state section payload semantics if such sections
    remain.
-4. Unknown storage-owned section types MUST be rejected unless the section is
-   explicitly marked skippable by the format.
-5. Opaque engine-owned section types MAY exist only if their ownership and
+6. Unknown storage-owned section types MUST be rejected by the owning snapshot
+   install service unless the section is explicitly marked skippable by that
+   service contract.
+7. Opaque engine-owned sections MAY exist only if their ownership and
    install path are explicit.
-6. Opaque engine-owned sections MUST NOT be required to recover committed
+8. Opaque engine-owned sections MUST NOT be required to recover committed
    storage rows.
+9. Section decoders MUST reject length fields that cannot fit the host address
+   space or would overflow envelope-size arithmetic before allocating or
+   copying payload bytes.
 
 ## 14. Primitive Snapshot Payloads
 
@@ -527,21 +572,24 @@ product semantics.
 
 ## 15. Storage Row Format
 
-Storage row format is not yet frozen.
+Storage row payloads use format version `1`.
 
-Draft V1 row fields:
+V1 row bytes:
 
 ```text
-physical_key           bytes
-commit_version         u64
-timestamp_micros       u64
-value                  bytes
-tombstone              bool
-expires_at_micros      u64, 0 means no expiry
-row_flags              reserved storage flags
+format_version         u8, currently 1
+physical_key_len       u32 LE
+physical_key           physical_key_len bytes
+commit_version         u64 LE
+timestamp_micros       u64 LE
+expires_at_micros      u64 LE, 0 means no expiry
+row_flags              u32 LE, must be 0 in V1
+tombstone              u8, 0=false, 1=true
+value_len              u32 LE
+value                  value_len bytes
 ```
 
-Draft V1 requirements:
+V1 row requirements:
 
 1. Rows MUST be generic.
 2. Rows MUST support deletion tombstones.
@@ -550,6 +598,9 @@ Draft V1 requirements:
 4. Rows MUST be encodable in WAL payloads, snapshots, and immutable tables
    without changing product meaning.
 5. Rows MUST carry expiry metadata. A zero expiry means no expiry.
+6. Decoders MUST reject unsupported row versions, nonzero row flags, invalid
+   tombstone bytes, tombstones with nonzero expiry, tombstones with non-empty
+   values, invalid nested physical keys, insufficient bytes, and trailing data.
 
 ## 16. Internal Key Encoding
 
@@ -568,6 +619,11 @@ storage_space_id       1 byte
 user_key               byte-stuffed bytes terminated by 0x00 0x00
 descending_commit      8 bytes, big-endian bitwise-NOT of commit_version
 ```
+
+The `descending_commit` suffix intentionally uses big-endian order so natural
+byte ordering sorts newer versions first for a physical key. Other standalone
+core atom encodings remain little-endian unless a format section explicitly
+states otherwise.
 
 User key byte-stuffing:
 
@@ -696,30 +752,35 @@ Draft V1 requirements:
 
 ## 18. Watermark And Sidecar Formats
 
-Current code has a snapshot watermark byte format:
+V1 snapshot watermark byte format:
 
 ```text
 has_data               u8, 0 means empty, 1 means present
 snapshot_id            u64 LE, present when has_data = 1
-watermark_txn          u64 LE, present when has_data = 1
+watermark_commit_version u64 LE, present when has_data = 1
 updated_at_micros      u64 LE, present when has_data = 1
 ```
 
-Current code also has WAL segment metadata sidecars:
+The empty watermark is exactly one byte: `00`. The present watermark is exactly
+25 bytes. In a present watermark, `snapshot_id` MUST be nonzero. The decoder
+MUST reject any other `has_data` byte, zero snapshot id, truncation, and
+trailing data.
+
+V1 WAL segment metadata sidecar format:
 
 ```text
 magic                  4 bytes   "STAM"
-version                u32 LE
+version                u32 LE, MUST be 1
 segment_number         u64 LE
 min_timestamp          u64 LE
 max_timestamp          u64 LE
-min_txn_id             u64 LE
-max_txn_id             u64 LE
+min_commit_version     u64 LE
+max_commit_version     u64 LE
 record_count           u64 LE
-crc32                  u32 LE
+crc32                  u32 LE over all preceding bytes
 ```
 
-Current segment metadata constants:
+V1 segment metadata constants:
 
 ```text
 SEGMENT_META_MAGIC       "STAM"
@@ -727,18 +788,28 @@ SEGMENT_META_VERSION     1
 SEGMENT_META_SIZE        60 bytes
 ```
 
-Draft V1 requirements:
+Requirements:
 
-1. Optional sidecars MUST be explicitly marked optional by the spec.
-2. Missing optional sidecars MAY be regenerated.
-3. Corrupt optional sidecars MAY be ignored only if their owning service can
+1. Segment metadata sidecars are optional accelerators. Missing sidecars do not
+   make the authoritative WAL segment invalid.
+2. If a segment metadata sidecar is present, it MUST be exactly 60 bytes and
+   pass magic, version, and CRC checks.
+3. Segment metadata version `0` is pre-V1. Versions greater than `1` are future
+   formats.
+4. Segment metadata decode MUST reject trailing bytes. The format has no
+   extension area in V1.
+
+5. Optional sidecars MUST be explicitly marked optional by the spec.
+6. Missing optional sidecars MAY be regenerated.
+7. Corrupt optional sidecars MAY be ignored only if their owning service can
    rebuild them from authoritative objects.
-4. Authoritative metadata MUST NOT be hidden in optional sidecars.
+8. Authoritative metadata MUST NOT be hidden in optional sidecars.
 
-First-pass decision: standalone watermark bytes and segment metadata sidecars
-are not stable V1 authoritative objects by default. Add sidecars only when the
-implementation proves they are needed for performance or diagnostics, and keep
-them rebuildable from authoritative manifest, WAL, snapshot, and table objects.
+First-pass decision: snapshot watermark bytes are stable when an owning service
+persists them. Segment metadata sidecars are stable optional accelerators; add
+them only when the implementation proves they are needed for performance or
+diagnostics, and keep them rebuildable from authoritative manifest, WAL,
+snapshot, and table objects.
 
 ## 19. Checksums And Integrity
 
@@ -798,11 +869,14 @@ The stable V1 spec must include golden vectors.
 Required golden vector categories:
 
 - manifest with identity codec
+- snapshot watermark, empty and present
 - WAL segment header
+- WAL record outer envelope
 - WAL record with empty commit payload
 - WAL record with non-empty commit payload
 - snapshot header with identity codec
 - snapshot section envelope with empty payload
+- snapshot container with one section and footer CRC
 - internal key with ordinary bytes
 - internal key with zero bytes in user key
 - storage row put
@@ -857,9 +931,9 @@ These decisions close the first-pass stabilization questions:
     needed before launch, is explicit developer tooling outside normal open.
 12. Durable core encodings stable enough for storage bytes are:
     `BranchId = 16 raw UUID bytes`, `CommitVersion = u64 LE`,
-    `TxnId = u64 LE`, and `Timestamp = u64 LE microseconds since Unix epoch`.
-    `EntityRef`, `PrimitiveType`, `Versioned`, and product DTOs are not stable
-    storage-format types.
+    and `Timestamp = u64 LE microseconds since Unix epoch`. V1 storage does
+    not define a durable transaction-id atom. `EntityRef`, `PrimitiveType`,
+    `Versioned`, and product DTOs are not stable storage-format types.
 
 ## 24. Drafting Plan
 

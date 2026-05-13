@@ -1,28 +1,98 @@
 //! Local filesystem backend shell.
 
 use super::{
-    Backend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata, BackendRange,
-    BackendResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
+    Backend, BackendAppend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata,
+    BackendRange, BackendResult, PublishDurability, PublishError, PublishFailureKind, PublishMode,
+    PublishOutcome, PublishResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
 use crate::object::{ObjectName, ObjectPrefix};
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(all(test, unix))]
+use std::sync::{Arc, Mutex};
 
 const OBJECT_FILE_SUFFIX: &str = ".object@";
+static TEMP_OBJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalFsPublishStep {
+    TemporaryCreate,
+    TemporaryWrite,
+    TemporarySync,
+    FinalPublish,
+    ParentSync,
+}
+
+impl LocalFsPublishStep {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::TemporaryCreate => "temporary_create",
+            Self::TemporaryWrite => "temporary_write",
+            Self::TemporarySync => "temporary_sync",
+            Self::FinalPublish => "final_publish",
+            Self::ParentSync => "parent_sync",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFsBackend {
     root: PathBuf,
+    #[cfg(all(test, unix))]
+    publish_fault: Arc<Mutex<Option<LocalFsPublishStep>>>,
 }
 
 impl LocalFsBackend {
     pub(crate) fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            #[cfg(all(test, unix))]
+            publish_fault: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    #[cfg(all(test, unix))]
+    fn arm_publish_fault(&self, step: LocalFsPublishStep) -> BackendResult<()> {
+        let mut fault = self.publish_fault.lock().map_err(|_| {
+            BackendError::new(
+                BackendErrorKind::Unknown,
+                "local filesystem publish fault state is poisoned",
+            )
+        })?;
+        *fault = Some(step);
+        Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    fn injected_publish_fault(&self, step: LocalFsPublishStep) -> Option<BackendError> {
+        let Ok(mut fault) = self.publish_fault.lock() else {
+            return Some(BackendError::new(
+                BackendErrorKind::Unknown,
+                "local filesystem publish fault state is poisoned",
+            ));
+        };
+
+        if *fault == Some(step) {
+            *fault = None;
+            Some(BackendError::new(
+                BackendErrorKind::Interrupted,
+                format!("test fault injected at {}", step.name()),
+            ))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(all(test, unix)))]
+    fn injected_publish_fault(&self, _step: LocalFsPublishStep) -> Option<BackendError> {
+        let _ = &self.root;
+        None
     }
 
     fn path_for(&self, name: &ObjectName) -> PathBuf {
@@ -36,6 +106,47 @@ impl LocalFsBackend {
             }
         }
         path
+    }
+
+    fn temporary_path_for(path: &Path, sequence: u64) -> BackendResult<PathBuf> {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                BackendError::new(
+                    BackendErrorKind::InvalidObjectName,
+                    format!("object path {} has no file name", path.display()),
+                )
+            })?;
+
+        Ok(path.with_file_name(format!(
+            "{file_name}.tmp.{:x}.{sequence:016x}",
+            std::process::id()
+        )))
+    }
+
+    fn create_temporary_file(path: &Path) -> BackendResult<(PathBuf, File)> {
+        for _ in 0..16 {
+            let sequence = TEMP_OBJECT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let temp_path = Self::temporary_path_for(path, sequence)?;
+            match OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp_path)
+            {
+                Ok(file) => return Ok((temp_path, file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(map_io_error(&error)),
+            }
+        }
+
+        Err(BackendError::new(
+            BackendErrorKind::AlreadyExists,
+            format!(
+                "could not allocate a temporary object path for {}",
+                path.display()
+            ),
+        ))
     }
 
     fn ensure_parent_dirs(&self, parent: &Path, create_missing: bool) -> BackendResult<()> {
@@ -104,6 +215,189 @@ impl LocalFsBackend {
             ));
         }
         Ok(BackendMetadata::new(metadata.len(), None))
+    }
+
+    fn validate_optional_file_path(path: &Path) -> BackendResult<Option<BackendMetadata>> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(BackendError::new(
+                BackendErrorKind::Corruption,
+                format!("object path {} is a symlink", path.display()),
+            )),
+            Ok(metadata) if !metadata.is_file() => Err(BackendError::new(
+                BackendErrorKind::Corruption,
+                format!("object path {} is not a file", path.display()),
+            )),
+            Ok(metadata) => Ok(Some(BackendMetadata::new(metadata.len(), None))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(map_io_error(&error)),
+        }
+    }
+
+    fn publish_error(
+        name: &ObjectName,
+        kind: PublishFailureKind,
+        error: BackendError,
+    ) -> PublishError {
+        PublishError::new(name.clone(), kind, error)
+    }
+
+    fn cleanup_temporary_path(path: &Path) {
+        // Best-effort cleanup must not mask the primary publish failure.
+        let _ = fs::remove_file(path);
+    }
+
+    fn prepare_publish_target(
+        &self,
+        name: &ObjectName,
+        mode: PublishMode,
+    ) -> PublishResult<PathBuf> {
+        let final_path = self.path_for(name);
+        if let Some(parent) = final_path.parent() {
+            self.ensure_parent_dirs(parent, true).map_err(|error| {
+                Self::publish_error(name, PublishFailureKind::FailedBeforeVisibility, error)
+            })?;
+        }
+
+        let target_metadata = Self::validate_optional_file_path(&final_path).map_err(|error| {
+            Self::publish_error(name, PublishFailureKind::FailedBeforeVisibility, error)
+        })?;
+        if mode == PublishMode::Create && target_metadata.is_some() {
+            return Err(PublishError::precondition_failed(
+                name,
+                format!("object {name} already exists"),
+            ));
+        }
+
+        Ok(final_path)
+    }
+
+    fn write_publish_temporary_object(
+        &self,
+        name: &ObjectName,
+        final_path: &Path,
+        bytes: &[u8],
+    ) -> PublishResult<PathBuf> {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryCreate) {
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            ));
+        }
+
+        let (temp_path, mut file) = Self::create_temporary_file(final_path).map_err(|error| {
+            Self::publish_error(name, PublishFailureKind::FailedBeforeVisibility, error)
+        })?;
+
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryWrite) {
+            Self::cleanup_temporary_path(&temp_path);
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            ));
+        }
+
+        if let Err(error) = file.write_all(bytes).map_err(|err| map_io_error(&err)) {
+            Self::cleanup_temporary_path(&temp_path);
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            ));
+        }
+
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporarySync) {
+            Self::cleanup_temporary_path(&temp_path);
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            ));
+        }
+
+        if let Err(error) = file.sync_all().map_err(|err| map_io_error(&err)) {
+            Self::cleanup_temporary_path(&temp_path);
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            ));
+        }
+
+        drop(file);
+        Ok(temp_path)
+    }
+
+    fn install_publish_temporary_object(
+        &self,
+        name: &ObjectName,
+        mode: PublishMode,
+        temp_path: &Path,
+        final_path: &Path,
+    ) -> PublishResult<()> {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::FinalPublish) {
+            Self::cleanup_temporary_path(temp_path);
+            let kind = if mode == PublishMode::Replace {
+                PublishFailureKind::VisibilityUnknown
+            } else {
+                PublishFailureKind::FailedBeforeVisibility
+            };
+            return Err(Self::publish_error(name, kind, error));
+        }
+
+        if mode == PublishMode::Create {
+            if let Err(error) = fs::hard_link(temp_path, final_path) {
+                Self::cleanup_temporary_path(temp_path);
+                let error = map_io_error(&error);
+                if error.kind() == BackendErrorKind::AlreadyExists {
+                    return Err(PublishError::precondition_failed(
+                        name,
+                        format!("object {name} already exists"),
+                    ));
+                }
+                return Err(Self::publish_error(
+                    name,
+                    PublishFailureKind::FailedBeforeVisibility,
+                    error,
+                ));
+            }
+            Self::cleanup_temporary_path(temp_path);
+            Ok(())
+        } else if let Err(error) = fs::rename(temp_path, final_path) {
+            Self::cleanup_temporary_path(temp_path);
+            Err(Self::publish_error(
+                name,
+                PublishFailureKind::VisibilityUnknown,
+                map_io_error(&error),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn sync_publish_parent(&self, name: &ObjectName, final_path: &Path) -> PublishResult<()> {
+        let Some(parent) = final_path.parent() else {
+            return Ok(());
+        };
+
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::ParentSync) {
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::VisibleDurabilityUnconfirmed,
+                error,
+            ));
+        }
+
+        File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|err| {
+                Self::publish_error(
+                    name,
+                    PublishFailureKind::VisibleDurabilityUnconfirmed,
+                    map_io_error(&err),
+                )
+            })
     }
 
     fn name_from_path(&self, path: &Path) -> BackendResult<ObjectName> {
@@ -184,7 +478,13 @@ impl LocalFsBackend {
 
 impl Backend for LocalFsBackend {
     fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::from_slice(BASIC_OBJECT_BACKEND_CAPABILITIES)
+        let mut capabilities = BackendCapabilities::from_slice(BASIC_OBJECT_BACKEND_CAPABILITIES);
+        capabilities.insert(super::BackendCapability::AppendObject);
+        if cfg!(unix) {
+            capabilities.insert(super::BackendCapability::DurablePublish);
+            capabilities.insert(super::BackendCapability::DurableSync);
+        }
+        capabilities
     }
 
     fn read_object(&self, name: &ObjectName) -> BackendResult<Vec<u8>> {
@@ -274,6 +574,57 @@ impl Backend for LocalFsBackend {
     fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
         self.metadata_for_object_path(&self.path_for(name))
     }
+
+    fn append_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendAppend> {
+        let path = self.path_for(name);
+        let before = self.metadata_for_object_path(&path)?.size_bytes();
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|err| map_io_error(&err))?;
+        file.write_all(bytes).map_err(|err| map_io_error(&err))?;
+        let after = self.metadata_for_object_path(&path)?;
+        Ok(BackendAppend::new(before, bytes.len() as u64, after))
+    }
+
+    fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+        let path = self.path_for(name);
+        self.metadata_for_object_path(&path)?;
+        File::open(path)
+            .and_then(|file| file.sync_all())
+            .map_err(|err| map_io_error(&err))
+    }
+
+    fn publish_object(
+        &self,
+        name: &ObjectName,
+        bytes: &[u8],
+        mode: PublishMode,
+    ) -> PublishResult<PublishOutcome> {
+        if mode == PublishMode::NonDurableReplace {
+            return Err(PublishError::unsupported(
+                name,
+                BackendError::unsupported(super::BackendCapability::DurablePublish),
+            ));
+        }
+        if !cfg!(unix) {
+            return Err(PublishError::unsupported(
+                name,
+                BackendError::unsupported(super::BackendCapability::DurablePublish),
+            ));
+        }
+
+        let final_path = self.prepare_publish_target(name, mode)?;
+        let temp_path = self.write_publish_temporary_object(name, &final_path, bytes)?;
+        self.install_publish_temporary_object(name, mode, &temp_path, &final_path)?;
+        self.sync_publish_parent(name, &final_path)?;
+
+        Ok(PublishOutcome::new(
+            name.clone(),
+            BackendMetadata::new(bytes.len() as u64, None),
+            PublishDurability::Durable,
+        ))
+    }
 }
 
 fn is_object_file_path(path: &Path) -> bool {
@@ -303,14 +654,48 @@ fn map_io_error(error: &std::io::Error) -> BackendError {
 #[cfg(test)]
 mod tests {
     use super::LocalFsBackend;
+    #[cfg(unix)]
+    use super::LocalFsPublishStep;
+    #[cfg(unix)]
+    use crate::backend::PublishDurability;
     use crate::backend::{
-        Backend, BackendCapability, BackendErrorKind, BackendRange,
-        BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
+        Backend, BackendCapability, BackendErrorKind, BackendRange, PublishFailureKind,
+        PublishMode, BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
     };
     use crate::object::{ObjectName, ObjectPrefix};
+    #[cfg(unix)]
+    use std::path::PathBuf;
+
+    #[cfg(unix)]
+    fn temporary_entries(backend: &LocalFsBackend, name: &ObjectName) -> Vec<PathBuf> {
+        let final_path = backend.path_for(name);
+        let parent = final_path.parent().expect("object parent");
+        match std::fs::read_dir(parent) {
+            Ok(entries) => entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.contains(".tmp."))
+                })
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("could not read object parent {}: {error}", parent.display()),
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_no_temporary_entries(backend: &LocalFsBackend, name: &ObjectName) {
+        let entries = temporary_entries(backend, name);
+        assert!(
+            entries.is_empty(),
+            "publish left temporary entries: {entries:?}"
+        );
+    }
 
     #[test]
-    fn localfs_backend_reports_basic_object_capabilities_only() {
+    fn localfs_backend_reports_object_and_durable_unix_capabilities() {
         let dir = tempfile::tempdir().expect("tempdir");
         let backend = LocalFsBackend::new(dir.path());
         let capabilities = backend.capabilities();
@@ -318,9 +703,332 @@ mod tests {
         assert_eq!(backend.root(), dir.path());
         assert!(capabilities.supports(CACHE_MODE_REQUIREMENTS));
         assert!(capabilities.supports(BASIC_OBJECT_BACKEND_CAPABILITIES));
-        assert!(!capabilities.contains(BackendCapability::DurablePublish));
-        assert!(!capabilities.contains(BackendCapability::DurableSync));
+        assert_eq!(
+            capabilities.contains(BackendCapability::DurablePublish),
+            cfg!(unix)
+        );
+        assert!(capabilities.contains(BackendCapability::AppendObject));
+        assert_eq!(
+            capabilities.contains(BackendCapability::DurableSync),
+            cfg!(unix)
+        );
         assert!(!capabilities.contains(BackendCapability::SingleWriterLock));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publishes_object_durably() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        let outcome = backend
+            .publish_object(&name, b"manifest", PublishMode::Replace)
+            .expect("publish");
+
+        assert_eq!(outcome.object(), &name);
+        assert_eq!(outcome.metadata().size_bytes(), 8);
+        assert_eq!(outcome.durability(), PublishDurability::Durable);
+        assert_eq!(backend.read_object(&name).expect("read"), b"manifest");
+        let final_path = backend.path_for(&name);
+        let parent = final_path.parent().expect("parent");
+        let temp_entries: Vec<_> = std::fs::read_dir(parent)
+            .expect("read parent")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            temp_entries.is_empty(),
+            "publish should not leave temporary files"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_create_publish_preserves_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        backend.write_object(&name, b"old").expect("seed");
+        let error = backend
+            .publish_object(&name, b"new", PublishMode::Create)
+            .expect_err("create should reject existing object");
+
+        assert_eq!(error.kind(), PublishFailureKind::PreconditionFailed);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::AlreadyExists);
+        assert_eq!(backend.read_object(&name).expect("old preserved"), b"old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_replace_publish_overwrites_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        backend.write_object(&name, b"old").expect("seed");
+        let outcome = backend
+            .publish_object(&name, b"new manifest", PublishMode::Replace)
+            .expect("replace publish");
+
+        assert_eq!(outcome.object(), &name);
+        assert_eq!(outcome.metadata().size_bytes(), 12);
+        assert_eq!(backend.read_object(&name).expect("read"), b"new manifest");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_temp_create_fault_leaves_no_visible_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend
+            .arm_publish_fault(LocalFsPublishStep::TemporaryCreate)
+            .expect("arm fault");
+
+        let error = backend
+            .publish_object(&name, b"manifest", PublishMode::Replace)
+            .expect_err("publish fault");
+
+        assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(
+            backend
+                .read_object(&name)
+                .expect_err("final object absent")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+        assert_no_temporary_entries(&backend, &name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_temp_write_fault_cleans_temp_and_preserves_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"old").expect("seed");
+        backend
+            .arm_publish_fault(LocalFsPublishStep::TemporaryWrite)
+            .expect("arm fault");
+
+        let error = backend
+            .publish_object(&name, b"new", PublishMode::Replace)
+            .expect_err("publish fault");
+
+        assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(backend.read_object(&name).expect("old preserved"), b"old");
+        assert_no_temporary_entries(&backend, &name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_temp_sync_fault_cleans_temp_and_preserves_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"old").expect("seed");
+        backend
+            .arm_publish_fault(LocalFsPublishStep::TemporarySync)
+            .expect("arm fault");
+
+        let error = backend
+            .publish_object(&name, b"new", PublishMode::Replace)
+            .expect_err("publish fault");
+
+        assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(backend.read_object(&name).expect("old preserved"), b"old");
+        assert_no_temporary_entries(&backend, &name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_final_publish_fault_cleans_temp_and_preserves_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"old").expect("seed");
+        backend
+            .arm_publish_fault(LocalFsPublishStep::FinalPublish)
+            .expect("arm fault");
+
+        let error = backend
+            .publish_object(&name, b"new", PublishMode::Replace)
+            .expect_err("publish fault");
+
+        assert_eq!(error.kind(), PublishFailureKind::VisibilityUnknown);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(backend.read_object(&name).expect("old preserved"), b"old");
+        assert_no_temporary_entries(&backend, &name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_create_final_publish_fault_leaves_no_visible_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend
+            .arm_publish_fault(LocalFsPublishStep::FinalPublish)
+            .expect("arm fault");
+
+        let error = backend
+            .publish_object(&name, b"new", PublishMode::Create)
+            .expect_err("publish fault");
+
+        assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(
+            backend
+                .read_object(&name)
+                .expect_err("final object absent")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+        assert_no_temporary_entries(&backend, &name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_parent_sync_fault_leaves_new_object_visible() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"old").expect("seed");
+        backend
+            .arm_publish_fault(LocalFsPublishStep::ParentSync)
+            .expect("arm fault");
+
+        let error = backend
+            .publish_object(&name, b"new", PublishMode::Replace)
+            .expect_err("publish fault");
+
+        assert_eq!(
+            error.kind(),
+            PublishFailureKind::VisibleDurabilityUnconfirmed
+        );
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(backend.read_object(&name).expect("new visible"), b"new");
+        assert_no_temporary_entries(&backend, &name);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn localfs_backend_rejects_durable_publish_without_unix_directory_sync() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        for mode in [PublishMode::Create, PublishMode::Replace] {
+            let error = backend
+                .publish_object(&name, b"bytes", mode)
+                .expect_err("durable publish should require unix directory sync");
+
+            assert_eq!(error.kind(), PublishFailureKind::Unsupported);
+            assert_eq!(
+                error.source_error().kind(),
+                BackendErrorKind::UnsupportedOperation
+            );
+        }
+    }
+
+    #[test]
+    fn localfs_backend_rejects_non_durable_publish_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        let error = backend
+            .publish_object(&name, b"bytes", PublishMode::NonDurableReplace)
+            .expect_err("local durable backend should not claim cache publishing");
+
+        assert_eq!(error.kind(), PublishFailureKind::Unsupported);
+        assert_eq!(
+            error.source_error().kind(),
+            BackendErrorKind::UnsupportedOperation
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_rejects_symlink_object_paths() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        std::fs::write(outside.path(), b"outside").expect("outside write");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("escape").expect("name");
+
+        symlink(outside.path(), backend.path_for(&name)).expect("symlink");
+        let error = backend
+            .publish_object(&name, b"should not escape", PublishMode::Replace)
+            .expect_err("publish symlink");
+
+        assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Corruption);
+        assert_eq!(
+            std::fs::read(outside.path()).expect("outside read"),
+            b"outside"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_rejects_symlink_parent_paths() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside dir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("tables/object").expect("name");
+        symlink(outside.path(), dir.path().join("tables")).expect("symlink dir");
+
+        let error = backend
+            .publish_object(&name, b"bytes", PublishMode::Replace)
+            .expect_err("publish through symlink parent");
+
+        assert_eq!(error.kind(), PublishFailureKind::FailedBeforeVisibility);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Corruption);
+        assert!(std::fs::read_dir(outside.path())
+            .expect("outside dir")
+            .next()
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_publish_ignores_stale_temporary_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        let final_path = backend.path_for(&name);
+        let parent = final_path.parent().expect("parent");
+        std::fs::create_dir_all(parent).expect("parent dirs");
+        let final_file_name = final_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("file name");
+        let stale_temp = parent.join(format!("{final_file_name}.tmp.stale"));
+        std::fs::write(&stale_temp, b"stale").expect("stale temp");
+
+        backend
+            .publish_object(&name, b"manifest", PublishMode::Replace)
+            .expect("publish");
+
+        assert_eq!(backend.read_object(&name).expect("read"), b"manifest");
+        assert_eq!(
+            std::fs::read(&stale_temp).expect("stale temp preserved"),
+            b"stale"
+        );
+        let listed = backend
+            .list_prefix(&ObjectPrefix::new("manifest/").expect("prefix"))
+            .expect("list");
+        assert_eq!(listed, vec![name]);
     }
 
     #[test]
@@ -348,6 +1056,53 @@ mod tests {
                 .size_bytes(),
             6
         );
+    }
+
+    #[test]
+    fn localfs_backend_appends_to_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("wal/0000000000000001").expect("valid object name");
+        backend.write_object(&name, b"abc").expect("seed");
+
+        let append = backend.append_object(&name, b"def").expect("append");
+
+        assert_eq!(append.start_offset(), 3);
+        assert_eq!(append.bytes_written(), 3);
+        assert_eq!(append.metadata().size_bytes(), 6);
+        assert_eq!(backend.read_object(&name).expect("read"), b"abcdef");
+    }
+
+    #[test]
+    fn localfs_backend_append_requires_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("wal/0000000000000001").expect("valid object name");
+
+        assert_eq!(
+            backend
+                .append_object(&name, b"def")
+                .expect_err("missing object")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn localfs_backend_sync_requires_existing_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("wal/0000000000000001").expect("valid object name");
+
+        assert_eq!(
+            backend
+                .sync_object(&name)
+                .expect_err("missing object")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+        backend.write_object(&name, b"abc").expect("write");
+        backend.sync_object(&name).expect("sync existing object");
     }
 
     #[test]

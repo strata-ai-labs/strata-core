@@ -1,0 +1,19 @@
+# Snapshot header with identity codec
+# magic "SNAP"
+# format_version = 1
+# snapshot_id = 3
+# watermark_commit_version = 42
+# created_at_micros = 1700000000123456
+# database_id = 20..2f
+# codec_id_len = 8
+# reserved = 15 zero bytes
+# codec_id = "identity"
+53 4e 41 50
+01 00 00 00
+03 00 00 00 00 00 00 00
+2a 00 00 00 00 00 00 00
+40 22 20 18 24 0a 06 00
+20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f
+08
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+69 64 65 6e 74 69 74 79

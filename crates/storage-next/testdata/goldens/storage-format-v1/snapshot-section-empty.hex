@@ -1,0 +1,5 @@
+# Snapshot section envelope with empty payload
+# section_kind = 0x01 (storage-owned section kind; payload meaning is outside L3)
+# section_data_len = 0
+01
+00 00 00 00 00 00 00 00

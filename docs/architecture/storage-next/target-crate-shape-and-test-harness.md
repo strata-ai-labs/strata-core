@@ -979,9 +979,10 @@ STRATA_STORAGE_STRESS_SECONDS=60
 If cargo-fuzz is used:
 
 ```bash
-cargo +nightly fuzz run format_wal_record
 cargo +nightly fuzz run format_manifest
-cargo +nightly fuzz run format_table_block
+cargo +nightly fuzz run format_snapshot_envelope
+cargo +nightly fuzz run format_storage_row
+cargo +nightly fuzz run format_wal_record
 ```
 
 Corpus and artifact directories should stay under the fuzz package defaults

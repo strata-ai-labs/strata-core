@@ -15,8 +15,15 @@ testkit = []
 fault-injection = ["testkit"]
 perf-trace = []
 
+[dependencies]
+crc32fast = { workspace = true }
+strata-core-next = { path = "../core-next" }
+
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

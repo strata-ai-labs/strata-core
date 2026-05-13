@@ -1,13 +1,5 @@
 //! Validated object names and prefixes.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the contract is consumed by concrete backends added in later work"
-    )
-)]
-
 use std::fmt;
 
 pub(crate) const MAX_OBJECT_NAME_BYTES: usize = 1024;

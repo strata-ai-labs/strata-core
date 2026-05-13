@@ -1,0 +1,42 @@
+[package]
+name = "strata-storage-next-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+strata-storage-next = { path = "..", default-features = false, features = ["testkit"] }
+
+[[bin]]
+name = "format_manifest"
+path = "fuzz_targets/format_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_snapshot_envelope"
+path = "fuzz_targets/format_snapshot_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_storage_row"
+path = "fuzz_targets/format_storage_row.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_wal_record"
+path = "fuzz_targets/format_wal_record.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

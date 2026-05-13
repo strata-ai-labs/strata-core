@@ -91,10 +91,11 @@ locks/
 meta/
 ```
 
-The exact names can change before implementation. The important property is
-that every object belongs to a known family and each family has one owner.
+These are the first-pass implemented V1 family names. Changing them now
+requires updating the storage format spec, layout constructors, and layout
+tests in the same slice.
 
-## Proposed Canonical Layout
+## Implemented Canonical Layout
 
 ```text
 manifest/current
@@ -116,7 +117,8 @@ locks/writer
 meta/database
 ```
 
-This is a target naming model, not a format commitment.
+This is the implemented first-pass object namespace. Object byte formats remain
+owned by L3/L4.
 
 `manifest/current` is the database-level durable manifest location. Its bytes
 belong to L3/L4.
@@ -151,19 +153,20 @@ metadata if needed. It should not become a dumping ground.
 Object names should use stable, sortable, fixed-width encodings where ordering
 matters.
 
-Recommended encodings:
+Chosen first-pass encodings:
 
-- manifest generation: zero-padded decimal or fixed-width hex
-- WAL segment ID: zero-padded decimal or fixed-width hex
-- snapshot ID: zero-padded decimal or fixed-width hex
+- manifest generation: not exposed in an object name for V1; the database
+  manifest lives at `manifest/current`
+- WAL segment ID: 16-character fixed-width lowercase hex
+- snapshot ID: 16-character fixed-width lowercase hex
 - branch ID: canonical lowercase hex or another core/storage-owned stable ID
-  encoding
+  encoding once the branch atom is wired through this layer
 - table ID: fixed-width generated ID
-- level: `l0`, `l1`, `l2`, etc.
+- level: `l` plus four fixed-width decimal digits, such as `l0000`; V1 layout
+  constructors reject levels greater than `9999`
 
-The exact encoding should be chosen once core-next/storage-next decide which ID
-types live where. L2 should own the string form used in object names even if the
-ID type itself lives in core-next.
+L2 owns the string form used in object names even when the ID type itself lives
+in core-next.
 
 ## Backend Mappings
 

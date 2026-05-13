@@ -1,0 +1,19 @@
+# Snapshot container with one row-native section and footer CRC32
+# header = snapshot-header-identity.hex
+# section_kind = 0x01
+# section_data_len = 4
+# section_data = "rows"
+# footer_crc32 over all preceding bytes = 0xe65fcf39
+53 4e 41 50
+01 00 00 00
+03 00 00 00 00 00 00 00
+2a 00 00 00 00 00 00 00
+40 22 20 18 24 0a 06 00
+20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f
+08
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+69 64 65 6e 74 69 74 79
+01
+04 00 00 00 00 00 00 00
+72 6f 77 73
+39 cf 5f e6
