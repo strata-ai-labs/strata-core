@@ -1,0 +1,22 @@
+[package]
+name = "strata-storage-next"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["localfs"]
+localfs = []
+testkit = []
+fault-injection = ["testkit"]
+perf-trace = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

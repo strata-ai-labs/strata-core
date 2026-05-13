@@ -15,6 +15,7 @@ exclude = ["benchmarks"]
 members = [
     "crates/core",
     "crates/core-next",
+    "crates/storage-next",
     "crates/storage",
     "crates/engine",
     "crates/inference",

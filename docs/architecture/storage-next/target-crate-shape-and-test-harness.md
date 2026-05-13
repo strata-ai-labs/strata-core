@@ -150,8 +150,9 @@ crates/storage-next/
     goldens/
       storage-format-v1/
   fuzz/
-    Cargo.toml
+    README.md
     fuzz_targets/
+      README.md
 ```
 
 The exact filenames can change. The important point is that the top-level
@@ -543,7 +544,6 @@ api
   -> format
   -> layout/object
   -> backend
-  -> strata-core-next
 ```
 
 This diagram is directional, not literal. Some shared modules sit to the side:
@@ -552,11 +552,11 @@ This diagram is directional, not literal. Some shared modules sit to the side:
 row, error, config, observability
 ```
 
-`strata-core-next` is the only Strata crate storage-next should depend on. It
-may supply stable shared identifiers and representation types such as branch
-IDs, commit versions, transaction IDs, timestamps, and transparent newtypes once
-the core-next ownership decisions are finalized. Storage-next must not depend
-on engine-next or any product crate.
+`strata-core-next` is the only Strata crate storage-next may depend on. The
+dependency should be added only when implementation code actually needs shared
+identifiers or representation types such as branch IDs, commit versions,
+transaction IDs, timestamps, and transparent newtypes. Storage-next must not
+depend on engine-next or any product crate.
 
 Allowed cross-links:
 
@@ -802,7 +802,11 @@ cross-module contracts visible and invokable.
 
 ## Fuzz Target Shape
 
-If cargo-fuzz is used, storage-next should own a `fuzz/` package with targets
+M2 may keep `fuzz/` as documentation-only scaffolding. Do not create
+`fuzz/Cargo.toml` until storage-next has a byte parser, durable codec, or
+state-machine harness worth fuzzing.
+
+Once cargo-fuzz is used, storage-next should own a `fuzz/` package with targets
 named by byte-oriented durable input, not layer number.
 
 Suggested targets:
@@ -985,15 +989,18 @@ unless a later fuzzing plan changes them.
 
 ### Wasm Cache Check
 
-The memory/cache backend should compile and run its non-durable conformance
-tests on `wasm32-unknown-unknown` with local filesystem support disabled:
+The memory/cache backend should compile on `wasm32-unknown-unknown` with local
+filesystem support disabled:
 
 ```bash
-cargo test -p strata-storage-next --no-default-features --target wasm32-unknown-unknown
+cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets
+cargo test -p strata-storage-next --test testkit_boundary localfs_feature_is_rejected_for_wasm_builds
 ```
 
-The exact runner for executing wasm tests can be chosen during implementation.
-The important constraint is that `localfs` is not compiled into the wasm build.
+The V1 gate is compile-only until a wasm test runner is chosen. The important
+constraint is that `localfs` is not compiled into the wasm build. A wasm build
+with default features must fail clearly rather than silently compiling the local
+filesystem backend.
 
 ### Golden Vector Checks
 
