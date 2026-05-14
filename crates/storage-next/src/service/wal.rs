@@ -4,7 +4,7 @@
     any(not(test), all(test, not(feature = "localfs"))),
     expect(
         dead_code,
-        reason = "WAL service is consumed by commit and lifecycle slices added later; no-localfs test builds only exercise unsupported durable construction"
+        reason = "WAL service is consumed by later commit and lifecycle layers; no-localfs test builds only exercise unsupported durable construction"
     )
 )]
 
@@ -823,7 +823,16 @@ fn parse_segment_object(object: ObjectName) -> WalServiceResult<WalSegmentObject
             "WAL segment object id is not fixed-width hex",
         ),
     })?;
-    validate_segment_id(segment_id)?;
+    if segment_id == 0 {
+        return Err(WalServiceError::Backend {
+            operation: WalOperation::List,
+            object,
+            source: BackendError::new(
+                BackendErrorKind::InvalidObjectName,
+                "WAL segment object id must be nonzero",
+            ),
+        });
+    }
     Ok(WalSegmentObject { segment_id, object })
 }
 

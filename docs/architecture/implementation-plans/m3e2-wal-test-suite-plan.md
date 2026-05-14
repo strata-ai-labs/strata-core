@@ -93,29 +93,45 @@ The current M3E2 tests already cover:
 15. Covered old segments are deleted after rotation.
 16. Backend append misreports for bytes-written and metadata size are rejected.
 
-Remaining coverage gaps:
+Baseline coverage gaps before `M3TC2`:
 
-1. No model/property test for long append sequences across rotations.
-2. No systematic corruption matrix.
-3. No per-operation fault-window matrix for append, sync, list, read,
-   metadata, create, and delete.
-4. No exact-boundary segment-size tests.
-5. No backend capability-missing matrix.
-6. No dirty-counter behavior under sync failure.
-7. No explicit close-failure test.
-8. No list-order and non-WAL-object noise tests.
-9. No deletion failure reporting test.
-10. No service-level fuzz target for WAL segment streams.
+1. Model/property test for long append sequences across rotations. Closed by
+   `M3TC2B`.
+2. Systematic corruption matrix. Closed by `M3TC2D`.
+3. Per-operation fault-window matrix for append, sync, list, read, metadata,
+   create, and delete. Append misreport and pre-append failure coverage is
+   closed by `M3TC2B`; sync failure coverage is closed by `M3TC2C`; list,
+   read, metadata, create, delete, and partial-visibility cases are closed by
+   `M3TC2E`.
+4. Exact-boundary segment-size tests. Closed by `M3TC2B`.
+5. Backend capability-missing matrix. Closed by `M3TC2A`.
+6. Dirty-counter behavior under sync failure. Closed by `M3TC2C`.
+7. Explicit close-failure test. Closed by `M3TC2C`.
+8. List-order and non-WAL-object noise tests. Closed by `M3TC2A`.
+9. Deletion failure reporting test. Closed by `M3TC2E`.
+10. Read/watermark boundary, duplicate-version, out-of-order-version, and
+    mixed-branch-id semantics. Closed by `M3TC2G`.
+11. Service-level fuzz target for WAL segment streams. Still open for a later
+    fuzz slice if service-level byte fuzzing remains useful after `M3TC2D`.
 
 ## Target Test Files
 
-Primary:
+Primary module-local files:
 
 1. `crates/storage-next/src/service/wal/tests.rs`
+2. `crates/storage-next/src/service/wal/tests/append.rs`
+3. `crates/storage-next/src/service/wal/tests/corruption.rs`
+4. `crates/storage-next/src/service/wal/tests/durability.rs`
+5. `crates/storage-next/src/service/wal/tests/fault_windows.rs`
+6. `crates/storage-next/src/service/wal/tests/localfs.rs`
+7. `crates/storage-next/src/service/wal/tests/read.rs`
+8. `crates/storage-next/src/service/wal/tests/retention_reopen.rs`
+9. `crates/storage-next/src/service/wal/tests/support.rs`
 
 Optional private support:
 
-1. `crates/storage-next/src/service/wal/test_support.rs`
+1. Additional child modules under `crates/storage-next/src/service/wal/tests/`
+   when a test family exceeds the unit-test file-size review threshold.
 
 Optional integration/fuzz files:
 
@@ -174,7 +190,10 @@ Required cases:
    offending object name preserved, and a source `BackendError` whose kind is
    `InvalidObjectName`. They are not silently ignored and should not be asserted
    as the separate `WalServiceError::List` variant.
-4. Segment ids sort numerically, not lexicographically.
+4. Listed WAL segments are read in ascending segment-id order independent of
+   backend list order. Valid WAL names use fixed-width hex segment ids, so
+   lexical path order and numeric segment-id order are equivalent for
+   well-formed names.
 5. Segment id overflow during rotation returns a typed error.
 6. Segment gaps are accepted at the WAL service layer: M3E2 reads listed WAL
    segment objects in numeric order and does not invent missing segment ids.
@@ -330,6 +349,9 @@ Implementation guidance:
 6. The database-id mismatch case must use a valid header checksum for another
    database id. A raw byte flip without checksum refresh belongs to the header
    checksum case.
+7. A shortened envelope length with a refreshed envelope CRC is not a
+   recoverable latest-tail fact. It is a valid envelope header around an
+   impossible inner record and should fail as `Format`.
 
 ### 7. Fault-Window Tests
 
@@ -374,6 +396,7 @@ Required cases:
 6. Deletion ignores non-WAL objects.
 7. Deletion works when there are no covered segments.
 8. Deletion report is deterministic and sorted.
+9. Retention requires `DeleteObject` capability before listing or deleting.
 
 Non-goal:
 
@@ -395,7 +418,9 @@ Required reopen cases:
 6. Reopen after latest partial envelope, then attempt same-segment append:
    append must be refused until lifecycle repairs/truncates.
 7. Reopen after latest partial envelope, then attempt append that would rotate:
-   rotation must be refused until lifecycle repairs/truncates.
+   rotation must be refused until lifecycle repairs/truncates. The test must
+   assert the candidate record would exceed the segment boundary after the valid
+   prefix so this is not accidentally another same-segment append case.
 8. Reopen after non-latest partial envelope: read fails strict.
 9. Reopen after corrupt header: open/read fails strict.
 
@@ -534,8 +559,9 @@ Recommended follow-up slices:
 3. `M3TC2C`: Add durability-policy sync-success and sync-failure tests.
 4. `M3TC2D`: Add corruption matrix tests.
 5. `M3TC2E`: Add backend fault-window and partial-visibility tests.
-6. `M3TC2F`: Add retention/deletion safety tests.
-7. `M3TB2`: Add service-level WAL fuzz target if a narrow testkit surface is
+6. `M3TC2F`: Add retention, deletion, and deterministic reopen safety tests.
+7. `M3TC2G`: Close read/watermark and review-discovered edge-case gaps.
+8. `M3TB2`: Add service-level WAL fuzz target if a narrow testkit surface is
    justified.
 
 Each slice should be reviewable independently. If a slice needs production

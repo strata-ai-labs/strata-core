@@ -57,7 +57,10 @@ Each implementation slice follows this loop:
 Acceptable sensitivity probes include:
 
 1. Remove one required backend capability from the open-time check.
-2. Sort WAL object names lexicographically instead of numerically.
+2. Trust backend list order instead of sorting WAL segments by segment id. Valid
+   WAL names are fixed-width hex, so lexical path order and numeric segment-id
+   order are equivalent for well-formed names; the bug to catch is failing to
+   sort listed segments at all.
 3. Advance dirty counters before a rejected append, or fail to advance them
    after an `always` sync failure that follows a successful append.
 4. Treat any partial tail as recoverable, even in non-latest segments.
@@ -103,7 +106,8 @@ Scope:
 
 1. Add backend fakes for missing individual capabilities.
 2. Add invalid WAL-listing object cases.
-3. Add list-order, numeric-sort, segment-gap, and segment-id-overflow tests.
+3. Add list-order, fixed-width segment ordering, segment-gap, and
+   segment-id-overflow tests.
 4. Tighten existing memory/localfs open tests to assert exact variants and
    fields.
 
@@ -114,7 +118,7 @@ Adversarial checks:
 2. Mutate invalid listed WAL object handling to return `WalServiceError::List`.
    The invalid-object test must fail because the contract is
    `WalServiceError::Backend` with operation `List`.
-3. Mutate segment ordering to raw string ordering. Numeric-sort tests must fail.
+3. Mutate segment ordering to raw backend order. Backend-order tests must fail.
 
 Closeout command:
 
@@ -169,7 +173,7 @@ Adversarial checks:
 Closeout command:
 
 ```bash
-cargo test -p strata-storage-next --locked service::wal sync
+cargo test -p strata-storage-next --locked service::wal::tests::durability
 cargo test -p strata-storage-next --locked service::wal
 ```
 
@@ -196,7 +200,7 @@ Adversarial checks:
 Closeout command:
 
 ```bash
-cargo test -p strata-storage-next --locked service::wal corrupt
+cargo test -p strata-storage-next --locked service::wal::tests::corruption
 cargo test -p strata-storage-next --locked service::wal
 ```
 
@@ -204,7 +208,8 @@ cargo test -p strata-storage-next --locked service::wal
 
 Scope:
 
-1. Add fault cases for publish, append, metadata, sync, list, read, and delete.
+1. Add fault cases for publish/create, metadata before append, list, read, and
+   delete. Sync fault cases are owned by Slice C.
 2. Add a partial-append backend that can expose a prefix before returning
    failure or misleading metadata.
 3. Assert the visible-prefix behavior on reopen.
@@ -214,8 +219,7 @@ Adversarial checks:
 
 1. Mutate append backend errors to advance service state. State assertions must
    fail.
-2. Mutate partial visible append to be treated as a complete record. Reopen
-   tests must fail.
+2. Mutate non-latest partial tails to be recoverable. Reopen tests must fail.
 3. Mutate delete failures to disappear from the delete report. Fault-window
    tests must fail.
 
@@ -235,7 +239,8 @@ Scope:
 3. Add deterministic reopen cases after clean close, dirty standard append,
    always append, rotation, latest partial tail, non-latest partial tail, and
    corrupt header.
-4. Confirm process-kill windows remain deferred to L7/L8.
+4. Assert retention requires `DeleteObject` capability before list/delete work.
+5. Confirm process-kill windows remain deferred to L7/L8.
 
 Adversarial checks:
 
@@ -244,11 +249,40 @@ Adversarial checks:
 2. Mutate retention to delete segments with records above the covered-through
    watermark. Protected-list tests must fail.
 3. Mutate reopen to ignore latest partial tails. Reopen refusal tests must fail.
+4. Remove the `DeleteObject` capability gate from retention. The capability
+   test must fail.
 
 Closeout command:
 
 ```bash
 cargo test -p strata-storage-next --locked service::wal
+```
+
+### Slice G: Read, Watermark, And Review Closure
+
+Scope:
+
+1. Add explicit `read_after_commit_version` boundary tests for zero and max
+   watermarks.
+2. Add duplicate-version, out-of-order-version, and mixed-branch-id read tests.
+3. Add the shortened-envelope-length corruption mutation that keeps the
+   envelope CRC valid but frames an impossible inner record.
+4. Add review-gap assertions for open-time metadata failure, empty existing
+   segment objects, clean close without sync, and property payload spread.
+
+Adversarial checks:
+
+1. Mutate `read_after_commit_version` to sort records by commit version before
+   filtering. The out-of-order append-order test must fail.
+2. Mutate `read_after_commit_version` to use `>=` instead of `>`. The duplicate
+   version test must fail.
+3. Mutate clean `close` to sync unconditionally. The clean-close test must fail.
+
+Closeout command:
+
+```bash
+cargo test -p strata-storage-next --locked service::wal
+PROPTEST_CASES=2048 cargo test -p strata-storage-next --locked wal_append_model
 ```
 
 ### Optional Slice: Service-Level WAL Fuzz

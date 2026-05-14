@@ -256,6 +256,12 @@ Panic policy:
 Comments should explain why code exists, which invariant it preserves, or which
 failure window it controls. They should not narrate obvious code.
 
+V1 code is expected to contain enough inline comments that a maintainer can
+debug unfamiliar recovery, durability, branching, or query behavior without
+first reconstructing the architecture from separate documents. A file with
+non-trivial invariants and no comments is usually under-documented, even when
+the code compiles and tests pass.
+
 Good comments explain:
 
 1. Durable format invariants.
@@ -267,6 +273,20 @@ Good comments explain:
 7. Unsafe code preconditions.
 8. Test harness fault windows.
 
+Required comment sites:
+
+1. Any code that intentionally ignores, downgrades, retries, or delays an
+   error.
+2. Any crash, publish, sync, recovery, or partial-visibility window.
+3. Any durable byte layout, ordering, checksum, versioning, or compatibility
+   assumption.
+4. Any branch, timestamp, version, or visibility rule that is not obvious from
+   the type name.
+5. Any test fixture or fake backend behavior that is deliberately different
+   from a production backend.
+6. Any assertion that exists to catch a specific historical or likely
+   regression, without using roadmap labels.
+
 Bad comments:
 
 1. Roadmap history.
@@ -277,7 +297,9 @@ Bad comments:
 
 Public items must have doc comments when they are part of a public API,
 cross-crate testkit, durable format, or error-code contract. Private items
-should have comments only when the code is not self-explanatory.
+should have comments when they encode an invariant, fault window, data-layout
+assumption, or non-obvious test condition. Private comments should be concise
+and local to the code they explain.
 
 TODO format:
 

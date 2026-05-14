@@ -6,41 +6,19 @@ use crate::backend::{
     PublishResult,
 };
 use crate::config::mode::DurabilityPolicy;
-use crate::format::WalRecord;
+use crate::format::{
+    encode_wal_segment_header, WalRecord, WalSegmentHeader, WAL_SEGMENT_HEADER_SIZE,
+};
+use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
 use std::sync::Mutex;
-use strata_core_next::{BranchId, CommitVersion, Timestamp};
-
-fn database_id() -> [u8; 16] {
-    [
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
-        0x1f,
-    ]
-}
-
-#[cfg(all(feature = "localfs", unix))]
-fn other_database_id() -> [u8; 16] {
-    [
-        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
-        0x2f,
-    ]
-}
-
-fn branch_id() -> BranchId {
-    BranchId::from_bytes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-}
-
-fn record(version: u64, payload: impl Into<Vec<u8>>) -> WalRecord {
-    WalRecord::new(
-        CommitVersion::new(version),
-        branch_id(),
-        Timestamp::from_micros(1_700_000_000_000_000 + version),
-        payload,
-    )
-}
+mod support;
+use support::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppendReportFault {
+    BackendFailure,
+    WrongStartOffset,
     ShortLength,
     WrongMetadataSize,
 }
@@ -126,6 +104,13 @@ impl Backend for MisreportingAppendBackend {
     }
 
     fn append_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendAppend> {
+        if self.fault == AppendReportFault::BackendFailure {
+            return Err(BackendError::new(
+                BackendErrorKind::Unknown,
+                "append fault before bytes are accepted",
+            ));
+        }
+
         let mut object = self.object.lock().expect("backend object lock");
         let Some((stored_name, stored_bytes)) = object.as_mut() else {
             return Err(BackendError::new(BackendErrorKind::NotFound, "not found"));
@@ -139,9 +124,17 @@ impl Backend for MisreportingAppendBackend {
         let actual_size = stored_bytes.len() as u64;
         let actual_len = bytes.len() as u64;
 
-        let (bytes_written, metadata_size) = match self.fault {
-            AppendReportFault::ShortLength => (actual_len.saturating_sub(1), actual_size),
-            AppendReportFault::WrongMetadataSize => (actual_len, actual_size.saturating_sub(1)),
+        let (start_offset, bytes_written, metadata_size) = match self.fault {
+            AppendReportFault::BackendFailure => unreachable!("handled before append"),
+            AppendReportFault::WrongStartOffset => {
+                (start_offset.saturating_add(1), actual_len, actual_size)
+            }
+            AppendReportFault::ShortLength => {
+                (start_offset, actual_len.saturating_sub(1), actual_size)
+            }
+            AppendReportFault::WrongMetadataSize => {
+                (start_offset, actual_len, actual_size.saturating_sub(1))
+            }
         };
         Ok(BackendAppend::new(
             start_offset,
@@ -182,525 +175,351 @@ fn memory_backend_cannot_open_durable_wal_service() {
         WalServiceConfig::default(),
     );
 
-    assert!(matches!(
-        result,
-        Err(WalServiceError::UnsupportedCapability { .. })
-    ));
+    assert_unsupported_capability(
+        &open_error(result, "memory backend should not open durable WAL"),
+        BackendCapability::AppendObject,
+    );
 }
 
 #[test]
-fn append_rejects_backend_short_byte_count_report() {
-    let backend = MisreportingAppendBackend::new(AppendReportFault::ShortLength);
-    let mut service = WalService::open(
+fn open_rejects_segment_id_zero() {
+    let backend = StoredWalBackend::new();
+
+    let result = WalService::open(
+        &backend,
+        database_id(),
+        0,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    );
+
+    assert_eq!(
+        open_error(result, "segment id zero should be rejected"),
+        WalServiceError::InvalidSegmentId { segment_id: 0 }
+    );
+    assert_eq!(backend.publish_count(), 0);
+}
+
+#[test]
+fn open_rejects_segment_size_below_minimum() {
+    let backend = StoredWalBackend::new();
+
+    let result = WalService::open(
         &backend,
         database_id(),
         1,
         DurabilityPolicy::Standard,
-        WalServiceConfig::default(),
-    )
-    .expect("open WAL");
+        WalServiceConfig::new(1023),
+    );
 
-    let error = service
-        .append(&record(1, b"short append report".to_vec()))
-        .expect_err("short append report should be rejected");
-
-    assert!(matches!(
-        error,
-        WalServiceError::UnexpectedAppendLength { .. }
-    ));
-}
-
-#[test]
-fn append_rejects_backend_wrong_metadata_size_report() {
-    let backend = MisreportingAppendBackend::new(AppendReportFault::WrongMetadataSize);
-    let mut service = WalService::open(
-        &backend,
-        database_id(),
-        1,
-        DurabilityPolicy::Standard,
-        WalServiceConfig::default(),
-    )
-    .expect("open WAL");
-
-    let error = service
-        .append(&record(1, b"wrong size report".to_vec()))
-        .expect_err("wrong metadata size should be rejected");
-
-    assert!(matches!(
-        error,
-        WalServiceError::UnexpectedObjectSize { .. }
-    ));
-}
-
-#[cfg(all(feature = "localfs", unix))]
-mod localfs {
-    use super::{database_id, other_database_id, record, WalService, WalServiceConfig};
-    use crate::backend::local_fs::LocalFsBackend;
-    use crate::backend::Backend;
-    use crate::config::mode::DurabilityPolicy;
-    use crate::format::{encode_wal_segment_header, WalSegmentHeader};
-    use crate::layout::ObjectLayout;
-    use crate::service::wal::WalServiceError;
-    use strata_core_next::CommitVersion;
-
-    fn backend() -> (tempfile::TempDir, LocalFsBackend) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let backend = LocalFsBackend::new(dir.path());
-        (dir, backend)
-    }
-
-    fn testing_config() -> WalServiceConfig {
-        WalServiceConfig::new(1024)
-    }
-
-    #[test]
-    fn open_missing_segment_creates_v1_header() {
-        let (_dir, backend) = backend();
-
-        let service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-
-        let object = ObjectLayout::wal_segment(1).expect("wal segment");
-        let bytes = backend.read_object(&object).expect("segment bytes");
-        assert_eq!(service.active_segment_id(), 1);
-        assert_eq!(
-            bytes,
-            encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()))
-        );
-    }
-
-    #[test]
-    fn append_and_read_round_trips_records() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        let first = record(1, b"first".to_vec());
-        let second = record(2, b"second".to_vec());
-
-        let append = service.append(&first).expect("append first");
-        service.append(&second).expect("append second");
-        let read = service.read_all().expect("read WAL");
-
-        assert_eq!(append.segment_id(), 1);
-        assert_eq!(append.start_offset(), 36);
-        assert!(append.bytes_written() > 0);
-        assert!(!append.forced_durable());
-        assert!(append.dirty_bytes() > 0);
-        assert_eq!(service.active_metadata().record_count(), 2);
-        assert_eq!(read.records(), &[first, second.clone()]);
-        assert_eq!(read.truncation(), None);
-
-        let after_first = service
-            .read_after_commit_version(CommitVersion::new(1))
-            .expect("read after watermark");
-        assert_eq!(after_first.records(), &[second]);
-    }
-
-    #[test]
-    fn open_existing_segment_rebuilds_active_metadata() {
-        let (_dir, backend) = backend();
-        let first = record(4, b"first".to_vec());
-        let second = record(6, b"second".to_vec());
-        {
-            let mut service = WalService::open(
-                &backend,
-                database_id(),
-                1,
-                DurabilityPolicy::Standard,
-                testing_config(),
-            )
-            .expect("open WAL");
-            service.append(&first).expect("append first");
-            service.append(&second).expect("append second");
-            service.close().expect("close");
+    assert_eq!(
+        open_error(result, "too-small segment size should be rejected"),
+        WalServiceError::InvalidConfig {
+            field: "segment_size"
         }
+    );
+    assert_eq!(backend.publish_count(), 0);
+}
 
+#[test]
+fn open_rejects_each_missing_required_capability() {
+    for missing in required_wal_capabilities() {
+        let backend = CapabilityProbeBackend::missing(missing);
+
+        let result = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            WalServiceConfig::default(),
+        );
+
+        assert_unsupported_capability(
+            &open_error(result, "missing capability should be rejected at open"),
+            missing,
+        );
+    }
+}
+
+#[test]
+fn open_missing_segment_creates_exactly_one_header_object() {
+    let backend = StoredWalBackend::new();
+    let object = ObjectLayout::wal_segment(1).expect("WAL segment");
+
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    assert_eq!(service.active_segment_id(), 1);
+    assert_eq!(backend.publish_count(), 1);
+    assert_eq!(backend.listed_objects(), vec![object.clone()]);
+    assert_eq!(
+        backend.read_object(&object).expect("segment header bytes"),
+        encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()))
+    );
+}
+
+#[test]
+fn open_existing_valid_segment_does_not_rewrite_it() {
+    let object = ObjectLayout::wal_segment(1).expect("WAL segment");
+    let bytes = segment_bytes(1, &[record(7, b"seed".to_vec())]);
+    let backend = StoredWalBackend::with_object(&object, &bytes);
+
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open existing WAL");
+
+    assert_eq!(service.active_segment_id(), 1);
+    assert_eq!(service.active_metadata().record_count(), 1);
+    assert_eq!(backend.publish_count(), 0);
+    assert_eq!(backend.read_object(&object).expect("segment bytes"), bytes);
+}
+
+#[test]
+fn open_existing_short_or_corrupt_headers_fail_closed() {
+    let object = ObjectLayout::wal_segment(1).expect("WAL segment");
+    let mut corrupt_magic = encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()));
+    corrupt_magic[0] ^= 0xff;
+    let mut future_version = encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()));
+    future_version[4..8].copy_from_slice(&9_u32.to_le_bytes());
+    let mut checksum_mismatch = encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()));
+    let last = checksum_mismatch.len() - 1;
+    checksum_mismatch[last] ^= 0xff;
+    let segment_mismatch = encode_wal_segment_header(&WalSegmentHeader::new(2, database_id()));
+
+    for bytes in [
+        Vec::new(),
+        vec![0; WAL_SEGMENT_HEADER_SIZE - 1],
+        corrupt_magic,
+        future_version,
+        checksum_mismatch,
+        segment_mismatch,
+    ] {
+        let backend = StoredWalBackend::with_object(&object, &bytes);
+
+        let result = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            WalServiceConfig::default(),
+        );
+
+        match open_error(result, "bad header should fail closed") {
+            WalServiceError::Format {
+                operation,
+                object: actual,
+                source: _,
+            } => {
+                assert_eq!(operation, super::WalOperation::Read);
+                assert_eq!(actual, object);
+            }
+            other => panic!("expected header format failure, got {other:?}"),
+        }
+        assert_eq!(backend.publish_count(), 0);
+    }
+}
+
+#[test]
+fn open_existing_header_for_other_database_fails_with_database_mismatch() {
+    let object = ObjectLayout::wal_segment(1).expect("WAL segment");
+    let backend = StoredWalBackend::with_object(
+        &object,
+        &encode_wal_segment_header(&WalSegmentHeader::new(1, other_database_id_for_tests())),
+    );
+
+    let result = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    );
+
+    assert_eq!(
+        open_error(result, "other database header should be rejected"),
+        WalServiceError::DatabaseMismatch {
+            object,
+            segment_id: 1,
+        }
+    );
+    assert_eq!(backend.publish_count(), 0);
+}
+
+#[test]
+fn open_metadata_failure_returns_typed_open_backend_error() {
+    let object = ObjectLayout::wal_segment(1).expect("WAL segment");
+    let backend = StoredWalBackend::new();
+    backend.fail_metadata_for(&object);
+
+    let result = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    );
+
+    match open_error(result, "metadata failure should fail open") {
+        WalServiceError::Backend {
+            operation,
+            object: actual,
+            source,
+        } => {
+            assert_eq!(operation, super::WalOperation::Open);
+            assert_eq!(actual, object);
+            assert_eq!(source.kind(), BackendErrorKind::Unavailable);
+        }
+        other => panic!("expected open metadata backend error, got {other:?}"),
+    }
+    assert_eq!(backend.publish_count(), 0);
+}
+
+fn other_database_id_for_tests() -> [u8; 16] {
+    [
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
+        0x2f,
+    ]
+}
+
+#[test]
+fn read_rejects_invalid_wal_object_names_from_listing() {
+    let active = ObjectLayout::wal_segment(1).expect("active segment");
+    for invalid in [
+        wal_listed_object("not-fixed-width"),
+        wal_listed_object("0000000000000001/extra"),
+        wal_listed_object("zzzzzzzzzzzzzzzz"),
+        wal_listed_object("0000000000000000"),
+    ] {
+        let backend = StoredWalBackend::with_object(&active, &segment_bytes(1, &[]));
+        backend.set_list_order(vec![invalid.clone()]);
         let service = WalService::open(
             &backend,
             database_id(),
             1,
             DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("reopen WAL");
-        let metadata = service.active_metadata();
-
-        assert_eq!(metadata.segment_id(), 1);
-        assert_eq!(metadata.record_count(), 2);
-        assert_eq!(metadata.min_commit_version(), CommitVersion::new(4));
-        assert_eq!(metadata.max_commit_version(), CommitVersion::new(6));
-        assert_eq!(metadata.min_timestamp(), first.commit_timestamp());
-        assert_eq!(metadata.max_timestamp(), second.commit_timestamp());
-    }
-
-    #[test]
-    fn always_policy_forces_durability_per_append() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Always,
-            testing_config(),
+            WalServiceConfig::default(),
         )
         .expect("open WAL");
-
-        let append = service
-            .append(&record(1, b"always".to_vec()))
-            .expect("append");
-
-        assert!(append.forced_durable());
-        assert_eq!(append.dirty_bytes(), 0);
-        assert_eq!(service.dirty_bytes(), 0);
-        assert_eq!(service.dirty_records(), 0);
-    }
-
-    #[test]
-    fn standard_policy_force_durable_clears_dirty_facts() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-
-        service
-            .append(&record(1, b"standard".to_vec()))
-            .expect("append");
-        assert!(service.dirty_bytes() > 0);
-        assert_eq!(service.dirty_records(), 1);
-
-        service.force_durable().expect("force durable");
-
-        assert_eq!(service.dirty_bytes(), 0);
-        assert_eq!(service.dirty_records(), 0);
-
-        service
-            .append(&record(2, b"close".to_vec()))
-            .expect("append before close");
-        service.close().expect("close sync");
-        assert_eq!(service.dirty_bytes(), 0);
-    }
-
-    #[test]
-    fn append_rotates_before_exceeding_segment_size() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        let large = vec![0x55; 800];
-
-        service.append(&record(1, large.clone())).expect("first");
-        let second = service.append(&record(2, large)).expect("second");
-
-        assert_eq!(second.segment_id(), 2);
-        assert_eq!(service.active_segment_id(), 2);
-        assert!(backend
-            .read_object(&ObjectLayout::wal_segment(1).expect("first segment"))
-            .is_ok());
-        assert!(backend
-            .read_object(&ObjectLayout::wal_segment(2).expect("second segment"))
-            .is_ok());
-    }
-
-    #[test]
-    fn open_rejects_wrong_segment_id_header() {
-        let (_dir, backend) = backend();
-        let object = ObjectLayout::wal_segment(1).expect("segment");
-        backend
-            .write_object(
-                &object,
-                &encode_wal_segment_header(&WalSegmentHeader::new(2, database_id())),
-            )
-            .expect("seed bad header");
-
-        let result = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        );
-
-        assert!(matches!(result, Err(WalServiceError::Format { .. })));
-    }
-
-    #[test]
-    fn open_rejects_wrong_database_id_header() {
-        let (_dir, backend) = backend();
-        let object = ObjectLayout::wal_segment(1).expect("segment");
-        backend
-            .write_object(
-                &object,
-                &encode_wal_segment_header(&WalSegmentHeader::new(1, other_database_id())),
-            )
-            .expect("seed bad header");
-
-        let result = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        );
-
-        assert!(matches!(
-            result,
-            Err(WalServiceError::DatabaseMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn latest_segment_partial_tail_returns_truncation_fact() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        let first = record(1, b"first".to_vec());
-        service.append(&first).expect("append");
-        let object = ObjectLayout::wal_segment(1).expect("segment");
-        backend
-            .append_object(&object, &[0xff])
-            .expect("partial tail");
-
-        let read = service.read_all().expect("partial latest is recoverable");
-
-        assert_eq!(read.records(), &[first]);
-        let truncation = read.truncation().expect("truncation fact");
-        assert_eq!(truncation.segment_id(), 1);
-        assert_eq!(truncation.object_size(), truncation.valid_end_offset() + 1);
-    }
-
-    #[test]
-    fn latest_segment_partial_tail_prevents_blind_append_after_reopen() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        let first = record(1, b"first".to_vec());
-        service.append(&first).expect("append");
-        let object = ObjectLayout::wal_segment(1).expect("segment");
-        backend
-            .append_object(&object, &[0xff])
-            .expect("partial tail");
-        let size_with_partial_tail = backend
-            .object_metadata(&object)
-            .expect("metadata")
-            .size_bytes();
-
-        let mut reopened = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("reopen WAL with recoverable tail");
-        let error = reopened
-            .append(&record(2, b"must not append".to_vec()))
-            .expect_err("partial tail must be repaired before append");
-
-        assert_eq!(reopened.active_metadata().record_count(), 1);
-        assert!(matches!(
-            error,
-            WalServiceError::UnexpectedAppendOffset { .. }
-        ));
-        assert_eq!(
-            backend
-                .object_metadata(&object)
-                .expect("metadata after refused append")
-                .size_bytes(),
-            size_with_partial_tail
-        );
-    }
-
-    #[test]
-    fn latest_segment_partial_tail_prevents_rotation_after_reopen() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        service
-            .append(&record(1, b"first".to_vec()))
-            .expect("append");
-        let first_segment = ObjectLayout::wal_segment(1).expect("first segment");
-        backend
-            .append_object(&first_segment, &[0xff])
-            .expect("partial tail");
-        let size_with_partial_tail = backend
-            .object_metadata(&first_segment)
-            .expect("metadata")
-            .size_bytes();
-
-        let mut reopened = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("reopen WAL with recoverable tail");
-        let error = reopened
-            .append(&record(2, vec![0x55; 900]))
-            .expect_err("partial tail must be repaired before rotation");
-
-        assert!(matches!(
-            error,
-            WalServiceError::UnexpectedAppendOffset { .. }
-        ));
-        assert_eq!(reopened.active_segment_id(), 1);
-        assert_eq!(
-            backend
-                .object_metadata(&first_segment)
-                .expect("metadata after refused rotation")
-                .size_bytes(),
-            size_with_partial_tail
-        );
-        assert!(backend
-            .read_object(&ObjectLayout::wal_segment(2).expect("second segment"))
-            .is_err());
-    }
-
-    #[test]
-    fn non_latest_partial_tail_is_corruption() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        let large = vec![0x55; 800];
-        service.append(&record(1, large.clone())).expect("first");
-        service.append(&record(2, large)).expect("second rotates");
-        let first_object = ObjectLayout::wal_segment(1).expect("first segment");
-        backend
-            .append_object(&first_object, &[0xff])
-            .expect("partial old tail");
 
         let error = service
             .read_all()
-            .expect_err("partial non-latest segment is corruption");
+            .expect_err("invalid listed WAL object should fail");
 
-        assert!(matches!(error, WalServiceError::Format { .. }));
-    }
-
-    #[test]
-    fn mid_segment_corruption_fails_strict_read() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        service
-            .append(&record(1, b"corrupt".to_vec()))
-            .expect("append");
-        let object = ObjectLayout::wal_segment(1).expect("segment");
-        let mut bytes = backend.read_object(&object).expect("read");
-        bytes[40] ^= 0xff;
-        backend
-            .write_object(&object, &bytes)
-            .expect("replace corrupt");
-
-        let error = service.read_all().expect_err("corruption");
-
-        assert!(matches!(error, WalServiceError::Format { .. }));
-    }
-
-    #[test]
-    fn active_segment_is_protected_from_deletion() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        service
-            .append(&record(1, b"active".to_vec()))
-            .expect("append");
-
-        let report = service
-            .delete_covered_segments(CommitVersion::MAX)
-            .expect("delete covered");
-
-        assert_eq!(report.deleted_segments(), &[]);
-        assert_eq!(report.protected_segments(), &[1]);
-        assert_eq!(report.failed_segments(), &[]);
-        assert!(backend
-            .read_object(&ObjectLayout::wal_segment(1).expect("segment"))
-            .is_ok());
-    }
-
-    #[test]
-    fn covered_old_segments_are_deleted_after_rotation() {
-        let (_dir, backend) = backend();
-        let mut service = WalService::open(
-            &backend,
-            database_id(),
-            1,
-            DurabilityPolicy::Standard,
-            testing_config(),
-        )
-        .expect("open WAL");
-        let large = vec![0x55; 800];
-        service.append(&record(1, large.clone())).expect("first");
-        service.append(&record(2, large)).expect("second rotates");
-
-        let report = service
-            .delete_covered_segments(CommitVersion::new(1))
-            .expect("delete covered");
-
-        assert_eq!(report.deleted_segments(), &[1]);
-        assert_eq!(report.protected_segments(), &[2]);
-        assert!(backend
-            .read_object(&ObjectLayout::wal_segment(1).expect("first segment"))
-            .is_err());
-        assert!(backend
-            .read_object(&ObjectLayout::wal_segment(2).expect("second segment"))
-            .is_ok());
+        assert_backend_list_invalid_object(error, &invalid);
     }
 }
+
+#[test]
+fn read_uses_listed_numeric_segments_and_accepts_gaps() {
+    let segment_one = ObjectLayout::wal_segment(1).expect("segment one");
+    let segment_three = ObjectLayout::wal_segment(3).expect("segment three");
+    let first = record(1, b"first".to_vec());
+    let third = record(3, b"third".to_vec());
+    let backend = StoredWalBackend::new();
+    backend
+        .write_object(
+            &segment_one,
+            &segment_bytes(1, std::slice::from_ref(&first)),
+        )
+        .expect("seed first segment");
+    backend
+        .write_object(
+            &segment_three,
+            &segment_bytes(3, std::slice::from_ref(&third)),
+        )
+        .expect("seed third segment");
+    backend.set_list_order(vec![segment_three, segment_one]);
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let read = service.read_all().expect("read listed WAL segments");
+
+    assert_eq!(read.records(), &[first, third]);
+    assert_eq!(read.truncation(), None);
+}
+
+#[test]
+fn read_ignores_adjacent_non_wal_prefix_objects_when_backend_filters_prefix() {
+    let first = record(1, b"first".to_vec());
+    let segment_one = ObjectLayout::wal_segment(1).expect("segment one");
+    let adjacent = ObjectName::new("walx/0000000000000002").expect("adjacent object");
+    let backend = StoredWalBackend::new();
+    backend
+        .write_object(
+            &segment_one,
+            &segment_bytes(1, std::slice::from_ref(&first)),
+        )
+        .expect("seed WAL segment");
+    backend
+        .write_object(&adjacent, b"not WAL")
+        .expect("seed adjacent object");
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let read = service.read_all().expect("read WAL only");
+
+    assert_eq!(backend.listed_objects(), vec![segment_one]);
+    assert_eq!(read.records(), &[first]);
+    assert_eq!(read.truncation(), None);
+}
+
+#[test]
+fn rotation_after_max_segment_id_returns_typed_overflow() {
+    let object = ObjectLayout::wal_segment(u64::MAX).expect("max segment");
+    let backend = StoredWalBackend::with_object(
+        &object,
+        &segment_bytes(u64::MAX, &[record(1, vec![0x55; 800])]),
+    );
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        u64::MAX,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("open max segment WAL");
+
+    let error = service
+        .append(&record(2, vec![0x66; 800]))
+        .expect_err("rotation after max segment should overflow");
+
+    assert_eq!(
+        error,
+        WalServiceError::SegmentIdOverflow {
+            segment_id: u64::MAX,
+        }
+    );
+    assert_eq!(service.active_segment_id(), u64::MAX);
+}
+
+mod append;
+mod corruption;
+mod durability;
+mod fault_windows;
+#[cfg(all(feature = "localfs", unix))]
+mod localfs;
+mod read;
+mod retention_reopen;
