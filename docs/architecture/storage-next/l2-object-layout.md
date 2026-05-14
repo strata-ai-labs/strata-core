@@ -101,6 +101,7 @@ tests in the same slice.
 manifest/current
 
 wal/<segment-id>
+meta/wal/<segment-id>
 
 tables/<branch-id>/<level>/<table-id>
 tables/<branch-id>/manifest
@@ -125,6 +126,10 @@ belong to L3/L4.
 
 `wal/<segment-id>` names WAL segment objects. It does not imply appendable
 files. L4 decides how WAL segments are written and published.
+
+`meta/wal/<segment-id>` names optional WAL segment metadata sidecars. These
+objects are accelerators only; recovery must be able to rebuild or ignore them
+by scanning authoritative WAL segment objects.
 
 `tables/<branch-id>/<level>/<table-id>` names immutable table objects. L5 owns
 the table bytes. L6 owns branch mechanics. L2 only defines the object name.
@@ -158,6 +163,8 @@ Chosen first-pass encodings:
 - manifest generation: not exposed in an object name for V1; the database
   manifest lives at `manifest/current`
 - WAL segment ID: 16-character fixed-width lowercase hex
+- WAL segment metadata sidecar ID: same fixed-width lowercase hex as its WAL
+  segment ID
 - snapshot ID: 16-character fixed-width lowercase hex
 - branch ID: canonical lowercase hex or another core/storage-owned stable ID
   encoding once the branch atom is wired through this layer

@@ -86,10 +86,12 @@ code.
 15. `M3TB2`: Add service-level WAL fuzz target if `M3TC2` justifies a narrow
     testkit surface; otherwise record the deferral.
 16. `M3E3`: Implement snapshot, checkpoint, and sidecar service mechanics.
-17. `M3E4`: Implement quarantine service mechanics and recovery
+17. `M3TC3`: Expand snapshot, checkpoint, and sidecar service tests to
+    reference-grade durability coverage.
+18. `M3E4`: Implement quarantine service mechanics and recovery
     classifications.
-18. `M3TD1`: Prove cache mode creates none of the durable object families.
-19. `M3TF1`: Re-run lower-layer conformance across memory and local filesystem
+19. `M3TD1`: Prove cache mode creates none of the durable object families.
+20. `M3TF1`: Re-run lower-layer conformance across memory and local filesystem
     backends and record any retired old-code files.
 
 ## Implementation Track
@@ -122,7 +124,9 @@ code.
 4. `M3TD` lands before cache mode is consumed by M4.
 5. `M3TE1` lands after `M3E1` and before later recovery layers treat database
    manifest behavior as stable recovery-pointer infrastructure.
-6. `M3TF` closes after durable services have enough backend behavior to
+6. `M3TC3` lands after `M3E3` and before `M3E4`; quarantine recovery should not
+   assume snapshot or sidecar behavior until M3TC3 closes.
+7. `M3TF` closes after durable services have enough backend behavior to
    validate end-to-end capability claims.
 
 ## Slice Briefs
@@ -133,6 +137,8 @@ code.
 4. `M3E2`: `docs/architecture/implementation-plans/m3e2-wal-service-implementation-brief.md`
 5. `M3TC2` / `M3TB2`: `docs/architecture/implementation-plans/m3e2-wal-test-suite-plan.md`
 6. `M3TC2` implementation: `docs/architecture/implementation-plans/m3tc2-wal-test-implementation-plan.md`
+7. `M3E3`: `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-implementation-brief.md`
+8. `M3TC3`: `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-test-suite-plan.md`
 
 ## Slice Policy
 

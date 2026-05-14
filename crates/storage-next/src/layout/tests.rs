@@ -19,6 +19,18 @@ fn manifest_lock_and_meta_objects_use_reserved_names() {
             .as_str(),
         "meta/database"
     );
+    assert_eq!(
+        ObjectLayout::wal_segment_metadata(2)
+            .expect("segment metadata")
+            .as_str(),
+        "meta/wal/0000000000000002"
+    );
+    assert_eq!(
+        ObjectLayout::wal_segment_metadata_prefix()
+            .expect("segment metadata prefix")
+            .as_str(),
+        "meta/wal/"
+    );
 }
 
 #[test]
@@ -26,6 +38,12 @@ fn ordered_ids_use_fixed_width_lower_hex() {
     assert_eq!(
         ObjectLayout::wal_segment(2).expect("wal segment").as_str(),
         "wal/0000000000000002"
+    );
+    assert_eq!(
+        ObjectLayout::wal_segment_metadata(2)
+            .expect("segment metadata")
+            .as_str(),
+        "meta/wal/0000000000000002"
     );
     assert_eq!(
         ObjectLayout::wal_segment(16).expect("wal segment").as_str(),
@@ -39,6 +57,20 @@ fn ordered_ids_use_fixed_width_lower_hex() {
         ObjectLayout::snapshot(u64::MAX).expect("snapshot").as_str(),
         "snapshots/ffffffffffffffff"
     );
+}
+
+#[test]
+fn wal_segment_metadata_names_sort_like_segment_ids() {
+    for left in sample_u64_values() {
+        for right in sample_u64_values() {
+            let left_name =
+                ObjectLayout::wal_segment_metadata(left).expect("left segment metadata");
+            let right_name =
+                ObjectLayout::wal_segment_metadata(right).expect("right segment metadata");
+
+            assert_eq!(left_name.cmp(&right_name), left.cmp(&right));
+        }
+    }
 }
 
 #[test]
@@ -327,6 +359,9 @@ fn follower_state_names_are_not_part_of_target_layout() {
             .to_string(),
         ObjectLayout::database_meta()
             .expect("database meta")
+            .to_string(),
+        ObjectLayout::wal_segment_metadata(1)
+            .expect("segment metadata")
             .to_string(),
     ];
     let forbidden_fragments = [

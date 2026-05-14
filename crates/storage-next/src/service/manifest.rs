@@ -234,16 +234,19 @@ impl<'a> DatabaseManifestService<'a> {
         &self,
         active_wal_segment: u64,
     ) -> ManifestServiceResult<DatabaseManifestWrite> {
-        let object = database_manifest_object()?;
-        if active_wal_segment == 0 {
-            return Err(ManifestServiceError::InvalidRecoveryFact {
-                role: ManifestRole::Database,
-                object,
-                field: "active_wal_segment",
-            });
-        }
-
+        validate_active_wal_segment(active_wal_segment)?;
         let current = self.load_required()?;
+        self.persist_active_wal_segment_from_current(current, active_wal_segment)
+    }
+
+    pub(crate) fn persist_active_wal_segment_from_current(
+        &self,
+        current: DatabaseManifest,
+        active_wal_segment: u64,
+    ) -> ManifestServiceResult<DatabaseManifestWrite> {
+        validate_active_wal_segment(active_wal_segment)?;
+        let object = database_manifest_object()?;
+
         // Active WAL changes must preserve snapshot and flush facts. Dropping
         // either would make a later recovery choose the wrong replay window.
         let snapshot_watermark = current.snapshot_watermark();
@@ -391,6 +394,18 @@ fn database_manifest_object() -> ManifestServiceResult<ObjectName> {
     ObjectLayout::database_manifest().map_err(|source| ManifestServiceError::Layout {
         role: ManifestRole::Database,
         source,
+    })
+}
+
+fn validate_active_wal_segment(active_wal_segment: u64) -> ManifestServiceResult<()> {
+    if active_wal_segment != 0 {
+        return Ok(());
+    }
+
+    Err(ManifestServiceError::InvalidRecoveryFact {
+        role: ManifestRole::Database,
+        object: database_manifest_object()?,
+        field: "active_wal_segment",
     })
 }
 

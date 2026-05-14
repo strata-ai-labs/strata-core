@@ -19,7 +19,13 @@ mod wal;
 mod watermark;
 
 pub(crate) use manifest::{decode_manifest, encode_manifest, DatabaseManifest};
-pub(crate) use segment_metadata::SegmentMetadata;
+pub(crate) use segment_metadata::{
+    decode_segment_metadata, encode_segment_metadata, SegmentMetadata,
+};
+pub(crate) use snapshot::{
+    decode_snapshot_container, encode_snapshot_container, visit_snapshot_container_sections,
+    SnapshotContainer, SnapshotHeader, SnapshotSection, SnapshotSectionRef,
+};
 pub(crate) use wal::{
     decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header, encode_wal_record,
     encode_wal_record_envelope, encode_wal_segment_header, WalRecord, WalRecordEnvelope,

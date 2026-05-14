@@ -828,3 +828,250 @@ and what old code became eligible for retirement.
   still serve current storage consumers.
 - Follow-up: M6/M7 should retire old commit-adapter WAL wiring after the new
   commit runtime consumes storage-next WAL service.
+
+## M3E3A: Snapshot Publish And Load Basics
+
+### Current Files Read
+
+- `crates/storage/src/durability/disk_snapshot/writer.rs`
+- `crates/storage/src/durability/disk_snapshot/reader.rs`
+- `crates/storage/src/durability/disk_snapshot/checkpoint.rs`
+- `crates/storage/src/durability/checkpoint_runtime.rs`
+- `crates/storage/src/durability/format/snapshot.rs`
+- `crates/storage-next/src/format/snapshot.rs`
+- `crates/storage-next/src/service/manifest.rs`
+- `crates/storage-next/src/service/publish.rs`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-implementation-brief.md`
+
+### Behavior Preserved
+
+- Snapshot publication uses the same durable publish primitive as MANIFEST and
+  table manifest publication.
+- Snapshot readers validate header facts, database identity, codec identity,
+  container CRC, and section framing before returning bytes to upper layers.
+- The snapshot service exposes a borrowed section visitor for large snapshot
+  inspection without forcing materialized section payloads.
+- Snapshot section payloads remain opaque to L4.
+- Snapshot objects are immutable once created; duplicate create attempts fail
+  without overwriting old bytes.
+
+### Intentional V1 Changes
+
+- Snapshot objects use `snapshots/<16-hex-id>` from `ObjectLayout`, not old
+  `snap-NNNNNN.chk` filenames.
+- Storage-next snapshots carry commit-version watermarks, not transaction ids.
+- The service accepts explicit snapshot facts and raw sections; it does not
+  serialize primitive checkpoint DTOs.
+- Snapshot id `0` and snapshot watermark `0` are rejected before backend
+  access.
+
+### Deferred
+
+- Snapshot listing, latest lookup, and pruning wait for M3E3B.
+- Mechanical checkpoint sequencing over MANIFEST and snapshot publication waits
+  for M3E3C.
+- Optional WAL segment metadata sidecars wait for M3E3D.
+- Row-native snapshot payload construction and install remain L6/L8 work.
+
+### Tests Ported Or Added
+
+- Add snapshot service tests for missing optional and required loads, durable
+  backend rejection, local filesystem publish/load roundtrip, invalid snapshot
+  facts, duplicate immutable create, corrupt bytes, header/object id mismatch,
+  decoded zero-watermark rejection, codec mismatch, database mismatch, publish
+  failure kind propagation, returned durable-byte facts, borrowed visitor
+  success, CRC-before-callback validation, identity-before-callback validation,
+  and callback error propagation.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old snapshot writer, reader, checkpoint runtime, and
+  primitive checkpoint DTO code still serve current storage consumers.
+- Follow-up: M3E3B-D should add list/prune/checkpoint/sidecar mechanics before
+  L8 recovery consumes storage-next snapshots.
+
+## M3E3B: Snapshot Listing, Latest Lookup, And Pruning
+
+### Current Files Read
+
+- `crates/storage/src/durability/disk_snapshot/writer.rs`
+- `crates/storage/src/durability/disk_snapshot/reader.rs`
+- `crates/storage/src/durability/disk_snapshot/checkpoint.rs`
+- `crates/storage-next/src/layout/mod.rs`
+- `crates/storage-next/src/backend/mod.rs`
+- `crates/storage-next/src/backend/memory.rs`
+- `crates/storage-next/src/service/snapshot.rs`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-implementation-brief.md`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-test-suite-plan.md`
+
+### Behavior Preserved
+
+- Snapshot retention remains caller-driven. The storage service executes
+  explicit live-snapshot and retain-newest facts; it does not decide checkpoint
+  policy.
+- Snapshot pruning protects the live MANIFEST snapshot and newest retained
+  snapshots before deleting any older snapshot objects.
+- Delete failures are reported per object without hiding successful deletions
+  or protected objects.
+
+### Intentional V1 Changes
+
+- Snapshot listing parses only exact lowercase `snapshots/<16-hex-id>` object
+  names from `ObjectLayout::snapshot_prefix()`.
+- Malformed names inside the snapshot family fail closed instead of being
+  silently ignored.
+- Objects outside the snapshot family are ignored even if a backend returns
+  them during prefix listing.
+- Latest snapshot means highest listed snapshot object id. It does not imply
+  the MANIFEST-live snapshot.
+
+### Deferred
+
+- Mechanical checkpoint sequencing waits for M3E3C.
+- Optional WAL segment metadata sidecars wait for M3E3D.
+- Recovery health classification for malformed snapshot listings remains L8
+  work.
+
+### Tests Ported Or Added
+
+- Add private snapshot listing/prune tests for empty listings, numeric ordering,
+  latest selection, malformed snapshot-family names, weak-prefix family ignores,
+  list failure routing, live/newest retention protection, retain count clamping,
+  malformed snapshot-family rejection during prune before any delete, delete
+  failure reporting, zero live-snapshot rejection, and delete-capability
+  preflight.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old snapshot reader/writer and checkpoint runtime still
+  serve current storage consumers.
+- Follow-up: M3E3C-D should add checkpoint sequencing and optional sidecar
+  mechanics before L8 recovery consumes storage-next snapshots.
+
+## M3E3C: Checkpoint Sequencing
+
+### Current Files Read
+
+- `crates/storage/src/durability/disk_snapshot/checkpoint.rs`
+- `crates/storage/src/durability/checkpoint_runtime.rs`
+- `crates/storage-next/src/service/manifest.rs`
+- `crates/storage-next/src/service/snapshot.rs`
+- `crates/storage-next/src/service/publish.rs`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-implementation-brief.md`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-test-suite-plan.md`
+
+### Behavior Preserved
+
+- Checkpoint sequencing remains mechanical: active WAL facts are persisted
+  before snapshot publication, and MANIFEST snapshot facts are persisted only
+  after snapshot publication succeeds.
+- Final MANIFEST no-visible failures after snapshot publication are classified
+  as orphan snapshots, not corrupt databases.
+- Final MANIFEST publish uncertainty after snapshot publication is classified
+  separately because MANIFEST may already point to the snapshot.
+- The checkpoint layer preserves enough published snapshot facts for later
+  lifecycle and recovery code to classify or inspect the snapshot.
+
+### Intentional V1 Changes
+
+- The checkpoint service takes caller-supplied raw `SnapshotSection` values and
+  explicit database, codec, active WAL, snapshot id, watermark, and timestamp
+  facts. It does not build row-native sections.
+- The service validates the existing database MANIFEST identity before
+  snapshot publication and rejects invalid checkpoint facts before MANIFEST
+  mutation.
+- The active-WAL MANIFEST update reuses the already-loaded MANIFEST from
+  identity validation instead of loading current state a second time.
+- Typed checkpoint errors own the sequencing boundary: load/current MANIFEST
+  failures, active-WAL MANIFEST failures, snapshot publish failures, database
+  mismatch, invalid input facts, orphan-after-publish failures, and final
+  MANIFEST uncertainty are distinct.
+
+### Deferred
+
+- Optional WAL segment metadata sidecars wait for M3E3D.
+- WAL durability forcing, snapshot payload construction, snapshot install,
+  checkpoint scheduling, snapshot pruning policy, and WAL deletion remain L6/L8
+  lifecycle work.
+
+### Tests Ported Or Added
+
+- Add private checkpoint sequencing tests for successful publish order, missing
+  and corrupt MANIFEST rejection, codec and database mismatch rejection,
+  invalid input fact rejection before mutation, active-WAL MANIFEST publish
+  failure, all snapshot publish `PublishFailureKind` values, orphan snapshot
+  facts on final MANIFEST no-visible failures, final MANIFEST uncertainty for
+  `VisibilityUnknown` and `VisibleDurabilityUnconfirmed`, direct orphan snapshot
+  loadability, preservation of previous MANIFEST snapshot facts, and the
+  single-load active-WAL update path.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old snapshot checkpoint runtime still serves current storage
+  consumers.
+- Follow-up: M3E3D should add optional sidecar mechanics before L8 recovery
+  consumes storage-next sidecar facts.
+
+## M3E3D: Optional WAL Segment Metadata Sidecars
+
+### Current Files Read
+
+- `crates/storage/src/durability/format/segment_meta.rs`
+- `crates/storage/src/durability/wal/writer.rs`
+- `crates/storage/src/durability/wal/reader.rs`
+- `crates/storage/src/durability/compaction/wal_only.rs`
+- `crates/storage-next/src/format/segment_metadata.rs`
+- `crates/storage-next/src/layout/mod.rs`
+- `crates/storage-next/src/service/publish.rs`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-implementation-brief.md`
+- `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-test-suite-plan.md`
+
+### Behavior Preserved
+
+- WAL segment metadata sidecars remain optional accelerators. Missing,
+  corrupt, future-version, pre-V1, checksum-mismatched, trailing-byte, and
+  segment-id-mismatched sidecars are reported as fallback facts, not
+  authoritative recovery failures.
+- Sidecar publication uses a durable replace operation and preserves
+  `PublishFailureKind` on publish failure.
+- Sidecar deletion failures are reported without hiding the authoritative WAL
+  segment state.
+
+### Intentional V1 Changes
+
+- Current `.meta` filesystem paths such as `wal-000001.meta` are not ported.
+  Storage-next sidecars live under `meta/wal/<16-hex-segment-id>` through
+  `ObjectLayout`.
+- The sidecar service is separate from the WAL service. M3E3D publishes,
+  loads, and deletes optional sidecar objects, but WAL recovery still scans
+  authoritative segment bytes when sidecars are absent or invalid.
+- Segment id `0` is rejected at the service boundary before object-name
+  construction.
+
+### Deferred
+
+- Writing sidecars automatically on WAL rotation, flush, or checkpoint remains
+  lifecycle/recovery work.
+- Using sidecars to skip WAL scans during recovery or retention remains L8
+  work.
+- Table or future sidecar families are not implemented in this slice.
+
+### Tests Ported Or Added
+
+- Add private sidecar service tests for exact object naming, zero segment-id
+  rejection across load/publish/delete, publish/load roundtrip, durable replace
+  mode, memory-backend durable rejection, local filesystem durable publication,
+  missing fallback, corrupt-byte fallback, segment-id mismatch fallback, backend
+  read failure routing, all publish failure kinds, WAL object preservation on
+  publish failure, delete failure reporting, and missing-delete no-op facts.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old WAL writer/reader sidecar mechanics still serve current
+  storage consumers.
+- Follow-up: M3E4 should implement quarantine service mechanics and recovery
+  integration.

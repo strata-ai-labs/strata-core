@@ -125,6 +125,18 @@ impl ObjectLayout {
         object_name(&[ObjectFamily::Wal.as_str(), &fixed_u64(segment_id)])
     }
 
+    pub(crate) fn wal_segment_metadata_prefix() -> LayoutResult<ObjectPrefix> {
+        object_prefix(&[ObjectFamily::Meta.as_str(), ObjectFamily::Wal.as_str()])
+    }
+
+    pub(crate) fn wal_segment_metadata(segment_id: u64) -> LayoutResult<ObjectName> {
+        object_name(&[
+            ObjectFamily::Meta.as_str(),
+            ObjectFamily::Wal.as_str(),
+            &fixed_u64(segment_id),
+        ])
+    }
+
     pub(crate) fn table_prefix() -> LayoutResult<ObjectPrefix> {
         Self::family_prefix(ObjectFamily::Tables)
     }
