@@ -16,6 +16,8 @@ pub(crate) struct SegmentMetadata {
 
 impl SegmentMetadata {
     pub(crate) const fn empty(segment_id: u64) -> Self {
+        // Empty segments use inverted min/max sentinels so the first tracked
+        // record can update each range with ordinary min/max operations.
         Self {
             segment_id,
             min_timestamp: Timestamp::MAX,
@@ -64,6 +66,8 @@ impl SegmentMetadata {
 }
 
 pub(crate) fn encode_segment_metadata(metadata: &SegmentMetadata) -> Vec<u8> {
+    // The sidecar is a cache of facts derivable from WAL bytes. The checksum
+    // protects the cache, but recovery still treats WAL bytes as authoritative.
     let mut bytes = Vec::with_capacity(SEGMENT_METADATA_SIZE);
     bytes.extend_from_slice(&SEGMENT_METADATA_MAGIC);
     bytes.extend_from_slice(&SEGMENT_METADATA_FORMAT_VERSION.to_le_bytes());

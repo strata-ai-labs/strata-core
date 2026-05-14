@@ -145,6 +145,9 @@ fn missing_object_candidate_capabilities(
     let has_fenced_update = capabilities.contains(BackendCapability::ConditionalCreate)
         && capabilities.contains(BackendCapability::ConditionalUpdate);
 
+    // Object-durable backends may offer either a single conditional publish
+    // primitive or a create/update fence pair. Reporting the missing side of a
+    // partial pair gives backend authors a targeted capability error.
     if !has_fenced_publish && !has_fenced_update {
         missing.push(BackendCapability::ConditionalPublish);
         if capabilities.contains(BackendCapability::ConditionalCreate) {

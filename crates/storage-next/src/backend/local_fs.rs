@@ -96,6 +96,9 @@ impl LocalFsBackend {
     }
 
     fn path_for(&self, name: &ObjectName) -> PathBuf {
+        // Object bytes live in a suffixed file so `tables/a` and
+        // `tables/a/child` can coexist on filesystems where a path cannot be
+        // both file and directory.
         let mut path = self.root.clone();
         let mut components = name.as_str().split('/').peekable();
         while let Some(component) = components.next() {
@@ -126,6 +129,9 @@ impl LocalFsBackend {
     }
 
     fn create_temporary_file(path: &Path) -> BackendResult<(PathBuf, File)> {
+        // Temporary names include process id and a local sequence. Retrying a
+        // bounded number of create_new attempts preserves no-clobber behavior
+        // without assuming the directory is free of stale temp files.
         for _ in 0..16 {
             let sequence = TEMP_OBJECT_COUNTER.fetch_add(1, Ordering::Relaxed);
             let temp_path = Self::temporary_path_for(path, sequence)?;
@@ -242,7 +248,7 @@ impl LocalFsBackend {
     }
 
     fn cleanup_temporary_path(path: &Path) {
-        // Best-effort cleanup must not mask the primary publish failure.
+        // Best-effort temp removal must not mask the primary publish failure.
         let _ = fs::remove_file(path);
     }
 
@@ -261,6 +267,8 @@ impl LocalFsBackend {
         let target_metadata = Self::validate_optional_file_path(&final_path).map_err(|error| {
             Self::publish_error(name, PublishFailureKind::FailedBeforeVisibility, error)
         })?;
+        // Create mode must fail before visibility if the target already
+        // exists; replace mode is allowed to publish over an existing object.
         if mode == PublishMode::Create && target_metadata.is_some() {
             return Err(PublishError::precondition_failed(
                 name,
@@ -289,6 +297,8 @@ impl LocalFsBackend {
             Self::publish_error(name, PublishFailureKind::FailedBeforeVisibility, error)
         })?;
 
+        // The temporary object is not reachable by object name. Failures before
+        // the final install are therefore classified as before-visibility.
         if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryWrite) {
             Self::cleanup_temporary_path(&temp_path);
             return Err(Self::publish_error(
@@ -316,6 +326,9 @@ impl LocalFsBackend {
             ));
         }
 
+        // fsync the temporary file before publishing it. After this point the
+        // remaining uncertainty is about visibility or parent-directory
+        // durability, not about whether the temp file bytes reached storage.
         if let Err(error) = file.sync_all().map_err(|err| map_io_error(&err)) {
             Self::cleanup_temporary_path(&temp_path);
             return Err(Self::publish_error(
@@ -347,6 +360,9 @@ impl LocalFsBackend {
         }
 
         if mode == PublishMode::Create {
+            // A hard link gives create-only no-clobber semantics: success makes
+            // the temp bytes visible at the final path; AlreadyExists remains a
+            // precondition failure.
             if let Err(error) = fs::hard_link(temp_path, final_path) {
                 Self::cleanup_temporary_path(temp_path);
                 let error = map_io_error(&error);
@@ -365,6 +381,8 @@ impl LocalFsBackend {
             Self::cleanup_temporary_path(temp_path);
             Ok(())
         } else if let Err(error) = fs::rename(temp_path, final_path) {
+            // rename failure for replace is ambiguous across platforms and
+            // filesystems: the caller must not assume either old or new bytes.
             Self::cleanup_temporary_path(temp_path);
             Err(Self::publish_error(
                 name,
@@ -381,6 +399,8 @@ impl LocalFsBackend {
             return Ok(());
         };
 
+        // The object is visible before the parent directory is synced. A
+        // failure here leaves visibility known but durability unconfirmed.
         if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::ParentSync) {
             return Err(Self::publish_error(
                 name,
@@ -431,6 +451,9 @@ impl LocalFsBackend {
                 format!("path {} does not name an object file", path.display()),
             ));
         };
+        // Only files with the object suffix map back to ObjectName values; this
+        // prevents directory-only prefixes and temporary files from leaking
+        // into backend listings.
         let Some(stem) = last.strip_suffix(OBJECT_FILE_SUFFIX) else {
             return Err(BackendError::new(
                 BackendErrorKind::Corruption,
@@ -465,6 +488,9 @@ impl LocalFsBackend {
                     } else if file_type.is_dir() {
                         self.collect_files(&path, files)?;
                     } else if file_type.is_file() && is_object_file_path(&path) {
+                        // Unknown files are ignored; malformed object-suffixed
+                        // files are corruption because they could shadow a
+                        // backend object.
                         files.push(self.name_from_path(&path)?);
                     }
                 }

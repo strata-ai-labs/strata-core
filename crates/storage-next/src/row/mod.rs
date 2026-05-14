@@ -34,6 +34,8 @@ impl StorageSpaceId {
 
     pub(crate) fn engine(raw: u8) -> Result<Self, RowError> {
         let id = Self::from_raw(raw)?;
+        // Engine-owned spaces start at 0x20; lower nonzero ids are reserved for
+        // storage metadata such as commit timeline rows.
         if !id.is_engine_owned() {
             return Err(RowError::StorageReservedSpaceId { raw });
         }

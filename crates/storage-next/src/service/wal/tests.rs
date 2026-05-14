@@ -23,6 +23,9 @@ enum AppendReportFault {
     WrongMetadataSize,
 }
 
+// This backend writes the bytes but lies about the append report. The WAL
+// service must reject the report without advancing its own offset and dirty
+// facts, because the durable bytes are now ahead of service state.
 struct MisreportingAppendBackend {
     object: Mutex<Option<(ObjectName, Vec<u8>)>>,
     fault: AppendReportFault,

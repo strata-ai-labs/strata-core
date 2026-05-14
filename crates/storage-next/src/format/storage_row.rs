@@ -22,6 +22,8 @@ pub(crate) fn encode_storage_row(row: &StorageRow) -> Result<Vec<u8>, FormatErro
     bytes.push(STORAGE_ROW_FORMAT_VERSION);
     bytes.extend_from_slice(&physical_key_len.to_le_bytes());
     bytes.extend_from_slice(&physical_key);
+    // The row carries commit facts redundantly with the internal key. Recovery
+    // and diagnostics can validate row bytes without re-parsing the key suffix.
     bytes.extend_from_slice(&row.commit_version().as_u64().to_le_bytes());
     bytes.extend_from_slice(&row.commit_timestamp().as_micros().to_le_bytes());
     bytes.extend_from_slice(&row.expires_at().as_micros().to_le_bytes());
@@ -52,6 +54,8 @@ pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError
     let expires_at = Timestamp::from_micros(reader.read_u64_le()?);
     let row_flags = reader.read_u32_le()?;
     if row_flags != STORAGE_ROW_FLAGS_NONE {
+        // Reserved flags fail closed until a later format version assigns
+        // semantics to them.
         return Err(FormatError::UnsupportedFlags {
             format: STORAGE_ROW_FORMAT,
             flags: row_flags,
@@ -71,6 +75,8 @@ pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError
     let value_len = usize::try_from(reader.read_u32_le()?)
         .map_err(|_| FormatError::InvalidLength { field: "value" })?;
     if tombstone {
+        // Tombstones carry only deletion intent and commit facts. Expiry and
+        // value bytes would make delete semantics ambiguous.
         if expires_at != Timestamp::EPOCH {
             return Err(FormatError::InvalidTombstonePayload { field: "expiry" });
         }

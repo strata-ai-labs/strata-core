@@ -210,6 +210,8 @@ fn decode_snapshot_section_with_payload_limit(
     max_payload_bytes: usize,
 ) -> Result<(SnapshotSection, usize), FormatError> {
     let (section, consumed) = decode_snapshot_section_ref(bytes)?;
+    // Borrowed section decoding is allowed to expose large slices, but
+    // materializing a section must enforce an allocation ceiling.
     if section.payload().len() > max_payload_bytes {
         return Err(FormatError::InvalidLength {
             field: "snapshot_materialized_payload",
@@ -391,6 +393,8 @@ pub(crate) fn visit_snapshot_container_sections(
             field: "snapshot_crc32",
         }
     })?);
+    // The container footer is validated before section visitation. Callers
+    // never see borrowed section bytes from a container with a bad footer.
     let computed_crc = crc32fast::hash(&bytes[..footer_offset]);
     if stored_crc != computed_crc {
         return Err(FormatError::ChecksumMismatch {
@@ -472,6 +476,8 @@ fn validate_codec_id_len(codec_id_len: usize) -> Result<(), FormatError> {
 
 fn validate_section_kind(section_kind: u8) -> Result<(), FormatError> {
     if section_kind == 0 {
+        // Kind zero is reserved as an impossible section marker, which makes an
+        // all-zero or uninitialized section header fail closed.
         return Err(FormatError::InvalidValue {
             field: "snapshot_section_kind",
         });

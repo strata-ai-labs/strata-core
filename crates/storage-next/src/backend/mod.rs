@@ -128,6 +128,9 @@ pub(crate) const CACHE_MODE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::ObjectMetadata,
 ];
 
+// Cache mode and the basic object contract intentionally share the same
+// capability floor. Durability semantics are supplied by higher modes, not by
+// pretending cache writes are durable.
 pub(crate) const BASIC_OBJECT_BACKEND_CAPABILITIES: &[BackendCapability] = &[
     BackendCapability::ReadObject,
     BackendCapability::ReadRange,
@@ -137,6 +140,8 @@ pub(crate) const BASIC_OBJECT_BACKEND_CAPABILITIES: &[BackendCapability] = &[
     BackendCapability::ObjectMetadata,
 ];
 
+// Durable local storage needs append, publish, sync, and a single-writer guard
+// before upper layers can make commit-ordering claims.
 pub(crate) const DURABLE_LOCAL_MODE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::ReadObject,
     BackendCapability::ReadRange,
@@ -150,6 +155,9 @@ pub(crate) const DURABLE_LOCAL_MODE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::SingleWriterLock,
 ];
 
+// Object-durable backends can later satisfy durability through conditional
+// publication or create/update fences, but they still need consistent listing
+// and monotonic metadata for recovery decisions.
 pub(crate) const OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::ReadObject,
     BackendCapability::ReadRange,
@@ -207,6 +215,8 @@ impl BackendAppend {
         bytes_written: u64,
         metadata: BackendMetadata,
     ) -> Self {
+        // Callers must verify all three facts. Some backends can expose bytes
+        // even when the reported append facts are wrong.
         Self {
             start_offset,
             bytes_written,

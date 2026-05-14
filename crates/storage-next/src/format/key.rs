@@ -7,6 +7,9 @@ const PHYSICAL_KEY_FORMAT: &str = "physical_key";
 const INTERNAL_KEY_FORMAT: &str = "internal_key";
 
 pub(crate) fn encode_physical_key(key: &PhysicalKey) -> Vec<u8> {
+    // Layout: branch id, NUL-terminated space, one-byte storage-space id, then
+    // an escaped user key. The escaped user key preserves arbitrary bytes while
+    // still giving the physical key a single unambiguous terminator.
     let mut bytes = Vec::with_capacity(
         BranchId::BYTE_LEN + key.space().len() + 1 + 1 + key.user_key().len() + 2,
     );
@@ -32,6 +35,8 @@ pub(crate) fn decode_physical_key(bytes: &[u8]) -> Result<PhysicalKey, FormatErr
 
 pub(crate) fn encode_internal_key(key: &InternalKey) -> Vec<u8> {
     let mut bytes = encode_physical_key(key.physical_key());
+    // Store the bitwise inverse as big-endian so ordinary ascending byte order
+    // returns newest commit versions first for the same physical key.
     bytes.extend_from_slice(&(!key.commit_version().as_u64()).to_be_bytes());
     bytes
 }
@@ -91,6 +96,7 @@ fn decode_physical_key_prefix(bytes: &[u8]) -> Result<(PhysicalKey, usize), Form
 }
 
 fn encode_escaped(source: &[u8], target: &mut Vec<u8>) {
+    // 00 00 terminates the user key; 00 01 represents a literal zero byte.
     for byte in source {
         if *byte == 0x00 {
             target.push(0x00);

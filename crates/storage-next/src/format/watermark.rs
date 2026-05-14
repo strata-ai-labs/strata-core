@@ -67,6 +67,8 @@ pub(crate) fn encode_snapshot_watermark(
     watermark: SnapshotWatermark,
 ) -> Result<Vec<u8>, FormatError> {
     match watermark {
+        // A one-byte empty encoding keeps the absence of a durable snapshot
+        // distinct from a present snapshot with invalid zero facts.
         SnapshotWatermark::Empty => Ok(vec![0]),
         SnapshotWatermark::Present {
             snapshot_id,

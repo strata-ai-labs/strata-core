@@ -88,6 +88,9 @@ pub(crate) fn encode_manifest(manifest: &DatabaseManifest) -> Result<Vec<u8>, Fo
     bytes.extend_from_slice(&codec_len.to_le_bytes());
     bytes.extend_from_slice(manifest.codec_id().as_bytes());
     bytes.extend_from_slice(&manifest.active_wal_segment().to_le_bytes());
+    // Zero is the durable sentinel for absent optional recovery facts. V1
+    // rejects present-zero values at construction so decode can map zero back
+    // to None unambiguously.
     bytes.extend_from_slice(&manifest.snapshot_watermark().unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(&manifest.snapshot_id().unwrap_or(0).to_le_bytes());
     bytes.extend_from_slice(
@@ -128,6 +131,8 @@ pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<DatabaseManifest, FormatEr
     match version {
         DATABASE_FORMAT_VERSION => {}
         0 | 2 => {
+            // Known development manifests are rejected with a distinct error so
+            // open-time policy can refuse pre-V1 databases deterministically.
             return Err(FormatError::PreV1Format {
                 format: FORMAT,
                 version,
@@ -173,6 +178,8 @@ pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<DatabaseManifest, FormatEr
     let snapshot_id = optional_nonzero(reader.read_u64_le()?);
     let flushed_through_commit_id = optional_nonzero(reader.read_u64_le()?).map(CommitVersion::new);
     reader.finish()?;
+    // Pair validation happens after sentinel decoding because a single present
+    // snapshot fact is not enough to restart recovery safely.
     validate_recovery_facts(active_wal_segment, snapshot_watermark, snapshot_id)?;
 
     Ok(DatabaseManifest {

@@ -224,6 +224,9 @@ impl<'a> DatabaseManifestService<'a> {
         manifest: &DatabaseManifest,
     ) -> ManifestServiceResult<DatabaseManifestWrite> {
         let object = database_manifest_object()?;
+        // Raw publish replaces the manifest the caller supplied; it does not
+        // merge with current durable state. The persist_* paths below own
+        // preservation of unrelated recovery facts.
         publish_database_manifest(self.backend, &object, manifest, PublishIntent::Replace)
     }
 
@@ -241,6 +244,8 @@ impl<'a> DatabaseManifestService<'a> {
         }
 
         let current = self.load_required()?;
+        // Active WAL changes must preserve snapshot and flush facts. Dropping
+        // either would make a later recovery choose the wrong replay window.
         let snapshot_watermark = current.snapshot_watermark();
         let snapshot_id = current.snapshot_id();
         let flushed_through_commit_id = current.flushed_through_commit_id();
@@ -280,6 +285,9 @@ impl<'a> DatabaseManifestService<'a> {
         }
 
         let current = self.load_required()?;
+        // Snapshot facts are a pair: the durable snapshot object id and the
+        // commit watermark it covers. They are updated together while the WAL
+        // and flush facts remain unchanged.
         let active_wal_segment = current.active_wal_segment();
         let flushed_through_commit_id = current.flushed_through_commit_id();
         let updated = current
@@ -310,6 +318,8 @@ impl<'a> DatabaseManifestService<'a> {
         }
 
         let current = self.load_required()?;
+        // Flush progress never changes the snapshot identity or active WAL
+        // segment; it only records how far table state has caught up.
         let active_wal_segment = current.active_wal_segment();
         let snapshot_watermark = current.snapshot_watermark();
         let snapshot_id = current.snapshot_id();
@@ -398,6 +408,9 @@ fn read_optional(
 ) -> ManifestServiceResult<Option<Vec<u8>>> {
     match backend.read_object(object) {
         Ok(bytes) => Ok(Some(bytes)),
+        // Only NotFound is absence. Other backend failures are not downgraded
+        // because open/recovery must distinguish missing metadata from an
+        // unavailable or corrupt backend.
         Err(source) if source.kind() == BackendErrorKind::NotFound => Ok(None),
         Err(source) => Err(ManifestServiceError::Read {
             role,
@@ -427,6 +440,8 @@ fn publish_database_manifest(
         object: object.clone(),
         source,
     })?;
+    // Decode our freshly encoded bytes before publish so callers receive the
+    // exact durable representation facts, not an unchecked input value.
     let decoded = decode_database_manifest(object, &bytes)?;
     let publisher = ObjectPublisher::new(backend);
     let outcome = match intent {
@@ -650,6 +665,8 @@ mod tests {
             mode: PublishMode,
         ) -> Result<PublishOutcome, PublishError> {
             let mut objects = self.objects.lock().expect("recording backend lock");
+            // The in-memory recording backend mirrors the publish precondition:
+            // create must not replace existing bytes, while replace may.
             if mode == PublishMode::Create && objects.contains_key(name) {
                 return Err(PublishError::precondition_failed(
                     name,
@@ -1128,6 +1145,8 @@ mod tests {
             _bytes: &[u8],
             _mode: PublishMode,
         ) -> Result<PublishOutcome, PublishError> {
+            // This backend never stores bytes; it only checks that each
+            // PublishFailureKind is preserved through the service error.
             Err(PublishError::new(
                 name.clone(),
                 self.kind,
@@ -1234,6 +1253,9 @@ mod tests {
             _bytes: &[u8],
             _mode: PublishMode,
         ) -> Result<PublishOutcome, PublishError> {
+            // Existing bytes stay authoritative for failure kinds that promise
+            // no visible replacement. Tests assert this separately from the
+            // service's error mapping.
             Err(PublishError::new(
                 name.clone(),
                 self.kind,

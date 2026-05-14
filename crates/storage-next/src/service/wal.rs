@@ -431,6 +431,9 @@ impl<'a> WalService<'a> {
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
         let frame = encode_record_frame(record, &self.active_object)?;
         let frame_len = frame.len() as u64;
+        // The segment header consumes part of the configured segment budget, so
+        // a single record frame must fit in the remaining capacity before any
+        // backend append is attempted.
         let max_record_bytes = self
             .segment_size
             .checked_sub(WAL_SEGMENT_HEADER_SIZE as u64)
@@ -446,6 +449,9 @@ impl<'a> WalService<'a> {
 
         self.validate_active_object_size(WalOperation::Append)?;
 
+        // Rotation is decided against service state that was just reconciled
+        // with backend metadata. That prevents appending after an unrepaired
+        // partial tail or externally-mutated active segment.
         let projected_size = self.active_segment_size.checked_add(frame_len).ok_or(
             WalServiceError::RecordTooLarge {
                 bytes: frame_len,
@@ -501,6 +507,9 @@ impl<'a> WalService<'a> {
         self.active_metadata
             .track_record(record.commit_version(), record.commit_timestamp());
 
+        // In always mode the append is already visible when sync runs. If sync
+        // fails, dirty facts intentionally remain advanced so lifecycle can
+        // classify the durability-uncertain window.
         let forced_durable = if self.durability_policy == DurabilityPolicy::Always {
             self.force_durable()?;
             true
@@ -613,6 +622,9 @@ impl<'a> WalService<'a> {
     }
 
     fn rotate_segment(&mut self) -> WalServiceResult<()> {
+        // Old segment bytes must be durable before the active pointer advances
+        // to a freshly created segment. Recovery can then replay all complete
+        // segments up to the active segment without losing the rotation record.
         if self.dirty_bytes > 0 {
             self.force_durable()?;
         }
@@ -779,6 +791,8 @@ fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject
         .into_iter()
         .map(parse_segment_object)
         .collect::<WalServiceResult<Vec<_>>>()?;
+    // Valid segment names are fixed-width hex, but sorting by parsed id keeps
+    // ordering correct even if a backend returns objects in arbitrary order.
     segments.sort_by_key(|segment| segment.segment_id);
     Ok(segments)
 }
@@ -870,6 +884,9 @@ fn read_segment(
         let (envelope, envelope_len) = match decode_wal_record_envelope(&bytes[offset..]) {
             Ok(decoded) => decoded,
             Err(FormatError::InsufficientBytes { .. }) if is_latest => {
+                // A short final envelope on the latest segment is a repairable
+                // tail fact. The same byte shape in an older segment is hard
+                // corruption because later durable records depend on it.
                 return Ok(WalRead::new(
                     records,
                     Some(WalTruncation::new(

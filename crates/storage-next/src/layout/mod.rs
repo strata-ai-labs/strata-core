@@ -214,6 +214,8 @@ impl ObjectLayout {
 }
 
 fn fixed_u64(value: u64) -> String {
+    // Fixed-width lowercase hex preserves numeric ordering in ordinary
+    // lexicographic object listings.
     format!("{value:016x}")
 }
 
@@ -243,6 +245,8 @@ fn object_prefix(components: &[&str]) -> LayoutResult<ObjectPrefix> {
 }
 
 fn validate_component(role: &'static str, component: &str) -> LayoutResult<()> {
+    // Components are validated before joining so a caller cannot smuggle an
+    // extra path segment into a branch, table, or quarantine object name.
     if component.is_empty() {
         return Err(LayoutError::EmptyComponent { role });
     }

@@ -35,6 +35,9 @@ impl WalSegmentHeader {
 }
 
 pub(crate) fn encode_wal_segment_header(header: &WalSegmentHeader) -> Vec<u8> {
+    // The header CRC covers only fixed header facts. Record bytes are protected
+    // by per-record envelopes so segment recovery can classify a partial tail
+    // without trusting unrelated later bytes.
     let mut bytes = Vec::with_capacity(WAL_SEGMENT_HEADER_SIZE);
     bytes.extend_from_slice(&WAL_SEGMENT_MAGIC);
     bytes.extend_from_slice(&WAL_SEGMENT_FORMAT_VERSION.to_le_bytes());
@@ -68,6 +71,8 @@ pub(crate) fn decode_wal_segment_header(
     match version {
         WAL_SEGMENT_FORMAT_VERSION => {}
         0 | 2 | 3 => {
+            // These versions are intentionally rejected as known non-V1
+            // development formats instead of being treated as future data.
             return Err(FormatError::PreV1Format {
                 format: WAL_SEGMENT_FORMAT,
                 version,
@@ -171,6 +176,9 @@ pub(crate) fn encode_wal_record_into(
     bytes: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
     bytes.clear();
+    // record_len includes the versioned payload and trailing payload CRC, but
+    // excludes the 4-byte length prefix itself. The separate length CRC lets
+    // readers reject impossible lengths before allocating or slicing payloads.
     let payload_len = 1usize
         .checked_add(4)
         .and_then(|len| len.checked_add(8))
@@ -227,6 +235,8 @@ pub(crate) fn decode_wal_record(bytes: &[u8]) -> Result<(WalRecord, usize), Form
     verify_wal_record_len_crc(bytes)?;
     validate_wal_record_len(record_len)?;
 
+    // Only after the length CRC passes do we trust record_len enough to compute
+    // the full frame boundary.
     let total_len = 4usize
         .checked_add(record_len)
         .ok_or(FormatError::InvalidLength {
@@ -311,6 +321,9 @@ fn verify_wal_record_payload_crc(
     payload_with_crc: &[u8],
     record_len: usize,
 ) -> Result<&[u8], FormatError> {
+    // The payload CRC covers version, length CRC, commit facts, and user bytes;
+    // a branch id or timestamp mutation is therefore detected the same way as a
+    // payload mutation.
     let payload = &payload_with_crc[..record_len - 4];
     let stored_payload_crc =
         u32::from_le_bytes(payload_with_crc[record_len - 4..].try_into().map_err(|_| {
@@ -384,6 +397,8 @@ pub(crate) fn encode_wal_record_envelope(
             field: WAL_ENVELOPE_FORMAT,
         })?;
     let encoded_len_bytes = encoded_len.to_le_bytes();
+    // The envelope length has its own checksum so recovery can distinguish a
+    // torn envelope header from an intact envelope around a corrupt record.
     let encoded_len_crc = crc32fast::hash(&encoded_len_bytes);
 
     let capacity = WAL_RECORD_ENVELOPE_HEADER_SIZE
@@ -439,6 +454,9 @@ pub(crate) fn decode_wal_record_envelope(
         });
     }
 
+    // A short envelope payload is a tail fact only when the WAL service knows
+    // this object is the latest segment. The byte codec reports the raw
+    // insufficiency and leaves that policy decision to the service.
     let total_len = WAL_RECORD_ENVELOPE_HEADER_SIZE
         .checked_add(encoded_len)
         .ok_or(FormatError::InvalidLength {

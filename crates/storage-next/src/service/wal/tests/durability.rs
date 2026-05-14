@@ -56,6 +56,8 @@ impl Backend for SyncFaultBackend {
     }
 
     fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+        // Calls are recorded before the injected result so tests can prove a
+        // failed durability barrier was actually attempted.
         self.sync_calls
             .lock()
             .expect("sync calls lock")

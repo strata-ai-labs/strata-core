@@ -66,10 +66,18 @@ impl PublishOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PublishFailureKind {
+    /// Backend cannot provide the requested publish contract at all.
     Unsupported,
+    /// Create-only publish observed an existing object before any replacement
+    /// attempt.
     PreconditionFailed,
+    /// Failure occurred before the new bytes could become the visible object.
     FailedBeforeVisibility,
+    /// Failure occurred during the visibility change, so callers must inspect
+    /// durable state before retrying blindly.
     VisibilityUnknown,
+    /// New bytes became visible, but the parent durability barrier did not
+    /// complete.
     VisibleDurabilityUnconfirmed,
 }
 

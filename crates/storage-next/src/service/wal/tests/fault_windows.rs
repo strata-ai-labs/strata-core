@@ -14,6 +14,9 @@ enum AppendFault {
     },
 }
 
+// This backend models fault windows the generic testkit cannot express: bytes
+// can become visible before append_object returns an error or a misleading
+// append report.
 #[derive(Default)]
 struct FaultWindowBackend {
     inner: StoredWalBackend,
@@ -138,6 +141,9 @@ impl Backend for FaultWindowBackend {
             let mut visible = current;
             visible.extend_from_slice(&bytes[..prefix_len]);
             self.inner.write_object(name, &visible)?;
+            // The visible prefix simulates a crash or backend fault after a
+            // partial write. Service state must not assume the full frame was
+            // accepted just because object bytes changed.
             return match fault {
                 AppendFault::VisiblePrefixThenError { kind, .. } => {
                     Err(BackendError::new(kind, "partial append visible"))
