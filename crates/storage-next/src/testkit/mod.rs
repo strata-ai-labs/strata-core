@@ -5,8 +5,12 @@
 use std::fmt;
 
 mod format_fuzz;
+mod service_fuzz;
 
 pub use format_fuzz::{decode_format_bytes, FormatDecodeOutcome, FormatDecoder};
+pub use service_fuzz::{
+    run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
+};
 
 /// Test-only backend selector used by external conformance tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

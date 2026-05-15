@@ -70,6 +70,21 @@ impl LocalFsBackend {
     }
 
     #[cfg(all(test, unix))]
+    pub(crate) fn inject_temporary_write_publish_fault(&self) -> BackendResult<()> {
+        self.arm_publish_fault(LocalFsPublishStep::TemporaryWrite)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn inject_temporary_sync_publish_fault(&self) -> BackendResult<()> {
+        self.arm_publish_fault(LocalFsPublishStep::TemporarySync)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn inject_parent_sync_publish_fault(&self) -> BackendResult<()> {
+        self.arm_publish_fault(LocalFsPublishStep::ParentSync)
+    }
+
+    #[cfg(all(test, unix))]
     fn injected_publish_fault(&self, step: LocalFsPublishStep) -> Option<BackendError> {
         let Ok(mut fault) = self.publish_fault.lock() else {
             return Some(BackendError::new(

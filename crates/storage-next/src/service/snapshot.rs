@@ -417,6 +417,7 @@ fn read_snapshot_optional(
     object: &ObjectName,
     snapshot_id: u64,
 ) -> SnapshotServiceResult<Option<Vec<u8>>> {
+    require_capability(backend, BackendCapability::ReadObject)?;
     match backend.read_object(object) {
         Ok(bytes) => Ok(Some(bytes)),
         // Only NotFound is absence. Other failures mean the snapshot object
@@ -428,6 +429,16 @@ fn read_snapshot_optional(
             source,
         }),
     }
+}
+
+pub(super) fn require_capability(
+    backend: &dyn Backend,
+    capability: BackendCapability,
+) -> SnapshotServiceResult<()> {
+    if backend.capabilities().contains(capability) {
+        return Ok(());
+    }
+    Err(SnapshotServiceError::UnsupportedCapability { capability })
 }
 
 fn decode_snapshot(
@@ -551,6 +562,15 @@ pub(crate) use listing::{SnapshotDeleteFailure, SnapshotDeleteReport, SnapshotOb
 
 #[cfg(test)]
 mod listing_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod listing_property_tests;
+
+#[cfg(test)]
+mod publish_load_tests;
+
+#[cfg(test)]
+mod publish_fault_tests;
 
 #[cfg(test)]
 mod tests {

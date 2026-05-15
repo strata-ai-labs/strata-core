@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 
+mod optional_fallback;
+
 use super::{
     WalSegmentMetadataSidecarError, WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService,
 };
@@ -180,6 +182,12 @@ impl Backend for RecordingBackend {
     ) -> PublishResult<PublishOutcome> {
         self.publish_modes.lock().expect("publish modes").push(mode);
         if let Some(kind) = self.publish_failure.lock().expect("publish failure").take() {
+            if kind == PublishFailureKind::VisibleDurabilityUnconfirmed {
+                self.objects
+                    .lock()
+                    .expect("objects")
+                    .insert(name.clone(), bytes.to_vec());
+            }
             return Err(PublishError::new(
                 name.clone(),
                 kind,

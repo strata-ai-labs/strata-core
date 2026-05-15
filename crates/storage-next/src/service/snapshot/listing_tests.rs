@@ -134,6 +134,26 @@ fn snapshot_list_failure_returns_typed_error_without_reads() {
 }
 
 #[test]
+fn snapshot_list_requires_list_capability_before_parsing() {
+    let malformed = object_name(snapshot_raw("000000000000000g"));
+    let backend = ListingBackend::without_list_capability(vec![malformed]);
+    let service = SnapshotService::new(&backend);
+
+    let error = service
+        .list_snapshots()
+        .expect_err("missing list capability");
+
+    match error {
+        SnapshotServiceError::UnsupportedCapability { capability } => {
+            assert_eq!(capability, BackendCapability::ListPrefix);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(backend.list_count(), 0);
+    assert_eq!(backend.read_count(), 0);
+}
+
+#[test]
 fn prune_snapshots_list_failure_returns_typed_error_without_deletes() {
     let backend = ListingBackend::with_list_error(BackendError::new(
         BackendErrorKind::Unavailable,
@@ -206,6 +226,86 @@ fn prune_snapshots_clamps_retain_newest_to_one() {
     assert_snapshot_ids(report.deleted(), &[1]);
     assert_snapshot_ids(report.protected(), &[2]);
     assert!(report.failed().is_empty());
+}
+
+#[test]
+fn prune_snapshots_empty_family_reports_no_work() {
+    let backend = MemoryBackend::new();
+    let service = SnapshotService::new(&backend);
+
+    let report = service.prune_snapshots(None, 1).expect("prune snapshots");
+
+    assert!(report.deleted().is_empty());
+    assert!(report.protected().is_empty());
+    assert!(report.failed().is_empty());
+}
+
+#[test]
+fn prune_snapshots_at_or_below_retain_count_deletes_nothing() {
+    let backend = MemoryBackend::new();
+    write_placeholder_snapshot(&backend, 3);
+    write_placeholder_snapshot(&backend, 1);
+    write_placeholder_snapshot(&backend, 2);
+    let service = SnapshotService::new(&backend);
+
+    let report = service.prune_snapshots(None, 3).expect("prune snapshots");
+
+    assert!(report.deleted().is_empty());
+    assert_snapshot_ids(report.protected(), &[1, 2, 3]);
+    assert!(report.failed().is_empty());
+    assert_present(&backend, 1);
+    assert_present(&backend, 2);
+    assert_present(&backend, 3);
+}
+
+#[test]
+fn prune_snapshots_reports_are_sorted_under_unsorted_backend_listing() {
+    let failing_one = snapshot_object(1);
+    let failing_three = snapshot_object(3);
+    let backend = ListingBackend::with_delete_failures(
+        vec![
+            snapshot_object(4),
+            failing_three.clone(),
+            snapshot_object(5),
+            failing_one.clone(),
+            snapshot_object(2),
+        ],
+        vec![failing_three, failing_one],
+    );
+    let service = SnapshotService::new(&backend);
+
+    let report = service
+        .prune_snapshots(Some(2), 1)
+        .expect("prune snapshots");
+
+    assert_snapshot_ids(report.deleted(), &[4]);
+    assert_snapshot_ids(report.protected(), &[2, 5]);
+    assert_failed_snapshot_ids(report.failed(), &[1, 3]);
+    assert_eq!(backend.deleted_objects(), vec![snapshot_object(4)]);
+}
+
+#[test]
+fn prune_snapshots_never_deletes_non_snapshot_family_objects() {
+    let outside_snapshot_family = object_name(format!(
+        "{}2/{}",
+        ObjectFamily::Snapshots.as_str(),
+        "0000000000000001"
+    ));
+    let wal_object = family_object(ObjectFamily::Wal, "0000000000000001");
+    let backend = ListingBackend::with_names(vec![
+        outside_snapshot_family,
+        snapshot_object(1),
+        wal_object,
+        snapshot_object(2),
+    ]);
+    let service = SnapshotService::new(&backend);
+
+    let report = service.prune_snapshots(None, 1).expect("prune snapshots");
+
+    assert_snapshot_ids(report.deleted(), &[1]);
+    assert_snapshot_ids(report.protected(), &[2]);
+    assert!(report.failed().is_empty());
+    assert_eq!(backend.deleted_objects(), vec![snapshot_object(1)]);
 }
 
 #[test]
@@ -317,6 +417,17 @@ impl ListingBackend {
         Self::new(names, None, Vec::new(), capabilities)
     }
 
+    fn without_list_capability(names: Vec<ObjectName>) -> Self {
+        let capabilities = BackendCapabilities::from_slice(&[
+            BackendCapability::ReadObject,
+            BackendCapability::ReadRange,
+            BackendCapability::WriteObject,
+            BackendCapability::DeleteObject,
+            BackendCapability::ObjectMetadata,
+        ]);
+        Self::new(names, None, Vec::new(), capabilities)
+    }
+
     fn new(
         names: Vec<ObjectName>,
         list_error: Option<BackendError>,
@@ -416,6 +527,14 @@ fn assert_missing(backend: &MemoryBackend, snapshot_id: u64) {
 
 fn assert_snapshot_ids(snapshots: &[SnapshotObject], expected: &[u64]) {
     let actual: Vec<u64> = snapshots.iter().map(SnapshotObject::snapshot_id).collect();
+    assert_eq!(actual, expected);
+}
+
+fn assert_failed_snapshot_ids(failures: &[super::SnapshotDeleteFailure], expected: &[u64]) {
+    let actual: Vec<u64> = failures
+        .iter()
+        .map(|failure| failure.snapshot().snapshot_id())
+        .collect();
     assert_eq!(actual, expected);
 }
 

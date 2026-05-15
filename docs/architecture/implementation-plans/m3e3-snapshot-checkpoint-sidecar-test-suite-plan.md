@@ -114,10 +114,11 @@ Primary module-local files:
 8. `crates/storage-next/src/service/sidecar/tests.rs`
 9. `crates/storage-next/src/service/snapshot/tests/support.rs`
 
-Optional integration/fuzz files:
+Optional integration file and required fuzz files:
 
 1. `crates/storage-next/tests/service_fault_windows.rs`
-2. `crates/storage-next/fuzz/fuzz_targets/service_snapshot_container.rs`
+2. `crates/storage-next/src/testkit/service_fuzz.rs`
+3. `crates/storage-next/fuzz/fuzz_targets/service_snapshot.rs`
 
 The default should remain module-local tests because the services are
 crate-private L4 services. Add testkit exposure only if integration or fuzz
@@ -379,21 +380,30 @@ Exit gate:
 
 ### 10. Service Fuzz Tests
 
-Service fuzzing is optional for M3TC3.
+M3TC3 pulls service fuzzing forward through a hidden testkit entry point rather
+than deferring it to later recovery layers.
 
-Add `service_snapshot_container` only if the implementation exposes a narrow
-testkit entry point that loads bytes through service validation without
-requiring a backend. If added, fuzz invariants are:
+Add `service_snapshot` under `crates/storage-next/fuzz/fuzz_targets/`. The
+target should route arbitrary bytes into a bounded service-operation script over
+a hidden durable in-memory backend. The script must exercise snapshot create,
+load, list, latest, prune, sidecar publish, sidecar corruption, and sidecar load
+operations.
 
-1. No panics.
-2. No unbounded allocation.
-3. Decode errors remain typed as format, codec mismatch, database mismatch, or
-   backend-independent validation errors.
-4. Visitor callbacks are not invoked before CRC validation.
+Fuzz invariants are:
 
-If service fuzzing is deferred, record the deferral in the progress tracker.
-The existing M3C5 `format_snapshot_envelope` target remains the required byte
-fuzz target.
+1. No panics except the fuzz target's intentional invariant-failure panic.
+2. No unbounded allocation; generated scripts must cap operation count and
+   payload size.
+3. Snapshot listing and latest facts match the model after every operation.
+4. Snapshot loads either return the model payload or a typed missing error.
+5. Duplicate immutable snapshot creates return precondition failure and preserve
+   prior visible bytes.
+6. Prune never deletes model-protected snapshots.
+7. Sidecar missing/corrupt/present states remain recoverable and never mutate
+   authoritative snapshot state.
+
+The existing M3C5 `format_snapshot_envelope` target remains the byte-decoder
+fuzz target. `service_snapshot` is the service-level operation fuzzer.
 
 ## Adversarial Implementation Protocol
 

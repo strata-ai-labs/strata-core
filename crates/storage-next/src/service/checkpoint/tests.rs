@@ -1,3 +1,4 @@
+mod sequencing;
 mod support;
 
 use super::{CheckpointManifestOperation, CheckpointService, CheckpointServiceError};

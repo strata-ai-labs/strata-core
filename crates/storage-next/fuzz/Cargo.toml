@@ -39,4 +39,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "service_snapshot"
+path = "fuzz_targets/service_snapshot.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

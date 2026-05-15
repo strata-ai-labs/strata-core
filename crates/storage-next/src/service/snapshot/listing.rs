@@ -1,4 +1,7 @@
-use super::{validate_snapshot_id, SnapshotService, SnapshotServiceError, SnapshotServiceResult};
+use super::{
+    require_capability, validate_snapshot_id, SnapshotService, SnapshotServiceError,
+    SnapshotServiceResult,
+};
 use crate::backend::{Backend, BackendCapability, BackendError, BackendErrorKind};
 use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
@@ -123,16 +126,6 @@ impl SnapshotService<'_> {
 
         Ok(report)
     }
-}
-
-fn require_capability(
-    backend: &dyn Backend,
-    capability: BackendCapability,
-) -> SnapshotServiceResult<()> {
-    if backend.capabilities().contains(capability) {
-        return Ok(());
-    }
-    Err(SnapshotServiceError::UnsupportedCapability { capability })
 }
 
 fn snapshot_prefix() -> SnapshotServiceResult<crate::object::ObjectPrefix> {
