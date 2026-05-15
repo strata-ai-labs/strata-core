@@ -14,9 +14,11 @@ Useful local commands:
 ```bash
 cargo install cargo-fuzz --locked
 cargo +nightly fuzz run format_manifest
+cargo +nightly fuzz run format_quarantine
 cargo +nightly fuzz run format_snapshot_envelope
 cargo +nightly fuzz run format_storage_row
 cargo +nightly fuzz run format_wal_record
+cargo +nightly fuzz run service_quarantine
 cargo +nightly fuzz run service_snapshot
 ```
 
@@ -25,4 +27,4 @@ the memory/cache-compatible build surface. Format targets should stay named for
 the byte-oriented durable input they fuzz, such as `object_name_parse`,
 `format_table_block`, `format_timeline_row`, and `recovery_object_inventory`.
 Service targets should stay named for the service family they script, such as
-`service_snapshot`.
+`service_snapshot` and `service_quarantine`.

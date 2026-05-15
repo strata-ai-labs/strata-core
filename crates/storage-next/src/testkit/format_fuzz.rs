@@ -5,6 +5,7 @@ use crate::format::fuzzing;
 pub enum FormatDecoder {
     Key,
     Manifest,
+    QuarantineInventory,
     SegmentMetadata,
     SnapshotEnvelope,
     StorageRow,
@@ -29,6 +30,7 @@ pub fn decode_format_bytes(decoder: FormatDecoder, bytes: &[u8]) -> FormatDecode
     let accepted = match decoder {
         FormatDecoder::Key => fuzzing::decode_key(bytes),
         FormatDecoder::Manifest => fuzzing::decode_manifest(bytes),
+        FormatDecoder::QuarantineInventory => fuzzing::decode_quarantine_inventory(bytes),
         FormatDecoder::SegmentMetadata => fuzzing::decode_segment_metadata(bytes),
         FormatDecoder::SnapshotEnvelope => fuzzing::decode_snapshot_envelope(bytes),
         FormatDecoder::StorageRow => fuzzing::decode_storage_row(bytes),
@@ -53,6 +55,7 @@ mod tests {
         for decoder in [
             FormatDecoder::Key,
             FormatDecoder::Manifest,
+            FormatDecoder::QuarantineInventory,
             FormatDecoder::SegmentMetadata,
             FormatDecoder::SnapshotEnvelope,
             FormatDecoder::StorageRow,

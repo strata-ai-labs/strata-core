@@ -13,6 +13,8 @@ Current vectors:
 | `internal-key-ordinary.hex` | Internal key | V1 key encoding | Ordinary engine-owned storage key with commit version 42. |
 | `internal-key-zero-user-byte.hex` | Internal key | V1 key encoding | Storage-owned timeline key with escaped NUL bytes in the user key. |
 | `manifest-identity.hex` | Manifest | V1 manifest format 1 | Database manifest with identity codec and recovery watermarks. |
+| `quarantine-inventory-empty.hex` | Quarantine inventory | V1 quarantine inventory format 1 | Empty branch-local quarantine inventory. |
+| `quarantine-inventory-multi-entry.hex` | Quarantine inventory | V1 quarantine inventory format 1 | Branch-local quarantine inventory with two canonical entries. |
 | `segment-metadata-sidecar.hex` | Segment metadata | V1 metadata format 1 | WAL segment metadata sidecar with timestamp and commit-version ranges. |
 | `snapshot-container-single-section.hex` | Snapshot container | V1 snapshot format 1 | Snapshot header, one row-native section envelope, and footer CRC. |
 | `snapshot-header-identity.hex` | Snapshot header | V1 snapshot format 1 | Snapshot header with database id, commit-version watermark, and identity codec id. |

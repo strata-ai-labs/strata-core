@@ -12,6 +12,7 @@ use std::fmt;
 
 mod key;
 mod manifest;
+pub(crate) mod quarantine;
 mod segment_metadata;
 mod snapshot;
 mod storage_row;

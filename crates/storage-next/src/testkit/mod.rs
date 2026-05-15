@@ -5,9 +5,11 @@
 use std::fmt;
 
 mod format_fuzz;
+mod quarantine_fuzz;
 mod service_fuzz;
 
 pub use format_fuzz::{decode_format_bytes, FormatDecodeOutcome, FormatDecoder};
+pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
 };

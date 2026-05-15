@@ -73,6 +73,350 @@ and what old code became eligible for retirement.
 
 ## Slice Entries
 
+## M3E4A: Quarantine Inventory Source Map And Codec
+
+### Current Files Read
+
+- `crates/storage/src/quarantine.rs`
+- `crates/storage/src/segmented/quarantine_protocol.rs`
+- `crates/storage/src/segmented/compaction.rs`
+- `docs/architecture/storage-next/l2-object-layout.md`
+- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/spec/strata-storage-format-v1.md`
+
+### Behavior Preserved
+
+- Quarantine remains a branch-local durable inventory used during safe reclaim.
+- Absence of a quarantine inventory represents an empty state only when no
+  quarantine objects exist for that branch.
+- Inventory bytes are integrity-checked and malformed inventories fail closed.
+- Entries are relocation-safe. They record database-relative storage identity,
+  not absolute filesystem paths.
+- Quarantine inventory publication remains separate from final purge.
+
+### Intentional V1 Changes
+
+- Storage-next does not read or write the old `STRAQRTN` quarantine manifest
+  bytes. Those bytes were local-filesystem and segment-filename specific.
+- V1 inventory entries record a quarantine object id, source `ObjectName`,
+  byte count, and timestamp. They do not record old segment ids or branch-local
+  filenames.
+- V1 inventory stores branch identity as raw `BranchId` bytes. Object paths use
+  `BranchId` display text produced by core-next.
+- Source family is derived from `source_object` during validation and reporting;
+  it is not stored redundantly in durable bytes.
+- The portable V1 service will use publish-inventory, publish-quarantine-object,
+  delete-source ordering because the storage-next backend has no rename
+  primitive.
+
+### Deferred
+
+- Quarantine service load/publish mechanics move to M3E4B.
+- Quarantine object movement, purge, and retry semantics move to M3E4C.
+- Recovery reconciliation and policy-downgrade classification move to M3E4D.
+- L6 reachability proof and L8 reclaim orchestration remain out of M3E4A.
+
+### Tests Ported Or Added
+
+- Add V1 quarantine inventory encode/decode unit tests.
+- Add golden vectors for empty and multi-entry quarantine inventories.
+- Add malformed-input and validation tests for invalid magic, version, CRC,
+  truncation, invalid object ids, unknown source families, duplicate object ids,
+  duplicate source objects, noncanonical entry order, and oversized entry
+  counts.
+- Add a `format_quarantine` cargo-fuzz target through the hidden testkit
+  decoder surface.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old `crates/storage/src/quarantine.rs` and segmented
+  quarantine protocol still serve old storage consumers.
+- Follow-up: M3E4B-D should make old quarantine inventory and protocol code
+  eligible for retirement once old storage is no longer a workspace consumer.
+
+## M3E4B: Quarantine Inventory Service
+
+### Current Files Read
+
+- `crates/storage/src/quarantine.rs`
+- `crates/storage/src/segmented/quarantine_protocol.rs`
+- `crates/storage/src/segmented/recovery.rs`
+- `crates/storage-next/src/format/quarantine.rs`
+- `crates/storage-next/src/service/publish.rs`
+- `crates/storage-next/src/layout/mod.rs`
+
+### Behavior Preserved
+
+- Inventory load treats absence as an empty inventory only at the inventory
+  service boundary; reconciliation still has to inspect branch quarantine
+  objects before calling a branch clean.
+- Corrupt inventory bytes fail closed as decode errors and are not converted to
+  empty state.
+- Database, branch, and codec identity mismatches are rejected before callers
+  can trust inventory entries.
+- Publishing an empty inventory is valid and represents an explicitly drained
+  branch quarantine inventory.
+- Durable inventory replacement preserves publish failure kind and source facts
+  so recovery layers can distinguish no-visible failures from uncertain
+  publication.
+
+### Intentional V1 Changes
+
+- The inventory service owns typed load and publish reports instead of exposing
+  old storage's path-oriented manifest handling.
+- Inventory object names are produced only through `ObjectLayout`; old
+  `quarantine.manifest` paths are not read or written.
+- Durable publication uses the shared storage-next publisher and backend
+  capabilities rather than local-filesystem-specific quarantine manifest writes.
+- Memory/cache backends can load absent inventory as empty but cannot pretend to
+  publish durable quarantine inventory.
+
+### Deferred
+
+- Quarantine object movement and purge mechanics move to M3E4C.
+- Recovery reconciliation and policy-downgrade classification move to M3E4D.
+- Stateful quarantine service fuzzing and property coverage move to M3TC4.
+- Cache-mode absence across open/close/maintenance paths remains M3TD1.
+
+### Tests Ported Or Added
+
+- Add inventory load tests for absent inventory, required missing inventory,
+  corrupt bytes, backend read failure, and database/branch/codec mismatches.
+- Add durable replace tests for creating a missing inventory object, replacing
+  an existing inventory object, publishing an explicit empty inventory, memory
+  backend durable rejection, and missing durable-sync capability preflight.
+- Add publish-failure tests for all five `PublishFailureKind` values, including
+  no-visible old-byte preservation and visible-but-unconfirmed byte facts.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old quarantine manifest loading and publication still serve
+  the old storage crate.
+- Follow-up: once M3E4C-D and M3TC4 close, old quarantine manifest service
+  behavior can be retired with old storage consumers.
+
+## M3E4C: Quarantine Object Movement And Purge
+
+### Current Files Read
+
+- `crates/storage/src/quarantine.rs`
+- `crates/storage/src/segmented/quarantine_protocol.rs`
+- `crates/storage/src/segmented/compaction.rs`
+- `crates/storage/src/segmented/tests/gc_under_degradation.rs`
+- `crates/storage/src/segmented/tests/lifecycle.rs`
+- `crates/storage-next/src/service/quarantine.rs`
+- `crates/storage-next/src/service/publish.rs`
+- `crates/storage-next/src/backend/publish.rs`
+
+### Behavior Preserved
+
+- Quarantine remains a safety buffer: source bytes are not deleted until a
+  quarantine copy has been durably published.
+- Reclaim requires a fresh safe gate fact. Referenced, unsafe-recovery, and
+  proof-incomplete facts stop before backend access.
+- Inventory is published before object movement so a copy failure can be
+  explained by later reconciliation as a missing quarantine object, not as lost
+  in-flight work.
+- Existing complete quarantine state is idempotent. If the inventory entry and
+  quarantine object already exist, the service can retry source deletion after
+  validating the source and quarantine bytes agree.
+- Purge deletes only inventory-listed quarantine objects and keeps failed
+  deletes in the rewritten inventory for retry.
+- Missing objects during purge are reported as already drained and removed from
+  the retained inventory.
+
+### Intentional V1 Changes
+
+- Storage-next uses portable publish-inventory, publish-quarantine-object, and
+  delete-source ordering because the backend contract has no rename operation.
+- Reachability and recovery-safety proof are caller-supplied gate facts. The
+  storage service does not scan tables or choose compaction policy.
+- Inventory mismatch is a typed service error before mutation rather than an
+  implicit old-storage maintenance decision.
+- Visibility-unknown and visible-but-unconfirmed quarantine object publish
+  windows share one top-level uncertain status; callers can inspect the
+  retained `PublishFailureKind` for the exact split.
+- Purge rewrite failure preserves the delete report instead of hiding objects
+  that were already deleted.
+
+### Deferred
+
+- Automatic repair of mismatched inventory/object state remains an L8 policy
+  operation.
+- L6 reachability proof remains outside storage-next.
+- Recovery reconciliation over mismatch states moves to M3E4D.
+- Stateful quarantine service fuzzing and operation-stream property tests move
+  to M3TC4.
+
+### Tests Ported Or Added
+
+- Add quarantine request validation and safe-gate tests that prove malformed or
+  unsafe requests fail before backend access.
+- Add operation-order tests for source read, source metadata, inventory publish,
+  quarantine object publish, and source delete.
+- Add fault-window tests for source missing, source read failure, metadata
+  failure, metadata size mismatch, corrupt inventory, inventory publish
+  failures, quarantine publish failures or uncertainty, and source delete
+  failure.
+- Add existing-entry tests for idempotent retry, missing quarantine copy,
+  source/quarantine byte drift, source mismatch, and byte-count drift.
+- Add purge tests for unsafe gate preflight, empty inventory, delete failure
+  retention, missing object removal, deterministic ordering, and inventory
+  rewrite failure reporting.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old quarantine movement, compaction, and purge behavior
+  still serve the old storage crate.
+- Follow-up: M3TC4 should port remaining adversarial fault-window and
+  state-machine coverage before old quarantine mutation tests are retired.
+
+## M3E4D: Quarantine Recovery Classification And Reconciliation
+
+### Current Files Read
+
+- `crates/storage/src/quarantine.rs`
+- `crates/storage/src/segmented/quarantine_protocol.rs`
+- `crates/storage/src/segmented/recovery.rs`
+- `crates/storage/src/durability/recovery.rs`
+- `crates/storage/src/segmented/tests/quarantine_reconciliation.rs`
+- `crates/storage-next/src/service/quarantine.rs`
+- `crates/storage-next/src/service/quarantine/mutation.rs`
+- `crates/storage-next/src/layout/mod.rs`
+
+### Behavior Preserved
+
+- Reconciliation treats inventory/object disagreement as degraded recovery
+  state, not as a clean empty branch.
+- Missing quarantine inventory is healthy only when the branch quarantine prefix
+  has no quarantine objects.
+- Corrupt inventory remains visible as a recovery fact instead of being
+  converted to empty state.
+- Backend read/list failures prevent classification and surface as unavailable
+  recovery state.
+- Unknown or malformed quarantine objects are retained and reported. They are
+  not repaired or deleted by reconciliation.
+
+### Intentional V1 Changes
+
+- Recovery classifications are returned as typed service reports instead of
+  string-oriented old storage diagnostics.
+- Branch-local reconciliation consumes a concrete `BranchId`; family
+  reconciliation parses the global quarantine family and reports invalid branch
+  path text that branch-local reconciliation cannot discover.
+- Inventory database, branch, and codec mismatches are classified as corrupt
+  inventory facts for recovery reporting.
+- Family reconciliation routes malformed object ids with valid branch text into
+  the matching branch-local report. Family-level malformed facts are reserved
+  for names that cannot be assigned to a branch report.
+- Reconciliation is read-only. Repair and purge remain separate operations that
+  require caller-supplied safe gate facts.
+
+### Deferred
+
+- Stateful quarantine service fuzzing and property coverage move to M3TC4.
+- Cache-mode durable quarantine absence remains M3TD1.
+- L6 reachability proof and L8 repair policy remain outside storage-next.
+- Old storage quarantine code stays until old storage consumers are retired.
+
+### Tests Ported Or Added
+
+- Add branch reconciliation tests for clean empty, explicit empty inventory,
+  matching inventory/object state, corrupt inventory, missing quarantine
+  objects, unlisted quarantine objects, malformed object ids, backend list
+  failure, and inventory read failure.
+- Add family reconciliation tests for malformed branch ids, weak-prefix
+  adjacent-family filtering, and valid-branch malformed object routing.
+- Add identity-mismatch classification coverage for corrupt inventory facts.
+- Add read-only assertions that reconciliation performs no publish, write,
+  delete, or metadata mutation.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old recovery and quarantine diagnostic paths still serve the
+  old storage crate.
+- Follow-up: M3TC4 should port any remaining adversarial reconciliation cases
+  into the property/fuzz suite before old quarantine recovery tests are retired.
+
+## M3TC4: Quarantine Test Suite And Service Fuzz Hardening
+
+### Current Files Read
+
+- `crates/storage/src/quarantine.rs`
+- `crates/storage/src/segmented/quarantine_protocol.rs`
+- `crates/storage/src/segmented/tests/quarantine_reconciliation.rs`
+- `crates/storage/src/segmented/tests/publish_failures.rs`
+- `crates/storage/src/segmented/tests/gc_under_degradation.rs`
+- `crates/storage/src/segmented/tests/lifecycle.rs`
+- `crates/storage-next/src/format/quarantine.rs`
+- `crates/storage-next/src/service/quarantine.rs`
+- `crates/storage-next/src/service/quarantine/mutation.rs`
+- `docs/architecture/implementation-plans/m3e4-quarantine-recovery-test-suite-plan.md`
+
+### Behavior Preserved
+
+- Malformed or corrupt quarantine inventories fail closed and are never treated
+  as empty inventory state.
+- Safe reclaim remains ordered so source bytes are deleted only after inventory
+  evidence and quarantine-copy visibility are established.
+- Publish-failure windows preserve enough facts for later recovery to
+  distinguish no-visible publication from visibility or durability uncertainty.
+- Purge is retryable: failed deletes stay listed, already-missing objects are
+  drained, and inventory rewrite failure does not hide per-object delete facts.
+- Reconciliation remains read-only and classifies inventory/object disagreement
+  as degraded recovery state instead of repairing or deleting bytes.
+
+### Intentional V1 Changes
+
+- The old path-oriented tests are re-expressed against portable `ObjectName`
+  layout and typed service reports.
+- Stateful coverage uses a shared bounded bytecode runner for proptest and
+  cargo-fuzz instead of old local-filesystem scenario setup.
+- The service model checks exact inventory and reconciliation facts, including
+  object id, quarantine object name, source object, byte count, and timestamp.
+- The fuzz runner models both visible and not-visible arms of inventory
+  `VisibilityUnknown`, while deterministic service tests still pin each
+  publisher boundary independently.
+
+### Deferred
+
+- Cache-mode absence across durable quarantine maintenance remains M3TD1.
+- Old storage quarantine concurrency and end-to-end segmented-store scenarios
+  remain legacy-retained until the old storage crate is retired.
+- L6 reachability proof and L8 repair/purge orchestration remain outside M3TC4.
+
+### Tests Ported Or Added
+
+- Add exhaustive quarantine codec tests for old-magic rejection, durable branch
+  bytes, reserved inventory object ids, overlong assembled paths, duplicate
+  entries, duplicate source objects, invalid source families, and fuzz-corpus
+  golden seeds.
+- Add inventory-service tests for missing, corrupt, identity-mismatched,
+  capability-missing, durable-replace, explicit-empty, publish-failure, and
+  visible-uncertain inventory states.
+- Add quarantine mutation and purge tests for unsafe gate preflight, malformed
+  requests, operation ordering, all publish/copy/delete fault windows,
+  idempotent retry, byte-count drift, source/quarantine byte drift, partial
+  purge failure, and inventory rewrite failure.
+- Add reconciliation and service-fuzz coverage for missing, corrupt, unlisted,
+  malformed, and read/list-unavailable recovery states, with property checks
+  after every generated operation.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old quarantine manifest, segmented quarantine protocol,
+  publish-failure, lifecycle, and recovery tests still serve current storage
+  consumers.
+- Follow-up: when old storage consumers are removed, retire the old quarantine
+  tests whose behavior is now represented by the storage-next suite and the
+  M3TC4 fuzz/property runner.
+
 ## M3A1: Backend Capability Validation
 
 ### Current Files Read

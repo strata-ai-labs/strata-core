@@ -1,0 +1,13 @@
+# Format: quarantine inventory
+# Version: 1
+# Purpose: empty branch-local quarantine inventory.
+# magic: "STQI"
+# database_id: 20212223-2425-2627-2829-2a2b2c2d2e2f
+# branch_id: 00010203-0405-0607-0809-0a0b0c0d0e0f
+# codec_id: identity
+# entry_count: 0
+# crc32: 0xc2361c6e
+53 54 51 49 01 00 00 00 20 21 22 23 24 25 26 27
+28 29 2a 2b 2c 2d 2e 2f 00 01 02 03 04 05 06 07
+08 09 0a 0b 0c 0d 0e 0f 08 00 00 00 69 64 65 6e
+74 69 74 79 00 00 00 00 6e 1c 36 c2

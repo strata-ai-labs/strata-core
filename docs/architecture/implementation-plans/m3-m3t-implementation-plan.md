@@ -90,8 +90,10 @@ code.
     reference-grade durability coverage.
 18. `M3E4`: Implement quarantine service mechanics and recovery
     classifications.
-19. `M3TD1`: Prove cache mode creates none of the durable object families.
-20. `M3TF1`: Re-run lower-layer conformance across memory and local filesystem
+19. `M3TC4`: Expand quarantine and recovery-classification tests to
+    reference-grade durability coverage.
+20. `M3TD1`: Prove cache mode creates none of the durable object families.
+21. `M3TF1`: Re-run lower-layer conformance across memory and local filesystem
     backends and record any retired old-code files.
 
 ## Implementation Track
@@ -126,7 +128,9 @@ code.
    manifest behavior as stable recovery-pointer infrastructure.
 6. `M3TC3` lands after `M3E3` and before `M3E4`; quarantine recovery should not
    assume snapshot or sidecar behavior until M3TC3 closes.
-7. `M3TF` closes after durable services have enough backend behavior to
+7. `M3TC4` lands after `M3E4` and before `M3TD1`; cache-mode absence should
+   test the final quarantine object families and durable mutation paths.
+8. `M3TF` closes after durable services have enough backend behavior to
    validate end-to-end capability claims.
 
 ## Slice Briefs
@@ -139,6 +143,8 @@ code.
 6. `M3TC2` implementation: `docs/architecture/implementation-plans/m3tc2-wal-test-implementation-plan.md`
 7. `M3E3`: `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-implementation-brief.md`
 8. `M3TC3`: `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-test-suite-plan.md`
+9. `M3E4`: `docs/architecture/implementation-plans/m3e4-quarantine-recovery-implementation-brief.md`
+10. `M3TC4`: `docs/architecture/implementation-plans/m3e4-quarantine-recovery-test-suite-plan.md`
 
 ## Slice Policy
 

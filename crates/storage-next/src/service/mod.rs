@@ -1,8 +1,9 @@
-//! Lower storage services for manifests, WAL, snapshots, and publication.
+//! Lower storage services for manifests, WAL, snapshots, quarantine, and publication.
 
 mod checkpoint;
 mod manifest;
 mod publish;
+mod quarantine;
 mod sidecar;
 mod snapshot;
 mod wal;
@@ -26,6 +27,21 @@ pub(crate) use manifest::{
 };
 
 pub(crate) use publish::ObjectPublisher;
+
+#[expect(
+    unused_imports,
+    reason = "quarantine service is consumed by lifecycle and recovery services added later"
+)]
+pub(crate) use quarantine::{
+    MalformedQuarantineObjectReason, QuarantineBackendOperation, QuarantineBackendUnavailable,
+    QuarantineCorruptInventory, QuarantineDeleteOutcome, QuarantineFamilyReconciliation,
+    QuarantineGate, QuarantineInventoryCorruption, QuarantineInventoryLoad,
+    QuarantineInventoryWrite, QuarantineListedObject, QuarantineMalformedObject,
+    QuarantineMissingObject, QuarantineObjectReport, QuarantineObjectRequest,
+    QuarantineObjectStatus, QuarantinePublishFailure, QuarantinePurgeReport,
+    QuarantinePurgeRequest, QuarantineReconciliationKind, QuarantineReconciliationReport,
+    QuarantineRecoveryClass, QuarantineService, QuarantineServiceError, QuarantineUnlistedObject,
+};
 
 #[expect(
     unused_imports,

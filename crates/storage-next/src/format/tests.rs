@@ -1,6 +1,10 @@
 use super::{
     key::{decode_internal_key, encode_internal_key},
     manifest::{decode_manifest, encode_manifest, DatabaseManifest},
+    quarantine::{
+        decode_quarantine_inventory, encode_quarantine_inventory, QuarantineEntry,
+        QuarantineInventory,
+    },
     segment_metadata::{decode_segment_metadata, encode_segment_metadata, SegmentMetadata},
     snapshot::{
         decode_snapshot_container, decode_snapshot_header, decode_snapshot_section,
@@ -15,6 +19,7 @@ use super::{
     },
     watermark::{decode_snapshot_watermark, encode_snapshot_watermark, SnapshotWatermark},
 };
+use crate::object::ObjectName;
 use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -28,6 +33,10 @@ const STORAGE_ROW_TOMBSTONE: &str =
     include_str!("../../testdata/goldens/storage-format-v1/storage-row-tombstone.hex");
 const DATABASE_IDENTITY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/manifest-identity.hex");
+const QUARANTINE_INVENTORY_EMPTY: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/quarantine-inventory-empty.hex");
+const QUARANTINE_INVENTORY_MULTI_ENTRY: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/quarantine-inventory-multi-entry.hex");
 const SNAPSHOT_WATERMARK_EMPTY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/snapshot-watermark-empty.hex");
 const SNAPSHOT_WATERMARK_PRESENT: &str =
@@ -111,6 +120,51 @@ fn manifest_identity_matches_golden_vector() {
 
     assert_eq!(encode_manifest(&manifest).expect("encode manifest"), golden);
     assert_eq!(decode_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn quarantine_inventory_empty_matches_golden_vector() {
+    let inventory =
+        QuarantineInventory::new(database_id(), ordinary_branch_id(), "identity", vec![])
+            .expect("quarantine inventory");
+    let golden = parse_hex(QUARANTINE_INVENTORY_EMPTY);
+
+    assert_eq!(
+        encode_quarantine_inventory(&inventory).expect("encode quarantine inventory"),
+        golden
+    );
+    assert_eq!(decode_quarantine_inventory(&golden), Ok(inventory));
+}
+
+#[test]
+fn quarantine_inventory_multi_entry_matches_golden_vector() {
+    let inventory = QuarantineInventory::new(
+        database_id(),
+        ordinary_branch_id(),
+        "identity",
+        vec![
+            quarantine_entry(
+                "table0002",
+                "tables/main/l0001/table0002",
+                256,
+                Timestamp::from_micros(1_700_000_000_000_100),
+            ),
+            quarantine_entry(
+                "table0001",
+                "tables/main/l0000/table0001",
+                128,
+                Timestamp::from_micros(1_700_000_000_000_000),
+            ),
+        ],
+    )
+    .expect("quarantine inventory");
+    let golden = parse_hex(QUARANTINE_INVENTORY_MULTI_ENTRY);
+
+    assert_eq!(
+        encode_quarantine_inventory(&inventory).expect("encode quarantine inventory"),
+        golden
+    );
+    assert_eq!(decode_quarantine_inventory(&golden), Ok(inventory));
 }
 
 #[test]
@@ -271,10 +325,7 @@ fn snapshot_container_single_section_matches_golden_vector() {
 
 fn ordinary_key() -> PhysicalKey {
     PhysicalKey::new(
-        BranchId::from_bytes([
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ]),
+        ordinary_branch_id(),
         "default",
         StorageSpaceId::engine(0x20).expect("engine id"),
         b"alpha".to_vec(),
@@ -319,6 +370,35 @@ fn payload_wal_record() -> WalRecord {
         Timestamp::from_micros(1_700_000_000_123_457),
         b"payload".to_vec(),
     )
+}
+
+fn database_id() -> [u8; 16] {
+    [
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
+        0x2f,
+    ]
+}
+
+fn ordinary_branch_id() -> BranchId {
+    BranchId::from_bytes([
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f,
+    ])
+}
+
+fn quarantine_entry(
+    object_id: &str,
+    source_object: &str,
+    byte_count: u64,
+    quarantined_at: Timestamp,
+) -> QuarantineEntry {
+    QuarantineEntry::new(
+        object_id,
+        ObjectName::new(source_object).expect("source object"),
+        byte_count,
+        quarantined_at,
+    )
+    .expect("quarantine entry")
 }
 
 fn parse_hex(text: &str) -> Vec<u8> {

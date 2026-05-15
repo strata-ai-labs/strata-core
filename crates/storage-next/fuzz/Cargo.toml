@@ -19,6 +19,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_quarantine"
+path = "fuzz_targets/format_quarantine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_snapshot_envelope"
 path = "fuzz_targets/format_snapshot_envelope.rs"
 test = false
@@ -42,6 +49,13 @@ bench = false
 [[bin]]
 name = "service_snapshot"
 path = "fuzz_targets/service_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "service_quarantine"
+path = "fuzz_targets/service_quarantine.rs"
 test = false
 doc = false
 bench = false

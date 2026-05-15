@@ -41,7 +41,7 @@ pub struct ServiceFuzzViolation {
 }
 
 impl ServiceFuzzViolation {
-    const fn new(message: &'static str) -> Self {
+    pub(crate) const fn new(message: &'static str) -> Self {
         Self { message }
     }
 }

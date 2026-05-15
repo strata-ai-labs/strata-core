@@ -1,3 +1,10 @@
 /artifacts/
-/corpus/
+/corpus/*
+!/corpus/format_quarantine/
+/corpus/format_quarantine/*
+!/corpus/format_quarantine/quarantine-inventory-empty
+!/corpus/format_quarantine/quarantine-inventory-multi-entry
+!/corpus/service_quarantine/
+/corpus/service_quarantine/*
+!/corpus/service_quarantine/basic
 /target/

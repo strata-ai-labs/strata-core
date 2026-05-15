@@ -750,7 +750,7 @@ Draft V1 requirements:
 8. The current table v7 implementation is evidence, not the public stable V1
    version number.
 
-## 18. Watermark And Sidecar Formats
+## 18. Watermark, Sidecar, And Quarantine Inventory Formats
 
 V1 snapshot watermark byte format:
 
@@ -811,6 +811,58 @@ them only when the implementation proves they are needed for performance or
 diagnostics, and keep them rebuildable from authoritative manifest, WAL,
 snapshot, and table objects.
 
+V1 quarantine inventory byte format:
+
+```text
+magic                  4 bytes   "STQI"
+version                u32 LE, MUST be 1
+database_id            16 bytes
+branch_id              16 raw BranchId bytes
+codec_id_len           u32 LE
+codec_id               codec_id_len UTF-8 bytes
+entry_count            u32 LE
+
+entries repeated entry_count times:
+  object_id_len        u32 LE
+  object_id            object_id_len UTF-8 bytes
+  source_object_len    u32 LE
+  source_object        source_object_len UTF-8 object-name bytes
+  byte_count           u64 LE
+  quarantined_at_micros u64 LE
+
+crc32                  u32 LE over all preceding bytes
+```
+
+V1 quarantine inventory constants:
+
+```text
+QUARANTINE_INVENTORY_MAGIC    "STQI"
+QUARANTINE_INVENTORY_VERSION  1
+```
+
+Requirements:
+
+1. Quarantine inventory is authoritative for storage-owned quarantine state.
+2. Inventory entries are canonicalized by `object_id`, then `source_object`.
+3. `object_id` is a branch-local quarantine object id used in
+   `quarantine/<branch-id>/<object-id>`.
+4. `object_id` MUST be a valid object-name component and MUST NOT be
+   `manifest`, which is reserved for `quarantine/<branch-id>/manifest`.
+5. `source_object` MUST be a valid database-relative `ObjectName`.
+6. `source_object` MUST NOT be in the `quarantine/` family.
+7. `source_object` MUST map to a known non-quarantine object family.
+8. Source family is derived from `source_object`. It is not stored as a
+   redundant durable field.
+9. Duplicate `object_id` values are invalid.
+10. Duplicate `source_object` values are invalid.
+11. Decoders MUST reject invalid magic, pre-V1 version `0`, future versions,
+    checksum mismatch, invalid UTF-8, invalid object-name values, noncanonical
+    entry ordering, insufficient bytes, and trailing data.
+12. Decoders MUST reject entry counts that cannot fit in the remaining bytes
+    before allocating an entry vector.
+13. The old storage crate's `STRAQRTN` quarantine manifest is pre-V1 evidence
+    only. V1 decoders MUST NOT accept it as a compatibility format.
+
 ## 19. Checksums And Integrity
 
 V1 durable formats MUST define integrity protection per object family.
@@ -824,6 +876,7 @@ Current evidence uses:
 - CRC32 for snapshot container footer
 - CRC32 for table block frames
 - CRC32 for segment metadata sidecars
+- CRC32 for quarantine inventory bytes
 - AES-GCM authentication tags for encrypted codec payloads
 
 Draft V1 requirements:
@@ -884,6 +937,8 @@ Required golden vector categories:
 - table header/footer
 - table framed block
 - segment metadata sidecar, if retained
+- quarantine inventory, empty
+- quarantine inventory, multiple entries
 
 Golden vectors must include:
 
