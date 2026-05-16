@@ -1,4 +1,6 @@
-use super::{key, manifest, quarantine, segment_metadata, snapshot, storage_row, wal, watermark};
+use super::{
+    key, manifest, quarantine, segment_metadata, snapshot, storage_row, table, wal, watermark,
+};
 
 pub(crate) fn decode_key(bytes: &[u8]) -> bool {
     let physical_key = key::decode_physical_key(bytes).is_ok();
@@ -27,6 +29,14 @@ pub(crate) fn decode_snapshot_envelope(bytes: &[u8]) -> bool {
 
 pub(crate) fn decode_storage_row(bytes: &[u8]) -> bool {
     storage_row::decode_storage_row(bytes).is_ok()
+}
+
+pub(crate) fn decode_table_artifact(bytes: &[u8]) -> bool {
+    table::decode_immutable_table(bytes).is_ok()
+}
+
+pub(crate) fn decode_table_block(bytes: &[u8]) -> bool {
+    table::decode_table_block_frame(bytes).is_ok_and(|(_frame, consumed)| consumed == bytes.len())
 }
 
 pub(crate) fn decode_wal_commit_payload(bytes: &[u8]) -> bool {

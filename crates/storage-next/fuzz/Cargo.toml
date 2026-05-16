@@ -40,6 +40,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_table_artifact"
+path = "fuzz_targets/format_table_artifact.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_table_block"
+path = "fuzz_targets/format_table_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_wal_commit_payload"
 path = "fuzz_targets/format_wal_commit_payload.rs"
 test = false

@@ -227,9 +227,11 @@ disappears, or if corrupt table bytes can produce partial table facts.
 8. Zstd decoded size above the implementation limit is rejected even if the
    compressed payload is small.
 9. Offset plus length overflow is rejected for every footer and index pointer.
-10. A table at the maximum allowed test row count decodes when total block bytes
-    fit limits.
-11. A table one row above the allowed test row count is rejected.
+10. A table at the generated property budget of 128 rows decodes when total
+    block bytes fit limits.
+11. Rows above the generated property budget are not rejected solely for test
+    budget reasons; durable row-count rejection is exercised by
+    `MAX_TABLE_ROWS + 1` header and properties facts.
 
 ### 10. Fuzz And Property Coverage
 

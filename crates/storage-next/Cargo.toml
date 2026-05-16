@@ -21,6 +21,10 @@ strata-core-next = { path = "../core-next" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fs2 = { workspace = true, optional = true }
+zstd = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+zstd-pure-rs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

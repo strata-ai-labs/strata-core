@@ -25,6 +25,13 @@ fn format_golden_harness_has_storage_format_directory() {
         "snapshot-watermark-present.hex",
         "storage-row-put.hex",
         "storage-row-tombstone.hex",
+        "immutable-table-one-block.hex",
+        "immutable-table-two-block.hex",
+        "table-data-block-one-put-uncompressed-frame.hex",
+        "table-data-block-put-tombstone-uncompressed-frame.hex",
+        "table-data-block-zstd-frame.hex",
+        "table-index-block.hex",
+        "table-properties-block.hex",
         "wal-commit-payload-one-put.hex",
         "wal-commit-payload-put-tombstone.hex",
         "wal-record-empty-pre-m3f.hex",
@@ -58,6 +65,26 @@ fn format_fuzz_corpus_matches_golden_vectors() {
             "wal-commit-payload-put-tombstone.hex",
             "format_wal_commit_payload",
             "put-tombstone",
+        ),
+        (
+            "table-data-block-one-put-uncompressed-frame.hex",
+            "format_table_block",
+            "one-put-uncompressed",
+        ),
+        (
+            "table-data-block-zstd-frame.hex",
+            "format_table_block",
+            "zstd",
+        ),
+        (
+            "immutable-table-one-block.hex",
+            "format_table_artifact",
+            "one-block",
+        ),
+        (
+            "immutable-table-two-block.hex",
+            "format_table_artifact",
+            "two-block",
         ),
     ];
 

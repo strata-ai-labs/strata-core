@@ -16,6 +16,7 @@ pub(crate) mod quarantine;
 mod segment_metadata;
 mod snapshot;
 mod storage_row;
+mod table;
 mod wal;
 mod watermark;
 
@@ -26,6 +27,14 @@ pub(crate) use segment_metadata::{
 pub(crate) use snapshot::{
     decode_snapshot_container, encode_snapshot_container, visit_snapshot_container_sections,
     SnapshotContainer, SnapshotHeader, SnapshotSection, SnapshotSectionRef,
+};
+#[expect(
+    unused_imports,
+    reason = "immutable table artifact helpers are consumed by L5 table runtime added later"
+)]
+pub(crate) use table::{
+    decode_immutable_table, encode_immutable_table, encode_immutable_table_with_block_compressions,
+    ImmutableTable, TableCompression,
 };
 #[expect(
     unused_imports,
@@ -114,6 +123,16 @@ pub(crate) enum FormatError {
         format: &'static str,
         flags: u32,
     },
+    UnsupportedCompression {
+        format: &'static str,
+        codec: u8,
+    },
+    CompressionFailed {
+        format: &'static str,
+    },
+    DecompressionFailed {
+        format: &'static str,
+    },
     InvalidTombstonePayload {
         field: &'static str,
     },
@@ -173,6 +192,16 @@ impl fmt::Display for FormatError {
             ),
             Self::UnsupportedFlags { format, flags } => {
                 write!(formatter, "{format} flags 0x{flags:08x} are unsupported")
+            }
+            Self::UnsupportedCompression { format, codec } => {
+                write!(
+                    formatter,
+                    "{format} compression codec {codec} is unsupported"
+                )
+            }
+            Self::CompressionFailed { format } => write!(formatter, "{format} compression failed"),
+            Self::DecompressionFailed { format } => {
+                write!(formatter, "{format} decompression failed")
             }
             Self::InvalidTombstonePayload { field } => {
                 write!(formatter, "tombstone row must not carry {field}")
@@ -235,6 +264,13 @@ impl<'a> ByteReader<'a> {
 
     fn read_u8(&mut self) -> Result<u8, FormatError> {
         Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_u16_le(&mut self) -> Result<u16, FormatError> {
+        let bytes = self.read_exact(2)?;
+        let bytes = <[u8; 2]>::try_from(bytes)
+            .map_err(|_| FormatError::InvalidLength { field: self.format })?;
+        Ok(u16::from_le_bytes(bytes))
     }
 
     fn read_u32_le(&mut self) -> Result<u32, FormatError> {

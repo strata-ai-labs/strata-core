@@ -1,4 +1,4 @@
-//! Lower storage services for manifests, WAL, snapshots, quarantine, and publication.
+//! Lower storage services for manifests, WAL, snapshots, tables, quarantine, and publication.
 
 mod checkpoint;
 mod manifest;
@@ -6,6 +6,7 @@ mod publish;
 mod quarantine;
 mod sidecar;
 mod snapshot;
+mod table;
 mod wal;
 
 #[cfg(test)]
@@ -63,6 +64,14 @@ pub(crate) use sidecar::{
 pub(crate) use snapshot::{
     SnapshotDeleteFailure, SnapshotDeleteReport, SnapshotObject, SnapshotPublishRequest,
     SnapshotService, SnapshotServiceError, SnapshotWrite,
+};
+
+#[expect(
+    unused_imports,
+    reason = "table object service is consumed by L5 table runtime added later"
+)]
+pub(crate) use table::{
+    TableObjectFacts, TableObjectService, TableObjectServiceError, TableObjectWrite,
 };
 
 #[expect(

@@ -652,93 +652,176 @@ events, graph, vectors, search, or any other product data capability.
 
 ## 17. Immutable Table Format
 
-The immutable table format is provisional but important.
+The immutable table format stores L5-built table bytes as a self-identifying L3
+artifact. V1 table bytes are storage-row-native; old development table files are
+historical evidence only and are not valid V1 input.
 
-Current table evidence:
+Stable V1 table object envelope:
 
 ```text
-header                 64 bytes
-data_blocks            repeated framed blocks
-sub_index_blocks       optional, for partitioned indexes
-bloom_partitions       repeated framed blocks
-filter_index_block     framed block
-top_level_index        framed block
-properties_block       framed block
-footer                 56 bytes
+table_header           64 bytes
+data_block_frames      repeated, at least one
+filter_block_frame     optional, absent until a V1 filter subformat is assigned
+index_block_frame      one, required
+properties_block_frame one, required
+table_footer           64 bytes
 ```
 
-Current table constants:
+Stable V1 table constants:
 
 ```text
-table_header_magic       "STRAKV\0\0"
-table_footer_magic       "STRAKEND"
-table_format_version     7
-minimum_read_version     4
+table_header_magic       "STTB"
+table_footer_magic       "STTF"
+table_format_version     1
 header_size              64 bytes
-footer_size              56 bytes
-block_frame_overhead     12 bytes
+footer_size              64 bytes
+block_frame_overhead     16 bytes
 ```
 
-Current table header evidence:
+Stable V1 table header:
 
 ```text
-magic                  8 bytes
-format_version         u16 LE
-reserved_a             6 bytes
+table_magic            4 bytes   "STTB"
+format_version         u32 LE, MUST be 1
+header_size            u32 LE, MUST be 64
+header_flags           u32 LE, MUST be 0
+target_data_block_size u32 LE, MUST be nonzero
+data_block_count       u32 LE, MUST be nonzero
+row_count              u64 LE, MUST be nonzero
 commit_min             u64 LE
 commit_max             u64 LE
-entry_count            u64 LE
-data_block_size        u32 LE
-reserved_b             20 bytes
+reserved               16 bytes, MUST be zero
 ```
 
-Current table footer evidence:
+Stable V1 table footer:
 
 ```text
 index_block_offset     u64 LE
-index_block_len        u32 LE
-filter_block_offset    u64 LE
-filter_block_len       u32 LE
+index_block_frame_len  u32 LE
+filter_block_offset    u64 LE, MUST be 0 until filter subformat assignment
+filter_block_frame_len u32 LE, MUST be 0 until filter subformat assignment
 props_block_offset     u64 LE
-props_block_len        u32 LE
-index_type             u8
-reserved               11 bytes
-footer_magic           8 bytes
+props_block_frame_len  u32 LE
+footer_magic           4 bytes   "STTF"
+reserved               20 bytes, MUST be zero
+table_crc32            u32 LE
 ```
 
-Current framed block evidence:
+The table CRC32 covers every byte in the table object before `table_crc32`.
+Readers MUST validate this checksum before trusting footer offsets.
+
+Stable V1 table block frame:
 
 ```text
 block_type             u8
-codec                  u8
-reserved               u16 LE
-data_len               u32 LE
-data                   data_len bytes
+compression_codec      u8
+block_flags            u16 LE, MUST be 0
+encoded_len            u32 LE
+decoded_len            u32 LE
+encoded_payload        encoded_len bytes
 crc32                  u32 LE
 ```
 
-Current block codec values:
+The block CRC32 covers every byte in the block frame before the `crc32` field.
+
+Stable V1 table block codec values:
 
 ```text
 0                      uncompressed
 1                      zstd compressed
 ```
 
-Current block types:
+Stable V1 table block types:
 
 ```text
 1                      data
 2                      index
-3                      filter
+3                      filter, reserved until assigned by a later V1 subformat
 4                      properties
-5                      filter index
-6                      sub-index
 ```
 
-Current entry encoding uses prefix-compressed internal keys and stores value
-kind, timestamp, TTL, value length, and value bytes.
+Readers MUST reject unknown block types, unknown compression codecs, nonzero
+block flags, impossible offsets, checksum mismatch, future format versions, and
+pre-V1 development bytes. The old `STRAKV`/version-7 table format and its
+prefix-compressed entry encoding are not V1 compatibility formats.
 
-Draft V1 requirements:
+Stable V1 data block payload:
+
+```text
+entry_count            u32 LE, MUST be nonzero
+
+entries repeated entry_count times:
+  internal_key_len     u32 LE, MUST be nonzero
+  internal_key_bytes   V1 InternalKey bytes
+  row_len              u32 LE, MUST be nonzero
+  row_bytes            V1 StorageRow bytes
+```
+
+Data block payload decoders MUST reject zero or oversized entry counts, zero or
+oversized key and row lengths, invalid nested internal-key bytes, invalid
+nested storage-row bytes, duplicate internal keys, entries not strictly sorted
+by encoded internal-key bytes, trailing payload bytes, and any mismatch between
+the internal key's physical key or commit version and the nested row facts.
+Duplicate physical keys at different commit versions are valid when their
+encoded internal-key bytes remain strictly ordered.
+
+Stable V1 monolithic index block payload:
+
+```text
+index_format_version   u32 LE, MUST be 1
+entry_count            u32 LE, MUST be nonzero
+
+entries repeated entry_count times:
+  first_key_len        u32 LE, MUST be nonzero
+  first_key_bytes      V1 InternalKey bytes
+  last_key_len         u32 LE, MUST be nonzero
+  last_key_bytes       V1 InternalKey bytes
+  block_offset         u64 LE, absolute table offset of data block frame
+  block_frame_len      u32 LE, full encoded data-block frame length
+  row_count            u32 LE, rows in that data block, MUST be nonzero
+```
+
+Index block payload decoders MUST reject pre-V1 version `0`, future versions,
+zero or oversized entry counts, zero or oversized key lengths, invalid nested
+key bytes, `first_key_bytes > last_key_bytes`, unsorted index entries,
+overlapping adjacent key ranges, zero frame lengths, zero row counts, and
+trailing payload bytes. Whole-table validation additionally MUST verify the
+entry count against the table header's data-block count and verify each
+referenced frame, first key, last key, and row count against the decoded data
+block bytes.
+
+Stable V1 properties block payload:
+
+```text
+properties_format_version u32 LE, MUST be 1
+row_count                 u64 LE, MUST be nonzero
+data_block_count          u32 LE, MUST be nonzero
+commit_min                u64 LE
+commit_max                u64 LE
+min_key_len               u32 LE, MUST be nonzero
+min_key_bytes             V1 InternalKey bytes
+max_key_len               u32 LE, MUST be nonzero
+max_key_bytes             V1 InternalKey bytes
+```
+
+Properties block payload decoders MUST reject pre-V1 version `0`, future
+versions, zero or oversized row and data-block counts, `commit_min >
+commit_max`, zero or oversized key lengths, invalid nested key bytes,
+`min_key_bytes > max_key_bytes`, and trailing payload bytes. Whole-table
+validation additionally MUST verify these properties against the table header
+and decoded data blocks.
+
+Whole-table artifact decoders MUST validate the object as one contiguous table:
+the data-block frames must fill the byte range between the 64-byte header and
+the footer-referenced index frame exactly, the index frame must fill the
+footer-referenced index range exactly, the properties frame must fill the
+footer-referenced properties range exactly, and the properties frame must end
+immediately before the footer. Hidden bytes between data blocks, index,
+properties, or footer are invalid. The decoded index entries MUST match the
+actual data-block frame offsets, frame lengths, first keys, last keys, and row
+counts.
+
+V1 table requirements:
 
 1. The stable V1 immutable table format version is `1`.
 2. Immutable tables MUST be self-identifying.
@@ -750,8 +833,8 @@ Draft V1 requirements:
 6. Table entry encoding MUST preserve internal-key ordering.
 7. Required table readers MUST support uncompressed blocks and zstd-compressed
    blocks. Writers may choose compression per storage mode and table level.
-8. The current table v7 implementation is evidence, not the public stable V1
-   version number.
+8. Stable table data entries MUST be based on `StorageRow` bytes, not bincode
+   product values or engine primitive payloads.
 
 ## 18. Watermark, Sidecar, And Quarantine Inventory Formats
 
@@ -939,8 +1022,13 @@ Required golden vector categories:
 - internal key with zero bytes in user key
 - storage row put
 - storage row tombstone
-- table header/footer
-- table framed block
+- table data block frame with one put row
+- table data block frame with put plus tombstone rows
+- table data block frame with zstd compression
+- table monolithic index block payload
+- table properties block payload
+- complete one-block immutable table
+- complete two-block immutable table
 - segment metadata sidecar, if retained
 - quarantine inventory, empty
 - quarantine inventory, multiple entries

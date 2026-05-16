@@ -4,6 +4,14 @@
 /corpus/format_quarantine/*
 !/corpus/format_quarantine/quarantine-inventory-empty
 !/corpus/format_quarantine/quarantine-inventory-multi-entry
+!/corpus/format_table_artifact/
+/corpus/format_table_artifact/*
+!/corpus/format_table_artifact/one-block
+!/corpus/format_table_artifact/two-block
+!/corpus/format_table_block/
+/corpus/format_table_block/*
+!/corpus/format_table_block/one-put-uncompressed
+!/corpus/format_table_block/zstd
 !/corpus/format_wal_commit_payload/
 /corpus/format_wal_commit_payload/*
 !/corpus/format_wal_commit_payload/one-put

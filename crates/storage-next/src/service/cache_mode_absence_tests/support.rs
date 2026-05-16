@@ -1,4 +1,7 @@
-use super::super::{CheckpointRequest, ManifestRole, ManifestServiceError, SnapshotPublishRequest};
+use super::super::{
+    CheckpointRequest, ManifestRole, ManifestServiceError, SnapshotPublishRequest,
+    TableObjectServiceError,
+};
 use crate::backend::memory::MemoryBackend;
 use crate::backend::{
     Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError, BackendMetadata,
@@ -9,7 +12,8 @@ use crate::format::quarantine::{
     encode_quarantine_inventory, QuarantineEntry, QuarantineInventory,
 };
 use crate::format::{
-    encode_manifest, DatabaseManifest, SnapshotSection, WalCommitPayload, WalRecord,
+    encode_immutable_table, encode_manifest, DatabaseManifest, SnapshotSection, TableCompression,
+    WalCommitPayload, WalRecord,
 };
 use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
@@ -200,6 +204,26 @@ pub(super) fn valid_manifest_bytes() -> Vec<u8> {
     encode_manifest(&manifest).expect("encode database metadata")
 }
 
+pub(super) fn valid_table_object_bytes() -> Vec<u8> {
+    let branch_id = branch_id();
+    let physical_key = PhysicalKey::new(
+        branch_id,
+        "default",
+        StorageSpaceId::engine(0x20).expect("engine storage space"),
+        b"cache-table-row".to_vec(),
+    )
+    .expect("physical key");
+    let row = StorageRow::put(
+        physical_key,
+        CommitVersion::new(7),
+        Timestamp::from_micros(2_000_000),
+        Timestamp::EPOCH,
+        b"table bytes".to_vec(),
+    );
+    encode_immutable_table(&[row], 4096, 1, TableCompression::Uncompressed)
+        .expect("encode table object")
+}
+
 pub(super) fn quarantine_inventory_fixture() -> (ObjectName, ObjectName, ObjectName, Vec<u8>) {
     let branch_id = branch_id();
     let source_object = table_source_object("table0001");
@@ -288,6 +312,22 @@ pub(super) fn assert_manifest_publish_unsupported(
             assert_publish_unsupported(&source, object, BackendCapability::DurablePublish);
         }
         other => panic!("expected manifest publish error, got {other:?}"),
+    }
+}
+
+pub(super) fn assert_table_object_publish_unsupported(
+    error: TableObjectServiceError,
+    object: &ObjectName,
+) {
+    match error {
+        TableObjectServiceError::Publish {
+            object: actual_object,
+            source,
+        } => {
+            assert_eq!(&actual_object, object);
+            assert_publish_unsupported(&source, object, BackendCapability::DurablePublish);
+        }
+        other => panic!("expected table object publish error, got {other:?}"),
     }
 }
 

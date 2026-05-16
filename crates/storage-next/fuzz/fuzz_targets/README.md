@@ -10,10 +10,12 @@ Current targets:
 2. `format_quarantine`
 3. `format_snapshot_envelope`
 4. `format_storage_row`
-5. `format_wal_commit_payload`
-6. `format_wal_record`
-7. `service_quarantine`
-8. `service_snapshot`
+5. `format_table_artifact`
+6. `format_table_block`
+7. `format_wal_commit_payload`
+8. `format_wal_record`
+9. `service_quarantine`
+10. `service_snapshot`
 
 Add new targets only after the corresponding parser exists and has normal unit
 or golden-vector coverage. Service targets also need normal service-level tests

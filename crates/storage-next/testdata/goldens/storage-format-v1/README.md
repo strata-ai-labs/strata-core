@@ -23,6 +23,13 @@ Current vectors:
 | `snapshot-watermark-present.hex` | Snapshot watermark | V1 watermark encoding | Present snapshot watermark with snapshot and transaction facts. |
 | `storage-row-put.hex` | Storage row | V1 row format 1 | Generic put row with value bytes and no expiry. |
 | `storage-row-tombstone.hex` | Storage row | V1 row format 1 | Generic tombstone row with no value and no expiry. |
+| `immutable-table-one-block.hex` | Immutable table artifact | V1 table format 1 | Complete table with one uncompressed data block. |
+| `immutable-table-two-block.hex` | Immutable table artifact | V1 table format 1 | Complete table with two uncompressed data blocks. |
+| `table-data-block-one-put-uncompressed-frame.hex` | Table data block frame | V1 table block frame | Uncompressed data frame containing one put row. |
+| `table-data-block-put-tombstone-uncompressed-frame.hex` | Table data block frame | V1 table block frame | Uncompressed data frame containing a put row and tombstone row. |
+| `table-data-block-zstd-frame.hex` | Table data block frame | V1 table block frame | Zstd-compressed data frame containing a put row and tombstone row. |
+| `table-index-block.hex` | Table index block payload | V1 table index payload | Monolithic index payload for a two-block table. |
+| `table-properties-block.hex` | Table properties block payload | V1 table properties payload | Table-level facts derived from the two-block table. |
 | `wal-commit-payload-one-put.hex` | WAL commit payload | V1 payload format 1 | Row-native commit payload with one put row. |
 | `wal-commit-payload-put-tombstone.hex` | WAL commit payload | V1 payload format 1 | Row-native commit payload with a put row followed by a tombstone row. |
 | `wal-record-empty-pre-m3f.hex` | WAL record | Historical pre-M3F fixture | Inner WAL record with an empty opaque commit payload; retained only as a malformed V1 fixture. |

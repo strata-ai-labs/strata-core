@@ -33,6 +33,7 @@ Recommended order:
 13. [L8. Lifecycle / Recovery / Maintenance](./l8-lifecycle-recovery-maintenance.md)
 14. [L9. Storage API Boundary](./l9-storage-api-boundary.md) final alignment pass
 15. [Future Object-Durable And Compute/Storage Separation Guardrails](./future-object-durable-guardrails.md)
+16. [Benchmarking Plan](./benchmarking-plan.md)
 
 The ordering is deliberate. Backend IO and object layout determine whether the
 rest of storage-next is genuinely portable. The initial storage API boundary

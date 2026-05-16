@@ -1548,3 +1548,329 @@ and what old code became eligible for retirement.
 - Follow-up: L7 must build `WalCommitPayload` from validated commit batches;
   immutable table encoding and table object publication remain separate M3
   closure work.
+
+## M3G1: Immutable Table Header, Footer, And Block Frame
+
+### Current Files Read
+
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/index.rs`
+- `crates/storage/src/bloom.rs`
+- `crates/storage/src/key_encoding.rs`
+- `crates/storage/src/stored_value.rs`
+- `crates/storage-next/src/format/key.rs`
+- `crates/storage-next/src/format/storage_row.rs`
+- `crates/storage-next/src/format/mod.rs`
+- `crates/storage-next/src/table/mod.rs`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/storage-next/l3-durable-format-codec.md`
+
+### Behavior Preserved
+
+- Table objects remain self-identifying durable byte artifacts.
+- Table headers and footers carry commit-range, row-count, and block-layout
+  facts before L5 interprets table contents.
+- Table blocks remain framed, length-delimited, and CRC-protected.
+- Table block payloads continue to support both uncompressed and zstd encoded
+  bytes.
+
+### Intentional V1 Changes
+
+- Stable storage-next table bytes use `STTB` and `STTF` magic with format
+  version `1`; old `STRAKV`/version-7 bytes are historical evidence only.
+- M3G1 reserves the filter block value but does not accept filter block frames as
+  valid V1 table payloads.
+- Footer CRC covers the header/body plus footer offset fields before offsets are
+  trusted by later table validation.
+- Block frames record both encoded and decoded payload lengths so zstd decode
+  cannot size allocations from unchecked compressed bytes.
+
+### Deferred
+
+- Data block entry bytes, monolithic index payloads, properties payloads, and
+  complete table artifact encode/decode are M3G2/M3G3.
+- Point lookup, range cursors, filters, block cache, compaction, and table object
+  publication remain outside M3G.
+- Golden vectors, fuzz routing, and source-vocabulary guards are completed in
+  later M3G slices after the full table artifact exists.
+
+### Tests Ported Or Added
+
+- Add focused table header tests for strict magic/version/size/flag/reserved and
+  fact validation, including old `STRAKV` rejection.
+- Add focused table footer tests for absent-filter enforcement, footer CRC
+  validation, and index/properties range checks over a synthetic table prefix.
+- Add focused table block-frame tests for uncompressed and zstd roundtrips,
+  unknown/reserved block types, unknown compression, flags, length bounds,
+  checksum failure, truncation, exact consumed byte count, and expected-kind
+  rejection.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage table implementation still serves current storage
+  consumers until storage-next L5 table runtime is implemented.
+- Follow-up: M3G2 must build data/index/properties payloads on top of these
+  frames instead of adding a second table frame shape.
+
+## M3G2: Immutable Table Data, Index, And Properties Payloads
+
+### Current Files Read
+
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/index.rs`
+- `crates/storage/src/key_encoding.rs`
+- `crates/storage/src/stored_value.rs`
+- `crates/storage-next/src/format/key.rs`
+- `crates/storage-next/src/format/storage_row.rs`
+- `crates/storage-next/src/format/table/mod.rs`
+- `crates/storage-next/src/row/mod.rs`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/storage-next/l3-durable-format-codec.md`
+
+### Behavior Preserved
+
+- Table data stays sorted by durable internal-key bytes.
+- Index entries describe absolute table offsets and full encoded data-block
+  frame lengths rather than runtime-only handles.
+- Properties blocks carry table-level row, block, key-range, and commit-range
+  facts for later fast rejection and recovery diagnostics.
+
+### Intentional V1 Changes
+
+- Data entries carry V1 `StorageRow` bytes and V1 `InternalKey` bytes, not old
+  prefix-compressed keys or bincode product values.
+- The first V1 table index is monolithic and versioned independently from the
+  outer block frame.
+- Properties are storage-mechanical facts derived from row bytes and key bytes;
+  product table semantics remain out of L3.
+
+### Deferred
+
+- Whole-table artifact encode/decode, cross-block validation against actual
+  framed data blocks, table goldens, fuzz routing, and placeholder integration
+  test replacement remain M3G3/M3G4 work.
+- Point lookup, range cursors, filters, block cache, compaction, and table object
+  publication remain outside M3G.
+
+### Tests Ported Or Added
+
+- Add data-block payload tests for put/tombstone rows, strict ordering,
+  duplicate-key rejection, key/row fact mismatch rejection, nested row failures,
+  trailing bytes, deterministic encoding, and allocation guards.
+- Add index-block payload tests for version routing, sorted non-overlapping key
+  ranges, zero/oversized counts and lengths, row-count and frame-length guards,
+  and trailing bytes.
+- Add properties-block payload tests for version routing, row/block/commit/key
+  fact validation, invalid key bytes, trailing bytes, and constructor guards.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage table implementation still serves current storage
+  consumers until storage-next L5 table runtime is implemented.
+- Follow-up: M3G3 must compose these payloads with M3G1 block frames into whole
+  table artifact helpers and cross-block validation.
+
+## M3G3: Immutable Table Artifact Helpers And Cross-Block Validation
+
+### Current Files Read
+
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/index.rs`
+- `crates/storage/src/key_encoding.rs`
+- `crates/storage/src/stored_value.rs`
+- `crates/storage-next/src/format/table/mod.rs`
+- `crates/storage-next/src/format/table/data.rs`
+- `crates/storage-next/src/format/table/index.rs`
+- `crates/storage-next/src/format/table/properties.rs`
+- `docs/architecture/implementation-plans/m3g-immutable-table-format-implementation-brief.md`
+- `docs/architecture/implementation-plans/m3g-immutable-table-format-test-plan.md`
+
+### Behavior Preserved
+
+- Complete table bytes remain a single durable artifact with header, framed data
+  blocks, a framed monolithic index, framed table properties, and a CRC-protected
+  footer.
+- Index entries continue to point at absolute table offsets and encoded frame
+  lengths for data blocks.
+- Decoded rows are returned in durable table order after the index, properties,
+  header, and actual data-block frames agree.
+
+### Intentional V1 Changes
+
+- Whole-table decode is strict about cross-block facts: header counts, commit
+  range, properties facts, index key ranges, index offsets, frame lengths, and
+  decoded data-block rows must all match.
+- Hidden bytes between the data region, index frame, properties frame, and footer
+  are rejected instead of treated as padding.
+- The helper remains storage-row-native and does not provide point lookup,
+  cursor, cache, compaction, or product-table behavior.
+
+### Deferred
+
+- Golden vectors, table artifact fuzz routing, source-vocabulary guards, and
+  placeholder integration-test replacement remain M3G4 work.
+- Point lookup, range cursors, filters, block cache, compaction, and table object
+  publication remain outside M3G.
+
+### Tests Ported Or Added
+
+- Add whole-table artifact tests for one-block, two-block, zstd, and mixed
+  compression round trips.
+- Add construction tests for empty, unsorted, and duplicate-row rejection.
+- Add corruption tests for header fact drift, footer CRC drift, wrong index or
+  properties frame types, properties row/block/commit/key fact drift, missing or
+  extra data-block facts, index offset/length/row/key drift, non-data-frame
+  index references, hidden bytes, short tables, impossible footer offsets,
+  mismatched header/footer facts, and opaque storage-space preservation.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage table implementation still serves current storage
+  consumers until storage-next L5 table runtime is implemented.
+- Follow-up: M3G4 must pin the table byte shape with goldens, fuzz/property
+  routing, source guards, and integration harness replacement.
+
+## M3G4: Immutable Table Goldens, Fuzz Routing, And Harness Closeout
+
+### Current Files Read
+
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/index.rs`
+- `crates/storage/src/key_encoding.rs`
+- `crates/storage/src/stored_value.rs`
+- `crates/storage-next/src/format/table/mod.rs`
+- `crates/storage-next/src/format/table/artifact.rs`
+- `crates/storage-next/src/format/table/data.rs`
+- `crates/storage-next/src/format/table/index.rs`
+- `crates/storage-next/src/format/table/properties.rs`
+- `crates/storage-next/tests/table_properties.rs`
+- `crates/storage-next/tests/format_golden.rs`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/implementation-plans/m3g-immutable-table-format-implementation-brief.md`
+- `docs/architecture/implementation-plans/m3g-immutable-table-format-test-plan.md`
+
+### Behavior Preserved
+
+- Table bytes are pinned by checked-in vectors instead of being validated only by
+  unit-test construction paths.
+- Whole-table artifacts remain contiguous durable bytes with header, data block
+  frames, index frame, properties frame, and footer.
+- Format fuzzing continues to route arbitrary bytes through narrow hidden
+  testkit decoder surfaces rather than exporting durable format internals as
+  public production API.
+- Table test coverage remains storage-row-native; it does not depend on product
+  table, cache, compaction, or engine-layer payload concepts.
+
+### Intentional V1 Changes
+
+- The old placeholder table integration test is replaced with generated
+  artifact checks over uncompressed and zstd table paths.
+- Table goldens now cover framed data blocks, zstd compression, monolithic index
+  payloads, properties payloads, and one-block/two-block whole artifacts.
+- Table fuzz targets are split between block-frame decoding and whole-artifact
+  decoding so failures shrink against the narrowest stable byte boundary.
+- A source-vocabulary guard now prevents reintroducing product payload or engine
+  crate coupling into the table format surface, while still allowing opaque
+  storage-row atoms such as `StorageSpaceId::engine`.
+
+### Deferred
+
+- Point lookup, range cursors, filters, block cache, compaction, and table object
+  publication remain outside M3G.
+- Old storage table runtime remains the active production runtime until
+  storage-next L5 consumes the immutable table byte format.
+- Backend conformance and crash/stress integration harness replacement remain
+  separate M3 test-track work.
+
+### Tests Ported Or Added
+
+- Add seven table golden vectors: one-put data frame, put-plus-tombstone data
+  frame, zstd data frame, index payload, properties payload, one-block whole
+  artifact, and two-block whole artifact.
+- Add golden inventory and corpus-drift checks so table fuzz seeds stay pinned
+  to the checked-in vectors.
+- Add `format_table_block` and `format_table_artifact` cargo-fuzz targets with
+  golden-seeded corpora.
+- Add a generated table artifact property harness over duplicate physical keys,
+  distinct commit versions, tombstones, uncompressed frames, zstd frames, and
+  one-block/multi-block construction paths.
+- Add a source guard for table format surfaces.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage table implementation still serves current storage
+  consumers until storage-next L5 table runtime is implemented.
+- M3G is closed. Follow-up table work moves to L4 table object publication and
+  L5 table runtime integration rather than additional durable table byte
+  format slices.
+
+## M3H1: L4 Immutable Table Object Publication
+
+### Current Files Read
+
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/manifest.rs`
+- `crates/storage-next/src/layout/mod.rs`
+- `crates/storage-next/src/format/table/artifact.rs`
+- `crates/storage-next/src/service/publish.rs`
+- `crates/storage-next/src/service/manifest.rs`
+- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+
+### Behavior Preserved
+
+- Old table file construction made table bytes durable before table reachability
+  metadata could name them. Storage-next preserves that ordering by adding an L4
+  service for durable table-object creation separate from table manifest
+  publication.
+- Table objects remain immutable create-only objects. A duplicate publish
+  returns the backend precondition failure and leaves existing bytes untouched.
+- L4 owns backend publication and object naming. L5 remains responsible for
+  producing the table bytes and L6 remains responsible for deciding table
+  reachability.
+
+### Intentional V1 Changes
+
+- The service validates supplied bytes with the stable V1 immutable-table
+  decoder before publishing, and it checks durable publish/sync capability
+  before table decode so unsupported backends fail before service work starts.
+  L4 will not make malformed table bytes durable through this path.
+- Returned facts are storage-mechanical: object name, byte count, row count,
+  data-block count, and commit range. They do not include point-lookup,
+  compaction, cache, or product payload semantics.
+- Cache-mode absence coverage now includes direct durable table object
+  publication, not just table manifest publication.
+
+### Deferred
+
+- L5 table builders, point lookup, range cursors, filters, block cache, and
+  compaction remain separate table-runtime work.
+- L6 branch/table manifest contents and reachability rules remain separate
+  branch-LSM work.
+- Object-store fencing for multi-writer table object namespaces remains future
+  object-durable work.
+
+### Tests Ported Or Added
+
+- Add service tests for successful create-only table object publication,
+  invalid layout, invalid immutable-table bytes before publish, duplicate
+  immutable object preservation, all five publish-failure kinds, and malformed
+  publish outcome object, size, and durability metadata.
+- Add capability-ordering tests proving missing durable publish or sync support
+  wins before table byte decode, plus a local filesystem service round trip.
+- Extend cache-mode absence tests so cache backends reject durable table object
+  publication before mutation.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage table file creation remains the active production
+  runtime until storage-next L5 table runtime calls this service.

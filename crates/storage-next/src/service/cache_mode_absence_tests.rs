@@ -5,7 +5,7 @@ use super::{
     CheckpointManifestOperation, CheckpointService, CheckpointServiceError,
     DatabaseManifestService, ManifestRole, ObjectPublisher, QuarantineGate, QuarantinePurgeRequest,
     QuarantineReconciliationKind, QuarantineService, QuarantineServiceError, SnapshotService,
-    SnapshotServiceError, TableManifestService, WalSegmentMetadataSidecarError,
+    SnapshotServiceError, TableManifestService, TableObjectService, WalSegmentMetadataSidecarError,
     WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
 };
 use crate::backend::{
@@ -72,8 +72,10 @@ fn cache_backend_rejects_durable_manifest_and_table_publication_before_mutation(
     let before = durable_snapshot(&backend);
     backend.clear_operations();
     let manifest_object = ObjectLayout::database_manifest().expect("database manifest object");
-    let table_object =
+    let table_manifest_object =
         ObjectLayout::branch_table_manifest(&table_branch()).expect("table manifest object");
+    let table_object =
+        ObjectLayout::table_object(&table_branch(), 0, "table0001").expect("table object");
 
     let database_error = DatabaseManifestService::new(&backend)
         .create_initial(DATABASE_ID, CODEC_ID)
@@ -94,12 +96,25 @@ fn cache_backend_rejects_durable_manifest_and_table_publication_before_mutation(
     let table_create_error = TableManifestService::new(&backend)
         .publish_create(&table_branch(), b"table manifest")
         .expect_err("cache backend cannot create table manifest durably");
-    assert_manifest_publish_unsupported(table_create_error, ManifestRole::Table, &table_object);
+    assert_manifest_publish_unsupported(
+        table_create_error,
+        ManifestRole::Table,
+        &table_manifest_object,
+    );
 
     let table_replace_error = TableManifestService::new(&backend)
         .publish_replace(&table_branch(), b"table manifest")
         .expect_err("cache backend cannot replace table manifest durably");
-    assert_manifest_publish_unsupported(table_replace_error, ManifestRole::Table, &table_object);
+    assert_manifest_publish_unsupported(
+        table_replace_error,
+        ManifestRole::Table,
+        &table_manifest_object,
+    );
+
+    let table_object_error = TableObjectService::new(&backend)
+        .publish_create(&table_branch(), 0, "table0001", &valid_table_object_bytes())
+        .expect_err("cache backend cannot publish table object durably");
+    assert_table_object_publish_unsupported(table_object_error, &table_object);
 
     assert!(backend.operations().is_empty());
     assert_durable_snapshot_unchanged(&backend, &before);
