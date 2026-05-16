@@ -1,5 +1,4 @@
 use super::{ByteReader, FormatError, DATABASE_FORMAT_VERSION, MAX_CODEC_ID_LEN};
-use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::{ObjectName, MAX_OBJECT_NAME_BYTES};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -84,10 +83,7 @@ impl QuarantineEntry {
         quarantined_at: Timestamp,
     ) -> Result<Self, FormatError> {
         let object_id = object_id.into();
-        // Object-id validity is branch-independent except for final path length; the
-        // inventory validates each entry again against its real branch id.
-        validate_object_id(&BranchId::from_bytes([0; BranchId::BYTE_LEN]), &object_id)?;
-        validate_source_object(&source_object)?;
+        validate_object_id(&object_id)?;
         Ok(Self {
             object_id,
             source_object,
@@ -302,15 +298,14 @@ fn validate_codec_id(codec_id: &str) -> Result<(), FormatError> {
 }
 
 fn validate_entries(
-    branch_id: &BranchId,
+    _branch_id: &BranchId,
     entries: &[QuarantineEntry],
     require_canonical_order: bool,
 ) -> Result<(), FormatError> {
     let mut object_ids = HashSet::new();
     let mut source_objects = HashSet::new();
     for entry in entries {
-        validate_object_id(branch_id, entry.object_id())?;
-        validate_source_object(entry.source_object())?;
+        validate_object_id(entry.object_id())?;
         if !object_ids.insert(entry.object_id()) {
             return Err(FormatError::InvalidValue { field: "object_id" });
         }
@@ -333,35 +328,14 @@ fn validate_entries(
     Ok(())
 }
 
-fn validate_object_id(branch_id: &BranchId, object_id: &str) -> Result<(), FormatError> {
-    // Derive the reserved inventory object id through the layout API so this
-    // codec never owns quarantine path literals.
-    if quarantine_inventory_object_id(branch_id)? == object_id {
+fn validate_object_id(object_id: &str) -> Result<(), FormatError> {
+    if object_id.contains('/') {
         return Err(FormatError::InvalidValue { field: "object_id" });
     }
-    ObjectLayout::quarantine_object(&branch_id.to_string(), object_id)
+
+    ObjectName::new(object_id)
         .map(|_| ())
         .map_err(|_| FormatError::InvalidValue { field: "object_id" })
-}
-
-fn quarantine_inventory_object_id(branch_id: &BranchId) -> Result<String, FormatError> {
-    let object = ObjectLayout::quarantine_manifest(&branch_id.to_string())
-        .map_err(|_| FormatError::InvalidValue { field: "branch_id" })?;
-    object
-        .as_str()
-        .rsplit('/')
-        .next()
-        .map(str::to_owned)
-        .ok_or(FormatError::InvalidValue { field: "object_id" })
-}
-
-fn validate_source_object(source_object: &ObjectName) -> Result<(), FormatError> {
-    match ObjectFamily::from_object_name(source_object) {
-        Some(ObjectFamily::Quarantine) | None => Err(FormatError::InvalidValue {
-            field: "source_object",
-        }),
-        Some(_) => Ok(()),
-    }
 }
 
 fn compare_entries(left: &QuarantineEntry, right: &QuarantineEntry) -> Ordering {
@@ -745,16 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn entry_rejects_reserved_manifest_object_id() {
-        assert_eq!(
-            QuarantineEntry::new(
-                "manifest",
-                source_object("tables/main/l0000/table0001"),
-                1,
-                Timestamp::from_micros(1)
-            ),
-            Err(FormatError::InvalidValue { field: "object_id" })
-        );
+    fn entry_accepts_layout_reserved_object_id_for_service_validation() {
+        assert!(QuarantineEntry::new(
+            "manifest",
+            source_object("tables/main/l0000/table0001"),
+            1,
+            Timestamp::from_micros(1)
+        )
+        .is_ok());
     }
 
     #[test]
@@ -807,48 +779,38 @@ mod tests {
     }
 
     #[test]
-    fn entry_rejects_overlong_assembled_object_name() {
+    fn entry_accepts_component_valid_object_id_without_layout_context() {
         let object_id = "a".repeat(980);
 
-        assert_eq!(
-            QuarantineEntry::new(
-                object_id,
-                source_object("tables/main/l0000/table0001"),
-                1,
-                Timestamp::from_micros(1)
-            ),
-            Err(FormatError::InvalidValue { field: "object_id" })
-        );
+        assert!(QuarantineEntry::new(
+            object_id,
+            source_object("tables/main/l0000/table0001"),
+            1,
+            Timestamp::from_micros(1)
+        )
+        .is_ok());
     }
 
     #[test]
-    fn entry_rejects_quarantine_source_object() {
-        assert_eq!(
-            QuarantineEntry::new(
-                "table0001",
-                source_object("quarantine/main/table0001"),
-                1,
-                Timestamp::from_micros(1)
-            ),
-            Err(FormatError::InvalidValue {
-                field: "source_object"
-            })
-        );
+    fn entry_accepts_quarantine_source_object_for_service_validation() {
+        assert!(QuarantineEntry::new(
+            "table0001",
+            source_object("quarantine/main/table0001"),
+            1,
+            Timestamp::from_micros(1)
+        )
+        .is_ok());
     }
 
     #[test]
-    fn entry_rejects_unknown_source_family() {
-        assert_eq!(
-            QuarantineEntry::new(
-                "table0001",
-                source_object("unknown/table0001"),
-                1,
-                Timestamp::from_micros(1)
-            ),
-            Err(FormatError::InvalidValue {
-                field: "source_object"
-            })
-        );
+    fn entry_accepts_unknown_source_family_for_service_validation() {
+        assert!(QuarantineEntry::new(
+            "table0001",
+            source_object("unknown/table0001"),
+            1,
+            Timestamp::from_micros(1)
+        )
+        .is_ok());
     }
 
     #[test]

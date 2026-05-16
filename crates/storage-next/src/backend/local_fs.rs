@@ -61,6 +61,9 @@ impl LocalFsBackend {
     }
 
     fn writer_lock_object() -> BackendResult<ObjectName> {
+        // L1/L2 bootstrap exception: the writer lock is the one reserved
+        // structural object name the backend must recognize before higher
+        // layers can safely open a durable local runtime.
         ObjectLayout::writer_lock().map_err(|error| {
             BackendError::new(
                 BackendErrorKind::InvalidObjectName,
@@ -119,6 +122,11 @@ impl LocalFsBackend {
     #[cfg(all(test, unix))]
     pub(crate) fn inject_temporary_sync_publish_fault(&self) -> BackendResult<()> {
         self.arm_publish_fault(LocalFsPublishStep::TemporarySync)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn inject_final_publish_fault(&self) -> BackendResult<()> {
+        self.arm_publish_fault(LocalFsPublishStep::FinalPublish)
     }
 
     #[cfg(all(test, unix))]
@@ -203,6 +211,10 @@ impl LocalFsBackend {
             }
         }
 
+        // Retry exhaustion is treated as a collision error instead of deleting
+        // matching temp files here. A matching temp path can belong to an
+        // in-flight publish in the same process; cleanup belongs to a future
+        // operator-visible maintenance pass that can prove staleness.
         Err(BackendError::new(
             BackendErrorKind::AlreadyExists,
             format!(
@@ -1104,9 +1116,7 @@ mod tests {
         let backend = LocalFsBackend::new(dir.path());
         let name = ObjectName::new("manifest/current").expect("name");
         backend.write_object(&name, b"old").expect("seed");
-        backend
-            .arm_publish_fault(LocalFsPublishStep::FinalPublish)
-            .expect("arm fault");
+        backend.inject_final_publish_fault().expect("arm fault");
 
         let error = backend
             .publish_object(&name, b"new", PublishMode::Replace)
@@ -1124,9 +1134,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let backend = LocalFsBackend::new(dir.path());
         let name = ObjectName::new("manifest/current").expect("name");
-        backend
-            .arm_publish_fault(LocalFsPublishStep::FinalPublish)
-            .expect("arm fault");
+        backend.inject_final_publish_fault().expect("arm fault");
 
         let error = backend
             .publish_object(&name, b"new", PublishMode::Create)

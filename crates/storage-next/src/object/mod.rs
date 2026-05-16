@@ -19,6 +19,12 @@ impl ObjectName {
     }
 }
 
+impl AsRef<str> for ObjectName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl fmt::Display for ObjectName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -37,6 +43,12 @@ impl ObjectPrefix {
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl AsRef<str> for ObjectPrefix {
+    fn as_ref(&self) -> &str {
+        self.as_str()
     }
 }
 

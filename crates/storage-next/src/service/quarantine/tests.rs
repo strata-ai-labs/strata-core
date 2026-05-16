@@ -88,6 +88,7 @@ fn assert_empty_load(load: &QuarantineInventoryLoad, branch_id: BranchId, object
 #[derive(Debug, Default)]
 struct RecordingBackend {
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
+    outcome_override: Mutex<Option<PublishOutcome>>,
 }
 
 impl RecordingBackend {
@@ -100,11 +101,19 @@ impl RecordingBackend {
         objects.insert(name, bytes);
         Self {
             objects: Mutex::new(objects),
+            outcome_override: Mutex::new(None),
         }
     }
 
     fn stored_bytes(&self, name: &ObjectName) -> Vec<u8> {
         self.read_object(name).expect("stored object")
+    }
+
+    fn override_next_publish_outcome(&self, outcome: PublishOutcome) {
+        *self
+            .outcome_override
+            .lock()
+            .expect("recording backend lock") = Some(outcome);
     }
 }
 
@@ -197,6 +206,14 @@ impl Backend for RecordingBackend {
             ));
         }
         objects.insert(name.clone(), bytes.to_vec());
+        if let Some(outcome) = self
+            .outcome_override
+            .lock()
+            .expect("recording backend lock")
+            .take()
+        {
+            return Ok(outcome);
+        }
         Ok(PublishOutcome::new(
             name.clone(),
             BackendMetadata::new(bytes.len() as u64, None),
@@ -687,6 +704,28 @@ fn empty_inventory_publish_is_valid_and_reports_facts() {
         expected_bytes.len() as u64
     );
     assert_eq!(backend.stored_bytes(&object), expected_bytes);
+}
+
+#[test]
+fn inventory_publish_rejects_invalid_publish_outcome_metadata() {
+    let backend = RecordingBackend::new();
+    let service = QuarantineService::new(&backend);
+    let branch_id = branch_id();
+    let inventory = one_entry_inventory(branch_id);
+    let object = inventory_object(branch_id);
+    backend.override_next_publish_outcome(PublishOutcome::new(
+        object.clone(),
+        BackendMetadata::new(1, None),
+        PublishDurability::Durable,
+    ));
+
+    assert_eq!(
+        service.publish_inventory_replace(&inventory),
+        Err(QuarantineServiceError::InvalidPublishMetadata {
+            object,
+            field: "size_bytes",
+        })
+    );
 }
 
 #[test]

@@ -382,6 +382,7 @@ fn quarantine_publishes_inventory_then_copy_then_deletes_source() {
     assert_eq!(report.entry_count(), 1);
     assert!(report.source_delete().expect("delete").deleted_flag());
     assert_eq!(backend.read_count(&source_object), 1);
+    assert_eq!(backend.read_count(&quarantine_object), 0);
     assert!(!backend.contains(&source_object));
     assert_eq!(backend.bytes(&quarantine_object), source_bytes);
     let loaded = service
@@ -395,6 +396,7 @@ fn quarantine_publishes_inventory_then_copy_then_deletes_source() {
     assert_eq!(
         operations,
         vec![
+            Operation::Metadata(quarantine_object.clone()),
             Operation::Metadata(source_object.clone()),
             Operation::Publish(inventory_object, PublishMode::Replace),
             Operation::Publish(quarantine_object, PublishMode::Create),
@@ -477,7 +479,10 @@ fn quarantine_missing_source_fails_before_mutation() {
     assert!(!backend.contains(&source_object));
     assert!(!backend.contains(&quarantine_object));
     assert!(!backend.contains(&inventory_object));
-    assert!(backend.operations().is_empty());
+    assert_eq!(
+        backend.operations(),
+        vec![Operation::Metadata(quarantine_object)]
+    );
 }
 
 #[test]
@@ -497,7 +502,10 @@ fn quarantine_source_read_failure_fails_before_mutation() {
     ));
     assert!(!backend.contains(&quarantine_object));
     assert!(!backend.contains(&inventory_object));
-    assert!(backend.operations().is_empty());
+    assert_eq!(
+        backend.operations(),
+        vec![Operation::Metadata(quarantine_object)]
+    );
 }
 
 #[test]
@@ -540,7 +548,10 @@ fn quarantine_metadata_failure_fails_before_mutation() {
     assert!(!backend.contains(&inventory_object));
     assert_eq!(
         backend.operations(),
-        vec![Operation::Metadata(source_object)]
+        vec![
+            Operation::Metadata(quarantine_object),
+            Operation::Metadata(source_object),
+        ]
     );
 }
 
@@ -641,6 +652,7 @@ fn quarantine_inventory_publish_failure_does_not_copy_or_delete_source() {
         assert_eq!(
             backend.operations(),
             vec![
+                Operation::Metadata(quarantine_object),
                 Operation::Metadata(source_object),
                 Operation::Publish(inventory_object, PublishMode::Replace),
             ]
@@ -694,6 +706,7 @@ fn quarantine_inventory_visibility_unknown_may_leave_inventory_visible_without_c
     assert_eq!(
         backend.operations(),
         vec![
+            Operation::Metadata(quarantine_object),
             Operation::Metadata(source_object),
             Operation::Publish(inventory_object, PublishMode::Replace),
         ]

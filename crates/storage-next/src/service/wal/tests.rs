@@ -1,4 +1,6 @@
-use super::{WalService, WalServiceConfig, WalServiceError};
+use super::{
+    WalRetentionProof, WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError,
+};
 use crate::backend::memory::MemoryBackend;
 use crate::backend::{
     Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
@@ -12,6 +14,7 @@ use crate::format::{
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
 use std::sync::Mutex;
+use strata_core_next::CommitVersion;
 mod support;
 use support::*;
 
@@ -21,6 +24,20 @@ enum AppendReportFault {
     WrongStartOffset,
     ShortLength,
     WrongMetadataSize,
+}
+
+#[test]
+fn wal_retention_proof_records_durable_source() {
+    let snapshot = WalRetentionProof::snapshot_watermark(CommitVersion::new(7));
+    let flush = WalRetentionProof::flush_watermark(CommitVersion::new(11));
+
+    assert_eq!(snapshot.covered_through(), CommitVersion::new(7));
+    assert_eq!(
+        snapshot.source(),
+        WalRetentionProofSource::SnapshotWatermark
+    );
+    assert_eq!(flush.covered_through(), CommitVersion::new(11));
+    assert_eq!(flush.source(), WalRetentionProofSource::FlushWatermark);
 }
 
 // This backend writes the bytes but lies about the append report. The WAL
@@ -225,6 +242,38 @@ fn open_rejects_segment_size_below_minimum() {
 }
 
 #[test]
+fn wal_config_makes_identity_codec_boundary_explicit() {
+    let config = WalServiceConfig::new(1024);
+
+    assert_eq!(config.segment_size(), 1024);
+    assert_eq!(config.codec_id(), "identity");
+    assert_eq!(
+        WalServiceConfig::default().codec_id(),
+        "identity",
+        "V1 WAL service defaults to the required identity storage codec"
+    );
+}
+
+#[test]
+fn open_rejects_non_identity_wal_codec_before_backend_access() {
+    let backend = StoredWalBackend::new();
+
+    let result = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::with_codec(1024, "zstd"),
+    );
+
+    assert_eq!(
+        open_error(result, "non-identity WAL codec should be rejected in V1"),
+        WalServiceError::InvalidConfig { field: "codec_id" }
+    );
+    assert_eq!(backend.publish_count(), 0);
+}
+
+#[test]
 fn open_rejects_each_missing_required_capability() {
     for missing in required_wal_capabilities() {
         let backend = CapabilityProbeBackend::missing(missing);
@@ -401,6 +450,7 @@ fn read_rejects_invalid_wal_object_names_from_listing() {
     for invalid in [
         wal_listed_object("not-fixed-width"),
         wal_listed_object("0000000000000001/extra"),
+        wal_listed_object("000000000000000A"),
         wal_listed_object("zzzzzzzzzzzzzzzz"),
         wal_listed_object("0000000000000000"),
     ] {

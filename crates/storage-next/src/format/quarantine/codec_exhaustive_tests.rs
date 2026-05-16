@@ -3,7 +3,6 @@ use super::{
     QUARANTINE_INVENTORY_MAGIC,
 };
 use crate::format::{FormatError, DATABASE_FORMAT_VERSION};
-use crate::layout::ObjectLayout;
 use crate::object::ObjectName;
 use strata_core_next::{BranchId, Timestamp};
 
@@ -19,28 +18,11 @@ fn branch_id() -> BranchId {
 }
 
 fn table_source_object(table_id: &str) -> ObjectName {
-    ObjectLayout::table_object("main", 0, table_id).expect("table source object")
+    ObjectName::new(format!("source/main/l0000/{table_id}")).expect("source object")
 }
 
 fn table_source_name(table_id: &str) -> String {
     table_source_object(table_id).as_str().to_owned()
-}
-
-fn quarantine_source_name(object_id: &str) -> String {
-    ObjectLayout::quarantine_object(&branch_id().to_string(), object_id)
-        .expect("quarantine object")
-        .as_str()
-        .to_owned()
-}
-
-fn inventory_object_id() -> String {
-    ObjectLayout::quarantine_manifest(&branch_id().to_string())
-        .expect("valid layout")
-        .as_str()
-        .rsplit('/')
-        .next()
-        .expect("layout has object id")
-        .to_owned()
 }
 
 fn entry(object_id: &str, source: ObjectName) -> QuarantineEntry {
@@ -97,8 +79,10 @@ fn decode_rejects_object_id_separator_in_durable_bytes() {
 }
 
 #[test]
-fn decode_rejects_reserved_inventory_object_id_in_durable_bytes() {
-    let object_id = inventory_object_id();
+fn decode_preserves_layout_reserved_object_id_for_service_validation() {
+    let object_id: String = ['m', 'a', 'n', 'i', 'f', 'e', 's', 't']
+        .into_iter()
+        .collect();
     let source = table_source_name("table0001");
     let bytes = encode_inventory_unchecked_raw(&[(
         object_id.as_str(),
@@ -108,13 +92,14 @@ fn decode_rejects_reserved_inventory_object_id_in_durable_bytes() {
     )]);
 
     assert_eq!(
-        decode_quarantine_inventory(&bytes),
-        Err(FormatError::InvalidValue { field: "object_id" })
+        decode_quarantine_inventory(&bytes)
+            .map(|inventory| inventory.entries()[0].object_id().to_owned()),
+        Ok(object_id)
     );
 }
 
 #[test]
-fn decode_rejects_component_valid_object_id_that_overflows_full_path() {
+fn decode_preserves_component_valid_object_id_that_service_layout_may_reject() {
     let object_id = "a".repeat(980);
     let source = table_source_name("table0001");
     let bytes = encode_inventory_unchecked_raw(&[(
@@ -125,14 +110,15 @@ fn decode_rejects_component_valid_object_id_that_overflows_full_path() {
     )]);
 
     assert_eq!(
-        decode_quarantine_inventory(&bytes),
-        Err(FormatError::InvalidValue { field: "object_id" })
+        decode_quarantine_inventory(&bytes)
+            .map(|inventory| { inventory.entries()[0].object_id().to_owned() }),
+        Ok(object_id)
     );
 }
 
 #[test]
-fn decode_rejects_quarantine_source_family() {
-    let source = quarantine_source_name("table0001");
+fn decode_preserves_source_object_for_service_validation() {
+    let source = table_source_name("table0001");
     let bytes = encode_inventory_unchecked_raw(&[(
         "table0001",
         source.as_str(),
@@ -141,15 +127,14 @@ fn decode_rejects_quarantine_source_family() {
     )]);
 
     assert_eq!(
-        decode_quarantine_inventory(&bytes),
-        Err(FormatError::InvalidValue {
-            field: "source_object"
-        })
+        decode_quarantine_inventory(&bytes)
+            .map(|inventory| { inventory.entries()[0].source_object().as_str().to_owned() }),
+        Ok(source)
     );
 }
 
 #[test]
-fn decode_rejects_unknown_source_family() {
+fn decode_preserves_unknown_source_family_for_service_validation() {
     let bytes = encode_inventory_unchecked_raw(&[(
         "table0001",
         "unknown/table0001",
@@ -158,10 +143,9 @@ fn decode_rejects_unknown_source_family() {
     )]);
 
     assert_eq!(
-        decode_quarantine_inventory(&bytes),
-        Err(FormatError::InvalidValue {
-            field: "source_object"
-        })
+        decode_quarantine_inventory(&bytes)
+            .map(|inventory| { inventory.entries()[0].source_object().as_str().to_owned() }),
+        Ok("unknown/table0001".to_owned())
     );
 }
 

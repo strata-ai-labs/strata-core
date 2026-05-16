@@ -7,7 +7,7 @@ use crate::backend::Backend;
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{encode_wal_segment_header, WalSegmentHeader};
 use crate::layout::ObjectLayout;
-use crate::service::wal::{WalOperation, WalServiceError};
+use crate::service::wal::{WalOperation, WalRetentionProof, WalServiceError};
 use strata_core_next::CommitVersion;
 
 fn backend() -> (tempfile::TempDir, LocalFsBackend) {
@@ -448,7 +448,7 @@ fn active_segment_is_protected_from_deletion() {
         .expect("append");
 
     let report = service
-        .delete_covered_segments(CommitVersion::MAX)
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::MAX))
         .expect("delete covered");
 
     assert_eq!(report.deleted_segments(), &[]);
@@ -475,7 +475,7 @@ fn covered_old_segments_are_deleted_after_rotation() {
     service.append(&record(2, large)).expect("second rotates");
 
     let report = service
-        .delete_covered_segments(CommitVersion::new(1))
+        .delete_covered_segments(WalRetentionProof::flush_watermark(CommitVersion::new(1)))
         .expect("delete covered");
 
     assert_eq!(report.deleted_segments(), &[1]);

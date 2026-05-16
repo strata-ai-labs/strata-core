@@ -692,6 +692,9 @@ fn corruption_from_identity_error(
         QuarantineServiceError::CodecMismatch {
             expected, actual, ..
         } => Ok(QuarantineInventoryCorruption::CodecMismatch { expected, actual }),
+        QuarantineServiceError::Decode { source, .. } => {
+            Ok(QuarantineInventoryCorruption::Decode(source))
+        }
         source => Err(source),
     }
 }

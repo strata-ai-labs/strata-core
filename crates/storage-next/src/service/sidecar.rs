@@ -35,6 +35,10 @@ pub(crate) enum WalSegmentMetadataSidecarError {
         object: ObjectName,
         source: Box<PublishError>,
     },
+    InvalidPublishMetadata {
+        object: ObjectName,
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for WalSegmentMetadataSidecarError {
@@ -64,6 +68,10 @@ impl fmt::Display for WalSegmentMetadataSidecarError {
                     "failed to publish segment metadata sidecar {object}: {source}"
                 )
             }
+            Self::InvalidPublishMetadata { object, field } => write!(
+                formatter,
+                "segment metadata sidecar {object} has invalid publish metadata {field}"
+            ),
         }
     }
 }
@@ -74,7 +82,7 @@ impl std::error::Error for WalSegmentMetadataSidecarError {
             Self::Layout { source } => Some(source),
             Self::Read { source, .. } => Some(source),
             Self::Publish { source, .. } => Some(source.as_ref()),
-            Self::InvalidSegmentId { .. } => None,
+            Self::InvalidSegmentId { .. } | Self::InvalidPublishMetadata { .. } => None,
         }
     }
 }
@@ -237,6 +245,7 @@ impl<'a> WalSegmentMetadataSidecarService<'a> {
                 object: object.clone(),
                 source: Box::new(source),
             })?;
+        validate_publish_outcome(&object, bytes.len() as u64, &outcome)?;
 
         Ok(WalSegmentMetadataSidecarWrite::new(
             metadata.segment_id(),
@@ -319,6 +328,19 @@ fn sidecar_object(segment_id: u64) -> WalSegmentMetadataSidecarResult<ObjectName
 
     ObjectLayout::wal_segment_metadata(segment_id)
         .map_err(|source| WalSegmentMetadataSidecarError::Layout { source })
+}
+
+fn validate_publish_outcome(
+    object: &ObjectName,
+    byte_count: u64,
+    outcome: &PublishOutcome,
+) -> WalSegmentMetadataSidecarResult<()> {
+    crate::service::validate_publish_outcome(object, byte_count, outcome).map_err(|mismatch| {
+        WalSegmentMetadataSidecarError::InvalidPublishMetadata {
+            object: mismatch.object().clone(),
+            field: mismatch.field(),
+        }
+    })
 }
 
 #[cfg(test)]

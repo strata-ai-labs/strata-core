@@ -31,6 +31,7 @@ struct RecordingBackend {
     publish_failure: Mutex<Option<PublishFailureKind>>,
     read_failure: Mutex<Option<BackendError>>,
     delete_failure: Mutex<Option<BackendError>>,
+    publish_durability: Mutex<PublishDurability>,
 }
 
 impl RecordingBackend {
@@ -41,6 +42,7 @@ impl RecordingBackend {
             publish_failure: Mutex::new(None),
             read_failure: Mutex::new(None),
             delete_failure: Mutex::new(None),
+            publish_durability: Mutex::new(PublishDurability::Durable),
         }
     }
 
@@ -62,6 +64,10 @@ impl RecordingBackend {
 
     fn set_delete_failure(&self, source: BackendError) {
         *self.delete_failure.lock().expect("delete failure") = Some(source);
+    }
+
+    fn set_publish_durability(&self, durability: PublishDurability) {
+        *self.publish_durability.lock().expect("publish durability") = durability;
     }
 
     fn publish_modes(&self) -> Vec<PublishMode> {
@@ -202,7 +208,7 @@ impl Backend for RecordingBackend {
         Ok(PublishOutcome::new(
             name.clone(),
             BackendMetadata::new(bytes.len() as u64, None),
-            PublishDurability::Durable,
+            *self.publish_durability.lock().expect("publish durability"),
         ))
     }
 }
@@ -313,6 +319,23 @@ fn sidecar_publish_uses_durable_replace() {
         .expect("publish sidecar");
 
     assert_eq!(backend.publish_modes(), vec![PublishMode::Replace]);
+}
+
+#[test]
+fn sidecar_publish_rejects_non_durable_publish_outcome() {
+    let backend = RecordingBackend::new();
+    backend.set_publish_durability(PublishDurability::NonDurable);
+    let service = WalSegmentMetadataSidecarService::new(&backend);
+
+    let error = service
+        .publish_replace(&metadata(3))
+        .expect_err("sidecar publish must report durable outcome");
+
+    assert!(matches!(
+        error,
+        WalSegmentMetadataSidecarError::InvalidPublishMetadata { object, field }
+            if object == sidecar_object(3) && field == "durability"
+    ));
 }
 
 #[test]

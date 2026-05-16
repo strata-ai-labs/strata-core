@@ -9,13 +9,12 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, PublishDurability, PublishError, PublishFailureKind,
-    PublishOutcome,
+    Backend, BackendCapability, BackendError, PublishError, PublishFailureKind, PublishOutcome,
 };
 use crate::format::{decode_immutable_table, FormatError, ImmutableTable};
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
-use crate::service::ObjectPublisher;
+use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::fmt;
 use strata_core_next::CommitVersion;
 
@@ -172,6 +171,10 @@ impl<'a> TableObjectService<'a> {
         bytes: &[u8],
     ) -> TableObjectServiceResult<TableObjectWrite> {
         let object = table_object(branch_id, level, table_id)?;
+        // Keep capability preflight ahead of table decode. ObjectPublisher also
+        // checks before backend mutation; this earlier check preserves the
+        // service contract that unsupported durable publication does not spend
+        // work decoding caller-supplied table bytes.
         require_durable_publish_capabilities(self.backend, &object)?;
         let table =
             decode_immutable_table(bytes).map_err(|source| TableObjectServiceError::Decode {
@@ -185,7 +188,12 @@ impl<'a> TableObjectService<'a> {
                 object: object.clone(),
                 source,
             })?;
-        validate_publish_outcome(&object, facts.byte_count(), &outcome)?;
+        validate_publish_outcome(&object, facts.byte_count(), &outcome).map_err(|mismatch| {
+            TableObjectServiceError::InvalidPublishMetadata {
+                object: mismatch.object().clone(),
+                field: mismatch.field(),
+            }
+        })?;
         Ok(TableObjectWrite::new(facts, outcome))
     }
 }
@@ -218,32 +226,6 @@ fn require_durable_publish_capabilities(
                 ),
             });
         }
-    }
-    Ok(())
-}
-
-fn validate_publish_outcome(
-    object: &ObjectName,
-    byte_count: u64,
-    outcome: &PublishOutcome,
-) -> TableObjectServiceResult<()> {
-    if outcome.object() != object {
-        return Err(TableObjectServiceError::InvalidPublishMetadata {
-            object: object.clone(),
-            field: "object",
-        });
-    }
-    if outcome.metadata().size_bytes() != byte_count {
-        return Err(TableObjectServiceError::InvalidPublishMetadata {
-            object: object.clone(),
-            field: "size_bytes",
-        });
-    }
-    if outcome.durability() != PublishDurability::Durable {
-        return Err(TableObjectServiceError::InvalidPublishMetadata {
-            object: object.clone(),
-            field: "durability",
-        });
     }
     Ok(())
 }

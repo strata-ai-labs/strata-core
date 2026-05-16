@@ -297,6 +297,8 @@ pub(crate) struct SnapshotContainer {
 
 impl SnapshotContainer {
     pub(crate) fn new(header: SnapshotHeader, sections: Vec<SnapshotSection>) -> Self {
+        // Zero sections is a valid V1 empty-checkpoint container. The header
+        // still carries the database, codec, timestamp, and watermark facts.
         Self { header, sections }
     }
 

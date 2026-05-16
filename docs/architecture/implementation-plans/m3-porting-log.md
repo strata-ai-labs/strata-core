@@ -1121,11 +1121,17 @@ and what old code became eligible for retirement.
   validation already locked by M3C3.
 - WAL append keeps the current separation between record bytes and the
   codec-aware outer envelope.
+- WAL envelope payloads now pass through an explicit storage-codec boundary.
+  V1 accepts only the configured `identity` codec, so bytes remain unchanged but
+  non-identity WAL configs fail before backend access.
 - Segment rotation happens before appending a record that would exceed the
   configured segment size.
 - `standard` records dirty WAL state without forcing a per-append durability
   barrier; `always` forces durability before append success is reported.
 - Strict WAL reads distinguish latest-segment partial tails from corruption.
+- Latest-segment partial tails can be repaired by durably replacing the active
+  WAL object with the validated prefix. Stale truncation facts are rejected if
+  object size changed before repair.
 - Segment metadata sidecars remain optional accelerators rather than
   authoritative recovery state.
 
@@ -1146,8 +1152,8 @@ and what old code became eligible for retirement.
 
 ### Deferred
 
-- Non-identity storage codecs for WAL payloads remain deferred until codec
-  plumbing is finalized.
+- Non-identity storage codecs for WAL payloads remain deferred until the codec
+  registry grows beyond the required V1 identity codec.
 - Full L8 recovery orchestration, lossy recovery policy, and health
   classification remain later work.
 - Commit runtime wiring, WAL-before-visible enforcement, and visible-version
@@ -1874,3 +1880,85 @@ and what old code became eligible for retirement.
 - Deleted: none.
 - Legacy-retained: old storage table file creation remains the active production
   runtime until storage-next L5 table runtime calls this service.
+
+## M3H2: L1-L4 Audit Hardening
+
+### Current Files Read
+
+- `crates/storage-next/src/backend/local_fs.rs`
+- `crates/storage-next/src/format/quarantine.rs`
+- `crates/storage-next/src/service/quarantine.rs`
+- `crates/storage-next/src/service/wal.rs`
+- `crates/storage-next/src/service/sidecar.rs`
+- `crates/storage-next/src/service/table.rs`
+- `docs/architecture/storage-next/l1-backend-io.md`
+- `docs/spec/strata-storage-format-v1.md`
+
+### Behavior Preserved
+
+- Quarantine inventory bytes stay stable. Duplicate object ids, duplicate
+  source objects, invalid object-name bytes, ordering drift, and checksum
+  failures remain L3 codec errors.
+- Quarantine source-family and full layout checks still fail closed before
+  inventory bytes are trusted by services; the checks now live in L4 where
+  object families and full object layout are owned.
+- WAL segment deletion still protects the active segment and deletes only old
+  segments whose records are covered by the supplied durable watermark.
+- Quarantine mutation still publishes inventory before the quarantine copy and
+  deletes source bytes only after the quarantine copy is durably created.
+
+### Intentional V1 Changes
+
+- WAL retention now requires a `WalRetentionProof` instead of a bare
+  `CommitVersion`, so future lifecycle callers must state whether the coverage
+  came from a snapshot watermark or flushed-table watermark.
+- WAL retention treats delete-not-found as an idempotent already-pruned result
+  and best-effort deletes the optional WAL segment metadata sidecar after the
+  authoritative segment is removed.
+- Quarantine mutation no longer reads the full quarantine object on the
+  new-entry path just to detect an unlisted existing copy. It uses metadata for
+  existence and only reads quarantine bytes for existing inventory entries where
+  byte equality must be checked.
+- Quarantine reserved inventory object id validation uses the literal
+  `manifest` reservation instead of recomputing it through layout on each
+  request.
+- The LocalFS writer-lock name is documented as the single L1/L2 bootstrap
+  exception needed to enforce durable-local single-writer open.
+- Sidecar publication now validates that backend publish outcomes claim durable
+  publication, matching the stronger checks used by authoritative services.
+- Table object publication keeps its explicit capability preflight before table
+  decode and documents that as intentional defense in depth over
+  `ObjectPublisher`.
+
+### Deferred
+
+- LocalFS retry-exhausted temporary object cleanup remains a future
+  operator-visible maintenance concern. The backend does not delete matching
+  temp paths on retry exhaustion because they can belong to an in-flight publish
+  in the same process.
+- Conditional-publish fences and typed core-next branch/table IDs remain future
+  object-store and L6 integration work.
+- Quarantine source copy still has linear memory cost because V1 backend
+  publishing is byte-slice based rather than streaming. Streaming publish is
+  post-V1 substrate work.
+- Manifest-vs-writer active-WAL mismatch coverage belongs to the L8 lifecycle
+  integration that will combine manifest facts with a live writer.
+
+### Tests Ported Or Added
+
+- Add WAL retention/reopen tests for delete-not-found idempotency, header-only
+  old segment deletion, optional sidecar cleanup on segment deletion,
+  consecutive retention idempotency, and retention followed by reopen.
+- Extend quarantine purge inventory-rewrite failure coverage across all publish
+  failure windows, including visibility-unknown and visible-but-unconfirmed
+  replacement visibility.
+- Add quarantine mutation assertions proving the new-entry path checks
+  quarantine-object existence through metadata and does not read unlisted
+  quarantine object bytes before failing closed.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage WAL retention and quarantine mutation paths still
+  serve current storage consumers until storage-next L7/L8 replace those
+  runtimes.

@@ -63,6 +63,11 @@ Backend IO does not own:
 Object names come from L2. Bytes come from L3 and above. Backend IO only moves
 opaque bytes and reports backend facts.
 
+V1 durable-local has one explicit bootstrap exception: the local backend may
+recognize the reserved writer-lock object name defined by L2 so it can enforce
+the single-writer guard before higher layers open durable services. No other
+database object names should be interpreted by L1.
+
 ## Required Backend Shapes
 
 ### Browser / Cache Backend
@@ -196,6 +201,7 @@ Higher storage layers should not call POSIX-shaped primitives directly.
 Cache mode requires:
 
 - read object
+- read object range
 - write object
 - delete object
 - list prefix

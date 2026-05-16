@@ -8,7 +8,9 @@
     )
 )]
 
-use crate::backend::{Backend, BackendCapability, BackendError, BackendErrorKind, PublishError};
+use crate::backend::{
+    Backend, BackendCapability, BackendError, BackendErrorKind, BackendRange, PublishError,
+};
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
     decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header, encode_wal_record,
@@ -17,28 +19,45 @@ use crate::format::{
 };
 use crate::layout::{LayoutError, ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
-use crate::service::ObjectPublisher;
+use crate::service::{validate_publish_outcome, ObjectPublisher};
+use std::borrow::Cow;
 use std::fmt;
 use strata_core_next::CommitVersion;
 
 const DEFAULT_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 const MIN_SEGMENT_SIZE: u64 = 1024;
 const WAL_SEGMENT_COMPONENT_LEN: usize = 16;
+const IDENTITY_CODEC_ID: &str = "identity";
 
 pub(crate) type WalServiceResult<T> = Result<T, WalServiceError>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WalServiceConfig {
     segment_size: u64,
+    codec_id: &'static str,
 }
 
 impl WalServiceConfig {
     pub(crate) const fn new(segment_size: u64) -> Self {
-        Self { segment_size }
+        Self {
+            segment_size,
+            codec_id: IDENTITY_CODEC_ID,
+        }
+    }
+
+    pub(crate) const fn with_codec(segment_size: u64, codec_id: &'static str) -> Self {
+        Self {
+            segment_size,
+            codec_id,
+        }
     }
 
     pub(crate) const fn segment_size(self) -> u64 {
         self.segment_size
+    }
+
+    pub(crate) const fn codec_id(self) -> &'static str {
+        self.codec_id
     }
 
     fn validate(self) -> WalServiceResult<()> {
@@ -46,6 +65,8 @@ impl WalServiceConfig {
             Err(WalServiceError::InvalidConfig {
                 field: "segment_size",
             })
+        } else if self.codec_id != IDENTITY_CODEC_ID {
+            Err(WalServiceError::InvalidConfig { field: "codec_id" })
         } else {
             Ok(())
         }
@@ -56,8 +77,45 @@ impl Default for WalServiceConfig {
     fn default() -> Self {
         Self {
             segment_size: DEFAULT_SEGMENT_SIZE,
+            codec_id: IDENTITY_CODEC_ID,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WalRetentionProof {
+    covered_through: CommitVersion,
+    source: WalRetentionProofSource,
+}
+
+impl WalRetentionProof {
+    pub(crate) const fn snapshot_watermark(covered_through: CommitVersion) -> Self {
+        Self {
+            covered_through,
+            source: WalRetentionProofSource::SnapshotWatermark,
+        }
+    }
+
+    pub(crate) const fn flush_watermark(covered_through: CommitVersion) -> Self {
+        Self {
+            covered_through,
+            source: WalRetentionProofSource::FlushWatermark,
+        }
+    }
+
+    pub(crate) const fn covered_through(self) -> CommitVersion {
+        self.covered_through
+    }
+
+    pub(crate) const fn source(self) -> WalRetentionProofSource {
+        self.source
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WalRetentionProofSource {
+    SnapshotWatermark,
+    FlushWatermark,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +124,7 @@ pub(crate) enum WalOperation {
     CreateSegment,
     Append,
     Sync,
+    Repair,
     List,
     Read,
 }
@@ -77,6 +136,7 @@ impl WalOperation {
             Self::CreateSegment => "create WAL segment",
             Self::Append => "append WAL record",
             Self::Sync => "sync WAL segment",
+            Self::Repair => "repair WAL segment",
             Self::List => "list WAL segments",
             Self::Read => "read WAL segment",
         }
@@ -129,6 +189,18 @@ pub(crate) enum WalServiceError {
         segment_size: u64,
     },
     SegmentIdOverflow {
+        segment_id: u64,
+    },
+    TruncationSegmentMismatch {
+        segment_id: u64,
+        active_segment_id: u64,
+    },
+    InvalidTruncation {
+        segment_id: u64,
+        valid_end_offset: u64,
+        object_size: u64,
+    },
+    RepairUncertain {
         segment_id: u64,
     },
     UnexpectedAppendOffset {
@@ -195,6 +267,25 @@ impl fmt::Display for WalServiceError {
             Self::SegmentIdOverflow { segment_id } => {
                 write!(formatter, "WAL segment id overflow after {segment_id}")
             }
+            Self::TruncationSegmentMismatch {
+                segment_id,
+                active_segment_id,
+            } => write!(
+                formatter,
+                "WAL truncation fact for segment {segment_id} does not match active segment {active_segment_id}"
+            ),
+            Self::InvalidTruncation {
+                segment_id,
+                valid_end_offset,
+                object_size,
+            } => write!(
+                formatter,
+                "invalid WAL truncation fact for segment {segment_id}: valid_end_offset {valid_end_offset} must be strictly less than object_size {object_size}"
+            ),
+            Self::RepairUncertain { segment_id } => write!(
+                formatter,
+                "WAL segment {segment_id} repair durability is uncertain; reopen before appending"
+            ),
             Self::UnexpectedAppendOffset {
                 object,
                 expected,
@@ -236,6 +327,9 @@ impl std::error::Error for WalServiceError {
             | Self::DatabaseMismatch { .. }
             | Self::RecordTooLarge { .. }
             | Self::SegmentIdOverflow { .. }
+            | Self::TruncationSegmentMismatch { .. }
+            | Self::InvalidTruncation { .. }
+            | Self::RepairUncertain { .. }
             | Self::UnexpectedAppendOffset { .. }
             | Self::UnexpectedAppendLength { .. }
             | Self::UnexpectedObjectSize { .. } => None,
@@ -343,6 +437,35 @@ impl WalRead {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WalRepair {
+    segment_id: u64,
+    valid_end_offset: u64,
+    removed_bytes: u64,
+}
+
+impl WalRepair {
+    const fn new(segment_id: u64, valid_end_offset: u64, removed_bytes: u64) -> Self {
+        Self {
+            segment_id,
+            valid_end_offset,
+            removed_bytes,
+        }
+    }
+
+    pub(crate) const fn segment_id(&self) -> u64 {
+        self.segment_id
+    }
+
+    pub(crate) const fn valid_end_offset(&self) -> u64 {
+        self.valid_end_offset
+    }
+
+    pub(crate) const fn removed_bytes(&self) -> u64 {
+        self.removed_bytes
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WalDeleteReport {
     deleted: Vec<u64>,
     protected: Vec<u64>,
@@ -378,10 +501,12 @@ pub(crate) struct WalService<'a> {
     active_object: ObjectName,
     active_segment_size: u64,
     segment_size: u64,
+    codec_id: &'static str,
     durability_policy: DurabilityPolicy,
     dirty_bytes: u64,
     dirty_records: u64,
     active_metadata: SegmentMetadata,
+    repair_uncertain: bool,
 }
 
 impl<'a> WalService<'a> {
@@ -396,7 +521,7 @@ impl<'a> WalService<'a> {
         validate_segment_id(active_segment_id)?;
         require_capabilities(backend, WAL_REQUIRED_CAPABILITIES)?;
         let (active_object, active_segment_size, active_metadata) =
-            open_or_create_segment(backend, database_id, active_segment_id)?;
+            open_or_create_segment(backend, database_id, active_segment_id, config.codec_id())?;
 
         Ok(Self {
             backend,
@@ -405,10 +530,12 @@ impl<'a> WalService<'a> {
             active_object,
             active_segment_size,
             segment_size: config.segment_size(),
+            codec_id: config.codec_id(),
             durability_policy,
             dirty_bytes: 0,
             dirty_records: 0,
             active_metadata,
+            repair_uncertain: false,
         })
     }
 
@@ -429,7 +556,13 @@ impl<'a> WalService<'a> {
     }
 
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
-        let frame = encode_record_frame(record, &self.active_object)?;
+        if self.repair_uncertain {
+            return Err(WalServiceError::RepairUncertain {
+                segment_id: self.active_segment_id,
+            });
+        }
+
+        let frame = encode_record_frame(record, &self.active_object, self.codec_id)?;
         let frame_len = frame.len() as u64;
         // The segment header consumes part of the configured segment budget, so
         // a single record frame must fit in the remaining capacity before any
@@ -560,6 +693,7 @@ impl<'a> WalService<'a> {
                 segment.segment_id,
                 &segment.object,
                 is_latest,
+                self.codec_id,
             )?;
             records.extend(read.records);
             if read.truncation.is_some() {
@@ -584,12 +718,96 @@ impl<'a> WalService<'a> {
         Ok(WalRead::new(records, read.truncation))
     }
 
+    pub(crate) fn repair_latest_tail(
+        &mut self,
+        truncation: &WalTruncation,
+    ) -> WalServiceResult<WalRepair> {
+        if truncation.segment_id() != self.active_segment_id {
+            return Err(WalServiceError::TruncationSegmentMismatch {
+                segment_id: truncation.segment_id(),
+                active_segment_id: self.active_segment_id,
+            });
+        }
+        if truncation.valid_end_offset() >= truncation.object_size() {
+            return Err(WalServiceError::InvalidTruncation {
+                segment_id: truncation.segment_id(),
+                valid_end_offset: truncation.valid_end_offset(),
+                object_size: truncation.object_size(),
+            });
+        }
+
+        self.validate_active_object_size_against(WalOperation::Repair, truncation.object_size())?;
+        let prefix = self
+            .backend
+            .read_range(
+                &self.active_object,
+                BackendRange::new(0, truncation.valid_end_offset()),
+            )
+            .map_err(|source| WalServiceError::Backend {
+                operation: WalOperation::Repair,
+                object: self.active_object.clone(),
+                source,
+            })?;
+        let prefix_len = prefix.len() as u64;
+        if prefix_len != truncation.valid_end_offset() {
+            return Err(WalServiceError::UnexpectedObjectSize {
+                object: self.active_object.clone(),
+                expected: truncation.valid_end_offset(),
+                actual: prefix_len,
+            });
+        }
+
+        let repaired_read = decode_segment_bytes(
+            self.database_id,
+            self.active_segment_id,
+            &self.active_object,
+            &prefix,
+            false,
+            self.codec_id,
+            WalOperation::Repair,
+        )?;
+        let outcome = match ObjectPublisher::new(self.backend)
+            .publish_durable_replace(&self.active_object, &prefix)
+        {
+            Ok(outcome) => outcome,
+            Err(source) => {
+                self.repair_uncertain = true;
+                return Err(WalServiceError::Publish {
+                    operation: WalOperation::Repair,
+                    source,
+                });
+            }
+        };
+        if let Err(error) = validate_wal_publish_outcome(
+            WalOperation::Repair,
+            &self.active_object,
+            truncation.valid_end_offset(),
+            &outcome,
+        ) {
+            self.repair_uncertain = true;
+            return Err(error);
+        }
+
+        self.active_segment_size = truncation.valid_end_offset();
+        self.active_metadata =
+            segment_metadata_from_records(self.active_segment_id, repaired_read.records());
+        self.dirty_bytes = 0;
+        self.dirty_records = 0;
+        self.repair_uncertain = false;
+        Ok(WalRepair::new(
+            truncation.segment_id(),
+            truncation.valid_end_offset(),
+            truncation.object_size() - truncation.valid_end_offset(),
+        ))
+    }
+
     pub(crate) fn delete_covered_segments(
         &self,
-        covered_through: CommitVersion,
+        retention_proof: WalRetentionProof,
     ) -> WalServiceResult<WalDeleteReport> {
         require_capability(self.backend, BackendCapability::DeleteObject)?;
         let mut report = WalDeleteReport::new();
+        let covered_through = retention_proof.covered_through();
 
         for segment in list_segments(self.backend)? {
             if segment.segment_id >= self.active_segment_id {
@@ -603,6 +821,7 @@ impl<'a> WalService<'a> {
                 segment.segment_id,
                 &segment.object,
                 false,
+                self.codec_id,
             )?;
             if read
                 .records
@@ -610,7 +829,14 @@ impl<'a> WalService<'a> {
                 .all(|record| record.commit_version() <= covered_through)
             {
                 match self.backend.delete_object(&segment.object) {
-                    Ok(()) => report.deleted.push(segment.segment_id),
+                    Ok(()) => {
+                        report.deleted.push(segment.segment_id);
+                        self.delete_segment_sidecar_best_effort(segment.segment_id);
+                    }
+                    Err(source) if source.kind() == BackendErrorKind::NotFound => {
+                        report.deleted.push(segment.segment_id);
+                        self.delete_segment_sidecar_best_effort(segment.segment_id);
+                    }
                     Err(_) => report.failed.push(segment.segment_id),
                 }
             } else {
@@ -619,6 +845,17 @@ impl<'a> WalService<'a> {
         }
 
         Ok(report)
+    }
+
+    fn delete_segment_sidecar_best_effort(&self, segment_id: u64) {
+        // Segment metadata sidecars are optional accelerators. Once a WAL
+        // segment is pruned, its sidecar is unreachable recovery state and can
+        // be removed, but sidecar deletion must not turn authoritative WAL
+        // retention into a failure.
+        let Ok(sidecar) = ObjectLayout::wal_segment_metadata(segment_id) else {
+            return;
+        };
+        let _ = self.backend.delete_object(&sidecar);
     }
 
     fn rotate_segment(&mut self) -> WalServiceResult<()> {
@@ -646,6 +883,14 @@ impl<'a> WalService<'a> {
     }
 
     fn validate_active_object_size(&self, operation: WalOperation) -> WalServiceResult<()> {
+        self.validate_active_object_size_against(operation, self.active_segment_size)
+    }
+
+    fn validate_active_object_size_against(
+        &self,
+        operation: WalOperation,
+        expected_size: u64,
+    ) -> WalServiceResult<()> {
         let actual_size = self
             .backend
             .object_metadata(&self.active_object)
@@ -655,12 +900,12 @@ impl<'a> WalService<'a> {
                 source,
             })?
             .size_bytes();
-        if actual_size == self.active_segment_size {
+        if actual_size == expected_size {
             Ok(())
         } else {
             Err(WalServiceError::UnexpectedAppendOffset {
                 object: self.active_object.clone(),
-                expected: self.active_segment_size,
+                expected: expected_size,
                 actual: actual_size,
             })
         }
@@ -720,11 +965,12 @@ fn open_or_create_segment(
     backend: &dyn Backend,
     database_id: [u8; 16],
     segment_id: u64,
+    codec_id: &str,
 ) -> WalServiceResult<(ObjectName, u64, SegmentMetadata)> {
     let object = segment_object(segment_id)?;
     match backend.object_metadata(&object) {
         Ok(metadata) => {
-            let read = read_segment(backend, database_id, segment_id, &object, true)?;
+            let read = read_segment(backend, database_id, segment_id, &object, true, codec_id)?;
             let segment_size = read
                 .truncation
                 .as_ref()
@@ -757,6 +1003,12 @@ fn create_segment(
             operation: WalOperation::CreateSegment,
             source,
         })?;
+    validate_wal_publish_outcome(
+        WalOperation::CreateSegment,
+        &object,
+        bytes.len() as u64,
+        &outcome,
+    )?;
     Ok((
         object,
         outcome.metadata().size_bytes(),
@@ -764,12 +1016,35 @@ fn create_segment(
     ))
 }
 
-fn encode_record_frame(record: &WalRecord, object: &ObjectName) -> WalServiceResult<Vec<u8>> {
+fn validate_wal_publish_outcome(
+    operation: WalOperation,
+    object: &ObjectName,
+    byte_count: u64,
+    outcome: &crate::backend::PublishOutcome,
+) -> WalServiceResult<()> {
+    validate_publish_outcome(object, byte_count, outcome).map_err(|mismatch| {
+        WalServiceError::Backend {
+            operation,
+            object: mismatch.object().clone(),
+            source: BackendError::new(
+                BackendErrorKind::MetadataMismatch,
+                format!("WAL publish returned invalid {} metadata", mismatch.field()),
+            ),
+        }
+    })
+}
+
+fn encode_record_frame(
+    record: &WalRecord,
+    object: &ObjectName,
+    codec_id: &str,
+) -> WalServiceResult<Vec<u8>> {
     let record_bytes = encode_wal_record(record).map_err(|source| WalServiceError::Format {
         operation: WalOperation::Append,
         object: object.clone(),
         source,
     })?;
+    let record_bytes = encode_wal_codec_bytes(codec_id, record_bytes)?;
     let envelope =
         WalRecordEnvelope::new(record_bytes).map_err(|source| WalServiceError::Format {
             operation: WalOperation::Append,
@@ -781,6 +1056,20 @@ fn encode_record_frame(record: &WalRecord, object: &ObjectName) -> WalServiceRes
         object: object.clone(),
         source,
     })
+}
+
+fn encode_wal_codec_bytes(codec_id: &str, bytes: Vec<u8>) -> WalServiceResult<Vec<u8>> {
+    match codec_id {
+        IDENTITY_CODEC_ID => Ok(bytes),
+        _ => Err(WalServiceError::InvalidConfig { field: "codec_id" }),
+    }
+}
+
+fn decode_wal_codec_bytes<'a>(codec_id: &str, bytes: &'a [u8]) -> WalServiceResult<Cow<'a, [u8]>> {
+    match codec_id {
+        IDENTITY_CODEC_ID => Ok(Cow::Borrowed(bytes)),
+        _ => Err(WalServiceError::InvalidConfig { field: "codec_id" }),
+    }
 }
 
 fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject>> {
@@ -819,7 +1108,11 @@ fn parse_segment_object(object: ObjectName) -> WalServiceResult<WalSegmentObject
             ),
         });
     };
-    if component.len() != WAL_SEGMENT_COMPONENT_LEN || component.contains('/') {
+    if component.len() != WAL_SEGMENT_COMPONENT_LEN
+        || !component
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return Err(WalServiceError::Backend {
             operation: WalOperation::List,
             object,
@@ -829,6 +1122,9 @@ fn parse_segment_object(object: ObjectName) -> WalServiceResult<WalSegmentObject
             ),
         });
     }
+    // The alphabet and fixed-width checks above should make parsing
+    // infallible. Keep the fallible branch explicit so later layout changes
+    // fail closed instead of introducing a production panic.
     let segment_id = u64::from_str_radix(component, 16).map_err(|_| WalServiceError::Backend {
         operation: WalOperation::List,
         object: object.clone(),
@@ -856,6 +1152,7 @@ fn read_segment(
     segment_id: u64,
     object: &ObjectName,
     is_latest: bool,
+    codec_id: &str,
 ) -> WalServiceResult<WalRead> {
     let bytes = backend
         .read_object(object)
@@ -864,10 +1161,30 @@ fn read_segment(
             object: object.clone(),
             source,
         })?;
+    decode_segment_bytes(
+        database_id,
+        segment_id,
+        object,
+        &bytes,
+        is_latest,
+        codec_id,
+        WalOperation::Read,
+    )
+}
+
+fn decode_segment_bytes(
+    database_id: [u8; 16],
+    segment_id: u64,
+    object: &ObjectName,
+    bytes: &[u8],
+    is_latest: bool,
+    codec_id: &str,
+    operation: WalOperation,
+) -> WalServiceResult<WalRead> {
     let (header, mut offset) =
-        decode_wal_segment_header(&bytes, Some(segment_id)).map_err(|source| {
+        decode_wal_segment_header(bytes, Some(segment_id)).map_err(|source| {
             WalServiceError::Format {
-                operation: WalOperation::Read,
+                operation,
                 object: object.clone(),
                 source,
             }
@@ -898,27 +1215,27 @@ fn read_segment(
             }
             Err(source) => {
                 return Err(WalServiceError::Format {
-                    operation: WalOperation::Read,
+                    operation,
                     object: object.clone(),
                     source,
                 });
             }
         };
-        let (record, consumed) =
-            decode_wal_record(envelope.encoded_record()).map_err(|source| {
-                WalServiceError::Format {
-                    operation: WalOperation::Read,
-                    object: object.clone(),
-                    source,
-                }
-            })?;
-        if consumed != envelope.encoded_record().len() {
+        let decoded_record = decode_wal_codec_bytes(codec_id, envelope.encoded_record())?;
+        let (record, consumed) = decode_wal_record(decoded_record.as_ref()).map_err(|source| {
+            WalServiceError::Format {
+                operation,
+                object: object.clone(),
+                source,
+            }
+        })?;
+        if consumed != decoded_record.len() {
             return Err(WalServiceError::Format {
-                operation: WalOperation::Read,
+                operation,
                 object: object.clone(),
                 source: FormatError::TrailingData {
                     format: "wal_record",
-                    remaining: envelope.encoded_record().len() - consumed,
+                    remaining: decoded_record.len() - consumed,
                 },
             });
         }

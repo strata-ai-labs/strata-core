@@ -1,11 +1,15 @@
 use super::*;
-use crate::backend::Backend;
+use crate::backend::{Backend, PublishFailureKind};
 use crate::format::FormatError;
 use crate::service::wal::WalOperation;
 use strata_core_next::CommitVersion;
 
 fn wal_segment(segment_id: u64) -> ObjectName {
     ObjectLayout::wal_segment(segment_id).expect("WAL segment")
+}
+
+fn wal_sidecar(segment_id: u64) -> ObjectName {
+    ObjectLayout::wal_segment_metadata(segment_id).expect("WAL metadata sidecar")
 }
 
 fn read_records(service: &WalService<'_>) -> Vec<WalRecord> {
@@ -20,11 +24,29 @@ fn seed_segment(backend: &StoredWalBackend, segment_id: u64, records: &[WalRecor
     object
 }
 
+fn seed_sidecar(backend: &StoredWalBackend, segment_id: u64) -> ObjectName {
+    let object = wal_sidecar(segment_id);
+    backend
+        .write_object(&object, b"sidecar")
+        .expect("seed WAL sidecar");
+    object
+}
+
 fn assert_segment_missing(backend: &StoredWalBackend, object: &ObjectName) {
     assert_eq!(
         backend
             .object_metadata(object)
             .expect_err("segment should be deleted")
+            .kind(),
+        BackendErrorKind::NotFound
+    );
+}
+
+fn assert_object_missing(backend: &StoredWalBackend, object: &ObjectName) {
+    assert_eq!(
+        backend
+            .object_metadata(object)
+            .expect_err("object should be missing")
             .kind(),
         BackendErrorKind::NotFound
     );
@@ -72,7 +94,7 @@ fn retention_deletes_only_covered_old_segments_and_sorts_report() {
     .expect("open WAL");
 
     let report = service
-        .delete_covered_segments(CommitVersion::new(3))
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(3)))
         .expect("delete covered WAL segments");
 
     assert_eq!(report.deleted_segments(), &[1]);
@@ -85,6 +107,168 @@ fn retention_deletes_only_covered_old_segments_and_sorts_report() {
     assert_eq!(
         backend.read_object(&manifest).expect("manifest bytes"),
         b"not a WAL segment"
+    );
+}
+
+#[test]
+fn retention_treats_delete_not_found_as_already_pruned() {
+    let backend = StoredWalBackend::new();
+    let segment_one = seed_segment(&backend, 1, &[record(1, b"raced delete".to_vec())]);
+    let segment_two = seed_segment(&backend, 2, &[record(2, b"active".to_vec())]);
+    backend.fail_delete_with(&segment_one, BackendErrorKind::NotFound);
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let report = service
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(1)))
+        .expect("delete covered WAL segments");
+
+    assert_eq!(report.deleted_segments(), &[1]);
+    assert_eq!(report.protected_segments(), &[2]);
+    assert_eq!(report.failed_segments(), &[]);
+    assert_segment_missing(&backend, &segment_one);
+    assert_segment_present(&backend, &segment_two);
+}
+
+#[test]
+fn retention_deletes_header_only_old_segments() {
+    let backend = StoredWalBackend::new();
+    let segment_one = seed_segment(&backend, 1, &[]);
+    let segment_two = seed_segment(&backend, 2, &[record(1, b"active".to_vec())]);
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let report = service
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::ZERO))
+        .expect("delete covered WAL segments");
+
+    assert_eq!(report.deleted_segments(), &[1]);
+    assert_eq!(report.protected_segments(), &[2]);
+    assert_eq!(report.failed_segments(), &[]);
+    assert_segment_missing(&backend, &segment_one);
+    assert_segment_present(&backend, &segment_two);
+}
+
+#[test]
+fn retention_removes_sidecar_for_deleted_segment() {
+    let backend = StoredWalBackend::new();
+    let segment_one = seed_segment(&backend, 1, &[record(1, b"covered".to_vec())]);
+    let sidecar_one = seed_sidecar(&backend, 1);
+    let sidecar_two = seed_sidecar(&backend, 2);
+    let segment_two = seed_segment(&backend, 2, &[record(2, b"active".to_vec())]);
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let report = service
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(1)))
+        .expect("delete covered WAL segments");
+
+    assert_eq!(report.deleted_segments(), &[1]);
+    assert_segment_missing(&backend, &segment_one);
+    assert_object_missing(&backend, &sidecar_one);
+    assert_segment_present(&backend, &segment_two);
+    assert_segment_present(&backend, &sidecar_two);
+}
+
+#[test]
+fn retention_is_idempotent_across_consecutive_calls() {
+    let backend = StoredWalBackend::new();
+    let segment_one = seed_segment(&backend, 1, &[record(1, b"covered".to_vec())]);
+    let segment_two = seed_segment(&backend, 2, &[record(2, b"active".to_vec())]);
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let first = service
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(1)))
+        .expect("first retention pass");
+    let second = service
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(1)))
+        .expect("second retention pass");
+
+    assert_eq!(first.deleted_segments(), &[1]);
+    assert_eq!(first.protected_segments(), &[2]);
+    assert_eq!(first.failed_segments(), &[]);
+    assert_eq!(second.deleted_segments(), &[]);
+    assert_eq!(second.protected_segments(), &[2]);
+    assert_eq!(second.failed_segments(), &[]);
+    assert_segment_missing(&backend, &segment_one);
+    assert_segment_present(&backend, &segment_two);
+}
+
+#[test]
+fn retention_then_reopen_reads_only_remaining_segments() {
+    let backend = StoredWalBackend::new();
+    let first = record(1, b"covered one".to_vec());
+    let second = record(2, b"covered two".to_vec());
+    let third = record(3, b"covered three".to_vec());
+    let active = record(4, b"active".to_vec());
+    let segment_one = seed_segment(&backend, 1, std::slice::from_ref(&first));
+    let segment_two = seed_segment(&backend, 2, std::slice::from_ref(&second));
+    let segment_three = seed_segment(&backend, 3, std::slice::from_ref(&third));
+    let segment_four = seed_segment(&backend, 4, std::slice::from_ref(&active));
+    {
+        let service = WalService::open(
+            &backend,
+            database_id(),
+            4,
+            DurabilityPolicy::Standard,
+            WalServiceConfig::default(),
+        )
+        .expect("open WAL");
+        let report = service
+            .delete_covered_segments(WalRetentionProof::flush_watermark(CommitVersion::new(3)))
+            .expect("retention pass");
+        assert_eq!(report.deleted_segments(), &[1, 2, 3]);
+        assert_eq!(report.protected_segments(), &[4]);
+    }
+
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        4,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("reopen retained WAL");
+
+    assert_segment_missing(&backend, &segment_one);
+    assert_segment_missing(&backend, &segment_two);
+    assert_segment_missing(&backend, &segment_three);
+    assert_segment_present(&backend, &segment_four);
+    assert_eq!(read_records(&reopened), vec![active.clone()]);
+    assert_eq!(reopened.active_segment_id(), 4);
+    assert_eq!(reopened.active_metadata().record_count(), 1);
+    assert_eq!(
+        reopened.active_metadata().min_commit_version(),
+        active.commit_version()
+    );
+    assert_eq!(
+        reopened.active_metadata().max_commit_version(),
+        active.commit_version()
     );
 }
 
@@ -110,7 +294,7 @@ fn retention_records_delete_failure_without_hiding_other_results() {
     .expect("open WAL");
 
     let report = service
-        .delete_covered_segments(CommitVersion::new(2))
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(2)))
         .expect("delete covered WAL segments");
 
     assert_eq!(report.deleted_segments(), &[2]);
@@ -139,7 +323,7 @@ fn retention_requires_delete_capability_before_listing_or_deleting() {
     .expect("open WAL without delete capability");
 
     let error = service
-        .delete_covered_segments(CommitVersion::MAX)
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::MAX))
         .expect_err("retention should require delete capability");
 
     assert_unsupported_capability(&error, BackendCapability::DeleteObject);
@@ -161,7 +345,7 @@ fn retention_reports_no_covered_segments_without_deleting() {
     .expect("open WAL");
 
     let report = service
-        .delete_covered_segments(CommitVersion::new(1))
+        .delete_covered_segments(WalRetentionProof::flush_watermark(CommitVersion::new(1)))
         .expect("delete covered WAL segments");
 
     assert_eq!(report.deleted_segments(), &[]);
@@ -403,6 +587,211 @@ fn reopen_after_latest_partial_tail_reports_truncation_and_refuses_append() {
             actual: object_size,
         }
     );
+}
+
+#[test]
+fn repair_latest_partial_tail_rewrites_valid_prefix_and_allows_append() {
+    let backend = StoredWalBackend::new();
+    let segment_one = wal_segment(1);
+    let first = record(1, b"repairable latest".to_vec());
+    {
+        let mut service = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            WalServiceConfig::new(1024),
+        )
+        .expect("open WAL");
+        service.append(&first).expect("append first");
+    }
+    let valid_end = backend
+        .object_metadata(&segment_one)
+        .expect("segment metadata before partial")
+        .size_bytes();
+    backend
+        .append_object(&segment_one, &[0xaa, 0xbb])
+        .expect("append partial tail");
+    let object_size = valid_end + 2;
+
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen latest partial WAL");
+    let read = reopened.read_all().expect("read recoverable latest tail");
+    let truncation = read.truncation().expect("truncation fact").clone();
+    assert_eq!(truncation.valid_end_offset(), valid_end);
+    assert_eq!(truncation.object_size(), object_size);
+    drop(read);
+
+    let repair = reopened
+        .repair_latest_tail(&truncation)
+        .expect("repair latest partial tail");
+    assert_eq!(repair.segment_id(), 1);
+    assert_eq!(repair.valid_end_offset(), valid_end);
+    assert_eq!(repair.removed_bytes(), 2);
+    assert_eq!(
+        backend
+            .object_metadata(&segment_one)
+            .expect("repaired segment metadata")
+            .size_bytes(),
+        valid_end
+    );
+
+    let repaired_read = reopened.read_all().expect("read repaired WAL");
+    assert_eq!(repaired_read.records(), std::slice::from_ref(&first));
+    assert!(repaired_read.truncation().is_none());
+
+    let second = record(2, b"after repair".to_vec());
+    let append = reopened.append(&second).expect("append after repair");
+    assert_eq!(append.start_offset(), valid_end);
+    assert_eq!(read_records(&reopened), vec![first, second]);
+}
+
+#[test]
+fn repair_latest_partial_tail_rejects_stale_truncation_fact() {
+    let backend = StoredWalBackend::new();
+    let segment_one = wal_segment(1);
+    let first = record(1, b"stale repair".to_vec());
+    {
+        let mut service = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            WalServiceConfig::new(1024),
+        )
+        .expect("open WAL");
+        service.append(&first).expect("append first");
+    }
+    let valid_end = backend
+        .object_metadata(&segment_one)
+        .expect("segment metadata before partial")
+        .size_bytes();
+    backend
+        .append_object(&segment_one, &[0xaa])
+        .expect("append partial tail");
+
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen latest partial WAL");
+    let stale = reopened
+        .read_all()
+        .expect("read recoverable latest tail")
+        .truncation()
+        .expect("truncation fact")
+        .clone();
+    backend
+        .append_object(&segment_one, &[0xbb])
+        .expect("mutate after truncation fact");
+
+    let error = reopened
+        .repair_latest_tail(&stale)
+        .expect_err("stale truncation facts should not repair");
+    assert_eq!(
+        error,
+        WalServiceError::UnexpectedAppendOffset {
+            object: segment_one,
+            expected: valid_end + 1,
+            actual: valid_end + 2,
+        }
+    );
+}
+
+#[test]
+fn repair_latest_partial_tail_publish_uncertainty_blocks_append_until_reopen() {
+    let backend = StoredWalBackend::new();
+    let segment_one = wal_segment(1);
+    let first = record(1, b"uncertain repair".to_vec());
+    {
+        let mut service = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            WalServiceConfig::new(1024),
+        )
+        .expect("open WAL");
+        service.append(&first).expect("append first");
+    }
+    let valid_end = backend
+        .object_metadata(&segment_one)
+        .expect("segment metadata before partial")
+        .size_bytes();
+    backend
+        .append_object(&segment_one, &[0xaa, 0xbb])
+        .expect("append partial tail");
+
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen latest partial WAL");
+    let truncation = reopened
+        .read_all()
+        .expect("read recoverable latest tail")
+        .truncation()
+        .expect("truncation fact")
+        .clone();
+    backend.fail_publish_with(
+        &segment_one,
+        PublishFailureKind::VisibleDurabilityUnconfirmed,
+        true,
+    );
+
+    let error = reopened
+        .repair_latest_tail(&truncation)
+        .expect_err("uncertain repair publish should be reported");
+    match error {
+        WalServiceError::Publish { operation, source } => {
+            assert_eq!(operation, WalOperation::Repair);
+            assert_eq!(
+                source.kind(),
+                PublishFailureKind::VisibleDurabilityUnconfirmed
+            );
+        }
+        other => panic!("expected WAL repair publish error, got {other:?}"),
+    }
+    assert_eq!(
+        backend
+            .object_metadata(&segment_one)
+            .expect("visible repaired prefix metadata")
+            .size_bytes(),
+        valid_end
+    );
+
+    let append_error = reopened
+        .append(&record(2, b"blocked after uncertainty".to_vec()))
+        .expect_err("append should wait for recovery after uncertain repair");
+    assert_eq!(
+        append_error,
+        WalServiceError::RepairUncertain { segment_id: 1 }
+    );
+
+    let mut recovered = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen after visible uncertain repair");
+    let append = recovered
+        .append(&record(2, b"after reopen".to_vec()))
+        .expect("append after reopen");
+    assert_eq!(append.start_offset(), valid_end);
 }
 
 #[test]

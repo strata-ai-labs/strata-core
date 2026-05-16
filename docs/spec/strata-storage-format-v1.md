@@ -160,6 +160,7 @@ Canonical V1 layout:
 manifest/current
 
 wal/<segment-id>
+meta/wal/<segment-id>
 
 tables/<branch-id>/<level>/<table-id>
 tables/<branch-id>/manifest
@@ -935,15 +936,19 @@ Requirements:
 4. `object_id` MUST be a valid object-name component and MUST NOT be
    `manifest`, which is reserved for `quarantine/<branch-id>/manifest`.
 5. `source_object` MUST be a valid database-relative `ObjectName`.
-6. `source_object` MUST NOT be in the `quarantine/` family.
-7. `source_object` MUST map to a known non-quarantine object family.
+6. L4 quarantine service validation MUST reject `source_object` values in the
+   `quarantine/` family.
+7. L4 quarantine service validation MUST reject `source_object` values that do
+   not map to a known non-quarantine object family.
 8. Source family is derived from `source_object`. It is not stored as a
    redundant durable field.
 9. Duplicate `object_id` values are invalid.
 10. Duplicate `source_object` values are invalid.
 11. Decoders MUST reject invalid magic, pre-V1 version `0`, future versions,
     checksum mismatch, invalid UTF-8, invalid object-name values, noncanonical
-    entry ordering, insufficient bytes, and trailing data.
+    entry ordering, insufficient bytes, and trailing data. Layout-derived
+    branch path length and source-family checks are enforced by L4 services
+    after byte decode.
 12. Decoders MUST reject entry counts that cannot fit in the remaining bytes
     before allocating an entry vector.
 13. The old storage crate's `STRAQRTN` quarantine manifest is pre-V1 evidence

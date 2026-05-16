@@ -12,6 +12,7 @@ use crate::object::{ObjectName, ObjectNameError, ObjectPrefix};
 use std::fmt;
 
 const MAX_TABLE_LEVEL: u32 = 9_999;
+const QUARANTINE_MANIFEST_OBJECT_ID: &str = "manifest";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ObjectFamily {
@@ -199,7 +200,15 @@ impl ObjectLayout {
 
     pub(crate) fn quarantine_manifest(branch_id: &str) -> LayoutResult<ObjectName> {
         validate_component("branch", branch_id)?;
-        object_name(&[ObjectFamily::Quarantine.as_str(), branch_id, "manifest"])
+        object_name(&[
+            ObjectFamily::Quarantine.as_str(),
+            branch_id,
+            QUARANTINE_MANIFEST_OBJECT_ID,
+        ])
+    }
+
+    pub(crate) const fn quarantine_inventory_object_id() -> &'static str {
+        QUARANTINE_MANIFEST_OBJECT_ID
     }
 
     pub(crate) fn quarantine_object(branch_id: &str, object_id: &str) -> LayoutResult<ObjectName> {

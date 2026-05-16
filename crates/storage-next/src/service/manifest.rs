@@ -12,7 +12,7 @@ use crate::backend::{Backend, BackendError, BackendErrorKind, PublishError, Publ
 use crate::format::{decode_manifest, encode_manifest, DatabaseManifest, FormatError};
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
-use crate::service::ObjectPublisher;
+use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::fmt;
 use strata_core_next::CommitVersion;
 
@@ -66,6 +66,11 @@ pub(crate) enum ManifestServiceError {
         role: ManifestRole,
         source: PublishError,
     },
+    InvalidPublishMetadata {
+        role: ManifestRole,
+        object: ObjectName,
+        field: &'static str,
+    },
     CodecMismatch {
         object: ObjectName,
         expected: String,
@@ -107,6 +112,14 @@ impl fmt::Display for ManifestServiceError {
             Self::Publish { role, source } => {
                 write!(formatter, "failed to publish {role}: {source}")
             }
+            Self::InvalidPublishMetadata {
+                role,
+                object,
+                field,
+            } => write!(
+                formatter,
+                "{role} object {object} has invalid publish metadata {field}"
+            ),
             Self::CodecMismatch {
                 object,
                 expected,
@@ -137,6 +150,7 @@ impl std::error::Error for ManifestServiceError {
             Self::Decode { source, .. } | Self::Encode { source, .. } => Some(source),
             Self::Publish { source, .. } => Some(source),
             Self::Missing { .. }
+            | Self::InvalidPublishMetadata { .. }
             | Self::CodecMismatch { .. }
             | Self::InvalidRecoveryFact { .. } => None,
         }
@@ -361,12 +375,19 @@ impl<'a> TableManifestService<'a> {
         bytes: &[u8],
     ) -> ManifestServiceResult<PublishOutcome> {
         let object = table_manifest_object(branch_id)?;
-        ObjectPublisher::new(self.backend)
+        let outcome = ObjectPublisher::new(self.backend)
             .publish_durable_create(&object, bytes)
             .map_err(|source| ManifestServiceError::Publish {
                 role: ManifestRole::Table,
                 source,
-            })
+            })?;
+        validate_manifest_publish_outcome(
+            ManifestRole::Table,
+            &object,
+            bytes.len() as u64,
+            &outcome,
+        )?;
+        Ok(outcome)
     }
 
     pub(crate) fn publish_replace(
@@ -375,12 +396,19 @@ impl<'a> TableManifestService<'a> {
         bytes: &[u8],
     ) -> ManifestServiceResult<PublishOutcome> {
         let object = table_manifest_object(branch_id)?;
-        ObjectPublisher::new(self.backend)
+        let outcome = ObjectPublisher::new(self.backend)
             .publish_durable_replace(&object, bytes)
             .map_err(|source| ManifestServiceError::Publish {
                 role: ManifestRole::Table,
                 source,
-            })
+            })?;
+        validate_manifest_publish_outcome(
+            ManifestRole::Table,
+            &object,
+            bytes.len() as u64,
+            &outcome,
+        )?;
+        Ok(outcome)
     }
 }
 
@@ -467,8 +495,29 @@ fn publish_database_manifest(
         role: ManifestRole::Database,
         source,
     })?;
+    validate_manifest_publish_outcome(
+        ManifestRole::Database,
+        object,
+        bytes.len() as u64,
+        &outcome,
+    )?;
 
     Ok(DatabaseManifestWrite::new(decoded, outcome))
+}
+
+fn validate_manifest_publish_outcome(
+    role: ManifestRole,
+    object: &ObjectName,
+    byte_count: u64,
+    outcome: &PublishOutcome,
+) -> ManifestServiceResult<()> {
+    validate_publish_outcome(object, byte_count, outcome).map_err(|mismatch| {
+        ManifestServiceError::InvalidPublishMetadata {
+            role,
+            object: mismatch.object().clone(),
+            field: mismatch.field(),
+        }
+    })
 }
 
 fn validate_codec(
@@ -495,12 +544,10 @@ mod tests {
     };
     #[cfg(all(feature = "localfs", unix))]
     use crate::backend::local_fs::LocalFsBackend;
-    #[cfg(all(feature = "localfs", unix))]
-    use crate::backend::PublishDurability;
     use crate::backend::{
         memory::MemoryBackend, Backend, BackendCapabilities, BackendCapability, BackendError,
-        BackendErrorKind, BackendMetadata, BackendRange, BackendResult, PublishError,
-        PublishFailureKind, PublishMode, PublishOutcome,
+        BackendErrorKind, BackendMetadata, BackendRange, BackendResult, PublishDurability,
+        PublishError, PublishFailureKind, PublishMode, PublishOutcome,
     };
     use crate::format::{
         encode_manifest, encode_wal_segment_header, DatabaseManifest, FormatError, WalSegmentHeader,
@@ -590,11 +637,19 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingBackend {
         objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
+        outcome_override: Mutex<Option<PublishOutcome>>,
     }
 
     impl RecordingBackend {
         fn new() -> Self {
             Self::default()
+        }
+
+        fn override_next_publish_outcome(&self, outcome: PublishOutcome) {
+            *self
+                .outcome_override
+                .lock()
+                .expect("recording backend lock") = Some(outcome);
         }
     }
 
@@ -689,10 +744,18 @@ mod tests {
                 ));
             }
             objects.insert(name.clone(), bytes.to_vec());
+            if let Some(outcome) = self
+                .outcome_override
+                .lock()
+                .expect("recording backend lock")
+                .take()
+            {
+                return Ok(outcome);
+            }
             Ok(PublishOutcome::new(
                 name.clone(),
                 BackendMetadata::new(bytes.len() as u64, None),
-                crate::backend::PublishDurability::Durable,
+                PublishDurability::Durable,
             ))
         }
     }
@@ -1332,6 +1395,30 @@ mod tests {
                 role: ManifestRole::Database,
                 object
             })
+        );
+    }
+
+    #[test]
+    fn database_manifest_publish_rejects_invalid_publish_outcome_metadata() {
+        let backend = RecordingBackend::new();
+        let service = DatabaseManifestService::new(&backend);
+        let object = ObjectLayout::database_manifest().expect("manifest name");
+        backend.override_next_publish_outcome(PublishOutcome::new(
+            object.clone(),
+            BackendMetadata::new(1, None),
+            PublishDurability::Durable,
+        ));
+
+        let error = service
+            .create_initial([0x22; 16], "identity")
+            .expect_err("bad publish metadata should fail");
+        assert_eq!(
+            error,
+            ManifestServiceError::InvalidPublishMetadata {
+                role: ManifestRole::Database,
+                object,
+                field: "size_bytes",
+            }
         );
     }
 
@@ -2233,6 +2320,27 @@ mod tests {
                 .read_object(&missing_object)
                 .expect("replace-created table bytes"),
             b"created-by-replace"
+        );
+    }
+
+    #[test]
+    fn table_manifest_publish_rejects_invalid_publish_outcome_metadata() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let object = ObjectLayout::branch_table_manifest("branch").expect("manifest name");
+        backend.override_next_publish_outcome(PublishOutcome::new(
+            object.clone(),
+            BackendMetadata::new(1, None),
+            PublishDurability::Durable,
+        ));
+
+        assert_eq!(
+            service.publish_create("branch", b"created"),
+            Err(ManifestServiceError::InvalidPublishMetadata {
+                role: ManifestRole::Table,
+                object,
+                field: "size_bytes",
+            })
         );
     }
 

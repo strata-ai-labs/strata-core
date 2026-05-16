@@ -368,48 +368,49 @@ fn purge_multiple_missing_objects_are_sorted_and_removed_from_inventory() {
 #[test]
 fn purge_inventory_rewrite_failure_preserves_delete_report() {
     let branch_id = branch_id();
-    let source_object = source_object();
-    let listed_object = quarantine_object(branch_id, "table0002");
-    let inventory_object = inventory_object(branch_id);
-    let entry = QuarantineEntry::new("table0002", source_object, 5, Timestamp::from_micros(2))
-        .expect("entry");
-    let inventory = inventory(branch_id, vec![entry]);
-    let backend = MutationBackend::durable()
-        .with_object(inventory_object.clone(), &encode_inventory(&inventory))
-        .with_object(listed_object.clone(), b"table");
-    backend.fail_publish(
-        inventory_object.clone(),
-        PublishFailureKind::FailedBeforeVisibility,
-        false,
-    );
-    let service = QuarantineService::new(&backend);
+    for (kind, visible, expected_visible_entries) in [
+        (PublishFailureKind::Unsupported, false, 1),
+        (PublishFailureKind::PreconditionFailed, false, 1),
+        (PublishFailureKind::FailedBeforeVisibility, false, 1),
+        (PublishFailureKind::VisibilityUnknown, false, 1),
+        (PublishFailureKind::VisibilityUnknown, true, 0),
+        (PublishFailureKind::VisibleDurabilityUnconfirmed, true, 0),
+    ] {
+        let source_object = source_object();
+        let listed_object = quarantine_object(branch_id, "table0002");
+        let inventory_object = inventory_object(branch_id);
+        let entry = QuarantineEntry::new("table0002", source_object, 5, Timestamp::from_micros(2))
+            .expect("entry");
+        let inventory = inventory(branch_id, vec![entry]);
+        let backend = MutationBackend::durable()
+            .with_object(inventory_object.clone(), &encode_inventory(&inventory))
+            .with_object(listed_object.clone(), b"table");
+        backend.fail_publish(inventory_object.clone(), kind, visible);
+        let service = QuarantineService::new(&backend);
 
-    let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
-        .expect("purge report");
+        let report = service
+            .purge_quarantine(QuarantinePurgeRequest::new(
+                branch_id,
+                DATABASE_ID,
+                CODEC_ID,
+                QuarantineGate::Safe,
+            ))
+            .expect("purge report");
 
-    assert_eq!(report.deleted().len(), 1);
-    assert_eq!(report.deleted()[0].object(), &listed_object);
-    assert_eq!(
-        report
-            .inventory_publish_failure()
-            .expect("publish failure")
-            .object(),
-        &inventory_object
-    );
-    assert!(!backend.contains(&listed_object));
-    assert_eq!(
-        service
-            .load_required_inventory(branch_id, DATABASE_ID, CODEC_ID)
-            .expect("old inventory remains visible after no-visible rewrite failure")
-            .inventory()
-            .entries()
-            .len(),
-        1
-    );
+        assert_eq!(report.deleted().len(), 1);
+        assert_eq!(report.deleted()[0].object(), &listed_object);
+        let failure = report.inventory_publish_failure().expect("publish failure");
+        assert_eq!(failure.object(), &inventory_object);
+        assert_eq!(failure.source().kind(), kind);
+        assert!(!backend.contains(&listed_object));
+        assert_eq!(
+            service
+                .load_required_inventory(branch_id, DATABASE_ID, CODEC_ID)
+                .expect("load inventory after failed rewrite")
+                .inventory()
+                .entries()
+                .len(),
+            expected_visible_entries
+        );
+    }
 }

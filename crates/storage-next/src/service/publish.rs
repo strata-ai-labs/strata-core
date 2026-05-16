@@ -9,8 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, PublishError, PublishFailureKind, PublishMode,
-    PublishOutcome, PublishResult,
+    Backend, BackendCapability, BackendError, PublishDurability, PublishError, PublishFailureKind,
+    PublishMode, PublishOutcome, PublishResult,
 };
 use crate::object::ObjectName;
 
@@ -74,6 +74,43 @@ impl<'a> ObjectPublisher<'a> {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PublishOutcomeMismatch {
+    object: ObjectName,
+    field: &'static str,
+}
+
+impl PublishOutcomeMismatch {
+    const fn new(object: ObjectName, field: &'static str) -> Self {
+        Self { object, field }
+    }
+
+    pub(crate) const fn object(&self) -> &ObjectName {
+        &self.object
+    }
+
+    pub(crate) const fn field(&self) -> &'static str {
+        self.field
+    }
+}
+
+pub(crate) fn validate_publish_outcome(
+    object: &ObjectName,
+    byte_count: u64,
+    outcome: &PublishOutcome,
+) -> Result<(), PublishOutcomeMismatch> {
+    if outcome.object() != object {
+        return Err(PublishOutcomeMismatch::new(object.clone(), "object"));
+    }
+    if outcome.metadata().size_bytes() != byte_count {
+        return Err(PublishOutcomeMismatch::new(object.clone(), "size_bytes"));
+    }
+    if outcome.durability() != PublishDurability::Durable {
+        return Err(PublishOutcomeMismatch::new(object.clone(), "durability"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -389,7 +389,7 @@ fn delete_failure_records_failed_segment_without_hiding_other_results() {
     .expect("open WAL");
 
     let report = service
-        .delete_covered_segments(CommitVersion::new(2))
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(2)))
         .expect("delete covered segments");
 
     assert_eq!(report.failed_segments(), &[1]);

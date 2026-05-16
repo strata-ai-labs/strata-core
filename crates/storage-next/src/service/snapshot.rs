@@ -18,7 +18,7 @@ use crate::format::{
 };
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
-use crate::service::ObjectPublisher;
+use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::fmt;
 use strata_core_next::{CommitVersion, Timestamp};
 
@@ -70,6 +70,11 @@ pub(crate) enum SnapshotServiceError {
     Publish {
         snapshot_id: u64,
         source: PublishError,
+    },
+    InvalidPublishMetadata {
+        object: ObjectName,
+        snapshot_id: u64,
+        field: &'static str,
     },
     CodecMismatch {
         object: ObjectName,
@@ -151,6 +156,14 @@ impl fmt::Display for SnapshotServiceError {
                 snapshot_id,
                 source,
             } => write!(formatter, "failed to publish snapshot {snapshot_id}: {source}"),
+            Self::InvalidPublishMetadata {
+                object,
+                snapshot_id,
+                field,
+            } => write!(
+                formatter,
+                "snapshot {snapshot_id} object {object} has invalid publish metadata {field}"
+            ),
             Self::CodecMismatch {
                 object,
                 snapshot_id,
@@ -195,6 +208,7 @@ impl std::error::Error for SnapshotServiceError {
             Self::InvalidSnapshotFact { .. }
             | Self::UnsupportedCapability { .. }
             | Self::Missing { .. }
+            | Self::InvalidPublishMetadata { .. }
             | Self::CodecMismatch { .. }
             | Self::DatabaseMismatch { .. }
             | Self::SnapshotIdMismatch { .. } => None,
@@ -510,6 +524,13 @@ fn publish_snapshot_container(
             snapshot_id,
             source,
         })?;
+    validate_publish_outcome(object, bytes.len() as u64, &outcome).map_err(|mismatch| {
+        SnapshotServiceError::InvalidPublishMetadata {
+            object: mismatch.object().clone(),
+            snapshot_id,
+            field: mismatch.field(),
+        }
+    })?;
     Ok(SnapshotWrite::new(decoded, outcome))
 }
 
@@ -607,11 +628,19 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingBackend {
         objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
+        outcome_override: Mutex<Option<PublishOutcome>>,
     }
 
     impl RecordingBackend {
         fn new() -> Self {
             Self::default()
+        }
+
+        fn override_next_publish_outcome(&self, outcome: PublishOutcome) {
+            *self
+                .outcome_override
+                .lock()
+                .expect("recording backend lock") = Some(outcome);
         }
     }
 
@@ -706,12 +735,41 @@ mod tests {
                 ));
             }
             objects.insert(name.clone(), bytes.to_vec());
+            if let Some(outcome) = self
+                .outcome_override
+                .lock()
+                .expect("recording backend lock")
+                .take()
+            {
+                return Ok(outcome);
+            }
             Ok(PublishOutcome::new(
                 name.clone(),
                 BackendMetadata::new(bytes.len() as u64, None),
                 PublishDurability::Durable,
             ))
         }
+    }
+
+    #[test]
+    fn snapshot_publish_rejects_invalid_publish_outcome_metadata() {
+        let backend = RecordingBackend::new();
+        let service = SnapshotService::new(&backend);
+        let object = ObjectLayout::snapshot(SNAPSHOT_ID).expect("snapshot object");
+        backend.override_next_publish_outcome(PublishOutcome::new(
+            object.clone(),
+            BackendMetadata::new(1, None),
+            PublishDurability::Durable,
+        ));
+
+        assert_eq!(
+            service.publish_create(request(SNAPSHOT_ID)),
+            Err(SnapshotServiceError::InvalidPublishMetadata {
+                object,
+                snapshot_id: SNAPSHOT_ID,
+                field: "size_bytes",
+            })
+        );
     }
 
     struct PublishFailureBackend {

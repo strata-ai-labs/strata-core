@@ -73,7 +73,12 @@ fn quarantine_rejects_existing_copy_without_inventory_entry_before_mutation() {
     ));
     assert!(backend.contains(&source_object));
     assert!(backend.contains(&quarantine_object));
-    assert!(backend.operations().is_empty());
+    assert_eq!(backend.read_count(&source_object), 0);
+    assert_eq!(backend.read_count(&quarantine_object), 0);
+    assert_eq!(
+        backend.operations(),
+        vec![Operation::Metadata(quarantine_object)]
+    );
 }
 
 #[test]

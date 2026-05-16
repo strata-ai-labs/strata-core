@@ -63,6 +63,40 @@ fn assert_decode_error(error: QuarantineServiceError, object: &ObjectName) {
     }
 }
 
+fn assert_decode_invalid_value(
+    error: QuarantineServiceError,
+    object: &ObjectName,
+    expected_field: &'static str,
+) {
+    match error {
+        QuarantineServiceError::Decode {
+            object: actual,
+            source: FormatError::InvalidValue { field },
+        } => {
+            assert_eq!(&actual, object);
+            assert_eq!(field, expected_field);
+        }
+        other => panic!("expected invalid-value decode error, got {other:?}"),
+    }
+}
+
+fn inventory_with_entry(
+    branch_id: BranchId,
+    object_id: impl Into<String>,
+    source_object: ObjectName,
+) -> QuarantineInventory {
+    inventory(
+        branch_id,
+        vec![QuarantineEntry::new(
+            object_id,
+            source_object,
+            128,
+            Timestamp::from_micros(1_700_000_000_000_000),
+        )
+        .expect("quarantine entry")],
+    )
+}
+
 fn assert_unsupported_publish_capability(
     error: QuarantineServiceError,
     object: &ObjectName,
@@ -139,6 +173,77 @@ fn corrupt_inventory_bytes_are_never_treated_as_empty() {
             .expect_err("required load must preserve corruption"),
         &object,
     );
+}
+
+#[test]
+fn inventory_load_rejects_layout_invalid_entries_after_decode() {
+    let branch_id = branch_id();
+    let object = inventory_object(branch_id);
+
+    let cases = [
+        (
+            "overlong assembled quarantine path",
+            inventory_with_entry(branch_id, "a".repeat(980), table_source_object("table0001")),
+            "object_id",
+        ),
+        (
+            "quarantine source family",
+            inventory_with_entry(
+                branch_id,
+                "table0001",
+                ObjectLayout::quarantine_object(&branch_id.to_string(), "table0001")
+                    .expect("quarantine source object"),
+            ),
+            "source_object",
+        ),
+        (
+            "unknown source family",
+            inventory_with_entry(
+                branch_id,
+                "table0001",
+                ObjectName::new("unknown/table0001").expect("unknown source object"),
+            ),
+            "source_object",
+        ),
+    ];
+
+    for (name, inventory, field) in cases {
+        let backend = RecordingBackend::with_object(object.clone(), encode_inventory(&inventory));
+        let service = QuarantineService::new(&backend);
+        let error = service
+            .load_required_inventory(branch_id, DATABASE_ID, CODEC_ID)
+            .expect_err(name);
+
+        assert_decode_invalid_value(error, &object, field);
+    }
+}
+
+#[test]
+fn inventory_publish_rejects_layout_invalid_entries_before_backend_publish() {
+    let branch_id = branch_id();
+    let object = inventory_object(branch_id);
+    let backend = RecordingBackend::new();
+    let service = QuarantineService::new(&backend);
+    let inventory = inventory_with_entry(
+        branch_id,
+        "table0001",
+        ObjectName::new("unknown/table0001").expect("unknown source object"),
+    );
+
+    match service
+        .publish_inventory_replace(&inventory)
+        .expect_err("layout-invalid inventory should fail before publish")
+    {
+        QuarantineServiceError::Encode {
+            object: actual,
+            source: FormatError::InvalidValue { field },
+        } => {
+            assert_eq!(actual, object);
+            assert_eq!(field, "source_object");
+        }
+        other => panic!("expected encode invalid-value error, got {other:?}"),
+    }
+    assert!(backend.objects.lock().expect("objects").is_empty());
 }
 
 #[test]

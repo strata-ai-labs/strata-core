@@ -41,10 +41,10 @@ impl QuarantineService<'_> {
             .entries()
             .iter()
             .find(|entry| entry.object_id() == request.object_id);
-        let quarantine_bytes = read_object_optional(self.backend, &quarantine_object)?;
-        let source_bytes = read_object_optional(self.backend, &request.source_object)?;
 
         if let Some(entry) = entry {
+            let quarantine_bytes = read_object_optional(self.backend, &quarantine_object)?;
+            let source_bytes = read_object_optional(self.backend, &request.source_object)?;
             return self.handle_existing_quarantine_entry(
                 request,
                 &quarantine_object,
@@ -55,11 +55,20 @@ impl QuarantineService<'_> {
             );
         }
 
+        let quarantine_object_exists = object_exists(self.backend, &quarantine_object)?;
+        if quarantine_object_exists {
+            return Err(QuarantineServiceError::InventoryMismatch {
+                object_id: request.object_id.clone(),
+                quarantine_object,
+                source_object: request.source_object.clone(),
+                reason: "quarantine object is not listed in inventory",
+            });
+        }
+        let source_bytes = read_object_optional(self.backend, &request.source_object)?;
         self.handle_new_quarantine_entry(
             request,
             quarantine_object,
             inventory_load.inventory(),
-            quarantine_bytes.is_some(),
             source_bytes,
         )
     }
@@ -69,18 +78,8 @@ impl QuarantineService<'_> {
         request: &QuarantineObjectRequest,
         quarantine_object: ObjectName,
         current_inventory: &QuarantineInventory,
-        quarantine_object_exists: bool,
         source_bytes: Option<Vec<u8>>,
     ) -> QuarantineServiceResult<QuarantineObjectReport> {
-        if quarantine_object_exists {
-            return Err(QuarantineServiceError::InventoryMismatch {
-                object_id: request.object_id.clone(),
-                quarantine_object,
-                source_object: request.source_object.clone(),
-                reason: "quarantine object is not listed in inventory",
-            });
-        }
-
         let Some(source_bytes) = source_bytes else {
             return Err(QuarantineServiceError::Missing {
                 object: request.source_object.clone(),
@@ -155,6 +154,12 @@ impl QuarantineService<'_> {
             .publish_durable_create(&quarantine_object, source_bytes)
         {
             Ok(outcome) => {
+                super::validate_publish_outcome(&quarantine_object, byte_count, &outcome).map_err(
+                    |mismatch| QuarantineServiceError::InvalidPublishMetadata {
+                        object: mismatch.object().clone(),
+                        field: mismatch.field(),
+                    },
+                )?;
                 let source_delete = delete_source(self.backend, &request.source_object);
                 let status = status_after_source_delete(&source_delete);
                 let mut report = QuarantineObjectReport::new(
@@ -337,7 +342,7 @@ fn validate_quarantine_request(request: &QuarantineObjectRequest) -> QuarantineS
     if request.object_id.is_empty() {
         return Err(QuarantineServiceError::InvalidRequest { field: "object_id" });
     }
-    if request.object_id == reserved_inventory_object_id(request.branch_id)? {
+    if request.object_id == ObjectLayout::quarantine_inventory_object_id() {
         return Err(QuarantineServiceError::InvalidRequest { field: "object_id" });
     }
     quarantine_object_name(request.branch_id, &request.object_id)?;
@@ -352,17 +357,6 @@ fn validate_quarantine_request(request: &QuarantineObjectRequest) -> QuarantineS
         }),
         Some(_) => Ok(()),
     }
-}
-
-fn reserved_inventory_object_id(branch_id: BranchId) -> QuarantineServiceResult<String> {
-    let object = ObjectLayout::quarantine_manifest(&branch_id.to_string())
-        .map_err(|source| QuarantineServiceError::Layout { source })?;
-    object
-        .as_str()
-        .rsplit('/')
-        .next()
-        .map(str::to_owned)
-        .ok_or(QuarantineServiceError::InvalidRequest { field: "object_id" })
 }
 
 fn updated_inventory_with_entry(
@@ -406,6 +400,20 @@ fn read_object_optional(
         Ok(bytes) => Ok(Some(bytes)),
         Err(source) if source.kind() == BackendErrorKind::NotFound => Ok(None),
         Err(source) => Err(QuarantineServiceError::Read {
+            object: object.clone(),
+            source,
+        }),
+    }
+}
+
+fn object_exists(
+    backend: &dyn crate::backend::Backend,
+    object: &ObjectName,
+) -> QuarantineServiceResult<bool> {
+    match backend.object_metadata(object) {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == BackendErrorKind::NotFound => Ok(false),
+        Err(source) => Err(QuarantineServiceError::Metadata {
             object: object.clone(),
             source,
         }),

@@ -30,7 +30,7 @@ pub(crate) use manifest::{
     TableManifestService,
 };
 
-pub(crate) use publish::ObjectPublisher;
+pub(crate) use publish::{validate_publish_outcome, ObjectPublisher};
 
 #[expect(
     unused_imports,
@@ -79,6 +79,6 @@ pub(crate) use table::{
     reason = "WAL service is consumed by commit and lifecycle services added later"
 )]
 pub(crate) use wal::{
-    WalAppend, WalDeleteReport, WalOperation, WalRead, WalService, WalServiceConfig,
-    WalServiceError, WalTruncation,
+    WalAppend, WalDeleteReport, WalOperation, WalRead, WalRepair, WalRetentionProof,
+    WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError, WalTruncation,
 };

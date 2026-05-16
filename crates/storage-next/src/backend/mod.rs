@@ -242,6 +242,8 @@ impl<T> BackendWriterGuardInner for T where T: Send + Sync {}
 
 pub(crate) struct BackendWriterGuard {
     object: ObjectName,
+    // The concrete guard owns the backend-specific lock handle. Releasing this
+    // wrapper drops that handle and releases the writer lock by RAII.
     _inner: Box<dyn BackendWriterGuardInner>,
 }
 

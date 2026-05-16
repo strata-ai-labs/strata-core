@@ -15,9 +15,9 @@ use crate::format::quarantine::{
     decode_quarantine_inventory, encode_quarantine_inventory, QuarantineInventory,
 };
 use crate::format::FormatError;
-use crate::layout::{LayoutError, ObjectLayout};
+use crate::layout::{LayoutError, ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
-use crate::service::ObjectPublisher;
+use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::fmt;
 use strata_core_next::BranchId;
 
@@ -65,6 +65,10 @@ pub(crate) enum QuarantineServiceError {
     Publish {
         object: ObjectName,
         source: PublishError,
+    },
+    InvalidPublishMetadata {
+        object: ObjectName,
+        field: &'static str,
     },
     DatabaseMismatch {
         object: ObjectName,
@@ -140,6 +144,10 @@ impl fmt::Display for QuarantineServiceError {
                     "failed to publish quarantine inventory {object}: {source}"
                 )
             }
+            Self::InvalidPublishMetadata { object, field } => write!(
+                formatter,
+                "quarantine inventory {object} has invalid publish metadata {field}"
+            ),
             Self::DatabaseMismatch {
                 object,
                 expected,
@@ -206,6 +214,7 @@ impl std::error::Error for QuarantineServiceError {
             Self::Publish { source, .. } => Some(source),
             Self::UnsupportedCapability { .. }
             | Self::Missing { .. }
+            | Self::InvalidPublishMetadata { .. }
             | Self::DatabaseMismatch { .. }
             | Self::BranchMismatch { .. }
             | Self::CodecMismatch { .. }
@@ -387,6 +396,10 @@ impl<'a> QuarantineService<'a> {
         inventory: &QuarantineInventory,
     ) -> QuarantineServiceResult<QuarantineInventoryWrite> {
         let object = inventory_object(inventory.branch_id())?;
+        validate_inventory_layout(inventory).map_err(|source| QuarantineServiceError::Encode {
+            object: object.clone(),
+            source,
+        })?;
         let bytes = encode_quarantine_inventory(inventory).map_err(|source| {
             QuarantineServiceError::Encode {
                 object: object.clone(),
@@ -394,6 +407,10 @@ impl<'a> QuarantineService<'a> {
             }
         })?;
         let decoded = decode_inventory(&object, &bytes)?;
+        validate_inventory_layout(&decoded).map_err(|source| QuarantineServiceError::Decode {
+            object: object.clone(),
+            source,
+        })?;
         let outcome = self
             .publisher
             .publish_durable_replace(&object, &bytes)
@@ -401,6 +418,12 @@ impl<'a> QuarantineService<'a> {
                 object: object.clone(),
                 source,
             })?;
+        validate_publish_outcome(&object, bytes.len() as u64, &outcome).map_err(|mismatch| {
+            QuarantineServiceError::InvalidPublishMetadata {
+                object: mismatch.object().clone(),
+                field: mismatch.field(),
+            }
+        })?;
         Ok(QuarantineInventoryWrite::new(
             object,
             decoded,
@@ -494,7 +517,48 @@ fn validate_inventory_identity(
             actual: inventory.codec_id().to_owned(),
         });
     }
+    validate_inventory_layout(&inventory).map_err(|source| QuarantineServiceError::Decode {
+        object: object.clone(),
+        source,
+    })?;
     Ok(inventory)
+}
+
+fn validate_inventory_layout(inventory: &QuarantineInventory) -> Result<(), FormatError> {
+    for entry in inventory.entries() {
+        validate_inventory_object_id(inventory.branch_id(), entry.object_id())?;
+        validate_inventory_source_object(entry.source_object())?;
+    }
+    Ok(())
+}
+
+fn validate_inventory_object_id(branch_id: BranchId, object_id: &str) -> Result<(), FormatError> {
+    if object_id == quarantine_inventory_object_id(branch_id)? {
+        return Err(FormatError::InvalidValue { field: "object_id" });
+    }
+    ObjectLayout::quarantine_object(&branch_id.to_string(), object_id)
+        .map(|_| ())
+        .map_err(|_| FormatError::InvalidValue { field: "object_id" })
+}
+
+fn quarantine_inventory_object_id(branch_id: BranchId) -> Result<String, FormatError> {
+    let object = ObjectLayout::quarantine_manifest(&branch_id.to_string())
+        .map_err(|_| FormatError::InvalidValue { field: "branch_id" })?;
+    object
+        .as_str()
+        .rsplit('/')
+        .next()
+        .map(str::to_owned)
+        .ok_or(FormatError::InvalidValue { field: "object_id" })
+}
+
+fn validate_inventory_source_object(source_object: &ObjectName) -> Result<(), FormatError> {
+    match ObjectFamily::from_object_name(source_object) {
+        Some(ObjectFamily::Quarantine) | None => Err(FormatError::InvalidValue {
+            field: "source_object",
+        }),
+        Some(_) => Ok(()),
+    }
 }
 
 #[cfg(test)]

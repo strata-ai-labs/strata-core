@@ -1,8 +1,8 @@
 use super::{WalService, WalServiceError};
 use crate::backend::{
     Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
-    BackendMetadata, BackendRange, BackendResult, PublishDurability, PublishMode, PublishOutcome,
-    PublishResult,
+    BackendMetadata, BackendRange, BackendResult, PublishDurability, PublishError,
+    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
 };
 use crate::format::{
     encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalCommitPayload,
@@ -288,7 +288,8 @@ pub(super) struct StoredWalBackend {
     list_order: Mutex<Option<Vec<ObjectName>>>,
     metadata_sizes: Mutex<BTreeMap<ObjectName, u64>>,
     metadata_failures: Mutex<Vec<ObjectName>>,
-    delete_failures: Mutex<Vec<ObjectName>>,
+    delete_failures: Mutex<BTreeMap<ObjectName, BackendErrorKind>>,
+    publish_failures: Mutex<BTreeMap<ObjectName, (PublishFailureKind, bool)>>,
     hide_delete_capability: Mutex<bool>,
     publish_count: Mutex<u64>,
 }
@@ -323,10 +324,26 @@ impl StoredWalBackend {
     }
 
     pub(super) fn fail_delete_for(&self, name: &ObjectName) {
+        self.fail_delete_with(name, BackendErrorKind::Unavailable);
+    }
+
+    pub(super) fn fail_delete_with(&self, name: &ObjectName, kind: BackendErrorKind) {
         self.delete_failures
             .lock()
             .expect("delete failures lock")
-            .push(name.clone());
+            .insert(name.clone(), kind);
+    }
+
+    pub(super) fn fail_publish_with(
+        &self,
+        name: &ObjectName,
+        kind: PublishFailureKind,
+        visible: bool,
+    ) {
+        self.publish_failures
+            .lock()
+            .expect("publish failures lock")
+            .insert(name.clone(), (kind, visible));
     }
 
     // Retention tests need to distinguish "delete is unsupported by contract"
@@ -398,12 +415,14 @@ impl Backend for StoredWalBackend {
 
     fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
         let mut failures = self.delete_failures.lock().expect("delete failures lock");
-        if let Some(index) = failures.iter().position(|object| object == name) {
-            failures.remove(index);
-            return Err(BackendError::new(
-                BackendErrorKind::Unavailable,
-                "injected delete failure",
-            ));
+        if let Some(kind) = failures.remove(name) {
+            if kind == BackendErrorKind::NotFound {
+                self.objects
+                    .lock()
+                    .expect("stored WAL objects lock")
+                    .remove(name);
+            }
+            return Err(BackendError::new(kind, "injected delete failure"));
         }
 
         self.objects
@@ -491,11 +510,26 @@ impl Backend for StoredWalBackend {
         bytes: &[u8],
         mode: PublishMode,
     ) -> PublishResult<PublishOutcome> {
+        let failure = self
+            .publish_failures
+            .lock()
+            .expect("publish failures lock")
+            .remove(name);
         let mut objects = self.objects.lock().expect("stored WAL objects lock");
         if mode == PublishMode::Create && objects.contains_key(name) {
-            return Err(crate::backend::PublishError::precondition_failed(
+            return Err(PublishError::precondition_failed(
                 name,
                 "object already exists",
+            ));
+        }
+        if let Some((kind, visible)) = failure {
+            if visible {
+                objects.insert(name.clone(), bytes.to_vec());
+            }
+            return Err(PublishError::new(
+                name.clone(),
+                kind,
+                BackendError::new(BackendErrorKind::Unavailable, "injected publish failure"),
             ));
         }
         objects.insert(name.clone(), bytes.to_vec());

@@ -183,7 +183,8 @@ Current WAL truncation facts:
 - Effective watermark is `max(snapshot_watermark, flushed_through_commit_id)`.
 - Segment coverage uses `.meta` sidecars when valid and falls back to a
   codec-aware full segment scan.
-- Deletion failure is logged and skipped for individual segments.
+- Delete-not-found is idempotent and treated as already pruned. Other deletion
+  failures are logged and skipped for individual segments.
 
 ### Table / Branch Manifest Publish
 
@@ -405,6 +406,8 @@ It should expose operations equivalent to:
 - read records after a watermark
 - read contiguous records after a watermark
 - return truncation facts for partial tails
+- repair the latest partial tail by durably replacing it with the validated
+  prefix before appends resume
 - delete/truncate safe log chunks after a retention proof
 - report counters and disk/object usage
 
@@ -509,6 +512,9 @@ L4 should classify sidecars as either:
 
 Current WAL segment metadata sidecars are optional. Missing or corrupt sidecars
 fall back to full WAL segment scans.
+When an authoritative WAL segment is deleted, the matching optional sidecar is
+best-effort deleted as cleanup; failure to delete the sidecar does not affect the
+retention result because the sidecar is not authoritative.
 
 ## Service Ordering Invariants
 
@@ -582,6 +588,7 @@ L4 consumes L1 backend capabilities.
 Cache mode requires only:
 
 - object read
+- object range read
 - object write
 - object delete
 - object list
@@ -744,7 +751,8 @@ The first storage-next implementation needs:
 1. A durable publisher abstraction with local filesystem and cache/browser
    implementations.
 2. A local filesystem WAL service with explicit `standard` and `always`
-   durability-policy behavior.
+   durability-policy behavior, an explicit identity storage-codec boundary, and
+   latest-partial-tail repair.
 3. No WAL service in cache/browser mode; L7 uses the WAL-free commit path for
    cache/browser storage and reports explicit non-durable facts.
 4. A database manifest service.
