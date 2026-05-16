@@ -5,16 +5,11 @@
 
 mod common;
 
-use strata_storage_next::testkit::{BackendOperation, FaultScript, FaultingBackend};
-
 #[test]
-fn service_fault_window_harness_can_record_backend_operations() {
-    let backend = FaultingBackend::new((), FaultScript::empty());
+fn service_fault_window_harness_exercises_l4_service_faults() {
+    let outcome = strata_storage_next::testkit::run_service_fault_window_harness()
+        .expect("service fault-window harness");
 
-    assert_eq!(
-        backend.before_operation(BackendOperation::WriteObject),
-        Ok(())
-    );
-    assert_eq!(backend.calls().len(), 1);
+    assert_eq!(outcome.cases_executed(), 3);
     assert!(common::crate_root().join("src/service/mod.rs").is_file());
 }

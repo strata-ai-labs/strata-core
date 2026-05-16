@@ -1,9 +1,10 @@
 # Storage-Next Test Harnesses
 
 This directory contains the integration harness entry points for storage-next.
-During the initial scaffold, these tests prove harness wiring and feature
-boundaries only. They do not claim durable WAL, manifest, table, branch,
-commit, recovery, or API behavior.
+The harnesses stay outside the production API surface and reach crate-private
+storage services through the hidden `testkit` feature. They cover backend
+selection, durable local reopen recovery, L4 service fault windows, bounded
+stress scripts, table-format generated artifacts, and feature boundaries.
 
 Useful local commands:
 
@@ -13,8 +14,8 @@ cargo test -p strata-storage-next --features testkit,fault-injection --locked
 cargo test -p strata-storage-next --features testkit --test backend_conformance --locked
 cargo test -p strata-storage-next --features testkit,fault-injection --test service_fault_windows --locked
 cargo test -p strata-storage-next --features testkit,fault-injection --test commit_runtime_faults --locked
-cargo test -p strata-storage-next --features testkit,fault-injection --test crash_recovery -- --ignored --test-threads=1 --nocapture
-cargo test -p strata-storage-next --features testkit,fault-injection --test stress -- --ignored --nocapture
+cargo test -p strata-storage-next --features testkit,fault-injection --test crash_recovery -- --test-threads=1 --nocapture
+cargo test -p strata-storage-next --features testkit,fault-injection --test stress -- --nocapture
 ```
 
 Feature matrix gate:

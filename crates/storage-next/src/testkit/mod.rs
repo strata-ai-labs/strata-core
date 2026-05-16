@@ -5,11 +5,20 @@
 use std::fmt;
 
 mod format_fuzz;
+mod integration_harness;
 mod quarantine_fuzz;
 mod service_fuzz;
 
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
+};
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+pub use integration_harness::run_localfs_crash_recovery_harness;
+#[cfg(any(test, feature = "fault-injection"))]
+pub use integration_harness::run_service_fault_window_harness;
+pub use integration_harness::{
+    run_storage_stress_harness, CrashRecoveryHarnessOutcome, ServiceFaultWindowHarnessOutcome,
+    StorageStressHarnessOutcome,
 };
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 pub use service_fuzz::{

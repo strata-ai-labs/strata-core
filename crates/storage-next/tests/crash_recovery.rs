@@ -4,15 +4,36 @@
 
 mod common;
 
+#[cfg(all(feature = "testkit", feature = "localfs", not(target_arch = "wasm32")))]
 #[test]
-#[ignore = "crash recovery requires durable services that are not implemented yet"]
-fn crash_recovery_harness_reads_local_options() {
-    let _ = common::crash_case_limit()
+fn crash_recovery_harness_reopens_durable_local_objects() {
+    let case_limit = common::crash_case_limit()
         .unwrap_or_else(|error| panic!("invalid crash harness environment: {error}"));
-    let _ = common::keep_test_dir()
+    let keep_test_dir = common::keep_test_dir()
         .unwrap_or_else(|error| panic!("invalid crash harness environment: {error}"));
-    let _ = common::test_root_override()
+    let test_root_override = common::test_root_override()
         .unwrap_or_else(|error| panic!("invalid crash harness environment: {error}"));
 
-    assert!(common::crate_root().join("src/lifecycle/mod.rs").is_file());
+    let tempdir = test_root_override
+        .is_none()
+        .then(|| tempfile::tempdir().expect("temp crash harness root"));
+    let root = test_root_override.unwrap_or_else(|| {
+        tempdir
+            .as_ref()
+            .expect("tempdir exists without override")
+            .path()
+            .to_path_buf()
+    });
+
+    let outcome =
+        strata_storage_next::testkit::run_localfs_crash_recovery_harness(&root, case_limit)
+            .expect("crash recovery harness");
+
+    assert!(outcome.cases_executed() > 0 || case_limit == Some(0));
+    if keep_test_dir {
+        if let Some(tempdir) = tempdir {
+            eprintln!("keeping crash recovery harness root at {}", root.display());
+            let _ = tempdir.keep();
+        }
+    }
 }

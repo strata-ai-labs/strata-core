@@ -768,27 +768,40 @@ The first implementation does not need:
 7. Quarantine policy redesign.
 8. Background sync as a public storage API.
 
-## Open Questions
+## Resolved V1 Decisions
 
-1. Closed by M3E2 for V1 local filesystem: WAL append is a stable L4 service
-   operation backed by object-name based backend append/sync. Future object
-   durable mode may implement the same service as immutable WAL chunks.
-2. Does the database manifest become a generationed object with history, or a
-   single current object?
-3. Should table/branch manifests share the same manifest service type as the
-   database MANIFEST, or remain separate services over the same publisher?
-4. Should L4 expose background sync phases, or should L8 own background sync
-   scheduling around a simpler `force_wal_durable` operation?
-5. What exact publish result should represent "rename succeeded but directory
-   fsync failed"?
-6. Should optional sidecar corruption be represented as a warning fact,
-   service health, or typed recoverable error?
-7. What object-store fencing model would be sufficient for a future durable
-   OpenDAL backend?
-8. Should durable deletion require a backend durability barrier, or can deletion
-   be best-effort unless a higher layer requires proof?
-9. What health state should be latched after L4 publish uncertainty, and which
-    layer is allowed to clear it?
+1. WAL append is a stable L4 service operation backed by object-name based
+   backend append/sync. Future object-durable mode may implement the same
+   service as immutable WAL chunks, but V1 local durable mode exposes
+   `WalService::append` and `WalService::force_durable`.
+2. The database manifest is single-current for V1. It lives at
+   `manifest/current`; manifest generation history is not part of the V1 local
+   durable contract.
+3. Database and table/branch manifests stay as separate services over the same
+   publisher. `DatabaseManifestService` owns storage recovery facts and
+   `TableManifestService` publishes opaque branch/table reachability bytes.
+4. L4 does not expose background sync phases as a public storage API. L4 owns
+   `force_durable`; lifecycle or commit orchestration decides when to schedule
+   background sync work around that operation.
+5. A publish where the final object became visible but parent-directory
+   durability failed is reported as
+   `PublishFailureKind::VisibleDurabilityUnconfirmed`.
+6. Optional sidecar corruption is represented as a typed recoverable load fact,
+   not as authoritative corruption and not as an L4 health latch. Recovery must
+   be able to ignore or rebuild sidecars from authoritative WAL/snapshot state.
+
+## Deferred Questions
+
+1. What object-store fencing model is sufficient for a future durable OpenDAL
+   backend: conditional object operations, generations, ETags, leases, or a
+   higher-level manifest pointer protocol?
+2. Should durable deletion require a backend durability barrier, or can deletion
+   remain best-effort unless a higher layer requires proof?
+3. What lifecycle health state should be latched after L4 publish uncertainty,
+   and which L8 action clears it? L4 reports typed uncertainty
+   (`VisibilityUnknown` or `VisibleDurabilityUnconfirmed`); L8 owns whether to
+   latch degraded writer health and whether reopen, reconcile, or explicit
+   maintenance clears it.
 
 ## Next Layer Dependency
 
