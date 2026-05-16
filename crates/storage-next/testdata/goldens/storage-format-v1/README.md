@@ -23,7 +23,9 @@ Current vectors:
 | `snapshot-watermark-present.hex` | Snapshot watermark | V1 watermark encoding | Present snapshot watermark with snapshot and transaction facts. |
 | `storage-row-put.hex` | Storage row | V1 row format 1 | Generic put row with value bytes and no expiry. |
 | `storage-row-tombstone.hex` | Storage row | V1 row format 1 | Generic tombstone row with no value and no expiry. |
-| `wal-record-empty.hex` | WAL record | V1 record format 1 | Inner WAL record with empty commit payload. |
+| `wal-commit-payload-one-put.hex` | WAL commit payload | V1 payload format 1 | Row-native commit payload with one put row. |
+| `wal-commit-payload-put-tombstone.hex` | WAL commit payload | V1 payload format 1 | Row-native commit payload with a put row followed by a tombstone row. |
+| `wal-record-empty-pre-m3f.hex` | WAL record | Historical pre-M3F fixture | Inner WAL record with an empty opaque commit payload; retained only as a malformed V1 fixture. |
 | `wal-record-envelope.hex` | WAL record envelope | V1 envelope encoding | Codec-aware outer envelope around an identity-encoded WAL record. |
-| `wal-record-payload.hex` | WAL record | V1 record format 1 | Inner WAL record with opaque commit payload bytes. |
+| `wal-record-payload.hex` | WAL record | V1 record format 1 | Inner WAL record with a row-native commit payload. |
 | `wal-segment-header.hex` | WAL segment header | V1 segment format 1 | Segment header with database id, segment id, and CRC. |

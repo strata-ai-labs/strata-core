@@ -1,5 +1,6 @@
 use super::{
     Backend, BackendErrorKind, BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
+    DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
 use crate::config::mode::{DurabilityPolicy, StorageModeRequest};
 use crate::test_support::{
@@ -32,18 +33,34 @@ fn assert_storage_mode_validation(backend: &dyn Backend) {
     for request in [
         StorageModeRequest::durable_local(DurabilityPolicy::Standard),
         StorageModeRequest::durable_local(DurabilityPolicy::Always),
-        StorageModeRequest::object_durable_candidate(),
     ] {
-        let error = request
-            .validate_backend(capabilities)
-            .expect_err("basic object backend should not satisfy durable modes");
+        if capabilities.supports(DURABLE_LOCAL_MODE_REQUIREMENTS) {
+            request
+                .validate_backend(capabilities)
+                .expect("backend with durable-local capabilities should satisfy durable mode");
+        } else {
+            let error = request.validate_backend(capabilities).expect_err(
+                "backend without durable-local capabilities should reject durable mode",
+            );
 
-        assert_eq!(error.kind(), BackendErrorKind::CapabilityMismatch);
-        assert!(
-            !request.missing_capabilities(capabilities).is_empty(),
-            "capability mismatch should report at least one missing capability"
-        );
+            assert_eq!(error.kind(), BackendErrorKind::CapabilityMismatch);
+            assert!(
+                !request.missing_capabilities(capabilities).is_empty(),
+                "capability mismatch should report at least one missing capability"
+            );
+        }
     }
+
+    let object_request = StorageModeRequest::object_durable_candidate();
+    let error = object_request
+        .validate_backend(capabilities)
+        .expect_err("basic local backends should not satisfy object-durable mode");
+
+    assert_eq!(error.kind(), BackendErrorKind::CapabilityMismatch);
+    assert!(
+        !object_request.missing_capabilities(capabilities).is_empty(),
+        "capability mismatch should report at least one missing capability"
+    );
 }
 
 fn assert_missing_object_behavior(backend: &dyn Backend) {

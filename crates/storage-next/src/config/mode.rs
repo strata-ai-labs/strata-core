@@ -186,6 +186,17 @@ mod tests {
         assert_eq!(request.mode(), StorageMode::Cache);
         assert_eq!(request.durability_policy(), None);
         assert_eq!(request.missing_capabilities(capabilities), Vec::new());
+
+        let browser_like_without_metadata = BackendCapabilities::from_slice(&[
+            BackendCapability::ReadObject,
+            BackendCapability::ReadRange,
+            BackendCapability::WriteObject,
+            BackendCapability::DeleteObject,
+            BackendCapability::ListPrefix,
+        ]);
+        request
+            .validate_backend(browser_like_without_metadata)
+            .expect("cache mode must not require metadata");
     }
 
     #[test]

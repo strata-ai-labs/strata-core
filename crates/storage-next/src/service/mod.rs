@@ -8,6 +8,9 @@ mod sidecar;
 mod snapshot;
 mod wal;
 
+#[cfg(test)]
+mod cache_mode_absence_tests;
+
 #[expect(
     unused_imports,
     reason = "checkpoint sequencing is consumed by lifecycle work added later"

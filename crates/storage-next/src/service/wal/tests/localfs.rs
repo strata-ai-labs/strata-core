@@ -1,4 +1,7 @@
-use super::{database_id, open_error, other_database_id, record, WalService, WalServiceConfig};
+use super::{
+    database_id, open_error, other_database_id, record, record_with_frame_len, WalService,
+    WalServiceConfig,
+};
 use crate::backend::local_fs::LocalFsBackend;
 use crate::backend::Backend;
 use crate::config::mode::DurabilityPolicy;
@@ -352,8 +355,12 @@ fn latest_segment_partial_tail_prevents_rotation_after_reopen() {
         testing_config(),
     )
     .expect("reopen WAL with recoverable tail");
+    // Pick a frame that fits an empty segment but cannot fit after the valid
+    // prefix. That keeps this on the rotation path without tripping the
+    // record-size preflight first.
+    let rotating_record = record_with_frame_len(2, 900, 0x55);
     let error = reopened
-        .append(&record(2, vec![0x55; 900]))
+        .append(&rotating_record)
         .expect_err("partial tail must be repaired before rotation");
 
     assert!(matches!(

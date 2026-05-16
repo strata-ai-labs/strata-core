@@ -32,6 +32,7 @@ Recommended order:
 12. [L7. Commit Runtime](./l7-commit-runtime.md)
 13. [L8. Lifecycle / Recovery / Maintenance](./l8-lifecycle-recovery-maintenance.md)
 14. [L9. Storage API Boundary](./l9-storage-api-boundary.md) final alignment pass
+15. [Future Object-Durable And Compute/Storage Separation Guardrails](./future-object-durable-guardrails.md)
 
 The ordering is deliberate. Backend IO and object layout determine whether the
 rest of storage-next is genuinely portable. The initial storage API boundary
@@ -85,3 +86,7 @@ S3 durable mode to complete the first storage rewrite.
 If an OpenDAL-backed path is added before it is production-supported, it must
 declare its capabilities honestly, and open must fail if the requested storage
 mode needs guarantees the backend cannot provide.
+
+The future object-durable guardrail is narrower than an implementation plan: it
+exists so M4-L9 work does not leak WAL objects, manifest services, backend
+handles, local paths, or publish primitives into engine-facing compute APIs.

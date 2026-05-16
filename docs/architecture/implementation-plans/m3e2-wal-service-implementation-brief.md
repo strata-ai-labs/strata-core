@@ -90,8 +90,11 @@ Storage-next implementation inputs:
 
 1. Cache mode has no WAL service. Memory backend tests may exercise unsupported
    behavior, but cache lifecycle must not create WAL objects.
-2. WAL records carry `CommitVersion`, `BranchId`, `Timestamp`, and opaque commit
+2. WAL records carry `CommitVersion`, `BranchId`, `Timestamp`, and commit
    payload bytes. Public transaction ids are not reintroduced.
+   Supersession note: M3E2 originally kept the payload opaque so the WAL
+   service could land before L7. M3F replaces that temporary shape with a
+   row-native commit payload before L7 depends on WAL replay.
 3. Stable V1 WAL segment, envelope, and inner-record formats use version `1`;
    pre-V1 development versions are rejected by the normal decoder.
 4. WAL object names come only from `ObjectLayout::wal_segment` and
@@ -344,8 +347,8 @@ git diff --check
 
 1. No commit runtime, version allocation, or visible-version publication. Those
    are M6/M7-layer concerns.
-2. No row-native commit payload format finalization beyond preserving opaque
-   payload bytes.
+2. No row-native commit payload format finalization in M3E2. That temporary
+   deferral is closed by M3F before L7 depends on WAL replay.
 3. No cache-mode WAL.
 4. No object-store WAL chunking, fencing, or OpenDAL durable mode.
 5. No public transaction API.

@@ -5,11 +5,12 @@ use crate::backend::{
     PublishResult,
 };
 use crate::format::{
-    encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalRecord,
-    WalRecordEnvelope, WalSegmentHeader,
+    encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalCommitPayload,
+    WalRecord, WalRecordEnvelope, WalSegmentHeader,
 };
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -53,12 +54,52 @@ pub(super) fn record_for_branch(
     branch_id: BranchId,
     payload: impl Into<Vec<u8>>,
 ) -> WalRecord {
-    WalRecord::new(
-        CommitVersion::new(version),
+    let commit_version = CommitVersion::new(version);
+    let commit_timestamp = Timestamp::from_micros(1_700_000_000_000_000 + version);
+    let physical_key = PhysicalKey::new(
         branch_id,
-        Timestamp::from_micros(1_700_000_000_000_000 + version),
-        payload,
+        "default",
+        StorageSpaceId::engine(0x20).expect("engine storage space"),
+        version.to_le_bytes(),
     )
+    .expect("physical key");
+    let row = StorageRow::put(
+        physical_key,
+        commit_version,
+        commit_timestamp,
+        Timestamp::EPOCH,
+        payload,
+    );
+    let commit_payload = WalCommitPayload::new(vec![row]).expect("WAL commit payload");
+    WalRecord::new(commit_version, branch_id, commit_timestamp, commit_payload).expect("WAL record")
+}
+
+pub(super) fn multi_row_record(version: u64, values: &[&[u8]]) -> WalRecord {
+    let branch_id = branch_id();
+    let commit_version = CommitVersion::new(version);
+    let commit_timestamp = Timestamp::from_micros(1_700_000_000_000_000 + version);
+    let rows = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let physical_key = PhysicalKey::new(
+                branch_id,
+                "default",
+                StorageSpaceId::engine(0x20).expect("engine storage space"),
+                index.to_le_bytes(),
+            )
+            .expect("physical key");
+            StorageRow::put(
+                physical_key,
+                commit_version,
+                commit_timestamp,
+                Timestamp::EPOCH,
+                (*value).to_vec(),
+            )
+        })
+        .collect();
+    let commit_payload = WalCommitPayload::new(rows).expect("WAL commit payload");
+    WalRecord::new(commit_version, branch_id, commit_timestamp, commit_payload).expect("WAL record")
 }
 
 pub(super) fn required_wal_capabilities() -> [BackendCapability; 7] {

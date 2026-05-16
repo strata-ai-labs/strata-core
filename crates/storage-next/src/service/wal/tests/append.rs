@@ -13,7 +13,7 @@ use proptest::test_runner::{
 };
 
 #[test]
-fn empty_payload_record_appends_and_reads() {
+fn empty_row_value_record_appends_and_reads() {
     let backend = StoredWalBackend::new();
     let mut service = WalService::open(
         &backend,
@@ -26,8 +26,10 @@ fn empty_payload_record_appends_and_reads() {
     let record = record(1, Vec::new());
     let frame_len = record_frame_len(&record);
 
-    let append = service.append(&record).expect("append empty payload");
-    let read = service.read_all().expect("read empty-payload record");
+    let append = service
+        .append(&record)
+        .expect("append empty row-value record");
+    let read = service.read_all().expect("read empty row-value record");
 
     assert_eq!(append.segment_id(), 1);
     assert_eq!(append.start_offset(), WAL_SEGMENT_HEADER_SIZE as u64);
@@ -420,11 +422,12 @@ fn append_rejects_backend_wrong_metadata_size_report_without_advancing_state() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn wal_append_model_strategy() -> impl Strategy<Value = (u64, Vec<(u64, Vec<u8>)>)> {
-    // The larger payload arm keeps rotation-edge paths in the generated corpus
-    // without exceeding the minimum 1 KiB segment capacity.
+    // M3F row-native payload framing adds fixed row overhead around the fuzzed
+    // value bytes, so the large arm stays below the minimum 1 KiB segment while
+    // still hitting rotation and near-capacity paths.
     let payload = proptest::prop_oneof![
         4 => vec(any::<u8>(), 0..=256),
-        1 => vec(any::<u8>(), 600..=900),
+        1 => vec(any::<u8>(), 500..=740),
     ];
     (1024_u64..=8192, vec((1_u64..=1_000_000, payload), 1..=128))
 }

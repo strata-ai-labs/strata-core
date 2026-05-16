@@ -17,6 +17,7 @@ cargo +nightly fuzz run format_manifest
 cargo +nightly fuzz run format_quarantine
 cargo +nightly fuzz run format_snapshot_envelope
 cargo +nightly fuzz run format_storage_row
+cargo +nightly fuzz run format_wal_commit_payload
 cargo +nightly fuzz run format_wal_record
 cargo +nightly fuzz run service_quarantine
 cargo +nightly fuzz run service_snapshot

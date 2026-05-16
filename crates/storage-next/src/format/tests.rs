@@ -13,8 +13,9 @@ use super::{
     },
     storage_row::{decode_storage_row, encode_storage_row},
     wal::{
-        decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header,
-        encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalRecord,
+        decode_wal_commit_payload, decode_wal_record, decode_wal_record_envelope,
+        decode_wal_segment_header, encode_wal_commit_payload, encode_wal_record,
+        encode_wal_record_envelope, encode_wal_segment_header, WalCommitPayload, WalRecord,
         WalRecordEnvelope, WalSegmentHeader,
     },
     watermark::{decode_snapshot_watermark, encode_snapshot_watermark, SnapshotWatermark},
@@ -51,8 +52,10 @@ const SEGMENT_METADATA_SIDECAR: &str =
     include_str!("../../testdata/goldens/storage-format-v1/segment-metadata-sidecar.hex");
 const WAL_SEGMENT_HEADER: &str =
     include_str!("../../testdata/goldens/storage-format-v1/wal-segment-header.hex");
-const WAL_RECORD_EMPTY: &str =
-    include_str!("../../testdata/goldens/storage-format-v1/wal-record-empty.hex");
+const WAL_COMMIT_PAYLOAD_ONE_PUT: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/wal-commit-payload-one-put.hex");
+const WAL_COMMIT_PAYLOAD_PUT_TOMBSTONE: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/wal-commit-payload-put-tombstone.hex");
 const WAL_RECORD_PAYLOAD: &str =
     include_str!("../../testdata/goldens/storage-format-v1/wal-record-payload.hex");
 const WAL_RECORD_ENVELOPE: &str =
@@ -234,23 +237,27 @@ fn wal_segment_header_matches_golden_vector() {
 }
 
 #[test]
-fn wal_record_empty_matches_golden_vector() {
-    let record = WalRecord::new(
-        CommitVersion::new(41),
-        BranchId::from_bytes([
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ]),
-        Timestamp::from_micros(1_700_000_000_123_456),
-        Vec::new(),
-    );
-    let golden = parse_hex(WAL_RECORD_EMPTY);
+fn wal_commit_payload_one_put_matches_golden_vector() {
+    let payload = wal_commit_payload_one_put();
+    let golden = parse_hex(WAL_COMMIT_PAYLOAD_ONE_PUT);
 
     assert_eq!(
-        encode_wal_record(&record).expect("encode WAL record"),
+        encode_wal_commit_payload(&payload).expect("encode WAL commit payload"),
         golden
     );
-    assert_eq!(decode_wal_record(&golden), Ok((record, golden.len())));
+    assert_eq!(decode_wal_commit_payload(&golden), Ok(payload));
+}
+
+#[test]
+fn wal_commit_payload_put_tombstone_matches_golden_vector() {
+    let payload = wal_commit_payload_put_tombstone();
+    let golden = parse_hex(WAL_COMMIT_PAYLOAD_PUT_TOMBSTONE);
+
+    assert_eq!(
+        encode_wal_commit_payload(&payload).expect("encode WAL commit payload"),
+        golden
+    );
+    assert_eq!(decode_wal_commit_payload(&golden), Ok(payload));
 }
 
 #[test]
@@ -279,6 +286,69 @@ fn wal_record_envelope_matches_golden_vector() {
         decode_wal_record_envelope(&golden),
         Ok((envelope, golden.len()))
     );
+}
+
+#[test]
+fn wal_record_rejects_historical_empty_payload_golden() {
+    let historical_empty_payload =
+        include_str!("../../testdata/goldens/storage-format-v1/wal-record-empty-pre-m3f.hex");
+    let bytes = parse_hex(historical_empty_payload);
+
+    assert!(matches!(
+        decode_wal_record(&bytes),
+        Err(super::FormatError::InvalidLength {
+            field: "wal_record_len",
+        })
+    ));
+}
+
+fn wal_commit_payload_one_put() -> WalCommitPayload {
+    let commit_version = CommitVersion::new(42);
+    let commit_timestamp = Timestamp::from_micros(1_700_000_000_123_456);
+    WalCommitPayload::new(vec![StorageRow::put(
+        ordinary_key(),
+        commit_version,
+        commit_timestamp,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    )])
+    .expect("WAL commit payload")
+}
+
+fn wal_commit_payload_put_tombstone() -> WalCommitPayload {
+    let commit_version = CommitVersion::new(42);
+    let commit_timestamp = Timestamp::from_micros(1_700_000_000_123_456);
+    WalCommitPayload::new(vec![
+        StorageRow::put(
+            ordinary_key(),
+            commit_version,
+            commit_timestamp,
+            Timestamp::EPOCH,
+            b"value".to_vec(),
+        ),
+        StorageRow::tombstone(
+            PhysicalKey::new(
+                ordinary_branch_id(),
+                "default",
+                StorageSpaceId::engine(0x20).expect("engine id"),
+                b"beta".to_vec(),
+            )
+            .expect("beta key"),
+            commit_version,
+            commit_timestamp,
+        ),
+    ])
+    .expect("WAL commit payload")
+}
+
+fn payload_wal_record() -> WalRecord {
+    WalRecord::new(
+        CommitVersion::new(42),
+        ordinary_branch_id(),
+        Timestamp::from_micros(1_700_000_000_123_456),
+        wal_commit_payload_one_put(),
+    )
+    .expect("WAL record")
 }
 
 #[test]
@@ -358,18 +428,6 @@ fn snapshot_header() -> SnapshotHeader {
         "identity",
     )
     .expect("snapshot header")
-}
-
-fn payload_wal_record() -> WalRecord {
-    WalRecord::new(
-        CommitVersion::new(42),
-        BranchId::from_bytes([
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
-            0x1e, 0x1f,
-        ]),
-        Timestamp::from_micros(1_700_000_000_123_457),
-        b"payload".to_vec(),
-    )
 }
 
 fn database_id() -> [u8; 16] {

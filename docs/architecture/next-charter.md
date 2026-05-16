@@ -36,7 +36,7 @@ are not V1 commitments.
 
 | Original charter point | V1 resolution |
 | --- | --- |
-| P1 storage abstraction only IO | Adopted in spirit. Direct filesystem/object IO belongs only inside storage backend implementations. The current rationale is direct `std::fs` and path-shaped IO; `memmap2` and `fs2` are not current storage dependencies. |
+| P1 storage abstraction only IO | Adopted in spirit. Direct filesystem/object IO belongs only inside storage backend implementations. The current rationale is direct `std::fs` and path-shaped IO; `memmap2` is not a current storage dependency, while `fs2` is used only behind storage-next's non-wasm `localfs` feature for the local single-writer guard. |
 | P2 wasm32 first-class | Adopted for the browser/cache substrate. Durable browser persistence is not required for the first storage rewrite. |
 | P3 no async public surface | Adopted for public APIs. Internal async/runtime choices are implementation details and are not committed to tokio or to a WAL-thread runtime. |
 | P4 capability-typed providers | Adopted. Storage modes validate backend capabilities before durable side effects. |

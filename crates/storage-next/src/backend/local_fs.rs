@@ -2,10 +2,13 @@
 
 use super::{
     Backend, BackendAppend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata,
-    BackendRange, BackendResult, PublishDurability, PublishError, PublishFailureKind, PublishMode,
-    PublishOutcome, PublishResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
+    BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError,
+    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
+    BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
+use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
+use fs2::FileExt as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -55,6 +58,45 @@ impl LocalFsBackend {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn writer_lock_object() -> BackendResult<ObjectName> {
+        ObjectLayout::writer_lock().map_err(|error| {
+            BackendError::new(
+                BackendErrorKind::InvalidObjectName,
+                format!("writer lock layout is invalid: {error}"),
+            )
+        })
+    }
+
+    fn is_writer_lock_object(name: &ObjectName) -> BackendResult<bool> {
+        Ok(Self::writer_lock_object()? == *name)
+    }
+
+    fn require_writer_lock_object(name: &ObjectName) -> BackendResult<()> {
+        let expected = Self::writer_lock_object()?;
+        if &expected == name {
+            Ok(())
+        } else {
+            Err(BackendError::new(
+                BackendErrorKind::InvalidObjectName,
+                format!("single-writer lock must use object {expected}, got {name}"),
+            ))
+        }
+    }
+
+    fn reject_writer_lock_object_mutation(
+        name: &ObjectName,
+        operation: &'static str,
+    ) -> BackendResult<()> {
+        if Self::is_writer_lock_object(name)? {
+            Err(BackendError::new(
+                BackendErrorKind::PermissionDenied,
+                format!("{operation} cannot mutate reserved writer lock object {name}"),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     #[cfg(all(test, unix))]
@@ -521,6 +563,7 @@ impl Backend for LocalFsBackend {
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = BackendCapabilities::from_slice(BASIC_OBJECT_BACKEND_CAPABILITIES);
         capabilities.insert(super::BackendCapability::AppendObject);
+        capabilities.insert(super::BackendCapability::SingleWriterLock);
         if cfg!(unix) {
             capabilities.insert(super::BackendCapability::DurablePublish);
             capabilities.insert(super::BackendCapability::DurableSync);
@@ -555,6 +598,7 @@ impl Backend for LocalFsBackend {
     }
 
     fn write_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendMetadata> {
+        Self::reject_writer_lock_object_mutation(name, "write")?;
         let path = self.path_for(name);
         if let Some(parent) = path.parent() {
             self.ensure_parent_dirs(parent, true)?;
@@ -581,6 +625,7 @@ impl Backend for LocalFsBackend {
     }
 
     fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+        Self::reject_writer_lock_object_mutation(name, "delete")?;
         let path = self.path_for(name);
         self.metadata_for_object_path(&path)?;
         fs::remove_file(path).map_err(|err| map_io_error(&err))
@@ -616,7 +661,47 @@ impl Backend for LocalFsBackend {
         self.metadata_for_object_path(&self.path_for(name))
     }
 
+    fn acquire_writer_lock(&self, name: &ObjectName) -> BackendResult<BackendWriterGuard> {
+        Self::require_writer_lock_object(name)?;
+        let path = self.path_for(name);
+        if let Some(parent) = path.parent() {
+            self.ensure_parent_dirs(parent, true)?;
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(BackendError::new(
+                    BackendErrorKind::Corruption,
+                    format!("writer lock path {} is a symlink", path.display()),
+                ));
+            }
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(BackendError::new(
+                    BackendErrorKind::Corruption,
+                    format!("writer lock path {} is not a file", path.display()),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(map_io_error(&error)),
+        }
+
+        // The lock file is a normal backend object so object-family scans can
+        // see `locks/writer`, while the held file descriptor carries the actual
+        // OS advisory exclusion.
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|err| map_io_error(&err))?;
+        file.try_lock_exclusive()
+            .map_err(|err| map_io_error(&err))?;
+        Ok(BackendWriterGuard::new(name.clone(), file))
+    }
+
     fn append_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendAppend> {
+        Self::reject_writer_lock_object_mutation(name, "append")?;
         let path = self.path_for(name);
         let before = self.metadata_for_object_path(&path)?.size_bytes();
         let mut file = OpenOptions::new()
@@ -642,6 +727,13 @@ impl Backend for LocalFsBackend {
         bytes: &[u8],
         mode: PublishMode,
     ) -> PublishResult<PublishOutcome> {
+        if let Err(error) = Self::reject_writer_lock_object_mutation(name, "publish") {
+            return Err(Self::publish_error(
+                name,
+                PublishFailureKind::FailedBeforeVisibility,
+                error,
+            ));
+        }
         if mode == PublishMode::NonDurableReplace {
             return Err(PublishError::unsupported(
                 name,
@@ -703,6 +795,8 @@ mod tests {
         Backend, BackendCapability, BackendErrorKind, BackendRange, PublishFailureKind,
         PublishMode, BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
     };
+    use crate::config::mode::{DurabilityPolicy, StorageModeRequest};
+    use crate::layout::ObjectLayout;
     use crate::object::{ObjectName, ObjectPrefix};
     #[cfg(unix)]
     use std::path::PathBuf;
@@ -753,7 +847,124 @@ mod tests {
             capabilities.contains(BackendCapability::DurableSync),
             cfg!(unix)
         );
-        assert!(!capabilities.contains(BackendCapability::SingleWriterLock));
+        assert!(capabilities.contains(BackendCapability::SingleWriterLock));
+
+        if cfg!(unix) {
+            StorageModeRequest::durable_local(DurabilityPolicy::Standard)
+                .validate_backend(capabilities)
+                .expect("unix localfs backend should satisfy durable local mode");
+            StorageModeRequest::durable_local(DurabilityPolicy::Always)
+                .validate_backend(capabilities)
+                .expect("unix localfs backend should satisfy durable local mode");
+        }
+    }
+
+    #[test]
+    fn localfs_backend_writer_lock_excludes_second_holder_until_released() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first_backend = LocalFsBackend::new(dir.path());
+        let second_backend = LocalFsBackend::new(dir.path());
+        let lock_name = ObjectLayout::writer_lock().expect("writer lock name");
+
+        let first_guard = first_backend
+            .acquire_writer_lock(&lock_name)
+            .expect("first writer lock");
+        let error = second_backend
+            .acquire_writer_lock(&lock_name)
+            .expect_err("second writer lock should be unavailable");
+
+        assert_eq!(first_guard.object(), &lock_name);
+        assert_eq!(error.kind(), BackendErrorKind::Unavailable);
+        assert_eq!(
+            first_backend
+                .object_metadata(&lock_name)
+                .expect("lock file metadata")
+                .size_bytes(),
+            0
+        );
+
+        drop(first_guard);
+        let second_guard = second_backend
+            .acquire_writer_lock(&lock_name)
+            .expect("released writer lock can be reacquired");
+        assert_eq!(second_guard.object(), &lock_name);
+    }
+
+    #[test]
+    fn localfs_backend_writer_lock_requires_reserved_layout_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let wrong_name = ObjectName::new("locks/not-writer").expect("wrong lock name");
+
+        let error = backend
+            .acquire_writer_lock(&wrong_name)
+            .expect_err("writer lock should reject alternate lock object names");
+
+        assert_eq!(error.kind(), BackendErrorKind::InvalidObjectName);
+    }
+
+    #[test]
+    fn localfs_backend_writer_lock_object_rejects_generic_mutations() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first_backend = LocalFsBackend::new(dir.path());
+        let second_backend = LocalFsBackend::new(dir.path());
+        let lock_name = ObjectLayout::writer_lock().expect("writer lock name");
+        let guard = first_backend
+            .acquire_writer_lock(&lock_name)
+            .expect("first writer lock");
+
+        let write_error = first_backend
+            .write_object(&lock_name, b"tamper")
+            .expect_err("writer lock object should reject writes");
+        let append_error = first_backend
+            .append_object(&lock_name, b"tamper")
+            .expect_err("writer lock object should reject appends");
+        let delete_error = first_backend
+            .delete_object(&lock_name)
+            .expect_err("writer lock object should reject deletes");
+        let publish_error = first_backend
+            .publish_object(&lock_name, b"tamper", PublishMode::Replace)
+            .expect_err("writer lock object should reject publish replacement");
+
+        assert_eq!(write_error.kind(), BackendErrorKind::PermissionDenied);
+        assert_eq!(append_error.kind(), BackendErrorKind::PermissionDenied);
+        assert_eq!(delete_error.kind(), BackendErrorKind::PermissionDenied);
+        assert_eq!(
+            publish_error.kind(),
+            PublishFailureKind::FailedBeforeVisibility
+        );
+        assert_eq!(
+            publish_error.source_error().kind(),
+            BackendErrorKind::PermissionDenied
+        );
+
+        let contention = second_backend
+            .acquire_writer_lock(&lock_name)
+            .expect_err("generic mutation attempts must not bypass held lock");
+        assert_eq!(contention.kind(), BackendErrorKind::Unavailable);
+
+        drop(guard);
+        let second_guard = second_backend
+            .acquire_writer_lock(&lock_name)
+            .expect("released writer lock can still be acquired");
+        assert_eq!(second_guard.object(), &lock_name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_writer_lock_rejects_symlink_lock_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let lock_name = ObjectLayout::writer_lock().expect("writer lock name");
+        let lock_path = backend.path_for(&lock_name);
+        std::fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("lock parent");
+        std::os::unix::fs::symlink(dir.path().join("target"), &lock_path).expect("symlink");
+
+        let error = backend
+            .acquire_writer_lock(&lock_name)
+            .expect_err("symlink lock file should be rejected");
+
+        assert_eq!(error.kind(), BackendErrorKind::Corruption);
     }
 
     #[cfg(unix)]

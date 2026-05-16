@@ -5,6 +5,12 @@ use super::{
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
+mod commit_payload;
+
+pub(crate) use commit_payload::{
+    decode_wal_commit_payload, encode_wal_commit_payload, WalCommitPayload,
+};
+
 const WAL_ENVELOPE_FORMAT: &str = "wal_record_envelope";
 const WAL_RECORD_FORMAT: &str = "wal_record";
 const WAL_RECORD_LENGTH_FORMAT: &str = "wal_record_len";
@@ -130,7 +136,7 @@ pub(crate) struct WalRecord {
     commit_version: CommitVersion,
     branch_id: BranchId,
     commit_timestamp: Timestamp,
-    commit_payload: Vec<u8>,
+    commit_payload: WalCommitPayload,
 }
 
 impl WalRecord {
@@ -138,14 +144,15 @@ impl WalRecord {
         commit_version: CommitVersion,
         branch_id: BranchId,
         commit_timestamp: Timestamp,
-        commit_payload: impl Into<Vec<u8>>,
-    ) -> Self {
-        Self {
+        commit_payload: WalCommitPayload,
+    ) -> Result<Self, FormatError> {
+        commit_payload.validate_outer_facts(commit_version, branch_id, commit_timestamp)?;
+        Ok(Self {
             commit_version,
             branch_id,
             commit_timestamp,
-            commit_payload: commit_payload.into(),
-        }
+            commit_payload,
+        })
     }
 
     pub(crate) const fn commit_version(&self) -> CommitVersion {
@@ -160,7 +167,7 @@ impl WalRecord {
         self.commit_timestamp
     }
 
-    pub(crate) fn commit_payload(&self) -> &[u8] {
+    pub(crate) fn commit_payload(&self) -> &WalCommitPayload {
         &self.commit_payload
     }
 }
@@ -176,6 +183,7 @@ pub(crate) fn encode_wal_record_into(
     bytes: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
     bytes.clear();
+    let commit_payload = encode_wal_commit_payload(record.commit_payload())?;
     // record_len includes the versioned payload and trailing payload CRC, but
     // excludes the 4-byte length prefix itself. The separate length CRC lets
     // readers reject impossible lengths before allocating or slicing payloads.
@@ -184,7 +192,7 @@ pub(crate) fn encode_wal_record_into(
         .and_then(|len| len.checked_add(8))
         .and_then(|len| len.checked_add(BranchId::BYTE_LEN))
         .and_then(|len| len.checked_add(8))
-        .and_then(|len| len.checked_add(record.commit_payload().len()))
+        .and_then(|len| len.checked_add(commit_payload.len()))
         .ok_or(FormatError::InvalidLength {
             field: WAL_RECORD_FORMAT,
         })?;
@@ -212,7 +220,7 @@ pub(crate) fn encode_wal_record_into(
     bytes.extend_from_slice(&record.commit_version().as_u64().to_le_bytes());
     bytes.extend_from_slice(record.branch_id().as_bytes());
     bytes.extend_from_slice(&record.commit_timestamp().as_micros().to_le_bytes());
-    bytes.extend_from_slice(record.commit_payload());
+    bytes.extend_from_slice(&commit_payload);
 
     let len_crc = crc32fast::hash(&record_len_bytes);
     bytes[payload_start + 1..payload_start + 5].copy_from_slice(&len_crc.to_le_bytes());
@@ -358,14 +366,9 @@ fn decode_wal_record_payload(payload: &[u8]) -> Result<WalRecord, FormatError> {
                 field: "commit_timestamp",
             },
         )?));
-    let commit_payload = payload[37..].to_vec();
+    let commit_payload = decode_wal_commit_payload(&payload[37..])?;
 
-    Ok(WalRecord {
-        commit_version,
-        branch_id,
-        commit_timestamp,
-        commit_payload,
-    })
+    WalRecord::new(commit_version, branch_id, commit_timestamp, commit_payload)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -482,13 +485,14 @@ pub(crate) fn decode_wal_record_envelope(
 mod tests {
     use super::{
         decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header,
-        encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalRecord,
-        WalRecordEnvelope, WalSegmentHeader, WAL_ENVELOPE_FORMAT, WAL_RECORD_FORMAT,
+        encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalCommitPayload,
+        WalRecord, WalRecordEnvelope, WalSegmentHeader, WAL_ENVELOPE_FORMAT, WAL_RECORD_FORMAT,
         WAL_RECORD_LENGTH_FORMAT, WAL_SEGMENT_FORMAT,
     };
     use crate::format::{
         FormatError, WAL_RECORD_FORMAT_VERSION, WAL_SEGMENT_FORMAT_VERSION, WAL_SEGMENT_HEADER_SIZE,
     };
+    use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
     use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
     fn segment_header() -> WalSegmentHeader {
@@ -508,13 +512,52 @@ mod tests {
         ])
     }
 
-    fn record(payload: impl Into<Vec<u8>>) -> WalRecord {
-        WalRecord::new(
-            CommitVersion::new(41),
-            branch_id(),
-            Timestamp::from_micros(1_700_000_000_123_456),
-            payload,
+    fn other_branch_id() -> BranchId {
+        BranchId::from_bytes([0x42; BranchId::BYTE_LEN])
+    }
+
+    fn physical_key(user_key: &[u8]) -> PhysicalKey {
+        physical_key_for_branch(branch_id(), user_key)
+    }
+
+    fn physical_key_for_branch(branch_id: BranchId, user_key: &[u8]) -> PhysicalKey {
+        PhysicalKey::new(
+            branch_id,
+            "default",
+            StorageSpaceId::engine(0x20).expect("engine storage space"),
+            user_key.to_vec(),
         )
+        .expect("physical key")
+    }
+
+    fn payload_for_facts(
+        commit_version: CommitVersion,
+        branch_id: BranchId,
+        commit_timestamp: Timestamp,
+    ) -> WalCommitPayload {
+        WalCommitPayload::new(vec![StorageRow::put(
+            physical_key_for_branch(branch_id, b"alpha"),
+            commit_version,
+            commit_timestamp,
+            Timestamp::EPOCH,
+            b"value".to_vec(),
+        )])
+        .expect("commit payload")
+    }
+
+    fn record(row_value: impl Into<Vec<u8>>) -> WalRecord {
+        let commit_version = CommitVersion::new(41);
+        let branch_id = branch_id();
+        let commit_timestamp = Timestamp::from_micros(1_700_000_000_123_456);
+        let row = StorageRow::put(
+            physical_key(b"alpha"),
+            commit_version,
+            commit_timestamp,
+            Timestamp::EPOCH,
+            row_value,
+        );
+        let payload = WalCommitPayload::new(vec![row]).expect("commit payload");
+        WalRecord::new(commit_version, branch_id, commit_timestamp, payload).expect("WAL record")
     }
 
     fn refresh_header_crc(bytes: &mut [u8]) {
@@ -534,6 +577,29 @@ mod tests {
         let crc_start = payload_start + record_len - 4;
         let crc = crc32fast::hash(&bytes[payload_start..crc_start]);
         bytes[crc_start..crc_start + 4].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    fn first_commit_payload_row_start(bytes: &[u8]) -> usize {
+        let commit_payload_start = 4 + 1 + 4 + 8 + BranchId::BYTE_LEN + 8;
+        let row_len_offset = commit_payload_start + 4 + 4 + 4;
+        let row_len = u32::from_le_bytes(
+            bytes[row_len_offset..row_len_offset + 4]
+                .try_into()
+                .expect("row length"),
+        ) as usize;
+        let row_start = row_len_offset + 4;
+        assert!(row_len > 0);
+        row_start
+    }
+
+    fn first_row_commit_version_offset(bytes: &[u8]) -> usize {
+        let row_start = first_commit_payload_row_start(bytes);
+        let key_len = u32::from_le_bytes(
+            bytes[row_start + 1..row_start + 5]
+                .try_into()
+                .expect("physical key length"),
+        ) as usize;
+        row_start + 1 + 4 + key_len
     }
 
     #[test]
@@ -647,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn wal_record_round_trips_empty_payload() {
+    fn wal_record_round_trips_empty_row_value() {
         let record = record(Vec::new());
         let bytes = encode_wal_record(&record).expect("encode record");
 
@@ -655,11 +721,151 @@ mod tests {
     }
 
     #[test]
-    fn wal_record_round_trips_non_empty_payload() {
+    fn wal_record_round_trips_non_empty_row_value() {
         let record = record(b"payload".to_vec());
         let bytes = encode_wal_record(&record).expect("encode record");
 
         assert_eq!(decode_wal_record(&bytes), Ok((record, bytes.len())));
+    }
+
+    #[test]
+    fn wal_record_round_trips_put_and_tombstone_rows_in_order() {
+        let commit_version = CommitVersion::new(41);
+        let branch_id = branch_id();
+        let commit_timestamp = Timestamp::from_micros(1_700_000_000_123_456);
+        let rows = vec![
+            StorageRow::put(
+                physical_key(b"alpha"),
+                commit_version,
+                commit_timestamp,
+                Timestamp::EPOCH,
+                b"value".to_vec(),
+            ),
+            StorageRow::tombstone(physical_key(b"beta"), commit_version, commit_timestamp),
+        ];
+        let payload = WalCommitPayload::new(rows.clone()).expect("commit payload");
+        let record =
+            WalRecord::new(commit_version, branch_id, commit_timestamp, payload).expect("record");
+        let bytes = encode_wal_record(&record).expect("encode record");
+
+        let (decoded, consumed) = decode_wal_record(&bytes).expect("decode record");
+
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(decoded.commit_payload().rows(), rows.as_slice());
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn wal_record_preserves_duplicate_physical_keys_in_payload_order() {
+        let commit_version = CommitVersion::new(41);
+        let branch_id = branch_id();
+        let commit_timestamp = Timestamp::from_micros(1_700_000_000_123_456);
+        let duplicate_key = physical_key(b"duplicate");
+        let rows = vec![
+            StorageRow::put(
+                duplicate_key.clone(),
+                commit_version,
+                commit_timestamp,
+                Timestamp::EPOCH,
+                b"first".to_vec(),
+            ),
+            StorageRow::put(
+                duplicate_key,
+                commit_version,
+                commit_timestamp,
+                Timestamp::EPOCH,
+                b"second".to_vec(),
+            ),
+        ];
+        let payload = WalCommitPayload::new(rows.clone()).expect("commit payload");
+        let record =
+            WalRecord::new(commit_version, branch_id, commit_timestamp, payload).expect("record");
+        let bytes = encode_wal_record(&record).expect("encode record");
+
+        let (decoded, consumed) = decode_wal_record(&bytes).expect("decode record");
+
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(decoded.commit_payload().rows(), rows.as_slice());
+    }
+
+    #[test]
+    fn wal_record_constructor_rejects_payload_outer_fact_mismatches() {
+        let commit_version = CommitVersion::new(41);
+        let branch_id = branch_id();
+        let commit_timestamp = Timestamp::from_micros(1_700_000_000_123_456);
+        let payload = payload_for_facts(commit_version, branch_id, commit_timestamp);
+
+        assert_eq!(
+            WalRecord::new(
+                CommitVersion::new(42),
+                branch_id,
+                commit_timestamp,
+                payload.clone()
+            ),
+            Err(FormatError::InvalidValue {
+                field: "commit_version"
+            })
+        );
+        assert_eq!(
+            WalRecord::new(
+                commit_version,
+                other_branch_id(),
+                commit_timestamp,
+                payload.clone()
+            ),
+            Err(FormatError::InvalidValue { field: "branch_id" })
+        );
+        assert_eq!(
+            WalRecord::new(
+                commit_version,
+                branch_id,
+                Timestamp::from_micros(commit_timestamp.as_micros() + 1),
+                payload
+            ),
+            Err(FormatError::InvalidValue {
+                field: "commit_timestamp"
+            })
+        );
+    }
+
+    #[test]
+    fn wal_record_decode_rejects_nested_payload_fact_mismatches_after_crc() {
+        let mut commit_version_mismatch =
+            encode_wal_record(&record(b"payload".to_vec())).expect("encode record");
+        let version_offset = first_row_commit_version_offset(&commit_version_mismatch);
+        commit_version_mismatch[version_offset..version_offset + 8]
+            .copy_from_slice(&CommitVersion::new(42).as_u64().to_le_bytes());
+        refresh_record_payload_crc(&mut commit_version_mismatch);
+        assert_eq!(
+            decode_wal_record(&commit_version_mismatch),
+            Err(FormatError::InvalidValue {
+                field: "commit_version"
+            })
+        );
+
+        let mut branch_mismatch =
+            encode_wal_record(&record(b"payload".to_vec())).expect("encode record");
+        let row_start = first_commit_payload_row_start(&branch_mismatch);
+        let branch_offset = row_start + 1 + 4;
+        branch_mismatch[branch_offset] ^= 0xff;
+        refresh_record_payload_crc(&mut branch_mismatch);
+        assert_eq!(
+            decode_wal_record(&branch_mismatch),
+            Err(FormatError::InvalidValue { field: "branch_id" })
+        );
+
+        let mut timestamp_mismatch =
+            encode_wal_record(&record(b"payload".to_vec())).expect("encode record");
+        let timestamp_offset = first_row_commit_version_offset(&timestamp_mismatch) + 8;
+        timestamp_mismatch[timestamp_offset..timestamp_offset + 8]
+            .copy_from_slice(&Timestamp::from_micros(42).as_micros().to_le_bytes());
+        refresh_record_payload_crc(&mut timestamp_mismatch);
+        assert_eq!(
+            decode_wal_record(&timestamp_mismatch),
+            Err(FormatError::InvalidValue {
+                field: "commit_timestamp"
+            })
+        );
     }
 
     #[test]

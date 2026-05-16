@@ -10,7 +10,7 @@ publish = false
 
 [features]
 default = ["localfs"]
-localfs = []
+localfs = ["dep:fs2"]
 testkit = []
 fault-injection = ["testkit"]
 perf-trace = []
@@ -18,6 +18,9 @@ perf-trace = []
 [dependencies]
 crc32fast = { workspace = true }
 strata-core-next = { path = "../core-next" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fs2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -29,6 +29,10 @@ pub(crate) fn decode_storage_row(bytes: &[u8]) -> bool {
     storage_row::decode_storage_row(bytes).is_ok()
 }
 
+pub(crate) fn decode_wal_commit_payload(bytes: &[u8]) -> bool {
+    wal::decode_wal_commit_payload(bytes).is_ok()
+}
+
 pub(crate) fn decode_wal_record(bytes: &[u8]) -> bool {
     let record = wal::decode_wal_record(bytes).is_ok();
     let envelope = wal::decode_wal_record_envelope(bytes).is_ok();

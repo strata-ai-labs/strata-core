@@ -32,6 +32,11 @@ Durable storage-space allocation and timeline placement are pinned in:
 1. [storage-next/storage-space-id-registry.md](./storage-next/storage-space-id-registry.md)
 2. [storage-next/commit-timeline-substrate.md](./storage-next/commit-timeline-substrate.md)
 
+Future object-durable and compute/storage separation guardrails live in
+[storage-next/future-object-durable-guardrails.md](./storage-next/future-object-durable-guardrails.md).
+That note is not a V1 object-store implementation plan; it records the coupling
+we must avoid while building the embedded-first path.
+
 ## Related Documents
 
 Product and architecture anchors:
@@ -71,6 +76,9 @@ The important constraints are:
 7. OpenDAL can become an adapter family later, but Strata owns its storage
    capability contract and does not require OpenDAL for the first storage
    rewrite.
+   M4-L9 code must preserve the L9/L8/L7 boundary so future compute nodes can
+   attach to storage through storage runtime contracts instead of lower-level
+   WAL, manifest, table, or backend objects.
 8. Storage is data-capability agnostic.
 9. Users should not manually flush, compact, checkpoint, prune, or recover
    during normal use.

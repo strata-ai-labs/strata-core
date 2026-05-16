@@ -140,6 +140,10 @@ with the product requirements and storage-next layer documents.
 1. Durable local filesystem is the reference durable backend.
    Object storage and OpenDAL remain architecture-aware substrate work, but V1
    does not make S3-like object durability the canonical first implementation.
+   V1 work must still preserve the future compute/storage separation guardrails
+   in `storage-next/future-object-durable-guardrails.md`: engine-next attaches
+   through L9/L8/L7 storage runtime contracts, not through WAL, manifest, table,
+   object layout, or backend publish primitives.
 
 2. Sync data movement is post-V1.
    V1 must provide dataset/instance identity, bundle and clone metadata,

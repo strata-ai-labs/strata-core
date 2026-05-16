@@ -40,6 +40,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_wal_commit_payload"
+path = "fuzz_targets/format_wal_commit_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_wal_record"
 path = "fuzz_targets/format_wal_record.rs"
 test = false

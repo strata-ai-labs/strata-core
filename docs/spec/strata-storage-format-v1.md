@@ -367,7 +367,7 @@ record_len_crc32       u32 LE, CRC32 over record_len bytes
 commit_version         u64 LE
 branch_id              16 bytes
 timestamp_micros       u64 LE
-commit_payload         variable bytes
+commit_payload         V1 WAL commit payload bytes
 payload_crc32          u32 LE
 ```
 
@@ -382,7 +382,7 @@ V1 WAL record constants:
 
 ```text
 WAL_RECORD_FORMAT_VERSION          1
-WAL_RECORD_MIN_LEN_AFTER_PREFIX    41 bytes
+WAL_RECORD_MIN_LEN_AFTER_PREFIX    116 bytes
 WAL_RECORD_ENVELOPE_HEADER_SIZE    8 bytes
 ```
 
@@ -392,53 +392,49 @@ Requirements:
 2. WAL records MUST detect torn writes to the length field.
 3. WAL records MUST detect payload corruption.
 4. WAL records MUST carry commit version, branch identity, commit timestamp,
-   and opaque commit payload bytes.
+   and a row-native WAL commit payload.
 5. WAL record decode MUST return the exact byte count consumed.
 6. The outer envelope length MUST be nonzero and protected by CRC before the
    WAL service trusts the encoded payload length.
 7. The inner record decoder MUST verify `record_len_crc32` before trusting
    `record_len`.
-8. The inner record decoder MUST verify `payload_crc32` before parsing fields.
+8. The inner record decoder MUST verify `payload_crc32` before decoding the
+   commit payload.
 9. Inner record version `0` and pre-launch development version `2` are pre-V1
    formats rejected by the normal V1 decoder. Versions greater than `1` other
    than known pre-V1 development versions are future formats.
 10. The codec-aware outer envelope is WAL segment framing. The logical WAL
     record begins after the segment frame payload has been decoded.
+11. Every decoded payload row MUST carry the same commit version, branch id,
+    and commit timestamp as the outer WAL record.
 
 ## 11. Commit Payload Format
 
-This section is intentionally provisional.
-
-Current implementation evidence has two commit payload families:
-
-1. Legacy writesets encode mutations using `EntityRef` and primitive tags.
-2. Current transaction payloads encode version, puts, deletes, and TTLs using
-   MessagePack over storage `Key` and `Value`.
-
-Storage-next V1 must not use primitive-shaped commit payloads as the storage
-contract. It should use a storage-native binary encoding, not MessagePack, for
-the stable commit payload.
-
-Draft V1 commit payload should be row-native:
+V1 WAL commit payloads are storage-row-native batches. They are not legacy
+primitive writesets, transaction MessagePack, JSON, or engine operation bytes.
 
 ```text
-commit_version         u64
-mutation_count         u32 or varint, exact size TBD
-mutations              repeated storage-row mutation
+magic                  4 bytes, ASCII "STCP"
+format_version         u32 LE, MUST be 1
+row_count              u32 LE, MUST be nonzero
+rows                   repeated row_count times:
+  row_len              u32 LE
+  storage_row          row_len bytes, storage row format V1
 ```
 
-A storage-row mutation should contain:
+V1 commit payload constants:
 
 ```text
-operation_kind         put | delete
-physical_key           bytes
-value                  bytes, empty for delete unless explicitly allowed
-timestamp_micros       u64
-expires_at_micros      u64, 0 means no expiry
-row_flags              reserved storage flags
+WAL_COMMIT_PAYLOAD_MAGIC            "STCP"
+WAL_COMMIT_PAYLOAD_FORMAT_VERSION   1
+MAX_WAL_COMMIT_PAYLOAD_ROWS         4096
+MAX_WAL_COMMIT_PAYLOAD_BYTES        64 MiB
+MAX_WAL_COMMIT_PAYLOAD_ROW_BYTES    16 MiB
 ```
 
-Draft V1 requirements:
+The nested `storage_row` bytes use the storage-row format from section 4.
+
+Requirements:
 
 1. Commit payloads MUST be storage-mechanical, not engine-primitive-shaped.
 2. Commit payloads MUST be deterministic for the same mutation sequence.
@@ -448,6 +444,13 @@ Draft V1 requirements:
    `getv`, and timestamp-bounded `as_of`.
 6. Commit payloads MUST be easy to fuzz and specify without relying on a
    serde data model.
+7. Row count MUST be validated before allocating the decoded row vector.
+8. Row length MUST be nonzero and within bounds before slicing row bytes.
+9. Trailing bytes after the declared rows MUST be rejected.
+10. Version `0` is a pre-V1 format and versions greater than `1` are future
+    formats.
+11. A successful WAL record decode MUST reject payload rows whose commit
+    version, branch id, or commit timestamp differs from the outer WAL record.
 
 ## 12. Snapshot Container Format
 
@@ -925,8 +928,10 @@ Required golden vector categories:
 - snapshot watermark, empty and present
 - WAL segment header
 - WAL record outer envelope
-- WAL record with empty commit payload
-- WAL record with non-empty commit payload
+- WAL record with empty commit payload, historical malformed fixture only
+- WAL record with row-native commit payload
+- WAL commit payload with one put row
+- WAL commit payload with put plus tombstone row
 - snapshot header with identity codec
 - snapshot section envelope with empty payload
 - snapshot container with one section and footer CRC

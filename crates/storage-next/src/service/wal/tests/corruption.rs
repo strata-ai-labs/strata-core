@@ -80,6 +80,10 @@ enum FormatErrorExpectation {
     InvalidLength(&'static str),
     InvalidMagic(&'static str),
     InvalidValue(&'static str),
+    InvalidVersion {
+        format: &'static str,
+        version: u8,
+    },
 }
 
 impl FormatErrorExpectation {
@@ -129,6 +133,16 @@ impl FormatErrorExpectation {
             }
             (Self::InvalidMagic(format), FormatError::InvalidMagic { format: actual }) => {
                 assert_eq!(*actual, format);
+            }
+            (
+                Self::InvalidVersion { format, version },
+                FormatError::InvalidVersion {
+                    format: actual,
+                    version: actual_version,
+                },
+            ) => {
+                assert_eq!(*actual, format);
+                assert_eq!(*actual_version, version);
             }
             (expected, actual) => panic!("expected {expected:?}, got {actual:?}"),
         }
@@ -211,6 +225,22 @@ fn refresh_record_len_crc(bytes: &mut [u8]) {
     bytes[RECORD_LEN_CRC_OFFSET..RECORD_LEN_CRC_OFFSET + 4].copy_from_slice(&crc.to_le_bytes());
 }
 
+fn refresh_record_payload_crc_at(bytes: &mut [u8], record_offset: usize) {
+    let record_len = u32::from_le_bytes(
+        bytes[record_offset..record_offset + 4]
+            .try_into()
+            .expect("record length bytes"),
+    ) as usize;
+    let payload_start = record_offset + 4;
+    let crc_start = payload_start + record_len - 4;
+    let crc = crc32fast::hash(&bytes[payload_start..crc_start]);
+    bytes[crc_start..crc_start + 4].copy_from_slice(&crc.to_le_bytes());
+}
+
+fn refresh_record_payload_crc(bytes: &mut [u8]) {
+    refresh_record_payload_crc_at(bytes, RECORD_LEN_OFFSET);
+}
+
 fn encoded_record_len_at(bytes: &[u8], envelope_offset: usize) -> u32 {
     u32::from_le_bytes(
         bytes[envelope_offset..envelope_offset + 4]
@@ -223,6 +253,12 @@ fn second_envelope_offset(bytes: &[u8]) -> usize {
     WAL_SEGMENT_HEADER_SIZE
         + ENVELOPE_HEADER_SIZE
         + encoded_record_len_at(bytes, WAL_SEGMENT_HEADER_SIZE) as usize
+}
+
+fn commit_payload_first_row_start_at(record_offset: usize) -> usize {
+    let commit_payload_start = record_offset + 41;
+    let row_len_offset = commit_payload_start + 4 + 4 + 4;
+    row_len_offset + 4
 }
 
 fn write_envelope_len_at(bytes: &mut [u8], envelope_offset: usize, encoded_len: u32) {
@@ -570,6 +606,44 @@ fn corrupt_inner_record_payload_byte_fails_as_format_error() {
 }
 
 #[test]
+fn corrupt_commit_payload_magic_with_refreshed_record_crc_is_format_error() {
+    let backend = StoredWalBackend::new();
+    let service = two_segment_service(&backend);
+    let object = segment_object(1);
+    let mut bytes = segment_bytes_from_backend(&backend, 1);
+    bytes[RECORD_PAYLOAD_OFFSET] ^= 0xff;
+    refresh_record_payload_crc(&mut bytes);
+    replace_segment(&backend, 1, &bytes);
+
+    assert_read_format_error(
+        &service,
+        &object,
+        FormatErrorExpectation::InvalidMagic("wal_commit_payload"),
+    );
+}
+
+#[test]
+fn corrupt_nested_row_version_with_refreshed_record_crc_is_format_error() {
+    let backend = StoredWalBackend::new();
+    let service = two_segment_service(&backend);
+    let object = segment_object(1);
+    let mut bytes = segment_bytes_from_backend(&backend, 1);
+    let row_start = commit_payload_first_row_start_at(RECORD_LEN_OFFSET);
+    bytes[row_start] = 9;
+    refresh_record_payload_crc(&mut bytes);
+    replace_segment(&backend, 1, &bytes);
+
+    assert_read_format_error(
+        &service,
+        &object,
+        FormatErrorExpectation::InvalidVersion {
+            format: "storage_row",
+            version: 9,
+        },
+    );
+}
+
+#[test]
 fn corrupt_inner_record_branch_id_byte_fails_as_format_error() {
     let backend = StoredWalBackend::new();
     let (service, _record) = single_record_service(&backend, b"branch id".to_vec());
@@ -642,6 +716,71 @@ fn corrupt_trailing_garbage_is_latest_tail_or_non_latest_format_error() {
     assert_read_format_error(
         &service,
         &object,
+        FormatErrorExpectation::InsufficientBytes(WAL_ENVELOPE_FORMAT),
+    );
+}
+
+#[test]
+fn truncated_latest_segment_inside_commit_payload_row_bytes_is_tail_fact() {
+    let backend = StoredWalBackend::new();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("open WAL");
+    let first = record(1, b"valid prefix".to_vec());
+    let second = record(2, b"commit payload row tail".to_vec());
+    service.append(&first).expect("append first record");
+    service.append(&second).expect("append second record");
+    let mut bytes = segment_bytes_from_backend(&backend, 1);
+    let second_record_offset = second_envelope_offset(&bytes) + ENVELOPE_HEADER_SIZE;
+    let row_start = commit_payload_first_row_start_at(second_record_offset);
+    bytes.truncate(row_start + 1);
+    let object_size = bytes.len() as u64;
+    replace_segment(&backend, 1, &bytes);
+
+    assert_latest_tail_truncation(&service, std::slice::from_ref(&first), object_size);
+}
+
+#[test]
+fn truncated_non_latest_segment_inside_commit_payload_row_bytes_is_format_error() {
+    let backend = StoredWalBackend::new();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("open WAL");
+    let first = record(1, b"valid prefix".to_vec());
+    let second = record(2, b"commit payload row non-latest".to_vec());
+    service.append(&first).expect("append first record");
+    service.append(&second).expect("append second record");
+    let mut bytes = segment_bytes_from_backend(&backend, 1);
+    let second_record_offset = second_envelope_offset(&bytes) + ENVELOPE_HEADER_SIZE;
+    let row_start = commit_payload_first_row_start_at(second_record_offset);
+    bytes.truncate(row_start + 1);
+    replace_segment(&backend, 1, &bytes);
+    let segment_two = segment_object(2);
+    backend
+        .write_object(&segment_two, &segment_bytes(2, &[]))
+        .expect("seed newer segment");
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("open newer segment");
+
+    assert_read_format_error(
+        &service,
+        &segment_object(1),
         FormatErrorExpectation::InsufficientBytes(WAL_ENVELOPE_FORMAT),
     );
 }

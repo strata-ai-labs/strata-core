@@ -27,6 +27,11 @@ pub(crate) use snapshot::{
     decode_snapshot_container, encode_snapshot_container, visit_snapshot_container_sections,
     SnapshotContainer, SnapshotHeader, SnapshotSection, SnapshotSectionRef,
 };
+#[expect(
+    unused_imports,
+    reason = "direct payload codec exports are used by M3F fuzz/testkit routing after record integration"
+)]
+pub(crate) use wal::{decode_wal_commit_payload, encode_wal_commit_payload, WalCommitPayload};
 pub(crate) use wal::{
     decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header, encode_wal_record,
     encode_wal_record_envelope, encode_wal_segment_header, WalRecord, WalRecordEnvelope,
@@ -51,7 +56,9 @@ const STORAGE_ROW_FORMAT_VERSION: u8 = 1;
 const STORAGE_ROW_FLAGS_NONE: u32 = 0;
 const WAL_RECORD_ENVELOPE_HEADER_SIZE: usize = 8;
 const WAL_RECORD_FORMAT_VERSION: u8 = 1;
-const WAL_RECORD_MIN_LEN_AFTER_PREFIX: usize = 41;
+// Minimum V1 WAL record length after the 4-byte length prefix: fixed record
+// fields plus the smallest row-native commit payload containing one row.
+const WAL_RECORD_MIN_LEN_AFTER_PREFIX: usize = 116;
 const WAL_SEGMENT_BASE_HEADER_SIZE: usize = 32;
 const WAL_SEGMENT_FORMAT_VERSION: u32 = 1;
 pub(crate) const WAL_SEGMENT_HEADER_SIZE: usize = 36;

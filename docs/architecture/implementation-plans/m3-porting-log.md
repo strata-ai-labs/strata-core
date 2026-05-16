@@ -1419,3 +1419,132 @@ and what old code became eligible for retirement.
   storage consumers.
 - Follow-up: M3E4 should implement quarantine service mechanics and recovery
   integration.
+
+## M3 L1 Hardening: Local Filesystem Writer Guard
+
+### Current Files Read
+
+- `crates/engine/src/database/open.rs`
+- `crates/engine/src/database/lifecycle.rs`
+- `crates/storage-next/src/backend/mod.rs`
+- `crates/storage-next/src/backend/local_fs.rs`
+- `crates/storage-next/src/backend/conformance.rs`
+- `crates/storage-next/src/config/mode.rs`
+- `crates/storage-next/src/layout/mod.rs`
+- `docs/architecture/storage-next/l1-backend-io.md`
+- `docs/architecture/storage-next/l2-object-layout.md`
+
+### Behavior Preserved
+
+- Durable local open still requires a single-writer guard before upper layers
+  can make commit-ordering claims.
+- The local writer guard uses an OS advisory exclusive lock held by an open file
+  descriptor, matching the current engine-side local database lock pattern.
+- Lock contention is surfaced as a transient unavailable backend error so L8/L9
+  can later map it to the writer-lock diagnostic contract.
+
+### Intentional V1 Changes
+
+- The writer lock is now exposed as a backend capability plus an executable
+  `Backend::acquire_writer_lock` operation. Advertising
+  `single_writer_lock` without an operation is not sufficient for storage-next.
+- The local filesystem lock lives at the reserved backend object
+  `locks/writer`, so object-family scans and cache-mode absence tests can see
+  the lock family consistently.
+- `fs2` is a storage-next dependency only when the `localfs` feature is enabled
+  on non-wasm targets. Default-feature wasm builds still fail at the
+  storage-next localfs boundary rather than inside a transitive lock crate.
+
+### Deferred
+
+- Lifecycle code must acquire and hold the writer guard during durable local
+  open once storage-next exposes the L8/L9 open path.
+- Product error mapping for lock contention remains in the later error and API
+  layers.
+- Object-durable multi-writer fencing remains separate from local filesystem
+  writer locking.
+
+### Tests Ported Or Added
+
+- Add local filesystem backend tests proving the reported
+  `SingleWriterLock` capability is backed by real exclusion, the lock can be
+  reacquired after guard drop, symlink lock files fail closed, and Unix localfs
+  now satisfies durable-local mode validation.
+- Update backend conformance so basic backends may either reject durable-local
+  mode or, when they expose the full durable-local capability set, satisfy it.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: current engine database open still owns product-level lock
+  acquisition until the storage-next lifecycle path is wired.
+- Follow-up: M3TD1 should prove cache mode does not create `locks/writer` or
+  any other durable lock-family object.
+
+## M3F: WAL Commit Payload Format
+
+### Current Files Read
+
+- `crates/storage/src/durability/payload.rs`
+- `crates/storage/src/durability/commit_adapter.rs`
+- `crates/storage/src/durability/format/wal_record.rs`
+- `crates/storage/src/txn/context.rs`
+- `crates/storage/src/key_encoding.rs`
+- `crates/storage/src/stored_value.rs`
+- `crates/storage-next/src/format/wal.rs`
+- `crates/storage-next/src/format/storage_row.rs`
+- `crates/storage-next/src/row/mod.rs`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/storage-next/l3-durable-format-codec.md`
+
+### Behavior Preserved
+
+- WAL records remain the durable commit replay unit for durable local storage.
+- The outer WAL record still carries commit version, branch id, and commit
+  timestamp facts.
+- Replay payloads still preserve put/delete intent, row values, expiry facts,
+  commit timestamps, and branch-local physical keys.
+- WAL record length CRC and payload CRC remain the integrity boundary for
+  payload bytes inside WAL segments.
+
+### Intentional V1 Changes
+
+- Valid V1 WAL payloads are storage-row-native byte batches, not legacy
+  primitive-shaped payloads and not MessagePack transaction payloads.
+- `EntityRef`, primitive tags, transaction ids, and product operation names are
+  not part of the storage-next WAL payload contract.
+- Arbitrary opaque payload bytes remain useful only as malformed/corruption
+  fixtures after this slice; valid construction goes through `StorageRow`
+  values.
+
+### Deferred
+
+- L7 commit runtime will build WAL commit payloads from validated commit
+  batches later.
+- Conflict validation, commit-version allocation, visible-version publication,
+  and branch commit guards remain outside M3F.
+- Immutable table encoding remains a separate M3 follow-up.
+
+### Tests Ported Or Added
+
+- Added focused WAL commit payload codec tests for row-native roundtrips,
+  strict magic/version/count/length handling, nested storage-row decode
+  failures, trailing-byte rejection, deterministic encoding, and
+  row/outer-fact validation.
+- Updated WAL record tests so valid construction goes through
+  `WalCommitPayload`; old empty-payload bytes are retained only as a
+  malformed historical fixture.
+- Updated WAL service tests and helpers so append/read/reopen, read-after,
+  rotation, partial-tail, and cache-mode probes use row-native payload records
+  instead of arbitrary valid payload bytes.
+- Updated golden tests and fuzz routing with checked-in row-native WAL commit
+  payload vectors and a direct `format_wal_commit_payload` fuzz target.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage WAL payload code still serves current storage
+  consumers until storage-next replaces the old commit path.
+- Follow-up: L7 must build `WalCommitPayload` from validated commit batches;
+  immutable table encoding and table object publication remain separate M3
+  closure work.

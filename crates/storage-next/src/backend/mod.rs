@@ -125,12 +125,11 @@ pub(crate) const CACHE_MODE_REQUIREMENTS: &[BackendCapability] = &[
     BackendCapability::WriteObject,
     BackendCapability::DeleteObject,
     BackendCapability::ListPrefix,
-    BackendCapability::ObjectMetadata,
 ];
 
-// Cache mode and the basic object contract intentionally share the same
-// capability floor. Durability semantics are supplied by higher modes, not by
-// pretending cache writes are durable.
+// Cache mode can run on a weaker browser-like object store than the full basic
+// backend conformance contract. Metadata is useful for local validation, but it
+// is not required to claim cache-mode behavior.
 pub(crate) const BASIC_OBJECT_BACKEND_CAPABILITIES: &[BackendCapability] = &[
     BackendCapability::ReadObject,
     BackendCapability::ReadRange,
@@ -237,6 +236,51 @@ impl BackendAppend {
     }
 }
 
+trait BackendWriterGuardInner: Send + Sync {}
+
+impl<T> BackendWriterGuardInner for T where T: Send + Sync {}
+
+pub(crate) struct BackendWriterGuard {
+    object: ObjectName,
+    _inner: Box<dyn BackendWriterGuardInner>,
+}
+
+impl BackendWriterGuard {
+    #[cfg_attr(
+        not(feature = "localfs"),
+        expect(
+            dead_code,
+            reason = "writer guards are only constructed by backends with single-writer support"
+        )
+    )]
+    pub(crate) fn new(object: ObjectName, inner: impl Send + Sync + 'static) -> Self {
+        Self {
+            object,
+            _inner: Box::new(inner),
+        }
+    }
+
+    #[cfg_attr(
+        not(feature = "localfs"),
+        expect(
+            dead_code,
+            reason = "no-default builds only exercise the unsupported guard path"
+        )
+    )]
+    pub(crate) fn object(&self) -> &ObjectName {
+        &self.object
+    }
+}
+
+impl fmt::Debug for BackendWriterGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BackendWriterGuard")
+            .field("object", &self.object)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BackendRange {
     offset: u64,
@@ -326,6 +370,14 @@ pub(crate) trait Backend: Send + Sync {
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>>;
 
     fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata>;
+
+    // The returned guard is the lock lifetime. Dropping it releases the
+    // backend-specific single-writer primitive.
+    fn acquire_writer_lock(&self, _name: &ObjectName) -> BackendResult<BackendWriterGuard> {
+        Err(BackendError::unsupported(
+            BackendCapability::SingleWriterLock,
+        ))
+    }
 
     fn append_object(&self, _name: &ObjectName, _bytes: &[u8]) -> BackendResult<BackendAppend> {
         Err(BackendError::unsupported(BackendCapability::AppendObject))
@@ -468,7 +520,10 @@ mod tests {
 
         assert!(memory.supports(CACHE_MODE_REQUIREMENTS));
         assert!(memory.supports(BASIC_OBJECT_BACKEND_CAPABILITIES));
-        assert!(cache_mode.supports(BASIC_OBJECT_BACKEND_CAPABILITIES));
+        assert!(
+            !cache_mode.contains(BackendCapability::ObjectMetadata),
+            "cache mode must not require metadata support"
+        );
         assert_eq!(
             memory.missing(DURABLE_LOCAL_MODE_REQUIREMENTS),
             vec![
@@ -554,12 +609,19 @@ mod tests {
         let sync_error = backend
             .sync_object(&name)
             .expect_err("sync should be unsupported");
+        let writer_lock_error = backend
+            .acquire_writer_lock(&name)
+            .expect_err("writer lock should be unsupported");
 
         assert_eq!(backend.capabilities(), BackendCapabilities::empty());
         assert_eq!(create_error.kind(), BackendErrorKind::UnsupportedOperation);
         assert_eq!(update_error.kind(), BackendErrorKind::UnsupportedOperation);
         assert_eq!(append_error.kind(), BackendErrorKind::UnsupportedOperation);
         assert_eq!(sync_error.kind(), BackendErrorKind::UnsupportedOperation);
+        assert_eq!(
+            writer_lock_error.kind(),
+            BackendErrorKind::UnsupportedOperation
+        );
         assert_eq!(publish_error.kind(), super::PublishFailureKind::Unsupported);
         assert_eq!(
             publish_error.source_error().kind(),

@@ -32,10 +32,11 @@ Architecture anchors:
 1. [strata-v1-architecture.md](./strata-v1-architecture.md)
 2. [engine-next-architecture.md](./engine-next-architecture.md)
 3. [inference-next-architecture.md](./inference-next-architecture.md)
-4. [runtime-resource-profile-architecture.md](./runtime-resource-profile-architecture.md)
-5. [v1-error-and-diagnostics-contract.md](./v1-error-and-diagnostics-contract.md)
-6. [v1-testing-and-conformance-plan.md](./v1-testing-and-conformance-plan.md)
-7. [v1-engineering-standards.md](./v1-engineering-standards.md)
+4. [strata-ai-architecture.md](./strata-ai-architecture.md)
+5. [runtime-resource-profile-architecture.md](./runtime-resource-profile-architecture.md)
+6. [v1-error-and-diagnostics-contract.md](./v1-error-and-diagnostics-contract.md)
+7. [v1-testing-and-conformance-plan.md](./v1-testing-and-conformance-plan.md)
+8. [v1-engineering-standards.md](./v1-engineering-standards.md)
 
 Engine contracts consumed by intelligence:
 

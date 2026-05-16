@@ -93,7 +93,11 @@ code.
 19. `M3TC4`: Expand quarantine and recovery-classification tests to
     reference-grade durability coverage.
 20. `M3TD1`: Prove cache mode creates none of the durable object families.
-21. `M3TF1`: Re-run lower-layer conformance across memory and local filesystem
+21. `M3F`: Replace opaque WAL commit payload bytes with row-native commit
+    payload format before L7 depends on WAL replay.
+22. `M3G`: Implement immutable table format bytes before L5 depends on table
+    builder/reader mechanics.
+23. `M3TF1`: Re-run lower-layer conformance across memory and local filesystem
     backends and record any retired old-code files.
 
 ## Implementation Track
@@ -105,6 +109,8 @@ code.
 | `M3C` | Format codec | Implement durable encoders and decoders for manifest, WAL envelope, table blocks, snapshots, and row records as specified. | Golden vectors match the storage format spec. |
 | `M3D` | Durable publisher | Implement atomic durable publication for local filesystem and non-durable publication for cache mode. | Fault-window tests cover temp, sync, rename, parent sync, and cleanup behavior. |
 | `M3E` | Durable services | Implement WAL, database manifest, payload-opaque table manifest, snapshot envelope, checkpoint, sidecar, and quarantine services. | Services return stable storage errors and do not leak product semantics. |
+| `M3F` | WAL commit payload format | Replace the M3C3/M3E2 opaque WAL payload with a bounded storage-row commit payload. | WAL records cannot be validly constructed from arbitrary engine-shaped payload bytes. |
+| `M3G` | Immutable table format | Implement stable V1 immutable table header, footer, block frame, data entry, index, properties, compression, checksum, golden, and fuzz coverage. | Table bytes are storage-row-native, strict, documented, and ready for L5 table runtime work. |
 
 ## Test Track
 
@@ -132,6 +138,8 @@ code.
    test the final quarantine object families and durable mutation paths.
 8. `M3TF` closes after durable services have enough backend behavior to
    validate end-to-end capability claims.
+9. `M3G` closes before M4A table runtime work. L5 should consume stable table
+   bytes rather than inventing a private table object format.
 
 ## Slice Briefs
 
@@ -145,6 +153,11 @@ code.
 8. `M3TC3`: `docs/architecture/implementation-plans/m3e3-snapshot-checkpoint-sidecar-test-suite-plan.md`
 9. `M3E4`: `docs/architecture/implementation-plans/m3e4-quarantine-recovery-implementation-brief.md`
 10. `M3TC4`: `docs/architecture/implementation-plans/m3e4-quarantine-recovery-test-suite-plan.md`
+11. `M3TD1`: `docs/architecture/implementation-plans/m3td1-cache-mode-absence-test-plan.md`
+12. `M3F`: `docs/architecture/implementation-plans/m3f-wal-commit-payload-implementation-brief.md`
+13. `M3F` tests: `docs/architecture/implementation-plans/m3f-wal-commit-payload-test-plan.md`
+14. `M3G`: `docs/architecture/implementation-plans/m3g-immutable-table-format-implementation-brief.md`
+15. `M3G` tests: `docs/architecture/implementation-plans/m3g-immutable-table-format-test-plan.md`
 
 ## Slice Policy
 

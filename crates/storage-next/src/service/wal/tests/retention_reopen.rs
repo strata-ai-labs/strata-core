@@ -383,7 +383,9 @@ fn reopen_after_latest_partial_tail_reports_truncation_and_refuses_append() {
         }
     );
 
-    let rotating_record = record(3, vec![0x33; 900]);
+    // This frame fits a fresh segment but not the current valid prefix, so the
+    // append would rotate if the partial tail were not blocking progress.
+    let rotating_record = record_with_frame_len(3, 900, 0x33);
     // This assertion keeps the rotation branch honest. Without it, the test can
     // silently collapse into a second same-segment append-refusal case.
     assert!(

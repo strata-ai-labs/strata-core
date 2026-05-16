@@ -4,6 +4,10 @@
 /corpus/format_quarantine/*
 !/corpus/format_quarantine/quarantine-inventory-empty
 !/corpus/format_quarantine/quarantine-inventory-multi-entry
+!/corpus/format_wal_commit_payload/
+/corpus/format_wal_commit_payload/*
+!/corpus/format_wal_commit_payload/one-put
+!/corpus/format_wal_commit_payload/put-tombstone
 !/corpus/service_quarantine/
 /corpus/service_quarantine/*
 !/corpus/service_quarantine/basic

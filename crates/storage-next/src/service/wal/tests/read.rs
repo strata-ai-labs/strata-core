@@ -49,6 +49,23 @@ fn read_after_max_commit_version_returns_no_records() {
 }
 
 #[test]
+fn read_all_preserves_multi_row_commit_payload_order() {
+    let backend = StoredWalBackend::new();
+    let record = multi_row_record(5, &[b"first", b"second", b"third"]);
+    let service = open_seeded_service(&backend, std::slice::from_ref(&record));
+
+    let read = service.read_all().expect("read multi-row record");
+
+    assert_eq!(read.records(), std::slice::from_ref(&record));
+    let rows = read.records()[0].commit_payload().rows();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].value(), b"first");
+    assert_eq!(rows[1].value(), b"second");
+    assert_eq!(rows[2].value(), b"third");
+    assert_eq!(read.truncation(), None);
+}
+
+#[test]
 fn read_after_duplicate_commit_versions_filters_by_version() {
     let backend = StoredWalBackend::new();
     let records = vec![
@@ -114,5 +131,11 @@ fn read_after_preserves_records_from_different_branch_ids() {
     // WAL is a physical log; branch interpretation belongs to commit replay.
     assert_eq!(read.records(), &[records[1].clone(), records[2].clone()]);
     assert_eq!(read.records()[0].branch_id(), other_branch);
+    assert_eq!(
+        read.records()[0].commit_payload().rows()[0]
+            .physical_key()
+            .branch_id(),
+        other_branch
+    );
     assert_eq!(read.truncation(), None);
 }

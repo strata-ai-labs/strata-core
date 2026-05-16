@@ -1,4 +1,5 @@
 # format: wal_record
+# status: historical pre-M3F fixture, not a valid V1 row-native WAL record
 # version: 1
 # record_len: 41
 # length_crc32: 0xfc7e3fa8

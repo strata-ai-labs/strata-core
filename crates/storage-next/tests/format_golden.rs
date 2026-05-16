@@ -25,7 +25,9 @@ fn format_golden_harness_has_storage_format_directory() {
         "snapshot-watermark-present.hex",
         "storage-row-put.hex",
         "storage-row-tombstone.hex",
-        "wal-record-empty.hex",
+        "wal-commit-payload-one-put.hex",
+        "wal-commit-payload-put-tombstone.hex",
+        "wal-record-empty-pre-m3f.hex",
         "wal-record-envelope.hex",
         "wal-record-payload.hex",
         "wal-segment-header.hex",
@@ -35,24 +37,36 @@ fn format_golden_harness_has_storage_format_directory() {
 }
 
 #[test]
-fn quarantine_inventory_fuzz_corpus_matches_golden_vectors() {
+fn format_fuzz_corpus_matches_golden_vectors() {
     let cases = [
         (
             "quarantine-inventory-empty.hex",
+            "format_quarantine",
             "quarantine-inventory-empty",
         ),
         (
             "quarantine-inventory-multi-entry.hex",
+            "format_quarantine",
             "quarantine-inventory-multi-entry",
+        ),
+        (
+            "wal-commit-payload-one-put.hex",
+            "format_wal_commit_payload",
+            "one-put",
+        ),
+        (
+            "wal-commit-payload-put-tombstone.hex",
+            "format_wal_commit_payload",
+            "put-tombstone",
         ),
     ];
 
     let goldens = common::storage_format_goldens_dir();
-    let corpus = common::crate_root().join("fuzz/corpus/format_quarantine");
+    let corpus = common::crate_root().join("fuzz/corpus");
 
-    for (golden_name, corpus_name) in cases {
+    for (golden_name, corpus_dir, corpus_name) in cases {
         let golden = parse_hex_fixture(&fs::read_to_string(goldens.join(golden_name)).unwrap());
-        let seed = fs::read(corpus.join(corpus_name)).unwrap();
+        let seed = fs::read(corpus.join(corpus_dir).join(corpus_name)).unwrap();
 
         assert_eq!(seed, golden, "fuzz corpus seed drifted from {golden_name}");
     }
