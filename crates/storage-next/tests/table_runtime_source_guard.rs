@@ -72,13 +72,16 @@ fn table_runtime_source_does_not_use_cursor_policy_vocabulary() {
 }
 
 #[test]
-fn table_runtime_source_does_not_use_filesystem_or_backend_apis() {
+fn table_runtime_source_does_not_use_filesystem_backend_service_or_env_apis() {
     let root = common::crate_root();
     let forbidden_substrings = [
         "std::fs",
         "std::path::Path",
         "std::os::unix::fs::FileExt",
         "crate::backend",
+        "crate::service",
+        "super::service",
+        "service::table",
         ".read_object(",
         ".read_range(",
         ".write_object(",
@@ -99,7 +102,7 @@ fn table_runtime_source_does_not_use_filesystem_or_backend_apis() {
             for needle in forbidden_substrings {
                 assert!(
                     !line.contains(needle),
-                    "{}:{} uses filesystem or backend API {needle:?}: {line}",
+                    "{}:{} uses filesystem, backend, service, or env API {needle:?}: {line}",
                     file.strip_prefix(&root).unwrap_or(&file).display(),
                     line_number + 1
                 );
@@ -107,11 +110,28 @@ fn table_runtime_source_does_not_use_filesystem_or_backend_apis() {
             for word in forbidden_words {
                 assert!(
                     !contains_ascii_word(line, word),
-                    "{}:{} uses filesystem or backend API word {word:?}: {line}",
+                    "{}:{} uses filesystem, backend, service, or env API word {word:?}: {line}",
                     file.strip_prefix(&root).unwrap_or(&file).display(),
                     line_number + 1
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn table_runtime_source_does_not_use_old_table_builder_vocabulary() {
+    let root = common::crate_root();
+
+    for file in table_runtime_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read table runtime source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_forbidden_old_table_builder_vocabulary(line),
+                "{}:{} uses old table builder vocabulary: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
         }
     }
 }
@@ -270,7 +290,28 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
         "env::var_os(\"STRATA\");",
     ] {
         assert!(
-            contains_forbidden_filesystem_backend_or_env(line),
+            contains_forbidden_filesystem_backend_service_or_env(line),
+            "guard should reject {line:?}"
+        );
+    }
+    for line in ["use crate::service::table;", "use super::service;"] {
+        assert!(
+            contains_forbidden_filesystem_backend_service_or_env(line),
+            "guard should reject {line:?}"
+        );
+    }
+
+    for line in [
+        "let _ = b\"STRAKV\";",
+        "let _: SegmentBuilder;",
+        "use crate::segment_builder;",
+        "use crate::layout::ObjectLayout;",
+        "service::table::TableObjectService::new();",
+        "let _: TableObjectName;",
+        "publish_table_object();",
+    ] {
+        assert!(
+            contains_forbidden_old_table_builder_vocabulary(line),
             "guard should reject {line:?}"
         );
     }
@@ -372,12 +413,15 @@ fn contains_forbidden_upper_layer_or_engine(line: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
-fn contains_forbidden_filesystem_backend_or_env(line: &str) -> bool {
+fn contains_forbidden_filesystem_backend_service_or_env(line: &str) -> bool {
     [
         "std::fs",
         "std::path::Path",
         "std::os::unix::fs::FileExt",
         "crate::backend",
+        "crate::service",
+        "super::service",
+        "service::table",
         ".read_object(",
         ".read_range(",
         ".write_object(",
@@ -395,6 +439,23 @@ fn contains_forbidden_filesystem_backend_or_env(line: &str) -> bool {
         || ["Backend", "File", "PathBuf"]
             .iter()
             .any(|word| contains_ascii_word(line, word))
+}
+
+fn contains_forbidden_old_table_builder_vocabulary(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    [
+        "strakv",
+        "segmentbuilder",
+        "segment_builder",
+        "crate::layout",
+        "objectlayout",
+        "tableobjectservice",
+        "table_object",
+        "tableobjectname",
+        "publish_table",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
 }
 
 fn contains_ascii_word(haystack: &str, needle: &str) -> bool {

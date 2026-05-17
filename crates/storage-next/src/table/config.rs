@@ -98,7 +98,7 @@ impl TableBuilderConfig {
         self.compression
     }
 
-    fn validate(self) -> TableRuntimeResult<()> {
+    pub(crate) fn validate(self) -> TableRuntimeResult<()> {
         if self.target_data_block_size == 0 {
             return Err(TableRuntimeError::InvalidConfig {
                 field: "target_data_block_size",

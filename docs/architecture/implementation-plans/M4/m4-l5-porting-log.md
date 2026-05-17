@@ -437,3 +437,90 @@ and what old code became eligible for retirement.
 - Follow-up: L5E can consume frozen/mutable cursor output as sorted builder
   input; L5F should implement the same `TableCursor` contract for immutable
   table readers.
+
+## M4-L5E: Immutable Table Builder
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/implementation-plans/M4/l5e-immutable-table-builder-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5e-immutable-table-builder-test-plan.md`
+- `crates/storage-next/src/format/table/artifact.rs`
+- `crates/storage-next/src/table/builder.rs`
+- `crates/storage-next/src/table/config.rs`
+- `crates/storage-next/src/table/facts.rs`
+- `crates/storage-next/src/table/key.rs`
+- `crates/storage-next/src/table/mutable.rs`
+- `crates/storage/src/segment_builder.rs`
+
+### Behavior Preserved
+
+- Sorted table rows can be built into immutable table bytes.
+- Empty input is rejected.
+- Unsorted input is rejected.
+- Duplicate encoded internal keys are rejected.
+- Tombstones, expired-looking rows, empty values, duplicate physical-key
+  versions, commit timestamps, expiry timestamps, branch bytes, and
+  storage-space ids are preserved as row facts.
+- Builder compression config is applied mechanically.
+- Output is deterministic for identical sorted rows and config.
+- Built-table facts are derived from decoded byte-format facts.
+
+### Intentional V1 Changes
+
+- L5E uses the M3G `encode_immutable_table` path as the only byte writer. It
+  does not port old `STRAKV` or segment-v7 bytes.
+- L5E returns owned bytes and table facts only. It does not write files, rename
+  temp files, fsync directories, construct object names, or publish objects.
+- The builder is table-runtime local and crate-private. L4 owns durable table
+  publication, and L6-L8 own branch placement and scheduling.
+- M3G currently partitions data blocks by rows-per-block and records
+  target-data-block size as a header fact. L5E does not add a separate
+  byte-packing algorithm.
+- Old durable bloom/filter blocks are not ported. Accelerators remain deferred
+  to L5G.
+
+### Deferred
+
+- Immutable table readers move to L5F.
+- Block cache and optional accelerators move to L5G.
+- Generic compaction output splitting moves to L5H.
+- Object-backed table access moves to L5I.
+- Branch table installation, manifest mutation, flush scheduling, and recovery
+  remain outside L5.
+
+### Tests Ported Or Added
+
+- Add module-local builder tests for construction, empty input rejection,
+  unsorted input rejection, duplicate internal-key rejection, one-block output,
+  multi-block output, row preservation, deterministic bytes, frozen-table input
+  parity, compression paths, and decoded fact alignment.
+- Extend the hidden testkit table-runtime property route with generated
+  immutable-builder model checks.
+- Extend `table_runtime_properties` to require L5E generated coverage under the
+  `testkit` feature.
+- Extend `table_runtime_source_guard` with old table-builder vocabulary checks
+  for old segment builder and old table magic leakage.
+
+### Sensitivity Probes
+
+- Add tests that fail if the builder accepts empty rows, out-of-order rows, or
+  duplicate encoded keys.
+- Add tests that fail if row output differs after L3 decode.
+- Add tests that fail if decoded header/properties facts drift from returned
+  `TableRuntimeFacts`.
+- Add tests that fail if changing rows-per-block no longer changes data-block
+  count.
+- Add tests that fail if repeated builds with the same input produce different
+  bytes.
+- Add source-guard probes proving old segment-builder names and old table magic
+  cannot enter production table-runtime code.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/segment_builder.rs` remains in use by
+  current storage consumers.
+- Follow-up: L5F should read the M3G bytes produced by this builder through the
+  immutable reader surface.

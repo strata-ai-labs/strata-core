@@ -23,6 +23,14 @@ mod reader;
     all(not(test), not(feature = "testkit")),
     expect(
         unused_imports,
+        reason = "immutable table builder surfaces are consumed by later M4 table slices"
+    )
+)]
+pub(crate) use builder::{BuiltTableArtifact, ImmutableTableBuilder};
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
         reason = "table scaffold exports define the local surface for later slices"
     )
 )]
