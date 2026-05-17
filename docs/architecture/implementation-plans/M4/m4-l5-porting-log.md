@@ -1,0 +1,337 @@
+# M4-L5 Porting Log
+
+Status: active during M4-L5
+
+## Purpose
+
+This document records how table-runtime behavior moves from the current
+`crates/storage` implementation into `crates/storage-next` during M4-L5.
+
+The M4-L5 implementation plan owns order and scope. This log owns the porting
+audit trail: what was read, what was preserved, what changed, what was deferred,
+and what old code became eligible for retirement.
+
+## Rules
+
+1. Add or update a slice entry before changing storage-next table code.
+2. Prefer porting, splitting, and tightening existing storage behavior over
+   fresh implementation.
+3. Fresh implementation is allowed only when the entry records why existing
+   behavior is obsolete, out of scope, or inconsistent with V1.
+4. Do not delete old storage code until replacement tests exist and workspace
+   references are gone.
+5. If old code cannot be deleted because current crates still depend on it,
+   record it as legacy-retained instead of adding compatibility glue to
+   storage-next.
+6. Treat old tests as evidence, not authority. Preserve the cases that still
+   match V1 semantics; reject or rewrite cases that freeze obsolete behavior.
+
+## Entry Template
+
+```md
+## <Slice>: <Title>
+
+### Current Files Read
+
+- `crates/storage/src/...`
+
+### Behavior Preserved
+
+- ...
+
+### Intentional V1 Changes
+
+- ...
+
+### Deferred
+
+- ...
+
+### Tests Ported Or Added
+
+- ...
+
+### Retirement
+
+- Deleted:
+- Legacy-retained:
+- Follow-up:
+```
+
+## Baseline Source Map
+
+| Target area | Current source material | Initial disposition |
+|---|---|---|
+| Mutable and frozen tables | `crates/storage/src/memtable.rs` | Port ordered-table mechanics over storage-next rows. |
+| Ordered key bytes | `crates/storage/src/key_encoding.rs` | Preserve ordering facts, but keep key meaning outside L5. |
+| Immutable table building | `crates/storage/src/segment_builder.rs` | Port builder mechanics onto M3G table bytes. |
+| Immutable table reading | `crates/storage/src/segment.rs`, `crates/storage/src/index.rs` | Port reader/index mechanics without direct file or path access. |
+| Optional accelerators | `crates/storage/src/bloom.rs` | Reuse only as non-authoritative table-local accelerators. |
+| Block cache | `crates/storage/src/block_cache.rs` | Port into database-owned cache state, not a process-global singleton. |
+| Raw cursors and merge | `crates/storage/src/merge_iter.rs`, `crates/storage/src/seekable.rs` | Port raw cursor mechanics; leave MVCC/COW wrappers to L6. |
+| Generic compaction | `crates/storage/src/compaction.rs`, `crates/storage/src/segmented/compaction.rs` | Extract policy-free merge/build mechanics; defer reachability and install policy. |
+
+## Slice Entries
+
+## M4-L5A: Table Runtime Scaffold
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+- `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
+- `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
+- `docs/architecture/implementation-plans/M4/l5a-table-runtime-scaffold-implementation-plan.md`
+- `crates/storage-next/src/table/mod.rs`
+- `crates/storage-next/src/format/table/`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage/src/memtable.rs`
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/block_cache.rs`
+- `crates/storage/src/merge_iter.rs`
+- `crates/storage/src/seekable.rs`
+- `crates/storage/src/compaction.rs`
+
+### Behavior Preserved
+
+- The table runtime remains a separate storage-domain module under
+  `crates/storage-next/src/table/`.
+- Table mechanics are prepared as internal crate surfaces only. No public API is
+  exposed.
+- Table configuration, facts, and statistics are table-local shells that later
+  slices can reuse.
+- Build/decode error paths preserve the underlying L3 format error as an error
+  source.
+
+### Intentional V1 Changes
+
+- L5A does not port old table behavior yet. It creates the scaffolding and
+  guardrails needed before behavior moves.
+- Table identity is an opaque table-local component. It does not construct
+  object names and does not encode branch or level ownership.
+- Table cache configuration is database-owned configuration, not a
+  process-global singleton.
+- Source guards enforce that table runtime code does not import upper layers,
+  engine crates, product vocabulary, filesystem APIs, or backend APIs.
+
+### Deferred
+
+- Row/key adapters move to L5B.
+- Mutable and frozen table behavior moves to L5C.
+- Raw cursor and merge behavior moves to L5D.
+- Immutable table building moves to L5E.
+- Immutable table reading moves to L5F.
+- Block cache behavior moves to L5G.
+- Generic compaction moves to L5H.
+- Object-backed read handoff moves to L5I.
+
+### Tests Ported Or Added
+
+- Add table module smoke tests for default config construction.
+- Add invalid config tests with typed `TableRuntimeError` results.
+- Add table facts construction and impossible-fact rejection tests.
+- Add error display/source-chain tests for wrapped `FormatError`.
+- Add table stats smoke tests.
+- Add a `table_runtime_properties` generated harness routed through hidden
+  testkit for executable L5A scaffold-contract coverage.
+- Add `table_runtime_source_guard` integration tests for layer imports, product
+  vocabulary, filesystem/backend APIs, process-global cache state, and public
+  API leakage.
+
+### Sensitivity Probes
+
+- Add executable source-guard probes proving forbidden upper-layer and testkit
+  imports such as `crate::branch`, `crate::commit`, `crate::lifecycle`, and
+  `crate::testkit` are rejected.
+- Add executable source-guard probes proving product payload vocabulary in
+  production table modules is rejected.
+- Add executable source-guard probes proving filesystem/path APIs, direct
+  backend calls, and environment reads such as `std::env::var` are rejected.
+- Add executable source-guard probes proving bare `pub ` production forms are
+  rejected, including `pub struct`, `pub enum`, `pub trait`, `pub type`,
+  `pub fn`, `pub async fn`, `pub unsafe fn`, `pub const`, `pub static`,
+  `pub extern`, `pub macro`, `pub union`, `pub mod`, and `pub use`, while
+  scoped crate-private visibility such as `pub(crate)` is allowed.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: all current `crates/storage` table files remain in use by
+  existing storage consumers.
+- Follow-up: L5B-L5J should record each behavior family as it is ported and
+  identify the old code that becomes eligible for retirement after cutover.
+
+## M4-L5B: Row And Key Adapters
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-test-plan.md`
+- `crates/storage-next/src/row/mod.rs`
+- `crates/storage-next/src/format/key.rs`
+- `crates/storage-next/src/format/storage_row.rs`
+- `crates/storage-next/src/format/table/data.rs`
+- `crates/storage/src/key_encoding.rs`
+- `crates/storage/src/memtable.rs`
+
+### Behavior Preserved
+
+- Encoded internal keys still sort by physical key ascending and commit version
+  descending.
+- Duplicate physical keys at distinct commit versions remain valid table input.
+- Duplicate encoded internal keys are rejected by helpers that require unique
+  rows.
+- User keys with embedded zero bytes are ordered by the V1 byte-stuffed key
+  encoding.
+- Row metadata such as tombstone marker, commit timestamp, expiry, and value
+  bytes is preserved exactly by the table row adapter.
+
+### Intentional V1 Changes
+
+- L5B adapts storage-next `StorageRow` and `InternalKey` types only. It does
+  not port old `Key`, `TypeTag`, or `StoredValue` surfaces.
+- Table key helpers operate on encoded V1 bytes. They do not interpret branch
+  ids, storage space ids, timestamps, expiry, tombstones, or row values.
+- Size accounting is explicitly approximate and table-runtime local. It is not
+  a durable byte-format fact.
+- Raw key construction verifies canonical V1 internal-key bytes through the
+  storage-next format codec instead of accepting arbitrary old table bytes.
+
+### Deferred
+
+- Mutable and frozen table insertion/storage move to L5C.
+- Cursor movement over key bounds moves to L5D.
+- Immutable table builder input validation consumes these adapters in L5E.
+- Immutable table reader output adapters move to L5F.
+- Compaction policy and row dropping remain deferred to L5H and higher-layer
+  callers.
+
+### Tests Ported Or Added
+
+- Add module-local `table::tests::key` tests for V1 internal-key ordering,
+  physical-key prefix behavior, row metadata preservation, sorted-unique
+  validation, key-bound filtering, and approximate size accounting.
+- Extend the hidden testkit table-runtime property route with generated row/key
+  adapter checks.
+- Extend `table_runtime_properties` to require generated L5B coverage under the
+  `testkit` feature.
+- Extend `table_runtime_source_guard` with old key/value import checks and
+  executable probes for old `crates/storage` key surfaces.
+
+### Sensitivity Probes
+
+- Add tests that fail if same-physical-key versions sort oldest first.
+- Add tests that fail if storage space id, branch id, or zero-byte user-key
+  encoding stops affecting encoded key order.
+- Add tests that fail if duplicate encoded internal keys are accepted.
+- Add tests that fail if duplicate physical keys at distinct commit versions
+  are rejected.
+- Add tests that fail if inclusive/exclusive key bounds drift.
+- Add tests that fail if size estimates become zero or non-monotonic for larger
+  key/value bytes.
+- Add source-guard probes proving old key/value imports and product vocabulary
+  are rejected.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/key_encoding.rs` and
+  `crates/storage/src/memtable.rs` remain in use by current storage consumers.
+- Follow-up: L5C should consume `TableRow` and sorted-key validation instead of
+  reintroducing old memtable key types.
+
+## M4-L5C: Mutable And Frozen Tables
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/implementation-plans/M4/l5c-mutable-frozen-tables-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5c-mutable-frozen-tables-test-plan.md`
+- `crates/storage-next/src/table/key.rs`
+- `crates/storage-next/src/table/mutable.rs`
+- `crates/storage/src/memtable.rs`
+- `crates/storage/src/bloom.rs`
+
+### Behavior Preserved
+
+- Mutable tables store rows by encoded internal-key order.
+- Duplicate physical keys at distinct commit versions remain valid table input.
+- Duplicate exact encoded internal keys are rejected.
+- Sorted full iteration is deterministic and suitable as later builder input.
+- Approximate byte accounting increases only on successful insertion.
+- Freezing produces a read-only in-memory table with the same rows and facts.
+
+### Intentional V1 Changes
+
+- L5C uses storage-next `StorageRow` and L5B `TableRow` only. It does not port
+  old `Key`, `Namespace`, `TypeTag`, `Value`, or `VersionedValue` surfaces.
+- The first storage-next mutable table uses a deterministic `BTreeMap` instead
+  of the old concurrent skiplist. L6/L7 own placement and write serialization;
+  a later performance slice may swap the internal structure behind the same
+  contract.
+- Freeze consumes `MutableTable` and returns `FrozenTable`. The old
+  panic-on-write-after-freeze behavior is not ported.
+- L5C exposes mechanical exact, range, and physical-prefix reads only. It does
+  not port MVCC latest-selection, snapshot filtering, TTL filtering, or
+  tombstone hiding.
+- Frozen table bloom filters are deferred to L5G. Frozen tables are correct
+  without accelerators.
+
+### Deferred
+
+- Raw cursor traits and merge cursors move to L5D.
+- Immutable table building from frozen rows moves to L5E.
+- Immutable table reading moves to L5F.
+- Bloom filters and block cache behavior move to L5G.
+- Generic compaction over mutable/frozen/table sources moves to L5H.
+- Branch-local active/frozen ownership moves to L6.
+- Commit visibility, snapshots, and WAL ordering move to L7.
+- Recovery and retention policy move to L8.
+
+### Tests Ported Or Added
+
+- Add module-local mutable/frozen tests for empty facts, insert behavior,
+  duplicate rejection, sorted iteration, exact lookup, range filtering,
+  physical-prefix filtering, and freeze preservation.
+- Expand module-local coverage for put rows, empty-value puts, tombstones,
+  storage-owned ids, engine-owned ids, expired-looking rows, all key-bound
+  shapes, present and absent exact lookup, branch/space/storage-id prefix
+  isolation, and min/max commit facts independent of key order.
+- Extend the hidden testkit table-runtime property route with generated
+  mutable/frozen model checks against an ordered map.
+- Strengthen the generated route so every generated script includes deterministic
+  edge rows for empty values, tombstones, expired-looking rows, embedded NUL
+  user-key bytes, storage-owned ids, engine-owned ids, duplicate physical keys
+  at distinct commit versions, and exact duplicate insert attempts.
+- Extend `table_runtime_properties` to require L5C generated coverage under the
+  `testkit` feature.
+- Keep `table_runtime_source_guard` covering the new production table module.
+
+### Sensitivity Probes
+
+- Add tests that fail if duplicate inserts mutate row count, facts, bytes, or
+  existing row bytes.
+- Add tests that fail if rows iterate in insertion order instead of encoded
+  internal-key order.
+- Add tests that fail if duplicate physical keys at distinct commit versions are
+  collapsed into one row.
+- Add tests that fail if tombstones or expired-looking rows are hidden by
+  mechanical reads.
+- Add tests that fail if exact lookup fabricates a latest-visible row, if range
+  bounds drop inclusive/exclusive endpoints, or if physical-prefix reads include
+  adjacent user keys, other branches, other spaces, or other storage-space ids.
+- Add generated checks that fail if mutable and frozen table facts diverge from
+  the ordered-map model.
+- Add generated checks that fail if mutable or frozen closed-range filtering
+  diverges from independent ordered-map filtering.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/memtable.rs` and `crates/storage/src/bloom.rs`
+  remain in use by current storage consumers.
+- Follow-up: L5D should build cursor movement on top of `MutableTable` and
+  `FrozenTable` without reintroducing old MVCC or branch rewriting behavior.

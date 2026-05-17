@@ -8,6 +8,7 @@ mod format_fuzz;
 mod integration_harness;
 mod quarantine_fuzz;
 mod service_fuzz;
+mod table_runtime;
 
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
@@ -24,6 +25,7 @@ pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOu
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
 };
+pub use table_runtime::{check_table_runtime_scaffold_contract, TableRuntimeScaffoldOutcome};
 
 /// Test-only backend selector used by external conformance tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

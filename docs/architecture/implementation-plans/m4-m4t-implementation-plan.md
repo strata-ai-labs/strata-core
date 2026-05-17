@@ -1,10 +1,13 @@
-# M4 / M4T Implementation Plan: Storage-Next Table, Branch, Commit, Recovery, And L9 API
+# M4 / M4T Implementation Plan: Storage-Next Runtime Program
 
-Status: draft implementation plan
+Status: draft program plan
 
 ## Goal
 
 Finish the storage substrate that engine-next consumes through the L9 boundary.
+
+M4 is a program milestone, not a single implementation slice. The detailed
+layer plans live in separate documents so this file remains the program index.
 
 ## Inputs
 
@@ -20,36 +23,22 @@ All slices must follow the V1 engineering standards: permanent domain names,
 concept-budget discipline, file/function thresholds, comment standards, and no
 roadmap labels in production code vocabulary.
 
-## Implementation Track
+## Program Decomposition
 
-| Epic | Title | Scope | Exit gate |
+| Sub-milestone | Layer | Detailed plan | Exit gate |
 |---|---|---|---|
-| `M4A` | Table runtime | Implement mutable tables, immutable tables, cursors, table manifests, compaction inputs, cache hooks, TTL metadata, and tombstones. | Table reads and compaction inputs are model-tested. |
-| `M4B` | Branch visibility | Implement branch-aware row resolution for latest, versioned, history, and timestamp substrate reads. | Visibility model handles branch inheritance, tombstones, and retention boundaries. |
-| `M4C` | Commit pipeline | Implement version allocation, timestamp stamping, durable commit ordering, and commit timeline rows. | Ambiguous commit outcomes are classified and recoverable. |
-| `M4D` | Open and recovery | Implement open, replay, repair classification, checkpoint loading, retention, maintenance, and recovery health facts. | Crash recovery converges to committed visible state or a structured failure. |
-| `M4E` | L9 API | Implement the storage API boundary engine-next is allowed to consume. M4 ships with explicit storage defaults; M5 wires engine-resolved runtime budgets through this boundary. | Engine-facing storage calls require no knowledge of lower services. |
-| `M4F` | Durability policies | Implement cache, standard, and always durability policy behavior over the commit pipeline. | Each mode has separate conformance and recovery coverage. |
+| `M4-L5` | Table runtime | `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md` | Table mechanics pass direct model/property/conformance tests without branch, commit, recovery, or engine concepts. |
+| `M4-L6` | Branch LSM runtime | TBD | Branch-aware reads match model tests across inheritance, tombstones, TTL, and retention boundaries. |
+| `M4-L7` | Commit runtime | TBD | Cache, standard, and always commit paths classify ambiguous outcomes and preserve ordering. |
+| `M4-L8` | Lifecycle, recovery, maintenance | TBD | Recovery converges to committed visible state or a structured failure without inventing or losing durable data. |
+| `M4-L9` | Storage API boundary | TBD | Engine-next can use storage through L9 without reaching lower modules. |
 
-## Test Track
+Durability policy testing is not a separate peer layer. Cache, standard, and
+always behavior must be proven where it matters:
 
-| Test epic | Title | Scope | Exit gate |
-|---|---|---|---|
-| `M4TA` | Table model tests | Compare table reads, merges, cursors, TTL, and tombstones against a reference model. | Table behavior is deterministic across operation orderings. |
-| `M4TB` | Branch model tests | Exercise branch inheritance, copy-on-write visibility, history, and as-of substrate behavior. | Branch reads match the branch visibility contract. |
-| `M4TC` | Commit pipeline tests | Cover version allocation, timestamp stamping, commit timeline, ordering, and ambiguous commit classification. | Commit ordering and timeline behavior are deterministic. |
-| `M4TD` | Crash recovery tests | Kill/reopen around WAL append, table publish, manifest publish, checkpoint, and truncation windows. | Recovery never invents committed data or loses acknowledged durable data. |
-| `M4TE` | L9 conformance tests | Test the public storage boundary using memory and local filesystem backends. | Engine-next can rely on L9 without reaching lower modules. |
-| `M4TF` | Durability mode tests | Cover cache, standard, and always mode behavior separately. | Each mode has distinct conformance tests. |
-
-## Convergence Notes
-
-1. `M4TA` lands with `M4A`.
-2. `M4TB` lands with `M4B`.
-3. `M4TC` lands with `M4C`.
-4. `M4TF` lands with `M4F`.
-5. `M4TD` closes after `M4C`, `M4D`, and `M4F` are wired together.
-6. `M4TE` closes the milestone after lower storage behavior is complete.
+1. L7 proves commit ordering and acknowledgement behavior.
+2. L8 proves recovery and maintenance convergence.
+3. L9 proves the public storage boundary presents the mode guarantees correctly.
 
 ## Slice Policy
 
@@ -57,15 +46,27 @@ Slices may be vertical only when storage semantics require table, branch, and
 commit cooperation. Otherwise keep slices aligned to one domain module and one
 test harness.
 
+Each layer-specific implementation plan should include:
+
+1. objective;
+2. existing-code source map;
+3. implementation slices;
+4. test plan;
+5. explicit layer boundaries;
+6. exit gate.
+
 ## Non-Goals
 
 1. No product capability semantics.
 2. No `EntityRef`.
 3. No graph, vector, JSON, event, or search behavior.
 4. No engine error mapping except storage-owned diagnostics.
+5. No public transaction-session resurrection.
+6. No direct use of old table bytes as valid storage-next V1 artifacts.
 
-## Milestone Exit Gate
+## Program Exit Gate
 
-M4 is complete when storage-next opens, commits, recovers, maintains, and serves
-branch-aware row reads exclusively through L9. The roadmap Test Gate Summary
-remains the canonical milestone gate; this plan explains how M4 reaches it.
+The full M4 program is complete when storage-next opens, commits, recovers,
+maintains, and serves branch-aware row reads exclusively through L9. The roadmap
+Test Gate Summary remains the canonical program gate; this plan explains how
+M4 is decomposed without turning the program into one oversized slice.

@@ -1,0 +1,1 @@
+//! Immutable table reader placeholder.

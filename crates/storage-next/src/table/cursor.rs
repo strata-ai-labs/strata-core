@@ -1,0 +1,1 @@
+//! Raw table cursor placeholder.

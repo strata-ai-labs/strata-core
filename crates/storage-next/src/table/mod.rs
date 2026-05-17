@@ -1,1 +1,75 @@
 //! Table runtime, builders, readers, and cursors.
+
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "table runtime scaffolding is consumed by later M4 table slices"
+    )
+)]
+
+mod builder;
+mod cache;
+mod compaction;
+mod config;
+mod cursor;
+mod error;
+mod facts;
+mod key;
+mod mutable;
+mod reader;
+
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "table scaffold exports define the local surface for later slices"
+    )
+)]
+pub(crate) use config::{
+    TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableReaderConfig,
+    TableRuntimeConfig,
+};
+pub(crate) use error::{TableRuntimeError, TableRuntimeResult};
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "table scaffold exports define the local surface for later slices"
+    )
+)]
+pub(crate) use facts::{
+    TableCommitRange, TableIdentity, TableKeyRange, TableRuntimeFacts, TableRuntimeStats,
+};
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "full row-key helper surface is consumed by later M4 table slices"
+    )
+)]
+pub(crate) use key::{
+    first_table_key, last_table_key, validate_strictly_sorted_unique_keys, TableKeyBound,
+};
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "table row-key adapters define the local surface for later slices"
+    )
+)]
+pub(crate) use key::{
+    sort_table_rows_by_key, validate_strictly_sorted_unique_rows, TableInternalKeyBytes,
+    TableKeyBounds, TablePhysicalKeyBytes, TableRow,
+};
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "mutable and frozen table surfaces are consumed by later M4 table slices"
+    )
+)]
+pub(crate) use mutable::{FrozenTable, MutableTable, TableMemoryFacts};
+
+#[cfg(test)]
+mod tests;

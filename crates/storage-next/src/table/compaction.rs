@@ -1,0 +1,1 @@
+//! Generic table compaction placeholder.
