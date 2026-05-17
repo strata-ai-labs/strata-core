@@ -1,8 +1,8 @@
 //! Mutable and frozen in-memory tables.
 
 use super::{
-    TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes, TableRow, TableRuntimeError,
-    TableRuntimeResult,
+    MemoryTableCursor, TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes, TableRow,
+    TableRuntimeError, TableRuntimeResult,
 };
 use crate::row::StorageRow;
 use std::collections::BTreeMap;
@@ -114,6 +114,10 @@ impl MutableTable {
         self.rows.values()
     }
 
+    pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
+        MemoryTableCursor::from_mutable(self)
+    }
+
     pub(crate) fn rows_in_bounds<'a>(
         &'a self,
         bounds: &'a TableKeyBounds,
@@ -186,6 +190,10 @@ impl FrozenTable {
 
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &TableRow> {
         self.rows.values()
+    }
+
+    pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
+        MemoryTableCursor::from_frozen(self)
     }
 
     pub(crate) fn rows_in_bounds<'a>(

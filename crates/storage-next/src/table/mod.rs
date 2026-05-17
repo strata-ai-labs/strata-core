@@ -30,6 +30,17 @@ pub(crate) use config::{
     TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableReaderConfig,
     TableRuntimeConfig,
 };
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "raw cursor surfaces are consumed by later M4 table slices"
+    )
+)]
+pub(crate) use cursor::{
+    BoundedTableCursor, CursorMergePath, MemoryTableCursor, MergeTableCursor, TableCursor,
+    MERGE_HEAP_THRESHOLD,
+};
 pub(crate) use error::{TableRuntimeError, TableRuntimeResult};
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

@@ -1,17 +1,21 @@
 use crate::format::{encode_internal_key, FormatError, TableCompression};
 use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    sort_table_rows_by_key, validate_strictly_sorted_unique_rows, FrozenTable, MutableTable,
-    TableBuilderConfig, TableCacheConfig, TableCommitRange, TableCompactionConfig, TableIdentity,
+    sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BoundedTableCursor,
+    CursorMergePath, FrozenTable, MergeTableCursor, MutableTable, TableBuilderConfig,
+    TableCacheConfig, TableCommitRange, TableCompactionConfig, TableCursor, TableIdentity,
     TableInternalKeyBytes, TableKeyBound, TableKeyBounds, TableKeyRange, TableMemoryFacts,
     TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeConfig, TableRuntimeError,
-    TableRuntimeFacts, TableRuntimeStats,
+    TableRuntimeFacts, TableRuntimeStats, MERGE_HEAP_THRESHOLD,
 };
 use std::collections::{btree_map::Entry, BTreeMap};
 use std::error::Error;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::TestkitError;
+
+type CursorKeyValue = (Vec<u8>, Vec<u8>);
+type MergeModelItem = (Vec<u8>, usize, Vec<u8>);
 
 /// Summary of one generated table-runtime scaffold contract check.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +29,7 @@ pub struct TableRuntimeScaffoldOutcome {
     key_bounds: usize,
     size_accounting: usize,
     mutable_frozen_tables: usize,
+    raw_cursors: usize,
     error_sources: usize,
     stats: usize,
 }
@@ -75,6 +80,11 @@ impl TableRuntimeScaffoldOutcome {
         self.mutable_frozen_tables
     }
 
+    /// Number of raw cursor and merge cursor cases exercised.
+    pub const fn raw_cursor_cases(self) -> usize {
+        self.raw_cursors
+    }
+
     /// Number of error source-chain cases exercised.
     pub const fn error_source_cases(self) -> usize {
         self.error_sources
@@ -88,10 +98,9 @@ impl TableRuntimeScaffoldOutcome {
 
 /// Runs one deterministic generated scaffold contract case for the L5 table runtime.
 ///
-/// The input is a bounded script. It is not durable table bytes and does not
-/// exercise table behavior beyond scaffold and row-key adapter contracts. Later
-/// L5 slices should extend this route instead of adding unrelated property
-/// harnesses.
+/// The input is a bounded script. It is not durable table bytes; it exercises
+/// deterministic table-runtime contracts that each L5 slice adds to this
+/// single generated route instead of scattering unrelated property harnesses.
 pub fn check_table_runtime_scaffold_contract(
     script: &[u8],
 ) -> Result<TableRuntimeScaffoldOutcome, TestkitError> {
@@ -105,6 +114,7 @@ pub fn check_table_runtime_scaffold_contract(
         key_bounds: 0,
         size_accounting: 0,
         mutable_frozen_tables: 0,
+        raw_cursors: 0,
         error_sources: 0,
         stats: 0,
     };
@@ -126,6 +136,8 @@ pub fn check_table_runtime_scaffold_contract(
     outcome.size_accounting += 1;
     check_mutable_frozen_tables(script)?;
     outcome.mutable_frozen_tables += 1;
+    check_raw_cursors(script)?;
+    outcome.raw_cursors += 1;
 
     check_error_source_chain()?;
     outcome.error_sources += 1;
@@ -932,6 +944,345 @@ fn assert_memory_facts_match_model(
     Ok(())
 }
 
+fn check_raw_cursors(script: &[u8]) -> Result<(), TestkitError> {
+    let table = generated_cursor_table(script, 0, 16)?;
+    assert_memory_cursors_match_model("generated memory cursor", &table)?;
+    assert_bounded_cursors_match_model("generated bounded cursor", &table)?;
+
+    let empty = MergeTableCursor::new(Vec::new());
+    if empty.path() != CursorMergePath::Empty {
+        return Err(TestkitError::new("empty merge selected the wrong path"));
+    }
+
+    let single_empty_tables = vec![MutableTable::new()];
+    assert_merge_cursor_matches_model(
+        "single empty merge",
+        &single_empty_tables,
+        CursorMergePath::Single,
+    )?;
+
+    let single_tables = vec![generated_cursor_table(script, 1, 8)?];
+    assert_merge_cursor_matches_model("single merge", &single_tables, CursorMergePath::Single)?;
+
+    let mixed_linear_tables = vec![
+        MutableTable::new(),
+        generated_cursor_table(script, 2, 0)?,
+        MutableTable::new(),
+    ];
+    assert_merge_cursor_matches_model(
+        "mixed linear merge",
+        &mixed_linear_tables,
+        CursorMergePath::Linear,
+    )?;
+
+    let linear_tables = generated_cursor_tables(script, MERGE_HEAP_THRESHOLD, 4)?;
+    assert_merge_cursor_matches_model("linear merge", &linear_tables, CursorMergePath::Linear)?;
+
+    let mut mixed_heap_tables = generated_cursor_tables(script, MERGE_HEAP_THRESHOLD + 1, 2)?;
+    mixed_heap_tables[1] = MutableTable::new();
+    mixed_heap_tables[3] = MutableTable::new();
+    assert_merge_cursor_matches_model(
+        "mixed heap merge",
+        &mixed_heap_tables,
+        CursorMergePath::Heap,
+    )?;
+
+    let heap_tables = generated_cursor_tables(script, MERGE_HEAP_THRESHOLD + 1, 4)?;
+    assert_merge_cursor_matches_model("heap merge", &heap_tables, CursorMergePath::Heap)?;
+
+    let stress_heap_tables = generated_cursor_tables(script, 16, 2)?;
+    assert_merge_cursor_matches_model(
+        "sixteen-source heap merge",
+        &stress_heap_tables,
+        CursorMergePath::Heap,
+    )?;
+
+    Ok(())
+}
+
+fn generated_cursor_tables(
+    script: &[u8],
+    source_count: usize,
+    generated_rows_per_source: usize,
+) -> Result<Vec<MutableTable>, TestkitError> {
+    (0..source_count)
+        .map(|source_index| generated_cursor_table(script, source_index, generated_rows_per_source))
+        .collect()
+}
+
+fn generated_cursor_table(
+    script: &[u8],
+    source_index: usize,
+    generated_row_count: usize,
+) -> Result<MutableTable, TestkitError> {
+    let mut table = MutableTable::new();
+    let shared_key = deterministic_physical_key(0xc1, "cursor", 0x20, b"shared".to_vec())?;
+    table
+        .insert_row(StorageRow::put(
+            shared_key,
+            CommitVersion::new(99),
+            Timestamp::from_micros(99),
+            Timestamp::EPOCH,
+            vec![u8::try_from(source_index % 256).expect("bounded source index")],
+        ))
+        .map_err(|err| TestkitError::new(format!("shared cursor row insert failed: {err}")))?;
+
+    for row_index in 0..generated_row_count {
+        table
+            .insert_row(generated_cursor_row(script, source_index, row_index)?)
+            .map_err(|err| TestkitError::new(format!("cursor row insert failed: {err}")))?;
+    }
+    Ok(table)
+}
+
+fn generated_cursor_row(
+    script: &[u8],
+    source_index: usize,
+    row_index: usize,
+) -> Result<StorageRow, TestkitError> {
+    let mut user_key = vec![
+        script_byte(script, 224 + (row_index % 16)),
+        u8::try_from(source_index % 256).expect("bounded source index"),
+        u8::try_from(row_index % 256).expect("bounded row index"),
+    ];
+    if row_index % 3 == 0 {
+        user_key.push(0x00);
+    }
+    if row_index % 5 == 0 {
+        user_key.extend_from_slice(&[0x00, 0xff]);
+    }
+    let raw_space_id = 0x20 + u8::try_from((source_index + row_index) % 16).unwrap_or(0);
+    let branch_byte = script_byte(script, 240 + (source_index % 16))
+        .wrapping_add(u8::try_from(row_index % 16).expect("bounded row index"));
+    let physical_key = deterministic_physical_key(branch_byte, "cursor", raw_space_id, user_key)?;
+    let version = CommitVersion::new(
+        1 + u64::from(script_byte(script, 192 + ((source_index + row_index) % 16))),
+    );
+    let timestamp = Timestamp::from_micros(
+        u64::from(script_byte(script, 208 + ((source_index + row_index) % 16)))
+            + u64::try_from(row_index).unwrap_or(0),
+    );
+
+    if (source_index + row_index) % 7 == 0 {
+        Ok(StorageRow::tombstone(physical_key, version, timestamp))
+    } else {
+        let expires_at = if (source_index + row_index) % 5 == 0 {
+            Timestamp::from_micros(1)
+        } else {
+            Timestamp::EPOCH
+        };
+        Ok(StorageRow::put(
+            physical_key,
+            version,
+            timestamp,
+            expires_at,
+            generated_value(script, 208 + (row_index % 16)),
+        ))
+    }
+}
+
+fn assert_memory_cursors_match_model(
+    label: &'static str,
+    table: &MutableTable,
+) -> Result<(), TestkitError> {
+    let expected = table.iter().map(table_row_key_bytes).collect::<Vec<_>>();
+
+    let mut mutable_cursor = table.cursor();
+    mutable_cursor
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} mutable seek failed: {err}")))?;
+    assert_cursor_keys(label, &mut mutable_cursor, &expected)?;
+
+    let frozen = table.clone().freeze();
+    let mut frozen_cursor = frozen.cursor();
+    frozen_cursor
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} frozen seek failed: {err}")))?;
+    assert_cursor_keys(label, &mut frozen_cursor, &expected)?;
+
+    let model_rows = table.iter().collect::<Vec<_>>();
+    if let Some(first) = model_rows.first() {
+        let targets = [
+            first.key().clone(),
+            model_rows[model_rows.len() / 2].key().clone(),
+            TableInternalKeyBytes::from_row(&StorageRow::put(
+                deterministic_physical_key(0xff, "cursor", 0x20, b"after".to_vec())?,
+                CommitVersion::new(1),
+                Timestamp::from_micros(1),
+                Timestamp::EPOCH,
+                Vec::new(),
+            )),
+        ];
+        for target in targets {
+            let expected_key = model_rows
+                .iter()
+                .find(|row| row.key() >= &target)
+                .map(|row| row.key().clone());
+            let mut cursor = table.cursor();
+            cursor
+                .seek(&target)
+                .map_err(|err| TestkitError::new(format!("{label} seek failed: {err}")))?;
+            if cursor.current_key().cloned() != expected_key {
+                return Err(TestkitError::new(format!(
+                    "{label} seek did not match generated model"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn assert_bounded_cursors_match_model(
+    label: &'static str,
+    table: &MutableTable,
+) -> Result<(), TestkitError> {
+    let rows = table.iter().collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let middle = rows[rows.len() / 2].key().clone();
+    let exact = TableKeyBounds::exact(middle);
+    assert_bounded_cursor_matches_model(label, table, exact)?;
+
+    let lower = rows[rows.len() / 3].key().clone();
+    let upper = rows[(rows.len() * 2) / 3].key().clone();
+    let closed = TableKeyBounds::closed(lower, upper)
+        .map_err(|err| TestkitError::new(format!("{label} range setup failed: {err}")))?;
+    assert_bounded_cursor_matches_model(label, table, closed)?;
+
+    let prefix = TablePhysicalKeyBytes::from_row(rows[0].row());
+    assert_bounded_cursor_matches_model(
+        label,
+        table,
+        TableKeyBounds::prefix(prefix.as_slice().to_vec()),
+    )?;
+
+    Ok(())
+}
+
+fn assert_bounded_cursor_matches_model(
+    label: &'static str,
+    table: &MutableTable,
+    bounds: TableKeyBounds,
+) -> Result<(), TestkitError> {
+    let expected = table
+        .iter()
+        .filter(|row| bounds.contains_key(row.key()))
+        .map(table_row_key_bytes)
+        .collect::<Vec<_>>();
+    let mut cursor = BoundedTableCursor::new(Box::new(table.cursor()), bounds);
+    cursor
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} bounded seek failed: {err}")))?;
+    assert_cursor_keys(label, &mut cursor, &expected)
+}
+
+fn assert_merge_cursor_matches_model(
+    label: &'static str,
+    tables: &[MutableTable],
+    expected_path: CursorMergePath,
+) -> Result<(), TestkitError> {
+    let mut expected = Vec::<MergeModelItem>::new();
+    for (source_index, table) in tables.iter().enumerate() {
+        for row in table.iter() {
+            expected.push((
+                row.encoded_key().to_vec(),
+                source_index,
+                row.value().to_vec(),
+            ));
+        }
+    }
+    expected.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut merge = MergeTableCursor::new(boxed_table_cursors(tables));
+    if merge.path() != expected_path {
+        return Err(TestkitError::new(format!(
+            "{label} selected wrong merge path"
+        )));
+    }
+    merge
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} seek failed: {err}")))?;
+    let actual = collect_cursor_key_values(&mut merge)?;
+    let expected = expected
+        .into_iter()
+        .map(|(key, _, value)| (key, value))
+        .collect::<Vec<_>>();
+    if actual != expected {
+        return Err(TestkitError::new(format!(
+            "{label} output did not match generated merge model"
+        )));
+    }
+
+    if let Some((seek_key, _)) = expected.get(expected.len() / 2) {
+        let seek_key = TableInternalKeyBytes::from_canonical_bytes(seek_key.clone())
+            .map_err(|err| TestkitError::new(format!("{label} seek key decode failed: {err}")))?;
+        merge
+            .seek(&seek_key)
+            .map_err(|err| TestkitError::new(format!("{label} re-seek failed: {err}")))?;
+        let actual_after_seek = collect_cursor_key_values(&mut merge)?;
+        let expected_after_seek = expected
+            .iter()
+            .filter(|(key, _)| key.as_slice() >= seek_key.as_slice())
+            .cloned()
+            .collect::<Vec<_>>();
+        if actual_after_seek != expected_after_seek {
+            return Err(TestkitError::new(format!(
+                "{label} re-seek output did not match generated model"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn boxed_table_cursors<'a>(tables: &'a [MutableTable]) -> Vec<Box<dyn TableCursor + 'a>> {
+    tables
+        .iter()
+        .map(|table| Box::new(table.cursor()) as Box<dyn TableCursor + 'a>)
+        .collect()
+}
+
+fn assert_cursor_keys(
+    label: &'static str,
+    cursor: &mut impl TableCursor,
+    expected: &[Vec<u8>],
+) -> Result<(), TestkitError> {
+    let actual = collect_cursor_keys(cursor)?;
+    if actual != expected {
+        return Err(TestkitError::new(format!(
+            "{label} cursor keys did not match generated model"
+        )));
+    }
+    Ok(())
+}
+
+fn collect_cursor_keys(cursor: &mut impl TableCursor) -> Result<Vec<Vec<u8>>, TestkitError> {
+    let mut keys = Vec::new();
+    while let Some(row) = cursor.current() {
+        keys.push(row.encoded_key().to_vec());
+        cursor
+            .advance()
+            .map_err(|err| TestkitError::new(format!("cursor advance failed: {err}")))?;
+    }
+    Ok(keys)
+}
+
+fn collect_cursor_key_values(
+    cursor: &mut impl TableCursor,
+) -> Result<Vec<CursorKeyValue>, TestkitError> {
+    let mut rows = Vec::new();
+    while let Some(row) = cursor.current() {
+        rows.push((row.encoded_key().to_vec(), row.value().to_vec()));
+        cursor
+            .advance()
+            .map_err(|err| TestkitError::new(format!("cursor advance failed: {err}")))?;
+    }
+    Ok(rows)
+}
+
 fn expect_invalid_config<T>(result: Result<T, TableRuntimeError>) -> Result<(), TestkitError> {
     match result {
         Err(TableRuntimeError::InvalidConfig { .. }) => Ok(()),
@@ -1118,6 +1469,7 @@ mod tests {
         assert_eq!(outcome.key_bound_cases(), 1);
         assert_eq!(outcome.size_accounting_cases(), 1);
         assert_eq!(outcome.mutable_frozen_table_cases(), 1);
+        assert_eq!(outcome.raw_cursor_cases(), 1);
         assert_eq!(outcome.error_source_cases(), 1);
         assert_eq!(outcome.stats_cases(), 1);
     }

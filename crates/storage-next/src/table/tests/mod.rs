@@ -7,6 +7,7 @@ use crate::format::{FormatError, TableCompression};
 use std::error::Error;
 use strata_core_next::CommitVersion;
 
+mod cursor;
 mod key;
 mod mutable;
 

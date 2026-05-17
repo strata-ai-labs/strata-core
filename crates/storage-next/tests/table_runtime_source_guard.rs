@@ -55,6 +55,23 @@ fn table_runtime_source_does_not_use_product_payload_vocabulary() {
 }
 
 #[test]
+fn table_runtime_source_does_not_use_cursor_policy_vocabulary() {
+    let root = common::crate_root();
+
+    for file in table_runtime_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read table runtime source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_forbidden_cursor_policy_vocabulary(line),
+                "{}:{} uses cursor policy vocabulary: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn table_runtime_source_does_not_use_filesystem_or_backend_apis() {
     let root = common::crate_root();
     let forbidden_substrings = [
@@ -222,6 +239,26 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
     }
 
     for line in [
+        "let _: MvccCursor;",
+        "let _: SnapshotCursor;",
+        "cursor.as_of(version);",
+        "let _: fork_version;",
+        "let _: inherited_layer;",
+        "rewrite_branch_id();",
+        "visible_at(version);",
+        "latest_row();",
+        "ttl_filter(row);",
+        "live_only();",
+        "let _: MemtableEntry;",
+        "let _: VersionedValue;",
+    ] {
+        assert!(
+            contains_forbidden_cursor_policy_vocabulary(line),
+            "guard should reject {line:?}"
+        );
+    }
+
+    for line in [
         "use std::fs;",
         "use std::path::Path;",
         "use std::os::unix::fs::FileExt;",
@@ -294,6 +331,26 @@ fn contains_forbidden_product_payload_vocabulary(line: &str) -> bool {
         ]
         .iter()
         .any(|phrase| normalized.contains(phrase))
+}
+
+fn contains_forbidden_cursor_policy_vocabulary(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    [
+        "mvcc",
+        "snapshot",
+        "as_of",
+        "fork",
+        "inherit",
+        "rewrite",
+        "visible_at",
+        "latest",
+        "ttl_filter",
+        "live_only",
+        "memtableentry",
+        "versionedvalue",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
 }
 
 fn contains_forbidden_upper_layer_or_engine(line: &str) -> bool {

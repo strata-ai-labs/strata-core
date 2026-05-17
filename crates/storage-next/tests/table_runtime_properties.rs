@@ -45,6 +45,7 @@ fn table_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.key_bound_cases() == 0
                 || outcome.size_accounting_cases() == 0
                 || outcome.mutable_frozen_table_cases() == 0
+                || outcome.raw_cursor_cases() == 0
                 || outcome.error_source_cases() == 0
                 || outcome.stats_cases() == 0
             {

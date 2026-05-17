@@ -333,5 +333,107 @@ and what old code became eligible for retirement.
 - Deleted: none.
 - Legacy-retained: `crates/storage/src/memtable.rs` and `crates/storage/src/bloom.rs`
   remain in use by current storage consumers.
-- Follow-up: L5D should build cursor movement on top of `MutableTable` and
-  `FrozenTable` without reintroducing old MVCC or branch rewriting behavior.
+- Follow-up: Immutable table building from frozen rows moves to L5E.
+
+## M4-L5D: Raw Cursors And Merge Cursor
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/implementation-plans/M4/l5d-raw-cursors-merge-cursor-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5d-raw-cursors-merge-cursor-test-plan.md`
+- `crates/storage-next/src/table/key.rs`
+- `crates/storage-next/src/table/mutable.rs`
+- `crates/storage/src/merge_iter.rs`
+- `crates/storage/src/seekable.rs`
+- `crates/storage/src/memtable.rs`
+- `crates/storage/src/segment.rs`
+
+### Behavior Preserved
+
+- Raw cursors can seek to the first encoded internal key greater than or equal
+  to a target key.
+- Raw cursors can advance through sorted source rows without consuming the
+  source.
+- Merge cursors combine sorted child cursors into deterministic global
+  encoded-key order.
+- Equal encoded internal keys across sources are preserved and tie-broken by
+  ascending source index.
+- Merge uses a linear path for small source counts and a heap path above the
+  old threshold of four sources.
+- Re-seeking a merge cursor repositions child cursors instead of rebuilding
+  source tables.
+
+### Intentional V1 Changes
+
+- L5D cursors operate on storage-next `TableRow` and `StorageRow` facts only.
+  They do not port old `InternalKey`, `MemtableEntry`, `Key`, `Namespace`,
+  `TypeTag`, or `Value` surfaces.
+- Cursor `current()` and `current_key()` return `Option` for exhausted state.
+  The old unwrap-style current access is not ported.
+- Memory cursors borrow rows from `MutableTable` and `FrozenTable`; row payloads
+  are not cloned during ordinary cursor movement.
+- `BoundedTableCursor` applies `TableKeyBounds` mechanically over any raw
+  cursor instead of adding source-specific range logic.
+- Merge source-index ordering is deterministic only. It is not a visibility or
+  source-age policy.
+
+### Deferred
+
+- Immutable table reader cursors move to L5F.
+- Cache-aware cursor movement moves to L5G.
+- Compaction policy over cursors moves to L5H.
+- Object-backed table access moves to L5I.
+- Latest-version selection, fork gates, inherited-layer reads, and branch-id
+  rewriting move to L6/L7.
+- Recovery, retention, WAL replay, and manifest installation stay outside L5.
+
+### Tests Ported Or Added
+
+- Add module-local cursor tests for empty and one-row state transitions,
+  exhausted behavior, re-seek behavior, mutable/frozen parity, exact seeks,
+  gap seeks, before-first seeks, and after-last seeks.
+- Add bounded cursor tests for exact bounds, missing exact bounds, open and
+  closed ranges, physical-prefix bounds, tombstones, expired-looking rows, and
+  duplicate physical-key versions.
+- Expand bounded cursor tests to cover unbounded ranges, lower-unbounded and
+  upper-unbounded ranges, equal inclusive and equal exclusive bounds, and
+  bounded `seek` repositioning.
+- Add merge cursor tests for zero, one, disjoint, equal-key, source-index tie
+  break, re-seek after partial consumption, re-seek after exhaustion, linear
+  path, heap path, and the threshold boundary.
+- Expand merge cursor tests to cover empty child cursors, raw tombstone and
+  expired-row preservation, stable `current()` before `advance`, selected-child
+  advance behavior, and 16-source heap shared-key ordering.
+- Extend the hidden testkit table-runtime property route with generated raw
+  cursor and merge checks against independent sorted-vector models.
+- Expand generated L5D checks with single-empty, mixed-empty linear,
+  mixed-empty heap, and 16-source heap scenarios.
+- Extend `table_runtime_properties` to require L5D generated coverage under the
+  `testkit` feature.
+- Extend `table_runtime_source_guard` with cursor-policy vocabulary checks for
+  MVCC, snapshot, fork, inherited-layer, rewrite, visibility, latest-row, and
+  old memtable-entry leakage.
+
+### Sensitivity Probes
+
+- Add tests that fail if seek returns the previous row instead of the first
+  greater-or-equal row.
+- Add tests that fail if exhausted cursor state panics or changes after
+  repeated advance.
+- Add tests that fail if bounded cursors drop tombstones, expired-looking rows,
+  or duplicate physical-key versions.
+- Add tests that fail if merge drops duplicate exact keys across sources.
+- Add tests that fail if equal-key merge ordering stops using source index.
+- Add tests that fail if either the linear or heap merge path loses coverage.
+- Add generated checks that fail if merge re-seek output diverges from the
+  sorted-vector model.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/merge_iter.rs` and
+  `crates/storage/src/seekable.rs` remain in use by current storage consumers.
+- Follow-up: L5E can consume frozen/mutable cursor output as sorted builder
+  input; L5F should implement the same `TableCursor` contract for immutable
+  table readers.
