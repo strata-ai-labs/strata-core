@@ -10,7 +10,11 @@ use std::time::{Duration, Instant};
     test
 ))]
 use crate::format::{encode_immutable_table, SnapshotSection, TableCompression};
-#[cfg(any(feature = "fault-injection", test))]
+#[cfg(any(
+    all(feature = "localfs", not(target_arch = "wasm32")),
+    feature = "fault-injection",
+    test
+))]
 use crate::layout::ObjectLayout;
 #[cfg(any(
     all(feature = "localfs", not(target_arch = "wasm32")),

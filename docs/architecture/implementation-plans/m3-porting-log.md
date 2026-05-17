@@ -1962,3 +1962,45 @@ and what old code became eligible for retirement.
 - Legacy-retained: old storage WAL retention and quarantine mutation paths still
   serve current storage consumers until storage-next L7/L8 replace those
   runtimes.
+
+## M3TF1: Backend Conformance Closeout
+
+### Current Files Read
+
+- `crates/storage-next/src/backend/conformance.rs`
+- `crates/storage-next/tests/backend_conformance.rs`
+- `crates/storage-next/src/testkit/integration_harness.rs`
+- `docs/architecture/v1-progress-tracker.md`
+- `docs/architecture/implementation-plans/m3-m3t-implementation-plan.md`
+
+### Behavior Verified
+
+- The private lower-layer backend conformance suite still passes for the memory
+  backend in both default and no-default builds.
+- The private lower-layer backend conformance suite still passes for the local
+  filesystem backend in the default localfs build.
+- The external testkit backend selector accepts the memory backend in a
+  no-default `testkit` build and continues to reject `localfs` with the
+  targeted feature-requirement error when the feature is absent.
+- The external testkit backend selector accepts the local filesystem backend in
+  a `testkit,localfs` build.
+
+### Intentional V1 Changes
+
+- Widened the `ObjectLayout` import cfg in
+  `crates/storage-next/src/testkit/integration_harness.rs` so the hidden
+  localfs crash-recovery/table-object helper compiles when `testkit` and
+  `localfs` are enabled without `fault-injection`.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked backend::conformance`
+- `cargo test -p strata-storage-next --no-default-features --locked backend::conformance`
+- `STRATA_STORAGE_TEST_BACKEND=memory cargo test -p strata-storage-next --no-default-features --features testkit --test backend_conformance --locked`
+- `STRATA_STORAGE_TEST_BACKEND=localfs cargo test -p strata-storage-next --features testkit --test backend_conformance --locked`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old storage lower-layer backend code remains active until
+  storage-next L8/L9 owns the public storage runtime.

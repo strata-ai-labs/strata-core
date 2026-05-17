@@ -70,8 +70,8 @@ M6TD2: Cover recipe freshness degradation
 | `M0` | Architecture freeze and tracking | Complete | Complete | Complete | M0 closed. |
 | `M1` | Core-next | Complete | Complete | Complete | M1 closed; start `M2A` and `M2TA` when storage-next implementation begins. |
 | `M2` | Storage-next testkit and crate skeleton | Complete | Complete | Complete | M2 closed. |
-| `M3` | Storage-next backend, layout, format, and durable services | In Progress | In Progress | In Progress | M3F closed the WAL payload contract. M3G1 through M3G4 closed immutable table bytes, table goldens, fuzz routing, source guards, and generated integration coverage. M3H1 closed L4 table object publication. M3TG1 replaced the remaining integration placeholders. Backend conformance remains. |
-| `M4` | Storage-next table, branch, commit, recovery, and L9 API | Planned | Planned | Planned | Start after durable bytes and services are stable. |
+| `M3` | Storage-next backend, layout, format, and durable services | Complete | Complete | Complete | M3 closed. M3TF1 reran lower-layer backend conformance across memory and local filesystem backends after durable services landed. |
+| `M4` | Storage-next table, branch, commit, recovery, and L9 API | Planned | Planned | Planned | Start M4 storage-next table, branch, commit, lifecycle recovery, and L9 API work. |
 | `M5` | Engine-next persistence adapter and control plane | Planned | Planned | Planned | Start after L9 is consumable. |
 | `M6` | Engine-next product semantics | Planned | Planned | Planned | Start after engine persistence/control plane are stable. |
 | `M7` | Inference-next hardening | Planned | Planned | Planned | May start now if inference-next should run parallel with storage path. |
@@ -111,10 +111,10 @@ M6TD2: Cover recipe freshness degradation
 | `M3H` | Table object publication | Implementation | Complete | none | `M3H1` adds the L4 table object publication service over layout-owned table object names, V1 immutable-table byte validation, create-only durable publish, publish metadata verification, and cache-mode durable absence coverage. |
 | `M3TA` | Format golden tests | Test | Complete | none | `M3C1` adds internal-key and storage-row goldens; `M3C2` adds manifest, watermark, and segment metadata goldens; `M3C3` adds WAL segment, envelope, and record goldens; `M3C4` adds snapshot header, section, and container goldens; `M3E4A` adds quarantine inventory goldens; `M3F` adds row-native WAL commit payload goldens and refreshes WAL record/envelope vectors; `M3G4` adds table frame, payload, and whole-artifact goldens. |
 | `M3TB` | Format fuzz tests | Test | Complete | none | `M3C5` adds the first cargo-fuzz package and initial parser targets for manifest, snapshot envelope, storage row, and WAL record bytes. `M3E4A` adds the quarantine inventory decoder target. `M3F4` adds the direct WAL commit payload decoder target and corpus seeds. `M3G4` adds table block and whole-table artifact fuzz targets with golden-seeded corpora. |
-| `M3TC` | Durable fault-window tests | Test | In Progress | none | `M3TC1` covers durable-publish fault windows; `M3TC2A-G` close the WAL durable-service matrix; `M3TC3A-E` close the snapshot, checkpoint, and sidecar durable-service matrix; `M3TC4A-D` close quarantine inventory, mutation, purge, reconciliation property, and service-fuzz coverage. Continue remaining M3T closure gates. |
+| `M3TC` | Durable fault-window tests | Test | Complete | none | `M3TC1` covers durable-publish fault windows; `M3TC2A-G` close the WAL durable-service matrix; `M3TC3A-E` close the snapshot, checkpoint, and sidecar durable-service matrix; `M3TC4A-D` close quarantine inventory, mutation, purge, reconciliation property, and service-fuzz coverage. |
 | `M3TD` | Cache-mode durable absence | Test | Complete | none | `M3TD1` proves cache mode does not require durable primitives, writes only caller-requested non-durable cache objects, and creates no durable manifest, table, WAL, sidecar, snapshot, checkpoint, quarantine, lock, or temporary object families. Lifecycle-level cache open/commit/checkpoint assertions are explicitly deferred until storage-next exposes those entry points. |
 | `M3TE` | Manifest service tests | Test | Complete | none | `M3TE1A` through `M3TE1E` closed; manifest services have reference-grade load, update, publish-failure, opacity, and error-precision coverage. |
-| `M3TF` | Backend conformance | Test | In Progress | none | `M3A1` extended private backend conformance with storage-mode validation; full M3TF closes after durable services exist. |
+| `M3TF` | Backend conformance | Test | Complete | none | `M3TF1` reran private backend conformance across memory and local filesystem and external testkit backend selection for both backends. The run fixed a `testkit,localfs` cfg import gap in the integration harness. |
 | `M3TG` | Durable integration harnesses | Test | Complete | none | `M3TG1` replaces the crash-recovery, service fault-window, and stress placeholders with storage-next service-path harnesses through hidden testkit entry points. |
 | `M7A` | Inference task traits | Implementation | Planned | none | May start now if parallel inference work is scheduled. |
 
@@ -267,10 +267,8 @@ When a slice closes:
 
 ## Next Work
 
-The current implementation milestone is `M3`. The next slices are:
-
-1. `M3TF1`: re-run lower-layer conformance across memory and local filesystem
-   backends and record any retired old-code files.
+The current implementation milestone is `M4`. Start storage-next table,
+branch, commit, lifecycle recovery, maintenance, and L9 API work.
 
 `M7` may also begin now if inference-next work should run in parallel with the
 storage path.
