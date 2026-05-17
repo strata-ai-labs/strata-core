@@ -2,11 +2,13 @@
 
 use super::{
     validate_strictly_sorted_unique_rows, FrozenTable, MutableTable, TableBuilderConfig,
-    TableCommitRange, TableIdentity, TableKeyRange, TableRow, TableRuntimeConfig,
-    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TableIdentity, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts,
+    TableRuntimeResult,
 };
-use crate::format::{decode_immutable_table, encode_immutable_table, ImmutableTable};
+use crate::format::{decode_immutable_table, encode_immutable_table};
 use crate::row::StorageRow;
+
+use super::facts::table_facts_from_decoded;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BuiltTableArtifact {
@@ -123,30 +125,4 @@ fn validate_builder_rows(rows: &[TableRow]) -> TableRuntimeResult<()> {
         return Err(TableRuntimeError::InvalidRange { field: "row_count" });
     }
     validate_strictly_sorted_unique_rows(rows)
-}
-
-fn table_facts_from_decoded(
-    identity: TableIdentity,
-    bytes: &[u8],
-    decoded: &ImmutableTable,
-) -> TableRuntimeResult<TableRuntimeFacts> {
-    let properties = decoded.properties();
-    let byte_count = u64::try_from(bytes.len()).map_err(|_| TableRuntimeError::InvalidRange {
-        field: "byte_count",
-    })?;
-    let key_range = TableKeyRange::new(
-        properties.min_key_bytes().to_vec(),
-        properties.max_key_bytes().to_vec(),
-    )?;
-
-    let commit_range = TableCommitRange::new(properties.commit_min(), properties.commit_max())?;
-
-    TableRuntimeFacts::new(
-        identity,
-        properties.row_count(),
-        properties.data_block_count(),
-        key_range,
-        commit_range,
-        byte_count,
-    )
 }

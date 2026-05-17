@@ -181,7 +181,7 @@ impl TableCacheConfig {
         self.capacity_bytes
     }
 
-    fn validate(self) -> TableRuntimeResult<()> {
+    pub(crate) fn validate(self) -> TableRuntimeResult<()> {
         if self.enabled && self.capacity_bytes == 0 {
             return Err(TableRuntimeError::InvalidConfig {
                 field: "cache_capacity_bytes",
@@ -228,7 +228,7 @@ impl TableCompactionConfig {
         self.max_output_tables
     }
 
-    fn validate(self) -> TableRuntimeResult<()> {
+    pub(crate) fn validate(self) -> TableRuntimeResult<()> {
         if self.target_output_bytes == 0 {
             return Err(TableRuntimeError::InvalidConfig {
                 field: "target_output_bytes",

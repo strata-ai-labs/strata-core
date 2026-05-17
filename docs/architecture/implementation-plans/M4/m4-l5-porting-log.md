@@ -524,3 +524,267 @@ and what old code became eligible for retirement.
   current storage consumers.
 - Follow-up: L5F should read the M3G bytes produced by this builder through the
   immutable reader surface.
+
+## M4-L5F: Immutable Table Reader
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/spec/strata-storage-format-v1.md`
+- `docs/architecture/implementation-plans/M4/l5f-immutable-table-reader-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5f-immutable-table-reader-test-plan.md`
+- `crates/storage-next/src/format/table/artifact.rs`
+- `crates/storage-next/src/table/reader.rs`
+- `crates/storage-next/src/table/builder.rs`
+- `crates/storage-next/src/table/cursor.rs`
+- `crates/storage-next/src/table/facts.rs`
+- `crates/storage-next/src/table/key.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/seekable.rs`
+
+### Behavior Preserved
+
+- Immutable table bytes can be opened and validated before reads are exposed.
+- Exact encoded-internal-key lookup returns the matching raw row or `None`.
+- Full-table, range, and physical-prefix cursors emit rows in encoded-key order.
+- Cursor seek positions at the first row whose encoded key is greater than or
+  equal to the target.
+- Tombstones, expired-looking rows, empty values, duplicate physical-key
+  versions, branch bytes, storage-space ids, timestamps, and values are
+  preserved as row facts.
+- Corrupt or truncated table bytes route through typed table-runtime decode
+  errors with the underlying format error preserved as the source.
+- Byte-backed and range-readable source-backed opens produce identical facts and
+  rows for the same artifact.
+
+### Intentional V1 Changes
+
+- L5F reads only M3G table bytes through `decode_immutable_table`. It does not
+  port old `STRAKV`/segment-v7 readers.
+- The first reader implementation validates the full artifact and materializes
+  rows at open. Lazy candidate-block reads remain API-compatible but deferred.
+- Range-readable sources are L5-local byte abstractions. L5F does not import
+  filesystem paths, file handles, backend traits, object names, or services.
+- Reader lookup is exact and raw. It does not perform MVCC latest selection,
+  inherited-layer lookup, branch rewriting, tombstone hiding, or TTL filtering.
+- Block caches, bloom/filter accelerators, and shared reader-local memoization
+  are deferred to L5G or a later reader optimization slice.
+
+### Deferred
+
+- Lazy candidate-block decode and source-read failures after open.
+- Object-backed table access through L4/L5 handoff; L5I owns that adapter.
+- Shared block-cache policy and optional accelerators; L5G owns cache behavior.
+- Generic compaction over immutable-reader cursors; L5H owns compaction.
+- Branch placement, level ownership, manifest mutation, recovery, and user read
+  policy remain outside L5.
+
+### Tests Ported Or Added
+
+- Add module-local reader tests for byte-backed open, source-backed open,
+  exact lookup, missing lookup, full/range/prefix cursors, zstd artifacts, row
+  shape preservation, corrupt/truncated byte rejection, source read failure, and
+  exact byte-source range behavior.
+- Extend the hidden testkit table-runtime property route with generated
+  immutable-reader model checks.
+- Extend `table_runtime_properties` to require L5F generated coverage under the
+  `testkit` feature.
+- Reuse `table_runtime_source_guard` to prove the reader stays crate-private and
+  does not import upper layers, backend/service APIs, filesystem APIs, process
+  globals, old table-builder vocabulary, or product payload vocabulary.
+
+### Sensitivity Probes
+
+- Add tests that fail if reader facts drift from L5E-built artifact facts.
+- Add tests that fail if byte-backed and source-backed reads diverge.
+- Add tests that fail if exact lookup collapses duplicate physical-key versions
+  or hides tombstones/expired-looking rows.
+- Add tests that fail if cursor seek, range, or prefix filtering diverges from a
+  sorted-vector model.
+- Add tests that fail if corrupt or truncated bytes are accepted.
+- Add source-guard probes that fail if L5 reader code reaches into paths,
+  backend/service layers, old segment readers, or user-payload vocabulary.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/segment.rs` and
+  `crates/storage/src/seekable.rs` remain in use by current storage consumers.
+- Follow-up: L5G can add cache/accelerator mechanics over the reader surface;
+  L5I can add the object-backed reader adapter.
+
+## M4-L5G: Block Cache And Accelerators
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/implementation-plans/M4/l5g-block-cache-accelerators-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5g-block-cache-accelerators-test-plan.md`
+- `crates/storage-next/src/table/cache.rs`
+- `crates/storage-next/src/table/config.rs`
+- `crates/storage-next/src/table/reader.rs`
+- `crates/storage-next/src/table/mutable.rs`
+- `crates/storage/src/block_cache.rs`
+- `crates/storage/src/bloom.rs`
+- `crates/storage/src/memtable.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/segment_builder.rs`
+
+### Behavior Preserved
+
+- Table cache instances support insert, lookup, duplicate insert handling,
+  removal, table-wide removal, clear, resize, capacity accounting, and stats.
+- Cache stats expose hit, miss, insert, duplicate-insert, eviction, removal,
+  clear, skipped-disabled, skipped-oversized, entry, byte, and capacity facts.
+- Cache identity includes table identity plus block address facts so blocks from
+  different tables or different block kinds do not alias.
+- Cache pressure evicts deterministic least-recent entries in the storage-next
+  implementation.
+- Bloom-style accelerators preserve the no-false-negative property for inserted
+  L5 byte keys.
+- Accelerators operate over L5 encoded key bytes and remain optional from a
+  correctness perspective.
+
+### Intentional V1 Changes
+
+- The old lock-free/raw-pointer cache implementation is not ported. Storage-next
+  keeps `#![deny(unsafe_code)]`, so L5G uses a safe database-owned cache.
+- The old process-global cache is retired. Every cache is explicitly
+  constructed and isolated.
+- The old path-hash/cache-file-id identity is retired. L5G uses opaque
+  table-cache ids and M3G block address facts.
+- Old durable SST bloom/filter blocks are not ported. L5G adds only in-memory
+  accelerators and leaves M3G footer filter fields unchanged.
+- L5G does not force a lazy-reader rewrite. L5F remains correct with eager
+  materialized rows; later slices can use the cache for candidate-block reads.
+
+### Deferred
+
+- Lazy data-block decode and cache-backed object range reads are deferred to the
+  reader optimization or L5I object-backed handoff.
+- Durable bloom/filter table bytes require an M3 format amendment and new
+  golden vectors.
+- Priority and pinned cache tiers are deferred until a caller needs them.
+- Branch-local cache ownership, table lifecycle, and maintenance policy remain
+  outside L5.
+
+### Tests Ported Or Added
+
+- Add module-local cache tests for key/address validation, disabled cache,
+  insert/get, duplicate insert, remove, clear, capacity pressure, eviction,
+  resize, table-wide removal, instance isolation, and stats.
+- Add module-local bloom tests for empty filters, no false negatives,
+  embedded-zero keys, duplicate keys, invalid configuration, and physical-key
+  boundary probes.
+- Extend the hidden testkit table-runtime property route with generated cache
+  and bloom/filter cases.
+- Extend `table_runtime_properties` to require L5G generated coverage under the
+  `testkit` feature.
+- Extend `table_runtime_source_guard` with checks for unsafe code and old cache
+  identity vocabulary.
+
+### Sensitivity Probes
+
+- Add tests that fail if duplicate cache insert overwrites existing bytes.
+- Add tests that fail if cache pressure exceeds capacity.
+- Add tests that fail if removing one table removes another table's entry.
+- Add tests that fail if two cache instances share state.
+- Add tests that fail if an inserted bloom key returns definite absence.
+- Add source-guard probes that fail if L5 cache code uses unsafe code,
+  process-global cache ownership, or old path-hash/cache-file-id vocabulary.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/block_cache.rs` and
+  `crates/storage/src/bloom.rs` remain in use by current storage consumers.
+- Follow-up: L5H owns generic compaction; L5I can use the cache from an
+  object-backed reader adapter.
+
+## M4-L5H: Generic Table Compaction
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/implementation-plans/M4/l5h-generic-compaction-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5h-generic-compaction-test-plan.md`
+- `crates/storage-next/src/table/compaction.rs`
+- `crates/storage-next/src/table/cursor.rs`
+- `crates/storage-next/src/table/builder.rs`
+- `crates/storage-next/src/table/key.rs`
+- `crates/storage/src/compaction.rs`
+- `crates/storage/src/segmented/compaction.rs`
+- `crates/storage/src/segment_builder.rs`
+- `crates/storage/src/merge_iter.rs`
+
+### Behavior Preserved
+
+- Compaction consumes sorted table rows and produces sorted immutable table
+  artifacts.
+- Keep-all compaction preserves all row facts byte-for-byte, including
+  tombstones, expiry-looking timestamps, multiple versions, storage-space ids,
+  branch bytes, commit timestamps, and values.
+- Output is deterministic for the same rows, policy, and configuration.
+- Output splitting occurs only between rows, never before the first row, and
+  never creates empty artifacts.
+- Output artifacts are built through the L5 immutable table builder and remain
+  M3G table bytes.
+- Compaction reports input rows, kept rows, dropped rows, output table count,
+  output bytes, split count, and drop-reason summaries.
+
+### Intentional V1 Changes
+
+- Old pruning decisions are not embedded in L5. Version retention, tombstone
+  elision, expiry dropping, and special row-family exemptions must be supplied
+  by caller policy.
+- Exact duplicate internal keys across input sources are rejected. L5 does not
+  resolve duplicate priority by source order because priority is a higher-layer
+  fact.
+- The old filesystem-writing `SplittingSegmentBuilder` path is not ported. L5H
+  buffers rows and returns in-memory `BuiltTableArtifact` values.
+- Branch level selection, manifest install, old-table deletion, and reclaim
+  handoff are not part of L5H.
+
+### Deferred
+
+- Streaming compaction output without buffering rows.
+- Rate limiting and backpressure.
+- Grandparent-overlap splitting and branch-level scoring.
+- Manifest publication and old-table retirement.
+- Caller implementations for retention, tombstone, expiry, and row-family
+  policy.
+
+### Tests Ported Or Added
+
+- Add module-local compaction tests for config validation, empty no-op,
+  keep-all merge, policy-selected drops, source ordering, local and global
+  duplicate rejection, output splitting, output limit errors, and cursor-backed
+  source collection.
+- Extend the hidden testkit table-runtime property route with generated
+  compaction model checks.
+- Extend `table_runtime_properties` to require L5H generated coverage under the
+  `testkit` feature.
+- Extend `table_runtime_source_guard` with checks that `table/compaction.rs`
+  does not embed higher-layer retention-policy vocabulary.
+
+### Sensitivity Probes
+
+- Add tests that fail if keep-all compaction drops tombstones or expiry-looking
+  rows.
+- Add tests that fail if policy-selected drops affect unselected rows.
+- Add tests that fail if duplicate exact internal keys are silently resolved.
+- Add tests that fail if output table count exceeds the configured maximum.
+- Add tests that fail if output artifacts do not decode through the M3G reader
+  path.
+- Add source-guard probes that fail if L5 compaction grows built-in pruning
+  floors or level-position policy.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/compaction.rs`,
+  `crates/storage/src/segmented/compaction.rs`, and
+  `crates/storage/src/segment_builder.rs` remain in use by current storage
+  consumers.
+- Follow-up: L5I owns object-backed table access; L6/L8 own table selection,
+  retention policy, manifest install, and lifecycle scheduling.

@@ -1,0 +1,595 @@
+use crate::format::TableCompression;
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::table::{
+    CacheInsert, TableBlockAddress, TableBlockCache, TableBlockCacheKey, TableBlockCacheKind,
+    TableBlockCacheStats, TableBloomFilter, TableBloomProbe, TableBuilderConfig, TableCacheConfig,
+    TableCacheTableId, TableIdentity, TablePhysicalKeyBytes, TableRow, TableRuntimeError,
+};
+use std::sync::Arc;
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+use crate::table::ImmutableTableBuilder;
+
+fn cache_id(name: &str) -> TableCacheTableId {
+    TableCacheTableId::new(name.as_bytes()).expect("cache id")
+}
+
+fn address(kind: TableBlockCacheKind, offset: u64, length: u32) -> TableBlockAddress {
+    TableBlockAddress::new(
+        kind,
+        offset,
+        length,
+        Some(u32::try_from(offset).expect("test offset fits in u32")),
+    )
+    .expect("block address")
+}
+
+fn key(table: &str, kind: TableBlockCacheKind, offset: u64, length: u32) -> TableBlockCacheKey {
+    TableBlockCacheKey::new(cache_id(table), address(kind, offset, length))
+}
+
+fn bytes(byte: u8, len: usize) -> Arc<[u8]> {
+    Arc::<[u8]>::from(vec![byte; len])
+}
+
+fn enabled_cache(capacity: usize) -> TableBlockCache {
+    TableBlockCache::new(TableCacheConfig::new(true, capacity).expect("cache config"))
+}
+
+fn physical_key(branch_byte: u8, space_id: u8, user_key: impl Into<Vec<u8>>) -> PhysicalKey {
+    PhysicalKey::new(
+        BranchId::from_bytes([branch_byte; BranchId::BYTE_LEN]),
+        "cache",
+        StorageSpaceId::from_raw(space_id).expect("storage space id"),
+        user_key,
+    )
+    .expect("physical key")
+}
+
+#[test]
+fn cache_key_and_address_validation_is_structural() {
+    assert_eq!(
+        TableCacheTableId::new(Vec::<u8>::new()),
+        Err(TableRuntimeError::InvalidConfig {
+            field: "table_cache_id",
+            reason: "must not be empty",
+        })
+    );
+    assert_eq!(
+        TableCacheTableId::new(vec![0xaa; 513]),
+        Err(TableRuntimeError::InvalidConfig {
+            field: "table_cache_id",
+            reason: "is too large",
+        })
+    );
+    assert_eq!(
+        TableBlockAddress::new(TableBlockCacheKind::Data, 0, 0, None),
+        Err(TableRuntimeError::InvalidRange {
+            field: "block_length",
+        })
+    );
+    assert_eq!(
+        TableBlockAddress::new(TableBlockCacheKind::Data, u64::MAX, 1, None),
+        Err(TableRuntimeError::InvalidRange {
+            field: "block_range",
+        })
+    );
+
+    assert_eq!(
+        TableCacheTableId::new(b"cache-table".as_slice())
+            .expect("id from explicit bytes")
+            .as_slice(),
+        b"cache-table"
+    );
+    assert_eq!(
+        TableCacheTableId::new(b"opaque/id/with/slashes".as_slice())
+            .expect("cache ids do not impose path syntax")
+            .as_slice(),
+        b"opaque/id/with/slashes"
+    );
+
+    let table = cache_id("table-a");
+    let data = TableBlockCacheKey::new(table.clone(), address(TableBlockCacheKind::Data, 8, 4));
+    let index = TableBlockCacheKey::new(table.clone(), address(TableBlockCacheKind::Index, 8, 4));
+    let accelerator = TableBlockCacheKey::new(
+        table.clone(),
+        address(TableBlockCacheKind::Accelerator, 8, 4),
+    );
+    let different_length =
+        TableBlockCacheKey::new(table.clone(), address(TableBlockCacheKind::Data, 8, 5));
+    let different_offset_same_ordinal = TableBlockCacheKey::new(
+        table,
+        TableBlockAddress::new(TableBlockCacheKind::Data, 9, 4, Some(8)).expect("address"),
+    );
+    assert_ne!(data, index);
+    assert_ne!(data, accelerator);
+    assert_ne!(data, different_length);
+    assert_ne!(data, different_offset_same_ordinal);
+    assert_ne!(index, accelerator);
+    assert_eq!(data.address().kind(), TableBlockCacheKind::Data);
+    assert_eq!(data.address().offset(), 8);
+    assert_eq!(data.address().length(), 4);
+    assert_eq!(data.address().ordinal(), Some(8));
+
+    let long = TableCacheTableId::new(vec![0xab; 32]).expect("long id");
+    let rendered = format!("{long:?}");
+    assert!(rendered.contains("32 bytes"));
+    assert!(rendered.len() < 96);
+}
+
+#[test]
+fn disabled_cache_stores_nothing_and_reports_skips() {
+    let cache = TableBlockCache::disabled();
+    let key = key("disabled", TableBlockCacheKind::Data, 0, 4);
+
+    assert!(cache.get(&key).is_none());
+    let inserted = cache
+        .insert(key.clone(), bytes(1, 4))
+        .expect("disabled insert");
+    assert!(matches!(inserted, CacheInsert::SkippedDisabled(_)));
+    assert_eq!(inserted.bytes().as_ref(), &[1, 1, 1, 1]);
+    assert!(cache.get(&key).is_none());
+
+    let stats: TableBlockCacheStats = cache.stats();
+    assert_eq!(stats.entries(), 0);
+    assert_eq!(stats.bytes(), 0);
+    assert_eq!(stats.misses(), 2);
+    assert_eq!(stats.skipped_disabled(), 1);
+
+    cache.clear();
+    cache.resize(128);
+    let inserted = cache
+        .insert(key.clone(), bytes(2, 4))
+        .expect("disabled insert after resize");
+    assert!(matches!(inserted, CacheInsert::SkippedDisabled(_)));
+    assert!(cache.get(&key).is_none());
+    assert_eq!(cache.stats().entries(), 0);
+    assert_eq!(cache.stats().bytes(), 0);
+    assert_eq!(cache.stats().capacity_bytes(), 128);
+}
+
+#[test]
+fn cache_insert_get_duplicate_remove_clear_and_stats_are_deterministic() {
+    let cache = enabled_cache(64);
+    let first = key("table-a", TableBlockCacheKind::Data, 0, 4);
+    let second = key("table-a", TableBlockCacheKind::Properties, 4, 3);
+
+    assert!(cache.get(&first).is_none());
+    assert!(matches!(
+        cache.insert(first.clone(), bytes(0x11, 4)).expect("insert"),
+        CacheInsert::Inserted(_)
+    ));
+    assert_eq!(cache.get(&first).expect("cache hit").as_ref(), &[0x11; 4]);
+
+    let duplicate = cache
+        .insert(first.clone(), bytes(0x22, 4))
+        .expect("duplicate insert");
+    assert!(matches!(duplicate, CacheInsert::DuplicateExisting(_)));
+    assert_eq!(duplicate.bytes().as_ref(), &[0x11; 4]);
+    assert_eq!(
+        cache.get(&first).expect("existing survives").as_ref(),
+        &[0x11; 4]
+    );
+
+    cache
+        .insert(second.clone(), bytes(0x33, 3))
+        .expect("second insert");
+    assert_eq!(cache.stats().entries(), 2);
+    assert_eq!(cache.stats().bytes(), 7);
+    assert!(cache.remove(&first));
+    assert!(!cache.remove(&first));
+    assert!(cache.get(&first).is_none());
+    assert_eq!(
+        cache.get(&second).expect("second remains").as_ref(),
+        &[0x33; 3]
+    );
+
+    cache.clear();
+    let stats = cache.stats();
+    assert_eq!(stats.entries(), 0);
+    assert_eq!(stats.bytes(), 0);
+    assert_eq!(stats.inserts(), 2);
+    assert_eq!(stats.duplicate_inserts(), 1);
+    assert_eq!(stats.removes(), 1);
+    assert_eq!(stats.clears(), 1);
+    assert!(stats.hits() >= 3);
+    assert!(stats.misses() >= 2);
+}
+
+#[test]
+fn cache_capacity_eviction_resize_and_table_removal_are_coherent() {
+    let cache = enabled_cache(10);
+    let first = key("table-a", TableBlockCacheKind::Data, 0, 4);
+    let second = key("table-a", TableBlockCacheKind::Data, 4, 4);
+    let third = key("table-a", TableBlockCacheKind::Data, 8, 4);
+    let other_table = key("table-b", TableBlockCacheKind::Data, 0, 4);
+
+    cache.insert(first.clone(), bytes(1, 4)).expect("first");
+    cache.insert(second.clone(), bytes(2, 4)).expect("second");
+    assert_eq!(cache.get(&first).expect("touch first").as_ref(), &[1; 4]);
+    cache.insert(third.clone(), bytes(3, 4)).expect("third");
+
+    assert_eq!(cache.stats().bytes(), 8);
+    assert_eq!(cache.stats().entries(), 2);
+    assert_eq!(cache.stats().evictions(), 1);
+    assert!(cache.get(&second).is_none());
+    assert_eq!(cache.get(&first).expect("recent first").as_ref(), &[1; 4]);
+    assert_eq!(cache.get(&third).expect("new third").as_ref(), &[3; 4]);
+
+    let oversized = cache
+        .insert(
+            key("table-a", TableBlockCacheKind::Data, 12, 20),
+            bytes(9, 20),
+        )
+        .expect("oversized insert");
+    assert!(matches!(oversized, CacheInsert::SkippedOversized(_)));
+    assert_eq!(cache.stats().skipped_oversized(), 1);
+
+    cache.resize(16);
+    cache
+        .insert(other_table.clone(), bytes(4, 4))
+        .expect("other table");
+    assert_eq!(cache.remove_table(&cache_id("table-a")), 2);
+    assert!(cache.get(&first).is_none());
+    assert_eq!(
+        cache
+            .get(&other_table)
+            .expect("other table remains")
+            .as_ref(),
+        &[4; 4]
+    );
+
+    cache.resize(0);
+    assert_eq!(cache.stats().capacity_bytes(), 0);
+    assert_eq!(cache.stats().entries(), 0);
+    assert!(cache.get(&other_table).is_none());
+}
+
+#[test]
+fn cache_zero_charge_exact_fit_resize_and_stats_read_edges_are_coherent() {
+    let cache = enabled_cache(4);
+    let first = key("table-a", TableBlockCacheKind::Data, 0, 4);
+    let second = key("table-a", TableBlockCacheKind::Data, 4, 4);
+
+    assert_eq!(
+        cache.insert(first.clone(), Arc::<[u8]>::from(Vec::<u8>::new())),
+        Err(TableRuntimeError::InvalidRange {
+            field: "cache_charge",
+        })
+    );
+    assert!(matches!(
+        cache.insert(first.clone(), bytes(1, 4)).expect("exact fit"),
+        CacheInsert::Inserted(_)
+    ));
+    let stats_before = cache.stats();
+    let stats_after = cache.stats();
+    assert_eq!(stats_before, stats_after);
+    assert_eq!(stats_after.entries(), 1);
+    assert_eq!(stats_after.bytes(), 4);
+    assert_eq!(stats_after.capacity_bytes(), 4);
+
+    assert!(matches!(
+        cache
+            .insert(second.clone(), bytes(2, 4))
+            .expect("second exact fit"),
+        CacheInsert::Inserted(_)
+    ));
+    assert_eq!(cache.stats().evictions(), 1);
+    assert!(cache.get(&first).is_none());
+    assert_eq!(
+        cache.get(&second).expect("second remains").as_ref(),
+        &[2; 4]
+    );
+
+    cache.resize(8);
+    assert!(matches!(
+        cache
+            .insert(first.clone(), bytes(3, 4))
+            .expect("insert after resize up"),
+        CacheInsert::Inserted(_)
+    ));
+    assert_eq!(cache.stats().entries(), 2);
+    assert_eq!(cache.stats().bytes(), 8);
+
+    cache.resize(0);
+    assert_eq!(cache.stats().entries(), 0);
+    assert!(matches!(
+        cache
+            .insert(first, bytes(4, 4))
+            .expect("insert after resize to zero"),
+        CacheInsert::SkippedOversized(_)
+    ));
+    assert_eq!(cache.stats().entries(), 0);
+}
+
+#[test]
+fn cache_resize_downward_and_reinsert_after_eviction_follow_lru_model() {
+    let cache = enabled_cache(12);
+    let first = key("table-a", TableBlockCacheKind::Data, 0, 4);
+    let second = key("table-a", TableBlockCacheKind::Index, 4, 4);
+    let third = key("table-a", TableBlockCacheKind::Properties, 8, 4);
+
+    cache.insert(first.clone(), bytes(1, 4)).expect("first");
+    cache.insert(second.clone(), bytes(2, 4)).expect("second");
+    cache.insert(third.clone(), bytes(3, 4)).expect("third");
+    assert_eq!(cache.stats().entries(), 3);
+
+    assert_eq!(cache.get(&first).expect("touch first").as_ref(), &[1; 4]);
+    cache.resize(8);
+    assert_eq!(cache.stats().entries(), 2);
+    assert_eq!(cache.stats().bytes(), 8);
+    assert!(cache.get(&second).is_none());
+    assert_eq!(cache.get(&first).expect("first retained").as_ref(), &[1; 4]);
+    assert_eq!(cache.get(&third).expect("third retained").as_ref(), &[3; 4]);
+
+    cache.resize(4);
+    assert_eq!(cache.stats().entries(), 1);
+    assert_eq!(cache.stats().bytes(), 4);
+    assert!(cache.get(&first).is_none());
+    assert_eq!(
+        cache.get(&third).expect("recent third retained").as_ref(),
+        &[3; 4]
+    );
+
+    assert!(matches!(
+        cache
+            .insert(first.clone(), bytes(4, 4))
+            .expect("reinsert evicted key"),
+        CacheInsert::Inserted(_)
+    ));
+    assert_eq!(
+        cache.get(&first).expect("reinserted first").as_ref(),
+        &[4; 4]
+    );
+    assert!(cache.get(&third).is_none());
+    assert!(cache.stats().evictions() >= 3);
+}
+
+#[test]
+fn cache_instances_do_not_share_entries_or_stats() {
+    let left = enabled_cache(32);
+    let right = enabled_cache(32);
+    let shared_key = key("shared", TableBlockCacheKind::Data, 0, 4);
+
+    left.insert(shared_key.clone(), bytes(0xaa, 4))
+        .expect("left insert");
+    assert_eq!(
+        left.get(&shared_key).expect("left hit").as_ref(),
+        &[0xaa; 4]
+    );
+    assert!(right.get(&shared_key).is_none());
+
+    left.clear();
+    assert_eq!(left.stats().entries(), 0);
+    assert_eq!(right.stats().entries(), 0);
+    assert!(left.stats().hits() > right.stats().hits());
+    assert!(right.stats().misses() > 0);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cache_concurrent_duplicate_inserts_leave_one_logical_entry() {
+    let cache = Arc::new(enabled_cache(64));
+    let shared_key = key("shared", TableBlockCacheKind::Data, 0, 4);
+    let handles = (0..8u8)
+        .map(|worker| {
+            let cache = Arc::clone(&cache);
+            let shared_key = shared_key.clone();
+            std::thread::spawn(move || {
+                cache
+                    .insert(shared_key.clone(), bytes(worker, 4))
+                    .expect("concurrent insert");
+                cache.get(&shared_key).expect("concurrent hit")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        assert_eq!(handle.join().expect("thread joined").len(), 4);
+    }
+
+    let stats = cache.stats();
+    assert_eq!(stats.entries(), 1);
+    assert_eq!(stats.bytes(), 4);
+    assert_eq!(stats.inserts(), 1);
+    assert_eq!(stats.duplicate_inserts(), 7);
+    assert!(stats.bytes() <= stats.capacity_bytes());
+    assert_eq!(cache.get(&shared_key).expect("shared survives").len(), 4);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cache_concurrent_disjoint_inserts_removes_and_clear_keep_gauges_coherent() {
+    let cache = Arc::new(enabled_cache(128));
+    let handles = (0..16u8)
+        .map(|worker| {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || {
+                let key = key(
+                    "concurrent",
+                    TableBlockCacheKind::Data,
+                    u64::from(worker) * 4,
+                    4,
+                );
+                cache.insert(key.clone(), bytes(worker, 4)).expect("insert");
+                assert_eq!(cache.get(&key).expect("hit").as_ref(), &[worker; 4]);
+                if worker % 3 == 0 {
+                    cache.remove(&key);
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().expect("thread joined");
+    }
+
+    let stats = cache.stats();
+    assert!(stats.bytes() <= stats.capacity_bytes());
+    assert!(stats.entries() <= 16);
+    assert!(stats.inserts() >= stats.entries() as u64);
+
+    cache.clear();
+    let cleared = cache.stats();
+    assert_eq!(cleared.entries(), 0);
+    assert_eq!(cleared.bytes(), 0);
+    assert!(cleared.clears() >= 1);
+}
+
+#[test]
+fn bloom_filter_has_no_false_negatives_and_is_conservative_for_absence() {
+    let keys = [
+        b"alpha".as_slice(),
+        b"bravo".as_slice(),
+        b"embedded\0zero".as_slice(),
+        b"alpha".as_slice(),
+    ];
+    let filter = TableBloomFilter::build(keys, 10).expect("bloom filter");
+
+    assert!(!filter.is_empty());
+    assert_eq!(filter.key_count(), keys.len());
+    assert!((1..=30).contains(&filter.probes()));
+    assert!(filter.approximate_size_bytes() > 0);
+    for key in keys {
+        assert_eq!(filter.might_contain(key), TableBloomProbe::MaybePresent);
+    }
+    assert!(matches!(
+        filter.might_contain(b"absent"),
+        TableBloomProbe::DefinitelyAbsent | TableBloomProbe::MaybePresent
+    ));
+
+    let empty = TableBloomFilter::build(Vec::<&[u8]>::new(), 10).expect("empty filter");
+    assert!(empty.is_empty());
+    assert_eq!(
+        empty.might_contain(b"anything"),
+        TableBloomProbe::DefinitelyAbsent
+    );
+    assert_eq!(
+        TableBloomFilter::build([b"key".as_slice()], 0),
+        Err(TableRuntimeError::InvalidConfig {
+            field: "bits_per_key",
+            reason: "must be nonzero",
+        })
+    );
+    assert_eq!(
+        TableBloomFilter::build([b"key".as_slice()], usize::MAX),
+        Err(TableRuntimeError::InvalidRange {
+            field: "bloom_bytes",
+        })
+    );
+    assert_eq!(
+        TableBloomFilter::build([b"first".as_slice(), b"second".as_slice()], usize::MAX),
+        Err(TableRuntimeError::InvalidRange {
+            field: "bloom_bits",
+        })
+    );
+    assert_eq!(
+        TableBloomFilter::build(keys, 10).expect("same bloom filter"),
+        filter
+    );
+    assert_eq!(TableBloomProbe::Unavailable, TableBloomProbe::Unavailable);
+}
+
+#[test]
+fn bloom_filter_many_long_keys_and_probe_cap_stay_bounded() {
+    let keys = (0..128usize)
+        .map(|index| {
+            let mut key = vec![u8::try_from(index % 251).expect("byte"); 128 + (index % 17)];
+            key.extend_from_slice(&index.to_le_bytes());
+            key
+        })
+        .collect::<Vec<_>>();
+    let key_refs = keys.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let filter = TableBloomFilter::build(key_refs.clone(), 14).expect("many-key bloom filter");
+
+    assert_eq!(filter.key_count(), keys.len());
+    assert!(filter.approximate_size_bytes() <= 16 * 1024 * 1024);
+    for key in &key_refs {
+        assert_eq!(filter.might_contain(key), TableBloomProbe::MaybePresent);
+    }
+
+    let high_probe_filter =
+        TableBloomFilter::build([b"cap-probes".as_slice()], 10_000).expect("probe-capped filter");
+    assert_eq!(high_probe_filter.probes(), 30);
+    assert!(high_probe_filter.approximate_size_bytes() > 0);
+    assert_eq!(
+        high_probe_filter.might_contain(b"cap-probes"),
+        TableBloomProbe::MaybePresent
+    );
+}
+
+#[test]
+fn bloom_filter_over_physical_key_bytes_preserves_l5_key_boundaries() {
+    let present = physical_key(1, 0x20, b"prefix".to_vec());
+    let other_branch = physical_key(2, 0x20, b"prefix".to_vec());
+    let other_space = physical_key(1, 0x21, b"prefix".to_vec());
+    let neighbor = physical_key(1, 0x20, b"prefix-extra".to_vec());
+    let present_bytes = TablePhysicalKeyBytes::from_physical_key(&present);
+    let other_branch_bytes = TablePhysicalKeyBytes::from_physical_key(&other_branch);
+    let other_space_bytes = TablePhysicalKeyBytes::from_physical_key(&other_space);
+    let neighbor_bytes = TablePhysicalKeyBytes::from_physical_key(&neighbor);
+
+    let filter = TableBloomFilter::build([present_bytes.as_slice()], 12).expect("physical filter");
+    assert_eq!(
+        filter.might_contain(present_bytes.as_slice()),
+        TableBloomProbe::MaybePresent
+    );
+    for candidate in [other_branch_bytes, other_space_bytes, neighbor_bytes] {
+        assert!(matches!(
+            filter.might_contain(candidate.as_slice()),
+            TableBloomProbe::DefinitelyAbsent | TableBloomProbe::MaybePresent
+        ));
+    }
+}
+
+#[test]
+fn accelerators_do_not_change_table_footer_filter_fields_or_table_bytes() {
+    const TABLE_FOOTER_SIZE: usize = 64;
+
+    let row = StorageRow::put(
+        physical_key(1, 0x20, b"durable-format".to_vec()),
+        CommitVersion::new(7),
+        Timestamp::from_micros(8),
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    let builder = ImmutableTableBuilder::new(
+        TableBuilderConfig::new(1024, 1, TableCompression::Uncompressed).expect("config"),
+    )
+    .expect("builder");
+    let artifact = builder
+        .build_from_rows(
+            TableIdentity::new("filter-format").expect("identity"),
+            &[TableRow::new(row.clone())],
+        )
+        .expect("table artifact");
+    let original = artifact.bytes().to_vec();
+    let footer_start = original.len() - TABLE_FOOTER_SIZE;
+
+    assert_eq!(read_u64_le(&original, footer_start + 12), 0);
+    assert_eq!(read_u32_le(&original, footer_start + 20), 0);
+
+    let cache = enabled_cache(1024);
+    let cache_key = key("format-table-generation", TableBlockCacheKind::Data, 64, 32);
+    cache
+        .insert(cache_key, Arc::<[u8]>::from(original[64..96].to_vec()))
+        .expect("cache insert");
+    let physical = TablePhysicalKeyBytes::from_physical_key(row.physical_key());
+    let filter = TableBloomFilter::build([physical.as_slice()], 10).expect("filter");
+    assert_eq!(
+        filter.might_contain(physical.as_slice()),
+        TableBloomProbe::MaybePresent
+    );
+
+    assert_eq!(artifact.bytes(), original.as_slice());
+    assert_eq!(read_u64_le(artifact.bytes(), footer_start + 12), 0);
+    assert_eq!(read_u32_le(artifact.bytes(), footer_start + 20), 0);
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 bytes"))
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 bytes"))
+}

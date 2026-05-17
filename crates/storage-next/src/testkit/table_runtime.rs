@@ -2,15 +2,20 @@ use crate::format::{decode_immutable_table, encode_internal_key, FormatError, Ta
 use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BoundedTableCursor,
-    BuiltTableArtifact, CursorMergePath, FrozenTable, ImmutableTableBuilder, MergeTableCursor,
-    MutableTable, TableBuilderConfig, TableCacheConfig, TableCommitRange, TableCompactionConfig,
-    TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBound, TableKeyBounds,
-    TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeStats,
-    MERGE_HEAP_THRESHOLD,
+    BuiltTableArtifact, BytesTableSource, CacheInsert, CursorMergePath, FrozenTable,
+    ImmutableTableBuilder, ImmutableTableReader, KeepAllTableCompactionPolicy, MergeTableCursor,
+    MutableTable, TableBlockAddress, TableBlockCache, TableBlockCacheKey, TableBlockCacheKind,
+    TableBlockCacheStats, TableBloomFilter, TableBloomProbe, TableBuilderConfig, TableByteSource,
+    TableCacheConfig, TableCacheTableId, TableCommitRange, TableCompactionConfig,
+    TableCompactionDecision, TableCompactionDropReason, TableCompactionSource,
+    TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableInternalKeyBytes,
+    TableKeyBound, TableKeyBounds, TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes,
+    TableReaderConfig, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts,
+    TableRuntimeResult, TableRuntimeStats, MERGE_HEAP_THRESHOLD,
 };
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::{btree_map::Entry, BTreeMap, VecDeque};
 use std::error::Error;
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::TestkitError;
@@ -32,6 +37,10 @@ pub struct TableRuntimeScaffoldOutcome {
     mutable_frozen_tables: usize,
     raw_cursors: usize,
     immutable_builder_artifacts: usize,
+    immutable_table_readers: usize,
+    table_block_caches: usize,
+    table_bloom_filters: usize,
+    table_compactions: usize,
     error_sources: usize,
     stats: usize,
 }
@@ -92,6 +101,26 @@ impl TableRuntimeScaffoldOutcome {
         self.immutable_builder_artifacts
     }
 
+    /// Number of immutable table reader cases exercised.
+    pub const fn immutable_table_reader_cases(self) -> usize {
+        self.immutable_table_readers
+    }
+
+    /// Number of table block-cache cases exercised.
+    pub const fn table_block_cache_cases(self) -> usize {
+        self.table_block_caches
+    }
+
+    /// Number of table bloom/filter accelerator cases exercised.
+    pub const fn table_bloom_filter_cases(self) -> usize {
+        self.table_bloom_filters
+    }
+
+    /// Number of generic table compaction cases exercised.
+    pub const fn table_compaction_cases(self) -> usize {
+        self.table_compactions
+    }
+
     /// Number of error source-chain cases exercised.
     pub const fn error_source_cases(self) -> usize {
         self.error_sources
@@ -123,6 +152,10 @@ pub fn check_table_runtime_scaffold_contract(
         mutable_frozen_tables: 0,
         raw_cursors: 0,
         immutable_builder_artifacts: 0,
+        immutable_table_readers: 0,
+        table_block_caches: 0,
+        table_bloom_filters: 0,
+        table_compactions: 0,
         error_sources: 0,
         stats: 0,
     };
@@ -148,6 +181,14 @@ pub fn check_table_runtime_scaffold_contract(
     outcome.raw_cursors += 1;
     check_immutable_table_builder(script)?;
     outcome.immutable_builder_artifacts += 1;
+    check_immutable_table_reader(script)?;
+    outcome.immutable_table_readers += 1;
+    check_table_block_cache(script)?;
+    outcome.table_block_caches += 1;
+    check_table_bloom_filter(script)?;
+    outcome.table_bloom_filters += 1;
+    check_table_compaction(script)?;
+    outcome.table_compactions += 1;
 
     check_error_source_chain()?;
     outcome.error_sources += 1;
@@ -1638,6 +1679,1242 @@ fn assert_built_table_matches_model(
     Ok(())
 }
 
+fn check_immutable_table_reader(script: &[u8]) -> Result<(), TestkitError> {
+    let rows = generated_builder_table_rows(script)?;
+    let expected_rows = rows.iter().map(|row| row.row().clone()).collect::<Vec<_>>();
+    let target_data_block_size = 1 + u32::from(script_byte(script, 48));
+    let rows_per_block = 1 + usize::from(script_byte(script, 49) % 8);
+    let compression = if script_byte(script, 50) & 1 == 0 {
+        TableCompression::Uncompressed
+    } else {
+        TableCompression::Zstd
+    };
+    let config = TableReaderConfig::new(script_byte(script, 51) & 1 == 0, true);
+    let builder = ImmutableTableBuilder::new(
+        TableBuilderConfig::new(target_data_block_size, rows_per_block, compression)
+            .map_err(|err| TestkitError::new(format!("reader builder config failed: {err}")))?,
+    )
+    .map_err(|err| TestkitError::new(format!("reader builder setup failed: {err}")))?;
+    let identity = TableIdentity::new(format!("reader-{:02x}", script_byte(script, 52)))
+        .map_err(|err| TestkitError::new(format!("reader identity setup failed: {err}")))?;
+    let artifact = builder
+        .build_from_rows(identity.clone(), &rows)
+        .map_err(|err| TestkitError::new(format!("reader artifact build failed: {err}")))?;
+
+    let reader =
+        ImmutableTableReader::open_bytes(identity.clone(), artifact.bytes().to_vec(), config)
+            .map_err(|err| TestkitError::new(format!("reader bytes open failed: {err}")))?;
+    assert_immutable_reader_matches_model(
+        "generated byte reader",
+        &reader,
+        &artifact,
+        &rows,
+        &expected_rows,
+        config,
+    )?;
+
+    let source_reader = ImmutableTableReader::open_source(
+        identity.clone(),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        config,
+    )
+    .map_err(|err| TestkitError::new(format!("reader source open failed: {err}")))?;
+    assert_immutable_reader_matches_model(
+        "generated source reader",
+        &source_reader,
+        &artifact,
+        &rows,
+        &expected_rows,
+        config,
+    )?;
+
+    let mut corrupt = artifact.bytes().to_vec();
+    corrupt[0] = corrupt[0].wrapping_add(1);
+    match ImmutableTableReader::open_bytes(identity.clone(), corrupt, config) {
+        Err(TableRuntimeError::DecodeFormat { .. }) => {}
+        Err(err) => {
+            return Err(TestkitError::new(format!(
+                "expected corrupt reader bytes to produce decode error; got {err}"
+            )));
+        }
+        Ok(_) => return Err(TestkitError::new("corrupt reader bytes were accepted")),
+    }
+
+    match ImmutableTableReader::open_source(
+        identity,
+        ShortTableSource::new(artifact.into_bytes()),
+        config,
+    ) {
+        Err(TableRuntimeError::SourceRead { .. }) => {}
+        Err(err) => {
+            return Err(TestkitError::new(format!(
+                "expected short reader source to produce source error; got {err}"
+            )));
+        }
+        Ok(_) => return Err(TestkitError::new("short reader source was accepted")),
+    }
+
+    Ok(())
+}
+
+fn check_table_block_cache(script: &[u8]) -> Result<(), TestkitError> {
+    let cache = TableBlockCache::new(
+        TableCacheConfig::new(true, 12)
+            .map_err(|err| TestkitError::new(format!("cache config failed: {err}")))?,
+    );
+    let table_a = TableCacheTableId::new(vec![0xa0, script_byte(script, 56)])
+        .map_err(|err| TestkitError::new(format!("cache table id failed: {err}")))?;
+    let table_b = TableCacheTableId::new(vec![0xb0, script_byte(script, 57)])
+        .map_err(|err| TestkitError::new(format!("cache table id failed: {err}")))?;
+    let first = generated_cache_key(&table_a, TableBlockCacheKind::Data, 0, 4, Some(0))?;
+    let second = generated_cache_key(&table_a, TableBlockCacheKind::Index, 4, 4, Some(1))?;
+    let third = generated_cache_key(&table_a, TableBlockCacheKind::Data, 8, 8, Some(2))?;
+    let other_table = generated_cache_key(&table_b, TableBlockCacheKind::Data, 0, 4, Some(0))?;
+
+    expect_cache_inserted(cache.insert(first.clone(), arc_bytes(script_byte(script, 58), 4)))?;
+    expect_cache_hit(&cache, &first, script_byte(script, 58), 4)?;
+    expect_cache_duplicate(
+        cache.insert(first.clone(), arc_bytes(script_byte(script, 59), 4)),
+        script_byte(script, 58),
+        4,
+    )?;
+    expect_cache_inserted(cache.insert(second.clone(), arc_bytes(script_byte(script, 60), 4)))?;
+    expect_cache_hit(&cache, &first, script_byte(script, 58), 4)?;
+    expect_cache_inserted(cache.insert(third.clone(), arc_bytes(script_byte(script, 61), 8)))?;
+    if cache.stats().bytes() > cache.stats().capacity_bytes() {
+        return Err(TestkitError::new("cache exceeded capacity"));
+    }
+    if cache.get(&second).is_some() {
+        return Err(TestkitError::new(
+            "least-recent cache entry survived pressure",
+        ));
+    }
+    expect_cache_hit(&cache, &first, script_byte(script, 58), 4)?;
+    expect_cache_hit(&cache, &third, script_byte(script, 61), 8)?;
+
+    expect_cache_inserted(
+        cache.insert(other_table.clone(), arc_bytes(script_byte(script, 62), 4)),
+    )?;
+    if cache.remove_table(&table_a) == 0 || cache.get(&first).is_some() {
+        return Err(TestkitError::new("cache table removal failed"));
+    }
+    expect_cache_hit(&cache, &other_table, script_byte(script, 62), 4)?;
+
+    check_disabled_and_oversized_cache(script)?;
+    check_generated_cache_model(script)
+}
+
+fn check_disabled_and_oversized_cache(script: &[u8]) -> Result<(), TestkitError> {
+    let disabled = TableBlockCache::disabled();
+    let disabled_key = generated_cache_key(
+        &TableCacheTableId::new(b"disabled".to_vec())
+            .map_err(|err| TestkitError::new(format!("disabled cache id failed: {err}")))?,
+        TableBlockCacheKind::Data,
+        0,
+        4,
+        None,
+    )?;
+    match disabled
+        .insert(disabled_key.clone(), arc_bytes(script_byte(script, 63), 4))
+        .map_err(|err| TestkitError::new(format!("disabled cache insert failed: {err}")))?
+    {
+        CacheInsert::SkippedDisabled(_) => {}
+        other => {
+            return Err(TestkitError::new(format!(
+                "disabled cache returned unexpected insert result: {other:?}"
+            )));
+        }
+    }
+    if disabled.get(&disabled_key).is_some() || disabled.stats().entries() != 0 {
+        return Err(TestkitError::new("disabled cache stored an entry"));
+    }
+
+    let small = TableBlockCache::new(
+        TableCacheConfig::new(true, 2)
+            .map_err(|err| TestkitError::new(format!("small cache config failed: {err}")))?,
+    );
+    match small
+        .insert(disabled_key, arc_bytes(script_byte(script, 64), 4))
+        .map_err(|err| TestkitError::new(format!("oversized cache insert failed: {err}")))?
+    {
+        CacheInsert::SkippedOversized(_) => Ok(()),
+        other => Err(TestkitError::new(format!(
+            "oversized cache returned unexpected insert result: {other:?}"
+        ))),
+    }
+}
+
+fn check_generated_cache_model(script: &[u8]) -> Result<(), TestkitError> {
+    let enabled = script_byte(script, 88) % 3 != 0;
+    let initial_capacity = if enabled {
+        1 + usize::from(script_byte(script, 89) % 64)
+    } else {
+        0
+    };
+    let cache = TableBlockCache::new(
+        TableCacheConfig::new(enabled, initial_capacity)
+            .map_err(|err| TestkitError::new(format!("generated cache config failed: {err}")))?,
+    );
+    let mut model = GeneratedCacheModel::new(enabled, initial_capacity);
+    let operations = 32 + usize::from(script_byte(script, 90) % 32);
+
+    for step in 0..operations {
+        run_generated_cache_operation(script, step, &cache, &mut model)?;
+        assert_generated_cache_stats(&cache.stats(), &model)?;
+        let before = cache.stats();
+        let after = cache.stats();
+        if before != after {
+            return Err(TestkitError::new("cache stats read mutated cache state"));
+        }
+    }
+
+    Ok(())
+}
+
+fn run_generated_cache_operation(
+    script: &[u8],
+    step: usize,
+    cache: &TableBlockCache,
+    model: &mut GeneratedCacheModel,
+) -> Result<(), TestkitError> {
+    let key = generated_script_cache_key(script, step)?;
+    match generated_script_cache_byte(script, step, 91) % 6 {
+        0 => {
+            let expected_bytes = model.get(&key);
+            if cache.get(&key).map(|bytes| bytes.to_vec()) != expected_bytes {
+                return Err(TestkitError::new("generated cache get drifted"));
+            }
+        }
+        1 => {
+            let value = generated_script_cache_value(script, step);
+            let expected = model.insert(&key, value);
+            let observed = cache
+                .insert(key, Arc::<[u8]>::from(expected.input_bytes().to_vec()))
+                .map_err(|err| {
+                    TestkitError::new(format!("generated cache insert failed: {err}"))
+                })?;
+            assert_generated_cache_insert(observed, expected)?;
+        }
+        2 => {
+            let expected_removed = model.remove(&key);
+            if cache.remove(&key) != expected_removed {
+                return Err(TestkitError::new("generated cache remove drifted"));
+            }
+        }
+        3 => {
+            let table = generated_script_cache_table_id(script, step)?;
+            let expected_removed = model.remove_table(&table);
+            if cache.remove_table(&table) != expected_removed {
+                return Err(TestkitError::new("generated cache table removal drifted"));
+            }
+        }
+        4 => {
+            model.clear();
+            cache.clear();
+        }
+        _ => {
+            let capacity = generated_script_cache_capacity(script, step);
+            model.resize(capacity);
+            cache.resize(capacity);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GeneratedCacheInsert {
+    Inserted(Vec<u8>),
+    DuplicateExisting { stored: Vec<u8>, attempted: Vec<u8> },
+    SkippedDisabled(Vec<u8>),
+    SkippedOversized(Vec<u8>),
+}
+
+impl GeneratedCacheInsert {
+    fn input_bytes(&self) -> &[u8] {
+        match self {
+            Self::Inserted(bytes)
+            | Self::SkippedDisabled(bytes)
+            | Self::SkippedOversized(bytes) => bytes,
+            Self::DuplicateExisting { attempted, .. } => attempted,
+        }
+    }
+}
+
+struct GeneratedCacheModel {
+    enabled: bool,
+    capacity_bytes: usize,
+    bytes: usize,
+    entries: BTreeMap<TableBlockCacheKey, Vec<u8>>,
+    recency: VecDeque<TableBlockCacheKey>,
+    hits: u64,
+    misses: u64,
+    inserts: u64,
+    duplicate_inserts: u64,
+    evictions: u64,
+    removes: u64,
+    clears: u64,
+    skipped_oversized: u64,
+    skipped_disabled: u64,
+}
+
+impl GeneratedCacheModel {
+    fn new(enabled: bool, capacity_bytes: usize) -> Self {
+        Self {
+            enabled,
+            capacity_bytes,
+            bytes: 0,
+            entries: BTreeMap::new(),
+            recency: VecDeque::new(),
+            hits: 0,
+            misses: 0,
+            inserts: 0,
+            duplicate_inserts: 0,
+            evictions: 0,
+            removes: 0,
+            clears: 0,
+            skipped_oversized: 0,
+            skipped_disabled: 0,
+        }
+    }
+
+    fn get(&mut self, key: &TableBlockCacheKey) -> Option<Vec<u8>> {
+        if let Some(bytes) = self.entries.get(key).cloned() {
+            self.hits = self.hits.saturating_add(1);
+            model_touch_recency(&mut self.recency, key);
+            Some(bytes)
+        } else {
+            self.misses = self.misses.saturating_add(1);
+            None
+        }
+    }
+
+    fn insert(&mut self, key: &TableBlockCacheKey, bytes: Vec<u8>) -> GeneratedCacheInsert {
+        if !self.enabled {
+            self.skipped_disabled = self.skipped_disabled.saturating_add(1);
+            return GeneratedCacheInsert::SkippedDisabled(bytes);
+        }
+        if let Some(stored) = self.entries.get(key).cloned() {
+            self.duplicate_inserts = self.duplicate_inserts.saturating_add(1);
+            model_touch_recency(&mut self.recency, key);
+            return GeneratedCacheInsert::DuplicateExisting {
+                stored,
+                attempted: bytes,
+            };
+        }
+        if bytes.len() > self.capacity_bytes {
+            self.skipped_oversized = self.skipped_oversized.saturating_add(1);
+            return GeneratedCacheInsert::SkippedOversized(bytes);
+        }
+        self.evict_to_fit(bytes.len());
+        if self.bytes.saturating_add(bytes.len()) > self.capacity_bytes {
+            self.skipped_oversized = self.skipped_oversized.saturating_add(1);
+            return GeneratedCacheInsert::SkippedOversized(bytes);
+        }
+
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        self.entries.insert(key.clone(), bytes.clone());
+        model_touch_recency(&mut self.recency, key);
+        self.inserts = self.inserts.saturating_add(1);
+        GeneratedCacheInsert::Inserted(bytes)
+    }
+
+    fn remove(&mut self, key: &TableBlockCacheKey) -> bool {
+        if let Some(bytes) = self.entries.remove(key) {
+            self.bytes = self.bytes.saturating_sub(bytes.len());
+            model_remove_from_recency(&mut self.recency, key);
+            self.removes = self.removes.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remove_table(&mut self, table: &TableCacheTableId) -> usize {
+        let keys = self
+            .entries
+            .keys()
+            .filter(|key| key.table() == table)
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed = keys.len();
+        for key in keys {
+            self.remove(&key);
+        }
+        removed
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.recency.clear();
+        self.bytes = 0;
+        self.clears = self.clears.saturating_add(1);
+    }
+
+    fn resize(&mut self, capacity_bytes: usize) {
+        self.capacity_bytes = capacity_bytes;
+        while self.bytes > self.capacity_bytes {
+            if !self.evict_one() {
+                break;
+            }
+        }
+    }
+
+    fn evict_to_fit(&mut self, incoming_bytes: usize) {
+        while self.bytes.saturating_add(incoming_bytes) > self.capacity_bytes {
+            if !self.evict_one() {
+                break;
+            }
+        }
+    }
+
+    fn evict_one(&mut self) -> bool {
+        while let Some(key) = self.recency.pop_front() {
+            if let Some(bytes) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(bytes.len());
+                self.evictions = self.evictions.saturating_add(1);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn assert_generated_cache_insert(
+    observed: CacheInsert,
+    expected: GeneratedCacheInsert,
+) -> Result<(), TestkitError> {
+    match (observed, expected) {
+        (CacheInsert::Inserted(bytes), GeneratedCacheInsert::Inserted(expected_bytes))
+        | (
+            CacheInsert::SkippedDisabled(bytes),
+            GeneratedCacheInsert::SkippedDisabled(expected_bytes),
+        )
+        | (
+            CacheInsert::SkippedOversized(bytes),
+            GeneratedCacheInsert::SkippedOversized(expected_bytes),
+        ) if bytes.as_ref() == expected_bytes.as_slice() => Ok(()),
+        (
+            CacheInsert::DuplicateExisting(bytes),
+            GeneratedCacheInsert::DuplicateExisting { stored, .. },
+        ) if bytes.as_ref() == stored.as_slice() => Ok(()),
+        (observed, expected) => Err(TestkitError::new(format!(
+            "generated cache insert drifted: observed {observed:?}, expected {expected:?}"
+        ))),
+    }
+}
+
+fn assert_generated_cache_stats(
+    stats: &TableBlockCacheStats,
+    model: &GeneratedCacheModel,
+) -> Result<(), TestkitError> {
+    if stats.entries() != model.entries.len()
+        || stats.bytes() != model.bytes
+        || stats.capacity_bytes() != model.capacity_bytes
+        || stats.hits() != model.hits
+        || stats.misses() != model.misses
+        || stats.inserts() != model.inserts
+        || stats.duplicate_inserts() != model.duplicate_inserts
+        || stats.evictions() != model.evictions
+        || stats.removes() != model.removes
+        || stats.clears() != model.clears
+        || stats.skipped_oversized() != model.skipped_oversized
+        || stats.skipped_disabled() != model.skipped_disabled
+        || stats.bytes() > stats.capacity_bytes()
+    {
+        return Err(TestkitError::new(
+            "generated cache stats drifted from model",
+        ));
+    }
+    Ok(())
+}
+
+fn model_touch_recency(recency: &mut VecDeque<TableBlockCacheKey>, key: &TableBlockCacheKey) {
+    model_remove_from_recency(recency, key);
+    recency.push_back(key.clone());
+}
+
+fn model_remove_from_recency(recency: &mut VecDeque<TableBlockCacheKey>, key: &TableBlockCacheKey) {
+    if let Some(index) = recency.iter().position(|candidate| candidate == key) {
+        recency.remove(index);
+    }
+}
+
+fn generated_script_cache_key(
+    script: &[u8],
+    step: usize,
+) -> Result<TableBlockCacheKey, TestkitError> {
+    let table = generated_script_cache_table_id(script, step)?;
+    let kind = match generated_script_cache_byte(script, step, 23) % 4 {
+        0 => TableBlockCacheKind::Data,
+        1 => TableBlockCacheKind::Index,
+        2 => TableBlockCacheKind::Properties,
+        _ => TableBlockCacheKind::Accelerator,
+    };
+    generated_cache_key(
+        &table,
+        kind,
+        u64::from(generated_script_cache_byte(script, step, 37) % 16).saturating_mul(4),
+        1 + u32::from(generated_script_cache_byte(script, step, 41) % 16),
+        Some(u32::from(
+            generated_script_cache_byte(script, step, 43) % 16,
+        )),
+    )
+}
+
+fn generated_script_cache_table_id(
+    script: &[u8],
+    step: usize,
+) -> Result<TableCacheTableId, TestkitError> {
+    TableCacheTableId::new(vec![
+        b'g',
+        generated_script_cache_byte(script, step, 11) % 4,
+        generated_script_cache_byte(script, step, 17),
+    ])
+    .map_err(|err| TestkitError::new(format!("generated cache table id failed: {err}")))
+}
+
+fn generated_script_cache_value(script: &[u8], step: usize) -> Vec<u8> {
+    let len = 1 + usize::from(generated_script_cache_byte(script, step, 53) % 96);
+    vec![generated_script_cache_byte(script, step, 59); len]
+}
+
+fn generated_script_cache_capacity(script: &[u8], step: usize) -> usize {
+    match generated_script_cache_byte(script, step, 67) % 6 {
+        0 => 0,
+        1 => 1,
+        2 => 4,
+        3 => 16,
+        4 => 64,
+        _ => 128,
+    }
+}
+
+fn generated_script_cache_byte(script: &[u8], step: usize, salt: usize) -> u8 {
+    let base = if script.is_empty() {
+        0
+    } else {
+        script[(step.saturating_mul(37).saturating_add(salt)) % script.len()]
+    };
+    base.wrapping_add(
+        u8::try_from(step % 251)
+            .expect("step residue fits u8")
+            .wrapping_mul(17),
+    )
+    .wrapping_add(u8::try_from(salt % 251).expect("salt residue fits u8"))
+}
+
+fn check_table_bloom_filter(script: &[u8]) -> Result<(), TestkitError> {
+    let first = deterministic_physical_key(1, "cache", 0x20, generated_user_key(script, 65))?;
+    let second = deterministic_physical_key(1, "cache", 0x21, generated_user_key(script, 73))?;
+    let third = deterministic_physical_key(2, "cache", 0x20, generated_user_key(script, 81))?;
+    let first_key = TablePhysicalKeyBytes::from_physical_key(&first);
+    let second_key = TablePhysicalKeyBytes::from_physical_key(&second);
+    let third_key = TablePhysicalKeyBytes::from_physical_key(&third);
+    let keys = vec![
+        first_key.as_slice(),
+        second_key.as_slice(),
+        third_key.as_slice(),
+    ];
+    let filter = TableBloomFilter::build(keys.clone(), 10)
+        .map_err(|err| TestkitError::new(format!("bloom build failed: {err}")))?;
+
+    for key in keys {
+        if filter.might_contain(key) == TableBloomProbe::DefinitelyAbsent {
+            return Err(TestkitError::new("bloom filter produced a false negative"));
+        }
+    }
+    let absent = TablePhysicalKeyBytes::from_physical_key(&deterministic_physical_key(
+        0xfe,
+        "cache",
+        0x20,
+        b"absent".to_vec(),
+    )?);
+    if !matches!(
+        filter.might_contain(absent.as_slice()),
+        TableBloomProbe::DefinitelyAbsent | TableBloomProbe::MaybePresent
+    ) {
+        return Err(TestkitError::new(
+            "bloom filter returned non-conservative absence",
+        ));
+    }
+
+    let empty = TableBloomFilter::build(Vec::<&[u8]>::new(), 10)
+        .map_err(|err| TestkitError::new(format!("empty bloom build failed: {err}")))?;
+    if !empty.is_empty() || empty.might_contain(b"anything") != TableBloomProbe::DefinitelyAbsent {
+        return Err(TestkitError::new("empty bloom filter facts drifted"));
+    }
+    expect_invalid_config(TableBloomFilter::build([b"key".as_slice()], 0))?;
+    Ok(())
+}
+
+fn check_table_compaction(script: &[u8]) -> Result<(), TestkitError> {
+    let rows = generated_builder_table_rows(script)?;
+    let expected_rows = rows.iter().map(|row| row.row().clone()).collect::<Vec<_>>();
+    let source_count = 1 + usize::from(script_byte(script, 88) % 4);
+    let sources = generated_compaction_sources(&rows, source_count, "generated")?;
+    let compactor = generated_compactor(script, 89, 1_024)?;
+
+    check_keep_all_compaction(
+        script,
+        &rows,
+        &expected_rows,
+        &sources,
+        source_count,
+        &compactor,
+    )?;
+    check_policy_compaction(
+        script,
+        &rows,
+        &expected_rows,
+        &sources,
+        source_count,
+        &compactor,
+    )?;
+    assert_compaction_rejects_duplicate_and_output_limit(script)?;
+    Ok(())
+}
+
+fn check_keep_all_compaction(
+    script: &[u8],
+    rows: &[TableRow],
+    expected_rows: &[StorageRow],
+    sources: &[TableCompactionSource],
+    source_count: usize,
+    compactor: &TableCompactor,
+) -> Result<(), TestkitError> {
+    let keep_identity = TableIdentity::new(format!("compact-keep-{:02x}", script_byte(script, 90)))
+        .map_err(|err| TestkitError::new(format!("compaction identity failed: {err}")))?;
+    let mut keep_all = KeepAllTableCompactionPolicy;
+    let keep_all_output = compactor
+        .compact(&keep_identity, sources, &mut keep_all)
+        .map_err(|err| TestkitError::new(format!("keep-all compaction failed: {err}")))?;
+    assert_compaction_output_matches_model(
+        "keep-all compaction",
+        &keep_all_output,
+        expected_rows,
+        source_count,
+        rows.len() as u64,
+        rows.len() as u64,
+        0,
+    )?;
+    let mut repeat_keep_all = KeepAllTableCompactionPolicy;
+    let repeated_output = compactor
+        .compact(&keep_identity, sources, &mut repeat_keep_all)
+        .map_err(|err| TestkitError::new(format!("repeat compaction failed: {err}")))?;
+    assert_compaction_output_matches_model(
+        "repeat keep-all compaction",
+        &repeated_output,
+        expected_rows,
+        source_count,
+        rows.len() as u64,
+        rows.len() as u64,
+        0,
+    )?;
+    assert_compaction_outputs_byte_identical(
+        "repeat keep-all compaction",
+        &keep_all_output,
+        &repeated_output,
+    )?;
+
+    let regrouped_count = if source_count == 1 { 2 } else { 1 };
+    let regrouped_sources = generated_compaction_sources(rows, regrouped_count, "regrouped")?;
+    let mut regrouped_keep_all = KeepAllTableCompactionPolicy;
+    let regrouped_output = compactor
+        .compact(&keep_identity, &regrouped_sources, &mut regrouped_keep_all)
+        .map_err(|err| TestkitError::new(format!("regrouped compaction failed: {err}")))?;
+    assert_compaction_output_matches_model(
+        "regrouped keep-all compaction",
+        &regrouped_output,
+        expected_rows,
+        regrouped_count,
+        rows.len() as u64,
+        rows.len() as u64,
+        0,
+    )?;
+    assert_compaction_outputs_byte_identical(
+        "regrouped keep-all compaction",
+        &keep_all_output,
+        &regrouped_output,
+    )?;
+    Ok(())
+}
+
+fn check_policy_compaction(
+    script: &[u8],
+    rows: &[TableRow],
+    expected_rows: &[StorageRow],
+    sources: &[TableCompactionSource],
+    source_count: usize,
+    compactor: &TableCompactor,
+) -> Result<(), TestkitError> {
+    let drop_mod = 2 + u64::from(script_byte(script, 91) % 5);
+    let mut drop_policy = |context: &crate::table::TableCompactionRowContext<'_>,
+                           row: &TableRow| {
+        if context.merged_row_index() % drop_mod == 0 {
+            Ok(TableCompactionDecision::drop(compaction_drop_reason(row)))
+        } else {
+            Ok(TableCompactionDecision::Keep)
+        }
+    };
+    let policy_output = compactor
+        .compact(
+            &TableIdentity::new(format!("compact-policy-{:02x}", script_byte(script, 92)))
+                .map_err(|err| TestkitError::new(format!("policy identity failed: {err}")))?,
+            sources,
+            &mut drop_policy,
+        )
+        .map_err(|err| TestkitError::new(format!("policy compaction failed: {err}")))?;
+    let expected_kept = expected_rows
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| (u64::try_from(*index).expect("bounded index") % drop_mod) != 0)
+        .map(|(_, row)| row.clone())
+        .collect::<Vec<_>>();
+    let expected_dropped = expected_rows.len().saturating_sub(expected_kept.len()) as u64;
+    assert_compaction_output_matches_model(
+        "policy compaction",
+        &policy_output,
+        &expected_kept,
+        source_count,
+        rows.len() as u64,
+        expected_kept.len() as u64,
+        expected_dropped,
+    )?;
+    if policy_output
+        .report()
+        .drop_summaries()
+        .iter()
+        .map(|summary| summary.rows())
+        .sum::<u64>()
+        != expected_dropped
+    {
+        return Err(TestkitError::new(
+            "generated compaction drop summaries did not add up",
+        ));
+    }
+
+    Ok(())
+}
+
+fn generated_compactor(
+    script: &[u8],
+    offset: usize,
+    max_output_tables: usize,
+) -> Result<TableCompactor, TestkitError> {
+    let target_output_bytes = 1 + u64::from(script_byte(script, offset));
+    let rows_per_block = 1 + usize::from(script_byte(script, offset + 1) % 8);
+    let compression = if script_byte(script, offset + 2) & 1 == 0 {
+        TableCompression::Uncompressed
+    } else {
+        TableCompression::Zstd
+    };
+    TableCompactor::new(
+        TableCompactionConfig::new(target_output_bytes, max_output_tables)
+            .map_err(|err| TestkitError::new(format!("compaction config failed: {err}")))?,
+        TableBuilderConfig::new(
+            1 + u32::from(script_byte(script, offset + 3)),
+            rows_per_block,
+            compression,
+        )
+        .map_err(|err| TestkitError::new(format!("compaction builder config failed: {err}")))?,
+    )
+    .map_err(|err| TestkitError::new(format!("compactor setup failed: {err}")))
+}
+
+fn generated_compaction_sources(
+    rows: &[TableRow],
+    source_count: usize,
+    label: &'static str,
+) -> Result<Vec<TableCompactionSource>, TestkitError> {
+    let mut buckets = vec![Vec::<TableRow>::new(); source_count];
+    for (index, row) in rows.iter().cloned().enumerate() {
+        buckets[index % source_count].push(row);
+    }
+    buckets
+        .into_iter()
+        .enumerate()
+        .map(|(index, bucket)| {
+            let id = TableCompactionSourceId::new(format!("{label}-{index}"))
+                .map_err(|err| TestkitError::new(format!("source id setup failed: {err}")))?;
+            TableCompactionSource::from_rows(id, bucket)
+                .map_err(|err| TestkitError::new(format!("source setup failed: {err}")))
+        })
+        .collect()
+}
+
+fn compaction_drop_reason(row: &TableRow) -> TableCompactionDropReason {
+    if row.is_tombstone() {
+        TableCompactionDropReason::TombstoneElided
+    } else if row.expires_at() != Timestamp::EPOCH {
+        TableCompactionDropReason::Expired
+    } else if row.commit_version().as_u64() % 2 == 0 {
+        TableCompactionDropReason::OlderVersion
+    } else {
+        TableCompactionDropReason::CallerSelected
+    }
+}
+
+fn assert_compaction_output_matches_model(
+    label: &'static str,
+    output: &crate::table::TableCompactionOutput,
+    expected_rows: &[StorageRow],
+    expected_input_sources: usize,
+    expected_input_rows: u64,
+    expected_kept_rows: u64,
+    expected_dropped_rows: u64,
+) -> Result<(), TestkitError> {
+    let actual_rows = compaction_output_rows(output)?;
+    if actual_rows != expected_rows {
+        return Err(TestkitError::new(format!(
+            "{label} rows did not match generated model"
+        )));
+    }
+    let actual_table_rows = actual_rows
+        .iter()
+        .cloned()
+        .map(TableRow::new)
+        .collect::<Vec<_>>();
+    validate_strictly_sorted_unique_rows(&actual_table_rows).map_err(|err| {
+        TestkitError::new(format!("{label} concatenated output rows invalid: {err}"))
+    })?;
+    if output.report().input_rows() != expected_input_rows
+        || output.report().input_sources() != expected_input_sources
+        || output.report().kept_rows() != expected_kept_rows
+        || output.report().dropped_rows() != expected_dropped_rows
+        || output.report().output_tables() != output.artifacts().len()
+    {
+        return Err(TestkitError::new(format!("{label} report drifted")));
+    }
+    let output_bytes = output
+        .artifacts()
+        .iter()
+        .map(BuiltTableArtifact::byte_count)
+        .sum::<u64>();
+    if output.report().output_bytes() != output_bytes {
+        return Err(TestkitError::new(format!(
+            "{label} output byte report drifted"
+        )));
+    }
+    if output.artifacts().is_empty() {
+        if output.report().split_count() != 0 {
+            return Err(TestkitError::new(format!(
+                "{label} empty split count drifted"
+            )));
+        }
+    } else if output.report().split_count() != output.artifacts().len().saturating_sub(1) as u64 {
+        return Err(TestkitError::new(format!("{label} split count drifted")));
+    }
+
+    assert_compaction_artifacts_match_model(label, output)?;
+    Ok(())
+}
+
+fn assert_compaction_artifacts_match_model(
+    label: &'static str,
+    output: &crate::table::TableCompactionOutput,
+) -> Result<(), TestkitError> {
+    let mut identities = Vec::new();
+    for artifact in output.artifacts() {
+        identities.push(artifact.facts().identity().as_str().to_owned());
+        assert_compaction_artifact_matches_model(label, artifact)?;
+    }
+    identities.sort();
+    identities.dedup();
+    if identities.len() != output.artifacts().len() {
+        return Err(TestkitError::new(format!(
+            "{label} output identities were not distinct"
+        )));
+    }
+    Ok(())
+}
+
+fn assert_compaction_artifact_matches_model(
+    label: &'static str,
+    artifact: &BuiltTableArtifact,
+) -> Result<(), TestkitError> {
+    let decoded = decode_immutable_table(artifact.bytes())
+        .map_err(|err| TestkitError::new(format!("{label} decode failed: {err}")))?;
+    let decoded_rows = decoded
+        .rows()
+        .iter()
+        .cloned()
+        .map(TableRow::new)
+        .collect::<Vec<_>>();
+    validate_strictly_sorted_unique_rows(&decoded_rows)
+        .map_err(|err| TestkitError::new(format!("{label} artifact rows invalid: {err}")))?;
+    let reader = ImmutableTableReader::open_bytes(
+        artifact.facts().identity().clone(),
+        artifact.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .map_err(|err| TestkitError::new(format!("{label} reader open failed: {err}")))?;
+    let reader_rows = reader
+        .rows()
+        .iter()
+        .map(|row| row.row().clone())
+        .collect::<Vec<_>>();
+    if decoded.rows().is_empty()
+        || artifact.facts().row_count() != decoded.rows().len() as u64
+        || artifact.facts().byte_count() != artifact.bytes().len() as u64
+        || reader_rows.as_slice() != decoded.rows()
+    {
+        return Err(TestkitError::new(format!("{label} artifact facts drifted")));
+    }
+    assert_compaction_artifact_ranges_match_model(label, artifact, &decoded_rows, decoded.rows())
+}
+
+fn assert_compaction_artifact_ranges_match_model(
+    label: &'static str,
+    artifact: &BuiltTableArtifact,
+    decoded_rows: &[TableRow],
+    storage_rows: &[StorageRow],
+) -> Result<(), TestkitError> {
+    let first_row = decoded_rows
+        .first()
+        .ok_or_else(|| TestkitError::new(format!("{label} artifact had no first row")))?;
+    let last_row = decoded_rows
+        .last()
+        .ok_or_else(|| TestkitError::new(format!("{label} artifact had no last row")))?;
+    if artifact.facts().key_range().first_key() != first_row.encoded_key()
+        || artifact.facts().key_range().last_key() != last_row.encoded_key()
+    {
+        return Err(TestkitError::new(format!("{label} key range drifted")));
+    }
+    let commit_min = storage_rows
+        .iter()
+        .map(StorageRow::commit_version)
+        .min()
+        .ok_or_else(|| TestkitError::new(format!("{label} commit min missing")))?;
+    let commit_max = storage_rows
+        .iter()
+        .map(StorageRow::commit_version)
+        .max()
+        .ok_or_else(|| TestkitError::new(format!("{label} commit max missing")))?;
+    if artifact.facts().commit_range().min() != commit_min
+        || artifact.facts().commit_range().max() != commit_max
+    {
+        return Err(TestkitError::new(format!("{label} commit range drifted")));
+    }
+    Ok(())
+}
+
+fn assert_compaction_outputs_byte_identical(
+    label: &'static str,
+    left: &crate::table::TableCompactionOutput,
+    right: &crate::table::TableCompactionOutput,
+) -> Result<(), TestkitError> {
+    let left_bytes = left
+        .artifacts()
+        .iter()
+        .map(BuiltTableArtifact::bytes)
+        .collect::<Vec<_>>();
+    let right_bytes = right
+        .artifacts()
+        .iter()
+        .map(BuiltTableArtifact::bytes)
+        .collect::<Vec<_>>();
+    if left_bytes != right_bytes {
+        return Err(TestkitError::new(format!(
+            "{label} did not produce byte-identical artifacts"
+        )));
+    }
+    Ok(())
+}
+
+fn compaction_output_rows(
+    output: &crate::table::TableCompactionOutput,
+) -> Result<Vec<StorageRow>, TestkitError> {
+    let mut rows = Vec::new();
+    for artifact in output.artifacts() {
+        let decoded = decode_immutable_table(artifact.bytes()).map_err(|err| {
+            TestkitError::new(format!("compaction artifact decode failed: {err}"))
+        })?;
+        rows.extend_from_slice(decoded.rows());
+    }
+    Ok(rows)
+}
+
+fn assert_compaction_rejects_duplicate_and_output_limit(script: &[u8]) -> Result<(), TestkitError> {
+    let duplicate = TableRow::new(StorageRow::put(
+        deterministic_physical_key(0xd1, "compact", 0x20, b"duplicate".to_vec())?,
+        CommitVersion::new(1),
+        Timestamp::from_micros(1),
+        Timestamp::EPOCH,
+        vec![1],
+    ));
+    let sources = vec![
+        TableCompactionSource::from_rows(
+            TableCompactionSourceId::new("left")
+                .map_err(|err| TestkitError::new(format!("left id failed: {err}")))?,
+            vec![duplicate.clone()],
+        )
+        .map_err(|err| TestkitError::new(format!("left duplicate setup failed: {err}")))?,
+        TableCompactionSource::from_rows(
+            TableCompactionSourceId::new("right")
+                .map_err(|err| TestkitError::new(format!("right id failed: {err}")))?,
+            vec![duplicate],
+        )
+        .map_err(|err| TestkitError::new(format!("right duplicate setup failed: {err}")))?,
+    ];
+    let mut keep_all = KeepAllTableCompactionPolicy;
+    match generated_compactor(script, 96, 4)?.compact(
+        &TableIdentity::new("compact-duplicate")
+            .map_err(|err| TestkitError::new(format!("duplicate identity failed: {err}")))?,
+        &sources,
+        &mut keep_all,
+    ) {
+        Err(TableRuntimeError::DuplicateInternalKey { .. }) => {}
+        Err(err) => {
+            return Err(TestkitError::new(format!(
+                "expected duplicate compaction error; got {err}"
+            )));
+        }
+        Ok(_) => return Err(TestkitError::new("duplicate compaction input was accepted")),
+    }
+
+    let rows = [
+        TableRow::new(StorageRow::put(
+            deterministic_physical_key(0xd2, "compact", 0x20, b"alpha".to_vec())?,
+            CommitVersion::new(1),
+            Timestamp::from_micros(1),
+            Timestamp::EPOCH,
+            vec![1; 64],
+        )),
+        TableRow::new(StorageRow::put(
+            deterministic_physical_key(0xd3, "compact", 0x20, b"bravo".to_vec())?,
+            CommitVersion::new(1),
+            Timestamp::from_micros(1),
+            Timestamp::EPOCH,
+            vec![2; 64],
+        )),
+    ];
+    let source = TableCompactionSource::from_rows(
+        TableCompactionSourceId::new("limit")
+            .map_err(|err| TestkitError::new(format!("limit id failed: {err}")))?,
+        rows.to_vec(),
+    )
+    .map_err(|err| TestkitError::new(format!("limit source setup failed: {err}")))?;
+    let limited = TableCompactor::new(
+        TableCompactionConfig::new(1, 1)
+            .map_err(|err| TestkitError::new(format!("limit config failed: {err}")))?,
+        TableBuilderConfig::new(1, 1, TableCompression::Uncompressed)
+            .map_err(|err| TestkitError::new(format!("limit builder config failed: {err}")))?,
+    )
+    .map_err(|err| TestkitError::new(format!("limit compactor failed: {err}")))?;
+    match limited.compact(
+        &TableIdentity::new("compact-limit")
+            .map_err(|err| TestkitError::new(format!("limit identity failed: {err}")))?,
+        &[source],
+        &mut keep_all,
+    ) {
+        Err(TableRuntimeError::InvalidRange {
+            field: "max_output_tables",
+        }) => {}
+        Err(err) => {
+            return Err(TestkitError::new(format!(
+                "expected max-output compaction error; got {err}"
+            )));
+        }
+        Ok(_) => return Err(TestkitError::new("compaction output limit was accepted")),
+    }
+
+    Ok(())
+}
+
+fn generated_cache_key(
+    table: &TableCacheTableId,
+    kind: TableBlockCacheKind,
+    offset: u64,
+    length: u32,
+    ordinal: Option<u32>,
+) -> Result<TableBlockCacheKey, TestkitError> {
+    let address = TableBlockAddress::new(kind, offset, length, ordinal)
+        .map_err(|err| TestkitError::new(format!("cache address setup failed: {err}")))?;
+    Ok(TableBlockCacheKey::new(table.clone(), address))
+}
+
+fn arc_bytes(byte: u8, len: usize) -> Arc<[u8]> {
+    Arc::<[u8]>::from(vec![byte; len])
+}
+
+fn expect_cache_inserted(result: TableRuntimeResult<CacheInsert>) -> Result<(), TestkitError> {
+    match result.map_err(|err| TestkitError::new(format!("cache insert failed: {err}")))? {
+        CacheInsert::Inserted(_) => Ok(()),
+        other => Err(TestkitError::new(format!(
+            "expected cache insert; got {other:?}"
+        ))),
+    }
+}
+
+fn expect_cache_duplicate(
+    result: TableRuntimeResult<CacheInsert>,
+    byte: u8,
+    len: usize,
+) -> Result<(), TestkitError> {
+    match result.map_err(|err| TestkitError::new(format!("cache duplicate failed: {err}")))? {
+        CacheInsert::DuplicateExisting(bytes) if bytes.as_ref() == vec![byte; len].as_slice() => {
+            Ok(())
+        }
+        other => Err(TestkitError::new(format!(
+            "expected cache duplicate; got {other:?}"
+        ))),
+    }
+}
+
+fn expect_cache_hit(
+    cache: &TableBlockCache,
+    key: &TableBlockCacheKey,
+    byte: u8,
+    len: usize,
+) -> Result<(), TestkitError> {
+    match cache.get(key) {
+        Some(bytes) if bytes.as_ref() == vec![byte; len].as_slice() => Ok(()),
+        Some(_) => Err(TestkitError::new("cache hit returned wrong bytes")),
+        None => Err(TestkitError::new("expected cache hit")),
+    }
+}
+
+fn assert_immutable_reader_matches_model(
+    label: &'static str,
+    reader: &ImmutableTableReader,
+    artifact: &BuiltTableArtifact,
+    rows: &[TableRow],
+    expected_rows: &[StorageRow],
+    expected_config: TableReaderConfig,
+) -> Result<(), TestkitError> {
+    if reader.config() != expected_config
+        || reader.facts() != artifact.facts()
+        || reader.byte_count() != artifact.byte_count()
+    {
+        return Err(TestkitError::new(format!("{label} reader facts drifted")));
+    }
+
+    let actual_rows = reader
+        .rows()
+        .iter()
+        .map(|row| row.row().clone())
+        .collect::<Vec<_>>();
+    if actual_rows != expected_rows {
+        return Err(TestkitError::new(format!(
+            "{label} rows did not match generated model"
+        )));
+    }
+
+    let expected_keys = rows.iter().map(table_row_key_bytes).collect::<Vec<_>>();
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} cursor seek failed: {err}")))?;
+    assert_cursor_keys(label, &mut cursor, &expected_keys)?;
+
+    for row in [rows.first(), rows.get(rows.len() / 2), rows.last()]
+        .into_iter()
+        .flatten()
+    {
+        let exact = reader.get_exact(row.key());
+        if exact.as_ref() != Some(row) {
+            return Err(TestkitError::new(format!(
+                "{label} exact lookup missed generated row"
+            )));
+        }
+    }
+
+    let absent = TableInternalKeyBytes::from_row(&StorageRow::put(
+        deterministic_physical_key(0xfe, "reader", 0x20, b"absent".to_vec())?,
+        CommitVersion::new(u64::MAX),
+        Timestamp::from_micros(u64::MAX),
+        Timestamp::EPOCH,
+        Vec::new(),
+    ));
+    let missing = reader.get_exact(&absent);
+    if missing.is_some() {
+        return Err(TestkitError::new(format!(
+            "{label} returned a row for an absent key"
+        )));
+    }
+
+    let target = rows[rows.len() / 2].key().clone();
+    let mut cursor = reader.cursor();
+    cursor
+        .seek(&target)
+        .map_err(|err| TestkitError::new(format!("{label} cursor target seek failed: {err}")))?;
+    let expected_seek = rows
+        .iter()
+        .find(|row| row.key() >= &target)
+        .map(table_row_key_bytes);
+    if cursor.current_key().map(|key| key.as_slice().to_vec()) != expected_seek {
+        return Err(TestkitError::new(format!(
+            "{label} target seek did not match generated model"
+        )));
+    }
+
+    let lower = rows[rows.len() / 3].key().clone();
+    let upper = rows[(rows.len() * 2) / 3].key().clone();
+    let bounds = TableKeyBounds::closed(lower, upper)
+        .map_err(|err| TestkitError::new(format!("{label} bounds setup failed: {err}")))?;
+    assert_reader_bounds_match_model(label, reader, bounds, rows)?;
+
+    let prefix = TablePhysicalKeyBytes::from_row(rows[0].row());
+    assert_reader_bounds_match_model(
+        label,
+        reader,
+        TableKeyBounds::prefix(prefix.as_slice().to_vec()),
+        rows,
+    )?;
+
+    Ok(())
+}
+
+fn assert_reader_bounds_match_model(
+    label: &'static str,
+    reader: &ImmutableTableReader,
+    bounds: TableKeyBounds,
+    rows: &[TableRow],
+) -> Result<(), TestkitError> {
+    let expected = rows
+        .iter()
+        .filter(|row| bounds.contains_key(row.key()))
+        .map(table_row_key_bytes)
+        .collect::<Vec<_>>();
+    let mut cursor = reader.bounded_cursor(bounds);
+    cursor
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} bounded reader seek failed: {err}")))?;
+    assert_cursor_keys(label, &mut cursor, &expected)
+}
+
+struct ShortTableSource {
+    bytes: Vec<u8>,
+}
+
+impl ShortTableSource {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+impl TableByteSource for ShortTableSource {
+    fn byte_count(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
+        let start = usize::try_from(offset).map_err(|_| TableRuntimeError::InvalidRange {
+            field: "byte_offset",
+        })?;
+        let end = start
+            .checked_add(len)
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "byte_range",
+            })?
+            .min(self.bytes.len());
+        if end == start {
+            return Ok(Vec::new());
+        }
+        Ok(self.bytes[start..end - 1].to_vec())
+    }
+}
+
 fn expect_invalid_config<T>(result: Result<T, TableRuntimeError>) -> Result<(), TestkitError> {
     match result {
         Err(TableRuntimeError::InvalidConfig { .. }) => Ok(()),
@@ -1826,6 +3103,10 @@ mod tests {
         assert_eq!(outcome.mutable_frozen_table_cases(), 1);
         assert_eq!(outcome.raw_cursor_cases(), 1);
         assert_eq!(outcome.immutable_builder_artifact_cases(), 1);
+        assert_eq!(outcome.immutable_table_reader_cases(), 1);
+        assert_eq!(outcome.table_block_cache_cases(), 1);
+        assert_eq!(outcome.table_bloom_filter_cases(), 1);
+        assert_eq!(outcome.table_compaction_cases(), 1);
         assert_eq!(outcome.error_source_cases(), 1);
         assert_eq!(outcome.stats_cases(), 1);
     }

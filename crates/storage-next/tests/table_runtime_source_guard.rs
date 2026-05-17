@@ -161,6 +161,39 @@ fn table_runtime_source_does_not_create_process_global_cache_state() {
 }
 
 #[test]
+fn table_runtime_source_does_not_use_unsafe_or_old_cache_identity() {
+    let root = common::crate_root();
+
+    for file in table_runtime_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read table runtime source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_forbidden_unsafe_or_old_cache_identity(line),
+                "{}:{} uses unsafe code or old cache identity vocabulary: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn table_runtime_compaction_source_does_not_embed_retention_policy_terms() {
+    let root = common::crate_root();
+    let file = root.join("src/table/compaction.rs");
+    let text = fs::read_to_string(&file).expect("read table compaction source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_compaction_policy_vocabulary(line),
+            "{}:{} embeds higher-layer compaction policy vocabulary: {line}",
+            file.strip_prefix(&root).unwrap_or(&file).display(),
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn table_runtime_stays_crate_private() {
     let root = common::crate_root();
     let lib = fs::read_to_string(root.join("src/lib.rs")).expect("read lib.rs");
@@ -317,6 +350,38 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
     }
 }
 
+#[test]
+fn table_runtime_dependency_guard_catches_cache_identity_terms() {
+    for line in [
+        "unsafe { do_work(); }",
+        "unsafe fn open() {}",
+        "let _ = file_path_hash(path);",
+        "let file_id = 7;",
+        "global_cache().get();",
+    ] {
+        assert!(
+            contains_forbidden_unsafe_or_old_cache_identity(line),
+            "guard should reject {line:?}"
+        );
+    }
+}
+
+#[test]
+fn table_runtime_dependency_guard_catches_compaction_policy_terms() {
+    for line in [
+        "let prune_floor = version;",
+        "let snapshot_floor = version;",
+        "let max_versions = 3;",
+        "let bottommost = true;",
+        "drop_expired(row);",
+    ] {
+        assert!(
+            contains_forbidden_compaction_policy_vocabulary(line),
+            "guard should reject {line:?}"
+        );
+    }
+}
+
 fn table_runtime_source_files(root: &Path) -> Vec<PathBuf> {
     rust_files(&root.join("src/table"))
         .into_iter()
@@ -453,6 +518,26 @@ fn contains_forbidden_old_table_builder_vocabulary(line: &str) -> bool {
         "table_object",
         "tableobjectname",
         "publish_table",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
+}
+
+fn contains_forbidden_unsafe_or_old_cache_identity(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    ["unsafe", "file_path_hash", "file_id", "global_cache"]
+        .iter()
+        .any(|term| normalized.contains(term))
+}
+
+fn contains_forbidden_compaction_policy_vocabulary(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    [
+        "prune_floor",
+        "snapshot_floor",
+        "max_versions",
+        "bottommost",
+        "drop_expired",
     ]
     .iter()
     .any(|term| normalized.contains(term))

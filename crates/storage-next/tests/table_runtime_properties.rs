@@ -13,6 +13,10 @@ fn table_runtime_property_harness_is_not_a_placeholder() {
 
     assert!(source.contains("table_runtime_property_harness_runs_scaffold_contract"));
     assert!(source.contains("check_table_runtime_scaffold_contract"));
+    assert!(source.contains("immutable_table_reader_cases"));
+    assert!(source.contains("table_block_cache_cases"));
+    assert!(source.contains("table_bloom_filter_cases"));
+    assert!(source.contains("table_compaction_cases"));
     assert!(!source.contains("src/table/mod.rs\").is_file()"));
 }
 
@@ -47,6 +51,10 @@ fn table_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.mutable_frozen_table_cases() == 0
                 || outcome.raw_cursor_cases() == 0
                 || outcome.immutable_builder_artifact_cases() == 0
+                || outcome.immutable_table_reader_cases() == 0
+                || outcome.table_block_cache_cases() == 0
+                || outcome.table_bloom_filter_cases() == 0
+                || outcome.table_compaction_cases() == 0
                 || outcome.error_source_cases() == 0
                 || outcome.stats_cases() == 0
             {

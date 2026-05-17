@@ -1,6 +1,7 @@
 //! Table identity, facts, and statistics.
 
 use super::{TableRuntimeError, TableRuntimeResult};
+use crate::format::ImmutableTable;
 use strata_core_next::CommitVersion;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -222,4 +223,29 @@ fn validate_identity_text(text: &str) -> TableRuntimeResult<()> {
         });
     }
     Ok(())
+}
+
+pub(super) fn table_facts_from_decoded(
+    identity: TableIdentity,
+    bytes: &[u8],
+    decoded: &ImmutableTable,
+) -> TableRuntimeResult<TableRuntimeFacts> {
+    let properties = decoded.properties();
+    let byte_count = u64::try_from(bytes.len()).map_err(|_| TableRuntimeError::InvalidRange {
+        field: "byte_count",
+    })?;
+    let key_range = TableKeyRange::new(
+        properties.min_key_bytes().to_vec(),
+        properties.max_key_bytes().to_vec(),
+    )?;
+    let commit_range = TableCommitRange::new(properties.commit_min(), properties.commit_max())?;
+
+    TableRuntimeFacts::new(
+        identity,
+        properties.row_count(),
+        properties.data_block_count(),
+        key_range,
+        commit_range,
+        byte_count,
+    )
 }

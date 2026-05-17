@@ -8,9 +8,12 @@ use std::error::Error;
 use strata_core_next::CommitVersion;
 
 mod builder;
+mod cache;
+mod compaction;
 mod cursor;
 mod key;
 mod mutable;
+mod reader;
 
 #[test]
 fn table_runtime_default_config_constructs() {

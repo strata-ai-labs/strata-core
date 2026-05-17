@@ -21,7 +21,7 @@ mod reader;
 
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
-    expect(
+    allow(
         unused_imports,
         reason = "immutable table builder surfaces are consumed by later M4 table slices"
     )
@@ -30,6 +30,30 @@ pub(crate) use builder::{BuiltTableArtifact, ImmutableTableBuilder};
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
     expect(
+        unused_imports,
+        reason = "table cache and accelerator surfaces are consumed by later M4 table slices"
+    )
+)]
+pub(crate) use cache::{
+    CacheInsert, TableBlockAddress, TableBlockCache, TableBlockCacheKey, TableBlockCacheKind,
+    TableBlockCacheStats, TableBloomFilter, TableBloomProbe, TableCacheTableId,
+};
+#[cfg_attr(
+    not(test),
+    allow(
+        unused_imports,
+        reason = "generic table compaction surfaces are consumed by later M4 table slices"
+    )
+)]
+pub(crate) use compaction::{
+    KeepAllTableCompactionPolicy, TableCompactionDecision, TableCompactionDropReason,
+    TableCompactionDropSummary, TableCompactionOutput, TableCompactionPolicy,
+    TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
+    TableCompactionSourceId, TableCompactor,
+};
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    allow(
         unused_imports,
         reason = "table scaffold exports define the local surface for later slices"
     )
@@ -89,6 +113,16 @@ pub(crate) use key::{
     )
 )]
 pub(crate) use mutable::{FrozenTable, MutableTable, TableMemoryFacts};
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "immutable table reader surfaces are consumed by later M4 table slices"
+    )
+)]
+pub(crate) use reader::{
+    BytesTableSource, ImmutableTableCursor, ImmutableTableReader, TableByteSource,
+};
 
 #[cfg(test)]
 mod tests;
