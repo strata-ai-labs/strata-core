@@ -68,10 +68,11 @@ pub(crate) use snapshot::{
 
 #[expect(
     unused_imports,
-    reason = "table object service is consumed by L5 table runtime added later"
+    reason = "table object service is consumed by branch table integration added later"
 )]
 pub(crate) use table::{
-    TableObjectFacts, TableObjectService, TableObjectServiceError, TableObjectWrite,
+    TableObjectByteSource, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
+    TableObjectService, TableObjectServiceError, TableObjectWrite,
 };
 
 #[expect(

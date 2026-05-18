@@ -1,5 +1,9 @@
+use crate::backend::memory::MemoryBackend;
+use crate::backend::Backend;
 use crate::format::{decode_immutable_table, encode_internal_key, FormatError, TableCompression};
+use crate::layout::ObjectLayout;
 use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
+use crate::service::TableObjectByteSource;
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BoundedTableCursor,
     BuiltTableArtifact, BytesTableSource, CacheInsert, CursorMergePath, FrozenTable,
@@ -38,6 +42,7 @@ pub struct TableRuntimeScaffoldOutcome {
     raw_cursors: usize,
     immutable_builder_artifacts: usize,
     immutable_table_readers: usize,
+    object_backed_table_readers: usize,
     table_block_caches: usize,
     table_bloom_filters: usize,
     table_compactions: usize,
@@ -106,6 +111,11 @@ impl TableRuntimeScaffoldOutcome {
         self.immutable_table_readers
     }
 
+    /// Number of object-backed immutable table reader cases exercised.
+    pub const fn object_backed_table_reader_cases(self) -> usize {
+        self.object_backed_table_readers
+    }
+
     /// Number of table block-cache cases exercised.
     pub const fn table_block_cache_cases(self) -> usize {
         self.table_block_caches
@@ -153,6 +163,7 @@ pub fn check_table_runtime_scaffold_contract(
         raw_cursors: 0,
         immutable_builder_artifacts: 0,
         immutable_table_readers: 0,
+        object_backed_table_readers: 0,
         table_block_caches: 0,
         table_bloom_filters: 0,
         table_compactions: 0,
@@ -183,6 +194,8 @@ pub fn check_table_runtime_scaffold_contract(
     outcome.immutable_builder_artifacts += 1;
     check_immutable_table_reader(script)?;
     outcome.immutable_table_readers += 1;
+    check_object_backed_table_reader(script)?;
+    outcome.object_backed_table_readers += 1;
     check_table_block_cache(script)?;
     outcome.table_block_caches += 1;
     check_table_bloom_filter(script)?;
@@ -1757,6 +1770,65 @@ fn check_immutable_table_reader(script: &[u8]) -> Result<(), TestkitError> {
     Ok(())
 }
 
+fn check_object_backed_table_reader(script: &[u8]) -> Result<(), TestkitError> {
+    let rows = generated_builder_table_rows(script)?;
+    let expected_rows = rows.iter().map(|row| row.row().clone()).collect::<Vec<_>>();
+    let target_data_block_size = 1 + u32::from(script_byte(script, 64));
+    let rows_per_block = 1 + usize::from(script_byte(script, 65) % 8);
+    let compression = if script_byte(script, 66) & 1 == 0 {
+        TableCompression::Uncompressed
+    } else {
+        TableCompression::Zstd
+    };
+    let config = TableReaderConfig::new(script_byte(script, 67) & 1 == 0, true);
+    let builder = ImmutableTableBuilder::new(
+        TableBuilderConfig::new(target_data_block_size, rows_per_block, compression).map_err(
+            |err| TestkitError::new(format!("object-backed builder config failed: {err}")),
+        )?,
+    )
+    .map_err(|err| TestkitError::new(format!("object-backed builder setup failed: {err}")))?;
+    let identity = TableIdentity::new(format!("object-reader-{:02x}", script_byte(script, 68)))
+        .map_err(|err| TestkitError::new(format!("object reader identity setup failed: {err}")))?;
+    let artifact = builder
+        .build_from_rows(identity.clone(), &rows)
+        .map_err(|err| TestkitError::new(format!("object-backed artifact build failed: {err}")))?;
+
+    let branch = BranchId::from_bytes([script_byte(script, 69); BranchId::BYTE_LEN]).to_string();
+    let level = u32::from(script_byte(script, 70) % 4);
+    let table_id = format!("table{:04x}", script_byte(script, 71));
+    let object = ObjectLayout::table_object(&branch, level, &table_id)
+        .map_err(|err| TestkitError::new(format!("object-backed layout failed: {err}")))?;
+    let backend = MemoryBackend::new();
+    backend
+        .write_object(&object, artifact.bytes())
+        .map_err(|err| TestkitError::new(format!("object-backed seed write failed: {err}")))?;
+    let source = TableObjectByteSource::new(&backend, object, artifact.byte_count())
+        .map_err(|err| TestkitError::new(format!("object-backed source setup failed: {err}")))?;
+    let object_reader = ImmutableTableReader::open_source(identity.clone(), &source, config)
+        .map_err(|err| TestkitError::new(format!("object-backed reader open failed: {err}")))?;
+    assert_immutable_reader_matches_model(
+        "generated object-backed reader",
+        &object_reader,
+        &artifact,
+        &rows,
+        &expected_rows,
+        config,
+    )?;
+
+    let byte_reader = ImmutableTableReader::open_bytes(identity, artifact.bytes().to_vec(), config)
+        .map_err(|err| TestkitError::new(format!("object-backed byte model open failed: {err}")))?;
+    if object_reader.facts() != byte_reader.facts()
+        || object_reader.rows() != byte_reader.rows()
+        || object_reader.config() != byte_reader.config()
+    {
+        return Err(TestkitError::new(
+            "object-backed reader drifted from byte-backed reader",
+        ));
+    }
+
+    Ok(())
+}
+
 fn check_table_block_cache(script: &[u8]) -> Result<(), TestkitError> {
     let cache = TableBlockCache::new(
         TableCacheConfig::new(true, 12)
@@ -3104,6 +3176,7 @@ mod tests {
         assert_eq!(outcome.raw_cursor_cases(), 1);
         assert_eq!(outcome.immutable_builder_artifact_cases(), 1);
         assert_eq!(outcome.immutable_table_reader_cases(), 1);
+        assert_eq!(outcome.object_backed_table_reader_cases(), 1);
         assert_eq!(outcome.table_block_cache_cases(), 1);
         assert_eq!(outcome.table_bloom_filter_cases(), 1);
         assert_eq!(outcome.table_compaction_cases(), 1);

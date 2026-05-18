@@ -120,6 +120,23 @@ fn table_runtime_source_does_not_use_filesystem_backend_service_or_env_apis() {
 }
 
 #[test]
+fn table_runtime_source_does_not_use_object_layout_literals() {
+    let root = common::crate_root();
+
+    for file in table_runtime_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read table runtime source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_forbidden_object_layout_literal(line),
+                "{}:{} uses object layout vocabulary: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn table_runtime_source_does_not_use_old_table_builder_vocabulary() {
     let root = common::crate_root();
 
@@ -351,6 +368,22 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
 }
 
 #[test]
+fn table_runtime_dependency_guard_catches_object_layout_literals() {
+    for line in [
+        "let _ = \"tables/branch/0000/table\";",
+        "let _ = \"wal/0000000000000001\";",
+        "let _ = \"snapshots/0000000000000001\";",
+        "let _ = \"manifest/current\";",
+        "let _ = \"manifest\";",
+    ] {
+        assert!(
+            contains_forbidden_object_layout_literal(line),
+            "guard should reject {line:?}"
+        );
+    }
+}
+
+#[test]
 fn table_runtime_dependency_guard_catches_cache_identity_terms() {
     for line in [
         "unsafe { do_work(); }",
@@ -521,6 +554,14 @@ fn contains_forbidden_old_table_builder_vocabulary(line: &str) -> bool {
     ]
     .iter()
     .any(|term| normalized.contains(term))
+}
+
+fn contains_forbidden_object_layout_literal(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    ["tables/", "wal/", "snapshots/", "manifest/current"]
+        .iter()
+        .any(|term| normalized.contains(term))
+        || contains_ascii_word(&normalized, "manifest")
 }
 
 fn contains_forbidden_unsafe_or_old_cache_identity(line: &str) -> bool {

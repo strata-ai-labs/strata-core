@@ -788,3 +788,105 @@ and what old code became eligible for retirement.
   consumers.
 - Follow-up: L5I owns object-backed table access; L6/L8 own table selection,
   retention policy, manifest install, and lifecycle scheduling.
+
+## M4-L5I: Object-Backed Table Access
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/implementation-plans/M4/l5i-object-backed-table-access-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5i-object-backed-table-access-test-plan.md`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/table/reader.rs`
+- `crates/storage-next/src/backend/mod.rs`
+- `crates/storage-next/src/backend/memory.rs`
+- `crates/storage-next/src/backend/local_fs.rs`
+- `crates/storage/src/segment.rs`
+- `crates/storage/src/block_cache.rs`
+
+### Behavior Preserved
+
+- Immutable table bytes can be read through positional/range reads from an
+  external storage source.
+- Opened object-backed table readers expose the same raw rows, exact lookup,
+  cursor, and table facts as byte-backed readers.
+- Corrupt table bytes remain table decode errors, while missing objects and
+  backend range failures remain object-read errors.
+- Table reads can use memory and local filesystem backends without production
+  table code importing backend or filesystem APIs.
+
+### Intentional V1 Changes
+
+- Object names, table layout, and backend range reads live at the L4/service
+  boundary. Production `src/table/` remains object-neutral.
+- The old file/path-backed `KVSegment` reader is not ported. L5I adapts
+  backend range reads into the existing L5 `TableByteSource` abstraction.
+- The reader helper performs the boundary range read before opening from bytes
+  so missing-object and interrupted-read causes remain object-read errors.
+- The adapter reads a known table object from caller-supplied `TableObjectFacts`;
+  it does not list prefixes, discover reachable tables, or infer branch state.
+- Reading an already-published object requires `ReadRange`, not durable publish
+  or durable sync capabilities.
+- Backends that advertise `ObjectMetadata` validate the expected table-object
+  byte count before the range read; weaker cache-mode backends may skip that
+  preflight and rely on exact range-read plus M3G decode validation.
+- Path-hash cache identity and process-global cache behavior remain retired.
+
+### Deferred
+
+- Lazy block reads after whole-object checksum validation.
+- Cache-backed candidate-block reads.
+- Durable object-store fences and conditional read validation.
+- Branch table manifest integration and reachable table selection.
+- Table object listing, deletion, retention, quarantine, and garbage
+  collection.
+
+### Tests Ported Or Added
+
+- Add service-local tests for publish-then-read through the object-backed
+  reader helper.
+- Add memory-backend object-backed reader coverage without durable publication
+  capabilities.
+- Add object-backed byte-source tests for missing `ReadRange`, zero-length
+  reads, exact range reads, long/short reads, overflow, and past-end rejection.
+- Add fault tests for missing objects, interrupted range reads, short reads,
+  corrupt table bytes, and stale table-object facts.
+- Add stale byte-count tests for both actual-object-larger and
+  actual-object-smaller metadata mismatches.
+- Add object-backed versus byte-backed query parity tests for exact lookup,
+  full cursor scans, closed bounds, physical-prefix bounds, zstd, multiblock
+  tables, one-row tables, cache-enabled/cache-disabled reader configs, and
+  mixed row shapes.
+- Extend the generated table-runtime property harness with memory-backend
+  object-backed reader parity cases over generated row shapes, compression
+  modes, and reader configs.
+- Add tests proving caller-supplied `TableIdentity` is preserved and not
+  derived from object names.
+- Add same-length corruption tests proving bad magic, bad footer CRC, and
+  legacy table magic route through wrapped table decode errors.
+- Extend localfs table-object tests to read the published object through the
+  L5 reader helper.
+
+### Sensitivity Probes
+
+- Add tests that fail if object-backed reads list, write, delete, or publish
+  during reader open.
+- Add tests that prove `ObjectMetadata` is optional for weaker read-capable
+  backends and used when available for stale byte-count detection.
+- Add tests that fail if stale L4 table-object row-count, block-count, or
+  commit-range facts are accepted.
+- Add tests that fail if short backend reads are accepted.
+- Add source-guard coverage for object layout literals including `tables/`,
+  `wal/`, `snapshots/`, and `manifest`.
+- Add tests that fail if memory backend reads require durable publish/sync.
+- Keep source guards proving production `src/table/` does not import backend,
+  service, layout, object, path, filesystem, or old segment-reader surfaces.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: `crates/storage/src/segment.rs` and
+  `crates/storage/src/block_cache.rs` remain in use by current storage
+  consumers.
+- Follow-up: L5J should close out L5 conformance; L6 can consume the
+  object-backed reader helper once branch table manifests exist.
