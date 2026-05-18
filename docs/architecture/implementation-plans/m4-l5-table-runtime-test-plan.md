@@ -5,6 +5,9 @@ Status: test-suite plan
 Parent plan:
 `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
 
+Closeout plan:
+`docs/architecture/implementation-plans/M4/l5j-l5-conformance-closeout-test-plan.md`
+
 ## Goal
 
 Prove that the storage-next L5 table runtime is a reusable, policy-free table

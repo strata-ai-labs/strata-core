@@ -77,11 +77,19 @@ fn table_runtime_source_does_not_use_filesystem_backend_service_or_env_apis() {
     let forbidden_substrings = [
         "std::fs",
         "std::path::Path",
+        "std::path::PathBuf",
         "std::os::unix::fs::FileExt",
+        "std::fs::File",
+        "pread",
+        "rename(",
+        "remove_file(",
+        "mmap",
+        "memmap",
         "crate::backend",
         "crate::service",
         "super::service",
         "service::table",
+        "testkit::",
         ".read_object(",
         ".read_range(",
         ".write_object(",
@@ -331,9 +339,15 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
     for line in [
         "use std::fs;",
         "use std::path::Path;",
+        "use std::path::PathBuf;",
         "use std::os::unix::fs::FileExt;",
+        "use std::fs::File;",
         "let _: File;",
         "let _: PathBuf;",
+        "pread(fd, buf, len, offset);",
+        "rename(source, target);",
+        "remove_file(path);",
+        "memmap2::Mmap::map(&file);",
         "source.read_range();",
         "backend.object_metadata();",
         "std::env::var(\"STRATA\");",
@@ -344,7 +358,11 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
             "guard should reject {line:?}"
         );
     }
-    for line in ["use crate::service::table;", "use super::service;"] {
+    for line in [
+        "use crate::service::table;",
+        "use super::service;",
+        "testkit::check_table_runtime_scaffold_contract();",
+    ] {
         assert!(
             contains_forbidden_filesystem_backend_service_or_env(line),
             "guard should reject {line:?}"
@@ -375,6 +393,8 @@ fn table_runtime_dependency_guard_catches_object_layout_literals() {
         "let _ = \"snapshots/0000000000000001\";",
         "let _ = \"manifest/current\";",
         "let _ = \"manifest\";",
+        "use crate::object::ObjectName;",
+        "use super::object::ObjectName;",
     ] {
         assert!(
             contains_forbidden_object_layout_literal(line),
@@ -407,6 +427,14 @@ fn table_runtime_dependency_guard_catches_compaction_policy_terms() {
         "let max_versions = 3;",
         "let bottommost = true;",
         "drop_expired(row);",
+        "let branch_retention = policy;",
+        "let inherited_table = table;",
+        "let fork_gate = version;",
+        "let visible_row = row;",
+        "install_manifest();",
+        "lifecycle_cleanup();",
+        "garbage_collect_tables();",
+        "gc_table_object();",
     ] {
         assert!(
             contains_forbidden_compaction_policy_vocabulary(line),
@@ -515,11 +543,19 @@ fn contains_forbidden_filesystem_backend_service_or_env(line: &str) -> bool {
     [
         "std::fs",
         "std::path::Path",
+        "std::path::PathBuf",
         "std::os::unix::fs::FileExt",
+        "std::fs::File",
+        "pread",
+        "rename(",
+        "remove_file(",
+        "mmap",
+        "memmap",
         "crate::backend",
         "crate::service",
         "super::service",
         "service::table",
+        "testkit::",
         ".read_object(",
         ".read_range(",
         ".write_object(",
@@ -558,9 +594,16 @@ fn contains_forbidden_old_table_builder_vocabulary(line: &str) -> bool {
 
 fn contains_forbidden_object_layout_literal(line: &str) -> bool {
     let normalized = line.to_ascii_lowercase();
-    ["tables/", "wal/", "snapshots/", "manifest/current"]
-        .iter()
-        .any(|term| normalized.contains(term))
+    [
+        "tables/",
+        "wal/",
+        "snapshots/",
+        "manifest/current",
+        "crate::object",
+        "super::object",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
         || contains_ascii_word(&normalized, "manifest")
 }
 
@@ -579,6 +622,14 @@ fn contains_forbidden_compaction_policy_vocabulary(line: &str) -> bool {
         "max_versions",
         "bottommost",
         "drop_expired",
+        "branch_retention",
+        "inherited_table",
+        "fork_gate",
+        "visible_row",
+        "install_manifest",
+        "lifecycle_cleanup",
+        "garbage_collect",
+        "gc_table_object",
     ]
     .iter()
     .any(|term| normalized.contains(term))

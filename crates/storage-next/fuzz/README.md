@@ -25,6 +25,11 @@ cargo +nightly fuzz run service_quarantine
 cargo +nightly fuzz run service_snapshot
 ```
 
+L5 table-runtime behavior is currently covered by the normal
+`table_runtime_properties` proptest route and by the `format_table_artifact`
+and `format_table_block` byte fuzzers. Add dedicated runtime fuzz targets only
+after their generated script model has normal unit and property coverage.
+
 The fuzz package uses `default-features = false` so parser fuzzing also covers
 the memory/cache-compatible build surface. Format targets should stay named for
 the byte-oriented durable input they fuzz, such as `object_name_parse`,

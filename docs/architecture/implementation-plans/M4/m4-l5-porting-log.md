@@ -890,3 +890,137 @@ and what old code became eligible for retirement.
   consumers.
 - Follow-up: L5J should close out L5 conformance; L6 can consume the
   object-backed reader helper once branch table manifests exist.
+
+## M4-L5J: L5 Conformance Closeout
+
+### Current Files Read
+
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
+- `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
+- `docs/architecture/implementation-plans/M4/l5j-l5-conformance-closeout-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/l5j-l5-conformance-closeout-test-plan.md`
+- `crates/storage-next/src/table/`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/testkit/table_runtime.rs`
+- `crates/storage-next/tests/table_runtime_properties.rs`
+- `crates/storage-next/tests/table_runtime_source_guard.rs`
+- `crates/storage-next/fuzz/README.md`
+- `crates/storage-next/fuzz/fuzz_targets/README.md`
+- `crates/storage/src/{memtable,key_encoding,segment_builder,segment,index,bloom,block_cache,merge_iter,seekable,compaction}.rs`
+- `crates/storage/src/segmented/{mod,compaction}.rs`
+
+### Coverage Inventory
+
+| Slice | Direct tests | Generated/property | Source guard | Fuzz/fuzz-adjacent | Status |
+|---|---|---|---|---|---|
+| L5A scaffold/config/facts/stats/errors | `src/table/tests/mod.rs` | `valid_config`, `invalid_config`, `valid_facts`, `invalid_facts`, `error_sources`, `stats` counters | public-surface and product-vocabulary guards | generated testkit route | Closed |
+| L5B row/key adapters | `src/table/tests/key.rs` | `row_key_adapters`, `invalid_row_key_sequences`, `key_bounds`, `size_accounting` counters | product/cursor-policy guards | generated row/key scripts | Closed |
+| L5C mutable/frozen tables | `src/table/tests/mutable.rs` | `mutable_frozen_tables` counter | product/cursor-policy guards | generated mutable/frozen scripts | Closed |
+| L5D raw cursors and merge | `src/table/tests/cursor.rs` | `raw_cursors` counter | cursor-policy guard | generated cursor and merge scripts | Closed |
+| L5E immutable builder | `src/table/tests/builder.rs` | `immutable_builder_artifacts` counter | old-table-vocabulary guard | `format_table_artifact` fuzz target plus generated builder scripts | Closed |
+| L5F immutable reader | `src/table/tests/reader.rs` | `immutable_table_readers` counter | filesystem/backend guard | `format_table_artifact`, `format_table_block`, and generated reader scripts | Closed |
+| L5G cache/accelerators | `src/table/tests/cache.rs` | `table_block_caches`, `table_bloom_filters` counters | old cache identity and global-state guards | generated cache/filter scripts | Closed |
+| L5H generic compaction | `src/table/tests/compaction.rs` | `table_compactions` counter | compaction-policy guard | generated compaction scripts | Closed |
+| L5I object-backed access | `src/service/table.rs` tests | `object_backed_table_readers` counter | object-layout and backend-boundary guards | generated memory-backend object-backed scripts | Closed |
+
+### Behavior Preserved
+
+- Ordered mutable table mechanics from `memtable.rs`.
+- Frozen read-only table views and raw row iteration.
+- Encoded internal-key ordering from `key_encoding.rs`, retargeted to
+  storage-next `StorageRow` and M3 key bytes.
+- Raw point/range/prefix cursor movement from seekable table sources.
+- K-way merge over sorted raw sources from `merge_iter.rs`.
+- Immutable table builder and reader mechanics from `segment_builder.rs` and
+  `segment.rs`, retargeted to M3G bytes.
+- Range-readable external source behavior, retargeted from path/file reads to
+  `TableByteSource` and L4 object-backed adapters.
+- Cache eviction/stats mechanics from `block_cache.rs`, retargeted to
+  database-owned table/block identities.
+- Bloom/filter acceleration from `bloom.rs` as optional in-memory
+  non-authoritative state.
+- Generic sorted compaction mechanics from `compaction.rs`, retargeted to
+  caller-supplied row-retention policy.
+
+### Intentional V1 Changes
+
+- L5 stores and compares storage-next `StorageRow` facts; it does not interpret
+  product payloads.
+- L5 emits and reads only M3G immutable table bytes. Old `STRAKV` bytes are
+  rejection inputs only.
+- L5 production code is object-neutral and backend-neutral. Object names and
+  backend range reads live in L4/L5 boundary services.
+- L5 caches use explicit table/block cache keys, not paths, file ids, or
+  process-global cache identity.
+- L5 compaction executes caller policy. It does not decide snapshot floors,
+  branch retention, bottommost-level behavior, or expiry/tombstone safety.
+- Runtime fuzz-adjacent coverage is currently the generated
+  `table_runtime_properties` route; byte-level table fuzzing remains in
+  `format_table_artifact` and `format_table_block`.
+
+### Tests And Guards Strengthened
+
+- Added detailed L5J implementation and test plans.
+- Linked L5J from the main M4-L5 implementation plan.
+- Added `table_runtime_closeout` integration tests for generated harness
+  counters, source-guard category coverage, and registered table fuzz targets.
+- Strengthened `table_runtime_source_guard` for additional filesystem/path
+  APIs (`PathBuf`, `std::fs::File`, `pread`, `rename`, `remove_file`,
+  `mmap`, `memmap`), direct object imports, testkit leakage, and higher-layer
+  compaction-policy vocabulary.
+- Documented the L5 fuzz/fuzz-adjacent split in the fuzz README files.
+- Confirmed the generated table-runtime harness exposes nonzero counters for
+  every L5 category, including object-backed table readers.
+
+### Deferred Ledger
+
+| Deferred behavior | Owner | Why not L5 | Current guard or test | First expected consumer |
+|---|---|---|---|---|
+| Branch table manifests and reachable table selection | L6 | Requires branch state and manifest semantics | L5 source guards reject branch/object ownership in `src/table/` | Branch LSM runtime |
+| MVCC/latest-visible selection | L6 | Requires read timestamp and visibility policy | Cursor-policy guard rejects MVCC/latest vocabulary; raw cursor tests preserve all rows | Branch readers |
+| Inherited table lookup and fork gates | L6 | Requires branch topology and fork metadata | Cursor-policy guard rejects fork/inherit/rewrite vocabulary | Branch inheritance |
+| Flush scheduling and table install | L8 | Requires WAL durability, manifest publish, and lifecycle orchestration | Compaction/output tests produce artifacts but do not install them | Lifecycle runtime |
+| Table retention and garbage collection | L8 | Requires durable reachability proofs and manifest coordination | Compaction-policy guard rejects retention/manifest/lifecycle vocabulary | Lifecycle retention |
+| Table quarantine policy | L8 | Requires object mutation and operator recovery policy | Object-backed reads do not delete/list/quarantine | Lifecycle recovery |
+| Checkpoint/table/WAL coordination | L8 | Requires cross-service scheduling and crash recovery | L5 has no WAL/checkpoint imports | Lifecycle checkpointing |
+| Lazy block reads after whole-object validation | post-V1 | M3G footer checksum currently validates whole-object bytes | Reader tests validate full bytes/source parity | Reader optimization |
+| Durable object-store fences and conditional reads | post-V1 | Requires object-store generation/fence design | L4 facts and metadata checks remain explicit; `PublishOutcome` fence is deferred | Object backend evolution |
+| Durable filter blocks | post-V1/spec update | Requires M3G format extension | Cache/filter tests prove accelerators are optional and non-authoritative | Format V2 or M3G extension |
+
+### Verification Command Set
+
+Mandatory L5J closeout commands:
+
+```sh
+cargo test -p strata-storage-next --locked --lib table::tests
+cargo test -p strata-storage-next --locked --lib testkit::table_runtime
+cargo test -p strata-storage-next --features testkit --locked --test table_runtime_properties
+cargo test -p strata-storage-next --no-default-features --features testkit --locked --test table_runtime_properties
+cargo test -p strata-storage-next --locked --test table_runtime_source_guard
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo test -p strata-storage-next --locked
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
+Optional/manual commands:
+
+```sh
+cargo test -p strata-storage-next --features testkit,localfs --locked
+cd crates/storage-next/fuzz && cargo +nightly fuzz run format_table_artifact -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run format_table_block -- -max_total_time=60
+```
+
+### Retirement
+
+- Deleted: none.
+- Retired from storage-next L5: old `STRAKV` table bytes, path-backed
+  `KVSegment`, `pread`/file-handle table access, path-hash cache identity,
+  process-global table cache, product `Value`/`Key`/DTO payload semantics, and
+  MessagePack table payloads.
+- Legacy-retained: old `crates/storage` table modules remain in use by current
+  storage consumers until the storage-next stack replaces them.
+- Follow-up: M4-L6 can start branch table state on top of L5 mechanics without
+  adding new L5 conformance work.

@@ -17,6 +17,10 @@ Current targets:
 9. `service_quarantine`
 10. `service_snapshot`
 
+L5 table-runtime generated behavior is exercised through
+`tests/table_runtime_properties.rs`; M3G byte-level table coverage is exercised
+by `format_table_artifact` and `format_table_block`.
+
 Add new targets only after the corresponding parser exists and has normal unit
 or golden-vector coverage. Service targets also need normal service-level tests
 for the same operation families before they are added here.
