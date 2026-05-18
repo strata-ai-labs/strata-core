@@ -130,6 +130,7 @@ Suggested shape:
 ImmutableTableBuilder::new(config: TableBuilderConfig) -> TableRuntimeResult<Self>
 ImmutableTableBuilder::from_runtime_config(config: &TableRuntimeConfig) -> TableRuntimeResult<Self>
 build_from_rows(identity: TableIdentity, rows: &[TableRow]) -> TableRuntimeResult<BuiltTableArtifact>
+build_from_mutable(identity: TableIdentity, table: &MutableTable) -> TableRuntimeResult<BuiltTableArtifact>
 build_from_frozen(identity: TableIdentity, table: &FrozenTable) -> TableRuntimeResult<BuiltTableArtifact>
 ```
 
@@ -143,7 +144,7 @@ Rules:
 
 1. `new` validates the builder config.
 2. `build_from_rows` requires nonempty, strictly sorted, unique internal keys.
-3. `build_from_frozen` must not reorder rows.
+3. `build_from_mutable` and `build_from_frozen` must not reorder rows.
 4. any `StorageRow` convenience path must convert through `TableRow` or the
    same L5 validation path.
 5. output bytes are always M3G table bytes produced by

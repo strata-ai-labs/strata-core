@@ -19,16 +19,20 @@ cargo +nightly fuzz run format_snapshot_envelope
 cargo +nightly fuzz run format_storage_row
 cargo +nightly fuzz run format_table_artifact
 cargo +nightly fuzz run format_table_block
+cargo +nightly fuzz run table_runtime_reader
+cargo +nightly fuzz run table_runtime_cursor
+cargo +nightly fuzz run table_runtime_compaction
 cargo +nightly fuzz run format_wal_commit_payload
 cargo +nightly fuzz run format_wal_record
 cargo +nightly fuzz run service_quarantine
 cargo +nightly fuzz run service_snapshot
 ```
 
-L5 table-runtime behavior is currently covered by the normal
-`table_runtime_properties` proptest route and by the `format_table_artifact`
-and `format_table_block` byte fuzzers. Add dedicated runtime fuzz targets only
-after their generated script model has normal unit and property coverage.
+L5 table-runtime behavior is covered by the normal `table_runtime_properties`
+proptest route, the `table_runtime_reader` arbitrary-byte open target, the
+`table_runtime_cursor` generated operation-script target, the
+`table_runtime_compaction` generated source/policy-script target, and the
+`format_table_artifact` and `format_table_block` byte fuzzers.
 
 The fuzz package uses `default-features = false` so parser fuzzing also covers
 the memory/cache-compatible build surface. Format targets should stay named for

@@ -43,7 +43,7 @@ Use these locations:
    old compaction behavior classification.
 
 Tests should use behavior-based names, not milestone names. For example, prefer
-`keep_all_policy_preserves_tombstones_and_expired_rows` over names containing
+`keep_all_policy_preserves_only_tombstone_and_expired_fixtures` over names containing
 implementation-plan labels.
 
 ## Reference Model
@@ -141,6 +141,9 @@ split expectations should be computed separately.
 7. Duplicate rejection does not call row-retention policy to resolve priority
    unless the implementation deliberately exposes explicit duplicate policy.
 
+Named coverage should include
+`global_duplicate_rejection_runs_before_policy`.
+
 ### 5. Policy Decisions
 
 1. Drop-exact-key policy drops only the selected key.
@@ -159,6 +162,9 @@ split expectations should be computed separately.
 14. Keep-all policy is the default for model tests unless a drop case requires
     otherwise.
 
+Named coverage should include
+`compaction_policy_can_drop_older_physical_key_versions_explicitly`.
+
 ### 6. No Hidden Retention Semantics
 
 1. Below-floor-looking old rows are kept under keep-all policy.
@@ -171,6 +177,9 @@ split expectations should be computed separately.
 8. Product-family-shaped payload bytes are not inspected.
 9. Branch-local level facts are not required by the API.
 10. Bottommost/non-bottommost is not inferred by L5H.
+
+Named coverage should include
+`keep_all_policy_preserves_only_tombstone_and_expired_fixtures`.
 
 ### 7. Artifact Build
 

@@ -151,10 +151,14 @@ fn assert_artifact_facts_match_rows(output: &TableCompactionOutput, seed: &str) 
     );
 
     for (index, artifact) in output.artifacts().iter().enumerate() {
-        assert_eq!(
-            artifact.facts().identity().as_str(),
-            format!("{seed}-{index:08x}")
-        );
+        let identity = artifact.facts().identity().as_str();
+        let prefix = format!("{seed}-");
+        let suffix = format!("-{index:08x}");
+        assert!(identity.starts_with(&prefix));
+        assert!(identity.ends_with(&suffix));
+        let fingerprint = &identity[prefix.len()..identity.len() - suffix.len()];
+        assert_eq!(fingerprint.len(), 16);
+        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(artifact.byte_count(), artifact.bytes().len() as u64);
         assert_eq!(&artifact.bytes()[..4], b"STTB");
         assert_ne!(&artifact.bytes()[..6], b"STRAKV");
@@ -510,6 +514,71 @@ fn compaction_policy_drops_exactly_selected_rows_and_reports_reasons() {
 }
 
 #[test]
+fn compaction_policy_can_drop_older_physical_key_versions_explicitly() {
+    let shared_key = physical_key(1, 0x20, b"versioned".to_vec());
+    let rows = [
+        put_row_for_key(shared_key.clone(), 10, b"newer".to_vec()),
+        put_row_for_key(shared_key, 2, b"older".to_vec()),
+        put_row(b"zulu".to_vec(), 1),
+    ];
+    let mut policy = |context: &TableCompactionRowContext<'_>, row: &TableRow| {
+        let Some(previous_key) = context.previous_kept_key() else {
+            return Ok(TableCompactionDecision::Keep);
+        };
+        if previous_key.physical_key()? == row.physical_key().clone() {
+            Ok(TableCompactionDecision::drop(
+                TableCompactionDropReason::OlderVersion,
+            ))
+        } else {
+            Ok(TableCompactionDecision::Keep)
+        }
+    };
+
+    let output = compactor(16 * 1024, 4)
+        .compact(
+            &identity("older-version-policy"),
+            &[source("versioned-source", &rows)],
+            &mut policy,
+        )
+        .expect("older-version compaction");
+    let kept = output_storage_rows(&output);
+
+    assert_eq!(kept.len(), 2);
+    assert!(kept
+        .iter()
+        .any(|row| row.value() == b"newer" && row.commit_version() == CommitVersion::new(10)));
+    assert!(!kept
+        .iter()
+        .any(|row| row.value() == b"older" && row.commit_version() == CommitVersion::new(2)));
+    assert!(output.report().drop_summaries().iter().any(|summary| {
+        summary.reason() == TableCompactionDropReason::OlderVersion && summary.rows() == 1
+    }));
+}
+
+#[test]
+fn keep_all_policy_preserves_only_tombstone_and_expired_fixtures() {
+    let rows = [
+        tombstone_row(b"deleted".to_vec(), 7),
+        expired_row(b"expired".to_vec(), 6),
+    ];
+    let mut policy = KeepAllTableCompactionPolicy;
+    let output = compactor(16 * 1024, 2)
+        .compact(
+            &identity("keep-sensitive-fixtures"),
+            &[source("sensitive-fixtures", &rows)],
+            &mut policy,
+        )
+        .expect("keep sensitive fixtures");
+    let kept = output_storage_rows(&output);
+
+    assert_eq!(kept, sorted_storage_rows(&rows));
+    assert!(kept.iter().any(StorageRow::is_tombstone));
+    assert!(kept
+        .iter()
+        .any(|row| row.expires_at() == Timestamp::from_micros(1)));
+}
+
+#[test]
 fn policy_error_before_first_keep_returns_no_output() {
     let rows = [put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
     let mut calls = 0usize;
@@ -638,6 +707,36 @@ fn source_validation_and_global_duplicate_rejection_are_typed() {
         err,
         TableRuntimeError::DuplicateInternalKey { .. }
     ));
+}
+
+#[test]
+fn global_duplicate_rejection_runs_before_policy() {
+    let duplicate = put_row(b"same".to_vec(), 7);
+    let rows = [put_row(b"alpha".to_vec(), 1), duplicate.clone()];
+    let mut calls = 0_u64;
+    let mut fail_on_call = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        calls = calls.saturating_add(1);
+        Err(TableRuntimeError::CompactionPolicy {
+            reason: "policy must not run before duplicate validation",
+        })
+    };
+
+    let err = compactor(16 * 1024, 4)
+        .compact(
+            &identity("duplicate-before-policy"),
+            &[
+                source("left", &rows),
+                source("right", std::slice::from_ref(&duplicate)),
+            ],
+            &mut fail_on_call,
+        )
+        .expect_err("global duplicate rejected before policy");
+
+    assert!(matches!(
+        err,
+        TableRuntimeError::DuplicateInternalKey { .. }
+    ));
+    assert_eq!(calls, 0);
 }
 
 #[test]
@@ -856,6 +955,31 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
     );
     assert_eq!(output_storage_rows(&first), sorted_storage_rows(&rows));
     assert_artifact_facts_match_rows(&first, "deterministic-output");
+
+    let changed_rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let mut changed_policy = KeepAllTableCompactionPolicy;
+    let changed = compactor(1, 8)
+        .compact(
+            &identity("deterministic-output"),
+            &[source("changed", &changed_rows)],
+            &mut changed_policy,
+        )
+        .expect("changed compaction");
+    let first_identities = first
+        .artifacts()
+        .iter()
+        .map(|artifact| artifact.facts().identity().as_str().to_owned())
+        .collect::<Vec<_>>();
+    let changed_identities = changed
+        .artifacts()
+        .iter()
+        .map(|artifact| artifact.facts().identity().as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert_ne!(first_identities, changed_identities);
 }
 
 #[test]
@@ -916,9 +1040,7 @@ impl FaultingCursor {
 impl TableCursor for FaultingCursor {
     fn seek_to_first(&mut self) -> Result<(), TableRuntimeError> {
         if matches!(self.fault, CursorFault::SeekToFirst) {
-            return Err(TableRuntimeError::SourceRead {
-                reason: "seek failed",
-            });
+            return Err(TableRuntimeError::source_read("seek failed"));
         }
         self.position = Some(0);
         Ok(())
@@ -931,9 +1053,7 @@ impl TableCursor for FaultingCursor {
     fn advance(&mut self) -> Result<(), TableRuntimeError> {
         self.advance_calls = self.advance_calls.saturating_add(1);
         if matches!(self.fault, CursorFault::Advance) && self.advance_calls == 1 {
-            return Err(TableRuntimeError::SourceRead {
-                reason: "advance failed",
-            });
+            return Err(TableRuntimeError::source_read("advance failed"));
         }
         self.position = self.position.and_then(|position| {
             let next = position.saturating_add(1);
@@ -954,18 +1074,14 @@ fn cursor_source_errors_are_preserved_before_compaction() {
     let mut seek_failure = FaultingCursor::new(&rows, CursorFault::SeekToFirst);
     assert_eq!(
         TableCompactionSource::from_cursor(source_id("seek-failure"), &mut seek_failure),
-        Err(TableRuntimeError::SourceRead {
-            reason: "seek failed",
-        })
+        Err(TableRuntimeError::source_read("seek failed"))
     );
     assert!(seek_failure.current().is_none());
 
     let mut advance_failure = FaultingCursor::new(&rows, CursorFault::Advance);
     assert_eq!(
         TableCompactionSource::from_cursor(source_id("advance-failure"), &mut advance_failure),
-        Err(TableRuntimeError::SourceRead {
-            reason: "advance failed",
-        })
+        Err(TableRuntimeError::source_read("advance failed"))
     );
     assert_eq!(advance_failure.advance_calls, 1);
 }

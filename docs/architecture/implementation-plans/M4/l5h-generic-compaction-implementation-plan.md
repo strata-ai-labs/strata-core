@@ -133,20 +133,30 @@ rules. None of those rules belong inside L5H.
 
 ## Proposed Type Surface
 
-Names may change during implementation if the responsibilities remain intact.
+The shipped M4 shape is intentionally smaller than the old segmented
+compaction API. Names may change during implementation if the responsibilities
+remain intact.
 
-### `TableCompactionRequest`
+### `TableCompactor` And `TableCompactionConfig`
 
-Suggested shape:
+Primary shipped shape:
 
 ```text
-TableCompactionRequest<'a> {
+TableCompactor::new(
     config: TableCompactionConfig,
     builder_config: TableBuilderConfig,
-    output_identity_seed: TableIdentity,
-    sources: Vec<TableCompactionSource<'a>>,
-    policy: &'a mut dyn TableCompactionPolicy,
-    split_policy: TableCompactionSplitPolicy,
+) -> TableRuntimeResult<Self>
+
+TableCompactor::compact(
+    &self,
+    output_identity_seed: &TableIdentity,
+    sources: &[TableCompactionSource],
+    policy: &mut impl TableCompactionPolicy,
+) -> TableRuntimeResult<TableCompactionOutput>
+
+TableCompactionConfig {
+    target_output_bytes: u64,
+    max_output_tables: usize,
 }
 ```
 
@@ -158,7 +168,9 @@ Rules:
 3. source identity is diagnostic only and must not encode branch policy;
 4. output identities must be caller-supplied or mechanically derived from the
    request seed plus output ordinal;
-5. request validation must happen before any output table is built.
+5. request validation must happen before any output table is built;
+6. split decisions use the configured approximate row-size target and maximum
+   output table count.
 
 ### `TableCompactionSource`
 
@@ -251,11 +263,23 @@ Drop reasons should be a closed L5 vocabulary for tests and observability:
 The reason records why the caller asked L5H to drop a row. It is not proof that
 the drop was safe.
 
-### `TableCompactionSplitPolicy`
+### Future Split Request Surface
 
-Suggested shape:
+Caller-provided split predicates and overlap boundaries are not part of the M4
+L5H API. If L6 later needs pure split facts from overlap analysis, it can grow
+a request wrapper around the shipped compactor shape. One possible future shape
+is:
 
 ```text
+TableCompactionRequest<'a> {
+    config: TableCompactionConfig,
+    builder_config: TableBuilderConfig,
+    output_identity_seed: TableIdentity,
+    sources: Vec<TableCompactionSource>,
+    policy: &'a mut dyn TableCompactionPolicy,
+    split_policy: TableCompactionSplitPolicy,
+}
+
 TableCompactionSplitPolicy {
     target_output_bytes: u64,
     max_output_tables: usize,
@@ -264,7 +288,7 @@ TableCompactionSplitPolicy {
 }
 ```
 
-M4 can start simpler by using `TableCompactionConfig` only:
+The M4 implementation uses `TableCompactionConfig` only:
 
 1. target output byte estimate;
 2. max output table count;
@@ -273,9 +297,9 @@ M4 can start simpler by using `TableCompactionConfig` only:
 5. prefer splitting at physical-key boundaries so one physical key's versions
    are not split across tables when possible.
 
-Grandparent-overlap splitting from old segmented compaction is explicitly
-deferred. The caller may later supply a pure split predicate when L6 has the
-necessary overlap facts.
+Grandparent-overlap splitting and caller-provided split boundaries from old
+segmented compaction are explicitly deferred. The caller may later supply a
+pure split predicate when L6 has the necessary overlap facts.
 
 ### `TableCompactionOutput`
 
@@ -402,7 +426,7 @@ semantics.
 ### L5H-B: Compaction API Skeleton
 
 1. Replace the placeholder `table/compaction.rs`.
-2. Add request, source, policy, decision, output, and report types.
+2. Add compactor, config, source, policy, decision, output, and report types.
 3. Re-export the L5H surfaces from `table/mod.rs` with `pub(crate)` visibility.
 4. Validate config, empty sources, and output table limits.
 
@@ -478,11 +502,12 @@ integration.
 3. Rate limiting.
 4. Branch level selection.
 5. Grandparent overlap splitting.
-6. Manifest install and old-table retirement.
-7. Object publication.
-8. Snapshot-aware retention safety.
-9. Version-retention and TTL policy implementations.
-10. Product-family exemptions.
+6. Caller-provided split boundaries and force-split predicates.
+7. Manifest install and old-table retirement.
+8. Object publication.
+9. Snapshot-aware retention safety.
+10. Version-retention and TTL policy implementations.
+11. Product-family exemptions.
 
 ## Exit Gate
 

@@ -25,8 +25,7 @@ fn table_runtime_default_config_constructs() {
         config.builder().compression(),
         TableCompression::Uncompressed
     );
-    assert!(config.reader().cache_enabled());
-    assert!(config.reader().validate_on_open());
+    assert_eq!(*config.reader(), TableReaderConfig::default());
     assert!(config.cache().enabled());
     assert_eq!(config.cache().capacity_bytes(), 64 * 1024 * 1024);
     assert_eq!(config.compaction().target_output_bytes(), 64 * 1024 * 1024);
@@ -76,7 +75,7 @@ fn table_runtime_config_rejects_invalid_values() {
 fn table_runtime_config_accepts_explicit_valid_values() {
     let builder =
         TableBuilderConfig::new(1024, 16, TableCompression::Zstd).expect("valid builder config");
-    let reader = TableReaderConfig::new(false, true);
+    let reader = TableReaderConfig::new();
     let cache = TableCacheConfig::new(false, 0).expect("disabled cache can have zero capacity");
     let compaction = TableCompactionConfig::new(4096, 4).expect("valid compaction config");
 
@@ -84,7 +83,7 @@ fn table_runtime_config_accepts_explicit_valid_values() {
         TableRuntimeConfig::new(builder, reader, cache, compaction).expect("valid table config");
 
     assert_eq!(config.builder().compression(), TableCompression::Zstd);
-    assert!(!config.reader().cache_enabled());
+    assert_eq!(*config.reader(), TableReaderConfig::default());
     assert!(!config.cache().enabled());
 }
 
@@ -182,9 +181,7 @@ fn table_runtime_error_display_and_sources_are_typed() {
         previous: vec![0x02],
         current: vec![0x01],
     };
-    let source_read = TableRuntimeError::SourceRead {
-        reason: "range unavailable",
-    };
+    let source_read = TableRuntimeError::source_read("range unavailable");
     let cache = TableRuntimeError::Cache {
         reason: "capacity exceeded",
     };

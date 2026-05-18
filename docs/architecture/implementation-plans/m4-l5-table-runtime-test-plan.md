@@ -66,6 +66,14 @@ Recommended test locations:
    byte fuzzing.
 6. `crates/storage-next/fuzz/fuzz_targets/table_runtime_cursor.rs` for cursor
    operation fuzzing over generated valid table sources.
+7. `crates/storage-next/fuzz/fuzz_targets/table_runtime_compaction.rs` for
+   generated compaction model fuzzing.
+
+Slice-level test plans live beside their implementation plans under
+`docs/architecture/implementation-plans/M4/`. L5A is the one structural
+exception: because it is only a scaffold slice, its required tests are recorded
+inside `l5a-table-runtime-scaffold-implementation-plan.md` rather than in a
+separate paired test-plan file.
 
 Required regression file:
 
@@ -308,8 +316,9 @@ vectors. L5 must not independently infer retention safety.
 11. Reader handles tombstones as rows.
 12. Reader handles expired rows as rows.
 13. Reader does not perform branch visibility filtering.
-14. Reader reads only needed data blocks for point lookup when index facts allow
-    it.
+14. Reader validates the full V1 table before exposing facts. Lazy data-block
+    reads are deferred until the table format has an authoritative metadata
+    proof that does not require the footer CRC over all preceding bytes.
 15. Reader reports range-read failures with object/source context.
 16. Reader handles short reads, overlong reads, and inconsistent metadata as
     typed errors.
@@ -319,9 +328,9 @@ vectors. L5 must not independently infer retention safety.
 
 ### 9. Block Cache
 
-1. Cache disabled path returns correct rows.
-2. Cold cache miss reads and stores the requested block.
-3. Warm cache hit avoids a second source read.
+1. Cache disabled path stores no bytes and returns no hits.
+2. Cold insert stores the requested block bytes.
+3. Warm cache hit returns the stored block bytes without another insert.
 4. Cache key includes stable table identity and block address.
 5. Same block offset in different table identities does not collide.
 6. Eviction removes entries when capacity is exceeded.
@@ -331,9 +340,10 @@ vectors. L5 must not independently infer retention safety.
 10. Cache does not use process-global state.
 11. Separate database-owned caches do not see each other's entries.
 12. Corrupt cached bytes cannot be installed through the public cache API.
-13. Cache pollution cannot change reader output.
+13. Cache pollution cannot change standalone cache lookup output.
 14. Cache capacity zero behaves like disabled cache or is rejected explicitly.
-15. Generated read scripts with random cache evictions match no-cache output.
+15. Generated cache scripts with random evictions match the in-memory cache
+    model.
 
 ### 10. Optional Accelerators
 
@@ -356,8 +366,10 @@ the M3G authoritative index.
    documented contract.
 2. One input source with keep-all policy is identity modulo output splitting.
 3. Multiple disjoint sources with keep-all policy merge in encoded-key order.
-4. Multiple overlapping sources with keep-all policy preserve the documented
-   duplicate/tie behavior.
+4. Multiple overlapping sources with keep-all policy preserve deterministic
+   source/index tie behavior for distinct internal keys; exact duplicate
+   internal keys across sources are rejected until a caller-supplied duplicate
+   policy exists.
 5. Tombstones are preserved under keep-all policy.
 6. Expired rows are preserved under keep-all policy.
 7. A drop-exact-row policy drops exactly the selected rows.
@@ -369,12 +381,11 @@ the M3G authoritative index.
 13. Compaction does not infer snapshot floors.
 14. Compaction does not special-case product data families.
 15. Output tables are sorted and duplicate-free where required.
-16. Output splitting respects target size.
-17. Output splitting respects caller-provided split boundaries.
-18. Every produced output artifact decodes through M3G whole-table validation.
-19. Compaction reports input row count, output row count, dropped row count,
+16. Output splitting respects the configured approximate row-size target.
+17. Every produced output artifact decodes through M3G whole-table validation.
+18. Compaction reports input row count, output row count, dropped row count,
     output table count, and byte estimates.
-20. Generated compaction model tests cover 1 to 16 sources and 1 to 4096 rows.
+19. Generated compaction model tests cover 1 to 16 sources and 0 to 4096 rows.
 
 ### 12. Object-Backed Reader Handoff
 
@@ -385,15 +396,13 @@ the M3G authoritative index.
 3. Object names are constructed outside L5.
 4. Durable publication remains in L4.
 5. L5 reader does not mutate table objects.
-6. Range-read failure while reading header returns typed source error.
-7. Range-read failure while reading footer returns typed source error.
-8. Range-read failure while reading index/properties returns typed source error.
-9. Range-read failure while reading data block returns typed source error.
-10. Short range-read is rejected.
-11. Object-backed reader does not read more bytes than needed for point lookup
-    once metadata is loaded.
-12. Object-backed reader tests run against memory and local filesystem paths
-    through lower-layer APIs, not by opening files from L5.
+6. Full-source read failure while loading table bytes returns typed source
+   error with object/source context.
+7. Short range-read is rejected.
+8. Object-backed reader may read the full V1 table object on open because the
+   current footer CRC validates all preceding bytes.
+9. Object-backed reader tests run against memory and local filesystem paths
+   through lower-layer APIs, not by opening files from L5.
 
 ### 13. Error And Diagnostic Coverage
 
@@ -507,7 +516,9 @@ The following are explicitly not L5 test gaps:
 8. checkpoint scheduling;
 9. retention reachability;
 10. table quarantine policy;
-11. public storage API conformance.
+11. public storage API conformance;
+12. lazy object-backed table reads and reader/cache integration;
+13. caller-provided compaction split boundaries.
 
 Those belong to M4-L6, M4-L7, M4-L8, and M4-L9.
 
@@ -522,7 +533,8 @@ M4-L5 test coverage is complete when:
 3. fuzz targets exist with checked-in seed corpora;
 4. source guards prevent upper-layer and product leakage;
 5. memory and local filesystem object-backed reader tests pass;
-6. cache-disabled and cache-enabled reader outputs are proven equivalent;
+6. standalone cache-disabled and cache-enabled paths are covered by cache model
+   tests;
 7. sensitivity probes have been run and recorded;
 8. the implementation plan and porting log identify old-code mechanics that
    were ported, rewritten, retired, or deferred.

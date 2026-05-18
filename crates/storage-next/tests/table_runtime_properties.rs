@@ -31,6 +31,7 @@ fn table_runtime_property_harness_runs_scaffold_contract() {
     use strata_storage_next::testkit::check_table_runtime_scaffold_contract;
 
     let mut runner = TestRunner::new(Config {
+        cases: 32,
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
             "proptest-regressions/table_runtime.txt",
         ))),

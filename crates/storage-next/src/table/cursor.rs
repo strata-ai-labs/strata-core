@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 pub(crate) const MERGE_HEAP_THRESHOLD: usize = 4;
+const _: () = assert!(MERGE_HEAP_THRESHOLD >= 2);
 
 pub(crate) trait TableCursor {
     fn seek_to_first(&mut self) -> TableRuntimeResult<()>;
@@ -59,10 +60,10 @@ impl<'a> MemoryTableCursor<'a> {
     }
 
     fn seek_index(&self, target: &TableInternalKeyBytes) -> Option<usize> {
-        match self.rows.binary_search_by(|row| row.key().cmp(target)) {
-            Ok(index) | Err(index) if index < self.rows.len() => Some(index),
-            Ok(_) | Err(_) => None,
-        }
+        let index = match self.rows.binary_search_by(|row| row.key().cmp(target)) {
+            Ok(index) | Err(index) => index,
+        };
+        (index < self.rows.len()).then_some(index)
     }
 }
 

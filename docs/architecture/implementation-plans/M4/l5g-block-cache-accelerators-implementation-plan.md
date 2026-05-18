@@ -71,8 +71,9 @@ L5G implements:
 4. `TableBlockAddress` for data, index, properties, and accelerator blocks;
 5. `TableBlockPriority` for data versus metadata/accelerator entries, if
    needed by the eviction policy;
-6. `TableBlockCacheStats` with hits, misses, inserts, replacements, evictions,
-   entries, bytes, capacity, and skipped oversized entries;
+6. `TableBlockCacheStats` with hits, misses, inserts, duplicate inserts,
+   per-entry removes, table invalidations, clears, evictions, entries, bytes,
+   capacity, and skipped oversized/disabled entries;
 7. a safe deterministic eviction policy suitable for M4 tests;
 8. optional `TableBloomFilter` or equivalent non-authoritative accelerator over
    L5 byte keys;
@@ -233,8 +234,10 @@ TableBlockCacheStats {
     misses: u64,
     inserts: u64,
     duplicate_inserts: u64,
-    replacements: u64,
     evictions: u64,
+    removes: u64,
+    table_invalidations: u64,
+    clears: u64,
     skipped_oversized: u64,
     skipped_disabled: u64,
     entries: usize,

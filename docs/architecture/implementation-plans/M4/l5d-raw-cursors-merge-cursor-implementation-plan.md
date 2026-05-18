@@ -235,6 +235,11 @@ Preserve the useful old split:
 MERGE_HEAP_THRESHOLD = 4
 ```
 
+The implementation may expose this threshold as a `pub(crate)` constant for
+tests, with a compile-time assertion that it stays at least two. It may also
+expose a `CursorMergePath` enum so tests can assert whether a merge used the
+empty, single, linear, or heap path without inspecting private cursor state.
+
 1. Use a direct empty/single-source path for zero or one child.
 2. Use a linear scan path for two to four child cursors.
 3. Use a binary heap path for five or more child cursors.

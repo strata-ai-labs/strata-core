@@ -26,7 +26,9 @@ L5C gives later table-runtime slices a deterministic in-memory source that can:
 
 L5C is not the cursor layer. It may expose direct read helpers or ordinary
 iterators for tests and later builders. L5D owns the reusable cursor traits,
-seek state machines, and merge cursor.
+seek state machines, and merge cursor. After L5D lands, `MutableTable` and
+`FrozenTable` may grow convenience `cursor()` methods that delegate to the L5D
+cursor type without moving cursor ownership back into L5C.
 
 ## Inputs
 
@@ -151,7 +153,9 @@ Responsibilities:
 9. expose exact-key lookup by `TableInternalKeyBytes`;
 10. expose key-bound filtering by `TableKeyBounds`;
 11. expose physical-prefix filtering by `TablePhysicalKeyBytes`;
-12. freeze into `FrozenTable`.
+12. freeze into `FrozenTable`;
+13. optionally expose `cursor()` convenience methods after L5D provides the
+    cursor implementation.
 
 Prefer consuming freeze:
 

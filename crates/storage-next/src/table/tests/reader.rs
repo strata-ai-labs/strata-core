@@ -209,9 +209,9 @@ impl TableByteSource for TestSource {
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
         self.calls.set(self.calls.get().saturating_add(1));
         if self.fail_read {
-            return Err(TableRuntimeError::SourceRead {
-                reason: "injected table source failure",
-            });
+            return Err(TableRuntimeError::source_read(
+                "injected table source failure",
+            ));
         }
 
         let start = usize::try_from(offset).map_err(|_| TableRuntimeError::InvalidRange {
@@ -223,9 +223,9 @@ impl TableByteSource for TestSource {
                 field: "byte_range",
             })?;
         if start > self.bytes.len() {
-            return Err(TableRuntimeError::SourceRead {
-                reason: "byte range exceeds source length",
-            });
+            return Err(TableRuntimeError::source_read(
+                "byte range exceeds source length",
+            ));
         }
         end = end.min(self.bytes.len());
         if self.short_read && end > start {
@@ -258,7 +258,7 @@ fn immutable_reader_opens_bytes_and_exposes_facts_and_exact_lookup() {
     let artifact = builder(2, TableCompression::Uncompressed)
         .build_from_rows(identity("reader-bytes"), &table_rows)
         .expect("build reader bytes");
-    let config = TableReaderConfig::new(false, true);
+    let config = TableReaderConfig::new();
 
     let reader = ImmutableTableReader::open_bytes(
         identity("reader-bytes"),
@@ -315,9 +315,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
     .expect_err("short source read should fail");
     assert_eq!(
         short,
-        TableRuntimeError::SourceRead {
-            reason: "short table source read",
-        }
+        TableRuntimeError::source_read("short table source read")
     );
 
     let short_advertised = TestSource::with_advertised_len(
@@ -345,9 +343,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
     .expect_err("advertised length beyond source should be a short read");
     assert_eq!(
         long_advertised,
-        TableRuntimeError::SourceRead {
-            reason: "short table source read",
-        }
+        TableRuntimeError::source_read("short table source read")
     );
 }
 
@@ -355,7 +351,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
 fn immutable_reader_one_row_facts_and_runtime_config_are_preserved() {
     let runtime = TableRuntimeConfig::new(
         TableBuilderConfig::new(256, 4, TableCompression::Uncompressed).expect("builder config"),
-        TableReaderConfig::new(false, true),
+        TableReaderConfig::new(),
         TableCacheConfig::new(false, 0).expect("cache config"),
         TableCompactionConfig::new(4096, 8).expect("compaction config"),
     )
@@ -890,7 +886,7 @@ fn immutable_reader_bytes_and_source_paths_are_identical_for_queries() {
         ),
     ];
     let (artifact, table_rows) = build_artifact("reader-parity", &rows, 2, TableCompression::Zstd);
-    let config = TableReaderConfig::new(true, true);
+    let config = TableReaderConfig::new();
     let bytes = artifact.bytes().to_vec();
     let source = TestSource::exact(bytes.clone());
     let source_probe = source.clone();
@@ -990,9 +986,9 @@ fn bytes_table_source_enforces_exact_ranges() {
     );
     assert_eq!(
         source.read_at(3, 2),
-        Err(TableRuntimeError::SourceRead {
-            reason: "byte range exceeds source length",
-        })
+        Err(TableRuntimeError::source_read(
+            "byte range exceeds source length"
+        ))
     );
     assert!(matches!(
         source.read_at(3, usize::MAX),

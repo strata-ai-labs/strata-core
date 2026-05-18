@@ -368,9 +368,7 @@ impl TableByteSource for TableObjectByteSource<'_> {
 
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
         self.read_exact_at(offset, len)
-            .map_err(|error| TableRuntimeError::SourceRead {
-                reason: error.source_read_reason(),
-            })
+            .map_err(|error| TableRuntimeError::source_read_with(error.source_read_reason(), error))
     }
 }
 
@@ -1195,6 +1193,13 @@ mod tests {
             }) if source.kind() == BackendErrorKind::Interrupted
         ));
 
+        assert_reader_source_chain_preserves_backend_error(
+            &interrupted,
+            object.clone(),
+            &facts,
+            identity.clone(),
+        );
+
         let short = RecordingBackend::durable().with_short_read();
         short.seed(object.clone(), &bytes);
         assert_eq!(
@@ -1424,14 +1429,8 @@ mod tests {
             .clone();
 
         for (identity_text, config) in [
-            (
-                "object-zstd-cache-disabled",
-                TableReaderConfig::new(false, true),
-            ),
-            (
-                "object-zstd-cache-enabled",
-                TableReaderConfig::new(true, true),
-            ),
+            ("object-zstd-cache-disabled", TableReaderConfig::new()),
+            ("object-zstd-cache-enabled", TableReaderConfig::new()),
         ] {
             let identity = TableIdentity::new(identity_text).expect("identity");
             let object_reader = TableObjectReaderService::new(&backend)
@@ -1716,6 +1715,27 @@ mod tests {
     fn facts_from_bytes(object: ObjectName, bytes: &[u8]) -> TableObjectFacts {
         let table = decode_immutable_table(bytes).expect("decode table");
         TableObjectFacts::from_table(object, bytes, &table).expect("table facts")
+    }
+
+    fn assert_reader_source_chain_preserves_backend_error(
+        backend: &RecordingBackend,
+        object: ObjectName,
+        facts: &TableObjectFacts,
+        identity: TableIdentity,
+    ) {
+        let source = TableObjectByteSource::new(backend, object, facts.byte_count())
+            .expect("table object source");
+        let runtime_error =
+            ImmutableTableReader::open_source(identity, &source, TableReaderConfig::default())
+                .expect_err("object source failure should preserve source chain");
+        let table_source = std::error::Error::source(&runtime_error)
+            .expect("table runtime source read error should expose object read source");
+        assert!(table_source
+            .to_string()
+            .contains("failed to read immutable table object"));
+        let backend_source = std::error::Error::source(table_source)
+            .expect("object read source should expose backend source");
+        assert!(backend_source.to_string().contains("injected read failure"));
     }
 
     fn diverse_rows() -> Vec<StorageRow> {

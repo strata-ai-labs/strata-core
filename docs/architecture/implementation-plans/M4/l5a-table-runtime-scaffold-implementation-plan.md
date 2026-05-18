@@ -118,7 +118,7 @@ Recommended initial types:
    - compaction policy failure.
 3. `TableRuntimeConfig` for top-level L5 defaults.
 4. `TableBuilderConfig` for target block size, rows-per-block, and compression.
-5. `TableReaderConfig` for cache use and validation mode.
+5. `TableReaderConfig` for the reader validation policy.
 6. `TableCacheConfig` for capacity and enablement.
 7. `TableCompactionConfig` for target output size and split limits.
 8. `TableIdentity` as an L5-stable identity shell that does not construct

@@ -121,6 +121,43 @@ fn table_runtime_closeout_fuzz_inventory_matches_existing_table_targets() {
             &fuzz_manifest,
             &[manifest_name.as_str(), manifest_path.as_str()],
         );
+        assert_nonempty_corpus(&crate_root, target);
+    }
+
+    for (target, contract) in [
+        (
+            "table_runtime_reader",
+            "check_table_runtime_reader_contract",
+        ),
+        (
+            "table_runtime_cursor",
+            "check_table_runtime_cursor_contract",
+        ),
+        (
+            "table_runtime_compaction",
+            "check_table_runtime_compaction_contract",
+        ),
+    ] {
+        let target_path = crate_root.join(format!("fuzz/fuzz_targets/{target}.rs"));
+        assert!(
+            target_path.is_file(),
+            "missing documented table fuzz target {}",
+            target_path.display()
+        );
+        let target_text = read_file(&target_path);
+        let manifest_name = format!("name = \"{target}\"");
+        let manifest_path = format!("path = \"fuzz_targets/{target}.rs\"");
+        assert_contains_all(
+            "fuzz/Cargo.toml",
+            &fuzz_manifest,
+            &[manifest_name.as_str(), manifest_path.as_str()],
+        );
+        assert_contains_all(target, &target_text, &[contract]);
+        assert!(
+            !target_text.contains("check_table_runtime_scaffold_contract"),
+            "{target} must exercise its dedicated runtime contract"
+        );
+        assert_nonempty_corpus(&crate_root, target);
     }
 }
 
@@ -132,4 +169,21 @@ fn assert_contains_all(label: &str, text: &str, needles: &[&str]) {
     for needle in needles {
         assert!(text.contains(needle), "{label} should contain {needle:?}");
     }
+}
+
+fn assert_nonempty_corpus(crate_root: &Path, target: &str) {
+    let corpus = crate_root.join(format!("fuzz/corpus/{target}"));
+    assert!(
+        corpus.is_dir(),
+        "missing checked-in fuzz corpus directory {}",
+        corpus.display()
+    );
+    let has_seed = fs::read_dir(&corpus)
+        .unwrap_or_else(|error| panic!("read {}: {error}", corpus.display()))
+        .any(|entry| entry.map(|entry| entry.path().is_file()).unwrap_or(false));
+    assert!(
+        has_seed,
+        "fuzz corpus directory {} should contain at least one seed",
+        corpus.display()
+    );
 }

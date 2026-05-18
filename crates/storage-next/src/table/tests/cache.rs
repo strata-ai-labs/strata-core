@@ -191,6 +191,7 @@ fn cache_insert_get_duplicate_remove_clear_and_stats_are_deterministic() {
     assert_eq!(stats.inserts(), 2);
     assert_eq!(stats.duplicate_inserts(), 1);
     assert_eq!(stats.removes(), 1);
+    assert_eq!(stats.table_invalidations(), 0);
     assert_eq!(stats.clears(), 1);
     assert!(stats.hits() >= 3);
     assert!(stats.misses() >= 2);
@@ -229,7 +230,10 @@ fn cache_capacity_eviction_resize_and_table_removal_are_coherent() {
     cache
         .insert(other_table.clone(), bytes(4, 4))
         .expect("other table");
+    let removes_before_table_invalidation = cache.stats().removes();
     assert_eq!(cache.remove_table(&cache_id("table-a")), 2);
+    assert_eq!(cache.stats().removes(), removes_before_table_invalidation);
+    assert_eq!(cache.stats().table_invalidations(), 1);
     assert!(cache.get(&first).is_none());
     assert_eq!(
         cache
@@ -364,6 +368,22 @@ fn cache_instances_do_not_share_entries_or_stats() {
     assert_eq!(right.stats().entries(), 0);
     assert!(left.stats().hits() > right.stats().hits());
     assert!(right.stats().misses() > 0);
+}
+
+#[test]
+fn cache_recovers_from_mutex_poison_without_panicking() {
+    let cache = enabled_cache(16);
+    let first = key("poison", TableBlockCacheKind::Data, 0, 4);
+    cache.insert(first.clone(), bytes(1, 4)).expect("insert");
+
+    cache.poison_for_test();
+
+    assert_eq!(
+        cache.get(&first).expect("hit after poison").as_ref(),
+        &[1; 4]
+    );
+    assert_eq!(cache.stats().entries(), 1);
+    assert!(cache.remove(&first));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

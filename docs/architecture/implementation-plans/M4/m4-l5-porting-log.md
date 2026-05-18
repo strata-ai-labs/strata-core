@@ -750,6 +750,10 @@ and what old code became eligible for retirement.
 - Streaming compaction output without buffering rows.
 - Rate limiting and backpressure.
 - Grandparent-overlap splitting and branch-level scoring.
+- Caller-provided split boundaries. L5H currently splits only by the configured
+  approximate row-size target while preserving physical-key groups; an explicit
+  split-boundary API is deferred until L6/L7 can supply branch-level placement
+  facts.
 - Manifest publication and old-table retirement.
 - Caller implementations for retention, tombstone, expiry, and row-family
   policy.
@@ -917,11 +921,11 @@ and what old code became eligible for retirement.
 | L5A scaffold/config/facts/stats/errors | `src/table/tests/mod.rs` | `valid_config`, `invalid_config`, `valid_facts`, `invalid_facts`, `error_sources`, `stats` counters | public-surface and product-vocabulary guards | generated testkit route | Closed |
 | L5B row/key adapters | `src/table/tests/key.rs` | `row_key_adapters`, `invalid_row_key_sequences`, `key_bounds`, `size_accounting` counters | product/cursor-policy guards | generated row/key scripts | Closed |
 | L5C mutable/frozen tables | `src/table/tests/mutable.rs` | `mutable_frozen_tables` counter | product/cursor-policy guards | generated mutable/frozen scripts | Closed |
-| L5D raw cursors and merge | `src/table/tests/cursor.rs` | `raw_cursors` counter | cursor-policy guard | generated cursor and merge scripts | Closed |
+| L5D raw cursors and merge | `src/table/tests/cursor.rs` | `raw_cursors` counter | cursor-policy guard | `table_runtime_cursor` plus generated cursor and merge scripts | Closed |
 | L5E immutable builder | `src/table/tests/builder.rs` | `immutable_builder_artifacts` counter | old-table-vocabulary guard | `format_table_artifact` fuzz target plus generated builder scripts | Closed |
-| L5F immutable reader | `src/table/tests/reader.rs` | `immutable_table_readers` counter | filesystem/backend guard | `format_table_artifact`, `format_table_block`, and generated reader scripts | Closed |
+| L5F immutable reader | `src/table/tests/reader.rs` | `immutable_table_readers` counter | filesystem/backend guard | `table_runtime_reader`, `format_table_artifact`, `format_table_block`, and generated reader scripts | Closed |
 | L5G cache/accelerators | `src/table/tests/cache.rs` | `table_block_caches`, `table_bloom_filters` counters | old cache identity and global-state guards | generated cache/filter scripts | Closed |
-| L5H generic compaction | `src/table/tests/compaction.rs` | `table_compactions` counter | compaction-policy guard | generated compaction scripts | Closed |
+| L5H generic compaction | `src/table/tests/compaction.rs` | `table_compactions` counter | compaction-policy guard | `table_runtime_compaction` plus generated compaction scripts | Closed |
 | L5I object-backed access | `src/service/table.rs` tests | `object_backed_table_readers` counter | object-layout and backend-boundary guards | generated memory-backend object-backed scripts | Closed |
 
 ### Behavior Preserved
@@ -955,8 +959,9 @@ and what old code became eligible for retirement.
   process-global cache identity.
 - L5 compaction executes caller policy. It does not decide snapshot floors,
   branch retention, bottommost-level behavior, or expiry/tombstone safety.
-- Runtime fuzz-adjacent coverage is currently the generated
-  `table_runtime_properties` route; byte-level table fuzzing remains in
+- Runtime generated coverage runs through the `table_runtime_properties`
+  route and the `table_runtime_reader`, `table_runtime_cursor`, and
+  `table_runtime_compaction` fuzz targets; byte-level table fuzzing remains in
   `format_table_artifact` and `format_table_block`.
 
 ### Tests And Guards Strengthened
@@ -1011,6 +1016,9 @@ Optional/manual commands:
 cargo test -p strata-storage-next --features testkit,localfs --locked
 cd crates/storage-next/fuzz && cargo +nightly fuzz run format_table_artifact -- -max_total_time=60
 cd crates/storage-next/fuzz && cargo +nightly fuzz run format_table_block -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_reader -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_cursor -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_compaction -- -max_total_time=60
 ```
 
 ### Retirement

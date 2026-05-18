@@ -127,33 +127,29 @@ impl Default for TableBuilderConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TableReaderConfig {
-    cache_enabled: bool,
-    validate_on_open: bool,
+    validation: TableReaderValidationMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableReaderValidationMode {
+    ValidateOnOpen,
 }
 
 impl TableReaderConfig {
-    pub(crate) const fn new(cache_enabled: bool, validate_on_open: bool) -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
-            cache_enabled,
-            validate_on_open,
+            validation: TableReaderValidationMode::ValidateOnOpen,
         }
     }
 
-    pub(crate) const fn cache_enabled(self) -> bool {
-        self.cache_enabled
-    }
-
-    pub(crate) const fn validate_on_open(self) -> bool {
-        self.validate_on_open
+    pub(crate) const fn validation_mode(self) -> TableReaderValidationMode {
+        self.validation
     }
 }
 
 impl Default for TableReaderConfig {
     fn default() -> Self {
-        Self {
-            cache_enabled: true,
-            validate_on_open: true,
-        }
+        Self::new()
     }
 }
 

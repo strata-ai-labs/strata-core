@@ -12,6 +12,15 @@
 /corpus/format_table_block/*
 !/corpus/format_table_block/one-put-uncompressed
 !/corpus/format_table_block/zstd
+!/corpus/table_runtime_reader/
+/corpus/table_runtime_reader/*
+!/corpus/table_runtime_reader/invalid-table
+!/corpus/table_runtime_cursor/
+/corpus/table_runtime_cursor/*
+!/corpus/table_runtime_cursor/basic-script
+!/corpus/table_runtime_compaction/
+/corpus/table_runtime_compaction/*
+!/corpus/table_runtime_compaction/generated-script
 !/corpus/format_wal_commit_payload/
 /corpus/format_wal_commit_payload/*
 !/corpus/format_wal_commit_payload/one-put

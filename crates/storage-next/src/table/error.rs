@@ -1,13 +1,15 @@
 //! Table-runtime error vocabulary.
 
 use crate::format::FormatError;
+use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 const MAX_DISPLAY_KEY_BYTES: usize = 16;
 
 pub(crate) type TableRuntimeResult<T> = Result<T, TableRuntimeError>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum TableRuntimeError {
     InvalidConfig {
         field: &'static str,
@@ -31,6 +33,7 @@ pub(crate) enum TableRuntimeError {
     },
     SourceRead {
         reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
     Cache {
         reason: &'static str,
@@ -39,6 +42,78 @@ pub(crate) enum TableRuntimeError {
         reason: &'static str,
     },
 }
+
+impl TableRuntimeError {
+    pub(crate) fn source_read(reason: &'static str) -> Self {
+        Self::SourceRead {
+            reason,
+            source: None,
+        }
+    }
+
+    pub(crate) fn source_read_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::SourceRead {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+}
+
+impl PartialEq for TableRuntimeError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::InvalidConfig {
+                    field: left_field,
+                    reason: left_reason,
+                },
+                Self::InvalidConfig {
+                    field: right_field,
+                    reason: right_reason,
+                },
+            ) => left_field == right_field && left_reason == right_reason,
+            (
+                Self::InvalidRowOrder {
+                    previous: left_previous,
+                    current: left_current,
+                },
+                Self::InvalidRowOrder {
+                    previous: right_previous,
+                    current: right_current,
+                },
+            ) => left_previous == right_previous && left_current == right_current,
+            (
+                Self::DuplicateInternalKey { key: left },
+                Self::DuplicateInternalKey { key: right },
+            ) => left == right,
+            (Self::InvalidRange { field: left }, Self::InvalidRange { field: right })
+            | (Self::Cache { reason: left }, Self::Cache { reason: right })
+            | (Self::CompactionPolicy { reason: left }, Self::CompactionPolicy { reason: right }) => {
+                left == right
+            }
+            (Self::BuildFormat { source: left }, Self::BuildFormat { source: right })
+            | (Self::DecodeFormat { source: left }, Self::DecodeFormat { source: right }) => {
+                left == right
+            }
+            (
+                Self::SourceRead {
+                    reason: left_reason,
+                    ..
+                },
+                Self::SourceRead {
+                    reason: right_reason,
+                    ..
+                },
+            ) => left_reason == right_reason,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for TableRuntimeError {}
 
 impl fmt::Display for TableRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -74,7 +149,7 @@ impl fmt::Display for TableRuntimeError {
                     "failed to decode immutable table bytes: {source}"
                 )
             }
-            Self::SourceRead { reason } => {
+            Self::SourceRead { reason, .. } => {
                 write!(formatter, "failed to read table source: {reason}")
             }
             Self::Cache { reason } => {
@@ -91,11 +166,15 @@ impl std::error::Error for TableRuntimeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::BuildFormat { source } | Self::DecodeFormat { source } => Some(source),
+            Self::SourceRead {
+                source: Some(source),
+                ..
+            } => Some(source.as_ref()),
             Self::InvalidConfig { .. }
             | Self::InvalidRowOrder { .. }
             | Self::DuplicateInternalKey { .. }
             | Self::InvalidRange { .. }
-            | Self::SourceRead { .. }
+            | Self::SourceRead { source: None, .. }
             | Self::Cache { .. }
             | Self::CompactionPolicy { .. } => None,
         }

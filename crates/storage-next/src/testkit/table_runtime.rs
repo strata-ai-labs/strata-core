@@ -27,6 +27,9 @@ use super::TestkitError;
 type CursorKeyValue = (Vec<u8>, Vec<u8>);
 type MergeModelItem = (Vec<u8>, usize, Vec<u8>);
 
+const GENERATED_COMPACTION_MAX_SOURCES: u8 = 16;
+const GENERATED_COMPACTION_MAX_ROWS: usize = 4096;
+
 /// Summary of one generated table-runtime scaffold contract check.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TableRuntimeScaffoldOutcome {
@@ -212,6 +215,97 @@ pub fn check_table_runtime_scaffold_contract(
     Ok(outcome)
 }
 
+/// Runs the reader-specific fuzz contract over arbitrary table bytes.
+pub fn check_table_runtime_reader_contract(bytes: &[u8]) -> Result<(), TestkitError> {
+    let identity = TableIdentity::new("fuzz-reader")
+        .map_err(|err| TestkitError::new(format!("reader identity setup failed: {err}")))?;
+    match ImmutableTableReader::open_bytes(identity, bytes.to_vec(), TableReaderConfig::default()) {
+        Ok(reader) => assert_reader_matches_decode("reader fuzz", &reader, bytes),
+        Err(
+            TableRuntimeError::DecodeFormat { .. }
+            | TableRuntimeError::InvalidRowOrder { .. }
+            | TableRuntimeError::DuplicateInternalKey { .. }
+            | TableRuntimeError::InvalidRange { .. },
+        ) => Ok(()),
+        Err(err) => Err(TestkitError::new(format!(
+            "reader fuzz returned unexpected error: {err}"
+        ))),
+    }
+}
+
+/// Runs the cursor-specific fuzz contract over generated valid table sources.
+pub fn check_table_runtime_cursor_contract(script: &[u8]) -> Result<(), TestkitError> {
+    let row_count = 1 + usize::from(script_byte(script, 0) % 32);
+    let table = generated_cursor_table(script, 0, row_count)?;
+    let model_keys = table
+        .iter()
+        .map(|row| row.key().clone())
+        .collect::<Vec<_>>();
+    let mut cursor = table.cursor();
+    let mut expected_position: Option<usize> = None;
+
+    for (step, op) in script.iter().copied().take(128).enumerate() {
+        match op % 4 {
+            0 => {
+                cursor
+                    .seek_to_first()
+                    .map_err(|err| TestkitError::new(format!("cursor seek-first failed: {err}")))?;
+                expected_position = (!model_keys.is_empty()).then_some(0);
+            }
+            1 => {
+                cursor
+                    .advance()
+                    .map_err(|err| TestkitError::new(format!("cursor advance failed: {err}")))?;
+                expected_position = expected_position.and_then(|position| {
+                    let next = position.saturating_add(1);
+                    (next < model_keys.len()).then_some(next)
+                });
+            }
+            2 => {
+                let target_index = usize::from(script_byte(script, step + 1)) % model_keys.len();
+                let target = model_keys[target_index].clone();
+                cursor
+                    .seek(&target)
+                    .map_err(|err| TestkitError::new(format!("cursor exact seek failed: {err}")))?;
+                expected_position = Some(target_index);
+            }
+            _ => {
+                let target = TableInternalKeyBytes::from_row(&generated_model_row(
+                    script,
+                    step.saturating_add(33),
+                )?);
+                cursor.seek(&target).map_err(|err| {
+                    TestkitError::new(format!("cursor generated seek failed: {err}"))
+                })?;
+                expected_position = model_keys.iter().position(|key| key >= &target);
+            }
+        }
+
+        let expected_key = expected_position.map(|position| &model_keys[position]);
+        if cursor.current_key() != expected_key {
+            return Err(TestkitError::new(
+                "cursor fuzz current key did not match generated model",
+            ));
+        }
+    }
+
+    assert_bounded_cursors_match_model("cursor fuzz bounded", &table)?;
+    let source_count = 1 + usize::from(script_byte(script, 2) % GENERATED_COMPACTION_MAX_SOURCES);
+    let merge_tables = generated_cursor_tables(script, source_count, 2)?;
+    let expected_path = match source_count {
+        0 => CursorMergePath::Empty,
+        1 => CursorMergePath::Single,
+        2..=MERGE_HEAP_THRESHOLD => CursorMergePath::Linear,
+        _ => CursorMergePath::Heap,
+    };
+    assert_merge_cursor_matches_model("cursor fuzz merge", &merge_tables, expected_path)
+}
+
+/// Runs the compaction-specific fuzz contract over generated sorted sources.
+pub fn check_table_runtime_compaction_contract(script: &[u8]) -> Result<(), TestkitError> {
+    check_table_compaction(script)
+}
+
 fn check_valid_config(script: &[u8]) -> Result<(), TestkitError> {
     let target_data_block_size = 1 + u32::from(script_byte(script, 0));
     let rows_per_block = 1 + usize::from(script_byte(script, 1));
@@ -231,7 +325,7 @@ fn check_valid_config(script: &[u8]) -> Result<(), TestkitError> {
 
     let builder = TableBuilderConfig::new(target_data_block_size, rows_per_block, compression)
         .map_err(|err| TestkitError::new(format!("valid builder config rejected: {err}")))?;
-    let reader = TableReaderConfig::new(cache_enabled, script_byte(script, 7) & 1 == 0);
+    let reader = TableReaderConfig::new();
     let cache = TableCacheConfig::new(cache_enabled, cache_capacity)
         .map_err(|err| TestkitError::new(format!("valid cache config rejected: {err}")))?;
     let compaction = TableCompactionConfig::new(target_output_bytes, max_output_tables)
@@ -242,8 +336,7 @@ fn check_valid_config(script: &[u8]) -> Result<(), TestkitError> {
     if runtime.builder().target_data_block_size() != target_data_block_size
         || runtime.builder().rows_per_block() != rows_per_block
         || runtime.builder().compression() != compression
-        || runtime.reader().cache_enabled() != cache_enabled
-        || runtime.reader().validate_on_open() != (script_byte(script, 7) & 1 == 0)
+        || *runtime.reader() != TableReaderConfig::default()
         || runtime.cache().enabled() != cache_enabled
         || runtime.cache().capacity_bytes() != cache_capacity
         || runtime.compaction().target_output_bytes() != target_output_bytes
@@ -1702,7 +1795,7 @@ fn check_immutable_table_reader(script: &[u8]) -> Result<(), TestkitError> {
     } else {
         TableCompression::Zstd
     };
-    let config = TableReaderConfig::new(script_byte(script, 51) & 1 == 0, true);
+    let config = TableReaderConfig::new();
     let builder = ImmutableTableBuilder::new(
         TableBuilderConfig::new(target_data_block_size, rows_per_block, compression)
             .map_err(|err| TestkitError::new(format!("reader builder config failed: {err}")))?,
@@ -1780,7 +1873,7 @@ fn check_object_backed_table_reader(script: &[u8]) -> Result<(), TestkitError> {
     } else {
         TableCompression::Zstd
     };
-    let config = TableReaderConfig::new(script_byte(script, 67) & 1 == 0, true);
+    let config = TableReaderConfig::new();
     let builder = ImmutableTableBuilder::new(
         TableBuilderConfig::new(target_data_block_size, rows_per_block, compression).map_err(
             |err| TestkitError::new(format!("object-backed builder config failed: {err}")),
@@ -2024,6 +2117,7 @@ struct GeneratedCacheModel {
     duplicate_inserts: u64,
     evictions: u64,
     removes: u64,
+    table_invalidations: u64,
     clears: u64,
     skipped_oversized: u64,
     skipped_disabled: u64,
@@ -2043,6 +2137,7 @@ impl GeneratedCacheModel {
             duplicate_inserts: 0,
             evictions: 0,
             removes: 0,
+            table_invalidations: 0,
             clears: 0,
             skipped_oversized: 0,
             skipped_disabled: 0,
@@ -2110,7 +2205,13 @@ impl GeneratedCacheModel {
             .collect::<Vec<_>>();
         let removed = keys.len();
         for key in keys {
-            self.remove(&key);
+            if let Some(bytes) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(bytes.len());
+            }
+            model_remove_from_recency(&mut self.recency, &key);
+        }
+        if removed > 0 {
+            self.table_invalidations = self.table_invalidations.saturating_add(1);
         }
         removed
     }
@@ -2188,6 +2289,7 @@ fn assert_generated_cache_stats(
         || stats.duplicate_inserts() != model.duplicate_inserts
         || stats.evictions() != model.evictions
         || stats.removes() != model.removes
+        || stats.table_invalidations() != model.table_invalidations
         || stats.clears() != model.clears
         || stats.skipped_oversized() != model.skipped_oversized
         || stats.skipped_disabled() != model.skipped_disabled
@@ -2320,11 +2422,11 @@ fn check_table_bloom_filter(script: &[u8]) -> Result<(), TestkitError> {
 }
 
 fn check_table_compaction(script: &[u8]) -> Result<(), TestkitError> {
-    let rows = generated_builder_table_rows(script)?;
+    let rows = generated_compaction_table_rows(script)?;
     let expected_rows = rows.iter().map(|row| row.row().clone()).collect::<Vec<_>>();
-    let source_count = 1 + usize::from(script_byte(script, 88) % 4);
+    let source_count = 1 + usize::from(script_byte(script, 88) % GENERATED_COMPACTION_MAX_SOURCES);
     let sources = generated_compaction_sources(&rows, source_count, "generated")?;
-    let compactor = generated_compactor(script, 89, 1_024)?;
+    let compactor = generated_compactor(script, 89, GENERATED_COMPACTION_MAX_ROWS)?;
 
     check_keep_all_compaction(
         script,
@@ -2344,6 +2446,74 @@ fn check_table_compaction(script: &[u8]) -> Result<(), TestkitError> {
     )?;
     assert_compaction_rejects_duplicate_and_output_limit(script)?;
     Ok(())
+}
+
+fn generated_compaction_table_rows(script: &[u8]) -> Result<Vec<TableRow>, TestkitError> {
+    let requested_rows = generated_compaction_row_count(script);
+    let mut model = BTreeMap::<Vec<u8>, StorageRow>::new();
+    for row in generated_compaction_seed_rows()?
+        .into_iter()
+        .take(requested_rows)
+    {
+        model.insert(table_key_bytes(&row), row);
+    }
+
+    let mut generated_index = 0_usize;
+    while model.len() < requested_rows {
+        let row = generated_model_row(script, generated_index)?;
+        model.insert(table_key_bytes(&row), row);
+        generated_index = generated_index.saturating_add(1);
+    }
+
+    let rows = model.into_values().map(TableRow::new).collect::<Vec<_>>();
+    validate_strictly_sorted_unique_rows(&rows)
+        .map_err(|err| TestkitError::new(format!("generated compaction rows invalid: {err}")))?;
+    Ok(rows)
+}
+
+fn generated_compaction_row_count(script: &[u8]) -> usize {
+    let raw = u16::from_le_bytes([script_byte(script, 93), script_byte(script, 94)]);
+    usize::from(raw) % (GENERATED_COMPACTION_MAX_ROWS + 1)
+}
+
+fn generated_compaction_seed_rows() -> Result<Vec<StorageRow>, TestkitError> {
+    let shared_key =
+        deterministic_physical_key(0xc1, "compaction", 0x20, b"shared\0compaction".to_vec())?;
+    Ok(vec![
+        StorageRow::put(
+            shared_key.clone(),
+            CommitVersion::new(11),
+            Timestamp::from_micros(11),
+            Timestamp::EPOCH,
+            b"newer".to_vec(),
+        ),
+        StorageRow::put(
+            shared_key,
+            CommitVersion::new(3),
+            Timestamp::from_micros(3),
+            Timestamp::EPOCH,
+            b"older".to_vec(),
+        ),
+        StorageRow::tombstone(
+            deterministic_physical_key(0xc2, "compaction", 0x20, b"delete".to_vec())?,
+            CommitVersion::new(7),
+            Timestamp::from_micros(7),
+        ),
+        StorageRow::put(
+            deterministic_physical_key(0xc3, "compaction", 0x20, b"expired".to_vec())?,
+            CommitVersion::new(5),
+            Timestamp::from_micros(5),
+            Timestamp::from_micros(1),
+            b"expired".to_vec(),
+        ),
+        StorageRow::put(
+            deterministic_physical_key(0xc4, "compaction", 0x21, b"empty".to_vec())?,
+            CommitVersion::new(13),
+            Timestamp::from_micros(13),
+            Timestamp::EPOCH,
+            Vec::new(),
+        ),
+    ])
 }
 
 fn check_keep_all_compaction(
@@ -2937,6 +3107,44 @@ fn assert_immutable_reader_matches_model(
     Ok(())
 }
 
+fn assert_reader_matches_decode(
+    label: &'static str,
+    reader: &ImmutableTableReader,
+    bytes: &[u8],
+) -> Result<(), TestkitError> {
+    let decoded = decode_immutable_table(bytes)
+        .map_err(|err| TestkitError::new(format!("{label} decode failed after open: {err}")))?;
+    let actual_rows = reader
+        .rows()
+        .iter()
+        .map(|row| row.row().clone())
+        .collect::<Vec<_>>();
+    if actual_rows.as_slice() != decoded.rows() {
+        return Err(TestkitError::new(format!(
+            "{label} rows did not match decoded table"
+        )));
+    }
+
+    let properties = decoded.properties();
+    let facts = reader.facts();
+    let byte_count =
+        u64::try_from(bytes.len()).expect("table fuzz input length fits in u64 on this platform");
+    if facts.byte_count() != byte_count
+        || facts.row_count() != properties.row_count()
+        || facts.data_block_count() != decoded.header().data_block_count()
+        || facts.key_range().first_key() != properties.min_key_bytes()
+        || facts.key_range().last_key() != properties.max_key_bytes()
+        || facts.commit_range().min() != properties.commit_min()
+        || facts.commit_range().max() != properties.commit_max()
+    {
+        return Err(TestkitError::new(format!(
+            "{label} trusted facts did not match decoded table"
+        )));
+    }
+
+    Ok(())
+}
+
 fn assert_reader_bounds_match_model(
     label: &'static str,
     reader: &ImmutableTableReader,
@@ -3155,7 +3363,13 @@ fn generated_model_row(script: &[u8], index: usize) -> Result<StorageRow, Testki
 
 #[cfg(test)]
 mod tests {
-    use super::check_table_runtime_scaffold_contract;
+    use super::{
+        check_table_runtime_compaction_contract, check_table_runtime_cursor_contract,
+        check_table_runtime_reader_contract, check_table_runtime_scaffold_contract,
+        generated_builder_table_rows, generated_compaction_row_count, generated_compaction_sources,
+        generated_compaction_table_rows, ImmutableTableBuilder, TableBuilderConfig, TableIdentity,
+        GENERATED_COMPACTION_MAX_ROWS, GENERATED_COMPACTION_MAX_SOURCES,
+    };
 
     #[test]
     fn table_runtime_scaffold_contract_checks_generated_scripts() {
@@ -3182,5 +3396,59 @@ mod tests {
         assert_eq!(outcome.table_compaction_cases(), 1);
         assert_eq!(outcome.error_source_cases(), 1);
         assert_eq!(outcome.stats_cases(), 1);
+    }
+
+    #[test]
+    fn table_runtime_compaction_generator_covers_planned_source_and_row_limits() {
+        let mut script = vec![0_u8; 256];
+        script[88] = GENERATED_COMPACTION_MAX_SOURCES - 1;
+        let max_rows = u16::try_from(GENERATED_COMPACTION_MAX_ROWS)
+            .expect("generated compaction max rows fits u16");
+        script[93..95].copy_from_slice(&max_rows.to_le_bytes());
+
+        assert_eq!(generated_compaction_row_count(&[]), 0);
+        assert_eq!(
+            generated_compaction_row_count(&script),
+            GENERATED_COMPACTION_MAX_ROWS
+        );
+
+        let rows = generated_compaction_table_rows(&script).expect("max generated rows");
+        assert_eq!(rows.len(), GENERATED_COMPACTION_MAX_ROWS);
+        let sources = generated_compaction_sources(
+            &rows,
+            usize::from(GENERATED_COMPACTION_MAX_SOURCES),
+            "max",
+        )
+        .expect("max generated sources");
+        assert_eq!(sources.len(), usize::from(GENERATED_COMPACTION_MAX_SOURCES));
+        assert_eq!(
+            sources
+                .iter()
+                .map(super::TableCompactionSource::len)
+                .sum::<usize>(),
+            GENERATED_COMPACTION_MAX_ROWS
+        );
+    }
+
+    #[test]
+    fn dedicated_table_runtime_fuzz_contracts_exercise_their_surfaces() {
+        let script = [
+            64, 16, 1, 0, 32, 128, 4, 1, 5, 2, 200, 7, 3, 0xaa, 0x10, 0x20, 1, 2, 3, 4, 5, 6,
+        ];
+
+        let rows = generated_builder_table_rows(&script).expect("reader rows");
+        let builder =
+            ImmutableTableBuilder::new(TableBuilderConfig::default()).expect("reader builder");
+        let artifact = builder
+            .build_from_rows(
+                TableIdentity::new("reader-contract").expect("reader identity"),
+                &rows,
+            )
+            .expect("reader artifact");
+        check_table_runtime_reader_contract(artifact.bytes()).expect("reader contract");
+        check_table_runtime_reader_contract(b"not an immutable table").expect("reader rejection");
+
+        check_table_runtime_cursor_contract(&script).expect("cursor contract");
+        check_table_runtime_compaction_contract(&script).expect("compaction contract");
     }
 }

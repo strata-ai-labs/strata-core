@@ -133,6 +133,7 @@ pub(crate) struct TableBlockCacheStats {
     duplicate_inserts: u64,
     evictions: u64,
     removes: u64,
+    table_invalidations: u64,
     clears: u64,
     skipped_oversized: u64,
     skipped_disabled: u64,
@@ -164,6 +165,10 @@ impl TableBlockCacheStats {
 
     pub(crate) const fn removes(self) -> u64 {
         self.removes
+    }
+
+    pub(crate) const fn table_invalidations(self) -> u64 {
+        self.table_invalidations
     }
 
     pub(crate) const fn clears(self) -> u64 {
@@ -329,9 +334,11 @@ impl TableBlockCache {
         for key in keys {
             if let Some(bytes) = state.entries.remove(&key) {
                 state.bytes = state.bytes.saturating_sub(bytes.len());
-                state.stats.removes = state.stats.removes.saturating_add(1);
             }
             remove_from_recency(&mut state.recency, &key);
+        }
+        if removed > 0 {
+            state.stats.table_invalidations = state.stats.table_invalidations.saturating_add(1);
         }
         refresh_gauges(&mut state);
         removed
@@ -363,10 +370,21 @@ impl TableBlockCache {
         view
     }
 
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = self
+                .state
+                .lock()
+                .expect("test lock should not already be poisoned");
+            panic!("poison table cache mutex for recovery test");
+        });
+    }
+
     fn lock_state(&self) -> std::sync::MutexGuard<'_, CacheState> {
         self.state
             .lock()
-            .expect("table cache mutex poisoned by previous panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

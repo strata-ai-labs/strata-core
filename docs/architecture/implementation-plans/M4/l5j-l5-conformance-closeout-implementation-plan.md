@@ -236,19 +236,26 @@ Do not add broad rewrites or duplicate existing tests.
 
 Inventory the current fuzz targets under `crates/storage-next/fuzz/`.
 
-Confirm coverage or create TODO-backed placeholders for:
+Confirm coverage for:
 
 1. M3G table artifact bytes;
 2. table block bytes;
-3. table runtime reader source movement;
-4. cursor movement over generated sources;
-5. compaction generated model;
-6. table runtime scaffold script.
+3. table runtime reader byte input;
+4. cursor movement over generated valid table sources;
+5. compaction generated models.
 
-If adding new fuzz targets is feasible and consistent with existing harness
-style, add bounded targets. If the repo intentionally keeps L5 runtime fuzzing
-inside the testkit property route for now, document that decision in the
-porting log and test plan.
+The delivered L5 runtime fuzz targets are:
+
+1. `table_runtime_reader`, which calls
+   `check_table_runtime_reader_contract`;
+2. `table_runtime_cursor`, which calls
+   `check_table_runtime_cursor_contract`;
+3. `table_runtime_compaction`, which calls
+   `check_table_runtime_compaction_contract`.
+
+`tests/table_runtime_closeout.rs` must enforce the fuzz inventory and the
+structural rule that each runtime target calls its dedicated contract instead
+of only calling the shared scaffold route.
 
 ### L5J-F: Cross-Feature Conformance Commands
 
@@ -316,7 +323,8 @@ Expected entries include:
 5. L8 table retention and garbage collection;
 6. L8 checkpoint/table/WAL coordination;
 7. post-V1 lazy block reads after whole-object validation;
-8. post-V1 durable object-store fences.
+8. post-V1 caller-provided compaction split boundaries;
+9. post-V1 durable object-store fences.
 
 ### L5J-J: Final Exit Gate
 
@@ -340,15 +348,18 @@ Likely touched files:
 1. `crates/storage-next/src/testkit/table_runtime.rs`
 2. `crates/storage-next/tests/table_runtime_properties.rs`
 3. `crates/storage-next/tests/table_runtime_source_guard.rs`
-4. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md`
-5. `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
+4. `crates/storage-next/tests/table_runtime_closeout.rs`
+5. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md`
 6. `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 
 Possible files if gaps are found:
 
 1. `crates/storage-next/src/table/tests/*.rs`
 2. `crates/storage-next/src/table/*.rs`
-3. `crates/storage-next/fuzz/fuzz_targets/*.rs`
+3. `crates/storage-next/fuzz/fuzz_targets/table_runtime_reader.rs`
+4. `crates/storage-next/fuzz/fuzz_targets/table_runtime_cursor.rs`
+5. `crates/storage-next/fuzz/fuzz_targets/table_runtime_compaction.rs`
+6. `crates/storage-next/fuzz/corpus/table_runtime_*/`
 
 Do not expect new production modules unless the audit finds a real missing L5
 mechanic.
@@ -376,12 +387,15 @@ Optional closeout commands:
 cargo test -p strata-storage-next --features testkit,localfs --locked
 cd crates/storage-next/fuzz && cargo +nightly fuzz run format_table_artifact -- -max_total_time=60
 cd crates/storage-next/fuzz && cargo +nightly fuzz run format_table_block -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_reader -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_cursor -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_compaction -- -max_total_time=60
 ```
 
 Only include optional fuzz commands in the final done criteria if cargo-fuzz
-and the nightly toolchain are available. If L5J adds future runtime fuzz
-targets, prefer names such as `table_runtime_reader` and
-`table_runtime_cursor` and document them in `crates/storage-next/fuzz/README.md`.
+and the nightly toolchain are available. Runtime fuzz targets must remain
+documented in `crates/storage-next/fuzz/README.md` and covered by
+`tests/table_runtime_closeout.rs`.
 
 ## Exit Criteria
 

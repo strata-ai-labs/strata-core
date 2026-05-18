@@ -39,9 +39,11 @@ Use these locations:
    property-harness assertions;
 6. `crates/storage-next/tests/table_runtime_source_guard.rs` for production L5
    boundary scans;
-7. `crates/storage-next/fuzz/fuzz_targets/` for fuzz targets or documented
-   fuzz-adjacent coverage;
-8. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md` for the
+7. `crates/storage-next/tests/table_runtime_closeout.rs` for closeout inventory
+   and fuzz-target structural checks;
+8. `crates/storage-next/fuzz/fuzz_targets/` for runtime and format fuzz
+   targets;
+9. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md` for the
    final closeout ledger.
 
 Do not add backend/object imports to production `src/table/`. Boundary tests
@@ -330,6 +332,19 @@ Acceptable proof forms:
 3. testkit model scripts that are callable by fuzz targets;
 4. documented deferral with a reason and owner.
 
+The delivered runtime fuzz targets are mandatory closeout inventory items:
+
+1. `table_runtime_reader`, calling
+   `check_table_runtime_reader_contract`;
+2. `table_runtime_cursor`, calling
+   `check_table_runtime_cursor_contract`;
+3. `table_runtime_compaction`, calling
+   `check_table_runtime_compaction_contract`.
+
+`tests/table_runtime_closeout.rs` must verify both target registration and the
+structural rule that each runtime target calls its dedicated contract rather
+than only the shared scaffold contract.
+
 ## Cross-Feature Matrix
 
 Run and record these mandatory modes:
@@ -340,6 +355,7 @@ Run and record these mandatory modes:
 | testkit unit | generated route unit check | `cargo test -p strata-storage-next --locked --lib testkit::table_runtime` |
 | testkit property | generated external property check | `cargo test -p strata-storage-next --features testkit --locked --test table_runtime_properties` |
 | no-default property | prove no accidental localfs/default dependency | `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test table_runtime_properties` |
+| closeout inventory | fuzz inventory and generated-counter enforcement | `cargo test -p strata-storage-next --locked --test table_runtime_closeout` |
 | source guards | L5 purity | `cargo test -p strata-storage-next --locked --test table_runtime_source_guard` |
 | wasm/no-default | browser-compatible lower surface | `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked` |
 | lint | all-target/all-feature lint surface | `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` |
@@ -350,8 +366,17 @@ Run and record these mandatory modes:
 Optional modes:
 
 1. localfs explicit feature if not already part of defaults;
-2. short fuzz smoke commands for any L5 fuzz targets that exist;
+2. short fuzz smoke commands for `table_runtime_reader`,
+   `table_runtime_cursor`, and `table_runtime_compaction`;
 3. longer stress commands for generated table runtime scripts.
+
+Runtime fuzz smoke commands, when cargo-fuzz and nightly are available:
+
+```sh
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_reader -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_cursor -- -max_total_time=60
+cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_compaction -- -max_total_time=60
+```
 
 ## Regression Map From Old Storage
 
@@ -400,9 +425,10 @@ Deferred to L8:
 Deferred to post-V1:
 
 1. lazy block reads after whole-object validation;
-2. durable object-store fences;
-3. conditional read validation;
-4. durable filter blocks if the M3G format is explicitly extended.
+2. caller-provided compaction split boundaries;
+3. durable object-store fences;
+4. conditional read validation;
+5. durable filter blocks if the M3G format is explicitly extended.
 
 ## Exit Gate
 

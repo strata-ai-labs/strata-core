@@ -7,6 +7,8 @@ use super::{
 };
 
 const MAX_SOURCE_ID_BYTES: usize = 128;
+const OUTPUT_IDENTITY_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const OUTPUT_IDENTITY_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableCompactor {
@@ -371,21 +373,13 @@ fn compact_tables(
             .then_with(|| left.source_index.cmp(&right.source_index))
             .then_with(|| left.source_row_index.cmp(&right.source_row_index))
     });
+    validate_no_global_duplicate_internal_keys(&merged)?;
 
     let mut output = PendingOutput::new(compactor.config.target_output_bytes())?;
     let mut artifacts = Vec::new();
-    let mut previous_key: Option<&TableInternalKeyBytes> = None;
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
 
     for merged_row in merged {
-        if let Some(previous) = previous_key {
-            if previous == merged_row.row.key() {
-                return Err(TableRuntimeError::DuplicateInternalKey {
-                    key: merged_row.row.encoded_key().to_vec(),
-                });
-            }
-        }
-        previous_key = Some(merged_row.row.key());
         report.input_rows = report.input_rows.saturating_add(1);
 
         let context = TableCompactionRowContext {
@@ -427,6 +421,21 @@ fn compact_tables(
     )?;
 
     Ok(TableCompactionOutput::new(artifacts, report))
+}
+
+fn validate_no_global_duplicate_internal_keys(merged: &[MergedRow<'_>]) -> TableRuntimeResult<()> {
+    let mut previous_key: Option<&TableInternalKeyBytes> = None;
+    for merged_row in merged {
+        if let Some(previous) = previous_key {
+            if previous == merged_row.row.key() {
+                return Err(TableRuntimeError::DuplicateInternalKey {
+                    key: merged_row.row.encoded_key().to_vec(),
+                });
+            }
+        }
+        previous_key = Some(merged_row.row.key());
+    }
+    Ok(())
 }
 
 fn merged_rows(sources: &[TableCompactionSource]) -> Vec<MergedRow<'_>> {
@@ -524,8 +533,9 @@ fn build_pending_output(
         });
     }
     let output_index = artifacts.len();
-    let identity = output_identity(output_identity_seed, output_index)?;
-    let artifact = builder.build_from_rows(identity, &output.take_rows())?;
+    let rows = output.take_rows();
+    let identity = output_identity(output_identity_seed, output_index, &rows)?;
+    let artifact = builder.build_from_rows(identity, &rows)?;
     report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
     artifacts.push(artifact);
     report.output_tables = artifacts.len();
@@ -533,8 +543,48 @@ fn build_pending_output(
     Ok(())
 }
 
-fn output_identity(seed: &TableIdentity, output_index: usize) -> TableRuntimeResult<TableIdentity> {
-    TableIdentity::new(format!("{}-{output_index:08x}", seed.as_str()))
+fn output_identity(
+    seed: &TableIdentity,
+    output_index: usize,
+    rows: &[TableRow],
+) -> TableRuntimeResult<TableIdentity> {
+    let fingerprint = output_rows_fingerprint(rows);
+    TableIdentity::new(format!(
+        "{}-{fingerprint:016x}-{output_index:08x}",
+        seed.as_str()
+    ))
+}
+
+fn output_rows_fingerprint(rows: &[TableRow]) -> u64 {
+    let mut hash = OUTPUT_IDENTITY_HASH_OFFSET;
+    hash_u64(&mut hash, rows.len() as u64);
+    for row in rows {
+        hash_bytes(&mut hash, row.encoded_key());
+        hash_u64(&mut hash, row.commit_timestamp().as_micros());
+        hash_u64(&mut hash, row.expires_at().as_micros());
+        hash_bytes(&mut hash, &[u8::from(row.is_tombstone())]);
+        hash_bytes(&mut hash, row.value());
+    }
+    hash
+}
+
+fn hash_u64(hash: &mut u64, value: u64) {
+    hash_bytes(hash, &value.to_le_bytes());
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    hash_u64_raw(hash, bytes.len() as u64);
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(OUTPUT_IDENTITY_HASH_PRIME);
+    }
+}
+
+fn hash_u64_raw(hash: &mut u64, value: u64) {
+    for byte in value.to_le_bytes() {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(OUTPUT_IDENTITY_HASH_PRIME);
+    }
 }
 
 fn physical_key_bytes(row: &TableRow) -> Vec<u8> {

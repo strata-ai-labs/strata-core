@@ -112,7 +112,7 @@ impl AsRef<[u8]> for TablePhysicalKeyBytes {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct TableRow {
     row: StorageRow,
     key: TableInternalKeyBytes,
@@ -174,6 +174,14 @@ impl TableRow {
         self.row
     }
 }
+
+impl PartialEq for TableRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for TableRow {}
 
 impl fmt::Debug for TableRow {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -237,26 +245,26 @@ impl TableKeyBound {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TableKeyBounds {
-    lower: TableKeyBound,
-    upper: TableKeyBound,
-    prefix: Option<Vec<u8>>,
+pub(crate) enum TableKeyBounds {
+    Range {
+        lower: TableKeyBound,
+        upper: TableKeyBound,
+    },
+    Prefix(Vec<u8>),
 }
 
 impl TableKeyBounds {
     pub(crate) fn unbounded() -> Self {
-        Self {
+        Self::Range {
             lower: TableKeyBound::Unbounded,
             upper: TableKeyBound::Unbounded,
-            prefix: None,
         }
     }
 
     pub(crate) fn exact(key: TableInternalKeyBytes) -> Self {
-        Self {
+        Self::Range {
             lower: TableKeyBound::Included(key.clone()),
             upper: TableKeyBound::Included(key),
-            prefix: None,
         }
     }
 
@@ -282,28 +290,20 @@ impl TableKeyBounds {
 
     pub(crate) fn range(lower: TableKeyBound, upper: TableKeyBound) -> TableRuntimeResult<Self> {
         validate_bound_order(&lower, &upper)?;
-        Ok(Self {
-            lower,
-            upper,
-            prefix: None,
-        })
+        Ok(Self::Range { lower, upper })
     }
 
     pub(crate) fn prefix(prefix: impl Into<Vec<u8>>) -> Self {
-        Self {
-            lower: TableKeyBound::Unbounded,
-            upper: TableKeyBound::Unbounded,
-            prefix: Some(prefix.into()),
-        }
+        Self::Prefix(prefix.into())
     }
 
     pub(crate) fn contains_key(&self, key: &TableInternalKeyBytes) -> bool {
-        if let Some(prefix) = &self.prefix {
-            if !key.as_slice().starts_with(prefix) {
-                return false;
+        match self {
+            Self::Range { lower, upper } => {
+                lower_contains(lower, key) && upper_contains(upper, key)
             }
+            Self::Prefix(prefix) => key.as_slice().starts_with(prefix),
         }
-        lower_contains(&self.lower, key) && upper_contains(&self.upper, key)
     }
 }
 

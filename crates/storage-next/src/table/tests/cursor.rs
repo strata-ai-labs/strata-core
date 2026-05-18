@@ -558,6 +558,54 @@ fn heap_merge_covers_sixteen_sources_with_shared_key_order() {
 }
 
 #[test]
+fn heap_merge_preserves_tie_break_after_advancing_selected_child() {
+    let key_a = physical_key(1, 0x20, b"a".to_vec());
+    let key_b = physical_key(1, 0x20, b"b".to_vec());
+    let tables = vec![
+        table_from_rows(vec![
+            put_row_for_key(key_a, 5, b"source-0-a".to_vec()),
+            put_row_for_key(key_b.clone(), 5, b"source-0-b".to_vec()),
+        ]),
+        table_from_rows(vec![put_row_for_key(
+            key_b.clone(),
+            5,
+            b"source-1-b".to_vec(),
+        )]),
+        table_from_rows(vec![put_row_for_key(
+            physical_key(1, 0x20, b"c".to_vec()),
+            5,
+            b"source-2-c".to_vec(),
+        )]),
+        table_from_rows(vec![put_row_for_key(
+            physical_key(1, 0x20, b"d".to_vec()),
+            5,
+            b"source-3-d".to_vec(),
+        )]),
+        table_from_rows(vec![put_row_for_key(
+            physical_key(1, 0x20, b"e".to_vec()),
+            5,
+            b"source-4-e".to_vec(),
+        )]),
+    ];
+
+    let mut merge = MergeTableCursor::new(boxed_cursors(&tables));
+    assert_eq!(merge.path(), CursorMergePath::Heap);
+    merge.seek_to_first().expect("seek heap merge");
+
+    assert_eq!(
+        collect_values(&mut merge),
+        vec![
+            b"source-0-a".to_vec(),
+            b"source-0-b".to_vec(),
+            b"source-1-b".to_vec(),
+            b"source-2-c".to_vec(),
+            b"source-3-d".to_vec(),
+            b"source-4-e".to_vec(),
+        ]
+    );
+}
+
+#[test]
 fn merge_cursor_current_is_stable_until_advance_and_only_selected_child_advances() {
     let tables = vec![
         table_from_rows(vec![

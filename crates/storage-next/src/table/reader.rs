@@ -40,9 +40,9 @@ impl TableByteSource for BytesTableSource {
                 field: "byte_range",
             })?;
         if end > self.bytes.len() {
-            return Err(TableRuntimeError::SourceRead {
-                reason: "byte range exceeds source length",
-            });
+            return Err(TableRuntimeError::source_read(
+                "byte range exceeds source length",
+            ));
         }
         Ok(self.bytes[start..end].to_vec())
     }
@@ -76,6 +76,7 @@ impl ImmutableTableReader {
         bytes: Vec<u8>,
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
+        require_validate_on_open(config);
         let source = BytesTableSource::new(bytes);
         let (facts, rows) = decode_reader_rows(identity, source.bytes())?;
         Ok(Self {
@@ -90,6 +91,7 @@ impl ImmutableTableReader {
         source: S,
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
+        require_validate_on_open(config);
         let bytes = read_full_source(&source)?;
         let (facts, rows) = decode_reader_rows(identity, &bytes)?;
         Ok(Self {
@@ -177,6 +179,12 @@ impl super::TableCursor for ImmutableTableCursor<'_> {
     }
 }
 
+fn require_validate_on_open(config: TableReaderConfig) {
+    match config.validation_mode() {
+        super::TableReaderValidationMode::ValidateOnOpen => {}
+    }
+}
+
 fn read_full_source(source: &impl TableByteSource) -> TableRuntimeResult<Vec<u8>> {
     let len =
         usize::try_from(source.byte_count()).map_err(|_| TableRuntimeError::InvalidRange {
@@ -184,9 +192,7 @@ fn read_full_source(source: &impl TableByteSource) -> TableRuntimeResult<Vec<u8>
         })?;
     let bytes = source.read_at(0, len)?;
     if bytes.len() != len {
-        return Err(TableRuntimeError::SourceRead {
-            reason: "short table source read",
-        });
+        return Err(TableRuntimeError::source_read("short table source read"));
     }
     Ok(bytes)
 }
@@ -197,7 +203,6 @@ fn decode_reader_rows(
 ) -> TableRuntimeResult<(TableRuntimeFacts, Vec<TableRow>)> {
     let decoded = decode_immutable_table(bytes)
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
-    let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
     let rows = decoded
         .rows()
         .iter()
@@ -205,5 +210,6 @@ fn decode_reader_rows(
         .map(TableRow::new)
         .collect::<Vec<_>>();
     super::validate_strictly_sorted_unique_rows(&rows)?;
+    let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
     Ok((facts, rows))
 }

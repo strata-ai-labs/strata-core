@@ -35,7 +35,8 @@ pub(crate) use snapshot::{
 )]
 pub(crate) use table::{
     decode_immutable_table, encode_immutable_table, encode_immutable_table_with_block_compressions,
-    ImmutableTable, TableCompression,
+    ImmutableTable, TableCompression, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES,
+    MAX_TABLE_DATA_BLOCKS, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS, MAX_TABLE_ROW_BYTES,
 };
 #[expect(
     unused_imports,

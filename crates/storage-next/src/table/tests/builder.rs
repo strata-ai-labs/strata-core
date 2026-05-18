@@ -1,11 +1,10 @@
-use crate::format::{decode_immutable_table, TableCompression};
+use crate::format::{decode_immutable_table, TableCompression, MAX_TABLE_KEY_BYTES};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, ImmutableTableBuilder, MutableTable,
     TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableIdentity, TableReaderConfig,
     TableRow, TableRuntimeConfig, TableRuntimeError,
 };
-use std::error::Error as _;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 fn branch(byte: u8) -> BranchId {
@@ -184,6 +183,20 @@ fn immutable_builder_rejects_empty_unsorted_and_duplicate_inputs() {
         builder.build_from_rows(identity("duplicate"), &duplicate),
         Err(TableRuntimeError::DuplicateInternalKey { .. })
     ));
+}
+
+#[test]
+fn immutable_builder_rejects_oversized_keys_before_format_encoding() {
+    let builder = builder(1, TableCompression::Uncompressed);
+    let oversized_key = put_row(vec![0x61; MAX_TABLE_KEY_BYTES], 1);
+    let rows = sorted_table_rows(&[oversized_key]);
+
+    assert_eq!(
+        builder.build_from_rows(identity("oversized-key"), &rows),
+        Err(TableRuntimeError::InvalidRange {
+            field: "internal_key_len"
+        })
+    );
 }
 
 #[test]
@@ -515,24 +528,4 @@ fn immutable_builder_validation_errors_keep_display_bounded() {
     ));
     assert!(duplicate_display.contains("...("));
     assert!(duplicate_display.len() < 128);
-}
-
-#[test]
-fn immutable_builder_wraps_l3_encode_failures() {
-    let oversized_key = vec![0xaa; 70 * 1024];
-    let rows = sorted_table_rows(&[put_row(oversized_key, 1)]);
-    let builder = builder(1, TableCompression::Uncompressed);
-
-    let error = builder
-        .build_from_rows(identity("oversized-key"), &rows)
-        .expect_err("oversized encoded key should fail in L3");
-    assert!(matches!(&error, TableRuntimeError::BuildFormat { .. }));
-    assert!(
-        error.source().is_some(),
-        "wrapped format errors must expose their source"
-    );
-    assert!(
-        format!("{error}").contains("failed to build immutable table bytes"),
-        "display should route through L5 build vocabulary"
-    );
 }

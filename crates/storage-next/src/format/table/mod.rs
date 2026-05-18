@@ -22,13 +22,13 @@ const TABLE_HEADER_SIZE_U32: u32 = 64;
 const TABLE_FOOTER_SIZE: usize = 64;
 const TABLE_BLOCK_FRAME_HEADER_SIZE: usize = 12;
 const TABLE_BLOCK_FRAME_OVERHEAD: usize = TABLE_BLOCK_FRAME_HEADER_SIZE + 4;
-const MAX_TABLE_DATA_BLOCKS: u32 = 1_048_576;
-const MAX_TABLE_ROWS: u64 = 1 << 40;
-const MAX_TABLE_BLOCK_ENTRIES: u32 = 1_048_576;
-const MAX_TABLE_KEY_BYTES: usize = 64 * 1024;
-const MAX_TABLE_ROW_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_TABLE_DATA_BLOCKS: u32 = 1_048_576;
+pub(crate) const MAX_TABLE_ROWS: u64 = 1 << 40;
+pub(crate) const MAX_TABLE_BLOCK_ENTRIES: u32 = 1_048_576;
+pub(crate) const MAX_TABLE_KEY_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_TABLE_ROW_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TABLE_BLOCK_ENCODED_BYTES: usize = 64 * 1024 * 1024;
-const MAX_TABLE_BLOCK_DECODED_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_TABLE_BLOCK_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const ZSTD_COMPRESSION_LEVEL: i32 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

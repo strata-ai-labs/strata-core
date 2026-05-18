@@ -54,6 +54,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "table_runtime_reader"
+path = "fuzz_targets/table_runtime_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "table_runtime_cursor"
+path = "fuzz_targets/table_runtime_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "table_runtime_compaction"
+path = "fuzz_targets/table_runtime_compaction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_wal_commit_payload"
 path = "fuzz_targets/format_wal_commit_payload.rs"
 test = false

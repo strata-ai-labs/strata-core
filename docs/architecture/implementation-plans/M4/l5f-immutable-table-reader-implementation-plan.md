@@ -354,9 +354,8 @@ L5F may expose simple reader-local stats if useful for tests:
 4. source read failures.
 
 Shared cache hit/miss/eviction behavior belongs to L5G. L5F should not create
-process-global cache state. If `TableReaderConfig::cache_enabled` exists before
-L5G, L5F may store it and leave it behaviorally inert, or add a reader-local
-single-block memo only if tests prove it is deterministic and not global.
+process-global cache state. The V1 reader config records validation policy only;
+reader/cache integration remains a later lazy-reader slice.
 
 ## Error Policy
 

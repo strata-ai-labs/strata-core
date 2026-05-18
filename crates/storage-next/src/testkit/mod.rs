@@ -25,7 +25,11 @@ pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOu
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
 };
-pub use table_runtime::{check_table_runtime_scaffold_contract, TableRuntimeScaffoldOutcome};
+pub use table_runtime::{
+    check_table_runtime_compaction_contract, check_table_runtime_cursor_contract,
+    check_table_runtime_reader_contract, check_table_runtime_scaffold_contract,
+    TableRuntimeScaffoldOutcome,
+};
 
 /// Test-only backend selector used by external conformance tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

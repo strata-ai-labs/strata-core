@@ -397,6 +397,11 @@ fn sorted_unique_validation_rejects_unsorted_and_duplicate_internal_keys_only() 
     ));
 
     let duplicate = TableRow::new(put_row_for_key(same_key, 9, b"different bytes".to_vec()));
+    assert_eq!(newer.cmp(&duplicate), std::cmp::Ordering::Equal);
+    assert_eq!(
+        newer, duplicate,
+        "TableRow Eq must match Ord and is therefore keyed by encoded internal key"
+    );
     let duplicates = vec![newer, duplicate];
     assert!(matches!(
         validate_strictly_sorted_unique_rows(&duplicates),

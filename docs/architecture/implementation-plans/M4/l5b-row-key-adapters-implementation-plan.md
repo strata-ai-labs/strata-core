@@ -181,6 +181,10 @@ Responsibilities:
 6. provide constructors for exact key, closed range, open range, and prefix
    range where practical.
 
+`TableKeyBound` is the lower/upper bound enum used by `TableKeyBounds::range`
+and should remain a mechanical encoded-key bound, not a visibility or product
+predicate.
+
 `TableKeyRange` in `facts.rs` is a table-fact range with concrete first and
 last keys. `TableKeyBounds` is a query/bounds helper. Do not merge them unless
 the resulting API keeps both meanings clear.
@@ -193,7 +197,8 @@ Add helpers for later slices:
 2. `validate_strictly_sorted_unique_keys<I>(keys: I)`;
 3. `sort_table_rows_by_key(&mut [TableRow])`, if tests and later builders need
    a canonical pre-sort helper;
-4. `first_key` and `last_key` extraction helpers for nonempty sorted slices.
+4. `first_table_key` and `last_table_key` extraction helpers for nonempty
+   sorted slices.
 
 Duplicate physical keys at distinct commit versions must be accepted. Duplicate
 encoded internal keys must be rejected by any helper that promises uniqueness.
