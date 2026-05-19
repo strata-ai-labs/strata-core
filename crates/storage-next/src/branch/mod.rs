@@ -30,17 +30,16 @@ pub(crate) use config::BranchRuntimeConfig;
         reason = "branch scaffold exports define the local surface for later slices"
     )
 )]
-pub(crate) use error::{BranchRuntimeError, BranchRuntimeResult};
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
+pub(crate) use error::{BranchRuntimeError, BranchRuntimeResult, BranchTimestampHistorySource};
+#[allow(
+    unused_imports,
+    reason = "branch scaffold exports define the local surface for later slices"
 )]
 pub(crate) use facts::{
-    BranchLevel, BranchReachabilityFacts, BranchRuntimeStats, BranchStateFacts,
-    BranchTableDescriptor, InheritedLayerDescriptor, InheritedLayerStatus,
+    BranchLevel, BranchProtectedTable, BranchProtectionReason, BranchReachabilityAggregate,
+    BranchReachabilityFacts, BranchReachabilitySnapshot, BranchReleasePlan, BranchRuntimeStats,
+    BranchStateFacts, BranchTableDescriptor, BranchTableProtection, BranchTableRef,
+    BranchTableReferenceKind, InheritedLayerDescriptor, InheritedLayerStatus, SharedTableRegistry,
 };
 #[cfg_attr(
     not(test),
@@ -63,8 +62,8 @@ pub(crate) use identity::{
 pub(crate) use read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
     BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowBoundMatch,
-    BranchRowCandidateFacts, BranchRowSource, BranchScanBounds, BranchUserKeyBound,
-    BranchVisibleRow,
+    BranchRowCandidateFacts, BranchRowSource, BranchScanBounds, BranchTimestampCoverage,
+    BranchUserKeyBound, BranchVisibleRow,
 };
 #[cfg_attr(
     not(test),
@@ -73,7 +72,10 @@ pub(crate) use read::{
         reason = "branch scaffold exports define the local surface for later slices"
     )
 )]
-pub(crate) use state::{BranchAppendOutcome, BranchForkOutcome, BranchImmutableInstallOutcome};
+pub(crate) use state::{
+    BranchAppendOutcome, BranchForkOutcome, BranchImmutableInstallOutcome,
+    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
+};
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
     allow(

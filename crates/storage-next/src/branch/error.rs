@@ -4,7 +4,7 @@ use crate::table::TableRuntimeError;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
-use strata_core_next::BranchId;
+use strata_core_next::{BranchId, Timestamp};
 
 pub(crate) type BranchRuntimeResult<T> = Result<T, BranchRuntimeError>;
 
@@ -29,6 +29,12 @@ pub(crate) enum BranchRuntimeError {
     InvalidReadBound {
         reason: &'static str,
     },
+    InsufficientTimestampHistory {
+        branch_id: BranchId,
+        requested_timestamp: Timestamp,
+        earliest_available_timestamp: Option<Timestamp>,
+        source: BranchTimestampHistorySource,
+    },
     InvalidInheritedLayer {
         reason: &'static str,
     },
@@ -42,6 +48,17 @@ pub(crate) enum BranchRuntimeError {
         reason: &'static str,
         source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
+}
+
+#[expect(
+    dead_code,
+    reason = "own and inherited timestamp history sources are reserved for retained-history proofs"
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchTimestampHistorySource {
+    OwnState,
+    InheritedState,
+    Combined,
 }
 
 impl BranchRuntimeError {
@@ -91,6 +108,25 @@ impl PartialEq for BranchRuntimeError {
                 Self::InvalidReachability { reason: right },
             ) => left == right,
             (
+                Self::InsufficientTimestampHistory {
+                    branch_id: left_branch_id,
+                    requested_timestamp: left_requested,
+                    earliest_available_timestamp: left_earliest,
+                    source: left_source,
+                },
+                Self::InsufficientTimestampHistory {
+                    branch_id: right_branch_id,
+                    requested_timestamp: right_requested,
+                    earliest_available_timestamp: right_earliest,
+                    source: right_source,
+                },
+            ) => {
+                left_branch_id == right_branch_id
+                    && left_requested == right_requested
+                    && left_earliest == right_earliest
+                    && left_source == right_source
+            }
+            (
                 Self::BranchNotFound { branch_id: left },
                 Self::BranchNotFound { branch_id: right },
             )
@@ -135,6 +171,24 @@ impl fmt::Display for BranchRuntimeError {
             Self::InvalidReadBound { reason } => {
                 write!(formatter, "branch read bound is invalid: {reason}")
             }
+            Self::InsufficientTimestampHistory {
+                branch_id,
+                requested_timestamp,
+                earliest_available_timestamp,
+                source,
+            } => {
+                if let Some(earliest) = earliest_available_timestamp {
+                    write!(
+                        formatter,
+                        "branch {branch_id} has insufficient timestamp history for requested timestamp {requested_timestamp:?}; earliest available timestamp is {earliest:?} from {source:?}",
+                    )
+                } else {
+                    write!(
+                        formatter,
+                        "branch {branch_id} has insufficient timestamp history for requested timestamp {requested_timestamp:?} from {source:?}",
+                    )
+                }
+            }
             Self::InvalidInheritedLayer { reason } => {
                 write!(formatter, "inherited branch layer is invalid: {reason}")
             }
@@ -165,6 +219,7 @@ impl Error for BranchRuntimeError {
             | Self::BranchAlreadyExists { .. }
             | Self::InvalidBranchRow { .. }
             | Self::InvalidReadBound { .. }
+            | Self::InsufficientTimestampHistory { .. }
             | Self::InvalidInheritedLayer { .. }
             | Self::InvalidReachability { .. }
             | Self::Publish { source: None, .. } => None,

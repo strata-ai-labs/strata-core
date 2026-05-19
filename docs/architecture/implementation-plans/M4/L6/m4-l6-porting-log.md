@@ -191,6 +191,11 @@ deferred, and what old code became eligible for retirement.
 - `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 - `cargo fmt --package strata-storage-next --check`
 - `git diff --check`
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties`
+- `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+- `cargo fmt --package strata-storage-next --check`
+- `git diff --check`
 
 ### Retirement
 
@@ -932,3 +937,420 @@ deferred, and what old code became eligible for retirement.
   after timestamp visibility, materialization, durable reachability, branch
   compaction, snapshot install, and lifecycle replacement slices land in
   storage-next.
+
+## L6G: Timestamp Reads And TTL Visibility
+
+### Current Files Read
+
+- `crates/storage/src/segmented/mod.rs`
+- `crates/storage/src/stored_value.rs`
+- `crates/storage/src/merge_iter.rs`
+- `crates/storage/src/seekable.rs`
+- `crates/storage-next/src/row/mod.rs`
+- `crates/storage-next/src/branch/read.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/testkit/branch_lsm.rs`
+- `crates/storage-next/tests/branch_lsm_source_guard.rs`
+- `crates/storage-next/tests/branch_lsm_properties.rs`
+
+### Behavior Preserved
+
+- Preserved retained row-chain semantics: timestamp-bounded reads first filter
+  rows by commit timestamp, then select the newest eligible row by commit
+  version and existing source tie-breaks.
+- Preserved separate storage rows for historical versions instead of rebuilding
+  the old `VersionedValue` container.
+- Preserved tombstone shadowing at timestamp bounds: a selected tombstone
+  returns no visible value and does not fall through to older puts.
+- Preserved inherited source-to-child key rewriting before grouping, with
+  inherited timestamp reads also applying the fork-version gate.
+- Preserved timestamp, expiry, tombstone, value, and source facts in retained
+  history rows.
+
+### Intentional V1 Changes
+
+- Did not port wall-clock expiry evaluation from old storage. L6G evaluates TTL
+  only against the requested timestamp read bound.
+- Did not port product `Value`, old `Key`, `Namespace`, `TypeTag`, or
+  `VersionedValue` vocabulary into storage-next.
+- Treated `Timestamp::EPOCH` expiry on put rows as the no-expiry sentinel.
+- Documented and tested exact-expiry behavior: rows with
+  `expires_at <= requested_timestamp` are invisible for timestamp reads.
+- Added a local `BranchTimestampCoverage` proof hook and typed
+  `InsufficientTimestampHistory` error. Default read views use unknown coverage,
+  so observed `timestamp_min` alone does not turn a best-effort miss into an
+  insufficient-history failure.
+
+### Deferred
+
+- Durable retained-history proof publication and recovery are still later
+  retention/lifecycle work.
+- Commit timeline lookup from application timestamp to branch frontier is still
+  outside L6G.
+- TTL cleanup, TTL-based physical deletion, and branch compaction safety remain
+  L6J/L8 territory.
+- Materialization and reachability behavior over timestamp-visible inherited
+  rows remain L6H/L6I.
+- Snapshot row install remains L6K.
+
+### Tests Ported Or Added
+
+- Enabled `BranchReadBound::AtTimestamp` in `BranchReadView::read_point`,
+  `scan_prefix`, and `scan_range`.
+- Added central selected-row visibility logic so point reads and scans share
+  timestamp-bound, tombstone, and TTL behavior.
+- Added direct branch tests for timestamp filtering, non-monotonic commit
+  timestamps, exact timestamp inclusion, tombstones at timestamp, TTL
+  before/exact/after expiry, `Timestamp::MAX` as a real far-future expiry,
+  frozen and owned-table timestamp reads, timestamp scans, timestamp scan
+  boundary/empty-result/key-space isolation, inherited timestamp scans after
+  source-to-child key rewriting, timestamp-pinned read views, inherited
+  timestamp plus fork-version gates, child-local expired-row inherited
+  suppression, child-local put/tombstone inherited shadowing, nearest inherited
+  exact-tie selection, source-mutation isolation for captured inherited
+  timestamp views, and known-insufficient timestamp coverage.
+- Updated wrong-branch timestamp tests to assert wrong-branch validation still
+  runs before payload inspection while valid timestamp reads now succeed.
+- Extended `crates/storage-next/src/testkit/branch_lsm.rs` with generated
+  timestamp categories for active/frozen/owned point reads, prefix/range scans,
+  inherited scan rewrites, pinned timestamp views, TTL boundaries,
+  `Timestamp::MAX` expiry, tombstones, tombstone-after-bound non-shadowing,
+  scan boundary/empty-result/key-space isolation, non-monotonic timestamps,
+  inherited timestamp reads, inherited fork gates, inherited child-local
+  put/tombstone shadowing, nearest inherited exact-tie selection, unknown
+  coverage, and insufficient-history rejection.
+- Updated `crates/storage-next/tests/branch_lsm_properties.rs` so the property
+  harness requires every L6G generated category to be exercised.
+
+### Sensitivity Probes
+
+- `branch_read_view_timestamp_reads_filter_by_timestamp_then_commit_version`
+  catches sorting timestamp reads by timestamp instead of commit-version row
+  order.
+- `branch_read_view_timestamp_tombstones_suppress_fallthrough` and
+  `branch_read_view_timestamp_ttl_boundaries_suppress_fallthrough` catch
+  exact-expiry inclusivity drift, wall-clock TTL assumptions, selected expired
+  row fallthrough, and tombstone fallthrough.
+- `branch_read_view_timestamp_max_expiry_is_far_future_not_no_expiry` catches
+  conflating the `Timestamp::MAX` expiry value with the `Timestamp::EPOCH`
+  no-expiry sentinel.
+- `branch_read_view_timestamp_reads_cover_frozen_and_owned_sources` catches
+  timestamp point reads accidentally working only for active rows.
+- `branch_read_view_timestamp_scans_apply_tombstone_and_ttl_per_key` catches
+  timestamp scan grouping/output drift and per-key visibility fallthrough.
+- `branch_read_view_timestamp_scans_preserve_bounds_and_empty_results` catches
+  open/closed timestamp range drift and empty-result fallback.
+- `branch_read_view_timestamp_scans_preserve_key_spaces` catches leakage across
+  named or storage-space key domains.
+- `branch_inherited_timestamp_scans_rewrite_source_keys_before_grouping` catches
+  inherited scan filtering against child scan bounds before branch-id rewrite.
+- `branch_read_view_timestamp_views_are_pinned_across_later_mutations` and
+  `branch_inherited_timestamp_view_is_pinned_after_source_mutation` catch
+  timestamp view instability after later branch-local or source-branch changes.
+- `branch_inherited_timestamp_reads_apply_timestamp_and_fork_gates` catches
+  inherited rows above fork versions, inherited rows above timestamp bounds,
+  and child-local expired-row fallback to inherited values.
+- `branch_inherited_timestamp_reads_pick_nearest_layer_for_exact_ties` catches
+  exact-tie instability across inherited layers.
+- `branch_inherited_timestamp_reads_apply_local_put_and_tombstone_shadows`
+  catches child-local put/tombstone fallback to inherited values.
+- `branch_timestamp_coverage_rejects_only_proven_insufficient_history` catches
+  inferring insufficient history from observed timestamp ranges without a
+  coverage proof, and catches payload leakage in coverage errors.
+- The generated branch-LSM property harness asserts nonzero coverage for every
+  L6G timestamp/TTL category, preventing the timestamp path from regressing to
+  a file-presence placeholder.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard`
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties`
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties`
+- `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+- `cargo fmt --package strata-storage-next --check`
+- `git diff --check`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old wall-clock TTL wrappers, old segmented as-of paths, and
+  old `VersionedValue` based history remain because current storage still
+  depends on them.
+- Follow-up: L6H/L6I/L6J/L6K/L8 will retire more old branch behavior after
+  materialization, durable reachability, compaction safety, snapshot install,
+  and lifecycle replacement slices land in storage-next.
+
+## L6H: Materialization Mechanics
+
+### Current Files Read
+
+- `crates/storage/src/segmented/mod.rs`
+- `crates/storage/src/segmented/tests/materialize.rs`
+- `crates/storage/src/segmented/tests/concurrency.rs`
+- `crates/storage/src/manifest.rs`
+- `crates/storage/src/segmented/ref_registry.rs`
+- `crates/storage-next/src/branch/read.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/branch/tests.rs`
+- `crates/storage-next/src/testkit/branch_lsm.rs`
+- `crates/storage-next/tests/branch_lsm_properties.rs`
+- `crates/storage-next/tests/branch_lsm_source_guard.rs`
+
+### Behavior Preserved
+
+- Preserved materialization as a physical ownership transition: inherited
+  source rows are rewritten into child-owned immutable table rows.
+- Preserved fork-version gating. Rows above the inherited layer fork version
+  are not materialized.
+- Preserved source-to-child branch-id rewriting while keeping logical space,
+  storage-space id, user key, commit version, commit timestamp, expiry,
+  tombstone flag, and value bytes unchanged.
+- Preserved read parity across latest, version-bounded, timestamp-bounded, and
+  history reads before and after materialization.
+- Preserved idempotent stale-state behavior for already-materialized layers and
+  no-table behavior for empty inherited layers.
+- Preserved exact duplicate suppression for byte-identical rewritten rows
+  already represented by a higher-precedence child-local or nearer inherited
+  source, while retaining same-internal-key rows whose timestamps, expiry,
+  tombstone bit, or value bytes differ.
+
+### Intentional V1 Changes
+
+- Did not port disk segment creation, filesystem directories, manifest writes,
+  publish-health latching, refcount decrements, or orphan file GC into L6H.
+  Those are L4/L6I/L8 responsibilities in storage-next.
+- Did not port old product `Value`, `Key`, `Namespace`, `TypeTag`, or
+  `VersionedValue` vocabulary.
+- Materialization does not perform broad cleanup. It keeps retained historical
+  rows that may be visible through `getv`, timestamp reads, or storage history.
+  Compaction/retention proof work owns later pruning.
+- Replacement tables are built through the L5 immutable table builder/reader
+  path and installed as branch-owned L0 tables.
+- Recovery is represented as storage-owned in-memory outcome facts, not durable
+  manifest state.
+
+### Deferred
+
+- Durable materialization intent publication, ambiguous publish-window
+  reconciliation, and crash recovery are L8 lifecycle work.
+- Durable branch/table reachability payloads and shared table release facts
+  remain L6I/L8 work.
+- Branch compaction and retention-proof based row pruning remain L6J/L8 work.
+- Snapshot row install remains L6K.
+- Dedicated materialization fuzz inventory remains L6L closeout work.
+
+### Tests Ported Or Added
+
+- Added `BranchMaterializationRequest`, `BranchMaterializationOutcome`, and
+  `BranchMaterializationRecovery` storage-owned facts.
+- Added `BranchLocalState::materialize_inherited_layer` to collect retained
+  inherited rows, rewrite them to the child branch, build L5 replacement
+  tables, install those tables into L0, and remove the inherited layer from new
+  read views.
+- Added direct branch tests for retained-history preservation, latest/getv/as-of
+  parity, history parity, post-fork row exclusion, byte-identical duplicate
+  suppression, same-internal-key fact divergence, scan parity, tombstone/TTL
+  preservation, pinned view isolation, output splitting, empty-layer
+  materialization, already-materialized no-op behavior, request/status
+  validation, edge row/table fact preservation, layer-order preservation, and
+  invalid output identity rejection.
+- Extended the generated branch-LSM testkit with materialization attempts,
+  success/empty/idempotent counters, materialized row/table counters, skipped
+  post-fork/duplicate counters, read-parity counters, tombstone/TTL
+  preservation counters, owned-table source checks, pinned-view isolation, and
+  invalid-request rejection counters.
+- Updated `branch_lsm_source_guard.rs` so materialization is no longer treated
+  as premature behavior while compaction and snapshot install remain guarded.
+
+### Sensitivity Probes
+
+- `branch_materialization_rewrites_retained_rows_without_cleanup` catches
+  branch-id rewrite drift, row fact loss, inherited-layer removal without
+  replacement rows, and broad cleanup that would drop retained history.
+- `branch_materialization_skips_post_fork_rows_and_exact_duplicates_only`
+  catches missing fork-version filtering, exact duplicate resurrection, and
+  over-broad same-key pruning that would remove older visible versions.
+- `branch_materialization_handles_empty_and_already_materialized_layers` catches
+  non-idempotent replay behavior, empty table creation, and invalid output
+  identity acceptance.
+- `branch_materialization_accepts_materializing_layer_status` catches retry
+  drift where a materializing layer no longer produces child-owned replacement
+  rows.
+- `branch_materialization_rejects_bad_request_without_mutation` and
+  `branch_materialization_rejects_unavailable_same_source_and_invalid_descriptors`
+  catch invalid materialization requests mutating branch state or silently
+  accepting corrupt inherited metadata.
+- `branch_materialization_preserves_edge_row_facts_and_table_facts` catches
+  loss of empty values, storage-owned key facts, binary keys, expiry facts, and
+  replacement table facts.
+- `branch_materialization_preserves_layer_order_when_deep_layer_materialized_first`
+  and
+  `branch_materialization_preserves_nearest_and_history_after_all_layers_materialize`
+  catch nearest-layer precedence drift and deep-layer materialization changing
+  remaining inherited-layer order.
+- `branch_lsm_source_has_no_premature_behavior_entrypoints` catches
+  accidental L6J/L6K entrypoint creep while allowing the L6H-owned
+  materialization method.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard`
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties`
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties`
+- `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+- `cargo fmt --package strata-storage-next --check`
+- `git diff --check`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old disk-backed `materialize_layer`, manifest status
+  publication, shared segment refcount decrements, and materialization GC remain
+  because current storage still depends on them.
+- Follow-up: L6I/L6J/L6K/L8 will retire more old branch behavior after durable
+  reachability, branch compaction safety, snapshot install, and lifecycle
+  recovery land in storage-next.
+
+## L6I: Reachability And Shared Table Refs
+
+### Current Files Read
+
+- `crates/storage/src/segmented/ref_registry.rs`
+- `crates/storage/src/segmented/tests/fork.rs`
+- `crates/storage/src/segmented/tests/concurrency.rs`
+- `crates/storage/src/segmented/tests/quarantine_reconciliation.rs`
+- `crates/storage/src/manifest.rs`
+- `crates/storage-next/src/branch/facts.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/branch/read.rs`
+- `crates/storage-next/src/branch/tests.rs`
+- `crates/storage-next/src/testkit/branch_lsm.rs`
+- `crates/storage-next/tests/branch_lsm_properties.rs`
+- `crates/storage-next/tests/branch_lsm_source_guard.rs`
+
+### Behavior Preserved
+
+- Preserved the old shared-ref deletion barrier as a storage-local table
+  reachability model: a table is not releasable while any branch snapshot,
+  inherited layer, materializing layer, or runtime registry entry still refers
+  to it.
+- Preserved the source-of-truth rule that durable reachability facts beat the
+  runtime registry. A registry/aggregate disagreement is reported as protected
+  state, not as a release candidate.
+- Preserved deterministic shared-reference rebuilds. `BranchReachabilitySnapshot`
+  and `BranchReachabilityAggregate` sort table refs by stable table identity and
+  reference facts, so insertion order does not affect release planning.
+- Preserved fork sharing semantics: forked children reference source tables
+  through inherited reachability facts rather than copying rows or minting new
+  table identities.
+- Preserved materialization safety: source inherited refs remain protected while
+  a layer is materializing and become release candidates only after replacement
+  child-owned reachability is visible in the branch snapshot.
+- Preserved replacement provenance for materialized tables so L8 can distinguish
+  ordinary child-owned tables from materialization replacement outputs.
+
+### Intentional V1 Changes
+
+- Did not port filesystem segment refcount files, async locks, object deletion,
+  quarantine, manifest publication, or GC into L6I. L6I emits in-memory
+  storage-owned facts and release plans; L4/L8 own durable publication and
+  physical deletion.
+- The runtime `SharedTableRegistry` is an accelerator over decoded reachability
+  snapshots. It tracks registered branch snapshots to reject duplicate or stale
+  unregister calls, supports atomic same-branch snapshot replacement, but it is
+  not a durable proof of release safety.
+- Release planning is table-identity based. It reports `StillReachable`,
+  `RuntimeReferenced`, or `RegistryDisagreement` protection reasons, and emits
+  releasable table identities only when both aggregate reachability and the
+  optional runtime registry have no remaining refs. Any positive count mismatch
+  between aggregate reachability and the runtime registry is classified as
+  `RegistryDisagreement`.
+- Branch clear/delete is represented as a release plan over removed refs. Product
+  branch lifecycle policy, object deletion, and quarantine are intentionally
+  deferred.
+
+### Deferred
+
+- Durable branch/table reachability manifests and crash-window reconciliation
+  remain L8 work.
+- Physical table deletion, quarantine handoff, and retention scheduling remain
+  L8 work.
+- Branch compaction release proofs remain L6J/L8.
+- Snapshot install reachability integration remains L6K/L8.
+- Cross-process shared-reference leases are outside L6.
+
+### Tests Ported Or Added
+
+- Added `BranchTableRef`, `BranchTableReferenceKind`,
+  `BranchReachabilitySnapshot`, `BranchReachabilityAggregate`,
+  `SharedTableRegistry`, `BranchReleasePlan`, and protection reason facts.
+- Added `BranchLocalState::reachability_snapshot`, covering owned immutable
+  tables, active inherited layers, materializing inherited layers, and
+  unavailable-layer rejection while excluding active/frozen mutable rows.
+- Added direct branch tests for deterministic reachability ref sorting,
+  validation, owned/inherited/materializing/replacement classifications,
+  aggregate shared-table detection, registry rebuild/unregister behavior,
+  atomic registry snapshot replacement, duplicate unregister rejection, release
+  candidates, runtime protection, zero-count and positive-count registry
+  disagreement, fork reachability, replacement provenance,
+  materializing-layer protection, empty/inherited branch clear release,
+  multi-layer materialization release, and deterministic rebuild from decoded
+  reachability refs.
+- Extended the generated branch-LSM testkit with reachability snapshot,
+  owned/inherited/materializing ref, aggregate rebuild, shared detection,
+  release candidate, protected release, registry rebuild/unregister,
+  disagreement, fork rollback, materialization release, branch clear release,
+  deterministic ordering, and invalid reachability counters.
+- Updated the branch source guard to recognize L6I-owned reachability entrypoints
+  while continuing to reject upper-layer imports, backend IO, product DTO
+  vocabulary, old segment-ref registry vocabulary, compaction, and snapshot
+  install entrypoints.
+
+### Sensitivity Probes
+
+- `branch_reachability_fact_types_are_deterministic_and_validated` catches
+  nondeterministic table ref ordering, duplicate refs, same-branch inherited
+  refs, owner-branch mismatches, and lost owned/inherited counts.
+- `branch_reachability_snapshot_tracks_owned_and_inherited_tables_only` catches
+  mutable active/frozen rows leaking into durable table reachability and
+  materializing layers failing to retain source refs.
+- `branch_reachability_aggregate_registry_and_release_plans_are_safe` catches
+  shared-table early release, stale runtime ref handling, registry/aggregate
+  disagreement becoming releasable, and duplicate unregister count corruption.
+- `branch_reachability_registry_snapshot_replacement_updates_counts_atomically`
+  catches stale snapshot replacement leaving old refs behind, missing new refs,
+  duplicate registration, and stale unregister underflow.
+- `branch_reachability_release_plans_cover_empty_clear_and_inherited_refs`
+  catches empty clear drift, parent clear releasing child-inherited tables,
+  inherited-ref clear plans losing removed-ref kind, and active/frozen rows
+  leaking into durable reachability facts.
+- `branch_reachability_materialization_release_is_limited_to_removed_layer`
+  catches materialization release plans dropping nearer-layer refs or retaining
+  removed deep-layer source refs after replacement reachability is visible.
+- `branch_reachability_rebuild_from_decoded_refs_is_deterministic_and_blocks_mismatches`
+  catches nondeterministic decoded-fact rebuilds, duplicate branch snapshots,
+  and positive registry/aggregate count disagreements becoming releasable.
+- `branch_lsm_property_harness_runs_scaffold_contract` now fails unless all L6I
+  reachability counters are exercised by generated cases.
+- `branch_lsm_source_guard_catches_required_forbidden_terms` catches accidental
+  resurrection of old `SegmentRefRegistry` vocabulary.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard`
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old disk-backed segment refcount registry, shared segment
+  deletion barriers, and manifest publication remain because current storage
+  still depends on them.
+- Follow-up: L6J/L6K/L8 will retire more old branch behavior after branch
+  compaction safety, snapshot install, durable reachability publication, and
+  lifecycle recovery land in storage-next.

@@ -282,6 +282,9 @@ this parent section close when L6G lands.
 
 ### 7. Timestamp-Bounded Reads
 
+Detailed slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6g-timestamp-ttl-visibility-test-plan.md`
+
 1. `as_of(T)` returns newest row whose commit timestamp is `<= T`.
 2. Rows with timestamp greater than `T` are ignored.
 3. Tombstone at or before `T` hides older put rows.
@@ -380,13 +383,17 @@ Detailed slice test plan:
 
 ### 14. Materialization
 
+Detailed slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6h-materialization-mechanics-test-plan.md`
+
 1. Materializing one inherited layer preserves latest reads.
 2. Materializing one inherited layer preserves getv reads.
 3. Materializing one inherited layer preserves as-of reads.
 4. Materializing one inherited layer preserves prefix/range scans.
 5. Materialization rewrites source branch id to child branch id.
-6. Materialization excludes rows shadowed by child-local rows or nearer
-   inherited layers.
+6. Materialization excludes only exact duplicate internal keys already
+   represented by child-local rows or nearer inherited layers; broad row
+   pruning is deferred to compaction/retention proof work.
 7. Materialization does not remove inherited layer before replacement tables
    are visible to readers.
 8. Materialization is idempotent when replayed from staged facts.
@@ -395,6 +402,9 @@ Detailed slice test plan:
     for L8.
 
 ### 15. Reachability And Shared Table References
+
+Detailed slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6i-reachability-shared-table-refs-test-plan.md`
 
 1. Branch-owned table is reachable from its owning branch.
 2. Inherited table is reachable from every branch/layer that references it.

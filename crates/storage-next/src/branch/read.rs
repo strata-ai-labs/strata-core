@@ -2,8 +2,8 @@
 
 use super::{
     rewrite_physical_key_branch, rewrite_row_branch, BranchLevel, BranchRuntimeError,
-    BranchRuntimeResult, BranchStateFacts, BranchTableDescriptor, InheritedLayerDescriptor,
-    InheritedLayerStatus,
+    BranchRuntimeResult, BranchStateFacts, BranchTableDescriptor, BranchTimestampHistorySource,
+    InheritedLayerDescriptor, InheritedLayerStatus,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
@@ -97,6 +97,49 @@ impl BranchEffectiveReadBound {
             None => true,
         };
         BranchRowBoundMatch::new(version_in_bound, timestamp_in_bound)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchTimestampCoverage {
+    Unknown,
+    Complete,
+    CompleteSince { earliest_timestamp: Timestamp },
+}
+
+impl BranchTimestampCoverage {
+    pub(crate) const fn unknown() -> Self {
+        Self::Unknown
+    }
+
+    pub(crate) const fn complete() -> Self {
+        Self::Complete
+    }
+
+    pub(crate) const fn complete_since(earliest_timestamp: Timestamp) -> Self {
+        Self::CompleteSince { earliest_timestamp }
+    }
+
+    fn require_timestamp(
+        self,
+        branch_id: BranchId,
+        requested_timestamp: Timestamp,
+        source: BranchTimestampHistorySource,
+    ) -> BranchRuntimeResult<()> {
+        if let Self::CompleteSince { earliest_timestamp } = self {
+            if requested_timestamp < earliest_timestamp {
+                Err(BranchRuntimeError::InsufficientTimestampHistory {
+                    branch_id,
+                    requested_timestamp,
+                    earliest_available_timestamp: Some(earliest_timestamp),
+                    source,
+                })
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -427,6 +470,7 @@ pub(crate) struct BranchOwnedTable {
     branch_id: BranchId,
     descriptor: BranchTableDescriptor,
     reader: ImmutableTableReader,
+    materialization_layer_index: Option<usize>,
 }
 
 impl BranchOwnedTable {
@@ -434,6 +478,29 @@ impl BranchOwnedTable {
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
         reader: ImmutableTableReader,
+    ) -> BranchRuntimeResult<Self> {
+        Self::new_with_materialization_layer(branch_id, descriptor, reader, None)
+    }
+
+    pub(crate) fn new_materialization_replacement(
+        branch_id: BranchId,
+        descriptor: BranchTableDescriptor,
+        reader: ImmutableTableReader,
+        materialization_layer_index: usize,
+    ) -> BranchRuntimeResult<Self> {
+        Self::new_with_materialization_layer(
+            branch_id,
+            descriptor,
+            reader,
+            Some(materialization_layer_index),
+        )
+    }
+
+    fn new_with_materialization_layer(
+        branch_id: BranchId,
+        descriptor: BranchTableDescriptor,
+        reader: ImmutableTableReader,
+        materialization_layer_index: Option<usize>,
     ) -> BranchRuntimeResult<Self> {
         if descriptor.facts() != reader.facts() {
             return Err(BranchRuntimeError::InvalidBranchState {
@@ -453,6 +520,7 @@ impl BranchOwnedTable {
             branch_id,
             descriptor,
             reader,
+            materialization_layer_index,
         })
     }
 
@@ -470,6 +538,10 @@ impl BranchOwnedTable {
 
     pub(crate) const fn level(&self) -> BranchLevel {
         self.descriptor.level()
+    }
+
+    pub(crate) const fn materialization_layer_index(&self) -> Option<usize> {
+        self.materialization_layer_index
     }
 
     pub(crate) fn rows(&self) -> &[TableRow] {
@@ -581,6 +653,7 @@ pub(crate) struct BranchReadView {
     owned_levels: Vec<Vec<BranchOwnedTable>>,
     inherited_layers: Vec<BranchInheritedLayer>,
     facts: BranchStateFacts,
+    timestamp_coverage: BranchTimestampCoverage,
 }
 
 impl BranchReadView {
@@ -617,6 +690,7 @@ impl BranchReadView {
             owned_levels,
             inherited_layers,
             facts,
+            timestamp_coverage: BranchTimestampCoverage::unknown(),
         })
     }
 
@@ -626,6 +700,18 @@ impl BranchReadView {
 
     pub(crate) const fn facts(&self) -> BranchStateFacts {
         self.facts
+    }
+
+    pub(crate) const fn timestamp_coverage(&self) -> BranchTimestampCoverage {
+        self.timestamp_coverage
+    }
+
+    pub(crate) fn with_timestamp_coverage(
+        mut self,
+        timestamp_coverage: BranchTimestampCoverage,
+    ) -> Self {
+        self.timestamp_coverage = timestamp_coverage;
+        self
     }
 
     pub(crate) fn active_row_count(&self) -> usize {
@@ -673,11 +759,12 @@ impl BranchReadView {
         bound: BranchReadBound,
     ) -> BranchRuntimeResult<Option<BranchVisibleRow>> {
         self.require_matching_branch(key.branch_id())?;
-        let effective_bound = effective_own_read_bound(bound)?;
-        Ok(
-            select_visible_candidate(self.point_candidates(key, bound)?, effective_bound)
-                .and_then(CandidateRow::into_visible_row),
-        )
+        let effective_bound = effective_own_read_bound(bound);
+        self.require_timestamp_coverage(bound)?;
+        Ok(select_visible_row(
+            self.point_candidates(key, bound)?,
+            effective_bound,
+        ))
     }
 
     pub(crate) fn history(
@@ -737,15 +824,14 @@ impl BranchReadView {
         bound: BranchReadBound,
     ) -> BranchRuntimeResult<Vec<BranchVisibleRow>> {
         self.require_matching_branch(bounds.branch_id())?;
-        let effective_bound = effective_own_read_bound(bound)?;
+        let effective_bound = effective_own_read_bound(bound);
+        self.require_timestamp_coverage(bound)?;
         let mut grouped: BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>> = BTreeMap::new();
         self.collect_matching_scan_candidates(bounds, bound, &mut grouped)?;
 
         let mut visible = Vec::new();
         for candidates in grouped.into_values() {
-            if let Some(row) = select_visible_candidate(candidates, effective_bound)
-                .and_then(CandidateRow::into_visible_row)
-            {
+            if let Some(row) = select_visible_row(candidates, effective_bound) {
                 visible.push(row);
             }
         }
@@ -937,6 +1023,17 @@ impl BranchReadView {
             })
         }
     }
+
+    fn require_timestamp_coverage(&self, bound: BranchReadBound) -> BranchRuntimeResult<()> {
+        match bound {
+            BranchReadBound::Latest | BranchReadBound::AtVersion(_) => Ok(()),
+            BranchReadBound::AtTimestamp(timestamp) => self.timestamp_coverage.require_timestamp(
+                self.branch_id,
+                timestamp,
+                BranchTimestampHistorySource::Combined,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -950,8 +1047,12 @@ impl CandidateRow {
         Self { row, source }
     }
 
-    fn into_visible_row(self) -> Option<BranchVisibleRow> {
-        (!self.row.is_tombstone()).then(|| BranchVisibleRow::new(self.row, self.source))
+    fn into_visible_row(self, read_timestamp: Option<Timestamp>) -> Option<BranchVisibleRow> {
+        if self.row.is_tombstone() || row_is_expired_at(&self.row, read_timestamp) {
+            None
+        } else {
+            Some(BranchVisibleRow::new(self.row, self.source))
+        }
     }
 
     fn into_history_row(self) -> BranchHistoryRow {
@@ -959,28 +1060,28 @@ impl CandidateRow {
     }
 }
 
-fn effective_own_read_bound(
-    bound: BranchReadBound,
-) -> BranchRuntimeResult<BranchEffectiveReadBound> {
-    match bound {
-        BranchReadBound::Latest | BranchReadBound::AtVersion(_) => {
-            Ok(BranchEffectiveReadBound::for_own_branch(bound))
-        }
-        BranchReadBound::AtTimestamp(_) => Err(BranchRuntimeError::InvalidReadBound {
-            reason: "timestamp-bounded branch reads are owned by L6G",
-        }),
-    }
+fn effective_own_read_bound(bound: BranchReadBound) -> BranchEffectiveReadBound {
+    BranchEffectiveReadBound::for_own_branch(bound)
 }
 
-fn select_visible_candidate(
+fn select_visible_row(
     mut candidates: Vec<CandidateRow>,
     effective_bound: BranchEffectiveReadBound,
-) -> Option<CandidateRow> {
+) -> Option<BranchVisibleRow> {
     sort_candidates_newest_first(&mut candidates);
-    candidates.into_iter().find(|candidate| {
-        effective_bound
-            .matches_row(&candidate.row)
-            .matches_effective_bound()
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            effective_bound
+                .matches_row(&candidate.row)
+                .matches_effective_bound()
+        })?
+        .into_visible_row(effective_bound.max_commit_timestamp())
+}
+
+fn row_is_expired_at(row: &StorageRow, read_timestamp: Option<Timestamp>) -> bool {
+    read_timestamp.is_some_and(|timestamp| {
+        !row.is_tombstone() && row.expires_at() != Timestamp::EPOCH && row.expires_at() <= timestamp
     })
 }
 

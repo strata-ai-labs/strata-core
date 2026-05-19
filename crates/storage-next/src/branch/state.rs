@@ -2,13 +2,21 @@
 
 use super::{
     read::{inherited_table_count, table_ranges_overlap},
-    require_row_branch, BranchInheritedLayer, BranchLevel, BranchOwnedTable, BranchReadView,
-    BranchRuntimeConfig, BranchRuntimeError, BranchRuntimeResult, BranchStateFacts,
+    require_row_branch, rewrite_row_branch, BranchInheritedLayer, BranchLevel, BranchOwnedTable,
+    BranchReachabilitySnapshot, BranchReadView, BranchRuntimeConfig, BranchRuntimeError,
+    BranchRuntimeResult, BranchStateFacts, BranchTableDescriptor, BranchTableRef,
     InheritedLayerDescriptor, InheritedLayerStatus,
 };
 use crate::row::StorageRow;
-use crate::table::{FrozenTable, MutableTable, TableInternalKeyBytes, TableRuntimeError};
+use crate::table::{
+    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, MutableTable, TableBuilderConfig,
+    TableIdentity, TableInternalKeyBytes, TableReaderConfig, TableRuntimeError,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
+const _: () = assert!(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE > 0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BranchStateDescriptor {
@@ -181,6 +189,122 @@ impl BranchForkOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchMaterializationRecovery {
+    ReplacementVisibleLayerRemoved,
+    LayerAlreadyMaterialized,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMaterializationRequest {
+    child_branch_id: BranchId,
+    layer_index: usize,
+    output_identity_prefix: String,
+}
+
+impl BranchMaterializationRequest {
+    pub(crate) fn new(
+        child_branch_id: BranchId,
+        layer_index: usize,
+        output_identity_prefix: impl Into<String>,
+    ) -> BranchRuntimeResult<Self> {
+        let output_identity_prefix = output_identity_prefix.into();
+        if output_identity_prefix.is_empty() {
+            return Err(BranchRuntimeError::InvalidConfig {
+                field: "output_identity_prefix",
+                reason: "must not be empty",
+            });
+        }
+        if output_identity_prefix
+            .bytes()
+            .any(|byte| byte == b'/' || byte == 0)
+        {
+            return Err(BranchRuntimeError::InvalidConfig {
+                field: "output_identity_prefix",
+                reason: "must be an opaque single component",
+            });
+        }
+        Ok(Self {
+            child_branch_id,
+            layer_index,
+            output_identity_prefix,
+        })
+    }
+
+    pub(crate) const fn child_branch_id(&self) -> BranchId {
+        self.child_branch_id
+    }
+
+    pub(crate) const fn layer_index(&self) -> usize {
+        self.layer_index
+    }
+
+    pub(crate) fn output_identity_prefix(&self) -> &str {
+        &self.output_identity_prefix
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMaterializationOutcome {
+    child_branch_id: BranchId,
+    source_branch_id: BranchId,
+    fork_version: CommitVersion,
+    layer_index: usize,
+    rows_materialized: u64,
+    tables_created: usize,
+    skipped_post_fork_rows: u64,
+    skipped_exact_duplicate_rows: u64,
+    inherited_layers_remaining: usize,
+    replacement_owned_table_count: usize,
+    recovery: BranchMaterializationRecovery,
+}
+
+impl BranchMaterializationOutcome {
+    pub(crate) const fn child_branch_id(self) -> BranchId {
+        self.child_branch_id
+    }
+
+    pub(crate) const fn source_branch_id(self) -> BranchId {
+        self.source_branch_id
+    }
+
+    pub(crate) const fn fork_version(self) -> CommitVersion {
+        self.fork_version
+    }
+
+    pub(crate) const fn layer_index(self) -> usize {
+        self.layer_index
+    }
+
+    pub(crate) const fn rows_materialized(self) -> u64 {
+        self.rows_materialized
+    }
+
+    pub(crate) const fn tables_created(self) -> usize {
+        self.tables_created
+    }
+
+    pub(crate) const fn skipped_post_fork_rows(self) -> u64 {
+        self.skipped_post_fork_rows
+    }
+
+    pub(crate) const fn skipped_exact_duplicate_rows(self) -> u64 {
+        self.skipped_exact_duplicate_rows
+    }
+
+    pub(crate) const fn inherited_layers_remaining(self) -> usize {
+        self.inherited_layers_remaining
+    }
+
+    pub(crate) const fn replacement_owned_table_count(self) -> usize {
+        self.replacement_owned_table_count
+    }
+
+    pub(crate) const fn recovery(self) -> BranchMaterializationRecovery {
+        self.recovery
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchLocalState {
     branch_id: BranchId,
@@ -316,6 +440,73 @@ impl BranchLocalState {
             self.inherited_layers.clone(),
             self.facts()?,
         )
+    }
+
+    pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
+        let mut table_refs = Vec::new();
+        for tables in &self.owned_levels {
+            for (table_index, table) in tables.iter().enumerate() {
+                let table_ref = if let Some(materialization_layer_index) =
+                    table.materialization_layer_index()
+                {
+                    BranchTableRef::replacement(
+                        self.branch_id,
+                        materialization_layer_index,
+                        table.level(),
+                        table_index,
+                        table.descriptor().identity().clone(),
+                    )?
+                } else {
+                    BranchTableRef::owned(
+                        self.branch_id,
+                        table.level(),
+                        table_index,
+                        table.descriptor().identity().clone(),
+                    )?
+                };
+                table_refs.push(table_ref);
+            }
+        }
+        for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
+            let reference_kind = match layer.status() {
+                InheritedLayerStatus::Active => InheritedReferenceKind::Active,
+                InheritedLayerStatus::Materializing => InheritedReferenceKind::Materializing,
+                InheritedLayerStatus::Materialized => continue,
+                InheritedLayerStatus::Unavailable => {
+                    return Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "unavailable inherited layers cannot emit reachability",
+                    });
+                }
+            };
+            for tables in layer.owned_levels() {
+                for (table_index, table) in tables.iter().enumerate() {
+                    let table_ref = match reference_kind {
+                        InheritedReferenceKind::Active => BranchTableRef::inherited(
+                            self.branch_id,
+                            layer.source_branch_id(),
+                            layer.fork_version(),
+                            layer_index,
+                            table.level(),
+                            table_index,
+                            table.descriptor().identity().clone(),
+                        )?,
+                        InheritedReferenceKind::Materializing => {
+                            BranchTableRef::materializing_source(
+                                self.branch_id,
+                                layer.source_branch_id(),
+                                layer.fork_version(),
+                                layer_index,
+                                table.level(),
+                                table_index,
+                                table.descriptor().identity().clone(),
+                            )?
+                        }
+                    };
+                    table_refs.push(table_ref);
+                }
+            }
+        }
+        BranchReachabilitySnapshot::new(self.branch_id, table_refs)
     }
 
     pub(crate) fn append_committed_row(
@@ -469,8 +660,237 @@ impl BranchLocalState {
         Ok((child, outcome))
     }
 
+    pub(crate) fn materialize_inherited_layer(
+        &mut self,
+        request: &BranchMaterializationRequest,
+    ) -> BranchRuntimeResult<BranchMaterializationOutcome> {
+        if request.child_branch_id() != self.branch_id {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "materialization request branch id must match branch state",
+            });
+        }
+        let layer = self.inherited_layers.get(request.layer_index()).ok_or(
+            BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization layer index must exist",
+            },
+        )?;
+        let source_branch_id = layer.source_branch_id();
+        let fork_version = layer.fork_version();
+
+        match layer.status() {
+            InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
+            InheritedLayerStatus::Materialized => {
+                return Ok(BranchMaterializationOutcome {
+                    child_branch_id: self.branch_id,
+                    source_branch_id,
+                    fork_version,
+                    layer_index: request.layer_index(),
+                    rows_materialized: 0,
+                    tables_created: 0,
+                    skipped_post_fork_rows: 0,
+                    skipped_exact_duplicate_rows: 0,
+                    inherited_layers_remaining: self.inherited_layers.len(),
+                    replacement_owned_table_count: 0,
+                    recovery: BranchMaterializationRecovery::LayerAlreadyMaterialized,
+                });
+            }
+            InheritedLayerStatus::Unavailable => {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "unavailable inherited layers cannot be materialized",
+                });
+            }
+        }
+
+        let materialized = self.collect_materialization_rows(request.layer_index())?;
+        let replacement_tables = self.build_materialized_l0_tables(
+            request.layer_index(),
+            request.output_identity_prefix(),
+            &materialized.rows,
+        )?;
+        let rows_materialized = u64::try_from(materialized.rows.len()).map_err(|_| {
+            BranchRuntimeError::InvalidBranchState {
+                reason: "materialized row count must fit in u64",
+            }
+        })?;
+        let tables_created = replacement_tables.len();
+
+        let level_index = usize::from(BranchLevel::ZERO.raw());
+        for table in replacement_tables.into_iter().rev() {
+            self.owned_levels[level_index].insert(0, table);
+        }
+        self.inherited_layers.remove(request.layer_index());
+        self.refresh_observed_row_facts();
+
+        Ok(BranchMaterializationOutcome {
+            child_branch_id: self.branch_id,
+            source_branch_id,
+            fork_version,
+            layer_index: request.layer_index(),
+            rows_materialized,
+            tables_created,
+            skipped_post_fork_rows: materialized.skipped_post_fork_rows,
+            skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
+            inherited_layers_remaining: self.inherited_layers.len(),
+            replacement_owned_table_count: tables_created,
+            recovery: BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
+        })
+    }
+
     fn require_absent_internal_key(&self, key: &TableInternalKeyBytes) -> BranchRuntimeResult<()> {
         self.require_absent_internal_key_except_frozen(key, None)
+    }
+
+    fn collect_materialization_rows(
+        &self,
+        layer_index: usize,
+    ) -> BranchRuntimeResult<MaterializedRows> {
+        let layer = self.inherited_layers.get(layer_index).ok_or(
+            BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization layer index must exist",
+            },
+        )?;
+        let higher_precedence_rows = self.higher_precedence_materialization_rows(layer_index)?;
+        let mut target_keys = BTreeSet::<TableInternalKeyBytes>::new();
+        let mut rows = Vec::new();
+        let mut skipped_post_fork_rows = 0u64;
+        let mut skipped_exact_duplicate_rows = 0u64;
+
+        for table in layer.owned_levels().iter().flatten() {
+            for row in table.rows() {
+                if row.commit_version().as_u64() > layer.fork_version().as_u64() {
+                    skipped_post_fork_rows = skipped_post_fork_rows.saturating_add(1);
+                    continue;
+                }
+                let rewritten =
+                    rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
+                        .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
+                            reason: "materialization row branch rewrite failed",
+                        })?;
+                let key = TableInternalKeyBytes::from_row(&rewritten);
+                if !target_keys.insert(key.clone()) {
+                    return Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason:
+                            "materialized inherited rows must not contain duplicate internal keys",
+                    });
+                }
+                if higher_precedence_rows
+                    .get(&key)
+                    .is_some_and(|rows| rows.iter().any(|existing| existing == &rewritten))
+                {
+                    skipped_exact_duplicate_rows = skipped_exact_duplicate_rows.saturating_add(1);
+                    continue;
+                }
+                rows.push(rewritten);
+            }
+        }
+
+        rows.sort_by(|left, right| {
+            TableInternalKeyBytes::from_row(left).cmp(&TableInternalKeyBytes::from_row(right))
+        });
+
+        Ok(MaterializedRows {
+            rows,
+            skipped_post_fork_rows,
+            skipped_exact_duplicate_rows,
+        })
+    }
+
+    fn higher_precedence_materialization_rows(
+        &self,
+        target_layer_index: usize,
+    ) -> BranchRuntimeResult<BTreeMap<TableInternalKeyBytes, Vec<StorageRow>>> {
+        let mut rows_by_key = BTreeMap::<TableInternalKeyBytes, Vec<StorageRow>>::new();
+        for row in self.active.iter() {
+            rows_by_key
+                .entry(row.key().clone())
+                .or_default()
+                .push(row.row().clone());
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                rows_by_key
+                    .entry(row.key().clone())
+                    .or_default()
+                    .push(row.row().clone());
+            }
+        }
+        for table in self.owned_levels.iter().flatten() {
+            for row in table.rows() {
+                rows_by_key
+                    .entry(row.key().clone())
+                    .or_default()
+                    .push(row.row().clone());
+            }
+        }
+        for layer in self.inherited_layers.iter().take(target_layer_index) {
+            match layer.status() {
+                InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
+                InheritedLayerStatus::Materialized => continue,
+                InheritedLayerStatus::Unavailable => {
+                    return Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason:
+                            "unavailable closer inherited layers cannot be used for materialization",
+                    });
+                }
+            }
+            for table in layer.owned_levels().iter().flatten() {
+                for row in table.rows() {
+                    if row.commit_version().as_u64() > layer.fork_version().as_u64() {
+                        continue;
+                    }
+                    let rewritten =
+                        rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
+                            .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
+                                reason: "closer inherited row branch rewrite failed",
+                            })?;
+                    rows_by_key
+                        .entry(TableInternalKeyBytes::from_row(&rewritten))
+                        .or_default()
+                        .push(rewritten);
+                }
+            }
+        }
+        Ok(rows_by_key)
+    }
+
+    fn build_materialized_l0_tables(
+        &self,
+        layer_index: usize,
+        output_identity_prefix: &str,
+        rows: &[StorageRow],
+    ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let builder = ImmutableTableBuilder::new(TableBuilderConfig::default())
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let mut tables = Vec::new();
+        for (output_index, chunk) in rows
+            .chunks(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE)
+            .enumerate()
+        {
+            let identity =
+                materialized_table_identity(output_identity_prefix, layer_index, output_index)?;
+            let artifact = builder
+                .build_from_storage_rows(identity.clone(), chunk)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            let reader = ImmutableTableReader::open_bytes(
+                identity.clone(),
+                artifact.into_bytes(),
+                TableReaderConfig::default(),
+            )
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            let descriptor =
+                BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)?;
+            tables.push(BranchOwnedTable::new_materialization_replacement(
+                self.branch_id,
+                descriptor,
+                reader,
+                layer_index,
+            )?);
+        }
+        Ok(tables)
     }
 
     fn validate_inherited_attach(
@@ -654,6 +1074,19 @@ impl BranchLocalState {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MaterializedRows {
+    rows: Vec<StorageRow>,
+    skipped_post_fork_rows: u64,
+    skipped_exact_duplicate_rows: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InheritedReferenceKind {
+    Active,
+    Materializing,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ObservedBranchRows {
     max_commit_version: Option<CommitVersion>,
@@ -706,6 +1139,17 @@ impl ObservedBranchRows {
                 .map_or(commit_timestamp, |max| max.max(commit_timestamp)),
         );
     }
+}
+
+fn materialized_table_identity(
+    output_identity_prefix: &str,
+    layer_index: usize,
+    output_index: usize,
+) -> BranchRuntimeResult<TableIdentity> {
+    TableIdentity::new(format!(
+        "{output_identity_prefix}-layer-{layer_index}-table-{output_index}"
+    ))
+    .map_err(|source| BranchRuntimeError::TableRuntime { source })
 }
 
 fn insert_sorted_by_range(tables: &mut Vec<BranchOwnedTable>, table: BranchOwnedTable) -> usize {

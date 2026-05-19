@@ -5,11 +5,15 @@ use crate::branch::{
     require_row_branch, rewrite_physical_key_branch, rewrite_row_branch, row_matches_branch,
     BranchEffectiveReadBound, BranchForkOutcome, BranchHistoryOptions, BranchHistoryRow,
     BranchImmutableInstallOutcome, BranchInheritedLayer, BranchLevel, BranchLocalState,
-    BranchOwnedTable, BranchReachabilityFacts, BranchReadBound, BranchRotationOutcome,
-    BranchRotationSkipReason, BranchRowCandidateFacts, BranchRowSource, BranchRuntimeConfig,
-    BranchRuntimeError, BranchRuntimeStats, BranchScanBounds, BranchStateDescriptor,
-    BranchStateFacts, BranchTableDescriptor, BranchUserKeyBound, BranchViewDescriptor,
-    BranchVisibleRow, InheritedLayerDescriptor, InheritedLayerStatus,
+    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
+    BranchOwnedTable, BranchProtectionReason, BranchReachabilityAggregate, BranchReachabilityFacts,
+    BranchReachabilitySnapshot, BranchReadBound, BranchReadView, BranchReleasePlan,
+    BranchRotationOutcome, BranchRotationSkipReason, BranchRowCandidateFacts, BranchRowSource,
+    BranchRuntimeConfig, BranchRuntimeError, BranchRuntimeStats, BranchScanBounds,
+    BranchStateDescriptor, BranchStateFacts, BranchTableDescriptor, BranchTableRef,
+    BranchTableReferenceKind, BranchTimestampCoverage, BranchTimestampHistorySource,
+    BranchUserKeyBound, BranchViewDescriptor, BranchVisibleRow, InheritedLayerDescriptor,
+    InheritedLayerStatus, SharedTableRegistry,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
@@ -73,7 +77,33 @@ pub struct BranchLsmScaffoldOutcome {
     scan_tombstone_suppressions: usize,
     active_frozen_merge_reads: usize,
     wrong_branch_read_rejections: usize,
-    timestamp_bound_deferrals: usize,
+    timestamp_point_reads: usize,
+    active_timestamp_point_reads: usize,
+    frozen_timestamp_point_reads: usize,
+    owned_timestamp_point_reads: usize,
+    timestamp_scan_reads: usize,
+    timestamp_prefix_scans: usize,
+    timestamp_range_scans: usize,
+    ttl_before_expiry_reads: usize,
+    ttl_exact_expiry_suppressions: usize,
+    ttl_after_expiry_suppressions: usize,
+    ttl_max_expiry_reads: usize,
+    timestamp_tombstone_shadows: usize,
+    timestamp_tombstone_after_non_shadows: usize,
+    timestamp_scan_boundary_reads: usize,
+    timestamp_scan_space_isolations: usize,
+    timestamp_empty_scans: usize,
+    non_monotonic_timestamp_reads: usize,
+    inherited_timestamp_reads: usize,
+    inherited_timestamp_point_reads: usize,
+    inherited_timestamp_scan_reads: usize,
+    inherited_timestamp_fork_gates: usize,
+    inherited_timestamp_child_put_shadows: usize,
+    inherited_timestamp_child_tombstone_shadows: usize,
+    inherited_timestamp_nearest_ties: usize,
+    pinned_timestamp_view_isolations: usize,
+    unknown_timestamp_coverage_reads: usize,
+    insufficient_timestamp_history_rejections: usize,
     immutable_descriptor_cases: usize,
     immutable_l0_installs: usize,
     immutable_l1_installs: usize,
@@ -103,6 +133,41 @@ pub struct BranchLsmScaffoldOutcome {
     inherited_chained_ancestry: usize,
     invalid_inherited_layer_rejections: usize,
     pinned_inherited_view_isolations: usize,
+    materialization_attempts: usize,
+    successful_materializations: usize,
+    empty_materializations: usize,
+    idempotent_materialization_retries: usize,
+    materialized_rows: usize,
+    materialized_tables: usize,
+    skipped_materialization_post_fork_rows: usize,
+    skipped_materialization_exact_duplicates: usize,
+    materialization_latest_read_parity: usize,
+    materialization_version_read_parity: usize,
+    materialization_timestamp_read_parity: usize,
+    materialization_history_read_parity: usize,
+    materialization_prefix_scan_parity: usize,
+    materialization_range_scan_parity: usize,
+    materialization_pinned_view_isolations: usize,
+    materialization_tombstone_preservations: usize,
+    materialization_ttl_preservations: usize,
+    invalid_materialization_rejections: usize,
+    reachability_snapshots: usize,
+    reachability_owned_refs: usize,
+    reachability_inherited_refs: usize,
+    materializing_reachability_refs: usize,
+    reachability_aggregate_rebuilds: usize,
+    shared_table_detections: usize,
+    reachability_release_candidates: usize,
+    protected_release_attempts: usize,
+    registry_rebuilds: usize,
+    registry_unregisters: usize,
+    registry_disagreements: usize,
+    fork_reachability_cases: usize,
+    failed_fork_reachability_rollbacks: usize,
+    materialization_release_cases: usize,
+    branch_clear_release_cases: usize,
+    reachability_deterministic_orderings: usize,
+    invalid_reachability_rejections: usize,
 }
 
 impl BranchLsmScaffoldOutcome {
@@ -306,8 +371,112 @@ impl BranchLsmScaffoldOutcome {
         self.wrong_branch_read_rejections
     }
 
-    pub const fn timestamp_bound_deferral_cases(self) -> usize {
-        self.timestamp_bound_deferrals
+    pub const fn timestamp_point_read_cases(self) -> usize {
+        self.timestamp_point_reads
+    }
+
+    pub const fn active_timestamp_point_read_cases(self) -> usize {
+        self.active_timestamp_point_reads
+    }
+
+    pub const fn frozen_timestamp_point_read_cases(self) -> usize {
+        self.frozen_timestamp_point_reads
+    }
+
+    pub const fn owned_timestamp_point_read_cases(self) -> usize {
+        self.owned_timestamp_point_reads
+    }
+
+    pub const fn timestamp_scan_read_cases(self) -> usize {
+        self.timestamp_scan_reads
+    }
+
+    pub const fn timestamp_prefix_scan_cases(self) -> usize {
+        self.timestamp_prefix_scans
+    }
+
+    pub const fn timestamp_range_scan_cases(self) -> usize {
+        self.timestamp_range_scans
+    }
+
+    pub const fn ttl_before_expiry_read_cases(self) -> usize {
+        self.ttl_before_expiry_reads
+    }
+
+    pub const fn ttl_exact_expiry_suppression_cases(self) -> usize {
+        self.ttl_exact_expiry_suppressions
+    }
+
+    pub const fn ttl_after_expiry_suppression_cases(self) -> usize {
+        self.ttl_after_expiry_suppressions
+    }
+
+    pub const fn ttl_max_expiry_read_cases(self) -> usize {
+        self.ttl_max_expiry_reads
+    }
+
+    pub const fn timestamp_tombstone_shadow_cases(self) -> usize {
+        self.timestamp_tombstone_shadows
+    }
+
+    pub const fn timestamp_tombstone_after_non_shadow_cases(self) -> usize {
+        self.timestamp_tombstone_after_non_shadows
+    }
+
+    pub const fn timestamp_scan_boundary_cases(self) -> usize {
+        self.timestamp_scan_boundary_reads
+    }
+
+    pub const fn timestamp_scan_space_isolation_cases(self) -> usize {
+        self.timestamp_scan_space_isolations
+    }
+
+    pub const fn timestamp_empty_scan_cases(self) -> usize {
+        self.timestamp_empty_scans
+    }
+
+    pub const fn non_monotonic_timestamp_read_cases(self) -> usize {
+        self.non_monotonic_timestamp_reads
+    }
+
+    pub const fn inherited_timestamp_read_cases(self) -> usize {
+        self.inherited_timestamp_reads
+    }
+
+    pub const fn inherited_timestamp_point_read_cases(self) -> usize {
+        self.inherited_timestamp_point_reads
+    }
+
+    pub const fn inherited_timestamp_scan_read_cases(self) -> usize {
+        self.inherited_timestamp_scan_reads
+    }
+
+    pub const fn inherited_timestamp_fork_gate_cases(self) -> usize {
+        self.inherited_timestamp_fork_gates
+    }
+
+    pub const fn inherited_timestamp_child_put_shadow_cases(self) -> usize {
+        self.inherited_timestamp_child_put_shadows
+    }
+
+    pub const fn inherited_timestamp_child_tombstone_shadow_cases(self) -> usize {
+        self.inherited_timestamp_child_tombstone_shadows
+    }
+
+    pub const fn inherited_timestamp_nearest_tie_cases(self) -> usize {
+        self.inherited_timestamp_nearest_ties
+    }
+
+    pub const fn pinned_timestamp_view_isolation_cases(self) -> usize {
+        self.pinned_timestamp_view_isolations
+    }
+
+    pub const fn unknown_timestamp_coverage_read_cases(self) -> usize {
+        self.unknown_timestamp_coverage_reads
+    }
+
+    pub const fn insufficient_timestamp_history_rejection_cases(self) -> usize {
+        self.insufficient_timestamp_history_rejections
     }
 
     pub const fn immutable_descriptor_cases(self) -> usize {
@@ -426,6 +595,146 @@ impl BranchLsmScaffoldOutcome {
         self.pinned_inherited_view_isolations
     }
 
+    pub const fn materialization_attempt_cases(self) -> usize {
+        self.materialization_attempts
+    }
+
+    pub const fn successful_materialization_cases(self) -> usize {
+        self.successful_materializations
+    }
+
+    pub const fn empty_materialization_cases(self) -> usize {
+        self.empty_materializations
+    }
+
+    pub const fn idempotent_materialization_retry_cases(self) -> usize {
+        self.idempotent_materialization_retries
+    }
+
+    pub const fn materialized_row_cases(self) -> usize {
+        self.materialized_rows
+    }
+
+    pub const fn materialized_table_cases(self) -> usize {
+        self.materialized_tables
+    }
+
+    pub const fn skipped_materialization_post_fork_row_cases(self) -> usize {
+        self.skipped_materialization_post_fork_rows
+    }
+
+    pub const fn skipped_materialization_exact_duplicate_cases(self) -> usize {
+        self.skipped_materialization_exact_duplicates
+    }
+
+    pub const fn materialization_latest_read_parity_cases(self) -> usize {
+        self.materialization_latest_read_parity
+    }
+
+    pub const fn materialization_version_read_parity_cases(self) -> usize {
+        self.materialization_version_read_parity
+    }
+
+    pub const fn materialization_timestamp_read_parity_cases(self) -> usize {
+        self.materialization_timestamp_read_parity
+    }
+
+    pub const fn materialization_history_read_parity_cases(self) -> usize {
+        self.materialization_history_read_parity
+    }
+
+    pub const fn materialization_prefix_scan_parity_cases(self) -> usize {
+        self.materialization_prefix_scan_parity
+    }
+
+    pub const fn materialization_range_scan_parity_cases(self) -> usize {
+        self.materialization_range_scan_parity
+    }
+
+    pub const fn materialization_pinned_view_isolation_cases(self) -> usize {
+        self.materialization_pinned_view_isolations
+    }
+
+    pub const fn materialization_tombstone_preservation_cases(self) -> usize {
+        self.materialization_tombstone_preservations
+    }
+
+    pub const fn materialization_ttl_preservation_cases(self) -> usize {
+        self.materialization_ttl_preservations
+    }
+
+    pub const fn invalid_materialization_rejection_cases(self) -> usize {
+        self.invalid_materialization_rejections
+    }
+
+    pub const fn reachability_snapshot_cases(self) -> usize {
+        self.reachability_snapshots
+    }
+
+    pub const fn reachability_owned_ref_cases(self) -> usize {
+        self.reachability_owned_refs
+    }
+
+    pub const fn reachability_inherited_ref_cases(self) -> usize {
+        self.reachability_inherited_refs
+    }
+
+    pub const fn materializing_reachability_ref_cases(self) -> usize {
+        self.materializing_reachability_refs
+    }
+
+    pub const fn reachability_aggregate_rebuild_cases(self) -> usize {
+        self.reachability_aggregate_rebuilds
+    }
+
+    pub const fn shared_table_detection_cases(self) -> usize {
+        self.shared_table_detections
+    }
+
+    pub const fn reachability_release_candidate_cases(self) -> usize {
+        self.reachability_release_candidates
+    }
+
+    pub const fn protected_release_attempt_cases(self) -> usize {
+        self.protected_release_attempts
+    }
+
+    pub const fn registry_rebuild_cases(self) -> usize {
+        self.registry_rebuilds
+    }
+
+    pub const fn registry_unregister_cases(self) -> usize {
+        self.registry_unregisters
+    }
+
+    pub const fn registry_disagreement_cases(self) -> usize {
+        self.registry_disagreements
+    }
+
+    pub const fn fork_reachability_cases(self) -> usize {
+        self.fork_reachability_cases
+    }
+
+    pub const fn failed_fork_reachability_rollback_cases(self) -> usize {
+        self.failed_fork_reachability_rollbacks
+    }
+
+    pub const fn materialization_release_cases(self) -> usize {
+        self.materialization_release_cases
+    }
+
+    pub const fn branch_clear_release_cases(self) -> usize {
+        self.branch_clear_release_cases
+    }
+
+    pub const fn reachability_deterministic_ordering_cases(self) -> usize {
+        self.reachability_deterministic_orderings
+    }
+
+    pub const fn invalid_reachability_rejection_cases(self) -> usize {
+        self.invalid_reachability_rejections
+    }
+
     fn absorb_state_outcome(&mut self, outcome: StateOutcome) {
         self.state_construction += outcome.state_construction;
         self.committed_put_appends += outcome.committed_put_appends;
@@ -460,7 +769,6 @@ impl BranchLsmScaffoldOutcome {
         self.scan_tombstone_suppressions += outcome.scan_tombstone_suppressions;
         self.active_frozen_merge_reads += outcome.active_frozen_merge_reads;
         self.wrong_branch_read_rejections += outcome.wrong_branch_read_rejections;
-        self.timestamp_bound_deferrals += outcome.timestamp_bound_deferrals;
     }
 
     fn absorb_immutable_outcome(&mut self, outcome: ImmutableOutcome) {
@@ -496,6 +804,83 @@ impl BranchLsmScaffoldOutcome {
         self.inherited_chained_ancestry += outcome.inherited_chained_ancestry;
         self.invalid_inherited_layer_rejections += outcome.invalid_inherited_layer_rejections;
         self.pinned_inherited_view_isolations += outcome.pinned_inherited_view_isolations;
+    }
+
+    fn absorb_timestamp_outcome(&mut self, outcome: TimestampOutcome) {
+        self.timestamp_point_reads += outcome.timestamp_point_reads;
+        self.active_timestamp_point_reads += outcome.active_timestamp_point_reads;
+        self.frozen_timestamp_point_reads += outcome.frozen_timestamp_point_reads;
+        self.owned_timestamp_point_reads += outcome.owned_timestamp_point_reads;
+        self.timestamp_scan_reads += outcome.timestamp_scan_reads;
+        self.timestamp_prefix_scans += outcome.timestamp_prefix_scans;
+        self.timestamp_range_scans += outcome.timestamp_range_scans;
+        self.ttl_before_expiry_reads += outcome.ttl_before_expiry_reads;
+        self.ttl_exact_expiry_suppressions += outcome.ttl_exact_expiry_suppressions;
+        self.ttl_after_expiry_suppressions += outcome.ttl_after_expiry_suppressions;
+        self.ttl_max_expiry_reads += outcome.ttl_max_expiry_reads;
+        self.timestamp_tombstone_shadows += outcome.timestamp_tombstone_shadows;
+        self.timestamp_tombstone_after_non_shadows += outcome.timestamp_tombstone_after_non_shadows;
+        self.timestamp_scan_boundary_reads += outcome.timestamp_scan_boundary_reads;
+        self.timestamp_scan_space_isolations += outcome.timestamp_scan_space_isolations;
+        self.timestamp_empty_scans += outcome.timestamp_empty_scans;
+        self.non_monotonic_timestamp_reads += outcome.non_monotonic_timestamp_reads;
+        self.inherited_timestamp_reads += outcome.inherited_timestamp_reads;
+        self.inherited_timestamp_point_reads += outcome.inherited_timestamp_point_reads;
+        self.inherited_timestamp_scan_reads += outcome.inherited_timestamp_scan_reads;
+        self.inherited_timestamp_fork_gates += outcome.inherited_timestamp_fork_gates;
+        self.inherited_timestamp_child_put_shadows += outcome.inherited_timestamp_child_put_shadows;
+        self.inherited_timestamp_child_tombstone_shadows +=
+            outcome.inherited_timestamp_child_tombstone_shadows;
+        self.inherited_timestamp_nearest_ties += outcome.inherited_timestamp_nearest_ties;
+        self.pinned_timestamp_view_isolations += outcome.pinned_timestamp_view_isolations;
+        self.unknown_timestamp_coverage_reads += outcome.unknown_timestamp_coverage_reads;
+        self.insufficient_timestamp_history_rejections +=
+            outcome.insufficient_timestamp_history_rejections;
+    }
+
+    fn absorb_materialization_outcome(&mut self, outcome: MaterializationOutcome) {
+        self.materialization_attempts += outcome.materialization_attempts;
+        self.successful_materializations += outcome.successful_materializations;
+        self.empty_materializations += outcome.empty_materializations;
+        self.idempotent_materialization_retries += outcome.idempotent_materialization_retries;
+        self.materialized_rows += outcome.materialized_rows;
+        self.materialized_tables += outcome.materialized_tables;
+        self.skipped_materialization_post_fork_rows +=
+            outcome.skipped_materialization_post_fork_rows;
+        self.skipped_materialization_exact_duplicates +=
+            outcome.skipped_materialization_exact_duplicates;
+        self.materialization_latest_read_parity += outcome.materialization_latest_read_parity;
+        self.materialization_version_read_parity += outcome.materialization_version_read_parity;
+        self.materialization_timestamp_read_parity += outcome.materialization_timestamp_read_parity;
+        self.materialization_history_read_parity += outcome.materialization_history_read_parity;
+        self.materialization_prefix_scan_parity += outcome.materialization_prefix_scan_parity;
+        self.materialization_range_scan_parity += outcome.materialization_range_scan_parity;
+        self.materialization_pinned_view_isolations +=
+            outcome.materialization_pinned_view_isolations;
+        self.materialization_tombstone_preservations +=
+            outcome.materialization_tombstone_preservations;
+        self.materialization_ttl_preservations += outcome.materialization_ttl_preservations;
+        self.invalid_materialization_rejections += outcome.invalid_materialization_rejections;
+    }
+
+    fn absorb_reachability_outcome(&mut self, outcome: ReachabilityOutcome) {
+        self.reachability_snapshots += outcome.reachability_snapshots;
+        self.reachability_owned_refs += outcome.reachability_owned_refs;
+        self.reachability_inherited_refs += outcome.reachability_inherited_refs;
+        self.materializing_reachability_refs += outcome.materializing_reachability_refs;
+        self.reachability_aggregate_rebuilds += outcome.reachability_aggregate_rebuilds;
+        self.shared_table_detections += outcome.shared_table_detections;
+        self.reachability_release_candidates += outcome.reachability_release_candidates;
+        self.protected_release_attempts += outcome.protected_release_attempts;
+        self.registry_rebuilds += outcome.registry_rebuilds;
+        self.registry_unregisters += outcome.registry_unregisters;
+        self.registry_disagreements += outcome.registry_disagreements;
+        self.fork_reachability_cases += outcome.fork_reachability_cases;
+        self.failed_fork_reachability_rollbacks += outcome.failed_fork_reachability_rollbacks;
+        self.materialization_release_cases += outcome.materialization_release_cases;
+        self.branch_clear_release_cases += outcome.branch_clear_release_cases;
+        self.reachability_deterministic_orderings += outcome.reachability_deterministic_orderings;
+        self.invalid_reachability_rejections += outcome.invalid_reachability_rejections;
     }
 }
 
@@ -548,6 +933,9 @@ pub fn check_branch_lsm_scaffold_contract(
     outcome.absorb_read_outcome(check_branch_read_view(script)?);
     outcome.absorb_immutable_outcome(check_branch_owned_immutable(script)?);
     outcome.absorb_inheritance_outcome(check_branch_inheritance(script)?);
+    outcome.absorb_timestamp_outcome(check_branch_timestamp_visibility(script)?);
+    outcome.absorb_materialization_outcome(check_branch_materialization(script)?);
+    outcome.absorb_reachability_outcome(check_branch_reachability(script)?);
 
     Ok(outcome)
 }
@@ -616,7 +1004,6 @@ struct ReadOutcome {
     scan_tombstone_suppressions: usize,
     active_frozen_merge_reads: usize,
     wrong_branch_read_rejections: usize,
-    timestamp_bound_deferrals: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -654,6 +1041,80 @@ struct InheritanceOutcome {
     inherited_chained_ancestry: usize,
     invalid_inherited_layer_rejections: usize,
     pinned_inherited_view_isolations: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TimestampOutcome {
+    timestamp_point_reads: usize,
+    active_timestamp_point_reads: usize,
+    frozen_timestamp_point_reads: usize,
+    owned_timestamp_point_reads: usize,
+    timestamp_scan_reads: usize,
+    timestamp_prefix_scans: usize,
+    timestamp_range_scans: usize,
+    ttl_before_expiry_reads: usize,
+    ttl_exact_expiry_suppressions: usize,
+    ttl_after_expiry_suppressions: usize,
+    ttl_max_expiry_reads: usize,
+    timestamp_tombstone_shadows: usize,
+    timestamp_tombstone_after_non_shadows: usize,
+    timestamp_scan_boundary_reads: usize,
+    timestamp_scan_space_isolations: usize,
+    timestamp_empty_scans: usize,
+    non_monotonic_timestamp_reads: usize,
+    inherited_timestamp_reads: usize,
+    inherited_timestamp_point_reads: usize,
+    inherited_timestamp_scan_reads: usize,
+    inherited_timestamp_fork_gates: usize,
+    inherited_timestamp_child_put_shadows: usize,
+    inherited_timestamp_child_tombstone_shadows: usize,
+    inherited_timestamp_nearest_ties: usize,
+    pinned_timestamp_view_isolations: usize,
+    unknown_timestamp_coverage_reads: usize,
+    insufficient_timestamp_history_rejections: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MaterializationOutcome {
+    materialization_attempts: usize,
+    successful_materializations: usize,
+    empty_materializations: usize,
+    idempotent_materialization_retries: usize,
+    materialized_rows: usize,
+    materialized_tables: usize,
+    skipped_materialization_post_fork_rows: usize,
+    skipped_materialization_exact_duplicates: usize,
+    materialization_latest_read_parity: usize,
+    materialization_version_read_parity: usize,
+    materialization_timestamp_read_parity: usize,
+    materialization_history_read_parity: usize,
+    materialization_prefix_scan_parity: usize,
+    materialization_range_scan_parity: usize,
+    materialization_pinned_view_isolations: usize,
+    materialization_tombstone_preservations: usize,
+    materialization_ttl_preservations: usize,
+    invalid_materialization_rejections: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ReachabilityOutcome {
+    reachability_snapshots: usize,
+    reachability_owned_refs: usize,
+    reachability_inherited_refs: usize,
+    materializing_reachability_refs: usize,
+    reachability_aggregate_rebuilds: usize,
+    shared_table_detections: usize,
+    reachability_release_candidates: usize,
+    protected_release_attempts: usize,
+    registry_rebuilds: usize,
+    registry_unregisters: usize,
+    registry_disagreements: usize,
+    fork_reachability_cases: usize,
+    failed_fork_reachability_rollbacks: usize,
+    materialization_release_cases: usize,
+    branch_clear_release_cases: usize,
+    reachability_deterministic_orderings: usize,
+    invalid_reachability_rejections: usize,
 }
 
 fn check_valid_config(script: &[u8]) -> Result<(), TestkitError> {
@@ -1560,26 +2021,6 @@ fn check_read_view_rejections(
     )?))?;
     outcome.wrong_branch_read_rejections += 1;
 
-    if !matches!(
-        after_prefix.read_point(
-            read_key,
-            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
-        ),
-        Err(BranchRuntimeError::InvalidReadBound { .. })
-    ) {
-        return Err(TestkitError::new("timestamp read was not deferred"));
-    }
-    if !matches!(
-        after_prefix.scan_prefix(
-            &BranchScanBounds::prefix(read_key),
-            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
-        ),
-        Err(BranchRuntimeError::InvalidReadBound { .. })
-    ) {
-        return Err(TestkitError::new("timestamp scan was not deferred"));
-    }
-    outcome.timestamp_bound_deferrals += 1;
-
     Ok(())
 }
 
@@ -2334,6 +2775,2236 @@ fn check_invalid_inherited_layers(
     Ok(())
 }
 
+fn check_branch_timestamp_visibility(script: &[u8]) -> Result<TimestampOutcome, TestkitError> {
+    let mut outcome = TimestampOutcome::default();
+    check_timestamp_point_reads(script, &mut outcome)?;
+    check_timestamp_frozen_and_owned_point_reads(script, &mut outcome)?;
+    check_timestamp_ttl(script, &mut outcome)?;
+    check_timestamp_tombstones(script, &mut outcome)?;
+    check_timestamp_scans(script, &mut outcome)?;
+    check_inherited_timestamp_reads(script, &mut outcome)?;
+    check_inherited_timestamp_scans(script, &mut outcome)?;
+    check_inherited_timestamp_local_shadows_and_ties(script, &mut outcome)?;
+    check_pinned_timestamp_views(script, &mut outcome)?;
+    check_timestamp_coverage(script, &mut outcome)?;
+    Ok(outcome)
+}
+
+fn check_timestamp_point_reads(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 110));
+    let mut state = BranchLocalState::empty(branch);
+    let key = b"generated-as-of".to_vec();
+    let older = storage_row_with(
+        branch,
+        key.clone(),
+        7,
+        80,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 111)],
+    )?;
+    let highest_version = storage_row_with(
+        branch,
+        key.clone(),
+        10,
+        100,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 112)],
+    )?;
+    let lower_version_later_timestamp = storage_row_with(
+        branch,
+        key.clone(),
+        8,
+        120,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 113)],
+    )?;
+    for row in [
+        older.clone(),
+        highest_version.clone(),
+        lower_version_later_timestamp,
+    ] {
+        append_expect_put(&mut state, &row)?;
+    }
+    let read_key = physical_key(branch, key)?;
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp point view failed: {err}")))?;
+    if view
+        .read_point(
+            &read_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(79)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp below read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "timestamp point read returned row before every eligible timestamp",
+        ));
+    }
+    let at_older = view
+        .read_point(
+            &read_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(80)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp exact read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp exact read missed older row"))?;
+    if at_older.row() != &older {
+        return Err(TestkitError::new("timestamp exact read selected wrong row"));
+    }
+    let after_all = view
+        .read_point(
+            &read_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(130)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp nonmonotonic read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp after-all read missed row"))?;
+    if after_all.row() != &highest_version {
+        return Err(TestkitError::new(
+            "timestamp read sorted by timestamp instead of commit version",
+        ));
+    }
+    outcome.timestamp_point_reads += 2;
+    outcome.active_timestamp_point_reads += 2;
+    outcome.non_monotonic_timestamp_reads += 1;
+    Ok(())
+}
+
+fn check_timestamp_frozen_and_owned_point_reads(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 125));
+    let mut state = BranchLocalState::empty(branch);
+    let frozen_key = b"generated-frozen-as-of".to_vec();
+    let frozen_visible = storage_row_with(
+        branch,
+        frozen_key.clone(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 126)],
+    )?;
+    let frozen_future = storage_row_with(
+        branch,
+        frozen_key.clone(),
+        3,
+        50,
+        Timestamp::EPOCH,
+        b"frozen-future".to_vec(),
+    )?;
+    for row in [frozen_visible.clone(), frozen_future] {
+        state
+            .append_committed_row(row)
+            .map_err(|err| TestkitError::new(format!("timestamp frozen append failed: {err}")))?;
+    }
+    match state.rotate_active() {
+        BranchRotationOutcome::Rotated { .. } => {}
+        outcome @ BranchRotationOutcome::Skipped { .. } => {
+            return Err(TestkitError::new(format!(
+                "timestamp frozen rotation skipped: {outcome:?}",
+            )))
+        }
+    }
+
+    let owned_key = b"generated-owned-as-of".to_vec();
+    let owned_visible = storage_row_with(
+        branch,
+        owned_key.clone(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 127)],
+    )?;
+    let owned_future = storage_row_with(
+        branch,
+        owned_key.clone(),
+        6,
+        80,
+        Timestamp::EPOCH,
+        b"owned-future".to_vec(),
+    )?;
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "generated-owned-as-of",
+            vec![owned_visible.clone(), owned_future],
+        )?)
+        .map_err(|err| TestkitError::new(format!("timestamp owned install failed: {err}")))?;
+
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp source view failed: {err}")))?;
+    let frozen = view
+        .read_point(
+            &physical_key(branch, frozen_key)?,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp frozen read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp frozen read missed row"))?;
+    if frozen.row() != &frozen_visible || frozen.source() != (BranchRowSource::Frozen { index: 0 })
+    {
+        return Err(TestkitError::new("timestamp frozen read/source drifted"));
+    }
+    outcome.timestamp_point_reads += 1;
+    outcome.frozen_timestamp_point_reads += 1;
+
+    let owned = view
+        .read_point(
+            &physical_key(branch, owned_key)?,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp owned read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp owned read missed row"))?;
+    if owned.row() != &owned_visible
+        || owned.source()
+            != (BranchRowSource::OwnedTable {
+                level: BranchLevel::ZERO,
+                table_index: 0,
+            })
+    {
+        return Err(TestkitError::new("timestamp owned read/source drifted"));
+    }
+    outcome.timestamp_point_reads += 1;
+    outcome.owned_timestamp_point_reads += 1;
+    Ok(())
+}
+
+fn check_timestamp_ttl(script: &[u8], outcome: &mut TimestampOutcome) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 114));
+    let mut state = BranchLocalState::empty(branch);
+    let ttl_key = b"generated-ttl".to_vec();
+    let old = storage_row_with(
+        branch,
+        ttl_key.clone(),
+        1,
+        5,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 115)],
+    )?;
+    let expiring = storage_row_with(
+        branch,
+        ttl_key.clone(),
+        2,
+        10,
+        Timestamp::from_micros(20),
+        vec![script_byte(script, 116)],
+    )?;
+    let epoch_key = b"generated-epoch-expiry".to_vec();
+    let epoch_expiry = storage_row_with(
+        branch,
+        epoch_key.clone(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        Vec::new(),
+    )?;
+    for row in [old, expiring.clone(), epoch_expiry.clone()] {
+        state
+            .append_committed_row(row)
+            .map_err(|err| TestkitError::new(format!("timestamp ttl append failed: {err}")))?;
+    }
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp ttl view failed: {err}")))?;
+    let ttl_physical_key = physical_key(branch, ttl_key)?;
+    let before_expiry = view
+        .read_point(
+            &ttl_physical_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(19)),
+        )
+        .map_err(|err| TestkitError::new(format!("ttl before read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("ttl before expiry missed row"))?;
+    if before_expiry.row() != &expiring {
+        return Err(TestkitError::new("ttl before expiry selected wrong row"));
+    }
+    outcome.ttl_before_expiry_reads += 1;
+
+    if view
+        .read_point(
+            &ttl_physical_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(20)),
+        )
+        .map_err(|err| TestkitError::new(format!("ttl exact read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "ttl exact expiry remained visible or fell through",
+        ));
+    }
+    outcome.ttl_exact_expiry_suppressions += 1;
+
+    if view
+        .read_point(
+            &ttl_physical_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(21)),
+        )
+        .map_err(|err| TestkitError::new(format!("ttl after read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "ttl after expiry remained visible or fell through",
+        ));
+    }
+    outcome.ttl_after_expiry_suppressions += 1;
+
+    let epoch_read = view
+        .read_point(
+            &physical_key(branch, epoch_key)?,
+            BranchReadBound::at_timestamp(Timestamp::MAX),
+        )
+        .map_err(|err| TestkitError::new(format!("epoch expiry read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("epoch expiry read missed row"))?;
+    if epoch_read.row() != &epoch_expiry {
+        return Err(TestkitError::new(
+            "epoch expiry sentinel did not behave as no expiry",
+        ));
+    }
+    outcome.timestamp_point_reads += 1;
+
+    check_timestamp_max_expiry(script, branch, outcome)?;
+    Ok(())
+}
+
+fn check_timestamp_max_expiry(
+    script: &[u8],
+    branch: BranchId,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let mut state = BranchLocalState::empty(branch);
+    let max_key = b"generated-max-expiry".to_vec();
+    let max_expiry = storage_row_with(
+        branch,
+        max_key.clone(),
+        5,
+        50,
+        Timestamp::MAX,
+        vec![script_byte(script, 133)],
+    )?;
+    state
+        .append_committed_row(max_expiry.clone())
+        .map_err(|err| TestkitError::new(format!("timestamp max expiry append failed: {err}")))?;
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp max expiry view failed: {err}")))?;
+    let max_before = view
+        .read_point(
+            &physical_key(branch, max_key.clone())?,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(u64::MAX - 1)),
+        )
+        .map_err(|err| TestkitError::new(format!("max expiry before read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("max expiry before read missed row"))?;
+    if max_before.row() != &max_expiry {
+        return Err(TestkitError::new("max expiry selected wrong row"));
+    }
+    if view
+        .read_point(
+            &physical_key(branch, max_key)?,
+            BranchReadBound::at_timestamp(Timestamp::MAX),
+        )
+        .map_err(|err| TestkitError::new(format!("max expiry exact read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "Timestamp::MAX expiry behaved as no-expiry sentinel",
+        ));
+    }
+    outcome.ttl_max_expiry_reads += 1;
+    Ok(())
+}
+
+fn check_timestamp_tombstones(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 114));
+    let mut state = BranchLocalState::empty(branch);
+    let deleted_key = b"generated-ts-delete".to_vec();
+    let deleted_put = storage_row_with(
+        branch,
+        deleted_key.clone(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 117)],
+    )?;
+    let deleted = tombstone_row(branch, deleted_key.clone(), 3, 30)?;
+    for row in [deleted_put.clone(), deleted] {
+        state.append_committed_row(row).map_err(|err| {
+            TestkitError::new(format!("timestamp tombstone append failed: {err}"))
+        })?;
+    }
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp tombstone view failed: {err}")))?;
+    let deleted_physical_key = physical_key(branch, deleted_key)?;
+    let before_tombstone = view
+        .read_point(
+            &deleted_physical_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(29)),
+        )
+        .map_err(|err| TestkitError::new(format!("pre-tombstone read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("pre-tombstone read missed put"))?;
+    if before_tombstone.row() != &deleted_put {
+        return Err(TestkitError::new("pre-tombstone read selected wrong row"));
+    }
+    outcome.timestamp_tombstone_after_non_shadows += 1;
+    if view
+        .read_point(
+            &deleted_physical_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+        )
+        .map_err(|err| TestkitError::new(format!("tombstone timestamp read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new("timestamp tombstone fell through"));
+    }
+    outcome.timestamp_tombstone_shadows += 1;
+    Ok(())
+}
+
+fn check_timestamp_scans(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 118));
+    let mut state = BranchLocalState::empty(branch);
+    let fixture = timestamp_scan_fixture(script, branch, &mut state)?;
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp scan view failed: {err}")))?;
+    check_timestamp_basic_scans(branch, &view, &fixture, outcome)?;
+    check_timestamp_scan_edges(branch, &view, outcome)?;
+    check_timestamp_scan_space_isolation(branch, &view, &fixture, outcome)?;
+    Ok(())
+}
+
+struct TimestampScanFixture {
+    visible: StorageRow,
+    system_row: StorageRow,
+    other_space_row: StorageRow,
+    engine_space: StorageSpaceId,
+    other_space: StorageSpaceId,
+}
+
+fn timestamp_scan_fixture(
+    script: &[u8],
+    branch: BranchId,
+    state: &mut BranchLocalState,
+) -> Result<TimestampScanFixture, TestkitError> {
+    let engine_space = StorageSpaceId::engine(0x20)
+        .map_err(|err| TestkitError::new(format!("storage space failed: {err}")))?;
+    let other_space = StorageSpaceId::engine(0x21)
+        .map_err(|err| TestkitError::new(format!("other storage space failed: {err}")))?;
+    let visible = storage_row_with(
+        branch,
+        b"generated-ts-scan-a".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 119)],
+    )?;
+    let future = storage_row_with(
+        branch,
+        b"generated-ts-scan-b".to_vec(),
+        2,
+        50,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 120)],
+    )?;
+    let expired_old = storage_row_with(
+        branch,
+        b"generated-ts-scan-c".to_vec(),
+        1,
+        5,
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    )?;
+    let expired_new = storage_row_with(
+        branch,
+        b"generated-ts-scan-c".to_vec(),
+        3,
+        30,
+        Timestamp::from_micros(35),
+        b"expired".to_vec(),
+    )?;
+    let deleted_old = storage_row_with(
+        branch,
+        b"generated-ts-scan-d".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"deleted".to_vec(),
+    )?;
+    let deleted = tombstone_row(branch, b"generated-ts-scan-d".to_vec(), 4, 40)?;
+    let system_row = storage_row_with_space(
+        branch,
+        "system",
+        engine_space,
+        b"generated-ts-scan-a".to_vec(),
+        5,
+        15,
+        Timestamp::EPOCH,
+        b"system-space".to_vec(),
+    )?;
+    let other_space_row = storage_row_with_space(
+        branch,
+        "default",
+        other_space,
+        b"generated-ts-scan-a".to_vec(),
+        6,
+        15,
+        Timestamp::EPOCH,
+        b"other-storage-space".to_vec(),
+    )?;
+    for row in [
+        visible.clone(),
+        future,
+        expired_old,
+        expired_new,
+        deleted_old,
+        deleted,
+        system_row.clone(),
+        other_space_row.clone(),
+    ] {
+        state
+            .append_committed_row(row)
+            .map_err(|err| TestkitError::new(format!("timestamp scan append failed: {err}")))?;
+    }
+    Ok(TimestampScanFixture {
+        visible,
+        system_row,
+        other_space_row,
+        engine_space,
+        other_space,
+    })
+}
+
+fn check_timestamp_basic_scans(
+    branch: BranchId,
+    view: &crate::branch::BranchReadView,
+    fixture: &TimestampScanFixture,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"generated-ts-scan-".to_vec())?);
+    let prefix_rows = view
+        .scan_prefix(
+            &prefix,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp prefix scan failed: {err}")))?;
+    if visible_user_keys(&prefix_rows) != vec![fixture.visible.physical_key().user_key().to_vec()] {
+        return Err(TestkitError::new("timestamp prefix scan drifted"));
+    }
+    outcome.timestamp_scan_reads += 1;
+    outcome.timestamp_prefix_scans += 1;
+
+    let range = BranchScanBounds::closed(
+        &physical_key(branch, b"generated-ts-scan-a".to_vec())?,
+        &physical_key(branch, b"generated-ts-scan-d".to_vec())?,
+    )
+    .map_err(|err| TestkitError::new(format!("timestamp scan bounds failed: {err}")))?;
+    let range_rows = view
+        .scan_range(
+            &range,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp range scan failed: {err}")))?;
+    if visible_user_keys(&range_rows) != vec![fixture.visible.physical_key().user_key().to_vec()] {
+        return Err(TestkitError::new("timestamp range scan drifted"));
+    }
+    outcome.timestamp_scan_reads += 1;
+    outcome.timestamp_range_scans += 1;
+    Ok(())
+}
+
+fn check_timestamp_scan_edges(
+    branch: BranchId,
+    view: &crate::branch::BranchReadView,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"generated-ts-scan-".to_vec())?);
+    let before_all_rows = view
+        .scan_prefix(
+            &prefix,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(4)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp empty prefix failed: {err}")))?;
+    if !before_all_rows.is_empty() {
+        return Err(TestkitError::new(
+            "timestamp scan returned rows before every eligible timestamp",
+        ));
+    }
+    outcome.timestamp_scan_reads += 1;
+    outcome.timestamp_empty_scans += 1;
+
+    let open = BranchScanBounds::open(
+        &physical_key(branch, b"generated-ts-scan-a".to_vec())?,
+        &physical_key(branch, b"generated-ts-scan-d".to_vec())?,
+    )
+    .map_err(|err| TestkitError::new(format!("timestamp open bounds failed: {err}")))?;
+    let open_rows = view
+        .scan_range(
+            &open,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(60)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp open range failed: {err}")))?;
+    if visible_user_keys(&open_rows) != vec![b"generated-ts-scan-b".to_vec()] {
+        return Err(TestkitError::new(
+            "timestamp open range failed to preserve exclusive edges",
+        ));
+    }
+    outcome.timestamp_scan_reads += 1;
+    outcome.timestamp_range_scans += 1;
+    outcome.timestamp_scan_boundary_reads += 1;
+    Ok(())
+}
+
+fn check_timestamp_scan_space_isolation(
+    branch: BranchId,
+    view: &crate::branch::BranchReadView,
+    fixture: &TimestampScanFixture,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let system_rows = view
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key_with_space(
+                branch,
+                "system",
+                fixture.engine_space,
+                b"generated-ts-scan-".to_vec(),
+            )?),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp system scan failed: {err}")))?;
+    let other_space_rows = view
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key_with_space(
+                branch,
+                "default",
+                fixture.other_space,
+                b"generated-ts-scan-".to_vec(),
+            )?),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp other-space scan failed: {err}")))?;
+    if system_rows.len() != 1
+        || system_rows[0].row() != &fixture.system_row
+        || other_space_rows.len() != 1
+        || other_space_rows[0].row() != &fixture.other_space_row
+    {
+        return Err(TestkitError::new(
+            "timestamp scans leaked across key-space boundaries",
+        ));
+    }
+    outcome.timestamp_scan_reads += 2;
+    outcome.timestamp_prefix_scans += 2;
+    outcome.timestamp_scan_space_isolations += 1;
+    Ok(())
+}
+
+fn check_inherited_timestamp_reads(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 121));
+    let child = branch_id(script_byte(script, 121).wrapping_add(1));
+    let visible = storage_row_with(
+        source,
+        b"generated-inherited-time".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 122)],
+    )?;
+    let future_timestamp = storage_row_with(
+        source,
+        b"generated-inherited-time".to_vec(),
+        4,
+        70,
+        Timestamp::EPOCH,
+        b"future".to_vec(),
+    )?;
+    let after_fork_old_timestamp = storage_row_with(
+        source,
+        b"generated-inherited-time".to_vec(),
+        7,
+        20,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    )?;
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-inherited-time",
+            vec![visible.clone(), future_timestamp, after_fork_old_timestamp],
+        )?]],
+    )?;
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .map_err(|err| TestkitError::new(format!("timestamp inherited attach failed: {err}")))?;
+    let view = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp inherited view failed: {err}")))?;
+    let child_key = physical_key(child, b"generated-inherited-time".to_vec())?;
+    let inherited = view
+        .read_point(
+            &child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp inherited read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp inherited read missed row"))?;
+    let expected = rewrite_row_branch(&visible, source, child)
+        .map_err(|err| TestkitError::new(format!("timestamp inherited rewrite failed: {err}")))?;
+    if inherited.row() != &expected {
+        return Err(TestkitError::new("timestamp inherited row drifted"));
+    }
+    outcome.inherited_timestamp_reads += 1;
+    outcome.inherited_timestamp_point_reads += 1;
+
+    if view
+        .read_point(
+            &child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(25)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp fork gate read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "timestamp inherited read exposed post-fork row with old timestamp",
+        ));
+    }
+    outcome.inherited_timestamp_fork_gates += 1;
+    Ok(())
+}
+
+fn check_inherited_timestamp_scans(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 128));
+    let child = branch_id(script_byte(script, 128).wrapping_add(1));
+    let visible = storage_row_with(
+        source,
+        b"generated-inherited-scan-a".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 129)],
+    )?;
+    let future_timestamp = storage_row_with(
+        source,
+        b"generated-inherited-scan-b".to_vec(),
+        4,
+        70,
+        Timestamp::EPOCH,
+        b"future".to_vec(),
+    )?;
+    let after_fork_old_timestamp = storage_row_with(
+        source,
+        b"generated-inherited-scan-c".to_vec(),
+        7,
+        20,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    )?;
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-inherited-scan",
+            vec![visible.clone(), future_timestamp, after_fork_old_timestamp],
+        )?]],
+    )?;
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .map_err(|err| {
+            TestkitError::new(format!("timestamp inherited scan attach failed: {err}"))
+        })?;
+    let view = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp inherited scan view failed: {err}")))?;
+    let expected = rewrite_row_branch(&visible, source, child)
+        .map_err(|err| TestkitError::new(format!("timestamp scan rewrite failed: {err}")))?;
+    let prefix =
+        BranchScanBounds::prefix(&physical_key(child, b"generated-inherited-scan-".to_vec())?);
+    let prefix_rows = view
+        .scan_prefix(
+            &prefix,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp inherited prefix failed: {err}")))?;
+    if visible_user_keys(&prefix_rows) != vec![expected.physical_key().user_key().to_vec()]
+        || prefix_rows.first().map(BranchVisibleRow::row) != Some(&expected)
+    {
+        return Err(TestkitError::new(
+            "timestamp inherited prefix scan did not rewrite before grouping",
+        ));
+    }
+    outcome.timestamp_scan_reads += 1;
+    outcome.timestamp_prefix_scans += 1;
+    outcome.inherited_timestamp_scan_reads += 1;
+
+    let range = BranchScanBounds::closed(
+        &physical_key(child, b"generated-inherited-scan-a".to_vec())?,
+        &physical_key(child, b"generated-inherited-scan-c".to_vec())?,
+    )
+    .map_err(|err| TestkitError::new(format!("timestamp inherited bounds failed: {err}")))?;
+    let range_rows = view
+        .scan_range(
+            &range,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp inherited range failed: {err}")))?;
+    if range_rows.len() != 1 || range_rows[0].row() != &expected {
+        return Err(TestkitError::new("timestamp inherited range scan drifted"));
+    }
+    outcome.timestamp_scan_reads += 1;
+    outcome.timestamp_range_scans += 1;
+    outcome.inherited_timestamp_scan_reads += 1;
+    Ok(())
+}
+
+fn check_inherited_timestamp_local_shadows_and_ties(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let (mut child_state, fixture) = inherited_timestamp_shadow_fixture(script)?;
+    check_inherited_timestamp_nearest_tie(&child_state, &fixture, outcome)?;
+    check_inherited_timestamp_child_put_shadow(&mut child_state, &fixture, outcome)?;
+    check_inherited_timestamp_child_tombstone_shadow(&mut child_state, &fixture, outcome)?;
+    Ok(())
+}
+
+struct InheritedTimestampShadowFixture {
+    child: BranchId,
+    nearest_source: BranchId,
+    key: Vec<u8>,
+    child_key: PhysicalKey,
+    expected_nearest: StorageRow,
+}
+
+fn inherited_timestamp_shadow_fixture(
+    script: &[u8],
+) -> Result<(BranchLocalState, InheritedTimestampShadowFixture), TestkitError> {
+    let nearest_source = branch_id(script_byte(script, 133));
+    let farther_source = branch_id(script_byte(script, 133).wrapping_add(1));
+    let child = branch_id(script_byte(script, 133).wrapping_add(2));
+    let key = b"generated-inherited-shadow".to_vec();
+    let nearest = storage_row_with(
+        nearest_source,
+        key.clone(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 134)],
+    )?;
+    let farther = storage_row_with(
+        farther_source,
+        key.clone(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"farther".to_vec(),
+    )?;
+    let nearest_layer = branch_inherited_layer(
+        nearest_source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            nearest_source,
+            BranchLevel::ZERO,
+            "generated-nearest-time-tie",
+            vec![nearest.clone()],
+        )?]],
+    )?;
+    let farther_layer = branch_inherited_layer(
+        farther_source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            farther_source,
+            BranchLevel::ZERO,
+            "generated-farther-time-tie",
+            vec![farther],
+        )?]],
+    )?;
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![nearest_layer, farther_layer])
+        .map_err(|err| {
+            TestkitError::new(format!("timestamp inherited shadow attach failed: {err}"))
+        })?;
+    let expected_nearest = rewrite_row_branch(&nearest, nearest_source, child)
+        .map_err(|err| TestkitError::new(format!("nearest inherited rewrite failed: {err}")))?;
+    Ok((
+        child_state,
+        InheritedTimestampShadowFixture {
+            child,
+            nearest_source,
+            key: key.clone(),
+            child_key: physical_key(child, key)?,
+            expected_nearest,
+        },
+    ))
+}
+
+fn check_inherited_timestamp_nearest_tie(
+    child_state: &BranchLocalState,
+    fixture: &InheritedTimestampShadowFixture,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let inherited = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp inherited tie view failed: {err}")))?
+        .read_point(
+            &fixture.child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp inherited tie read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp inherited tie missed row"))?;
+    if inherited.row() != &fixture.expected_nearest
+        || inherited.source()
+            != (BranchRowSource::Inherited {
+                source_branch_id: fixture.nearest_source,
+                layer_index: 0,
+            })
+    {
+        return Err(TestkitError::new(
+            "nearest inherited timestamp layer did not win exact tie",
+        ));
+    }
+    outcome.inherited_timestamp_reads += 1;
+    outcome.inherited_timestamp_point_reads += 1;
+    outcome.inherited_timestamp_nearest_ties += 1;
+    Ok(())
+}
+
+fn check_inherited_timestamp_child_put_shadow(
+    child_state: &mut BranchLocalState,
+    fixture: &InheritedTimestampShadowFixture,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let child_put = storage_row_with(
+        fixture.child,
+        fixture.key.clone(),
+        4,
+        35,
+        Timestamp::EPOCH,
+        b"child-put".to_vec(),
+    )?;
+    child_state
+        .append_committed_row(child_put.clone())
+        .map_err(|err| TestkitError::new(format!("timestamp child put failed: {err}")))?;
+    let put_read = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp child put view failed: {err}")))?
+        .read_point(
+            &fixture.child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp child put read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("timestamp child put missed row"))?;
+    if put_read.row() != &child_put || put_read.source() != BranchRowSource::Active {
+        return Err(TestkitError::new(
+            "child-local put did not shadow inherited timestamp row",
+        ));
+    }
+    outcome.inherited_timestamp_reads += 1;
+    outcome.inherited_timestamp_point_reads += 1;
+    outcome.inherited_timestamp_child_put_shadows += 1;
+    Ok(())
+}
+
+fn check_inherited_timestamp_child_tombstone_shadow(
+    child_state: &mut BranchLocalState,
+    fixture: &InheritedTimestampShadowFixture,
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    child_state
+        .append_committed_row(tombstone_row(fixture.child, fixture.key.clone(), 5, 45)?)
+        .map_err(|err| TestkitError::new(format!("timestamp child tombstone failed: {err}")))?;
+    if child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("timestamp child tombstone view failed: {err}")))?
+        .read_point(
+            &fixture.child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(50)),
+        )
+        .map_err(|err| TestkitError::new(format!("timestamp child tombstone read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "child-local tombstone did not shadow inherited timestamp row",
+        ));
+    }
+    outcome.inherited_timestamp_reads += 1;
+    outcome.inherited_timestamp_point_reads += 1;
+    outcome.inherited_timestamp_child_tombstone_shadows += 1;
+    Ok(())
+}
+
+fn check_pinned_timestamp_views(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 130));
+    let mut state = BranchLocalState::empty(branch);
+    let point = storage_row_with(
+        branch,
+        b"generated-pinned-ts".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 131)],
+    )?;
+    let scan = storage_row_with(
+        branch,
+        b"generated-pinned-scan-a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 132)],
+    )?;
+    for row in [point.clone(), scan.clone()] {
+        state
+            .append_committed_row(row)
+            .map_err(|err| TestkitError::new(format!("pinned timestamp append failed: {err}")))?;
+    }
+    let pinned = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("pinned timestamp view failed: {err}")))?;
+    state
+        .append_committed_row(storage_row_with(
+            branch,
+            b"generated-pinned-ts".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"later-point".to_vec(),
+        )?)
+        .map_err(|err| TestkitError::new(format!("later timestamp append failed: {err}")))?;
+    state
+        .append_committed_row(storage_row_with(
+            branch,
+            b"generated-pinned-scan-b".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"later-scan".to_vec(),
+        )?)
+        .map_err(|err| TestkitError::new(format!("later scan append failed: {err}")))?;
+    match state.rotate_active() {
+        BranchRotationOutcome::Rotated { .. } => {}
+        outcome @ BranchRotationOutcome::Skipped { .. } => {
+            return Err(TestkitError::new(format!(
+                "pinned timestamp rotation skipped: {outcome:?}",
+            )))
+        }
+    }
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "generated-pinned-owned",
+            vec![storage_row_with(
+                branch,
+                b"generated-pinned-scan-c".to_vec(),
+                5,
+                50,
+                Timestamp::EPOCH,
+                b"owned".to_vec(),
+            )?],
+        )?)
+        .map_err(|err| TestkitError::new(format!("pinned owned install failed: {err}")))?;
+
+    let point_row = pinned
+        .read_point(
+            &physical_key(branch, b"generated-pinned-ts".to_vec())?,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(35)),
+        )
+        .map_err(|err| TestkitError::new(format!("pinned timestamp point failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("pinned timestamp point missed row"))?;
+    if point_row.row() != &point {
+        return Err(TestkitError::new(
+            "pinned timestamp point saw later mutation",
+        ));
+    }
+    let scan_rows = pinned
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key(branch, b"generated-pinned-scan-".to_vec())?),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(60)),
+        )
+        .map_err(|err| TestkitError::new(format!("pinned timestamp scan failed: {err}")))?;
+    if visible_user_keys(&scan_rows) != vec![scan.physical_key().user_key().to_vec()] {
+        return Err(TestkitError::new(
+            "pinned timestamp scan saw later mutation",
+        ));
+    }
+    outcome.pinned_timestamp_view_isolations += 1;
+    Ok(())
+}
+
+fn check_timestamp_coverage(
+    script: &[u8],
+    outcome: &mut TimestampOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 123));
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"generated-coverage".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 124)],
+    )?;
+    state
+        .append_committed_row(row.clone())
+        .map_err(|err| TestkitError::new(format!("coverage append failed: {err}")))?;
+    let key = physical_key(branch, b"generated-coverage".to_vec())?;
+    let unknown = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("coverage unknown view failed: {err}")))?;
+    if unknown
+        .read_point(
+            &key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(49)),
+        )
+        .map_err(|err| TestkitError::new(format!("unknown coverage read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "unknown coverage returned row below row timestamp",
+        ));
+    }
+    outcome.unknown_timestamp_coverage_reads += 1;
+
+    let complete_since = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("coverage proof view failed: {err}")))?
+        .with_timestamp_coverage(BranchTimestampCoverage::complete_since(
+            Timestamp::from_micros(50),
+        ));
+    match complete_since.read_point(
+        &key,
+        BranchReadBound::at_timestamp(Timestamp::from_micros(49)),
+    ) {
+        Err(BranchRuntimeError::InsufficientTimestampHistory {
+            branch_id,
+            requested_timestamp,
+            earliest_available_timestamp: Some(earliest),
+            source: BranchTimestampHistorySource::Combined,
+        }) if branch_id == branch
+            && requested_timestamp == Timestamp::from_micros(49)
+            && earliest == Timestamp::from_micros(50) => {}
+        Err(err) => {
+            return Err(TestkitError::new(format!(
+                "coverage proof returned wrong error: {err}",
+            )))
+        }
+        Ok(_) => {
+            return Err(TestkitError::new(
+                "coverage proof accepted insufficient timestamp",
+            ))
+        }
+    }
+    outcome.insufficient_timestamp_history_rejections += 1;
+
+    let at_floor = complete_since
+        .read_point(
+            &key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(50)),
+        )
+        .map_err(|err| TestkitError::new(format!("coverage floor read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("coverage floor read missed row"))?;
+    if at_floor.row() != &row {
+        return Err(TestkitError::new("coverage floor read selected wrong row"));
+    }
+    outcome.timestamp_point_reads += 1;
+    Ok(())
+}
+
+fn check_branch_materialization(script: &[u8]) -> Result<MaterializationOutcome, TestkitError> {
+    let mut outcome = MaterializationOutcome::default();
+    check_materialization_read_parity(script, &mut outcome)?;
+    check_materialization_tombstone_and_ttl(script, &mut outcome)?;
+    check_materialization_empty_and_idempotent(script, &mut outcome)?;
+    check_invalid_materialization_requests(script, &mut outcome)?;
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_materialization_read_parity(
+    script: &[u8],
+    outcome: &mut MaterializationOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 140));
+    let child = branch_id(script_byte(script, 140).wrapping_add(1));
+    let visible = storage_row_with(
+        source,
+        b"generated-materialize-a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 141)],
+    )?;
+    let historical = storage_row_with(
+        source,
+        b"generated-materialize-history".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 142)],
+    )?;
+    let post_fork = storage_row_with(
+        source,
+        b"generated-materialize-post-fork".to_vec(),
+        9,
+        15,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    )?;
+    let exact_duplicate_source = storage_row_with(
+        source,
+        b"generated-materialize-duplicate".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"duplicate".to_vec(),
+    )?;
+    let same_internal_key_different_timestamp = storage_row_with(
+        source,
+        b"generated-materialize-same-key".to_vec(),
+        4,
+        30,
+        Timestamp::EPOCH,
+        b"inherited-timestamp".to_vec(),
+    )?;
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-materialize-source",
+            vec![
+                visible.clone(),
+                historical.clone(),
+                post_fork,
+                exact_duplicate_source.clone(),
+                same_internal_key_different_timestamp.clone(),
+            ],
+        )?]],
+    )?;
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .map_err(|err| TestkitError::new(format!("materialization attach failed: {err}")))?;
+    let child_newer = storage_row_with(
+        child,
+        b"generated-materialize-history".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"child-newer".to_vec(),
+    )?;
+    child_state
+        .append_committed_row(child_newer)
+        .map_err(|err| TestkitError::new(format!("materialization child append failed: {err}")))?;
+    let exact_duplicate_child = rewrite_row_branch(&exact_duplicate_source, source, child)
+        .map_err(|err| {
+            TestkitError::new(format!("materialization duplicate rewrite failed: {err}"))
+        })?;
+    child_state
+        .append_committed_row(exact_duplicate_child)
+        .map_err(|err| {
+            TestkitError::new(format!("materialization duplicate append failed: {err}"))
+        })?;
+    let child_same_internal_key_later_timestamp = storage_row_with(
+        child,
+        b"generated-materialize-same-key".to_vec(),
+        4,
+        50,
+        Timestamp::EPOCH,
+        b"child-timestamp".to_vec(),
+    )?;
+    child_state
+        .append_committed_row(child_same_internal_key_later_timestamp)
+        .map_err(|err| {
+            TestkitError::new(format!("materialization timestamp append failed: {err}"))
+        })?;
+
+    let before = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("materialization before view failed: {err}")))?;
+    let pinned = before.clone();
+    let visible_key = physical_key(child, b"generated-materialize-a".to_vec())?;
+    let history_key = physical_key(child, b"generated-materialize-history".to_vec())?;
+    let timestamp_key = physical_key(child, b"generated-materialize-same-key".to_vec())?;
+    let prefix =
+        BranchScanBounds::prefix(&physical_key(child, b"generated-materialize-".to_vec())?);
+    let range = BranchScanBounds::closed(
+        &physical_key(child, b"generated-materialize-a".to_vec())?,
+        &physical_key(child, b"generated-materialize-history".to_vec())?,
+    )
+    .map_err(|err| TestkitError::new(format!("materialization range bounds failed: {err}")))?;
+
+    let before_latest = before
+        .latest(&visible_key)
+        .map_err(|err| TestkitError::new(format!("materialization before latest failed: {err}")))?
+        .map(|row| row.row().clone());
+    let before_version = before
+        .at_version(&history_key, CommitVersion::new(2))
+        .map_err(|err| TestkitError::new(format!("materialization before getv failed: {err}")))?
+        .map(|row| row.row().clone());
+    let before_timestamp = before
+        .read_point(
+            &timestamp_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization before as-of failed: {err}")))?
+        .map(|row| row.row().clone());
+    let before_history_rows = before
+        .history(
+            &history_key,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization before history failed: {err}")))?
+        .into_iter()
+        .map(|row| row.row().clone())
+        .collect::<Vec<_>>();
+    let before_prefix_keys = visible_user_keys(
+        &before
+            .scan_prefix(&prefix, BranchReadBound::latest())
+            .map_err(|err| {
+                TestkitError::new(format!("materialization before prefix failed: {err}"))
+            })?,
+    );
+    let before_range_keys = visible_user_keys(
+        &before
+            .scan_range(&range, BranchReadBound::latest())
+            .map_err(|err| {
+                TestkitError::new(format!("materialization before range failed: {err}"))
+            })?,
+    );
+
+    let materialization: BranchMaterializationOutcome = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "generated-materialize").map_err(
+                |err| TestkitError::new(format!("materialization request failed: {err}")),
+            )?,
+        )
+        .map_err(|err| TestkitError::new(format!("materialization failed: {err}")))?;
+    outcome.materialization_attempts += 1;
+    outcome.successful_materializations += 1;
+    outcome.materialized_rows += usize::try_from(materialization.rows_materialized())
+        .map_err(|_| TestkitError::new("materialized row count did not fit usize"))?;
+    outcome.materialized_tables += materialization.tables_created();
+    outcome.skipped_materialization_post_fork_rows +=
+        usize::try_from(materialization.skipped_post_fork_rows())
+            .map_err(|_| TestkitError::new("skipped post-fork count did not fit usize"))?;
+    outcome.skipped_materialization_exact_duplicates +=
+        usize::try_from(materialization.skipped_exact_duplicate_rows())
+            .map_err(|_| TestkitError::new("skipped duplicate count did not fit usize"))?;
+    if materialization.recovery() != BranchMaterializationRecovery::ReplacementVisibleLayerRemoved
+        || materialization.rows_materialized() != 3
+        || materialization.skipped_post_fork_rows() != 1
+        || materialization.skipped_exact_duplicate_rows() != 1
+        || child_state.inherited_layer_count() != 0
+    {
+        return Err(TestkitError::new("materialization outcome facts drifted"));
+    }
+
+    let after = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("materialization after view failed: {err}")))?;
+    if after
+        .latest(&visible_key)
+        .map_err(|err| TestkitError::new(format!("materialization after latest failed: {err}")))?
+        .map(|row| row.row().clone())
+        != before_latest
+    {
+        return Err(TestkitError::new("materialization latest parity failed"));
+    }
+    outcome.materialization_latest_read_parity += 1;
+    if after
+        .at_version(&history_key, CommitVersion::new(2))
+        .map_err(|err| TestkitError::new(format!("materialization after getv failed: {err}")))?
+        .map(|row| row.row().clone())
+        != before_version
+    {
+        return Err(TestkitError::new("materialization getv parity failed"));
+    }
+    outcome.materialization_version_read_parity += 1;
+    if after
+        .read_point(
+            &timestamp_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization after as-of failed: {err}")))?
+        .map(|row| row.row().clone())
+        != before_timestamp
+    {
+        return Err(TestkitError::new("materialization as-of parity failed"));
+    }
+    outcome.materialization_timestamp_read_parity += 1;
+    let after_history_rows = after
+        .history(
+            &history_key,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization after history failed: {err}")))?
+        .into_iter()
+        .map(|row| row.row().clone())
+        .collect::<Vec<_>>();
+    if after_history_rows != before_history_rows {
+        return Err(TestkitError::new("materialization history parity failed"));
+    }
+    outcome.materialization_history_read_parity += 1;
+    let after_prefix_keys = visible_user_keys(
+        &after
+            .scan_prefix(&prefix, BranchReadBound::latest())
+            .map_err(|err| {
+                TestkitError::new(format!("materialization after prefix failed: {err}"))
+            })?,
+    );
+    if after_prefix_keys != before_prefix_keys {
+        return Err(TestkitError::new("materialization prefix parity failed"));
+    }
+    outcome.materialization_prefix_scan_parity += 1;
+    let after_range_keys = visible_user_keys(
+        &after
+            .scan_range(&range, BranchReadBound::latest())
+            .map_err(|err| {
+                TestkitError::new(format!("materialization after range failed: {err}"))
+            })?,
+    );
+    if after_range_keys != before_range_keys {
+        return Err(TestkitError::new("materialization range parity failed"));
+    }
+    outcome.materialization_range_scan_parity += 1;
+
+    let pinned_row = pinned
+        .latest(&visible_key)
+        .map_err(|err| TestkitError::new(format!("materialization pinned read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("materialization pinned read missed row"))?;
+    if !matches!(pinned_row.source(), BranchRowSource::Inherited { .. }) {
+        return Err(TestkitError::new(
+            "materialization pinned view lost inherited source",
+        ));
+    }
+    outcome.materialization_pinned_view_isolations += 1;
+    Ok(())
+}
+
+fn check_materialization_tombstone_and_ttl(
+    script: &[u8],
+    outcome: &mut MaterializationOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 148));
+    let child = branch_id(script_byte(script, 148).wrapping_add(1));
+    let expired = storage_row_with(
+        source,
+        b"generated-materialize-expired".to_vec(),
+        2,
+        20,
+        Timestamp::from_micros(25),
+        vec![script_byte(script, 149)],
+    )?;
+    let deleted_put = storage_row_with(
+        source,
+        b"generated-materialize-deleted".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 150)],
+    )?;
+    let deleting_tombstone =
+        tombstone_row(source, b"generated-materialize-deleted".to_vec(), 3, 30)?;
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-materialize-ttl-source",
+            vec![expired.clone(), deleted_put, deleting_tombstone],
+        )?]],
+    )?;
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .map_err(|err| TestkitError::new(format!("materialization ttl attach failed: {err}")))?;
+    let materialization = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "generated-materialize-ttl").map_err(
+                |err| TestkitError::new(format!("materialization ttl request failed: {err}")),
+            )?,
+        )
+        .map_err(|err| TestkitError::new(format!("materialization ttl failed: {err}")))?;
+    outcome.materialization_attempts += 1;
+    outcome.successful_materializations += 1;
+    outcome.materialized_rows += usize::try_from(materialization.rows_materialized())
+        .map_err(|_| TestkitError::new("ttl materialized rows did not fit usize"))?;
+    outcome.materialized_tables += materialization.tables_created();
+
+    let view = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("materialization ttl view failed: {err}")))?;
+    check_materialized_ttl_preserved(&view, &expired, source, child, outcome)?;
+    check_materialized_tombstone_preserved(&view, child, outcome)
+}
+
+fn check_materialized_ttl_preserved(
+    view: &BranchReadView,
+    expired: &StorageRow,
+    source: BranchId,
+    child: BranchId,
+    outcome: &mut MaterializationOutcome,
+) -> Result<(), TestkitError> {
+    let expired_key = physical_key(child, b"generated-materialize-expired".to_vec())?;
+    let before_expiry = view
+        .read_point(
+            &expired_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(24)),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization ttl before read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("materialization ttl row missing before expiry"))?;
+    let expected_expired = rewrite_row_branch(expired, source, child)
+        .map_err(|err| TestkitError::new(format!("materialization ttl rewrite failed: {err}")))?;
+    if before_expiry.row() != &expected_expired {
+        return Err(TestkitError::new(
+            "materialization ttl changed expired row facts",
+        ));
+    }
+    if !matches!(
+        before_expiry.source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            ..
+        }
+    ) {
+        return Err(TestkitError::new(
+            "materialization ttl row did not move to owned table",
+        ));
+    }
+    if view
+        .read_point(
+            &expired_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(25)),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization ttl exact read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "materialization ttl failed to suppress at expiry",
+        ));
+    }
+    outcome.materialization_ttl_preservations += 1;
+    Ok(())
+}
+
+fn check_materialized_tombstone_preserved(
+    view: &BranchReadView,
+    child: BranchId,
+    outcome: &mut MaterializationOutcome,
+) -> Result<(), TestkitError> {
+    let deleted_key = physical_key(child, b"generated-materialize-deleted".to_vec())?;
+    if view
+        .read_point(
+            &deleted_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        )
+        .map_err(|err| TestkitError::new(format!("materialization tombstone read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "materialization tombstone failed to suppress put",
+        ));
+    }
+    let history_rows = view
+        .history(
+            &deleted_key,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .map_err(|err| {
+            TestkitError::new(format!("materialization tombstone history failed: {err}"))
+        })?;
+    if history_versions(&history_rows) != vec![3, 1] {
+        return Err(TestkitError::new(
+            "materialization tombstone history drifted",
+        ));
+    }
+    if history_rows.iter().any(|row| {
+        !matches!(
+            row.source(),
+            BranchRowSource::OwnedTable {
+                level: BranchLevel::ZERO,
+                ..
+            }
+        )
+    }) {
+        return Err(TestkitError::new(
+            "materialization tombstone history did not move to owned table",
+        ));
+    }
+    outcome.materialization_tombstone_preservations += 1;
+    Ok(())
+}
+
+fn check_materialization_empty_and_idempotent(
+    script: &[u8],
+    outcome: &mut MaterializationOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 145));
+    let child = branch_id(script_byte(script, 145).wrapping_add(1));
+    let empty_layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        Vec::new(),
+    )?;
+    let mut empty_state = BranchLocalState::empty(child);
+    empty_state
+        .attach_inherited_layers(vec![empty_layer])
+        .map_err(|err| TestkitError::new(format!("empty materialization attach failed: {err}")))?;
+    let empty = empty_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "generated-materialize-empty").map_err(
+                |err| TestkitError::new(format!("empty materialization request failed: {err}")),
+            )?,
+        )
+        .map_err(|err| TestkitError::new(format!("empty materialization failed: {err}")))?;
+    outcome.materialization_attempts += 1;
+    outcome.successful_materializations += 1;
+    if empty.rows_materialized() != 0
+        || empty.tables_created() != 0
+        || empty_state.inherited_layer_count() != 0
+    {
+        return Err(TestkitError::new("empty materialization drifted"));
+    }
+    outcome.empty_materializations += 1;
+
+    let materialized_layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Materialized,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-materialize-already",
+            vec![storage_row_with(
+                source,
+                b"generated-materialized-stale".to_vec(),
+                5,
+                50,
+                Timestamp::EPOCH,
+                vec![script_byte(script, 146)],
+            )?],
+        )?]],
+    )?;
+    let mut materialized_state = BranchLocalState::empty(child);
+    materialized_state
+        .attach_inherited_layers(vec![materialized_layer])
+        .map_err(|err| {
+            TestkitError::new(format!("idempotent materialization attach failed: {err}"))
+        })?;
+    let before = materialized_state.clone();
+    let retry = materialized_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "generated-materialize-retry").map_err(
+                |err| TestkitError::new(format!("retry materialization request failed: {err}")),
+            )?,
+        )
+        .map_err(|err| TestkitError::new(format!("retry materialization failed: {err}")))?;
+    outcome.materialization_attempts += 1;
+    if retry.recovery() != BranchMaterializationRecovery::LayerAlreadyMaterialized
+        || retry.rows_materialized() != 0
+        || materialized_state != before
+    {
+        return Err(TestkitError::new("idempotent materialization drifted"));
+    }
+    outcome.idempotent_materialization_retries += 1;
+    Ok(())
+}
+
+fn check_invalid_materialization_requests(
+    script: &[u8],
+    outcome: &mut MaterializationOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 147));
+    let child = branch_id(script_byte(script, 147).wrapping_add(1));
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        Vec::new(),
+    )?;
+    let mut state = BranchLocalState::empty(child);
+    state.attach_inherited_layers(vec![layer]).map_err(|err| {
+        TestkitError::new(format!("invalid materialization attach failed: {err}"))
+    })?;
+    match state.materialize_inherited_layer(
+        &BranchMaterializationRequest::new(source, 0, "generated-materialize-wrong-branch")
+            .map_err(|err| TestkitError::new(format!("wrong-branch request failed: {err}")))?,
+    ) {
+        Err(BranchRuntimeError::InvalidBranchState { .. }) => {}
+        Err(err) => {
+            return Err(TestkitError::new(format!(
+                "wrong-branch materialization returned wrong error: {err}",
+            )))
+        }
+        Ok(_) => return Err(TestkitError::new("wrong-branch materialization succeeded")),
+    }
+    outcome.materialization_attempts += 1;
+    outcome.invalid_materialization_rejections += 1;
+
+    expect_invalid_config(BranchMaterializationRequest::new(
+        child,
+        0,
+        "generated/materialize",
+    ))?;
+    outcome.invalid_materialization_rejections += 1;
+    Ok(())
+}
+
+fn check_branch_reachability(script: &[u8]) -> Result<ReachabilityOutcome, TestkitError> {
+    let mut outcome = ReachabilityOutcome::default();
+    check_reachability_fact_model(script, &mut outcome)?;
+    check_fork_reachability_registry_and_release(script, &mut outcome)?;
+    check_materialization_reachability_release(script, &mut outcome)?;
+    check_branch_clear_reachability_release(script, &mut outcome)?;
+    Ok(outcome)
+}
+
+#[allow(clippy::similar_names, clippy::too_many_lines)]
+fn check_reachability_fact_model(
+    script: &[u8],
+    outcome: &mut ReachabilityOutcome,
+) -> Result<(), TestkitError> {
+    let owner = branch_id(script_byte(script, 151));
+    let source = branch_id(script_byte(script, 151).wrapping_add(1));
+    let owned = BranchTableRef::owned(
+        owner,
+        BranchLevel::new(1),
+        2,
+        table_identity("generated-reach-owned")?,
+    )
+    .map_err(|err| TestkitError::new(format!("owned reachability ref failed: {err}")))?;
+    let inherited = BranchTableRef::inherited(
+        owner,
+        source,
+        CommitVersion::new(5),
+        0,
+        BranchLevel::ZERO,
+        0,
+        table_identity("generated-reach-inherited")?,
+    )
+    .map_err(|err| TestkitError::new(format!("inherited reachability ref failed: {err}")))?;
+    let materializing = BranchTableRef::materializing_source(
+        owner,
+        source,
+        CommitVersion::new(5),
+        1,
+        BranchLevel::ZERO,
+        1,
+        table_identity("generated-reach-materializing")?,
+    )
+    .map_err(|err| TestkitError::new(format!("materializing reachability ref failed: {err}")))?;
+    let replacement = BranchTableRef::replacement(
+        owner,
+        1,
+        BranchLevel::ZERO,
+        2,
+        table_identity("generated-reach-replacement")?,
+    )
+    .map_err(|err| TestkitError::new(format!("replacement reachability ref failed: {err}")))?;
+    let snapshot = BranchReachabilitySnapshot::new(
+        owner,
+        vec![
+            replacement.clone(),
+            materializing.clone(),
+            inherited.clone(),
+            owned.clone(),
+        ],
+    )
+    .map_err(|err| TestkitError::new(format!("reachability snapshot failed: {err}")))?;
+    if snapshot.facts().owned_table_count() != 2
+        || snapshot.facts().inherited_table_count() != 2
+        || snapshot.facts().reachable_table_count() != 4
+        || snapshot.protected_table_count() != 4
+    {
+        return Err(TestkitError::new("reachability facts drifted"));
+    }
+    if snapshot
+        .table_refs()
+        .iter()
+        .map(|table_ref| table_ref.table_identity().as_str())
+        .collect::<Vec<_>>()
+        != vec![
+            "generated-reach-inherited",
+            "generated-reach-materializing",
+            "generated-reach-owned",
+            "generated-reach-replacement",
+        ]
+    {
+        return Err(TestkitError::new(
+            "reachability snapshot order was nondeterministic",
+        ));
+    }
+    outcome.reachability_snapshots += 1;
+    outcome.reachability_owned_refs += 2;
+    outcome.reachability_inherited_refs += 2;
+    outcome.materializing_reachability_refs += 1;
+    outcome.reachability_deterministic_orderings += 1;
+
+    let aggregate = BranchReachabilityAggregate::from_snapshots(std::slice::from_ref(&snapshot))
+        .map_err(|err| TestkitError::new(format!("reachability aggregate failed: {err}")))?;
+    if aggregate.branch_count() != 1
+        || aggregate.table_count() != 4
+        || aggregate.reference_count_for(owned.table_identity()) != 1
+    {
+        return Err(TestkitError::new("single-branch aggregate facts drifted"));
+    }
+    if !aggregate
+        .table_protections()
+        .iter()
+        .all(|protection| protection.reference_count() == 1 && protection.table_refs().len() == 1)
+    {
+        return Err(TestkitError::new("aggregate protection refs drifted"));
+    }
+    outcome.reachability_aggregate_rebuilds += 1;
+
+    expect_invalid_reachability(BranchTableRef::inherited(
+        owner,
+        owner,
+        CommitVersion::new(1),
+        0,
+        BranchLevel::ZERO,
+        0,
+        table_identity("generated-reach-invalid-same-branch")?,
+    ))?;
+    expect_invalid_reachability(BranchReachabilitySnapshot::new(
+        owner,
+        vec![inherited.clone(), inherited],
+    ))?;
+    expect_invalid_reachability(BranchReachabilityAggregate::from_snapshots(&[
+        snapshot.clone(),
+        snapshot,
+    ]))?;
+    outcome.invalid_reachability_rejections += 3;
+    Ok(())
+}
+
+#[allow(clippy::similar_names, clippy::too_many_lines)]
+fn check_fork_reachability_registry_and_release(
+    script: &[u8],
+    outcome: &mut ReachabilityOutcome,
+) -> Result<(), TestkitError> {
+    let parent = branch_id(script_byte(script, 152));
+    let child_a = branch_id(script_byte(script, 152).wrapping_add(1));
+    let child_b = branch_id(script_byte(script, 152).wrapping_add(2));
+    let mut parent_state = BranchLocalState::empty(parent);
+    parent_state
+        .install_l0_table(branch_owned_table(
+            parent,
+            BranchLevel::ZERO,
+            "generated-reach-shared-parent",
+            vec![storage_row_with(
+                parent,
+                b"generated-reach-shared".to_vec(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                vec![script_byte(script, 153)],
+            )?],
+        )?)
+        .map_err(|err| TestkitError::new(format!("shared parent install failed: {err}")))?;
+    let (child_a_state, _) = parent_state
+        .fork_into_empty_child(child_a)
+        .map_err(|err| TestkitError::new(format!("reachability fork a failed: {err}")))?;
+    let (child_b_state, _) = parent_state
+        .fork_into_empty_child(child_b)
+        .map_err(|err| TestkitError::new(format!("reachability fork b failed: {err}")))?;
+    outcome.fork_reachability_cases += 2;
+
+    let parent_snapshot = parent_state
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("parent reachability failed: {err}")))?;
+    let child_a_snapshot = child_a_state
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("child a reachability failed: {err}")))?;
+    let child_b_snapshot = child_b_state
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("child b reachability failed: {err}")))?;
+    let table_identity = parent_snapshot.table_refs()[0].table_identity().clone();
+    outcome.reachability_snapshots += 3;
+    outcome.reachability_owned_refs += parent_snapshot.facts().owned_table_count();
+    outcome.reachability_inherited_refs += child_a_snapshot.facts().inherited_table_count()
+        + child_b_snapshot.facts().inherited_table_count();
+
+    let aggregate = BranchReachabilityAggregate::from_snapshots(&[
+        parent_snapshot.clone(),
+        child_a_snapshot.clone(),
+        child_b_snapshot.clone(),
+    ])
+    .map_err(|err| TestkitError::new(format!("fork aggregate failed: {err}")))?;
+    if aggregate.reference_count_for(&table_identity) != 3
+        || !aggregate.is_reachable(&table_identity)
+        || !aggregate.is_shared(&table_identity)
+    {
+        return Err(TestkitError::new("shared fork aggregate facts drifted"));
+    }
+    outcome.reachability_aggregate_rebuilds += 1;
+    outcome.shared_table_detections += 1;
+
+    let mut registry = SharedTableRegistry::rebuild_from_snapshots(&[
+        parent_snapshot.clone(),
+        child_a_snapshot.clone(),
+        child_b_snapshot.clone(),
+    ])
+    .map_err(|err| TestkitError::new(format!("registry rebuild failed: {err}")))?;
+    if registry.table_count() != 1
+        || registry.reference_count(&table_identity) != 3
+        || !registry.is_runtime_referenced(&table_identity)
+    {
+        return Err(TestkitError::new("registry rebuild facts drifted"));
+    }
+    outcome.registry_rebuilds += 1;
+
+    let registry_before_failed_fork = registry.clone();
+    if !matches!(
+        parent_state.fork_into_empty_child(parent),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ) {
+        return Err(TestkitError::new(
+            "same-branch fork did not reject before reachability publication",
+        ));
+    }
+    if registry != registry_before_failed_fork {
+        return Err(TestkitError::new(
+            "failed fork mutated reachability registry",
+        ));
+    }
+    outcome.failed_fork_reachability_rollbacks += 1;
+
+    registry
+        .unregister_snapshot(&child_a_snapshot)
+        .map_err(|err| TestkitError::new(format!("child a unregister failed: {err}")))?;
+    if registry.reference_count(&table_identity) != 2 {
+        return Err(TestkitError::new("registry unregister count drifted"));
+    }
+    outcome.registry_unregisters += 1;
+
+    let aggregate_after_child_a = BranchReachabilityAggregate::from_snapshots(&[
+        parent_snapshot.clone(),
+        child_b_snapshot.clone(),
+    ])
+    .map_err(|err| TestkitError::new(format!("post-release aggregate failed: {err}")))?;
+    outcome.reachability_aggregate_rebuilds += 1;
+    let protected = BranchReleasePlan::from_removed_refs(
+        child_a,
+        child_a_snapshot.table_refs().to_vec(),
+        &aggregate_after_child_a,
+        Some(&registry),
+    )
+    .map_err(|err| TestkitError::new(format!("shared release plan failed: {err}")))?;
+    if !protected.releasable_tables().is_empty()
+        || protected.protected_tables().len() != 1
+        || protected.protected_tables()[0].reason() != BranchProtectionReason::StillReachable
+    {
+        return Err(TestkitError::new("shared release protection drifted"));
+    }
+    outcome.protected_release_attempts += 1;
+
+    let durable_only_protected = BranchReleasePlan::from_removed_refs(
+        child_b,
+        child_b_snapshot.table_refs().to_vec(),
+        &aggregate_after_child_a,
+        None,
+    )
+    .map_err(|err| TestkitError::new(format!("durable-only release plan failed: {err}")))?;
+    if durable_only_protected.protected_tables()[0].reason()
+        != BranchProtectionReason::StillReachable
+    {
+        return Err(TestkitError::new(
+            "missing runtime registry was misclassified as disagreement",
+        ));
+    }
+    outcome.protected_release_attempts += 1;
+
+    let empty_registry = SharedTableRegistry::new();
+    let releasable = BranchReleasePlan::from_removed_refs(
+        child_b,
+        child_b_snapshot.table_refs().to_vec(),
+        &BranchReachabilityAggregate::empty(),
+        Some(&empty_registry),
+    )
+    .map_err(|err| TestkitError::new(format!("final release plan failed: {err}")))?;
+    if releasable.released_branch_id() != child_b
+        || releasable.removed_refs().len() != 1
+        || releasable.releasable_tables().len() != 1
+        || !releasable.protected_tables().is_empty()
+    {
+        return Err(TestkitError::new("final release candidate drifted"));
+    }
+    outcome.reachability_release_candidates += 1;
+
+    let runtime_protected = BranchReleasePlan::from_removed_refs(
+        child_b,
+        child_b_snapshot.table_refs().to_vec(),
+        &BranchReachabilityAggregate::empty(),
+        Some(&registry),
+    )
+    .map_err(|err| TestkitError::new(format!("runtime-protected plan failed: {err}")))?;
+    if runtime_protected.protected_tables()[0].reason() != BranchProtectionReason::RuntimeReferenced
+    {
+        return Err(TestkitError::new(
+            "runtime registry protection reason drifted",
+        ));
+    }
+    outcome.protected_release_attempts += 1;
+
+    let disagreement = BranchReleasePlan::from_removed_refs(
+        child_b,
+        child_b_snapshot.table_refs().to_vec(),
+        &aggregate_after_child_a,
+        Some(&empty_registry),
+    )
+    .map_err(|err| TestkitError::new(format!("disagreement plan failed: {err}")))?;
+    if disagreement.protected_tables()[0].reason() != BranchProtectionReason::RegistryDisagreement {
+        return Err(TestkitError::new("registry disagreement reason drifted"));
+    }
+    outcome.protected_release_attempts += 1;
+    outcome.registry_disagreements += 1;
+
+    let mut count_mismatch_registry = SharedTableRegistry::new();
+    count_mismatch_registry
+        .register_snapshot(&child_b_snapshot)
+        .map_err(|err| TestkitError::new(format!("mismatch registry register failed: {err}")))?;
+    let count_mismatch = BranchReleasePlan::from_removed_refs(
+        child_a,
+        child_a_snapshot.table_refs().to_vec(),
+        &aggregate_after_child_a,
+        Some(&count_mismatch_registry),
+    )
+    .map_err(|err| TestkitError::new(format!("count-mismatch release plan failed: {err}")))?;
+    if count_mismatch.protected_tables()[0].reason() != BranchProtectionReason::RegistryDisagreement
+    {
+        return Err(TestkitError::new(
+            "registry count mismatch was not reported as disagreement",
+        ));
+    }
+    outcome.protected_release_attempts += 1;
+    outcome.registry_disagreements += 1;
+
+    let mut replacement_registry = SharedTableRegistry::rebuild_from_snapshots(&[
+        parent_snapshot,
+        child_b_snapshot.clone(),
+    ])
+    .map_err(|err| TestkitError::new(format!("replacement registry rebuild failed: {err}")))?;
+    replacement_registry
+        .replace_snapshot(&BranchReachabilitySnapshot::empty(child_b))
+        .map_err(|err| TestkitError::new(format!("registry snapshot replacement failed: {err}")))?;
+    if replacement_registry.reference_count(&table_identity) != 1 {
+        return Err(TestkitError::new("registry replacement count drifted"));
+    }
+    expect_invalid_reachability(replacement_registry.replace_snapshot(&child_a_snapshot))?;
+
+    expect_invalid_reachability(registry.unregister_snapshot(&child_a_snapshot))?;
+    outcome.invalid_reachability_rejections += 2;
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_materialization_reachability_release(
+    script: &[u8],
+    outcome: &mut ReachabilityOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(script_byte(script, 154));
+    let child = branch_id(script_byte(script, 154).wrapping_add(1));
+    let source_table = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "generated-reach-materialize-source",
+        vec![storage_row_with(
+            source,
+            b"generated-reach-materialize".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            vec![script_byte(script, 155)],
+        )?],
+    )?;
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![branch_inherited_layer(
+            source,
+            CommitVersion::new(4),
+            InheritedLayerStatus::Active,
+            vec![vec![source_table.clone()]],
+        )?])
+        .map_err(|err| {
+            TestkitError::new(format!("reachability materialize attach failed: {err}"))
+        })?;
+    let before = child_state
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("pre-materialize reachability failed: {err}")))?;
+    if before.facts().inherited_table_count() != 1 {
+        return Err(TestkitError::new(
+            "pre-materialization reachability missed source table",
+        ));
+    }
+    outcome.reachability_snapshots += 1;
+    outcome.reachability_inherited_refs += 1;
+
+    let mut in_flight = BranchLocalState::empty(child);
+    in_flight
+        .attach_inherited_layers(vec![branch_inherited_layer(
+            source,
+            CommitVersion::new(4),
+            InheritedLayerStatus::Materializing,
+            vec![vec![source_table]],
+        )?])
+        .map_err(|err| TestkitError::new(format!("materializing attach failed: {err}")))?;
+    let in_flight_snapshot = in_flight
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("materializing snapshot failed: {err}")))?;
+    if !matches!(
+        in_flight_snapshot.table_refs()[0].reference_kind(),
+        BranchTableReferenceKind::MaterializingSource { .. }
+    ) {
+        return Err(TestkitError::new(
+            "materializing layer did not retain source reachability",
+        ));
+    }
+    outcome.reachability_snapshots += 1;
+    outcome.reachability_inherited_refs += 1;
+    outcome.materializing_reachability_refs += 1;
+
+    child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "generated-reach-materialized").map_err(
+                |err| TestkitError::new(format!("materialization request failed: {err}")),
+            )?,
+        )
+        .map_err(|err| TestkitError::new(format!("reachability materialization failed: {err}")))?;
+    let after = child_state
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("post-materialize reachability failed: {err}")))?;
+    if after.facts().owned_table_count() != 1 || after.facts().inherited_table_count() != 0 {
+        return Err(TestkitError::new(
+            "post-materialization replacement reachability drifted",
+        ));
+    }
+    if !matches!(
+        after.table_refs()[0].reference_kind(),
+        BranchTableReferenceKind::Replacement {
+            materialization_layer_index: 0,
+        }
+    ) {
+        return Err(TestkitError::new(
+            "materialized table reachability did not preserve replacement provenance",
+        ));
+    }
+    outcome.reachability_snapshots += 1;
+    outcome.reachability_owned_refs += 1;
+
+    let aggregate_after = BranchReachabilityAggregate::from_snapshots(&[after])
+        .map_err(|err| TestkitError::new(format!("materialized aggregate failed: {err}")))?;
+    let release = BranchReleasePlan::from_removed_refs(
+        child,
+        before.table_refs().to_vec(),
+        &aggregate_after,
+        Some(&SharedTableRegistry::new()),
+    )
+    .map_err(|err| TestkitError::new(format!("materialized release failed: {err}")))?;
+    if release.releasable_tables().len() != 1 || !release.protected_tables().is_empty() {
+        return Err(TestkitError::new(
+            "materialization removed-source release facts drifted",
+        ));
+    }
+    outcome.reachability_aggregate_rebuilds += 1;
+    outcome.materialization_release_cases += 1;
+    outcome.reachability_release_candidates += 1;
+    Ok(())
+}
+
+fn check_branch_clear_reachability_release(
+    script: &[u8],
+    outcome: &mut ReachabilityOutcome,
+) -> Result<(), TestkitError> {
+    let branch = branch_id(script_byte(script, 156));
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "generated-reach-clear-a",
+            vec![storage_row_with(
+                branch,
+                b"generated-reach-clear-a".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                vec![script_byte(script, 157)],
+            )?],
+        )?)
+        .map_err(|err| TestkitError::new(format!("clear table a failed: {err}")))?;
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "generated-reach-clear-b",
+            vec![storage_row_with(
+                branch,
+                b"generated-reach-clear-b".to_vec(),
+                2,
+                20,
+                Timestamp::EPOCH,
+                vec![script_byte(script, 158)],
+            )?],
+        )?)
+        .map_err(|err| TestkitError::new(format!("clear table b failed: {err}")))?;
+    let snapshot = state
+        .reachability_snapshot()
+        .map_err(|err| TestkitError::new(format!("clear reachability failed: {err}")))?;
+    if snapshot.facts().owned_table_count() != 2 || snapshot.protected_table_count() != 2 {
+        return Err(TestkitError::new("clear snapshot reachability drifted"));
+    }
+    outcome.reachability_snapshots += 1;
+    outcome.reachability_owned_refs += 2;
+
+    let release = BranchReleasePlan::from_removed_refs(
+        branch,
+        snapshot.table_refs().to_vec(),
+        &BranchReachabilityAggregate::empty(),
+        Some(&SharedTableRegistry::new()),
+    )
+    .map_err(|err| TestkitError::new(format!("clear release failed: {err}")))?;
+    if release.releasable_tables().len() != 2 || !release.protected_tables().is_empty() {
+        return Err(TestkitError::new("clear release facts drifted"));
+    }
+    outcome.branch_clear_release_cases += 1;
+    outcome.reachability_release_candidates += 2;
+    Ok(())
+}
+
 fn check_branch_local_append_path(
     script: &[u8],
     branch: BranchId,
@@ -2733,8 +5404,25 @@ fn expect_invalid_state<T>(result: Result<T, BranchRuntimeError>) -> Result<(), 
     }
 }
 
+fn expect_invalid_reachability<T>(
+    result: Result<T, BranchRuntimeError>,
+) -> Result<(), TestkitError> {
+    match result {
+        Err(BranchRuntimeError::InvalidReachability { .. }) => Ok(()),
+        Err(err) => Err(TestkitError::new(format!(
+            "invalid reachability returned wrong error: {err}"
+        ))),
+        Ok(_) => Err(TestkitError::new("invalid reachability was accepted")),
+    }
+}
+
 fn branch_id(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+}
+
+fn table_identity(identity: &str) -> Result<TableIdentity, TestkitError> {
+    TableIdentity::new(identity)
+        .map_err(|err| TestkitError::new(format!("table identity failed: {err}")))
 }
 
 fn branch_owned_table(

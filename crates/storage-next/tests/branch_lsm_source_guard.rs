@@ -133,8 +133,9 @@ fn branch_lsm_source_has_no_premature_behavior_entrypoints() {
     // L6C owns branch-local committed-row append and active rotation. L6D owns
     // pinned own-branch read-view methods. L6E owns branch-owned immutable
     // level install methods. L6F owns storage-level fork/inheritance helpers.
-    // Later behavior-owning L6 slices should narrow this guard as they add
-    // materialization, compaction, or snapshot install entrypoints.
+    // L6H owns materialization mechanics. L6I owns reachability snapshots and
+    // shared table registry facts. Later behavior-owning L6 slices should
+    // narrow this guard as they add compaction or snapshot install entrypoints.
     for file in branch_lsm_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read branch LSM source");
         for (line_number, line) in text.lines().enumerate() {
@@ -164,6 +165,9 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
     assert!(contains_forbidden_product_vocabulary("let _: EntityRef;"));
     assert!(contains_forbidden_product_vocabulary(
         "let _: TransactionContext;"
+    ));
+    assert!(contains_forbidden_product_vocabulary(
+        "let _: SegmentRefRegistry;"
     ));
 
     assert!(contains_forbidden_substring(
@@ -213,9 +217,6 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
         "pub(crate) fn read_latest() {}"
     ));
     assert!(contains_premature_behavior_entrypoint(
-        "pub(crate) fn materialize_inherited_layer() {}"
-    ));
-    assert!(contains_premature_behavior_entrypoint(
         "pub(crate) fn install_snapshot_rows() {}"
     ));
     assert!(contains_premature_behavior_entrypoint(
@@ -244,6 +245,8 @@ fn branch_lsm_source_guard_allows_owned_l6_entrypoints() {
         "pub(crate) fn replace_frozen_with_l0_table(&mut self) {}",
         "pub(crate) fn attach_inherited_layers(&mut self) {}",
         "pub(crate) fn fork_into_empty_child(&self) {}",
+        "pub(crate) fn materialize_inherited_layer(&mut self) {}",
+        "pub(crate) fn reachability_snapshot(&self) {}",
         "pub(crate) const fn latest() -> Self",
         "pub(crate) const fn fork_version(self) -> CommitVersion",
     ] {
@@ -324,6 +327,7 @@ fn contains_forbidden_product_vocabulary(line: &str) -> bool {
         "Vector",
         "Search",
         "TransactionContext",
+        "SegmentRefRegistry",
     ]
     .iter()
     .any(|needle| line.contains(needle))
@@ -370,7 +374,6 @@ fn contains_premature_behavior_entrypoint(line: &str) -> bool {
         "fn range_scan",
         "fn rewrite_branch",
         "fn create_inherited",
-        "fn materialize",
         "fn install_immutable",
         "fn install_snapshot",
         "fn compact",
