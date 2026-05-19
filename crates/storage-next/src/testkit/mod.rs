@@ -4,12 +4,14 @@
 
 use std::fmt;
 
+mod branch_lsm;
 mod format_fuzz;
 mod integration_harness;
 mod quarantine_fuzz;
 mod service_fuzz;
 mod table_runtime;
 
+pub use branch_lsm::{check_branch_lsm_scaffold_contract, BranchLsmScaffoldOutcome};
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
 };

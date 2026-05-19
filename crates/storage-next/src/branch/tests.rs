@@ -1,0 +1,1548 @@
+use super::*;
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::table::{
+    sort_table_rows_by_key, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyRange,
+    TablePhysicalKeyBytes, TableRow, TableRuntimeFacts,
+};
+use std::error::Error;
+use std::fmt;
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+#[test]
+fn branch_runtime_config_rejects_unusable_zero_limits() {
+    let default_config = BranchRuntimeConfig::default();
+    assert_eq!(default_config.max_level_count(), 7);
+    assert_eq!(default_config.max_inherited_layers(), 64);
+    assert_eq!(default_config.max_frozen_tables(), 32);
+
+    let explicit = BranchRuntimeConfig::new(3, 2, 8).expect("valid branch config");
+    assert_eq!(explicit.max_level_count(), 3);
+    assert_eq!(explicit.max_inherited_layers(), 2);
+    assert_eq!(explicit.max_frozen_tables(), 8);
+
+    assert_invalid_config_field(BranchRuntimeConfig::new(0, 2, 8), "max_level_count");
+    assert_invalid_config_field(BranchRuntimeConfig::new(3, 0, 8), "max_inherited_layers");
+    assert_invalid_config_field(BranchRuntimeConfig::new(3, 2, 0), "max_frozen_tables");
+}
+
+#[test]
+fn branch_read_bound_preserves_requested_bound() {
+    let version = CommitVersion::new(42);
+    let timestamp = Timestamp::from_micros(1_000);
+
+    assert_eq!(BranchReadBound::latest(), BranchReadBound::Latest);
+    assert_eq!(
+        BranchReadBound::at_version(version),
+        BranchReadBound::AtVersion(version)
+    );
+    assert_eq!(
+        BranchReadBound::at_timestamp(timestamp),
+        BranchReadBound::AtTimestamp(timestamp)
+    );
+}
+
+#[test]
+fn branch_state_facts_accept_empty_shape_and_reject_impossible_shapes() {
+    let test_branch_id = branch_id(1);
+    let empty = BranchStateFacts::empty(test_branch_id);
+
+    assert_eq!(empty.branch_id(), test_branch_id);
+    assert_eq!(empty.active_rows(), 0);
+    assert_eq!(empty.frozen_table_count(), 0);
+    assert_eq!(empty.owned_table_count(), 0);
+    assert_eq!(empty.inherited_layer_count(), 0);
+    assert_eq!(empty.max_commit_version(), None);
+    assert_eq!(empty.timestamp_min(), None);
+    assert_eq!(empty.timestamp_max(), None);
+
+    let populated = BranchStateFacts::new(
+        test_branch_id,
+        1,
+        2,
+        3,
+        4,
+        Some(CommitVersion::new(9)),
+        Some(Timestamp::from_micros(10)),
+        Some(Timestamp::from_micros(11)),
+    )
+    .expect("populated branch facts");
+    assert_eq!(populated.active_rows(), 1);
+    assert_eq!(populated.max_commit_version(), Some(CommitVersion::new(9)));
+
+    assert!(matches!(
+        BranchStateFacts::new(
+            test_branch_id,
+            0,
+            0,
+            0,
+            0,
+            Some(CommitVersion::new(1)),
+            None,
+            None,
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert!(matches!(
+        BranchStateFacts::new(
+            test_branch_id,
+            0,
+            0,
+            0,
+            0,
+            None,
+            Some(Timestamp::from_micros(5)),
+            Some(Timestamp::from_micros(5)),
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert!(matches!(
+        BranchStateFacts::new(
+            test_branch_id,
+            1,
+            0,
+            0,
+            0,
+            Some(CommitVersion::new(1)),
+            Some(Timestamp::from_micros(5)),
+            Some(Timestamp::from_micros(4)),
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert!(matches!(
+        BranchStateFacts::new(
+            test_branch_id,
+            1,
+            0,
+            0,
+            0,
+            Some(CommitVersion::new(1)),
+            Some(Timestamp::from_micros(5)),
+            None,
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+}
+
+#[test]
+fn branch_descriptors_preserve_storage_owned_facts() {
+    let test_branch_id = branch_id(2);
+    let state_facts = BranchStateFacts::empty(test_branch_id);
+    let state = BranchStateDescriptor::new(test_branch_id, state_facts).expect("state descriptor");
+    let view = BranchViewDescriptor::new(test_branch_id, state_facts).expect("view descriptor");
+
+    assert_eq!(state.branch_id(), test_branch_id);
+    assert_eq!(state.facts(), state_facts);
+    assert_eq!(view.branch_id(), test_branch_id);
+    assert_eq!(view.facts(), state_facts);
+
+    let table_facts = table_facts("branch-table");
+    let table = BranchTableDescriptor::new(
+        TableIdentity::new("branch-table").expect("identity"),
+        table_facts.clone(),
+        BranchLevel::new(2),
+    )
+    .expect("table descriptor");
+    assert_eq!(table.identity().as_str(), "branch-table");
+    assert_eq!(table.facts(), &table_facts);
+    assert_eq!(table.level().raw(), 2);
+    assert_eq!(table, table.clone());
+
+    let inherited = InheritedLayerDescriptor::new(
+        branch_id(3),
+        CommitVersion::new(11),
+        InheritedLayerStatus::Active,
+        4,
+    );
+    assert_eq!(inherited.source_branch_id(), branch_id(3));
+    assert_eq!(inherited.fork_version(), CommitVersion::new(11));
+    assert_eq!(inherited.status(), InheritedLayerStatus::Active);
+    assert_eq!(inherited.table_count(), 4);
+    let statuses = [
+        InheritedLayerStatus::Active,
+        InheritedLayerStatus::Materializing,
+        InheritedLayerStatus::Materialized,
+        InheritedLayerStatus::Unavailable,
+    ];
+    assert!(statuses.contains(&InheritedLayerStatus::Materializing));
+    assert!(statuses.contains(&InheritedLayerStatus::Materialized));
+    assert!(statuses.contains(&InheritedLayerStatus::Unavailable));
+
+    let reachability = BranchReachabilityFacts::new(test_branch_id, 3, 4);
+    assert_eq!(reachability.branch_id(), test_branch_id);
+    assert_eq!(reachability.owned_table_count(), 3);
+    assert_eq!(reachability.inherited_table_count(), 4);
+    assert_eq!(
+        reachability,
+        BranchReachabilityFacts::new(test_branch_id, 3, 4)
+    );
+    assert_ne!(
+        reachability,
+        BranchReachabilityFacts::new(test_branch_id, 4, 3)
+    );
+
+    for debug_text in [
+        format!("{state:?}"),
+        format!("{view:?}"),
+        format!("{table:?}"),
+        format!("{inherited:?}"),
+        format!("{reachability:?}"),
+    ] {
+        assert!(!debug_text.contains("secret-payload"));
+    }
+
+    assert!(matches!(
+        BranchStateDescriptor::new(branch_id(42), state_facts),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert!(matches!(
+        BranchViewDescriptor::new(branch_id(42), state_facts),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert!(matches!(
+        BranchTableDescriptor::new(
+            TableIdentity::new("wrong-table").expect("identity"),
+            table_facts,
+            BranchLevel::new(2),
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+}
+
+#[test]
+fn branch_row_result_shells_preserve_row_and_source() {
+    let row = storage_row(branch_id(4), 17);
+    let visible = BranchVisibleRow::new(row.clone(), BranchRowSource::Active);
+    assert_eq!(visible.row(), &row);
+    assert_eq!(visible.source(), BranchRowSource::Active);
+
+    let source = BranchRowSource::OwnedTable {
+        level: BranchLevel::ZERO,
+        table_index: 2,
+    };
+    let history = BranchHistoryRow::new(row.clone(), source);
+    assert_eq!(history.row(), &row);
+    assert_eq!(history.source(), source);
+
+    let inherited_source = BranchRowSource::Inherited {
+        source_branch_id: branch_id(5),
+        layer_index: 1,
+    };
+    let inherited = BranchVisibleRow::new(row, inherited_source);
+    assert_eq!(inherited.source(), inherited_source);
+
+    let frozen_source = BranchRowSource::Frozen { index: 3 };
+    let frozen = BranchHistoryRow::new(storage_row(branch_id(4), 18), frozen_source);
+    assert_eq!(frozen.source(), frozen_source);
+}
+
+#[test]
+fn branch_row_identity_accepts_matching_rows_and_rejects_mismatches() {
+    let expected = branch_id(10);
+    let other = branch_id(11);
+    let row = storage_row(expected, 21);
+
+    assert!(row_matches_branch(expected, &row));
+    assert!(!row_matches_branch(other, &row));
+    require_physical_key_branch(expected, row.physical_key()).expect("matching key");
+
+    let identity: BranchRowIdentity =
+        require_row_branch(expected, &row).expect("matching row identity");
+    assert_eq!(identity.branch_id(), expected);
+    assert_eq!(identity.physical_key(), row.physical_key());
+    assert_eq!(identity.commit_version(), CommitVersion::new(21));
+    assert_eq!(identity.commit_timestamp(), Timestamp::from_micros(21));
+
+    let mismatch = require_row_branch(other, &row).expect_err("branch mismatch");
+    assert!(matches!(
+        mismatch,
+        BranchRuntimeError::InvalidBranchRow { .. }
+    ));
+    assert!(!mismatch.to_string().contains("row-bytes"));
+}
+
+#[test]
+fn branch_physical_key_validation_accepts_opaque_edge_key_shapes() {
+    let zero_branch = BranchId::from_bytes([0x00; BranchId::BYTE_LEN]);
+    let high_branch = BranchId::from_bytes([0xff; BranchId::BYTE_LEN]);
+    let mixed_branch = BranchId::from_bytes([
+        0x00, 0x01, 0x02, 0x03, 0x80, 0x81, 0xfe, 0xff, 0x10, 0x20, 0x30, 0x40, 0x55, 0xaa, 0x7e,
+        0xe7,
+    ]);
+    let keys = [
+        physical_key_with(
+            zero_branch,
+            "system",
+            StorageSpaceId::COMMIT_TIMELINE,
+            Vec::new(),
+        ),
+        physical_key_with(
+            high_branch,
+            "default-prefix",
+            StorageSpaceId::engine(0xff).expect("engine storage space"),
+            vec![0x00, 0x00, 0xff],
+        ),
+        physical_key_with(
+            mixed_branch,
+            "default",
+            StorageSpaceId::engine(0x20).expect("engine storage space"),
+            vec![0x80, 0x00, 0x81, 0xfe],
+        ),
+    ];
+
+    for key in &keys {
+        require_physical_key_branch(key.branch_id(), key).expect("opaque branch key accepted");
+        let same_branch = rewrite_physical_key_branch(key, key.branch_id())
+            .expect("same-branch physical key rewrite");
+        assert_eq!(same_branch, *key);
+    }
+
+    let rewritten =
+        rewrite_physical_key_branch(&keys[1], mixed_branch).expect("physical key rewrite");
+    assert_eq!(rewritten.branch_id(), mixed_branch);
+    assert_eq!(rewritten.space(), "default-prefix");
+    assert_eq!(
+        rewritten.storage_space_id(),
+        StorageSpaceId::engine(0xff).expect("engine storage space")
+    );
+    assert_eq!(rewritten.user_key(), &[0x00, 0x00, 0xff]);
+    assert_eq!(
+        rewrite_physical_key_branch(&rewritten, high_branch).expect("round trip key"),
+        keys[1],
+    );
+    assert_eq!(
+        &TablePhysicalKeyBytes::from_physical_key(&rewritten).as_slice()[..BranchId::BYTE_LEN],
+        mixed_branch.as_bytes()
+    );
+
+    let mismatch =
+        require_physical_key_branch(high_branch, &keys[0]).expect_err("wrong branch key");
+    assert!(matches!(
+        mismatch,
+        BranchRuntimeError::InvalidBranchRow { .. }
+    ));
+    let text = mismatch.to_string();
+    assert!(!text.contains("main"));
+    assert!(!text.contains("default-prefix"));
+    assert!(!text.contains("row-bytes"));
+}
+
+#[test]
+fn branch_row_validation_accepts_put_tombstone_and_edge_rows_without_policy() {
+    let branch = branch_id(20);
+    let other = branch_id(21);
+    let put = StorageRow::put(
+        physical_key_with(
+            branch,
+            "system",
+            StorageSpaceId::COMMIT_TIMELINE,
+            Vec::new(),
+        ),
+        CommitVersion::ZERO,
+        Timestamp::EPOCH,
+        Timestamp::from_micros(1),
+        Vec::new(),
+    );
+    let put_identity = require_row_branch(branch, &put).expect("edge put row");
+    assert_eq!(put_identity.branch_id(), branch);
+    assert_eq!(put_identity.physical_key(), put.physical_key());
+    assert_eq!(put_identity.commit_version(), CommitVersion::ZERO);
+    assert_eq!(put_identity.commit_timestamp(), Timestamp::EPOCH);
+    assert_eq!(put.expires_at(), Timestamp::from_micros(1));
+    assert!(put.value().is_empty());
+    assert!(!put.is_tombstone());
+
+    let tombstone = StorageRow::tombstone(
+        physical_key_with(
+            branch,
+            "default",
+            StorageSpaceId::engine(0x21).expect("engine storage space"),
+            vec![0x00, 0xff],
+        ),
+        CommitVersion::MAX,
+        Timestamp::MAX,
+    );
+    let tombstone_identity = require_row_branch(branch, &tombstone).expect("tombstone row");
+    assert_eq!(tombstone_identity.physical_key(), tombstone.physical_key());
+    assert_eq!(tombstone_identity.commit_version(), CommitVersion::MAX);
+    assert_eq!(tombstone_identity.commit_timestamp(), Timestamp::MAX);
+    assert!(tombstone.is_tombstone());
+    assert!(tombstone.value().is_empty());
+
+    let wrong_put = StorageRow::put(
+        physical_key(other, b"wrong-put".to_vec()),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1),
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let wrong_tombstone = tombstone_row(other, b"wrong-delete".to_vec(), 2, 2);
+    for row in [&wrong_put, &wrong_tombstone] {
+        let error = require_row_branch(branch, row).expect_err("wrong-branch row rejected");
+        assert!(matches!(error, BranchRuntimeError::InvalidBranchRow { .. }));
+        assert!(!error.to_string().contains("secret-payload"));
+    }
+}
+
+#[test]
+fn branch_rewrite_preserves_put_and_tombstone_row_facts() {
+    let source = branch_id(12);
+    let target = branch_id(13);
+    let put = storage_row_with(
+        source,
+        b"\x00user\x00\x00key".to_vec(),
+        31,
+        310,
+        Timestamp::from_micros(999),
+        b"secret-payload".to_vec(),
+    );
+
+    let rewritten_key =
+        rewrite_physical_key_branch(put.physical_key(), target).expect("rewrite key");
+    assert_eq!(rewritten_key.branch_id(), target);
+    assert_eq!(rewritten_key.space(), put.physical_key().space());
+    assert_eq!(
+        rewritten_key.storage_space_id(),
+        put.physical_key().storage_space_id()
+    );
+    assert_eq!(rewritten_key.user_key(), put.physical_key().user_key());
+
+    let rewritten = rewrite_row_branch(&put, source, target).expect("rewrite put");
+    assert_eq!(rewritten.physical_key().branch_id(), target);
+    assert_eq!(rewritten.physical_key().space(), put.physical_key().space());
+    assert_eq!(
+        rewritten.physical_key().user_key(),
+        put.physical_key().user_key()
+    );
+    assert_eq!(rewritten.commit_version(), put.commit_version());
+    assert_eq!(rewritten.commit_timestamp(), put.commit_timestamp());
+    assert_eq!(rewritten.expires_at(), put.expires_at());
+    assert_eq!(rewritten.value(), put.value());
+    assert!(!rewritten.is_tombstone());
+
+    let round_trip = rewrite_row_branch(&rewritten, target, source).expect("round trip");
+    assert_eq!(round_trip, put);
+    assert_eq!(
+        rewrite_row_branch(&put, source, source).expect("same branch rewrite"),
+        put
+    );
+    assert!(matches!(
+        rewrite_row_branch(&put, target, source),
+        Err(BranchRuntimeError::InvalidBranchRow { .. })
+    ));
+
+    let tombstone = tombstone_row(source, b"deleted".to_vec(), 44, 440);
+    let rewritten_tombstone =
+        rewrite_row_branch(&tombstone, source, target).expect("rewrite tombstone");
+    assert_eq!(rewritten_tombstone.physical_key().branch_id(), target);
+    assert_eq!(
+        rewritten_tombstone.physical_key().user_key(),
+        tombstone.physical_key().user_key()
+    );
+    assert_eq!(rewritten_tombstone.commit_version(), CommitVersion::new(44));
+    assert_eq!(
+        rewritten_tombstone.commit_timestamp(),
+        Timestamp::from_micros(440)
+    );
+    assert!(rewritten_tombstone.is_tombstone());
+    assert!(rewritten_tombstone.value().is_empty());
+}
+
+#[test]
+fn branch_rewrite_preserves_empty_put_values_and_storage_owned_keys() {
+    let source = branch_id(22);
+    let target = branch_id(23);
+    let put = StorageRow::put(
+        physical_key_with(
+            source,
+            "system",
+            StorageSpaceId::COMMIT_TIMELINE,
+            Vec::new(),
+        ),
+        CommitVersion::new(9),
+        Timestamp::from_micros(90),
+        Timestamp::from_micros(100),
+        Vec::new(),
+    );
+
+    let rewritten = rewrite_row_branch(&put, source, target).expect("rewrite empty put");
+    assert_eq!(rewritten.physical_key().branch_id(), target);
+    assert_eq!(rewritten.physical_key().space(), "system");
+    assert_eq!(
+        rewritten.physical_key().storage_space_id(),
+        StorageSpaceId::COMMIT_TIMELINE
+    );
+    assert!(rewritten.physical_key().user_key().is_empty());
+    assert_eq!(rewritten.commit_version(), put.commit_version());
+    assert_eq!(rewritten.commit_timestamp(), put.commit_timestamp());
+    assert_eq!(rewritten.expires_at(), put.expires_at());
+    assert!(rewritten.value().is_empty());
+    assert!(!rewritten.is_tombstone());
+}
+
+#[test]
+fn branch_rewrite_groups_inherited_rows_with_child_local_encoded_keys() {
+    let source = branch_id(16);
+    let target = branch_id(17);
+    let user_key = b"shared-logical-key".to_vec();
+    let inherited = storage_row_with(
+        source,
+        user_key.clone(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"inherited".to_vec(),
+    );
+    let child_local =
+        storage_row_with(target, user_key, 5, 50, Timestamp::EPOCH, b"child".to_vec());
+
+    let rewritten = rewrite_row_branch(&inherited, source, target).expect("rewrite inherited row");
+    let rewritten_prefix = TablePhysicalKeyBytes::from_row(&rewritten);
+    let child_prefix = TablePhysicalKeyBytes::from_row(&child_local);
+    assert_eq!(rewritten_prefix.as_slice(), child_prefix.as_slice());
+    assert_eq!(
+        &rewritten_prefix.as_slice()[..BranchId::BYTE_LEN],
+        target.as_bytes()
+    );
+
+    let mut rows = vec![TableRow::new(child_local), TableRow::new(rewritten)];
+    sort_table_rows_by_key(&mut rows);
+    assert_eq!(rows[0].commit_version(), CommitVersion::new(7));
+    assert_eq!(rows[1].commit_version(), CommitVersion::new(5));
+    assert_eq!(
+        TablePhysicalKeyBytes::from_row(rows[0].row()).as_slice(),
+        TablePhysicalKeyBytes::from_row(rows[1].row()).as_slice()
+    );
+}
+
+#[test]
+fn branch_effective_read_bounds_apply_inclusive_own_and_inherited_caps() {
+    let row = storage_row_with(
+        branch_id(14),
+        b"bounded".to_vec(),
+        50,
+        500,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+
+    let latest = BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest());
+    assert_eq!(latest.max_commit_version(), None);
+    assert_eq!(latest.max_commit_timestamp(), None);
+    assert!(latest.matches_row(&row).matches_effective_bound());
+
+    let exact_version = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(
+        CommitVersion::new(50),
+    ));
+    assert!(exact_version.matches_row(&row).matches_effective_bound());
+    let before_version = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(
+        CommitVersion::new(49),
+    ));
+    assert!(!before_version.matches_row(&row).version_in_bound());
+
+    let exact_timestamp = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
+        Timestamp::from_micros(500),
+    ));
+    assert!(exact_timestamp.matches_row(&row).matches_effective_bound());
+    let before_timestamp = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
+        Timestamp::from_micros(499),
+    ));
+    assert!(!before_timestamp.matches_row(&row).timestamp_in_bound());
+
+    let inherited_latest = BranchEffectiveReadBound::for_inherited_layer(
+        BranchReadBound::latest(),
+        CommitVersion::new(50),
+    );
+    assert_eq!(
+        inherited_latest.max_commit_version(),
+        Some(CommitVersion::new(50))
+    );
+    assert!(inherited_latest.matches_row(&row).matches_effective_bound());
+
+    let inherited_timestamp = BranchEffectiveReadBound::for_inherited_layer(
+        BranchReadBound::at_timestamp(Timestamp::from_micros(500)),
+        CommitVersion::new(49),
+    );
+    let inherited_match: BranchRowBoundMatch = inherited_timestamp.matches_row(&row);
+    assert_eq!(
+        inherited_timestamp.max_commit_version(),
+        Some(CommitVersion::new(49))
+    );
+    assert_eq!(
+        inherited_timestamp.max_commit_timestamp(),
+        Some(Timestamp::from_micros(500))
+    );
+    assert!(!inherited_match.version_in_bound());
+    assert!(inherited_match.timestamp_in_bound());
+    assert!(!inherited_match.matches_effective_bound());
+
+    let inherited_version = BranchEffectiveReadBound::for_inherited_layer(
+        BranchReadBound::at_version(CommitVersion::new(70)),
+        CommitVersion::new(55),
+    );
+    assert_eq!(
+        inherited_version.max_commit_version(),
+        Some(CommitVersion::new(55))
+    );
+}
+
+#[test]
+fn branch_own_bounds_cover_zero_epoch_and_below_equal_above_edges() {
+    let branch = branch_id(24);
+    let zero_row = storage_row_with(
+        branch,
+        b"zero".to_vec(),
+        0,
+        0,
+        Timestamp::EPOCH,
+        b"zero".to_vec(),
+    );
+    let later_row = storage_row_with(
+        branch,
+        b"later".to_vec(),
+        1,
+        1,
+        Timestamp::EPOCH,
+        b"later".to_vec(),
+    );
+
+    let latest = BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest());
+    assert!(latest.matches_row(&zero_row).matches_effective_bound());
+    assert!(latest.matches_row(&later_row).matches_effective_bound());
+
+    let version_zero =
+        BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(CommitVersion::ZERO));
+    assert_eq!(version_zero.max_commit_version(), Some(CommitVersion::ZERO));
+    assert_eq!(version_zero.max_commit_timestamp(), None);
+    assert!(version_zero
+        .matches_row(&zero_row)
+        .matches_effective_bound());
+    assert!(!version_zero.matches_row(&later_row).version_in_bound());
+
+    let version_one = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(
+        CommitVersion::new(1),
+    ));
+    assert!(version_one.matches_row(&zero_row).version_in_bound());
+    assert!(version_one.matches_row(&later_row).version_in_bound());
+
+    let timestamp_epoch =
+        BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(Timestamp::EPOCH));
+    assert_eq!(timestamp_epoch.max_commit_version(), None);
+    assert_eq!(
+        timestamp_epoch.max_commit_timestamp(),
+        Some(Timestamp::EPOCH)
+    );
+    assert!(timestamp_epoch
+        .matches_row(&zero_row)
+        .matches_effective_bound());
+    assert!(!timestamp_epoch.matches_row(&later_row).timestamp_in_bound());
+
+    let timestamp_one = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
+        Timestamp::from_micros(1),
+    ));
+    assert!(timestamp_one.matches_row(&zero_row).timestamp_in_bound());
+    assert!(timestamp_one.matches_row(&later_row).timestamp_in_bound());
+}
+
+#[test]
+fn branch_inherited_bounds_cover_fork_edges_and_combined_timestamp_match() {
+    let branch = branch_id(25);
+    let fork_version = CommitVersion::new(4);
+    let row_at_fork = storage_row_with(
+        branch,
+        b"at-fork".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"at".to_vec(),
+    );
+    let row_after_fork = storage_row_with(
+        branch,
+        b"after-fork".to_vec(),
+        5,
+        40,
+        Timestamp::EPOCH,
+        b"after".to_vec(),
+    );
+    let row_after_timestamp = storage_row_with(
+        branch,
+        b"after-time".to_vec(),
+        3,
+        41,
+        Timestamp::EPOCH,
+        b"after-time".to_vec(),
+    );
+
+    let latest =
+        BranchEffectiveReadBound::for_inherited_layer(BranchReadBound::latest(), fork_version);
+    assert_eq!(latest.max_commit_version(), Some(fork_version));
+    assert!(latest.matches_row(&row_at_fork).matches_effective_bound());
+    assert!(!latest.matches_row(&row_after_fork).version_in_bound());
+
+    for (requested, expected) in [
+        (CommitVersion::new(3), CommitVersion::new(3)),
+        (CommitVersion::new(4), CommitVersion::new(4)),
+        (CommitVersion::new(5), CommitVersion::new(4)),
+    ] {
+        let bound = BranchEffectiveReadBound::for_inherited_layer(
+            BranchReadBound::at_version(requested),
+            fork_version,
+        );
+        assert_eq!(bound.max_commit_version(), Some(expected));
+        assert_eq!(bound.max_commit_timestamp(), None);
+    }
+
+    let timestamp_bound = BranchEffectiveReadBound::for_inherited_layer(
+        BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+        fork_version,
+    );
+    assert_eq!(timestamp_bound.max_commit_version(), Some(fork_version));
+    assert_eq!(
+        timestamp_bound.max_commit_timestamp(),
+        Some(Timestamp::from_micros(40))
+    );
+    assert!(timestamp_bound
+        .matches_row(&row_at_fork)
+        .matches_effective_bound());
+
+    let after_fork_match = timestamp_bound.matches_row(&row_after_fork);
+    assert!(!after_fork_match.version_in_bound());
+    assert!(after_fork_match.timestamp_in_bound());
+    assert!(!after_fork_match.matches_effective_bound());
+
+    let after_timestamp_match = timestamp_bound.matches_row(&row_after_timestamp);
+    assert!(after_timestamp_match.version_in_bound());
+    assert!(!after_timestamp_match.timestamp_in_bound());
+    assert!(!after_timestamp_match.matches_effective_bound());
+}
+
+#[test]
+fn branch_effective_bounds_filter_row_chains_without_collapsing_versions() {
+    let branch = branch_id(18);
+    let user_key = b"row-chain".to_vec();
+    let mut rows = vec![
+        TableRow::new(storage_row_with(
+            branch,
+            user_key.clone(),
+            3,
+            30,
+            Timestamp::from_micros(25),
+            b"expired-looking".to_vec(),
+        )),
+        TableRow::new(storage_row_with(
+            branch,
+            user_key.clone(),
+            5,
+            50,
+            Timestamp::EPOCH,
+            b"newest".to_vec(),
+        )),
+        TableRow::new(tombstone_row(branch, user_key.clone(), 4, 40)),
+        TableRow::new(storage_row_with(
+            branch,
+            user_key,
+            2,
+            60,
+            Timestamp::EPOCH,
+            b"timestamp-late".to_vec(),
+        )),
+    ];
+    sort_table_rows_by_key(&mut rows);
+    assert_eq!(row_versions(&rows), vec![5, 4, 3, 2]);
+
+    let version_bound = BranchEffectiveReadBound::new(Some(CommitVersion::new(4)), None);
+    assert_eq!(matching_versions(&rows, version_bound), vec![4, 3, 2]);
+
+    let timestamp_bound = BranchEffectiveReadBound::new(None, Some(Timestamp::from_micros(40)));
+    assert_eq!(matching_versions(&rows, timestamp_bound), vec![4, 3]);
+
+    let combined_bound = BranchEffectiveReadBound::new(
+        Some(CommitVersion::new(4)),
+        Some(Timestamp::from_micros(40)),
+    );
+    let combined = matching_versions(&rows, combined_bound);
+    assert_eq!(combined, vec![4, 3]);
+    assert!(
+        combined.len() > 1,
+        "L6B candidate filtering must not collapse row history into one visible row",
+    );
+
+    let candidates = rows
+        .iter()
+        .map(|row| {
+            BranchRowCandidateFacts::from_row(row.row(), BranchRowSource::Active, combined_bound)
+        })
+        .filter(|candidate| candidate.bound_match().matches_effective_bound())
+        .collect::<Vec<_>>();
+    assert!(candidates.iter().any(BranchRowCandidateFacts::is_tombstone));
+    assert!(candidates
+        .iter()
+        .any(|candidate| candidate.expires_at() == Timestamp::from_micros(25)));
+
+    let wrong_branch = storage_row(branch_id(19), 4);
+    assert!(matches!(
+        require_row_branch(branch, &wrong_branch),
+        Err(BranchRuntimeError::InvalidBranchRow { .. })
+    ));
+}
+
+#[test]
+fn branch_candidate_facts_preserve_tombstone_and_expiry_without_visibility_policy() {
+    let branch = branch_id(15);
+    let expired_looking = storage_row_with(
+        branch,
+        b"expired".to_vec(),
+        10,
+        100,
+        Timestamp::from_micros(90),
+        b"value".to_vec(),
+    );
+    let bound = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
+        Timestamp::from_micros(100),
+    ));
+    let facts = BranchRowCandidateFacts::from_row(&expired_looking, BranchRowSource::Active, bound);
+    assert_eq!(facts.source(), BranchRowSource::Active);
+    assert_eq!(facts.physical_key(), expired_looking.physical_key());
+    assert_eq!(facts.commit_version(), CommitVersion::new(10));
+    assert_eq!(facts.commit_timestamp(), Timestamp::from_micros(100));
+    assert_eq!(facts.expires_at(), Timestamp::from_micros(90));
+    assert!(!facts.is_tombstone());
+    assert!(facts.bound_match().matches_effective_bound());
+
+    let tombstone = tombstone_row(branch, b"deleted".to_vec(), 11, 100);
+    let tombstone_facts =
+        BranchRowCandidateFacts::from_row(&tombstone, BranchRowSource::Frozen { index: 0 }, bound);
+    assert_eq!(
+        tombstone_facts.source(),
+        BranchRowSource::Frozen { index: 0 }
+    );
+    assert!(tombstone_facts.is_tombstone());
+    assert!(tombstone_facts.bound_match().matches_effective_bound());
+}
+
+#[test]
+fn branch_candidate_bound_match_records_each_axis_independently() {
+    let row = storage_row_with(
+        branch_id(26),
+        b"axis".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+
+    let version_miss = BranchRowCandidateFacts::from_row(
+        &row,
+        BranchRowSource::Active,
+        BranchEffectiveReadBound::new(
+            Some(CommitVersion::new(4)),
+            Some(Timestamp::from_micros(50)),
+        ),
+    );
+    assert!(!version_miss.bound_match().version_in_bound());
+    assert!(version_miss.bound_match().timestamp_in_bound());
+    assert!(!version_miss.bound_match().matches_effective_bound());
+
+    let timestamp_miss = BranchRowCandidateFacts::from_row(
+        &row,
+        BranchRowSource::Active,
+        BranchEffectiveReadBound::new(
+            Some(CommitVersion::new(5)),
+            Some(Timestamp::from_micros(49)),
+        ),
+    );
+    assert!(timestamp_miss.bound_match().version_in_bound());
+    assert!(!timestamp_miss.bound_match().timestamp_in_bound());
+    assert!(!timestamp_miss.bound_match().matches_effective_bound());
+
+    let both_miss = BranchRowCandidateFacts::from_row(
+        &row,
+        BranchRowSource::Active,
+        BranchEffectiveReadBound::new(
+            Some(CommitVersion::new(4)),
+            Some(Timestamp::from_micros(49)),
+        ),
+    );
+    assert!(!both_miss.bound_match().version_in_bound());
+    assert!(!both_miss.bound_match().timestamp_in_bound());
+    assert!(!both_miss.bound_match().matches_effective_bound());
+
+    let latest = BranchRowCandidateFacts::from_row(
+        &row,
+        BranchRowSource::Active,
+        BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest()),
+    );
+    assert!(latest.bound_match().matches_effective_bound());
+}
+
+#[test]
+fn branch_local_state_constructs_empty_active_state() {
+    let branch = branch_id(30);
+    let config = BranchRuntimeConfig::new(3, 4, 2).expect("valid config");
+    let state = BranchLocalState::new(branch, config).expect("branch-local state");
+
+    assert_eq!(state.branch_id(), branch);
+    assert_eq!(state.config(), config);
+    assert!(state.is_empty());
+    assert_eq!(state.active_row_count(), 0);
+    assert!(state.active().is_empty());
+    assert!(state.frozen().is_empty());
+    assert_eq!(state.frozen_table_count(), 0);
+    assert_eq!(state.max_commit_version(), None);
+    assert_eq!(state.timestamp_min(), None);
+    assert_eq!(state.timestamp_max(), None);
+    assert_eq!(state.put_rows(), 0);
+    assert_eq!(state.tombstone_rows(), 0);
+    assert_eq!(
+        state.facts().expect("facts"),
+        BranchStateFacts::empty(branch)
+    );
+
+    let default_state = BranchLocalState::empty(branch);
+    assert_eq!(default_state.branch_id(), branch);
+    assert!(default_state.is_empty());
+}
+
+#[test]
+fn branch_local_state_appends_puts_tombstones_and_preserves_row_facts() {
+    let branch = branch_id(31);
+    let mut state = BranchLocalState::empty(branch);
+    let put = storage_row_with(
+        branch,
+        b"same-logical-key".to_vec(),
+        5,
+        50,
+        Timestamp::from_micros(500),
+        b"secret-payload".to_vec(),
+    );
+    let older_same_key = storage_row_with(
+        branch,
+        b"same-logical-key".to_vec(),
+        4,
+        40,
+        Timestamp::from_micros(40),
+        Vec::new(),
+    );
+    let same_version_other_key = storage_row_with(
+        branch,
+        b"other-logical-key".to_vec(),
+        5,
+        60,
+        Timestamp::EPOCH,
+        b"other".to_vec(),
+    );
+    let tombstone = tombstone_row(branch, b"deleted".to_vec(), 9, 30);
+
+    let put_outcome: BranchAppendOutcome = state
+        .append_committed_row(put.clone())
+        .expect("append put row");
+    assert_eq!(put_outcome.branch_id(), branch);
+    assert_eq!(put_outcome.commit_version(), CommitVersion::new(5));
+    assert_eq!(put_outcome.commit_timestamp(), Timestamp::from_micros(50));
+    assert!(!put_outcome.is_tombstone());
+    assert_eq!(put_outcome.active_rows(), 1);
+    assert!(put_outcome.approximate_active_bytes() > 0);
+    assert_eq!(
+        state
+            .active()
+            .get(&TableInternalKeyBytes::from_row(&put))
+            .expect("stored put")
+            .row(),
+        &put
+    );
+
+    state
+        .append_committed_row(older_same_key.clone())
+        .expect("same physical key at different version");
+    state
+        .append_committed_row(same_version_other_key.clone())
+        .expect("different physical key at same version");
+    let tombstone_outcome = state
+        .append_committed_row(tombstone.clone())
+        .expect("append tombstone row");
+    assert!(tombstone_outcome.is_tombstone());
+    assert_eq!(state.active_row_count(), 4);
+    assert_eq!(state.put_rows(), 3);
+    assert_eq!(state.tombstone_rows(), 1);
+    for row in [&older_same_key, &same_version_other_key, &tombstone] {
+        assert_eq!(
+            state
+                .active()
+                .get(&TableInternalKeyBytes::from_row(row))
+                .expect("stored row")
+                .row(),
+            row
+        );
+    }
+
+    let facts = state.facts().expect("facts");
+    assert_eq!(facts.active_rows(), 4);
+    assert_eq!(facts.frozen_table_count(), 0);
+    assert_eq!(facts.owned_table_count(), 0);
+    assert_eq!(facts.inherited_layer_count(), 0);
+    assert_eq!(facts.max_commit_version(), Some(CommitVersion::new(9)));
+    assert_eq!(facts.timestamp_min(), Some(Timestamp::from_micros(30)));
+    assert_eq!(facts.timestamp_max(), Some(Timestamp::from_micros(60)));
+}
+
+#[test]
+fn branch_local_state_tracks_zero_max_version_and_timestamp_edges() {
+    let branch = branch_id(37);
+    let mut state = BranchLocalState::empty(branch);
+    let zero = storage_row_with(branch, b"zero".to_vec(), 0, 0, Timestamp::EPOCH, Vec::new());
+    let max = storage_row_with(
+        branch,
+        b"max".to_vec(),
+        u64::MAX,
+        u64::MAX,
+        Timestamp::MAX,
+        b"max".to_vec(),
+    );
+
+    state
+        .append_committed_row(zero)
+        .expect("append zero edge row");
+    let zero_facts = state.facts().expect("zero facts");
+    assert_eq!(zero_facts.max_commit_version(), Some(CommitVersion::ZERO));
+    assert_eq!(zero_facts.timestamp_min(), Some(Timestamp::EPOCH));
+    assert_eq!(zero_facts.timestamp_max(), Some(Timestamp::EPOCH));
+
+    state
+        .append_committed_row(max)
+        .expect("append max edge row");
+    let max_facts = state.facts().expect("max facts");
+    assert_eq!(max_facts.max_commit_version(), Some(CommitVersion::MAX));
+    assert_eq!(max_facts.timestamp_min(), Some(Timestamp::EPOCH));
+    assert_eq!(max_facts.timestamp_max(), Some(Timestamp::MAX));
+
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated {
+            frozen_index: 0,
+            frozen_rows: 2,
+            frozen_tables: 1,
+        }
+    ));
+    let rotated_facts = state.facts().expect("rotated facts");
+    assert_eq!(rotated_facts.active_rows(), 0);
+    assert_eq!(rotated_facts.frozen_table_count(), 1);
+    assert_eq!(rotated_facts.max_commit_version(), Some(CommitVersion::MAX));
+    assert_eq!(rotated_facts.timestamp_min(), Some(Timestamp::EPOCH));
+    assert_eq!(rotated_facts.timestamp_max(), Some(Timestamp::MAX));
+}
+
+#[test]
+fn branch_local_state_accepts_opaque_branch_ids_and_key_shapes() {
+    let branch_ids = [
+        BranchId::from_bytes([0x00; BranchId::BYTE_LEN]),
+        BranchId::from_bytes([0xff; BranchId::BYTE_LEN]),
+        BranchId::from_bytes([
+            0x00, 0x01, 0x02, 0x03, 0x80, 0x81, 0xfe, 0xff, 0x10, 0x20, 0x30, 0x40, 0x55, 0xaa,
+            0x7e, 0xe7,
+        ]),
+    ];
+
+    for branch in branch_ids {
+        let mut state = BranchLocalState::empty(branch);
+        let rows = [
+            StorageRow::put(
+                physical_key_with(
+                    branch,
+                    "system",
+                    StorageSpaceId::COMMIT_TIMELINE,
+                    Vec::new(),
+                ),
+                CommitVersion::new(1),
+                Timestamp::from_micros(100),
+                Timestamp::EPOCH,
+                Vec::new(),
+            ),
+            storage_row_with(
+                branch,
+                vec![0x00, 0x00, 0xff],
+                2,
+                100,
+                Timestamp::from_micros(1),
+                b"nul-key".to_vec(),
+            ),
+            storage_row_with(
+                branch,
+                vec![0x80, 0x00, 0xfe, 0xff],
+                3,
+                90,
+                Timestamp::EPOCH,
+                b"high-bit".to_vec(),
+            ),
+            StorageRow::put(
+                physical_key_with(
+                    branch,
+                    "default-prefix",
+                    StorageSpaceId::engine(0xff).expect("engine storage space"),
+                    b"shared-prefix-key".to_vec(),
+                ),
+                CommitVersion::new(4),
+                Timestamp::from_micros(110),
+                Timestamp::EPOCH,
+                b"prefixed-space".to_vec(),
+            ),
+        ];
+
+        for row in &rows {
+            state
+                .append_committed_row(row.clone())
+                .expect("append opaque branch/key row");
+            assert_eq!(
+                state
+                    .active()
+                    .get(&TableInternalKeyBytes::from_row(row))
+                    .expect("stored opaque row")
+                    .row(),
+                row
+            );
+        }
+
+        let facts = state.facts().expect("opaque facts");
+        assert_eq!(
+            facts.active_rows(),
+            u64::try_from(rows.len()).expect("row count fits in u64")
+        );
+        assert_eq!(facts.frozen_table_count(), 0);
+        assert_eq!(facts.max_commit_version(), Some(CommitVersion::new(4)));
+        assert_eq!(facts.timestamp_min(), Some(Timestamp::from_micros(90)));
+        assert_eq!(facts.timestamp_max(), Some(Timestamp::from_micros(110)));
+    }
+}
+
+#[test]
+fn branch_local_state_rejects_wrong_branch_rows_without_mutation() {
+    let branch = branch_id(32);
+    let wrong_branch = branch_id(33);
+    let mut state = BranchLocalState::empty(branch);
+    let baseline_facts = state.facts().expect("baseline facts");
+    let wrong_put = storage_row_with(
+        wrong_branch,
+        b"wrong".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let wrong_tombstone = tombstone_row(wrong_branch, b"wrong-delete".to_vec(), 2, 20);
+
+    for row in [wrong_put, wrong_tombstone] {
+        let error = state
+            .append_committed_row(row)
+            .expect_err("wrong branch rejected");
+        assert!(matches!(error, BranchRuntimeError::InvalidBranchRow { .. }));
+        assert!(!error.to_string().contains("secret-payload"));
+        assert_eq!(
+            state.facts().expect("facts after rejection"),
+            baseline_facts
+        );
+        assert!(state.active().is_empty());
+        assert!(state.frozen().is_empty());
+    }
+}
+
+#[test]
+fn branch_local_state_rejects_active_and_frozen_duplicates_without_mutation() {
+    let branch = branch_id(34);
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"duplicate".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+
+    state
+        .append_committed_row(row.clone())
+        .expect("initial append");
+    let facts_after_append = state.facts().expect("append facts");
+    let active_duplicate = state
+        .append_committed_row(row.clone())
+        .expect_err("active duplicate rejected");
+    assert_duplicate_internal_key(&active_duplicate);
+    assert_eq!(
+        state.facts().expect("after active duplicate"),
+        facts_after_append
+    );
+    assert_eq!(state.active_row_count(), 1);
+
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated {
+            frozen_index: 0,
+            frozen_rows: 1,
+            frozen_tables: 1,
+        }
+    ));
+    let facts_after_rotation = state.facts().expect("rotation facts");
+    let frozen_duplicate = state
+        .append_committed_row(row)
+        .expect_err("frozen duplicate rejected");
+    assert_duplicate_internal_key(&frozen_duplicate);
+    assert_eq!(
+        state.facts().expect("after frozen duplicate"),
+        facts_after_rotation
+    );
+    assert_eq!(state.active_row_count(), 0);
+    assert_eq!(state.frozen_table_count(), 1);
+}
+
+#[test]
+fn branch_local_state_rotation_preserves_rows_and_newest_first_order() {
+    let branch = branch_id(35);
+    let mut state =
+        BranchLocalState::new(branch, BranchRuntimeConfig::new(7, 64, 4).expect("config"))
+            .expect("state");
+
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Skipped {
+            reason: BranchRotationSkipReason::EmptyActive,
+        }
+    ));
+    assert!(state.frozen().is_empty());
+
+    let first = storage_row_with(
+        branch,
+        b"first".to_vec(),
+        1,
+        100,
+        Timestamp::EPOCH,
+        b"first".to_vec(),
+    );
+    state
+        .append_committed_row(first.clone())
+        .expect("append first");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated {
+            frozen_index: 0,
+            frozen_rows: 1,
+            frozen_tables: 1,
+        }
+    ));
+    assert!(state.active().is_empty());
+    assert_eq!(
+        state.frozen()[0]
+            .get(&TableInternalKeyBytes::from_row(&first))
+            .expect("first frozen row")
+            .row(),
+        &first
+    );
+
+    let second = storage_row_with(
+        branch,
+        b"second".to_vec(),
+        2,
+        50,
+        Timestamp::EPOCH,
+        b"second".to_vec(),
+    );
+    state
+        .append_committed_row(second.clone())
+        .expect("append second");
+    assert_eq!(
+        state.frozen()[0]
+            .get(&TableInternalKeyBytes::from_row(&first))
+            .expect("frozen row unchanged after active append")
+            .row(),
+        &first
+    );
+    assert_eq!(
+        state
+            .active()
+            .get(&TableInternalKeyBytes::from_row(&second))
+            .expect("second active row")
+            .row(),
+        &second
+    );
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated {
+            frozen_index: 0,
+            frozen_rows: 1,
+            frozen_tables: 2,
+        }
+    ));
+
+    assert_eq!(
+        state.frozen()[0]
+            .get(&TableInternalKeyBytes::from_row(&second))
+            .expect("newest frozen row")
+            .row(),
+        &second
+    );
+    assert_eq!(
+        state.frozen()[1]
+            .get(&TableInternalKeyBytes::from_row(&first))
+            .expect("older frozen row")
+            .row(),
+        &first
+    );
+    let facts = state.facts().expect("facts");
+    assert_eq!(facts.active_rows(), 0);
+    assert_eq!(facts.frozen_table_count(), 2);
+    assert_eq!(facts.max_commit_version(), Some(CommitVersion::new(2)));
+    assert_eq!(facts.timestamp_min(), Some(Timestamp::from_micros(50)));
+    assert_eq!(facts.timestamp_max(), Some(Timestamp::from_micros(100)));
+}
+
+#[test]
+fn branch_local_state_respects_frozen_limit_without_dropping_active_rows() {
+    let branch = branch_id(36);
+    let config = BranchRuntimeConfig::new(7, 64, 1).expect("config");
+    let mut state = BranchLocalState::new(branch, config).expect("state");
+    let frozen_row = storage_row(branch, 1);
+    let active_row = storage_row_with(
+        branch,
+        b"still-active".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+    let additional_active_row = storage_row_with(
+        branch,
+        b"still-active-too".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"active-too".to_vec(),
+    );
+
+    state
+        .append_committed_row(frozen_row.clone())
+        .expect("append frozen row");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(active_row.clone())
+        .expect("append active row");
+    let before_skip = state.facts().expect("before skip facts");
+
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Skipped {
+            reason: BranchRotationSkipReason::FrozenLimitReached,
+        }
+    ));
+    assert_eq!(state.facts().expect("after skip facts"), before_skip);
+    assert_eq!(state.active_row_count(), 1);
+    assert_eq!(state.frozen_table_count(), 1);
+    assert!(state
+        .active()
+        .get(&TableInternalKeyBytes::from_row(&active_row))
+        .is_some());
+    assert!(state.frozen()[0]
+        .get(&TableInternalKeyBytes::from_row(&frozen_row))
+        .is_some());
+
+    state
+        .append_committed_row(additional_active_row.clone())
+        .expect("append after frozen-limit skip");
+    assert_eq!(state.active_row_count(), 2);
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(
+        state
+            .active()
+            .get(&TableInternalKeyBytes::from_row(&additional_active_row))
+            .expect("additional active row")
+            .row(),
+        &additional_active_row
+    );
+    let after_append = state.facts().expect("after append facts");
+    assert_eq!(after_append.active_rows(), 2);
+    assert_eq!(after_append.frozen_table_count(), 1);
+    assert_eq!(
+        after_append.max_commit_version(),
+        Some(CommitVersion::new(3))
+    );
+}
+
+#[test]
+fn branch_runtime_stats_default_and_accessors_are_stable() {
+    let empty = BranchRuntimeStats::default();
+    assert_eq!(empty.latest_reads(), 0);
+    assert_eq!(empty.bounded_reads(), 0);
+    assert_eq!(empty.history_reads(), 0);
+    assert_eq!(empty.inherited_layers_examined(), 0);
+
+    let stats = BranchRuntimeStats::new(1, 2, 3, 4);
+    assert_eq!(stats.latest_reads(), 1);
+    assert_eq!(stats.bounded_reads(), 2);
+    assert_eq!(stats.history_reads(), 3);
+    assert_eq!(stats.inherited_layers_examined(), 4);
+}
+
+#[test]
+fn branch_runtime_errors_are_typed_and_preserve_sources() {
+    let test_branch_id = branch_id(6);
+    let invalid_config = BranchRuntimeConfig::new(0, 1, 1).expect_err("invalid config");
+    let table_error = BranchRuntimeError::TableRuntime {
+        source: crate::table::TableRuntimeError::Cache {
+            reason: "cache unavailable",
+        },
+    };
+    let variants = [
+        invalid_config,
+        BranchRuntimeError::InvalidBranchState { reason: "state" },
+        BranchRuntimeError::BranchNotFound {
+            branch_id: test_branch_id,
+        },
+        BranchRuntimeError::BranchAlreadyExists {
+            branch_id: test_branch_id,
+        },
+        BranchRuntimeError::InvalidBranchRow { reason: "row" },
+        BranchRuntimeError::InvalidReadBound { reason: "bound" },
+        BranchRuntimeError::InvalidInheritedLayer { reason: "layer" },
+        BranchRuntimeError::InvalidReachability {
+            reason: "reachability",
+        },
+        table_error.clone(),
+        BranchRuntimeError::publish("publish"),
+    ];
+
+    for error in variants {
+        let text = error.to_string();
+        assert!(!text.is_empty());
+        assert!(!text.contains("secret-payload"));
+    }
+
+    let alias_result: BranchRuntimeResult<()> =
+        Err(BranchRuntimeError::InvalidReadBound { reason: "alias" });
+    assert!(matches!(
+        alias_result,
+        Err(BranchRuntimeError::InvalidReadBound { reason: "alias" })
+    ));
+
+    let source = table_error.source().expect("table source");
+    assert!(source.to_string().contains("table cache operation failed"));
+
+    let publish_error = BranchRuntimeError::publish_with("ambiguous", LeafError);
+    let source = publish_error.source().expect("publish source");
+    assert_eq!(source.to_string(), "leaf source");
+}
+
+fn assert_invalid_config_field(
+    result: BranchRuntimeResult<BranchRuntimeConfig>,
+    expected_field: &'static str,
+) {
+    match result {
+        Err(BranchRuntimeError::InvalidConfig { field, .. }) => {
+            assert_eq!(field, expected_field);
+        }
+        other => panic!("expected invalid config field {expected_field}, got {other:?}"),
+    }
+}
+
+fn assert_duplicate_internal_key(error: &BranchRuntimeError) {
+    assert!(matches!(
+        error,
+        BranchRuntimeError::TableRuntime {
+            source: crate::table::TableRuntimeError::DuplicateInternalKey { .. },
+        }
+    ));
+    assert!(error.source().is_some());
+    assert!(!error.to_string().contains("secret-payload"));
+}
+
+fn branch_id(byte: u8) -> BranchId {
+    BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+}
+
+fn table_facts(identity: &str) -> TableRuntimeFacts {
+    TableRuntimeFacts::new(
+        TableIdentity::new(identity).expect("identity"),
+        2,
+        1,
+        TableKeyRange::new(vec![0x01], vec![0x02]).expect("key range"),
+        TableCommitRange::new(CommitVersion::new(1), CommitVersion::new(2)).expect("commit range"),
+        128,
+    )
+    .expect("table facts")
+}
+
+fn row_versions(rows: &[TableRow]) -> Vec<u64> {
+    rows.iter()
+        .map(|row| row.commit_version().as_u64())
+        .collect()
+}
+
+fn matching_versions(rows: &[TableRow], bound: BranchEffectiveReadBound) -> Vec<u64> {
+    rows.iter()
+        .filter(|row| bound.matches_row(row.row()).matches_effective_bound())
+        .map(|row| row.commit_version().as_u64())
+        .collect()
+}
+
+fn storage_row(branch_id: BranchId, version: u64) -> StorageRow {
+    storage_row_with(
+        branch_id,
+        b"key".to_vec(),
+        version,
+        version,
+        Timestamp::EPOCH,
+        b"row-bytes".to_vec(),
+    )
+}
+
+fn storage_row_with(
+    branch_id: BranchId,
+    user_key: Vec<u8>,
+    version: u64,
+    timestamp: u64,
+    expires_at: Timestamp,
+    value: Vec<u8>,
+) -> StorageRow {
+    StorageRow::put(
+        physical_key(branch_id, user_key),
+        CommitVersion::new(version),
+        Timestamp::from_micros(timestamp),
+        expires_at,
+        value,
+    )
+}
+
+fn tombstone_row(
+    branch_id: BranchId,
+    user_key: Vec<u8>,
+    version: u64,
+    timestamp: u64,
+) -> StorageRow {
+    StorageRow::tombstone(
+        physical_key(branch_id, user_key),
+        CommitVersion::new(version),
+        Timestamp::from_micros(timestamp),
+    )
+}
+
+fn physical_key(branch_id: BranchId, user_key: Vec<u8>) -> PhysicalKey {
+    let space = StorageSpaceId::engine(0x20).expect("engine storage space");
+    physical_key_with(branch_id, "default", space, user_key)
+}
+
+fn physical_key_with(
+    branch_id: BranchId,
+    space_name: &str,
+    storage_space_id: StorageSpaceId,
+    user_key: Vec<u8>,
+) -> PhysicalKey {
+    PhysicalKey::new(branch_id, space_name, storage_space_id, user_key).expect("physical key")
+}
+
+#[derive(Debug)]
+struct LeafError;
+
+impl fmt::Display for LeafError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("leaf source")
+    }
+}
+
+impl Error for LeafError {}

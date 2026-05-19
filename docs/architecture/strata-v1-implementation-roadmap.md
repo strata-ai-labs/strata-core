@@ -27,6 +27,8 @@ Product anchors:
 2. `docs/product/strata-v1-feature-inventory.md`
 3. `docs/product/strata-v1-user-pathways.md`
 4. `docs/product/strata-v1-non-functional-requirements.md`
+5. `docs/stratahub/docs/product/stratahub-user-pathways.md`
+6. `docs/stratahub/docs/product/stratahub-v1-cli-commands.md`
 
 Architecture anchors:
 
@@ -79,6 +81,7 @@ Milestone implementation plans:
 9. `docs/architecture/implementation-plans/m8-m8t-implementation-plan.md`
 10. `docs/architecture/implementation-plans/m9-m9t-implementation-plan.md`
 11. `docs/architecture/implementation-plans/m10-m10t-implementation-plan.md`
+12. `docs/architecture/implementation-plans/m11-m11t-implementation-plan.md`
 
 ## Architecture Integration Review
 
@@ -111,8 +114,12 @@ The stack is coherent if these rules remain true during implementation:
    surfaces, not storage internals.
 7. Runtime resource profiling is engine-owned policy; storage and inference
    receive resolved budgets and execution hints.
-8. StrataHub V1 substrate is identity, provenance, clone, capability, and
-   health metadata. Sync and fleet management are post-V1 product work.
+8. StrataHub V1 integration is the strata-core side of a read-only Hub path:
+   clone/info commands, Hub-compatible manifest/object fetch, dataset-card
+   rendering, provenance remote refs, opt-in telemetry client behavior, and a
+   deterministic client conformance fixture. StrataHub hosting, catalog
+   management, publishing, push, auth, hosted runtime, sync, and fleet
+   management are not strata-core responsibilities in V1.
 
 ## Product Coverage Check
 
@@ -133,7 +140,7 @@ The current architecture covers the V1 product model as follows:
 | Autoembedding | intelligence-next over engine surfaces | Engine shadow-vector surfaces before intelligence runtime |
 | Runtime resource adaptation | engine-next policy + storage/inference hints | Resource profile implementation before product cutover |
 | Dataset clone artifacts | engine-next + storage bundles | Clone contract before CLI `strata clone` |
-| StrataHub future substrate | engine-next metadata + clone/provenance | Identity/provenance rows before public clone workflows |
+| StrataHub V1 clone/info | engine-next metadata + clone/provenance + CLI/Hub protocol | Clone substrate before M9 Hub integration |
 
 ## Out Of V1 Scope
 
@@ -144,10 +151,11 @@ post-V1 once V1 engine and CLI APIs are stable.
    `/Users/aniruddhajoshi/Documents/GitHub/strata-foundry/`).
    On ice for V1. The FFI bridge will be revisited post-V1 once engine APIs
    stabilize. V1 milestone slices must not couple themselves to Foundry, and
-   M9 product cutover does not include the Foundry bridge update.
+   M10 product cutover does not include the Foundry bridge update.
 2. Network server mode.
-3. Cross-machine sync and fleet management. StrataHub V1 substrate is
-   metadata-only; sync is post-V1.
+3. Cross-machine sync and fleet management. V1 includes StrataHub clone/info
+   over a read-only Hub protocol; push, pull, sync, deploy, and fleet remain
+   post-V1.
 4. Migration tooling for pre-V1 development databases.
 5. OpenAI-compatible on-prem endpoint adapters (vLLM, NIM, Ollama, LM Studio,
    llama.cpp server). Extension point reserved in inference-next; adapter is
@@ -173,7 +181,7 @@ points.
    See `V1Q-003`.
 4. Engine `StageOutcome` shape is owned by `M6E` and `M6TD`.
    See `V1Q-004`.
-5. Cutover PR series is owned by `M9G`.
+5. Cutover PR series is owned by `M10G`.
    See `V1Q-005`.
 6. Layer-specific storage, engine, inference, intelligence, product, and spec
    questions map to `V1Q-006` through `V1Q-037`.
@@ -218,8 +226,9 @@ Phase 5: Engine-next persistence adapter and control plane
 Phase 6: Engine-next capabilities, branch/time, retrieval, IPC, and clone
 Phase 7: Inference-next hardening
 Phase 8: Intelligence-next orchestration
-Phase 9: Executor, CLI, SDK, tests, benches, and docs cutover
-Phase 10: V1 readiness hardening
+Phase 9: StrataHub V1 integration
+Phase 10: Executor, CLI, SDK, tests, benches, and docs cutover
+Phase 11: V1 readiness hardening
 ```
 
 Inference-next can proceed in parallel with storage-next because it does not
@@ -236,8 +245,10 @@ Milestone scheduling is a DAG, not a strict serial chain:
 6. `M6` depends on `M5`.
 7. `M8` depends on the required engine surfaces from `M6` and the inference
    task contracts from `M7`.
-8. `M9` depends on the product surfaces from `M6` and `M8`.
-9. `M10` depends on all previous milestone gates.
+8. `M9` depends on the clone substrate and public command conventions from
+   `M6`.
+9. `M10` depends on the product surfaces from `M6`, `M8`, and `M9`.
+10. `M11` depends on all previous milestone gates.
 
 ## Progress Nomenclature
 
@@ -319,8 +330,9 @@ Milestone code map:
 | Phase 6 | `M6` | Engine-next product semantics |
 | Phase 7 | `M7` | Inference-next hardening |
 | Phase 8 | `M8` | Intelligence-next orchestration |
-| Phase 9 | `M9` | Executor, CLI, SDK, tests, benches, and docs cutover |
-| Phase 10 | `M10` | V1 readiness hardening |
+| Phase 9 | `M9` | StrataHub V1 integration |
+| Phase 10 | `M10` | Executor, CLI, SDK, tests, benches, and docs cutover |
+| Phase 11 | `M11` | V1 readiness hardening |
 
 Each milestone implementation plan should start with an epic table:
 
@@ -606,7 +618,51 @@ Exit criteria:
 4. Fake-provider tests cover expansion, rerank, RAG, generation, and
    autoembedding paths.
 
-## Phase 9: Executor, CLI, SDK, Tests, Benches, And Docs Cutover
+## Phase 9: StrataHub V1 Integration
+
+Goal: make the V1 read-only Hub path part of the release surface before final
+crate and CLI cutover.
+
+Work:
+
+1. Implement StrataHub V1 protocol types for Hub URLs, dataset names, content
+   hashes, manifests, object references, dataset cards, remote refs, and
+   protocol errors.
+2. Implement clone transport over Hub manifests and content-addressed objects,
+   including hash verification, interrupted-clone handling, destination
+   conflict behavior, atomic assembly, local database open-check, and
+   engine-owned `origin` remote-ref writes.
+3. Add `strata clone <source> <destination>` with `--hub`, `--force`, and
+   `--format` behavior through existing CLI conventions.
+4. Add `strata info <dataset>` with `--hub`, `--format`, and `--field`
+   behavior as the CLI rendering of dataset cards.
+5. Register `hub.default` and `telemetry.enabled` with the existing config
+   system.
+6. Add a deterministic Hub-client conformance fixture for tests: dataset info,
+   refs, manifests, objects, telemetry capture, and fixture serving. This is
+   not a production StrataHub server.
+7. Enforce telemetry default-off behavior and the V1 privacy allowlist.
+8. Add hub-neutrality guards: no hidden network behavior, no hard dependency on
+   hosted `stratahub.io` outside defaults/docs/tests, no Hub imports from
+   storage, and no hosted-Hub/catalog/publish responsibilities in strata-core.
+9. Update docs and cutover prerequisites so M10/M11 treat clone/info as V1
+   release pathways.
+
+Exit criteria:
+
+1. `strata clone` can clone a deterministic Hub fixture, verify the local
+   database, and preserve provenance in an engine-owned remote ref.
+2. `strata info` renders dataset-card text/json/short/field output through
+   stable CLI fixtures.
+3. Clone failures for missing data, hash mismatch, destination conflict,
+   interrupted download, and write/open-check failure are structured and do not
+   leave a trusted partial destination.
+4. Telemetry is opt-in, hub-neutral, and cannot collect dataset names, URLs,
+   Hub URLs, local paths, error text, contents, or identifying data.
+5. V1 exposes no Hub push, auth, list/search, fork, deploy, sync, or fleet
+   commands.
+
+## Phase 10: Executor, CLI, SDK, Tests, Benches, And Docs Cutover
 
 Goal: make the V1 integration line ready for promotion without exposing
 `*-next` architecture to users.
@@ -639,7 +695,7 @@ Exit criteria:
    time travel, retrieval, graph, vectors, clone, and model-assisted pathways.
 6. The cutover PR series has a reviewed execution checklist.
 
-## Phase 10: V1 Readiness Hardening
+## Phase 11: V1 Readiness Hardening
 
 Goal: move from functionally complete to release-grade.
 
@@ -688,7 +744,7 @@ Recommended branch model:
    security fixes, and documentation updates that do not expand the old
    architecture.
 2. `v1`
-   Active M0-M10 development line. It may break old crate compatibility and
+   Active M0-M11 development line. It may break old crate compatibility and
    old consumers while a slice is in progress.
 
 This strategy is intentionally different from an incremental mainline cutover.
@@ -713,7 +769,7 @@ Recommended sequence:
 
 1. Freeze `main` for old-architecture feature work.
 2. Create the V1 integration branch.
-3. Implement M1-M10 on the V1 branch using milestone, epic, and slice plans.
+3. Implement M1-M11 on the V1 branch using milestone, epic, and slice plans.
 4. Keep the V1 branch green at slice and milestone gates, not necessarily at
    every transient edit.
 5. Cut executor and CLI to the new engine/intelligence APIs on the V1 branch
@@ -748,6 +804,7 @@ deleted. A milestone cannot close until both tracks close.
 | Engine product semantics | product-path conformance and removed-surface guards |
 | Inference | feature matrix, parser, provider mapping, redaction, fake providers |
 | Intelligence | fake-provider product paths, dependency guards, degradation tests |
+| StrataHub V1 integration | Hub protocol/client conformance, clone/info CLI, telemetry privacy, hub-neutrality |
 | Cutover | workspace graph audit, CLI/executor pathways, docs terminology scan |
 | V1 readiness | full conformance, crash, fuzz, performance, and NFR checks |
 

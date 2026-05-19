@@ -76,8 +76,9 @@ M6TD2: Cover recipe freshness degradation
 | `M6` | Engine-next product semantics | Planned | Planned | Planned | Start after engine persistence/control plane are stable. |
 | `M7` | Inference-next hardening | Planned | Planned | Planned | May start now if inference-next should run parallel with storage path. |
 | `M8` | Intelligence-next orchestration | Planned | Planned | Planned | Start after engine surfaces and inference task contracts are ready. |
-| `M9` | Executor, CLI, SDK, tests, benches, and docs cutover | Planned | Planned | Planned | Start after product surfaces stabilize. |
-| `M10` | V1 readiness hardening | Planned | Planned | Planned | Start after cutover. |
+| `M9` | StrataHub V1 integration | Planned | Planned | Planned | Start after engine clone substrate and CLI conventions are stable. |
+| `M10` | Executor, CLI, SDK, tests, benches, and docs cutover | Planned | Planned | Planned | Start after product and StrataHub surfaces stabilize. |
+| `M11` | V1 readiness hardening | Planned | Planned | Planned | Start after cutover. |
 
 ## Current Epic Status
 

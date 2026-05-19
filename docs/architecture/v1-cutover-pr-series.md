@@ -7,11 +7,11 @@ Status: draft planning placeholder
 This document is the owner for the exact PR sequence that promotes the V1 stack
 from build-branch crates to the canonical Strata crate graph.
 
-The detailed sequence is produced during `M9G`. It is intentionally not fully
+The detailed sequence is produced during `M10G`. It is intentionally not fully
 specified before core-next, storage-next, engine-next, inference-next, and
 intelligence-next have real crate shapes.
 
-## Required Content Before M9 Cutover
+## Required Content Before M10 Cutover
 
 The completed cutover PR series must list:
 
@@ -29,14 +29,14 @@ The completed cutover PR series must list:
 
 The expected sequence is:
 
-1. Verify M6 and M8 product surfaces are stable.
+1. Verify M6, M8, and M9 product surfaces are stable.
 2. Cut product crates to V1 engine/intelligence APIs on the `v1` branch.
 3. Rename build-phase crates to canonical package names.
 4. Delete retired crate implementations and stale compatibility paths.
 5. Update workspace manifests, lockfile, benches, docs, and examples.
 6. Add dependency and removed-surface guards.
-7. Run M9 product-path, CLI, IPC, dependency, docs, and benchmark gates.
-8. Run M10 readiness gates.
+7. Run M10 product-path, CLI, IPC, dependency, docs, and benchmark gates.
+8. Run M11 readiness gates.
 9. Promote `v1` to `main` only after readiness gates pass.
 
 ## Non-Goals

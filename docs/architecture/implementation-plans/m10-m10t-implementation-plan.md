@@ -1,22 +1,23 @@
-# M10 / M10T Implementation Plan: V1 Readiness Hardening
+# M10 / M10T Implementation Plan: Executor, CLI, SDK, Tests, Benches, And Docs Cutover
 
 Status: draft implementation plan
 
 ## Goal
 
-Move from functionally complete to release-grade.
+Make the V1 integration line ready for promotion without exposing `*-next`
+architecture to users.
 
 ## Inputs
 
-1. `docs/architecture/strata-v1-architecture.md`
-2. `docs/architecture/strata-v1-implementation-roadmap.md`
-3. `docs/architecture/v1-testing-and-conformance-plan.md`
-4. `docs/architecture/v1-engineering-standards.md`
-5. `docs/product/strata-v1-product-requirements.md`
-6. `docs/product/strata-v1-user-pathways.md`
-7. `CLAUDE.md`
-8. `docs/architecture/v1-cutover-pr-series.md`
-9. `docs/architecture/v1-removed-surfaces.md`
+1. `docs/architecture/strata-v1-implementation-roadmap.md`
+2. `docs/architecture/engine-next/public-api-and-cli-surface-cleanup-checklist.md`
+3. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
+4. `docs/architecture/engine-next/dataset-clone-artifact-contract.md`
+5. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
+6. `docs/product/strata-v1-product-requirements.md`
+7. `docs/architecture/v1-cutover-pr-series.md`
+8. `docs/architecture/v1-removed-surfaces.md`
+9. `docs/architecture/implementation-plans/m9-m9t-implementation-plan.md`
 
 All slices must follow the V1 engineering standards: permanent domain names,
 concept-budget discipline, file/function thresholds, comment standards, and no
@@ -26,59 +27,50 @@ roadmap labels in production code vocabulary.
 
 | Epic | Title | Scope | Exit gate |
 |---|---|---|---|
-| `M10A` | Durability hardening | Close storage crash, fault-injection, retention, repair, and recovery issues found by full-matrix testing. | Durable local committed data survives required crash windows. |
-| `M10B` | Product hardening | Close engine product-path, IPC, cache, branch, time-travel, retrieval, clone, and relationship issues. | Required pathways have no known correctness gaps. |
-| `M10C` | Model behavior hardening | Close inference and intelligence issues found by feature matrix and fake-provider tests. | Model-assisted behavior degrades predictably. |
-| `M10D` | Performance hardening | Investigate benchmark regressions and resource-profile failures. | Regressions are fixed or explicitly accepted with rationale. |
-| `M10E` | Release audit | Final API, docs, dependency, terminology, error-code, and security/redaction audit. | V1 is understandable without cleanup-era context. |
-| `M10F` | Promotion to main | Execute the reviewed promotion path from `docs/architecture/v1-cutover-pr-series.md`, including branch protection, release tagging, and final merge/fast-forward policy. | `v1` is promoted to `main` only after readiness gates pass. |
+| `M10A` | Product crate cutover | Route executor, CLI, SDK, and product entry points to engine-next and intelligence-next APIs. | Product crates do not call old engine/storage internals. |
+| `M10B` | Canonical crate rename | Replace old canonical crate implementations with the V1 stack and shed `next` suffixes. | Public package names are normal and old crates are retired. |
+| `M10C` | CLI and IPC surface | Update CLI commands, IPC daemon protocol access, same-machine sharing UX for multiple local processes, and clone commands to V1 semantics. | CLI reflects required V1 product pathways. |
+| `M10D` | Public API cleanup | Remove or hide old public surfaces, internal escape hatches, and stale compatibility names. | Public API audit matches the V1 surface checklist. |
+| `M10E` | Docs and examples | Update user docs, examples, architecture links, and stale terminology. | New users do not need old cleanup documents to understand V1. |
+| `M10F` | Bench and dependency cutover | Update benchmarks, guard tests, and workspace dependency audits. | Performance and crate-graph checks run against the V1 stack. |
+| `M10G` | Cutover PR series plan | Complete `docs/architecture/v1-cutover-pr-series.md` with exact PR order, dependency cuts, package renames, promotion steps, and retirement guards. | Cutover execution has a reviewed checklist before crate renames start. |
 
 ## Test Track
 
 | Test epic | Title | Scope | Exit gate |
 |---|---|---|---|
-| `M10TA` | Full storage matrix | Run fault-injection, crash, recovery, fuzz, golden, property, and stress tests. | No required durability or format failure remains unclassified. |
-| `M10TB` | Full product conformance | Run product-pathway conformance across cache, durable local, read-only, IPC, branch/time, retrieval, graph, vector, clone, and model-assisted paths. | Every required pathway is tested and documented. |
-| `M10TC` | Full inference/intelligence matrix | Run feature combinations, fake providers, redaction, model mismatch, and degradation tests. | Optional model-assisted paths fail closed or degrade as documented. |
-| `M10TD` | Performance suite | Run required benchmarks and compare against threshold policy. | Regressions are within policy or explicitly waived. |
-| `M10TE` | Release scans | Run dependency graph, public API, terminology, secret redaction, docs link, and engineering-standard scans. | No release-blocking scan failures remain. |
-
-## Release Audit Slices
-
-`M10E` should split into at least these slices:
-
-1. `M10E1`: public API audit.
-2. `M10E2`: docs and examples audit.
-3. `M10E3`: dependency graph audit.
-4. `M10E4`: terminology and cleanup-era vocabulary audit.
-5. `M10E5`: error-code and retry-policy audit.
-6. `M10E6`: security, secret-redaction, and prompt/data-leakage audit.
+| `M10TA` | Product-path end-to-end tests | Run required product pathways through public APIs, executor, and CLI where applicable. | End-to-end behavior matches product docs. |
+| `M10TB` | IPC tests | Validate local IPC ownership, read-only clients, maintenance authority, command serialization, and cache-mode rejection. | Same-machine sharing works without server-mode semantics. |
+| `M10TC` | Removed-surface scans | Scan source, docs, public API, and CLI help for `docs/architecture/v1-removed-surfaces.md`. | Removed surfaces stay removed. |
+| `M10TD` | Benchmark harness | Run required performance benchmarks and record baseline changes. | Regressions are classified before V1 readiness. |
+| `M10TE` | Dependency graph audit | Check retired crates and forbidden edges. | Workspace graph matches the target architecture. |
+| `M10TF` | Pre-V1 rejection tests | Attempt to open pre-V1 development databases and malformed clone artifacts. | Failures are structured and user-actionable. |
 
 ## Convergence Notes
 
-1. `M10TA` through `M10TD` produce the findings that feed `M10A` through
-   `M10D`.
-2. `M10TE` lands with `M10E` and must be clean before `M10F`.
-3. `M10F` is the final promotion slice, not a substitute for readiness gates.
+1. `M10G` closes before `M10B` begins crate rename work.
+2. `M10TA` grows as `M10A`, `M10C`, and `M10D` cut over product paths.
+3. `M10TB` lands with `M10C`.
+4. `M10TC` lands with `M10D` and references the canonical removed-surface list.
+5. `M10TD` and `M10TE` close before M11 readiness hardening.
+6. `M10TF` lands before public docs claim V1 format behavior.
 
 ## Slice Policy
 
-M10 slices are bug-fix and hardening slices. Each slice should start with a
-specific failing test, audit finding, benchmark regression, or release checklist
-item.
+Cutover slices may be larger than normal because crate renames and public API
+routes are coupled. Do not preserve old and new product paths indefinitely just
+to keep intermediate compatibility.
 
 ## Non-Goals
 
-1. No new architecture direction.
-2. No new optional product features.
-3. No broad refactors unless they fix a release-blocking issue.
-4. No compatibility work for pre-V1 development databases unless separately
-   approved.
+1. No new product features beyond the V1 surface.
+2. No migration tool for pre-V1 development databases.
+3. No network server mode.
+4. No hidden sync or upload behavior.
 
 ## Milestone Exit Gate
 
-M10 is complete when V1 is release-ready: product pathways are tested, durable
-local recovery is proven, cache mode is explicit, removed surfaces are absent,
-error semantics are stable, and the crate graph is understandable to a new
-engineer. The roadmap Test Gate Summary remains the canonical milestone gate;
-this plan explains how M10 reaches it.
+M10 is complete when product crates, CLI, SDK surfaces, docs, tests, benches, and
+dependency guards all point at the canonical V1 stack. The roadmap Test Gate
+Summary remains the canonical milestone gate; this plan explains how M10 reaches
+it.
