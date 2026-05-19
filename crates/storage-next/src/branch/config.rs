@@ -47,6 +47,12 @@ impl BranchRuntimeConfig {
                 reason: "must be nonzero",
             });
         }
+        if self.level_count > usize::from(u8::MAX) + 1 {
+            return Err(BranchRuntimeError::InvalidConfig {
+                field: "max_level_count",
+                reason: "must fit in BranchLevel",
+            });
+        }
         if self.inherited_layers == 0 {
             return Err(BranchRuntimeError::InvalidConfig {
                 field: "max_inherited_layers",

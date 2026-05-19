@@ -1,8 +1,9 @@
 use super::*;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    sort_table_rows_by_key, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyRange,
-    TablePhysicalKeyBytes, TableRow, TableRuntimeFacts,
+    sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, MutableTable,
+    TableBuilderConfig, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyRange,
+    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeFacts,
 };
 use std::error::Error;
 use std::fmt;
@@ -21,6 +22,10 @@ fn branch_runtime_config_rejects_unusable_zero_limits() {
     assert_eq!(explicit.max_frozen_tables(), 8);
 
     assert_invalid_config_field(BranchRuntimeConfig::new(0, 2, 8), "max_level_count");
+    assert_invalid_config_field(
+        BranchRuntimeConfig::new(usize::from(u8::MAX) + 2, 2, 8),
+        "max_level_count",
+    );
     assert_invalid_config_field(BranchRuntimeConfig::new(3, 0, 8), "max_inherited_layers");
     assert_invalid_config_field(BranchRuntimeConfig::new(3, 2, 0), "max_frozen_tables");
 }
@@ -1366,6 +1371,2278 @@ fn branch_local_state_respects_frozen_limit_without_dropping_active_rows() {
 }
 
 #[test]
+fn branch_read_view_is_pinned_across_append_and_rotation() {
+    let branch = branch_id(38);
+    let mut state = BranchLocalState::empty(branch);
+    let first = storage_row_with(
+        branch,
+        b"pinned".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"first".to_vec(),
+    );
+    let tombstone = tombstone_row(branch, b"pinned".to_vec(), 2, 20);
+
+    state
+        .append_committed_row(first.clone())
+        .expect("append first");
+    let view = state.capture_read_view().expect("capture read view");
+    let captured_facts = view.facts();
+
+    state
+        .append_committed_row(tombstone.clone())
+        .expect("append tombstone after capture");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let after = state.capture_read_view().expect("capture after mutation");
+
+    let key = physical_key(branch, b"pinned".to_vec());
+    let visible = view.latest(&key).expect("pinned latest").expect("row");
+    assert_eq!(visible.row(), &first);
+    assert_eq!(visible.source(), BranchRowSource::Active);
+    assert_eq!(view.facts(), captured_facts);
+    assert_eq!(view.active_row_count(), 1);
+    assert_eq!(view.frozen_table_count(), 0);
+
+    assert_eq!(after.latest(&key).expect("after latest"), None);
+    assert_eq!(after.active_row_count(), 0);
+    assert_eq!(after.frozen_table_count(), 1);
+    assert_eq!(
+        after
+            .history(&key, BranchHistoryOptions::all())
+            .expect("after history")
+            .iter()
+            .map(|row| row.row().commit_version().as_u64())
+            .collect::<Vec<_>>(),
+        vec![2, 1],
+    );
+}
+
+#[test]
+fn branch_read_view_constructor_rejects_stale_facts_and_wrong_branch_sources() {
+    let branch = branch_id(43);
+    let other = branch_id(44);
+    let row = storage_row_with(
+        branch,
+        b"constructor".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    let mut active = MutableTable::new();
+    active.insert_row(row.clone()).expect("insert row");
+    let valid_facts = BranchStateFacts::new(
+        branch,
+        1,
+        0,
+        0,
+        0,
+        Some(CommitVersion::new(3)),
+        Some(Timestamp::from_micros(30)),
+        Some(Timestamp::from_micros(30)),
+    )
+    .expect("valid facts");
+    BranchReadView::new(branch, active.clone(), Vec::new(), Vec::new(), valid_facts)
+        .expect("valid read view");
+
+    assert!(matches!(
+        BranchReadView::new(
+            branch,
+            active.clone(),
+            Vec::new(),
+            Vec::new(),
+            BranchStateFacts::empty(branch)
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let stale_facts = BranchStateFacts::new(
+        branch,
+        1,
+        0,
+        0,
+        0,
+        Some(CommitVersion::new(2)),
+        Some(Timestamp::from_micros(30)),
+        Some(Timestamp::from_micros(30)),
+    )
+    .expect("stale facts shape");
+    assert!(matches!(
+        BranchReadView::new(branch, active.clone(), Vec::new(), Vec::new(), stale_facts),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let unsupported_inherited_facts =
+        BranchStateFacts::new(branch, 0, 0, 0, 1, None, None, None).expect("inherited facts shape");
+    assert!(matches!(
+        BranchReadView::new(
+            branch,
+            MutableTable::new(),
+            Vec::new(),
+            Vec::new(),
+            unsupported_inherited_facts
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let wrong_branch_row = storage_row_with(
+        other,
+        b"constructor".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let mut wrong_active = MutableTable::new();
+    wrong_active
+        .insert_row(wrong_branch_row)
+        .expect("insert wrong row");
+    let wrong_error =
+        BranchReadView::new(branch, wrong_active, Vec::new(), Vec::new(), valid_facts)
+            .expect_err("wrong-branch source rejected");
+    assert!(matches!(
+        wrong_error,
+        BranchRuntimeError::InvalidBranchState { .. }
+    ));
+    assert!(!wrong_error.to_string().contains("secret-payload"));
+}
+
+#[test]
+fn branch_read_view_constructor_rejects_frozen_source_and_fact_mismatches() {
+    let branch = branch_id(45);
+    let other = branch_id(46);
+    let row = storage_row_with(
+        branch,
+        b"frozen-constructor".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    let mut frozen_source = MutableTable::new();
+    frozen_source.insert_row(row).expect("insert frozen row");
+    let valid_facts = BranchStateFacts::new(
+        branch,
+        0,
+        1,
+        0,
+        0,
+        Some(CommitVersion::new(3)),
+        Some(Timestamp::from_micros(30)),
+        Some(Timestamp::from_micros(30)),
+    )
+    .expect("valid frozen facts");
+    let frozen = frozen_source.freeze();
+    BranchReadView::new(
+        branch,
+        MutableTable::new(),
+        vec![frozen.clone()],
+        Vec::new(),
+        valid_facts,
+    )
+    .expect("valid frozen read view");
+
+    let stale_count = BranchStateFacts::new(
+        branch,
+        0,
+        2,
+        0,
+        0,
+        Some(CommitVersion::new(3)),
+        Some(Timestamp::from_micros(30)),
+        Some(Timestamp::from_micros(30)),
+    )
+    .expect("stale frozen count facts");
+    assert!(matches!(
+        BranchReadView::new(
+            branch,
+            MutableTable::new(),
+            vec![frozen.clone()],
+            Vec::new(),
+            stale_count
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let stale_timestamps = BranchStateFacts::new(
+        branch,
+        0,
+        1,
+        0,
+        0,
+        Some(CommitVersion::new(3)),
+        Some(Timestamp::from_micros(29)),
+        Some(Timestamp::from_micros(30)),
+    )
+    .expect("stale timestamp facts");
+    assert!(matches!(
+        BranchReadView::new(
+            branch,
+            MutableTable::new(),
+            vec![frozen.clone()],
+            Vec::new(),
+            stale_timestamps,
+        ),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let wrong_row = storage_row_with(
+        other,
+        b"frozen-constructor".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let mut wrong_frozen = MutableTable::new();
+    wrong_frozen
+        .insert_row(wrong_row)
+        .expect("insert wrong frozen row");
+    let wrong_error = BranchReadView::new(
+        branch,
+        MutableTable::new(),
+        vec![wrong_frozen.freeze()],
+        Vec::new(),
+        valid_facts,
+    )
+    .expect_err("wrong frozen row rejected");
+    assert!(matches!(
+        wrong_error,
+        BranchRuntimeError::InvalidBranchState { .. }
+    ));
+    assert!(!wrong_error.to_string().contains("secret-payload"));
+}
+
+#[test]
+fn branch_read_view_empty_and_single_row_cases_are_stable() {
+    let branch = branch_id(45);
+    let empty_state = BranchLocalState::empty(branch);
+    let empty_view = empty_state.capture_read_view().expect("empty view");
+    let key = physical_key(branch, b"single".to_vec());
+    assert_eq!(empty_view.latest(&key).expect("empty latest"), None);
+    assert!(empty_view
+        .history(&key, BranchHistoryOptions::all())
+        .expect("empty history")
+        .is_empty());
+    let empty_prefix = BranchScanBounds::prefix(&physical_key(branch, Vec::new()));
+    assert!(empty_view
+        .scan_prefix(&empty_prefix, BranchReadBound::latest())
+        .expect("empty prefix")
+        .is_empty());
+    let empty_range = BranchScanBounds::unbounded(
+        branch,
+        "default",
+        StorageSpaceId::engine(0x20).expect("engine space"),
+    )
+    .expect("empty range");
+    assert!(empty_view
+        .scan_range(&empty_range, BranchReadBound::latest())
+        .expect("empty range")
+        .is_empty());
+
+    let mut single_state = BranchLocalState::empty(branch);
+    let expired_looking = storage_row_with(
+        branch,
+        b"single".to_vec(),
+        1,
+        10,
+        Timestamp::from_micros(5),
+        Vec::new(),
+    );
+    single_state
+        .append_committed_row(expired_looking.clone())
+        .expect("append expired-looking row");
+    let single_view = single_state.capture_read_view().expect("single view");
+    let latest = single_view
+        .latest(&key)
+        .expect("latest")
+        .expect("single row");
+    assert_eq!(latest.row(), &expired_looking);
+    assert_eq!(latest.source(), BranchRowSource::Active);
+    assert_eq!(latest.row().value(), b"");
+    assert_eq!(latest.row().expires_at(), Timestamp::from_micros(5));
+    assert_eq!(
+        single_view
+            .at_version(&key, CommitVersion::ZERO)
+            .expect("below single row"),
+        None
+    );
+    assert_eq!(
+        single_view
+            .at_version(&key, CommitVersion::MAX)
+            .expect("max bound")
+            .expect("max row")
+            .row(),
+        &expired_looking
+    );
+}
+
+#[test]
+fn branch_read_view_frozen_limit_skip_does_not_mutate_captured_view() {
+    let branch = branch_id(45);
+    let config = BranchRuntimeConfig::new(7, 64, 1).expect("config");
+    let mut limited_state = BranchLocalState::new(branch, config).expect("limited state");
+    let frozen = storage_row_with(
+        branch,
+        b"limited".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    let active = storage_row_with(
+        branch,
+        b"limited".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+    limited_state
+        .append_committed_row(frozen.clone())
+        .expect("append frozen row");
+    assert!(matches!(
+        limited_state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let pinned = limited_state.capture_read_view().expect("pinned view");
+    let pinned_facts = pinned.facts();
+    limited_state
+        .append_committed_row(active.clone())
+        .expect("append active row");
+    assert_eq!(
+        limited_state.rotate_active(),
+        BranchRotationOutcome::Skipped {
+            reason: BranchRotationSkipReason::FrozenLimitReached,
+        }
+    );
+    let limited_key = physical_key(branch, b"limited".to_vec());
+    assert_eq!(
+        pinned
+            .latest(&limited_key)
+            .expect("pinned latest")
+            .expect("pinned row")
+            .row(),
+        &frozen
+    );
+    assert_eq!(pinned.facts(), pinned_facts);
+    assert_eq!(
+        limited_state
+            .capture_read_view()
+            .expect("after skip view")
+            .latest(&limited_key)
+            .expect("after skip latest")
+            .expect("active row")
+            .row(),
+        &active
+    );
+}
+
+#[test]
+fn branch_read_view_latest_and_version_reads_follow_row_chain_not_source_order() {
+    let branch = branch_id(39);
+    let mut state = BranchLocalState::empty(branch);
+    let key = physical_key(branch, b"versioned".to_vec());
+    let frozen_newer = storage_row_with(
+        branch,
+        b"versioned".to_vec(),
+        10,
+        100,
+        Timestamp::EPOCH,
+        b"frozen-newer".to_vec(),
+    );
+    let active_older = storage_row_with(
+        branch,
+        b"versioned".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"active-older".to_vec(),
+    );
+    let hidden_by_tombstone = storage_row_with(
+        branch,
+        b"hidden".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"hidden".to_vec(),
+    );
+    let tombstone = tombstone_row(branch, b"hidden".to_vec(), 5, 50);
+
+    state
+        .append_committed_row(frozen_newer.clone())
+        .expect("append frozen newer");
+    state
+        .append_committed_row(hidden_by_tombstone)
+        .expect("append hidden");
+    state
+        .append_committed_row(tombstone)
+        .expect("append tombstone");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(active_older.clone())
+        .expect("append active older");
+
+    let view = state.capture_read_view().expect("view");
+    let latest = view.latest(&key).expect("latest").expect("latest row");
+    assert_eq!(latest.row(), &frozen_newer);
+    assert_eq!(latest.source(), BranchRowSource::Frozen { index: 0 });
+
+    let at_seven = view
+        .at_version(&key, CommitVersion::new(7))
+        .expect("at version")
+        .expect("older row");
+    assert_eq!(at_seven.row(), &active_older);
+    assert_eq!(at_seven.source(), BranchRowSource::Active);
+    assert_eq!(
+        view.at_version(&key, CommitVersion::new(6))
+            .expect("below all"),
+        None
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"hidden".to_vec()))
+            .expect("tombstone shadows"),
+        None
+    );
+}
+
+#[test]
+fn branch_read_view_version_bounds_respect_tombstone_edges_and_extremes() {
+    let branch = branch_id(46);
+    let mut state = BranchLocalState::empty(branch);
+    let live_before_tombstone = storage_row_with(
+        branch,
+        b"deleted".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"live".to_vec(),
+    );
+    let deleting_tombstone = tombstone_row(branch, b"deleted".to_vec(), 3, 30);
+    let zero_row = storage_row_with(
+        branch,
+        b"zero".to_vec(),
+        0,
+        0,
+        Timestamp::EPOCH,
+        b"zero".to_vec(),
+    );
+    let max_row = storage_row_with(
+        branch,
+        b"max".to_vec(),
+        u64::MAX,
+        u64::MAX,
+        Timestamp::EPOCH,
+        b"max".to_vec(),
+    );
+    for row in [
+        live_before_tombstone.clone(),
+        deleting_tombstone,
+        zero_row.clone(),
+        max_row.clone(),
+    ] {
+        state.append_committed_row(row).expect("append version row");
+    }
+    let view = state.capture_read_view().expect("view");
+    let deleted_key = physical_key(branch, b"deleted".to_vec());
+    assert_eq!(view.latest(&deleted_key).expect("latest deleted"), None);
+    assert_eq!(
+        view.at_version(&deleted_key, CommitVersion::new(2))
+            .expect("before tombstone")
+            .expect("live row")
+            .row(),
+        &live_before_tombstone
+    );
+    assert_eq!(
+        view.at_version(&deleted_key, CommitVersion::new(3))
+            .expect("at tombstone"),
+        None
+    );
+    assert_eq!(
+        view.at_version(&physical_key(branch, b"zero".to_vec()), CommitVersion::ZERO)
+            .expect("zero bound")
+            .expect("zero row")
+            .row(),
+        &zero_row
+    );
+    assert_eq!(
+        view.at_version(&physical_key(branch, b"max".to_vec()), CommitVersion::MAX)
+            .expect("max bound")
+            .expect("max row")
+            .row(),
+        &max_row
+    );
+}
+
+#[test]
+fn branch_read_view_multiple_frozen_tables_preserve_source_facts() {
+    let branch = branch_id(47);
+    let mut state = BranchLocalState::empty(branch);
+    let old_frozen = storage_row_with(
+        branch,
+        b"multi-frozen".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    );
+    let new_frozen = storage_row_with(
+        branch,
+        b"multi-frozen".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"new".to_vec(),
+    );
+    let active_middle = storage_row_with(
+        branch,
+        b"multi-frozen".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+
+    state
+        .append_committed_row(old_frozen.clone())
+        .expect("append old frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(new_frozen.clone())
+        .expect("append new frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(active_middle.clone())
+        .expect("append active middle");
+
+    let view = state.capture_read_view().expect("view");
+    assert_eq!(view.frozen_table_count(), 2);
+    let key = physical_key(branch, b"multi-frozen".to_vec());
+    let latest = view.latest(&key).expect("latest").expect("new frozen");
+    assert_eq!(latest.row(), &new_frozen);
+    assert_eq!(latest.source(), BranchRowSource::Frozen { index: 0 });
+    let at_two = view
+        .at_version(&key, CommitVersion::new(2))
+        .expect("at two")
+        .expect("active middle");
+    assert_eq!(at_two.row(), &active_middle);
+    assert_eq!(at_two.source(), BranchRowSource::Active);
+    let at_one = view
+        .at_version(&key, CommitVersion::new(1))
+        .expect("at one")
+        .expect("old frozen");
+    assert_eq!(at_one.row(), &old_frozen);
+    assert_eq!(at_one.source(), BranchRowSource::Frozen { index: 1 });
+}
+
+#[test]
+fn branch_read_view_history_preserves_tombstones_limits_and_before_version() {
+    let branch = branch_id(40);
+    let mut state = BranchLocalState::empty(branch);
+    let key = physical_key(branch, b"history".to_vec());
+    let rows = [
+        storage_row_with(
+            branch,
+            b"history".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"one".to_vec(),
+        ),
+        tombstone_row(branch, b"history".to_vec(), 2, 20),
+        storage_row_with(
+            branch,
+            b"history".to_vec(),
+            3,
+            30,
+            Timestamp::from_micros(25),
+            Vec::new(),
+        ),
+    ];
+
+    for row in rows {
+        state.append_committed_row(row).expect("append history row");
+    }
+    let view = state.capture_read_view().expect("view");
+
+    let all = view
+        .history(&key, BranchHistoryOptions::all())
+        .expect("all history");
+    assert_eq!(history_versions(&all), vec![3, 2, 1]);
+    assert!(all.iter().any(|row| row.row().is_tombstone()));
+    assert_eq!(all[0].row().value(), b"");
+    assert_eq!(all[0].row().expires_at(), Timestamp::from_micros(25));
+
+    let before_three = view
+        .history(
+            &key,
+            BranchHistoryOptions::all().before_version(CommitVersion::new(3)),
+        )
+        .expect("before");
+    assert_eq!(history_versions(&before_three), vec![2, 1]);
+
+    let one = view
+        .history(&key, BranchHistoryOptions::all().limit(1))
+        .expect("limited");
+    assert_eq!(history_versions(&one), vec![3]);
+
+    let zero = view
+        .history(&key, BranchHistoryOptions::all().limit(0))
+        .expect("zero limit");
+    assert!(zero.is_empty());
+
+    let without_tombstones = view
+        .history(&key, BranchHistoryOptions::all().include_tombstones(false))
+        .expect("without tombstones");
+    assert_eq!(history_versions(&without_tombstones), vec![3, 1]);
+
+    let before_zero = view
+        .history(
+            &key,
+            BranchHistoryOptions::all().before_version(CommitVersion::ZERO),
+        )
+        .expect("before zero");
+    assert!(before_zero.is_empty());
+}
+
+#[test]
+fn branch_read_view_prefix_and_range_scans_group_by_physical_key() {
+    let branch = branch_id(41);
+    let view = branch_read_view_with_scan_rows(branch);
+    assert_eq!(view.branch_id(), branch);
+
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"ap".to_vec()));
+    let prefix_rows = view
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .expect("prefix scan");
+    assert_eq!(
+        scan_user_keys(&prefix_rows),
+        vec![b"apple".to_vec(), b"apricot".to_vec()]
+    );
+    assert_eq!(prefix_rows[0].row().value(), b"new-apple");
+
+    let closed = BranchScanBounds::closed(
+        &physical_key(branch, b"apple".to_vec()),
+        &physical_key(branch, b"banana".to_vec()),
+    )
+    .expect("closed range");
+    let range_rows = view
+        .scan_range(&closed, BranchReadBound::at_version(CommitVersion::new(4)))
+        .expect("range scan");
+    assert_eq!(
+        scan_user_keys(&range_rows),
+        vec![b"apple".to_vec(), b"apricot".to_vec(), b"banana".to_vec()]
+    );
+
+    let open = BranchScanBounds::open(
+        &physical_key(branch, b"apple".to_vec()),
+        &physical_key(branch, b"banana".to_vec()),
+    )
+    .expect("open range");
+    let open_rows = view
+        .scan_range(&open, BranchReadBound::latest())
+        .expect("open range scan");
+    assert_eq!(scan_user_keys(&open_rows), vec![b"apricot".to_vec()]);
+
+    let bounded = BranchScanBounds::range(
+        branch,
+        "default",
+        StorageSpaceId::engine(0x20).expect("engine space"),
+        BranchUserKeyBound::included(b"apple".to_vec()),
+        BranchUserKeyBound::excluded(b"banana".to_vec()),
+    )
+    .expect("manual range");
+    let bounded_rows = view
+        .scan_range(&bounded, BranchReadBound::latest())
+        .expect("manual range scan");
+    assert_eq!(
+        scan_user_keys(&bounded_rows),
+        vec![b"apple".to_vec(), b"apricot".to_vec()]
+    );
+
+    let unbounded = BranchScanBounds::unbounded(
+        branch,
+        "default",
+        StorageSpaceId::engine(0x20).expect("engine space"),
+    )
+    .expect("unbounded scan");
+    let unbounded_rows = view
+        .scan_range(
+            &unbounded,
+            BranchReadBound::at_version(CommitVersion::new(6)),
+        )
+        .expect("unbounded scan");
+    assert_eq!(
+        scan_user_keys(&unbounded_rows),
+        vec![
+            b"apple".to_vec(),
+            b"apricot".to_vec(),
+            b"banana".to_vec(),
+            vec![0x80, 0x00, 0xff],
+        ]
+    );
+}
+
+#[test]
+fn branch_read_view_scans_cover_empty_prefix_zero_bytes_and_degenerate_ranges() {
+    let branch = branch_id(48);
+    let mut state = BranchLocalState::empty(branch);
+    let empty_key_row = storage_row_with(branch, Vec::new(), 1, 10, Timestamp::EPOCH, Vec::new());
+    let nul_row = storage_row_with(
+        branch,
+        b"nul\0a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"nul-a".to_vec(),
+    );
+    let nul_tombstone = tombstone_row(branch, b"nul\0b".to_vec(), 3, 30);
+    let other_storage_space = StorageRow::put(
+        physical_key_with(
+            branch,
+            "default",
+            StorageSpaceId::engine(0x21).expect("engine space"),
+            b"nul\0a".to_vec(),
+        ),
+        CommitVersion::new(4),
+        Timestamp::from_micros(40),
+        Timestamp::EPOCH,
+        b"other-storage-space".to_vec(),
+    );
+    for row in [
+        empty_key_row.clone(),
+        nul_row.clone(),
+        nul_tombstone,
+        other_storage_space,
+    ] {
+        state
+            .append_committed_row(row)
+            .expect("append scan edge row");
+    }
+    let view = state.capture_read_view().expect("view");
+
+    let empty_prefix = BranchScanBounds::prefix(&physical_key(branch, Vec::new()));
+    assert_eq!(
+        scan_user_keys(
+            &view
+                .scan_prefix(&empty_prefix, BranchReadBound::latest())
+                .expect("empty prefix scan")
+        ),
+        vec![Vec::new(), b"nul\0a".to_vec()]
+    );
+
+    let nul_prefix = BranchScanBounds::prefix(&physical_key(branch, b"nul\0".to_vec()));
+    let nul_rows = view
+        .scan_prefix(&nul_prefix, BranchReadBound::latest())
+        .expect("nul prefix scan");
+    assert_eq!(scan_user_keys(&nul_rows), vec![b"nul\0a".to_vec()]);
+    assert_eq!(nul_rows[0].row(), &nul_row);
+
+    let lower = physical_key(branch, b"nul\0a".to_vec());
+    let open_degenerate = BranchScanBounds::open(&lower, &lower).expect("open degenerate");
+    assert!(view
+        .scan_range(&open_degenerate, BranchReadBound::latest())
+        .expect("open degenerate scan")
+        .is_empty());
+    let closed_degenerate = BranchScanBounds::closed(&lower, &lower).expect("closed degenerate");
+    let closed_degenerate_rows = view
+        .scan_range(&closed_degenerate, BranchReadBound::latest())
+        .expect("closed degenerate scan");
+    assert_eq!(closed_degenerate_rows.len(), 1);
+    assert_eq!(closed_degenerate_rows[0].row(), &nul_row);
+}
+
+fn branch_read_view_with_scan_rows(branch: BranchId) -> BranchReadView {
+    let mut state = BranchLocalState::empty(branch);
+    let rows = [
+        storage_row_with(
+            branch,
+            b"apple".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"old-apple".to_vec(),
+        ),
+        storage_row_with(
+            branch,
+            b"apple".to_vec(),
+            2,
+            20,
+            Timestamp::EPOCH,
+            b"new-apple".to_vec(),
+        ),
+        storage_row_with(
+            branch,
+            b"apricot".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"apricot".to_vec(),
+        ),
+        storage_row_with(
+            branch,
+            b"banana".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"banana".to_vec(),
+        ),
+        tombstone_row(branch, b"apex".to_vec(), 5, 50),
+        storage_row_with(
+            branch,
+            vec![0x80, 0x00, 0xff],
+            6,
+            60,
+            Timestamp::EPOCH,
+            b"high".to_vec(),
+        ),
+        StorageRow::put(
+            physical_key_with(
+                branch,
+                "other-space",
+                StorageSpaceId::engine(0x20).expect("engine space"),
+                b"apple".to_vec(),
+            ),
+            CommitVersion::new(7),
+            Timestamp::from_micros(70),
+            Timestamp::EPOCH,
+            b"other-space".to_vec(),
+        ),
+        StorageRow::put(
+            physical_key_with(
+                branch,
+                "default",
+                StorageSpaceId::engine(0x21).expect("engine space"),
+                b"apple".to_vec(),
+            ),
+            CommitVersion::new(8),
+            Timestamp::from_micros(80),
+            Timestamp::EPOCH,
+            b"other-storage-space".to_vec(),
+        ),
+    ];
+    for row in rows {
+        state.append_committed_row(row).expect("append scan row");
+    }
+    state.capture_read_view().expect("view")
+}
+
+#[test]
+fn branch_read_view_rejects_wrong_branch_and_timestamp_bounds_without_payload() {
+    let branch = branch_id(42);
+    let other = branch_id(43);
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"payload".to_vec(),
+        1,
+        10,
+        Timestamp::from_micros(20),
+        b"secret-payload".to_vec(),
+    );
+    state.append_committed_row(row).expect("append row");
+    let view = state.capture_read_view().expect("view");
+
+    let wrong_branch_error = view
+        .latest(&physical_key(other, b"payload".to_vec()))
+        .expect_err("wrong branch rejected");
+    assert!(matches!(
+        wrong_branch_error,
+        BranchRuntimeError::InvalidBranchRow { .. }
+    ));
+    assert!(!wrong_branch_error.to_string().contains("secret-payload"));
+
+    let timestamp_error = view
+        .read_point(
+            &physical_key(branch, b"payload".to_vec()),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(20)),
+        )
+        .expect_err("timestamp bound deferred");
+    assert!(matches!(
+        timestamp_error,
+        BranchRuntimeError::InvalidReadBound { .. }
+    ));
+    assert!(!timestamp_error.to_string().contains("secret-payload"));
+
+    let scan_error = view
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key(branch, b"payload".to_vec())),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(20)),
+        )
+        .expect_err("timestamp scan deferred");
+    assert!(matches!(
+        scan_error,
+        BranchRuntimeError::InvalidReadBound { .. }
+    ));
+
+    let wrong_branch_scan = view
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key(other, b"payload".to_vec())),
+            BranchReadBound::latest(),
+        )
+        .expect_err("wrong branch scan rejected");
+    assert!(matches!(
+        wrong_branch_scan,
+        BranchRuntimeError::InvalidBranchRow { .. }
+    ));
+
+    assert!(matches!(
+        BranchScanBounds::closed(
+            &physical_key(branch, b"z".to_vec()),
+            &physical_key(branch, b"a".to_vec()),
+        ),
+        Err(BranchRuntimeError::InvalidReadBound { .. })
+    ));
+    assert!(matches!(
+        BranchScanBounds::unbounded(
+            branch,
+            "",
+            StorageSpaceId::engine(0x20).expect("engine space"),
+        ),
+        Err(BranchRuntimeError::InvalidReadBound { .. })
+    ));
+    assert!(matches!(
+        BranchScanBounds::range(
+            branch,
+            "bad\0space",
+            StorageSpaceId::engine(0x20).expect("engine space"),
+            BranchUserKeyBound::Unbounded,
+            BranchUserKeyBound::Unbounded,
+        ),
+        Err(BranchRuntimeError::InvalidReadBound { .. })
+    ));
+}
+
+#[test]
+fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
+    let branch = branch_id(49);
+    let row = storage_row_with(
+        branch,
+        b"owned-constructor".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let reader = immutable_reader("owned-constructor", vec![row]);
+    let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+    let owned =
+        BranchOwnedTable::new(branch, descriptor.clone(), reader.clone()).expect("owned table");
+    assert_eq!(owned.branch_id(), branch);
+    assert_eq!(owned.descriptor(), &descriptor);
+    assert_eq!(owned.facts(), reader.facts());
+    assert_eq!(owned.level(), BranchLevel::ZERO);
+    assert_eq!(owned.rows().len(), 1);
+
+    let other_reader = immutable_reader(
+        "owned-constructor-other",
+        vec![storage_row_with(
+            branch,
+            b"other".to_vec(),
+            2,
+            20,
+            Timestamp::EPOCH,
+            b"other".to_vec(),
+        )],
+    );
+    assert!(matches!(
+        BranchOwnedTable::new(branch, descriptor, other_reader),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let wrong_branch_reader = immutable_reader(
+        "owned-constructor-wrong",
+        vec![storage_row_with(
+            branch_id(50),
+            b"wrong".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"secret-payload".to_vec(),
+        )],
+    );
+    let wrong_branch_descriptor = branch_table_descriptor(BranchLevel::ZERO, &wrong_branch_reader);
+    let error = BranchOwnedTable::new(branch, wrong_branch_descriptor, wrong_branch_reader)
+        .expect_err("wrong branch table rejected");
+    assert!(matches!(error, BranchRuntimeError::InvalidBranchRow { .. }));
+    assert!(!error.to_string().contains("secret-payload"));
+}
+
+#[test]
+fn branch_owned_table_empty_immutable_input_is_rejected_before_install() {
+    let branch = branch_id(68);
+    let state = BranchLocalState::empty(branch);
+    let builder = ImmutableTableBuilder::new(TableBuilderConfig::default()).expect("builder");
+    let rows = Vec::<TableRow>::new();
+    let error = builder
+        .build_from_rows(
+            TableIdentity::new("empty-owned-table").expect("identity"),
+            &rows,
+        )
+        .expect_err("empty immutable table rejected");
+
+    assert!(matches!(
+        error,
+        crate::table::TableRuntimeError::InvalidRange { field: "row_count" }
+    ));
+    assert_eq!(state.owned_table_count(), 0);
+    assert!(state.is_empty());
+}
+
+#[test]
+fn branch_local_state_installs_l0_table_and_reads_owned_sources() {
+    let branch = branch_id(51);
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"owned-l0".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"owned".to_vec(),
+    );
+    let table = branch_owned_table(branch, BranchLevel::ZERO, "owned-l0", vec![row.clone()]);
+
+    let outcome: BranchImmutableInstallOutcome = state.install_l0_table(table).expect("install l0");
+    assert_eq!(outcome.branch_id(), branch);
+    assert_eq!(outcome.level(), BranchLevel::ZERO);
+    assert_eq!(outcome.table_index(), 0);
+    assert_eq!(outcome.level_table_count(), 1);
+    assert_eq!(outcome.owned_table_count(), 1);
+    assert_eq!(outcome.replaced_frozen_index(), None);
+    assert_eq!(state.owned_table_count(), 1);
+    assert_eq!(state.max_commit_version(), Some(CommitVersion::new(5)));
+    assert_eq!(state.put_rows(), 1);
+
+    let facts = state.facts().expect("facts");
+    assert_eq!(facts.owned_table_count(), 1);
+    assert_eq!(facts.max_commit_version(), Some(CommitVersion::new(5)));
+    let view = state.capture_read_view().expect("view");
+    assert_eq!(view.owned_table_count(), 1);
+    assert_eq!(view.owned_levels()[0].len(), 1);
+    let visible = view
+        .latest(&physical_key(branch, b"owned-l0".to_vec()))
+        .expect("latest")
+        .expect("owned row");
+    assert_eq!(visible.row(), &row);
+    assert_eq!(
+        visible.source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        }
+    );
+}
+
+#[test]
+fn branch_local_state_rejects_owned_table_for_other_branch_without_mutation() {
+    let branch = branch_id(56);
+    let other = branch_id(57);
+    let mut state = BranchLocalState::empty(branch);
+    let table = branch_owned_table(
+        other,
+        BranchLevel::ZERO,
+        "owned-other-branch",
+        vec![storage_row_with(
+            other,
+            b"wrong-branch-owned".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"secret-payload".to_vec(),
+        )],
+    );
+    let before = state.clone();
+
+    let error = state
+        .install_l0_table(table)
+        .expect_err("other branch table rejected");
+    assert!(matches!(error, BranchRuntimeError::InvalidBranchRow { .. }));
+    assert!(!error.to_string().contains("secret-payload"));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn branch_local_state_replaces_frozen_with_l0_without_mutating_pinned_views() {
+    let branch = branch_id(52);
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"flush".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"flush".to_vec(),
+    );
+    state.append_committed_row(row.clone()).expect("append row");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let pinned = state.capture_read_view().expect("pinned view");
+    let table = branch_owned_table(branch, BranchLevel::ZERO, "flush-l0", vec![row.clone()]);
+
+    let outcome: BranchImmutableInstallOutcome = state
+        .replace_frozen_with_l0_table(0, table)
+        .expect("replace frozen");
+    assert_eq!(outcome.replaced_frozen_index(), Some(0));
+    assert_eq!(state.frozen_table_count(), 0);
+    assert_eq!(state.owned_table_count(), 1);
+
+    let key = physical_key(branch, b"flush".to_vec());
+    let before = pinned.latest(&key).expect("pinned latest").expect("row");
+    assert_eq!(before.row(), &row);
+    assert_eq!(before.source(), BranchRowSource::Frozen { index: 0 });
+
+    let after_view = state.capture_read_view().expect("after view");
+    let after = after_view.latest(&key).expect("after latest").expect("row");
+    assert_eq!(after.row(), &row);
+    assert_eq!(
+        after.source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        }
+    );
+}
+
+#[test]
+fn branch_frozen_replacement_rejects_mismatches_without_mutation() {
+    let branch = branch_id(55);
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"flush-mismatch".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    state.append_committed_row(row.clone()).expect("append row");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let before = state.clone();
+
+    let mismatched_value = storage_row_with(
+        branch,
+        b"flush-mismatch".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"different".to_vec(),
+    );
+    let mismatch = branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "flush-mismatch",
+        vec![mismatched_value],
+    );
+    assert!(matches!(
+        state.replace_frozen_with_l0_table(0, mismatch),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert_eq!(state, before);
+
+    let replacement =
+        branch_owned_table(branch, BranchLevel::ZERO, "flush-out-of-range", vec![row]);
+    assert!(matches!(
+        state.replace_frozen_with_l0_table(1, replacement),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn branch_read_view_scans_owned_immutable_tables_and_pins_before_l0_install() {
+    let branch = branch_id(58);
+    let mut state = BranchLocalState::empty(branch);
+    let pinned_before = state.capture_read_view().expect("pre-install view");
+    let live = storage_row_with(
+        branch,
+        b"scan-owned-a".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"live".to_vec(),
+    );
+    let old_deleted = storage_row_with(
+        branch,
+        b"scan-owned-b".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    );
+    let deleting_tombstone = tombstone_row(branch, b"scan-owned-b".to_vec(), 4, 40);
+    let high = storage_row_with(
+        branch,
+        vec![b's', b'c', b'a', b'n', 0x80],
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"high".to_vec(),
+    );
+    let table = branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "owned-scan",
+        vec![live.clone(), old_deleted, deleting_tombstone, high.clone()],
+    );
+    state.install_l0_table(table).expect("install scan table");
+
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"scan-owned".to_vec()));
+    assert!(pinned_before
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .expect("pinned prefix")
+        .is_empty());
+
+    let view = state.capture_read_view().expect("post-install view");
+    let prefix_rows = view
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .expect("prefix scan");
+    assert_eq!(scan_user_keys(&prefix_rows), vec![b"scan-owned-a".to_vec()]);
+    assert_eq!(prefix_rows[0].row(), &live);
+    assert_eq!(
+        prefix_rows[0].source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        }
+    );
+
+    let range = BranchScanBounds::closed(
+        &physical_key(branch, b"scan-owned-a".to_vec()),
+        &physical_key(branch, vec![b's', b'c', b'a', b'n', 0x80]),
+    )
+    .expect("closed owned range");
+    let range_rows = view
+        .scan_range(&range, BranchReadBound::latest())
+        .expect("range scan");
+    assert_eq!(
+        scan_user_keys(&range_rows),
+        vec![b"scan-owned-a".to_vec(), vec![b's', b'c', b'a', b'n', 0x80]]
+    );
+    assert_eq!(range_rows[1].row(), &high);
+}
+
+#[test]
+fn branch_owned_l0_tables_accept_overlaps_and_select_by_version_not_index() {
+    let branch = branch_id(59);
+    let mut state = BranchLocalState::empty(branch);
+    let key = physical_key(branch, b"l0-overlap".to_vec());
+    let newer = storage_row_with(
+        branch,
+        b"l0-overlap".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"newer".to_vec(),
+    );
+    let older = storage_row_with(
+        branch,
+        b"l0-overlap".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-overlap-newer",
+            vec![newer.clone()],
+        ))
+        .expect("install newer L0");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-overlap-older",
+            vec![older.clone()],
+        ))
+        .expect("install overlapping older L0");
+    assert_eq!(state.owned_levels()[0].len(), 2);
+    assert_eq!(
+        state.owned_levels()[0][0].descriptor().identity().as_str(),
+        "l0-overlap-older"
+    );
+
+    let view = state.capture_read_view().expect("view");
+    assert_visible_row(
+        view.latest(&key).expect("latest").as_ref(),
+        &newer,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 1,
+        },
+    );
+    assert_visible_row(
+        view.at_version(&key, CommitVersion::new(2))
+            .expect("bounded")
+            .as_ref(),
+        &older,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_frozen_replacement_targets_named_frozen_table_and_keeps_l0_front() {
+    let branch = branch_id(60);
+    let mut state = BranchLocalState::empty(branch);
+    let older_frozen = storage_row_with(
+        branch,
+        b"replace-old".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    );
+    let newer_frozen = storage_row_with(
+        branch,
+        b"replace-new".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"new".to_vec(),
+    );
+    state
+        .append_committed_row(older_frozen.clone())
+        .expect("append older");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(newer_frozen.clone())
+        .expect("append newer");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "preexisting-l0",
+            vec![storage_row_with(
+                branch,
+                b"preexisting".to_vec(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                b"preexisting".to_vec(),
+            )],
+        ))
+        .expect("install preexisting L0");
+    let pinned = state.capture_read_view().expect("pinned");
+
+    let outcome = state
+        .replace_frozen_with_l0_table(
+            1,
+            branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                "replace-old-l0",
+                vec![older_frozen.clone()],
+            ),
+        )
+        .expect("replace older frozen");
+    assert_eq!(outcome.replaced_frozen_index(), Some(1));
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(state.owned_levels()[0].len(), 2);
+    assert_eq!(
+        state.owned_levels()[0][0].descriptor().identity().as_str(),
+        "replace-old-l0"
+    );
+    assert_eq!(
+        state.owned_levels()[0][1].descriptor().identity().as_str(),
+        "preexisting-l0"
+    );
+
+    let old_key = physical_key(branch, b"replace-old".to_vec());
+    let new_key = physical_key(branch, b"replace-new".to_vec());
+    assert_visible_row(
+        pinned.latest(&old_key).expect("pinned old").as_ref(),
+        &older_frozen,
+        BranchRowSource::Frozen { index: 1 },
+    );
+    let after = state.capture_read_view().expect("after");
+    assert_visible_row(
+        after.latest(&old_key).expect("after old").as_ref(),
+        &older_frozen,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after.latest(&new_key).expect("after new").as_ref(),
+        &newer_frozen,
+        BranchRowSource::Frozen { index: 0 },
+    );
+}
+
+#[test]
+fn branch_owned_nonzero_levels_are_sorted_and_reject_overlaps_without_mutation() {
+    let branch = branch_id(53);
+    let config = BranchRuntimeConfig::new(3, 64, 32).expect("config");
+    let mut state = BranchLocalState::new(branch, config).expect("state");
+    let level = BranchLevel::new(1);
+    let z_table = branch_owned_table(
+        branch,
+        level,
+        "level-one-z",
+        vec![storage_row_with(
+            branch,
+            b"z".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"z".to_vec(),
+        )],
+    );
+    let ac_table = branch_owned_table(
+        branch,
+        level,
+        "level-one-ac",
+        vec![
+            storage_row_with(
+                branch,
+                b"a".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                b"a".to_vec(),
+            ),
+            storage_row_with(
+                branch,
+                b"c".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                b"c".to_vec(),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        state
+            .install_owned_table_at_level(level, z_table)
+            .expect("install z")
+            .table_index(),
+        0
+    );
+    assert_eq!(
+        state
+            .install_owned_table_at_level(level, ac_table)
+            .expect("install ac")
+            .table_index(),
+        0
+    );
+    assert_eq!(
+        state.owned_levels()[1][0].descriptor().identity().as_str(),
+        "level-one-ac"
+    );
+    assert_eq!(
+        state.owned_levels()[1][1].descriptor().identity().as_str(),
+        "level-one-z"
+    );
+
+    let before = state.clone();
+    let overlap = branch_owned_table(
+        branch,
+        level,
+        "level-one-overlap",
+        vec![storage_row_with(
+            branch,
+            b"b".to_vec(),
+            2,
+            20,
+            Timestamp::EPOCH,
+            b"b".to_vec(),
+        )],
+    );
+    assert!(matches!(
+        state.install_owned_table_at_level(level, overlap),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert_eq!(state, before);
+
+    let wrong_level_table = branch_owned_table(
+        branch,
+        BranchLevel::new(2),
+        "wrong-level",
+        vec![storage_row(branch, 9)],
+    );
+    assert!(matches!(
+        state.install_owned_table_at_level(level, wrong_level_table),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+}
+
+#[test]
+fn branch_owned_level_outside_configured_count_is_rejected_without_mutation() {
+    let branch = branch_id(70);
+    let config = BranchRuntimeConfig::new(3, 64, 32).expect("config");
+    let mut state = BranchLocalState::new(branch, config).expect("state");
+    let outside = BranchLevel::new(3);
+    let outside_level_table = branch_owned_table(
+        branch,
+        outside,
+        "outside-level",
+        vec![storage_row(branch, 10)],
+    );
+    let before_outside = state.clone();
+    assert!(matches!(
+        state.install_owned_table_at_level(outside, outside_level_table),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert_eq!(state, before_outside);
+}
+
+#[test]
+fn branch_read_view_merges_owned_tables_with_active_and_frozen_by_commit_version() {
+    let branch = branch_id(54);
+    let mut state = BranchLocalState::empty(branch);
+    let key = physical_key(branch, b"owned-chain".to_vec());
+    let frozen_newer = storage_row_with(
+        branch,
+        b"owned-chain".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    let active_older = storage_row_with(
+        branch,
+        b"owned-chain".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+    let owned_middle = storage_row_with(
+        branch,
+        b"owned-chain".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"owned".to_vec(),
+    );
+
+    state
+        .append_committed_row(frozen_newer.clone())
+        .expect("append frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(active_older.clone())
+        .expect("append active");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "owned-chain",
+            vec![owned_middle.clone()],
+        ))
+        .expect("install owned");
+
+    let view = state.capture_read_view().expect("view");
+    assert_eq!(
+        view.latest(&key).expect("latest").expect("newest").source(),
+        BranchRowSource::Frozen { index: 0 }
+    );
+    assert_eq!(
+        view.at_version(&key, CommitVersion::new(5))
+            .expect("at five")
+            .expect("owned")
+            .source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        }
+    );
+    assert_eq!(
+        view.at_version(&key, CommitVersion::new(2))
+            .expect("at two")
+            .expect("active")
+            .row(),
+        &active_older
+    );
+    assert_eq!(
+        history_versions(
+            &view
+                .history(&key, BranchHistoryOptions::all())
+                .expect("history")
+        ),
+        vec![7, 5, 2]
+    );
+}
+
+#[test]
+fn branch_immutable_point_reads_choose_newer_between_active_and_l0() {
+    let branch = branch_id(61);
+    let mut state = BranchLocalState::empty(branch);
+    let active_wins = storage_row_with(
+        branch,
+        b"active-wins".to_vec(),
+        9,
+        90,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+    let owned_beats_active_old = storage_row_with(
+        branch,
+        b"owned-beats-active".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"old-active".to_vec(),
+    );
+    state
+        .append_committed_row(active_wins.clone())
+        .expect("append active winner");
+    state
+        .append_committed_row(owned_beats_active_old)
+        .expect("append active loser");
+    let owned_rows = vec![
+        storage_row_with(
+            branch,
+            b"active-wins".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"old-owned".to_vec(),
+        ),
+        storage_row_with(
+            branch,
+            b"owned-beats-active".to_vec(),
+            7,
+            70,
+            Timestamp::EPOCH,
+            b"owned-active".to_vec(),
+        ),
+    ];
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "active-l0-precedence",
+            owned_rows.clone(),
+        ))
+        .expect("install L0");
+
+    let view = state.capture_read_view().expect("view");
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"active-wins".to_vec()))
+            .expect("active wins")
+            .as_ref(),
+        &active_wins,
+        BranchRowSource::Active,
+    );
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"owned-beats-active".to_vec()))
+            .expect("owned active")
+            .as_ref(),
+        &owned_rows[1],
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_immutable_point_reads_choose_newer_between_frozen_l0_and_l1() {
+    let branch = branch_id(62);
+    let mut state = BranchLocalState::empty(branch);
+    let frozen_wins = storage_row_with(
+        branch,
+        b"frozen-wins".to_vec(),
+        8,
+        80,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    state
+        .append_committed_row(frozen_wins.clone())
+        .expect("append frozen winner");
+    state
+        .append_committed_row(storage_row_with(
+            branch,
+            b"owned-beats-frozen".to_vec(),
+            2,
+            20,
+            Timestamp::EPOCH,
+            b"old-frozen".to_vec(),
+        ))
+        .expect("append frozen loser");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+
+    let owned_rows = vec![
+        storage_row_with(
+            branch,
+            b"frozen-wins".to_vec(),
+            5,
+            50,
+            Timestamp::EPOCH,
+            b"old-owned".to_vec(),
+        ),
+        storage_row_with(
+            branch,
+            b"owned-beats-frozen".to_vec(),
+            6,
+            60,
+            Timestamp::EPOCH,
+            b"owned-frozen".to_vec(),
+        ),
+    ];
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "frozen-l0-precedence",
+            owned_rows.clone(),
+        ))
+        .expect("install L0");
+    let l1_only = storage_row_with(
+        branch,
+        b"l1-only".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"l1".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "source-precedence-l1",
+                vec![l1_only.clone()],
+            ),
+        )
+        .expect("install L1");
+
+    let view = state.capture_read_view().expect("view");
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"frozen-wins".to_vec()))
+            .expect("frozen wins")
+            .as_ref(),
+        &frozen_wins,
+        BranchRowSource::Frozen { index: 0 },
+    );
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"owned-beats-frozen".to_vec()))
+            .expect("owned frozen")
+            .as_ref(),
+        &owned_rows[1],
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"l1-only".to_vec()))
+            .expect("l1 only")
+            .as_ref(),
+        &l1_only,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_immutable_version_reads_cover_tombstone_bounds() {
+    let branch = branch_id(63);
+    let mut state = BranchLocalState::empty(branch);
+    let deleted_put = storage_row_with(
+        branch,
+        b"deleted".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"before-delete".to_vec(),
+    );
+    let tombstone_above_put = storage_row_with(
+        branch,
+        b"tombstone-above".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"visible-before-tombstone".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "version-tombstone-l0",
+            vec![
+                deleted_put.clone(),
+                tombstone_row(branch, b"deleted".to_vec(), 3, 30),
+                tombstone_above_put.clone(),
+                tombstone_row(branch, b"tombstone-above".to_vec(), 5, 50),
+            ],
+        ))
+        .expect("install version table");
+    let view = state.capture_read_view().expect("view");
+
+    assert_visible_row(
+        view.at_version(
+            &physical_key(branch, b"deleted".to_vec()),
+            CommitVersion::new(2),
+        )
+        .expect("before delete")
+        .as_ref(),
+        &deleted_put,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert!(view
+        .at_version(
+            &physical_key(branch, b"deleted".to_vec()),
+            CommitVersion::new(3),
+        )
+        .expect("at delete")
+        .is_none());
+    assert_visible_row(
+        view.at_version(
+            &physical_key(branch, b"tombstone-above".to_vec()),
+            CommitVersion::new(4),
+        )
+        .expect("below tombstone")
+        .as_ref(),
+        &tombstone_above_put,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert!(view
+        .at_version(
+            &physical_key(branch, b"tombstone-above".to_vec()),
+            CommitVersion::new(5),
+        )
+        .expect("at tombstone")
+        .is_none());
+}
+
+#[test]
+fn branch_immutable_version_reads_cover_zero_and_max_commit_bounds() {
+    let branch = branch_id(64);
+    let mut state = BranchLocalState::empty(branch);
+    let zero = storage_row_with(
+        branch,
+        b"zero-owned".to_vec(),
+        0,
+        0,
+        Timestamp::EPOCH,
+        b"zero".to_vec(),
+    );
+    let max = storage_row_with(
+        branch,
+        b"max-owned".to_vec(),
+        u64::MAX,
+        90,
+        Timestamp::EPOCH,
+        b"max".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "version-extremes-l0",
+            vec![zero.clone(), max.clone()],
+        ))
+        .expect("install version extremes");
+    let view = state.capture_read_view().expect("view");
+
+    assert_visible_row(
+        view.at_version(
+            &physical_key(branch, b"zero-owned".to_vec()),
+            CommitVersion::ZERO,
+        )
+        .expect("zero")
+        .as_ref(),
+        &zero,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.at_version(
+            &physical_key(branch, b"max-owned".to_vec()),
+            CommitVersion::MAX,
+        )
+        .expect("max")
+        .as_ref(),
+        &max,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_immutable_history_filters_tombstones_limits_and_cross_level_versions() {
+    let branch = branch_id(65);
+    let mut state = BranchLocalState::empty(branch);
+    let key = physical_key(branch, b"owned-history".to_vec());
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "history-l1",
+                vec![storage_row_with(
+                    branch,
+                    b"owned-history".to_vec(),
+                    1,
+                    10,
+                    Timestamp::EPOCH,
+                    b"old".to_vec(),
+                )],
+            ),
+        )
+        .expect("install history L1");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "history-l0",
+            vec![
+                storage_row_with(
+                    branch,
+                    b"owned-history".to_vec(),
+                    3,
+                    30,
+                    Timestamp::EPOCH,
+                    b"new".to_vec(),
+                ),
+                tombstone_row(branch, b"owned-history".to_vec(), 2, 20),
+            ],
+        ))
+        .expect("install history L0");
+    let view = state.capture_read_view().expect("view");
+
+    assert_eq!(
+        history_versions(
+            &view
+                .history(&key, BranchHistoryOptions::all())
+                .expect("all")
+        ),
+        vec![3, 2, 1]
+    );
+    assert_eq!(
+        history_versions(
+            &view
+                .history(&key, BranchHistoryOptions::all().include_tombstones(false))
+                .expect("without tombstones")
+        ),
+        vec![3, 1]
+    );
+    assert_eq!(
+        history_versions(
+            &view
+                .history(
+                    &key,
+                    BranchHistoryOptions::all().before_version(CommitVersion::new(3)),
+                )
+                .expect("before three")
+        ),
+        vec![2, 1]
+    );
+    assert!(view
+        .history(&key, BranchHistoryOptions::all().limit(0))
+        .expect("limit zero")
+        .is_empty());
+    assert_eq!(
+        history_versions(
+            &view
+                .history(
+                    &key,
+                    BranchHistoryOptions::all()
+                        .include_tombstones(false)
+                        .limit(1),
+                )
+                .expect("filtered limit")
+        ),
+        vec![3]
+    );
+}
+
+#[test]
+fn branch_immutable_prefix_scans_merge_sources_and_respect_spaces() {
+    let branch = branch_id(66);
+    let mut state = BranchLocalState::empty(branch);
+    let frozen = storage_row_with(
+        branch,
+        b"scan-b".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    let active = storage_row_with(
+        branch,
+        b"scan-a".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+    state
+        .append_committed_row(frozen.clone())
+        .expect("append frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(active.clone())
+        .expect("append active");
+    let scan_c_new = storage_row_with(
+        branch,
+        b"scan-c".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"new-c".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "scan-l0-new",
+            vec![
+                scan_c_new.clone(),
+                tombstone_row(branch, b"scan-d".to_vec(), 6, 60),
+            ],
+        ))
+        .expect("install scan L0 new");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "scan-l0-old",
+            vec![
+                storage_row_with(
+                    branch,
+                    b"scan-c".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"old-c".to_vec(),
+                ),
+                storage_row_with(
+                    branch,
+                    b"scan-d".to_vec(),
+                    1,
+                    10,
+                    Timestamp::EPOCH,
+                    b"old-d".to_vec(),
+                ),
+                storage_row_with_named_space(
+                    branch,
+                    "other-space",
+                    StorageSpaceId::engine(0x20).expect("engine space"),
+                    b"scan-a".to_vec(),
+                    9,
+                    90,
+                    b"other-space".to_vec(),
+                ),
+            ],
+        ))
+        .expect("install scan L0 old");
+
+    let view = state.capture_read_view().expect("view");
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"scan-".to_vec()));
+    let prefix_rows = view
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .expect("prefix scan");
+    assert_eq!(
+        scan_user_keys(&prefix_rows),
+        vec![b"scan-a".to_vec(), b"scan-b".to_vec(), b"scan-c".to_vec(),]
+    );
+    assert_eq!(prefix_rows[0].row(), &active);
+    assert_eq!(prefix_rows[1].row(), &frozen);
+    assert_eq!(prefix_rows[2].row(), &scan_c_new);
+}
+
+#[test]
+fn branch_immutable_prefix_scan_includes_l1_and_excludes_storage_space_id() {
+    let branch = branch_id(69);
+    let mut state = BranchLocalState::empty(branch);
+    let l1_row = storage_row_with(
+        branch,
+        b"scan-l1".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"l1".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "scan-other-storage-space",
+            vec![storage_row_with_named_space(
+                branch,
+                "default",
+                StorageSpaceId::engine(0x21).expect("engine space"),
+                b"scan-l1".to_vec(),
+                2,
+                20,
+                b"other-storage-space".to_vec(),
+            )],
+        ))
+        .expect("install other storage-space L0");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "scan-l1-default-space",
+                vec![l1_row.clone()],
+            ),
+        )
+        .expect("install L1");
+
+    let view = state.capture_read_view().expect("view");
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"scan-".to_vec()));
+    let rows = view
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .expect("prefix scan");
+    assert_eq!(scan_user_keys(&rows), vec![b"scan-l1".to_vec()]);
+    assert_visible_row(
+        rows.first(),
+        &l1_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_immutable_range_scans_cover_l1_edge_and_degenerate_bounds() {
+    let branch = branch_id(67);
+    let mut state = BranchLocalState::empty(branch);
+    let scan_e = storage_row_with(
+        branch,
+        b"scan-e".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"e".to_vec(),
+    );
+    let scan_g = storage_row_with(
+        branch,
+        b"scan-g".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"g".to_vec(),
+    );
+    let scan_h = storage_row_with(
+        branch,
+        b"scan-h".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"h".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "scan-l1-e-g",
+                vec![scan_e, scan_g],
+            ),
+        )
+        .expect("install scan L1 e-g");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(branch, BranchLevel::new(1), "scan-l1-h", vec![scan_h]),
+        )
+        .expect("install scan L1 h");
+
+    let view = state.capture_read_view().expect("view");
+    let closed = BranchScanBounds::closed(
+        &physical_key(branch, b"scan-e".to_vec()),
+        &physical_key(branch, b"scan-g".to_vec()),
+    )
+    .expect("closed range");
+    assert_eq!(
+        scan_user_keys(
+            &view
+                .scan_range(&closed, BranchReadBound::latest())
+                .expect("closed range")
+        ),
+        vec![b"scan-e".to_vec(), b"scan-g".to_vec()]
+    );
+    let open = BranchScanBounds::open(
+        &physical_key(branch, b"scan-e".to_vec()),
+        &physical_key(branch, b"scan-g".to_vec()),
+    )
+    .expect("open range");
+    assert!(view
+        .scan_range(&open, BranchReadBound::latest())
+        .expect("open range")
+        .is_empty());
+    let degenerate = BranchScanBounds::closed(
+        &physical_key(branch, b"scan-h".to_vec()),
+        &physical_key(branch, b"scan-h".to_vec()),
+    )
+    .expect("degenerate range");
+    assert_eq!(
+        scan_user_keys(
+            &view
+                .scan_range(&degenerate, BranchReadBound::latest())
+                .expect("degenerate range")
+        ),
+        vec![b"scan-h".to_vec()]
+    );
+}
+
+#[test]
 fn branch_runtime_stats_default_and_accessors_are_stable() {
     let empty = BranchRuntimeStats::default();
     assert_eq!(empty.latest_reads(), 0);
@@ -1441,6 +3718,1198 @@ fn assert_invalid_config_field(
     }
 }
 
+#[test]
+fn branch_inherited_layer_constructor_rejects_count_and_source_mismatches() {
+    let source = branch_id(70);
+    let child = branch_id(71);
+    let table = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "inherited-valid",
+        vec![storage_row_with(
+            source,
+            b"inherited".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"secret-payload".to_vec(),
+        )],
+    );
+
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Active,
+        vec![vec![table.clone()]],
+    );
+    assert_eq!(layer.source_branch_id(), source);
+    assert_eq!(layer.fork_version(), CommitVersion::new(3));
+    assert_eq!(layer.table_count(), 1);
+
+    let stale_count = BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(
+            source,
+            CommitVersion::new(3),
+            InheritedLayerStatus::Active,
+            2,
+        ),
+        vec![vec![table.clone()]],
+    )
+    .expect_err("stale inherited table count rejected");
+    assert!(matches!(
+        stale_count,
+        BranchRuntimeError::InvalidInheritedLayer { .. }
+    ));
+    assert!(!stale_count.to_string().contains("secret-payload"));
+
+    let wrong_table = branch_owned_table(
+        child,
+        BranchLevel::ZERO,
+        "inherited-wrong-source",
+        vec![storage_row_with(
+            child,
+            b"inherited".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"secret-payload".to_vec(),
+        )],
+    );
+    let wrong_source = BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(
+            source,
+            CommitVersion::new(3),
+            InheritedLayerStatus::Active,
+            1,
+        ),
+        vec![vec![wrong_table]],
+    )
+    .expect_err("wrong source table rejected");
+    assert!(matches!(
+        wrong_source,
+        BranchRuntimeError::InvalidInheritedLayer { .. }
+    ));
+    assert!(!wrong_source.to_string().contains("secret-payload"));
+
+    let view_error = BranchReadView::new_with_inherited(
+        child,
+        MutableTable::new(),
+        Vec::new(),
+        Vec::new(),
+        vec![branch_inherited_layer(
+            child,
+            CommitVersion::new(3),
+            InheritedLayerStatus::Active,
+            Vec::new(),
+        )],
+        BranchStateFacts::new(child, 0, 0, 0, 1, Some(CommitVersion::new(3)), None, None)
+            .expect("self inherited facts"),
+    )
+    .expect_err("self inheritance rejected");
+    assert!(matches!(
+        view_error,
+        BranchRuntimeError::InvalidInheritedLayer { .. }
+    ));
+}
+
+#[test]
+fn branch_inherited_layer_rejects_duplicate_internal_keys_across_tables() {
+    let source = branch_id(71);
+    let duplicate_left = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "inherited-duplicate-left",
+        vec![storage_row_with(
+            source,
+            b"duplicate".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"secret-payload-left".to_vec(),
+        )],
+    );
+    let duplicate_right = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "inherited-duplicate-right",
+        vec![storage_row_with(
+            source,
+            b"duplicate".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"secret-payload-right".to_vec(),
+        )],
+    );
+
+    let error = BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(
+            source,
+            CommitVersion::new(4),
+            InheritedLayerStatus::Active,
+            2,
+        ),
+        vec![vec![duplicate_left, duplicate_right]],
+    )
+    .expect_err("duplicate inherited internal keys rejected");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidInheritedLayer { .. }
+    ));
+    assert!(!error.to_string().contains("secret-payload"));
+}
+
+#[test]
+fn branch_inherited_layer_status_and_count_edges_are_enforced() {
+    let source = branch_id(72);
+    let child = branch_id(73);
+    let row = storage_row_with(
+        source,
+        b"status".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    );
+    let materializing = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Materializing,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "inherited-materializing",
+            vec![row.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![materializing])
+        .expect("materializing layer attaches");
+    let visible = child_state
+        .capture_read_view()
+        .expect("materializing view")
+        .latest(&physical_key(child, b"status".to_vec()))
+        .expect("materializing latest")
+        .expect("materializing inherited row");
+    assert_eq!(
+        visible.row(),
+        &rewrite_row_branch(&row, source, child).expect("rewrite")
+    );
+
+    let materialized = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Materialized,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "inherited-materialized",
+            vec![row],
+        )]],
+    );
+    let mut materialized_child = BranchLocalState::empty(child);
+    materialized_child
+        .attach_inherited_layers(vec![materialized])
+        .expect("materialized layer attaches for diagnostic state");
+    assert!(materialized_child
+        .capture_read_view()
+        .expect("materialized view")
+        .latest(&physical_key(child, b"status".to_vec()))
+        .expect("materialized latest")
+        .is_none());
+
+    let unavailable = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Unavailable,
+        Vec::new(),
+    );
+    let mut unavailable_child = BranchLocalState::empty(child);
+    assert!(matches!(
+        unavailable_child.attach_inherited_layers(vec![unavailable]),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ));
+
+    let config = BranchRuntimeConfig::new(7, 1, 32).expect("one inherited layer config");
+    let mut limited_child = BranchLocalState::new(child, config).expect("limited child");
+    let first = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Active,
+        Vec::new(),
+    );
+    let second_source = branch_id(74);
+    let second = branch_inherited_layer(
+        second_source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Active,
+        Vec::new(),
+    );
+    assert!(matches!(
+        limited_child.attach_inherited_layers(vec![first, second]),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ));
+}
+
+#[test]
+fn branch_fork_preserves_layer_order_and_resets_readable_inherited_statuses() {
+    let fixture = fork_status_fixture();
+    assert_eq!(fixture.outcome.fork_version(), CommitVersion::new(6));
+    assert_eq!(fixture.outcome.inherited_layer_count(), 2);
+    assert_eq!(fixture.outcome.inherited_table_count(), 2);
+    assert_eq!(
+        fixture.child_state.inherited_layers()[0].source_branch_id(),
+        fixture.source
+    );
+    assert_eq!(
+        fixture.child_state.inherited_layers()[0].status(),
+        InheritedLayerStatus::Active
+    );
+    assert_eq!(
+        fixture.child_state.inherited_layers()[1].source_branch_id(),
+        fixture.grandparent
+    );
+    assert_eq!(
+        fixture.child_state.inherited_layers()[1].status(),
+        InheritedLayerStatus::Active,
+        "copied materializing inherited layers reset to active"
+    );
+
+    let view = fixture.child_state.capture_read_view().expect("child view");
+    assert_visible_row(
+        view.latest(&physical_key(fixture.child, b"source-owned".to_vec()))
+            .expect("source-owned latest")
+            .as_ref(),
+        &rewrite_row_branch(&fixture.source_owned, fixture.source, fixture.child)
+            .expect("source-owned rewrite"),
+        BranchRowSource::Inherited {
+            source_branch_id: fixture.source,
+            layer_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.latest(&physical_key(fixture.child, b"materializing".to_vec()))
+            .expect("materializing latest")
+            .as_ref(),
+        &rewrite_row_branch(&fixture.inherited_row, fixture.grandparent, fixture.child)
+            .expect("inherited rewrite"),
+        BranchRowSource::Inherited {
+            source_branch_id: fixture.grandparent,
+            layer_index: 1,
+        },
+    );
+    assert!(
+        view.latest(&physical_key(fixture.child, b"materialized".to_vec()))
+            .expect("materialized latest")
+            .is_none(),
+        "materialized source layers are skipped when forking"
+    );
+}
+
+#[test]
+fn branch_fork_and_attach_rejections_do_not_mutate_state() {
+    let branch = branch_id(87);
+    let other = branch_id(88);
+    let mut child_state = BranchLocalState::empty(branch);
+    let original = child_state.clone();
+    child_state
+        .append_committed_row(storage_row_with(
+            branch,
+            b"owned-before-attach".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"owned".to_vec(),
+        ))
+        .expect("append own row");
+    let non_empty = child_state.clone();
+    let layer = branch_inherited_layer(
+        other,
+        CommitVersion::new(1),
+        InheritedLayerStatus::Active,
+        Vec::new(),
+    );
+
+    assert!(matches!(
+        child_state.attach_inherited_layers(vec![layer]),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert_eq!(child_state, non_empty);
+    assert_ne!(child_state, original);
+
+    let source_state = BranchLocalState::empty(branch);
+    let source_before = source_state.clone();
+    assert!(matches!(
+        source_state.fork_into_empty_child(branch),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ));
+    assert_eq!(source_state, source_before);
+
+    let unavailable = branch_inherited_layer(
+        other,
+        CommitVersion::new(1),
+        InheritedLayerStatus::Unavailable,
+        Vec::new(),
+    );
+    assert!(matches!(
+        unavailable.clone_active_for_fork(),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ));
+}
+
+#[test]
+fn branch_fork_into_empty_child_captures_inherited_layers_without_copying_rows() {
+    let source = branch_id(72);
+    let child = branch_id(73);
+    let mut source_state = BranchLocalState::empty(source);
+    let inherited_row = storage_row_with(
+        source,
+        b"shared".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"parent".to_vec(),
+    );
+    let table = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "fork-source-owned",
+        vec![inherited_row.clone()],
+    );
+    source_state
+        .install_l0_table(table)
+        .expect("source install");
+    source_state
+        .append_committed_row(storage_row_with(
+            source,
+            b"active-only".to_vec(),
+            8,
+            80,
+            Timestamp::EPOCH,
+            b"not-inherited-by-l6f".to_vec(),
+        ))
+        .expect("source active append");
+
+    let (child_state, outcome): (BranchLocalState, BranchForkOutcome) = source_state
+        .fork_into_empty_child(child)
+        .expect("fork child");
+    assert_eq!(outcome.source_branch_id(), source);
+    assert_eq!(outcome.destination_branch_id(), child);
+    assert_eq!(outcome.fork_version(), CommitVersion::new(8));
+    assert_eq!(outcome.inherited_layer_count(), 1);
+    assert_eq!(outcome.inherited_table_count(), 1);
+    assert!(child_state.active().is_empty());
+    assert!(child_state.frozen().is_empty());
+    assert_eq!(child_state.owned_table_count(), 0);
+    assert_eq!(child_state.inherited_layer_count(), 1);
+    assert_eq!(child_state.inherited_table_count(), 1);
+    assert_eq!(child_state.inherited_layers()[0].source_branch_id(), source);
+    assert_eq!(
+        child_state.max_commit_version(),
+        Some(CommitVersion::new(8))
+    );
+    assert_eq!(child_state.put_rows(), 0);
+
+    let view = child_state.capture_read_view().expect("child read view");
+    assert_eq!(view.inherited_layer_count(), 1);
+    assert_eq!(
+        view.inherited_layers()[0].fork_version(),
+        CommitVersion::new(8)
+    );
+    let expected = rewrite_row_branch(&inherited_row, source, child).expect("expected rewrite");
+    let visible = view
+        .latest(&physical_key(child, b"shared".to_vec()))
+        .expect("latest")
+        .expect("inherited row");
+    assert_eq!(visible.row(), &expected);
+    assert_eq!(
+        visible.source(),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        }
+    );
+    assert!(
+        view.latest(&physical_key(child, b"active-only".to_vec()))
+            .expect("active-only latest")
+            .is_none(),
+        "L6F must not silently inherit source active/frozen rows"
+    );
+}
+
+#[test]
+fn branch_inherited_reads_apply_fork_gate_and_child_tombstone_shadowing() {
+    let source = branch_id(74);
+    let child = branch_id(75);
+    let visible_source = storage_row_with(
+        source,
+        b"gate".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"visible".to_vec(),
+    );
+    let post_fork_source = storage_row_with(
+        source,
+        b"gate".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fork-gated-source",
+            vec![visible_source.clone(), post_fork_source],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+
+    let child_key = physical_key(child, b"gate".to_vec());
+    let view = child_state.capture_read_view().expect("view");
+    let expected = rewrite_row_branch(&visible_source, source, child).expect("rewrite");
+    assert_visible_row(
+        view.latest(&child_key).expect("latest").as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.at_version(&child_key, CommitVersion::new(7))
+            .expect("bounded")
+            .as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+
+    child_state
+        .append_committed_row(tombstone_row(child, b"gate".to_vec(), 6, 60))
+        .expect("child tombstone");
+    let shadowed = child_state.capture_read_view().expect("shadowed view");
+    assert!(
+        shadowed.latest(&child_key).expect("latest").is_none(),
+        "child tombstone must shadow inherited put"
+    );
+    assert_visible_row(
+        shadowed
+            .at_version(&child_key, CommitVersion::new(4))
+            .expect("before tombstone")
+            .as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_inherited_history_filters_tombstones_limits_and_fork_gates() {
+    let source = branch_id(89);
+    let child = branch_id(90);
+    let key = b"history-inherited".to_vec();
+    let post_fork = storage_row_with(
+        source,
+        key.clone(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"post-fork-secret".to_vec(),
+    );
+    let tombstone = tombstone_row(source, key.clone(), 4, 40);
+    let visible = storage_row_with(
+        source,
+        key.clone(),
+        3,
+        30,
+        Timestamp::from_micros(300),
+        b"visible".to_vec(),
+    );
+    let older = storage_row_with(
+        source,
+        key.clone(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(4),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "inherited-history",
+            vec![post_fork, tombstone.clone(), visible.clone(), older.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited history layer");
+    let view = child_state.capture_read_view().expect("view");
+    let child_key = physical_key(child, key);
+
+    assert!(
+        view.latest(&child_key).expect("latest").is_none(),
+        "selected inherited tombstone shadows older inherited puts"
+    );
+
+    let all = view
+        .history(&child_key, BranchHistoryOptions::all())
+        .expect("all inherited history");
+    assert_eq!(history_versions(&all), vec![4, 3, 1]);
+    assert!(all[0].row().is_tombstone());
+    assert_eq!(
+        all[1].source(),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        }
+    );
+    assert_eq!(
+        all[1].row(),
+        &rewrite_row_branch(&visible, source, child).expect("visible rewrite")
+    );
+
+    let without_tombstones = view
+        .history(
+            &child_key,
+            BranchHistoryOptions::all().include_tombstones(false),
+        )
+        .expect("history without tombstones");
+    assert_eq!(history_versions(&without_tombstones), vec![3, 1]);
+
+    let before_fork = view
+        .history(
+            &child_key,
+            BranchHistoryOptions::all().before_version(CommitVersion::new(4)),
+        )
+        .expect("history before tombstone");
+    assert_eq!(history_versions(&before_fork), vec![3, 1]);
+
+    let limited_after_filter = view
+        .history(
+            &child_key,
+            BranchHistoryOptions::all()
+                .include_tombstones(false)
+                .limit(1),
+        )
+        .expect("limited inherited history");
+    assert_eq!(history_versions(&limited_after_filter), vec![3]);
+    assert_eq!(
+        limited_after_filter[0].row(),
+        &rewrite_row_branch(&visible, source, child).expect("limited rewrite")
+    );
+    assert!(
+        history_versions(&all).iter().all(|version| *version <= 4),
+        "rows above the fork version must stay out of history"
+    );
+}
+
+#[test]
+fn branch_inherited_l0_overlap_and_l1_tables_participate_in_point_reads() {
+    let source = branch_id(91);
+    let child = branch_id(92);
+    let overlapping_key = b"overlap".to_vec();
+    let old_l0 = storage_row_with(
+        source,
+        overlapping_key.clone(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"old-l0".to_vec(),
+    );
+    let new_l0 = storage_row_with(
+        source,
+        overlapping_key.clone(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"new-l0".to_vec(),
+    );
+    let l1_row = storage_row_with(
+        source,
+        b"from-l1".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"l1".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![
+            vec![
+                branch_owned_table(
+                    source,
+                    BranchLevel::ZERO,
+                    "inherited-overlap-l0-new",
+                    vec![new_l0.clone()],
+                ),
+                branch_owned_table(
+                    source,
+                    BranchLevel::ZERO,
+                    "inherited-overlap-l0-old",
+                    vec![old_l0],
+                ),
+            ],
+            vec![branch_owned_table(
+                source,
+                BranchLevel::new(1),
+                "inherited-l1-point",
+                vec![l1_row.clone()],
+            )],
+        ],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited overlap layer");
+    let view = child_state.capture_read_view().expect("view");
+
+    assert_visible_row(
+        view.latest(&physical_key(child, overlapping_key))
+            .expect("overlap latest")
+            .as_ref(),
+        &rewrite_row_branch(&new_l0, source, child).expect("new L0 rewrite"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.latest(&physical_key(child, b"from-l1".to_vec()))
+            .expect("L1 latest")
+            .as_ref(),
+        &rewrite_row_branch(&l1_row, source, child).expect("L1 rewrite"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_child_owned_table_shadows_inherited_exact_duplicate_key() {
+    let source = branch_id(81);
+    let child = branch_id(82);
+    let source_row = storage_row_with(
+        source,
+        b"exact-duplicate".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    );
+    let child_row = storage_row_with(
+        child,
+        b"exact-duplicate".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"child-owned".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "exact-duplicate-inherited",
+            vec![source_row],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited");
+    child_state
+        .install_l0_table(branch_owned_table(
+            child,
+            BranchLevel::ZERO,
+            "exact-duplicate-owned",
+            vec![child_row.clone()],
+        ))
+        .expect("install child-owned shadow");
+
+    let visible = child_state
+        .capture_read_view()
+        .expect("view")
+        .latest(&physical_key(child, b"exact-duplicate".to_vec()))
+        .expect("latest")
+        .expect("child-owned row");
+    assert_eq!(visible.row(), &child_row);
+    assert_eq!(
+        visible.source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        }
+    );
+}
+
+#[test]
+fn branch_inherited_scans_and_history_rewrite_before_grouping() {
+    let source = branch_id(76);
+    let child = branch_id(77);
+    let source_put = storage_row_with(
+        source,
+        b"scan-a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    );
+    let source_tombstone = StorageRow::tombstone(
+        physical_key(source, b"scan-b".to_vec()),
+        CommitVersion::new(4),
+        Timestamp::from_micros(40),
+    );
+    let child_put = storage_row_with(
+        child,
+        b"scan-a".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"child".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(4),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "scan-inherited",
+            vec![source_put.clone(), source_tombstone.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited");
+    child_state
+        .append_committed_row(child_put.clone())
+        .expect("child put");
+
+    let view = child_state.capture_read_view().expect("view");
+    let bounds = BranchScanBounds::prefix(&physical_key(child, b"scan-".to_vec()));
+    let scan = view
+        .scan_prefix(&bounds, BranchReadBound::latest())
+        .expect("scan");
+    assert_eq!(scan_user_keys(&scan), vec![b"scan-a".to_vec()]);
+    assert_eq!(scan[0].row(), &child_put);
+    assert_eq!(scan[0].source(), BranchRowSource::Active);
+
+    let history = view
+        .history(
+            &physical_key(child, b"scan-a".to_vec()),
+            BranchHistoryOptions::all(),
+        )
+        .expect("history");
+    assert_eq!(history_versions(&history), vec![5, 2]);
+    assert_eq!(history[0].source(), BranchRowSource::Active);
+    assert_eq!(
+        history[1].source(),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        }
+    );
+    assert_eq!(
+        history[1].row(),
+        &rewrite_row_branch(&source_put, source, child).expect("source rewrite")
+    );
+}
+
+#[test]
+fn branch_inherited_scans_preserve_space_boundaries() {
+    let fixture = inherited_scan_boundary_fixture();
+    let closed = fixture
+        .view
+        .scan_range(
+            &BranchScanBounds::closed(&fixture.lower, &fixture.upper).expect("closed bounds"),
+            BranchReadBound::latest(),
+        )
+        .expect("closed inherited scan");
+    assert_eq!(
+        scan_user_keys(&closed),
+        vec![b"scan-a".to_vec(), b"scan-b".to_vec(), b"scan-c".to_vec()]
+    );
+    assert!(closed.iter().all(|row| {
+        row.row().physical_key().space() == "default"
+            && row.row().physical_key().storage_space_id() == fixture.engine_space
+    }));
+    let system_rows = fixture
+        .view
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key_with(
+                fixture.child,
+                "system",
+                fixture.engine_space,
+                b"scan-".to_vec(),
+            )),
+            BranchReadBound::latest(),
+        )
+        .expect("system prefix scan");
+    assert_eq!(system_rows.len(), 1);
+    assert_eq!(system_rows[0].row().physical_key().space(), "system");
+    assert_eq!(
+        system_rows[0].row().physical_key().storage_space_id(),
+        fixture.engine_space
+    );
+    assert_eq!(system_rows[0].row().physical_key().user_key(), b"scan-b");
+}
+
+#[test]
+fn branch_inherited_scans_preserve_range_edges() {
+    let fixture = inherited_scan_boundary_fixture();
+    let open = fixture
+        .view
+        .scan_range(
+            &BranchScanBounds::open(&fixture.lower, &fixture.upper).expect("open bounds"),
+            BranchReadBound::latest(),
+        )
+        .expect("open inherited scan");
+    assert_eq!(scan_user_keys(&open), vec![b"scan-b".to_vec()]);
+    assert_eq!(
+        open[0].row(),
+        &rewrite_row_branch(&fixture.scan_b, fixture.source, fixture.child)
+            .expect("middle rewrite")
+    );
+
+    let closed_degenerate = fixture
+        .view
+        .scan_range(
+            &BranchScanBounds::closed(&fixture.middle, &fixture.middle).expect("closed degenerate"),
+            BranchReadBound::latest(),
+        )
+        .expect("closed degenerate scan");
+    assert_eq!(scan_user_keys(&closed_degenerate), vec![b"scan-b".to_vec()]);
+
+    let open_degenerate = fixture
+        .view
+        .scan_range(
+            &BranchScanBounds::open(&fixture.middle, &fixture.middle).expect("open degenerate"),
+            BranchReadBound::latest(),
+        )
+        .expect("open degenerate scan");
+    assert!(open_degenerate.is_empty());
+}
+
+#[test]
+fn branch_inherited_rejects_wrong_branch_and_timestamp_reads_without_payload() {
+    let source = branch_id(95);
+    let child = branch_id(96);
+    let row = storage_row_with(
+        source,
+        b"reject".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(2),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "inherited-reject-secret",
+            vec![row],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+    let view = child_state.capture_read_view().expect("view");
+
+    let wrong_branch_error = view
+        .latest(&physical_key(branch_id(97), b"reject".to_vec()))
+        .expect_err("wrong branch rejected before inherited lookup");
+    assert!(matches!(
+        wrong_branch_error,
+        BranchRuntimeError::InvalidBranchRow { .. }
+    ));
+    assert!(!wrong_branch_error.to_string().contains("secret-payload"));
+
+    let timestamp_error = view
+        .read_point(
+            &physical_key(child, b"reject".to_vec()),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(20)),
+        )
+        .expect_err("timestamp read rejected before inherited lookup");
+    assert!(matches!(
+        timestamp_error,
+        BranchRuntimeError::InvalidReadBound { .. }
+    ));
+    assert!(!timestamp_error.to_string().contains("secret-payload"));
+}
+
+#[test]
+fn branch_chained_fork_prefers_nearest_inherited_layer_for_exact_ties() {
+    let grandparent = branch_id(78);
+    let parent = branch_id(79);
+    let child = branch_id(80);
+    let key = b"tie".to_vec();
+    let grandparent_row = storage_row_with(
+        grandparent,
+        key.clone(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"grandparent".to_vec(),
+    );
+    let parent_row = storage_row_with(
+        parent,
+        key.clone(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"parent".to_vec(),
+    );
+
+    let mut grandparent_state = BranchLocalState::empty(grandparent);
+    grandparent_state
+        .install_l0_table(branch_owned_table(
+            grandparent,
+            BranchLevel::ZERO,
+            "grandparent-tie",
+            vec![grandparent_row],
+        ))
+        .expect("grandparent install");
+    let (mut parent_state, _) = grandparent_state
+        .fork_into_empty_child(parent)
+        .expect("fork parent");
+    parent_state
+        .install_l0_table(branch_owned_table(
+            parent,
+            BranchLevel::ZERO,
+            "parent-tie",
+            vec![parent_row.clone()],
+        ))
+        .expect("parent install");
+
+    let (child_state, outcome) = parent_state
+        .fork_into_empty_child(child)
+        .expect("fork child");
+    assert_eq!(outcome.inherited_layer_count(), 2);
+    let view = child_state.capture_read_view().expect("view");
+    let visible = view
+        .latest(&physical_key(child, key))
+        .expect("latest")
+        .expect("nearest inherited row");
+    assert_eq!(
+        visible.row(),
+        &rewrite_row_branch(&parent_row, parent, child).expect("parent rewrite")
+    );
+    assert_eq!(
+        visible.source(),
+        BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        }
+    );
+}
+
+struct ForkStatusFixture {
+    grandparent: BranchId,
+    source: BranchId,
+    child: BranchId,
+    source_owned: StorageRow,
+    inherited_row: StorageRow,
+    child_state: BranchLocalState,
+    outcome: BranchForkOutcome,
+}
+
+fn fork_status_fixture() -> ForkStatusFixture {
+    let grandparent = branch_id(83);
+    let materialized_source = branch_id(84);
+    let source = branch_id(85);
+    let child = branch_id(86);
+    let inherited_row = storage_row_with(
+        grandparent,
+        b"materializing".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"grandparent".to_vec(),
+    );
+    let source_owned = storage_row_with(
+        source,
+        b"source-owned".to_vec(),
+        6,
+        60,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    );
+    let materializing = branch_inherited_layer(
+        grandparent,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Materializing,
+        vec![vec![branch_owned_table(
+            grandparent,
+            BranchLevel::ZERO,
+            "fork-materializing",
+            vec![inherited_row.clone()],
+        )]],
+    );
+    let materialized = branch_inherited_layer(
+        materialized_source,
+        CommitVersion::new(2),
+        InheritedLayerStatus::Materialized,
+        vec![vec![branch_owned_table(
+            materialized_source,
+            BranchLevel::ZERO,
+            "fork-materialized",
+            vec![storage_row_with(
+                materialized_source,
+                b"materialized".to_vec(),
+                2,
+                20,
+                Timestamp::EPOCH,
+                b"old-materialized".to_vec(),
+            )],
+        )]],
+    );
+    let mut source_state = BranchLocalState::empty(source);
+    source_state
+        .attach_inherited_layers(vec![materializing, materialized])
+        .expect("attach source inherited layers");
+    source_state
+        .install_l0_table(branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fork-source-owned-status",
+            vec![source_owned.clone()],
+        ))
+        .expect("install source-owned table after inherited attach");
+    let (child_state, outcome) = source_state
+        .fork_into_empty_child(child)
+        .expect("fork child with inherited layers");
+    ForkStatusFixture {
+        grandparent,
+        source,
+        child,
+        source_owned,
+        inherited_row,
+        child_state,
+        outcome,
+    }
+}
+
+struct InheritedScanBoundaryFixture {
+    source: BranchId,
+    child: BranchId,
+    engine_space: StorageSpaceId,
+    view: BranchReadView,
+    lower: PhysicalKey,
+    middle: PhysicalKey,
+    upper: PhysicalKey,
+    scan_b: StorageRow,
+}
+
+fn inherited_scan_boundary_fixture() -> InheritedScanBoundaryFixture {
+    let source = branch_id(93);
+    let child = branch_id(94);
+    let engine_space = StorageSpaceId::engine(0x21).expect("engine space");
+    let system_space = StorageSpaceId::COMMIT_TIMELINE;
+    let scan_a = storage_row_with_named_space(
+        source,
+        "default",
+        engine_space,
+        b"scan-a".to_vec(),
+        2,
+        20,
+        b"a".to_vec(),
+    );
+    let scan_b = storage_row_with_named_space(
+        source,
+        "default",
+        engine_space,
+        b"scan-b".to_vec(),
+        3,
+        30,
+        b"b".to_vec(),
+    );
+    let scan_c = storage_row_with_named_space(
+        source,
+        "default",
+        engine_space,
+        b"scan-c".to_vec(),
+        4,
+        40,
+        b"c".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(6),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "inherited-scan-boundaries",
+            vec![
+                scan_a,
+                scan_b.clone(),
+                scan_c,
+                storage_row_with_named_space(
+                    source,
+                    "system",
+                    engine_space,
+                    b"scan-b".to_vec(),
+                    5,
+                    50,
+                    b"wrong-name".to_vec(),
+                ),
+                storage_row_with_named_space(
+                    source,
+                    "default",
+                    system_space,
+                    b"scan-b".to_vec(),
+                    6,
+                    60,
+                    b"wrong-storage".to_vec(),
+                ),
+            ],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited scan layer");
+    InheritedScanBoundaryFixture {
+        source,
+        child,
+        engine_space,
+        view: child_state.capture_read_view().expect("view"),
+        lower: physical_key_with(child, "default", engine_space, b"scan-a".to_vec()),
+        middle: physical_key_with(child, "default", engine_space, b"scan-b".to_vec()),
+        upper: physical_key_with(child, "default", engine_space, b"scan-c".to_vec()),
+        scan_b,
+    }
+}
+
 fn assert_duplicate_internal_key(error: &BranchRuntimeError) {
     assert!(matches!(
         error,
@@ -1468,6 +4937,59 @@ fn table_facts(identity: &str) -> TableRuntimeFacts {
     .expect("table facts")
 }
 
+fn branch_owned_table(
+    branch: BranchId,
+    level: BranchLevel,
+    identity: &str,
+    rows: Vec<StorageRow>,
+) -> BranchOwnedTable {
+    let reader = immutable_reader(identity, rows);
+    let descriptor = branch_table_descriptor(level, &reader);
+    BranchOwnedTable::new(branch, descriptor, reader).expect("branch-owned table")
+}
+
+fn branch_inherited_layer(
+    source: BranchId,
+    fork_version: CommitVersion,
+    status: InheritedLayerStatus,
+    owned_levels: Vec<Vec<BranchOwnedTable>>,
+) -> BranchInheritedLayer {
+    let table_count = owned_levels.iter().map(Vec::len).sum();
+    BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(source, fork_version, status, table_count),
+        owned_levels,
+    )
+    .expect("branch inherited layer")
+}
+
+fn branch_table_descriptor(
+    level: BranchLevel,
+    reader: &ImmutableTableReader,
+) -> BranchTableDescriptor {
+    BranchTableDescriptor::new(
+        reader.facts().identity().clone(),
+        reader.facts().clone(),
+        level,
+    )
+    .expect("branch table descriptor")
+}
+
+fn immutable_reader(identity: &str, rows: Vec<StorageRow>) -> ImmutableTableReader {
+    let mut rows = rows.into_iter().map(TableRow::new).collect::<Vec<_>>();
+    sort_table_rows_by_key(&mut rows);
+    let identity = TableIdentity::new(identity).expect("identity");
+    let builder = ImmutableTableBuilder::new(TableBuilderConfig::default()).expect("builder");
+    let artifact = builder
+        .build_from_rows(identity.clone(), &rows)
+        .expect("built table");
+    ImmutableTableReader::open_bytes(
+        identity,
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .expect("immutable table reader")
+}
+
 fn row_versions(rows: &[TableRow]) -> Vec<u64> {
     rows.iter()
         .map(|row| row.commit_version().as_u64())
@@ -1479,6 +5001,28 @@ fn matching_versions(rows: &[TableRow], bound: BranchEffectiveReadBound) -> Vec<
         .filter(|row| bound.matches_row(row.row()).matches_effective_bound())
         .map(|row| row.commit_version().as_u64())
         .collect()
+}
+
+fn history_versions(rows: &[BranchHistoryRow]) -> Vec<u64> {
+    rows.iter()
+        .map(|row| row.row().commit_version().as_u64())
+        .collect()
+}
+
+fn scan_user_keys(rows: &[BranchVisibleRow]) -> Vec<Vec<u8>> {
+    rows.iter()
+        .map(|row| row.row().physical_key().user_key().to_vec())
+        .collect()
+}
+
+fn assert_visible_row(
+    actual: Option<&BranchVisibleRow>,
+    expected_row: &StorageRow,
+    expected_source: BranchRowSource,
+) {
+    let actual = actual.expect("visible row");
+    assert_eq!(actual.row(), expected_row);
+    assert_eq!(actual.source(), expected_source);
 }
 
 fn storage_row(branch_id: BranchId, version: u64) -> StorageRow {
@@ -1505,6 +5049,24 @@ fn storage_row_with(
         CommitVersion::new(version),
         Timestamp::from_micros(timestamp),
         expires_at,
+        value,
+    )
+}
+
+fn storage_row_with_named_space(
+    branch_id: BranchId,
+    space_name: &str,
+    storage_space_id: StorageSpaceId,
+    user_key: Vec<u8>,
+    version: u64,
+    timestamp: u64,
+    value: Vec<u8>,
+) -> StorageRow {
+    StorageRow::put(
+        physical_key_with(branch_id, space_name, storage_space_id, user_key),
+        CommitVersion::new(version),
+        Timestamp::from_micros(timestamp),
+        Timestamp::EPOCH,
         value,
     )
 }

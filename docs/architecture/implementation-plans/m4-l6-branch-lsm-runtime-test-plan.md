@@ -253,6 +253,13 @@ Detailed slice test plan:
 
 ### 5. Own-Branch Latest Reads
 
+Detailed active/frozen-only slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6d-pinned-own-branch-read-views-test-plan.md`
+
+L6D closes the latest/getv/history/prefix/range subset over own active/frozen
+state and records timestamp/TTL policy as deferred. The timestamp/TTL cases in
+this parent section close when L6G lands.
+
 1. Latest returns newest live put row.
 2. Newer tombstone makes latest return none.
 3. Newer expired row makes latest return none at a read timestamp after expiry.
@@ -312,6 +319,10 @@ Detailed slice test plan:
 
 ### 10. Pinned Read Views
 
+L6D first proves pinned views across active/frozen append and rotation. Later
+slices extend the same invariant to immutable table install, compaction,
+materialization, and clear/delete transitions.
+
 1. Captured read view remains valid after active rotation.
 2. Captured read view remains valid after frozen flush/table install.
 3. Captured read view remains valid after compaction install.
@@ -324,6 +335,9 @@ Detailed slice test plan:
 
 ### 11. Branch-Owned Immutable Levels
 
+Detailed slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6e-branch-owned-immutable-levels-test-plan.md`
+
 1. Installing one L0 table preserves reads.
 2. Installing multiple overlapping L0 tables searches newest first.
 3. L1+ tables are non-overlapping and searched by key range.
@@ -335,6 +349,9 @@ Detailed slice test plan:
 8. Installing an empty table is rejected.
 
 ### 12. Fork And Inherited Layers
+
+Detailed slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6f-fork-inherited-layers-test-plan.md`
 
 1. Fork creates destination branch without copying rows.
 2. Destination branch starts with empty own state and inherited layers.

@@ -61,8 +61,10 @@ pub(crate) use identity::{
     )
 )]
 pub(crate) use read::{
-    BranchEffectiveReadBound, BranchHistoryRow, BranchReadBound, BranchRowBoundMatch,
-    BranchRowCandidateFacts, BranchRowSource, BranchVisibleRow,
+    BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
+    BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowBoundMatch,
+    BranchRowCandidateFacts, BranchRowSource, BranchScanBounds, BranchUserKeyBound,
+    BranchVisibleRow,
 };
 #[cfg_attr(
     not(test),
@@ -71,7 +73,7 @@ pub(crate) use read::{
         reason = "branch scaffold exports define the local surface for later slices"
     )
 )]
-pub(crate) use state::BranchAppendOutcome;
+pub(crate) use state::{BranchAppendOutcome, BranchForkOutcome, BranchImmutableInstallOutcome};
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
     allow(

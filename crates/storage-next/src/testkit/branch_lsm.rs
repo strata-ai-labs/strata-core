@@ -3,22 +3,25 @@
 use super::TestkitError;
 use crate::branch::{
     require_row_branch, rewrite_physical_key_branch, rewrite_row_branch, row_matches_branch,
-    BranchEffectiveReadBound, BranchHistoryRow, BranchLevel, BranchLocalState,
-    BranchReachabilityFacts, BranchReadBound, BranchRotationOutcome, BranchRotationSkipReason,
-    BranchRowCandidateFacts, BranchRowSource, BranchRuntimeConfig, BranchRuntimeError,
-    BranchRuntimeStats, BranchStateDescriptor, BranchStateFacts, BranchTableDescriptor,
-    BranchViewDescriptor, BranchVisibleRow, InheritedLayerDescriptor, InheritedLayerStatus,
+    BranchEffectiveReadBound, BranchForkOutcome, BranchHistoryOptions, BranchHistoryRow,
+    BranchImmutableInstallOutcome, BranchInheritedLayer, BranchLevel, BranchLocalState,
+    BranchOwnedTable, BranchReachabilityFacts, BranchReadBound, BranchRotationOutcome,
+    BranchRotationSkipReason, BranchRowCandidateFacts, BranchRowSource, BranchRuntimeConfig,
+    BranchRuntimeError, BranchRuntimeStats, BranchScanBounds, BranchStateDescriptor,
+    BranchStateFacts, BranchTableDescriptor, BranchUserKeyBound, BranchViewDescriptor,
+    BranchVisibleRow, InheritedLayerDescriptor, InheritedLayerStatus,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    sort_table_rows_by_key, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyRange,
-    TablePhysicalKeyBytes, TableRow, TableRuntimeFacts,
+    sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
+    TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyRange, TablePhysicalKeyBytes,
+    TableReaderConfig, TableRow, TableRuntimeFacts,
 };
 use std::error::Error;
 use std::fmt;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BranchLsmScaffoldOutcome {
     valid_config: usize,
     invalid_config: usize,
@@ -56,6 +59,50 @@ pub struct BranchLsmScaffoldOutcome {
     mixed_active_frozen_facts: usize,
     timestamp_edge_facts: usize,
     max_commit_edge_facts: usize,
+    read_view_captures: usize,
+    pinned_append_isolations: usize,
+    pinned_rotation_isolations: usize,
+    latest_point_reads: usize,
+    version_bounded_point_reads: usize,
+    tombstone_shadow_reads: usize,
+    history_reads: usize,
+    history_tombstones: usize,
+    history_limits: usize,
+    prefix_scans: usize,
+    range_scans: usize,
+    scan_tombstone_suppressions: usize,
+    active_frozen_merge_reads: usize,
+    wrong_branch_read_rejections: usize,
+    timestamp_bound_deferrals: usize,
+    immutable_descriptor_cases: usize,
+    immutable_l0_installs: usize,
+    immutable_l1_installs: usize,
+    invalid_immutable_install_rejections: usize,
+    immutable_l1_overlap_rejections: usize,
+    frozen_replacements: usize,
+    pinned_immutable_install_isolations: usize,
+    immutable_latest_reads: usize,
+    immutable_version_bounded_reads: usize,
+    immutable_history_reads: usize,
+    immutable_prefix_scans: usize,
+    immutable_range_scans: usize,
+    immutable_tombstone_shadows: usize,
+    active_frozen_immutable_merge_reads: usize,
+    immutable_source_attributions: usize,
+    inherited_fork_captures: usize,
+    inherited_layer_validations: usize,
+    inherited_latest_reads: usize,
+    inherited_version_bounded_reads: usize,
+    inherited_history_reads: usize,
+    inherited_prefix_scans: usize,
+    inherited_range_scans: usize,
+    inherited_key_rewrites: usize,
+    inherited_child_put_shadows: usize,
+    inherited_child_tombstone_shadows: usize,
+    inherited_post_fork_invisibility: usize,
+    inherited_chained_ancestry: usize,
+    invalid_inherited_layer_rejections: usize,
+    pinned_inherited_view_isolations: usize,
 }
 
 impl BranchLsmScaffoldOutcome {
@@ -202,49 +249,260 @@ impl BranchLsmScaffoldOutcome {
     pub const fn max_commit_edge_fact_cases(self) -> usize {
         self.max_commit_edge_facts
     }
+
+    pub const fn read_view_capture_cases(self) -> usize {
+        self.read_view_captures
+    }
+
+    pub const fn pinned_append_isolation_cases(self) -> usize {
+        self.pinned_append_isolations
+    }
+
+    pub const fn pinned_rotation_isolation_cases(self) -> usize {
+        self.pinned_rotation_isolations
+    }
+
+    pub const fn latest_point_read_cases(self) -> usize {
+        self.latest_point_reads
+    }
+
+    pub const fn version_bounded_point_read_cases(self) -> usize {
+        self.version_bounded_point_reads
+    }
+
+    pub const fn tombstone_shadow_read_cases(self) -> usize {
+        self.tombstone_shadow_reads
+    }
+
+    pub const fn history_read_cases(self) -> usize {
+        self.history_reads
+    }
+
+    pub const fn history_tombstone_cases(self) -> usize {
+        self.history_tombstones
+    }
+
+    pub const fn history_limit_cases(self) -> usize {
+        self.history_limits
+    }
+
+    pub const fn prefix_scan_cases(self) -> usize {
+        self.prefix_scans
+    }
+
+    pub const fn range_scan_cases(self) -> usize {
+        self.range_scans
+    }
+
+    pub const fn scan_tombstone_suppression_cases(self) -> usize {
+        self.scan_tombstone_suppressions
+    }
+
+    pub const fn active_frozen_merge_read_cases(self) -> usize {
+        self.active_frozen_merge_reads
+    }
+
+    pub const fn wrong_branch_read_rejection_cases(self) -> usize {
+        self.wrong_branch_read_rejections
+    }
+
+    pub const fn timestamp_bound_deferral_cases(self) -> usize {
+        self.timestamp_bound_deferrals
+    }
+
+    pub const fn immutable_descriptor_cases(self) -> usize {
+        self.immutable_descriptor_cases
+    }
+
+    pub const fn immutable_l0_install_cases(self) -> usize {
+        self.immutable_l0_installs
+    }
+
+    pub const fn immutable_l1_install_cases(self) -> usize {
+        self.immutable_l1_installs
+    }
+
+    pub const fn invalid_immutable_install_rejection_cases(self) -> usize {
+        self.invalid_immutable_install_rejections
+    }
+
+    pub const fn immutable_l1_overlap_rejection_cases(self) -> usize {
+        self.immutable_l1_overlap_rejections
+    }
+
+    pub const fn frozen_replacement_cases(self) -> usize {
+        self.frozen_replacements
+    }
+
+    pub const fn pinned_immutable_install_isolation_cases(self) -> usize {
+        self.pinned_immutable_install_isolations
+    }
+
+    pub const fn immutable_latest_read_cases(self) -> usize {
+        self.immutable_latest_reads
+    }
+
+    pub const fn immutable_version_bounded_read_cases(self) -> usize {
+        self.immutable_version_bounded_reads
+    }
+
+    pub const fn immutable_history_cases(self) -> usize {
+        self.immutable_history_reads
+    }
+
+    pub const fn immutable_prefix_scan_cases(self) -> usize {
+        self.immutable_prefix_scans
+    }
+
+    pub const fn immutable_range_scan_cases(self) -> usize {
+        self.immutable_range_scans
+    }
+
+    pub const fn immutable_tombstone_shadow_cases(self) -> usize {
+        self.immutable_tombstone_shadows
+    }
+
+    pub const fn active_frozen_immutable_merge_read_cases(self) -> usize {
+        self.active_frozen_immutable_merge_reads
+    }
+
+    pub const fn immutable_source_attribution_cases(self) -> usize {
+        self.immutable_source_attributions
+    }
+
+    pub const fn inherited_fork_capture_cases(self) -> usize {
+        self.inherited_fork_captures
+    }
+
+    pub const fn inherited_layer_validation_cases(self) -> usize {
+        self.inherited_layer_validations
+    }
+
+    pub const fn inherited_latest_read_cases(self) -> usize {
+        self.inherited_latest_reads
+    }
+
+    pub const fn inherited_version_bounded_read_cases(self) -> usize {
+        self.inherited_version_bounded_reads
+    }
+
+    pub const fn inherited_history_read_cases(self) -> usize {
+        self.inherited_history_reads
+    }
+
+    pub const fn inherited_prefix_scan_cases(self) -> usize {
+        self.inherited_prefix_scans
+    }
+
+    pub const fn inherited_range_scan_cases(self) -> usize {
+        self.inherited_range_scans
+    }
+
+    pub const fn inherited_key_rewrite_cases(self) -> usize {
+        self.inherited_key_rewrites
+    }
+
+    pub const fn inherited_child_put_shadow_cases(self) -> usize {
+        self.inherited_child_put_shadows
+    }
+
+    pub const fn inherited_child_tombstone_shadow_cases(self) -> usize {
+        self.inherited_child_tombstone_shadows
+    }
+
+    pub const fn inherited_post_fork_invisibility_cases(self) -> usize {
+        self.inherited_post_fork_invisibility
+    }
+
+    pub const fn inherited_chained_ancestry_cases(self) -> usize {
+        self.inherited_chained_ancestry
+    }
+
+    pub const fn invalid_inherited_layer_rejection_cases(self) -> usize {
+        self.invalid_inherited_layer_rejections
+    }
+
+    pub const fn pinned_inherited_view_isolation_cases(self) -> usize {
+        self.pinned_inherited_view_isolations
+    }
+
+    fn absorb_state_outcome(&mut self, outcome: StateOutcome) {
+        self.state_construction += outcome.state_construction;
+        self.committed_put_appends += outcome.committed_put_appends;
+        self.committed_tombstone_appends += outcome.committed_tombstone_appends;
+        self.wrong_branch_append_rejections += outcome.wrong_branch_append_rejections;
+        self.active_duplicate_rejections += outcome.active_duplicate_rejections;
+        self.frozen_duplicate_rejections += outcome.frozen_duplicate_rejections;
+        self.same_key_version_appends += outcome.same_key_version_appends;
+        self.same_version_key_appends += outcome.same_version_key_appends;
+        self.active_rotations += outcome.active_rotations;
+        self.empty_rotation_skips += outcome.empty_rotation_skips;
+        self.frozen_limit_skips += outcome.frozen_limit_skips;
+        self.active_only_facts += outcome.active_only_facts;
+        self.frozen_only_facts += outcome.frozen_only_facts;
+        self.mixed_active_frozen_facts += outcome.mixed_active_frozen_facts;
+        self.timestamp_edge_facts += outcome.timestamp_edge_facts;
+        self.max_commit_edge_facts += outcome.max_commit_edge_facts;
+    }
+
+    fn absorb_read_outcome(&mut self, outcome: ReadOutcome) {
+        self.read_view_captures += outcome.read_view_captures;
+        self.pinned_append_isolations += outcome.pinned_append_isolations;
+        self.pinned_rotation_isolations += outcome.pinned_rotation_isolations;
+        self.latest_point_reads += outcome.latest_point_reads;
+        self.version_bounded_point_reads += outcome.version_bounded_point_reads;
+        self.tombstone_shadow_reads += outcome.tombstone_shadow_reads;
+        self.history_reads += outcome.history_reads;
+        self.history_tombstones += outcome.history_tombstones;
+        self.history_limits += outcome.history_limits;
+        self.prefix_scans += outcome.prefix_scans;
+        self.range_scans += outcome.range_scans;
+        self.scan_tombstone_suppressions += outcome.scan_tombstone_suppressions;
+        self.active_frozen_merge_reads += outcome.active_frozen_merge_reads;
+        self.wrong_branch_read_rejections += outcome.wrong_branch_read_rejections;
+        self.timestamp_bound_deferrals += outcome.timestamp_bound_deferrals;
+    }
+
+    fn absorb_immutable_outcome(&mut self, outcome: ImmutableOutcome) {
+        self.immutable_descriptor_cases += outcome.immutable_descriptor_cases;
+        self.immutable_l0_installs += outcome.immutable_l0_installs;
+        self.immutable_l1_installs += outcome.immutable_l1_installs;
+        self.invalid_immutable_install_rejections += outcome.invalid_immutable_install_rejections;
+        self.immutable_l1_overlap_rejections += outcome.immutable_l1_overlap_rejections;
+        self.frozen_replacements += outcome.frozen_replacements;
+        self.pinned_immutable_install_isolations += outcome.pinned_immutable_install_isolations;
+        self.immutable_latest_reads += outcome.immutable_latest_reads;
+        self.immutable_version_bounded_reads += outcome.immutable_version_bounded_reads;
+        self.immutable_history_reads += outcome.immutable_history_reads;
+        self.immutable_prefix_scans += outcome.immutable_prefix_scans;
+        self.immutable_range_scans += outcome.immutable_range_scans;
+        self.immutable_tombstone_shadows += outcome.immutable_tombstone_shadows;
+        self.active_frozen_immutable_merge_reads += outcome.active_frozen_immutable_merge_reads;
+        self.immutable_source_attributions += outcome.immutable_source_attributions;
+    }
+
+    fn absorb_inheritance_outcome(&mut self, outcome: InheritanceOutcome) {
+        self.inherited_fork_captures += outcome.inherited_fork_captures;
+        self.inherited_layer_validations += outcome.inherited_layer_validations;
+        self.inherited_latest_reads += outcome.inherited_latest_reads;
+        self.inherited_version_bounded_reads += outcome.inherited_version_bounded_reads;
+        self.inherited_history_reads += outcome.inherited_history_reads;
+        self.inherited_prefix_scans += outcome.inherited_prefix_scans;
+        self.inherited_range_scans += outcome.inherited_range_scans;
+        self.inherited_key_rewrites += outcome.inherited_key_rewrites;
+        self.inherited_child_put_shadows += outcome.inherited_child_put_shadows;
+        self.inherited_child_tombstone_shadows += outcome.inherited_child_tombstone_shadows;
+        self.inherited_post_fork_invisibility += outcome.inherited_post_fork_invisibility;
+        self.inherited_chained_ancestry += outcome.inherited_chained_ancestry;
+        self.invalid_inherited_layer_rejections += outcome.invalid_inherited_layer_rejections;
+        self.pinned_inherited_view_isolations += outcome.pinned_inherited_view_isolations;
+    }
 }
 
 pub fn check_branch_lsm_scaffold_contract(
     script: &[u8],
 ) -> Result<BranchLsmScaffoldOutcome, TestkitError> {
-    let mut outcome = BranchLsmScaffoldOutcome {
-        valid_config: 0,
-        invalid_config: 0,
-        read_bounds: 0,
-        valid_facts: 0,
-        invalid_facts: 0,
-        descriptors: 0,
-        error_sources: 0,
-        stats: 0,
-        matching_rows: 0,
-        mismatching_rows: 0,
-        physical_key_rewrites: 0,
-        row_rewrites: 0,
-        own_bounds: 0,
-        inherited_bounds: 0,
-        candidate_puts: 0,
-        candidate_tombstones: 0,
-        edge_rows: 0,
-        encoded_grouping: 0,
-        row_chains: 0,
-        fork_edges: 0,
-        state_construction: 0,
-        committed_put_appends: 0,
-        committed_tombstone_appends: 0,
-        wrong_branch_append_rejections: 0,
-        active_duplicate_rejections: 0,
-        frozen_duplicate_rejections: 0,
-        same_key_version_appends: 0,
-        same_version_key_appends: 0,
-        active_rotations: 0,
-        empty_rotation_skips: 0,
-        frozen_limit_skips: 0,
-        active_only_facts: 0,
-        frozen_only_facts: 0,
-        mixed_active_frozen_facts: 0,
-        timestamp_edge_facts: 0,
-        max_commit_edge_facts: 0,
-    };
+    let mut outcome = BranchLsmScaffoldOutcome::default();
 
     check_valid_config(script)?;
     outcome.valid_config += 1;
@@ -286,23 +544,10 @@ pub fn check_branch_lsm_scaffold_contract(
     outcome.row_chains += chain_outcome.row_chains;
     outcome.fork_edges += chain_outcome.fork_edges;
 
-    let state_outcome = check_branch_local_state(script)?;
-    outcome.state_construction += state_outcome.state_construction;
-    outcome.committed_put_appends += state_outcome.committed_put_appends;
-    outcome.committed_tombstone_appends += state_outcome.committed_tombstone_appends;
-    outcome.wrong_branch_append_rejections += state_outcome.wrong_branch_append_rejections;
-    outcome.active_duplicate_rejections += state_outcome.active_duplicate_rejections;
-    outcome.frozen_duplicate_rejections += state_outcome.frozen_duplicate_rejections;
-    outcome.same_key_version_appends += state_outcome.same_key_version_appends;
-    outcome.same_version_key_appends += state_outcome.same_version_key_appends;
-    outcome.active_rotations += state_outcome.active_rotations;
-    outcome.empty_rotation_skips += state_outcome.empty_rotation_skips;
-    outcome.frozen_limit_skips += state_outcome.frozen_limit_skips;
-    outcome.active_only_facts += state_outcome.active_only_facts;
-    outcome.frozen_only_facts += state_outcome.frozen_only_facts;
-    outcome.mixed_active_frozen_facts += state_outcome.mixed_active_frozen_facts;
-    outcome.timestamp_edge_facts += state_outcome.timestamp_edge_facts;
-    outcome.max_commit_edge_facts += state_outcome.max_commit_edge_facts;
+    outcome.absorb_state_outcome(check_branch_local_state(script)?);
+    outcome.absorb_read_outcome(check_branch_read_view(script)?);
+    outcome.absorb_immutable_outcome(check_branch_owned_immutable(script)?);
+    outcome.absorb_inheritance_outcome(check_branch_inheritance(script)?);
 
     Ok(outcome)
 }
@@ -353,6 +598,62 @@ struct StateOutcome {
     mixed_active_frozen_facts: usize,
     timestamp_edge_facts: usize,
     max_commit_edge_facts: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ReadOutcome {
+    read_view_captures: usize,
+    pinned_append_isolations: usize,
+    pinned_rotation_isolations: usize,
+    latest_point_reads: usize,
+    version_bounded_point_reads: usize,
+    tombstone_shadow_reads: usize,
+    history_reads: usize,
+    history_tombstones: usize,
+    history_limits: usize,
+    prefix_scans: usize,
+    range_scans: usize,
+    scan_tombstone_suppressions: usize,
+    active_frozen_merge_reads: usize,
+    wrong_branch_read_rejections: usize,
+    timestamp_bound_deferrals: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ImmutableOutcome {
+    immutable_descriptor_cases: usize,
+    immutable_l0_installs: usize,
+    immutable_l1_installs: usize,
+    invalid_immutable_install_rejections: usize,
+    immutable_l1_overlap_rejections: usize,
+    frozen_replacements: usize,
+    pinned_immutable_install_isolations: usize,
+    immutable_latest_reads: usize,
+    immutable_version_bounded_reads: usize,
+    immutable_history_reads: usize,
+    immutable_prefix_scans: usize,
+    immutable_range_scans: usize,
+    immutable_tombstone_shadows: usize,
+    active_frozen_immutable_merge_reads: usize,
+    immutable_source_attributions: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct InheritanceOutcome {
+    inherited_fork_captures: usize,
+    inherited_layer_validations: usize,
+    inherited_latest_reads: usize,
+    inherited_version_bounded_reads: usize,
+    inherited_history_reads: usize,
+    inherited_prefix_scans: usize,
+    inherited_range_scans: usize,
+    inherited_key_rewrites: usize,
+    inherited_child_put_shadows: usize,
+    inherited_child_tombstone_shadows: usize,
+    inherited_post_fork_invisibility: usize,
+    inherited_chained_ancestry: usize,
+    invalid_inherited_layer_rejections: usize,
+    pinned_inherited_view_isolations: usize,
 }
 
 fn check_valid_config(script: &[u8]) -> Result<(), TestkitError> {
@@ -971,6 +1272,1068 @@ fn check_branch_local_state(script: &[u8]) -> Result<StateOutcome, TestkitError>
     Ok(outcome)
 }
 
+fn check_branch_read_view(script: &[u8]) -> Result<ReadOutcome, TestkitError> {
+    let mut outcome = ReadOutcome::default();
+    let branch = branch_id(script_byte(script, 79));
+    let mut state = BranchLocalState::empty(branch);
+    let seed = seed_read_view_state(script, branch, &mut state)?;
+
+    check_read_view_point_reads(&state, branch, &seed, &mut outcome)?;
+    check_read_view_history(&state, &seed, &mut outcome)?;
+    check_read_view_scans_and_pinning(script, branch, &mut state, &mut outcome)?;
+    check_read_view_rejections(script, &seed.read_key, &state, &mut outcome)?;
+
+    Ok(outcome)
+}
+
+struct ReadSeed {
+    read_key: PhysicalKey,
+    tombstone_key: PhysicalKey,
+    newer: StorageRow,
+    active_lower: StorageRow,
+}
+
+fn seed_read_view_state(
+    script: &[u8],
+    branch: BranchId,
+    state: &mut BranchLocalState,
+) -> Result<ReadSeed, TestkitError> {
+    let mut key = user_key(script, 80);
+    key.push(0x01);
+    let older = storage_row_with(
+        branch,
+        key.clone(),
+        1,
+        10,
+        Timestamp::from_micros(100),
+        vec![script_byte(script, 84)],
+    )?;
+    let newer = storage_row_with(
+        branch,
+        key.clone(),
+        3,
+        30,
+        Timestamp::from_micros(90),
+        vec![script_byte(script, 85), 0x00],
+    )?;
+    let active_lower = storage_row_with(
+        branch,
+        key.clone(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 86)],
+    )?;
+    let mut tombstone_key = user_key(script, 87);
+    tombstone_key.push(0x02);
+    let tombstone_old = storage_row_with(
+        branch,
+        tombstone_key.clone(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"shadowed".to_vec(),
+    )?;
+    let tombstone = tombstone_row(branch, tombstone_key.clone(), 5, 50)?;
+
+    state
+        .append_committed_row(older.clone())
+        .map_err(|err| TestkitError::new(format!("read older append failed: {err}")))?;
+    state
+        .append_committed_row(newer.clone())
+        .map_err(|err| TestkitError::new(format!("read newer append failed: {err}")))?;
+    state
+        .append_committed_row(tombstone_old)
+        .map_err(|err| TestkitError::new(format!("read shadowed append failed: {err}")))?;
+    state
+        .append_committed_row(tombstone.clone())
+        .map_err(|err| TestkitError::new(format!("read tombstone append failed: {err}")))?;
+    check_successful_rotation(state, 4, 1)?;
+    state
+        .append_committed_row(active_lower.clone())
+        .map_err(|err| TestkitError::new(format!("read active append failed: {err}")))?;
+
+    Ok(ReadSeed {
+        read_key: physical_key(branch, key)?,
+        tombstone_key: physical_key(branch, tombstone_key)?,
+        newer,
+        active_lower,
+    })
+}
+
+fn check_read_view_point_reads(
+    state: &BranchLocalState,
+    branch: BranchId,
+    seed: &ReadSeed,
+    outcome: &mut ReadOutcome,
+) -> Result<(), TestkitError> {
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("read view capture failed: {err}")))?;
+    if view.branch_id() != branch || view.active_row_count() != 1 || view.frozen_table_count() != 1
+    {
+        return Err(TestkitError::new("read view capture facts drifted"));
+    }
+    outcome.read_view_captures += 1;
+
+    let latest = view
+        .latest(&seed.read_key)
+        .map_err(|err| TestkitError::new(format!("latest read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("latest read missed row"))?;
+    if latest.row() != &seed.newer || latest.source() != (BranchRowSource::Frozen { index: 0 }) {
+        return Err(TestkitError::new(
+            "latest read did not select newest version across active/frozen",
+        ));
+    }
+    outcome.latest_point_reads += 1;
+    outcome.active_frozen_merge_reads += 1;
+
+    let bounded = view
+        .at_version(&seed.read_key, CommitVersion::new(2))
+        .map_err(|err| TestkitError::new(format!("version read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("version read missed row"))?;
+    if bounded.row() != &seed.active_lower || bounded.source() != BranchRowSource::Active {
+        return Err(TestkitError::new("version read selected wrong row"));
+    }
+    outcome.version_bounded_point_reads += 1;
+
+    let tombstone_read = view
+        .latest(&seed.tombstone_key)
+        .map_err(|err| TestkitError::new(format!("tombstone read failed: {err}")))?;
+    if tombstone_read.is_some() {
+        return Err(TestkitError::new(
+            "selected tombstone fell through to older put",
+        ));
+    }
+    outcome.tombstone_shadow_reads += 1;
+    Ok(())
+}
+
+fn check_read_view_history(
+    state: &BranchLocalState,
+    seed: &ReadSeed,
+    outcome: &mut ReadOutcome,
+) -> Result<(), TestkitError> {
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("history view capture failed: {err}")))?;
+    let history = view
+        .history(&seed.read_key, BranchHistoryOptions::all())
+        .map_err(|err| TestkitError::new(format!("history read failed: {err}")))?;
+    if history_versions(&history) != vec![3, 2, 1] {
+        return Err(TestkitError::new("history read order drifted"));
+    }
+    outcome.history_reads += 1;
+
+    let tombstone_history = view
+        .history(&seed.tombstone_key, BranchHistoryOptions::all())
+        .map_err(|err| TestkitError::new(format!("tombstone history failed: {err}")))?;
+    if !tombstone_history.iter().any(|row| row.row().is_tombstone()) {
+        return Err(TestkitError::new("history dropped tombstone row"));
+    }
+    outcome.history_tombstones += 1;
+
+    let limited = view
+        .history(
+            &seed.read_key,
+            BranchHistoryOptions::all().before_version(CommitVersion::new(3)),
+        )
+        .map_err(|err| TestkitError::new(format!("bounded history failed: {err}")))?;
+    if history_versions(&limited) != vec![2, 1] {
+        return Err(TestkitError::new("bounded history drifted"));
+    }
+    let limited_one = view
+        .history(&seed.read_key, BranchHistoryOptions::all().limit(1))
+        .map_err(|err| TestkitError::new(format!("limited history failed: {err}")))?;
+    if history_versions(&limited_one) != vec![3] {
+        return Err(TestkitError::new("one-row history limit drifted"));
+    }
+    let limited_zero = view
+        .history(&seed.read_key, BranchHistoryOptions::all().limit(0))
+        .map_err(|err| TestkitError::new(format!("zero history limit failed: {err}")))?;
+    if !limited_zero.is_empty() {
+        return Err(TestkitError::new("zero history limit returned rows"));
+    }
+    outcome.history_limits += 1;
+    Ok(())
+}
+
+fn check_read_view_scans_and_pinning(
+    script: &[u8],
+    branch: BranchId,
+    state: &mut BranchLocalState,
+    outcome: &mut ReadOutcome,
+) -> Result<(), TestkitError> {
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("pre-prefix capture failed: {err}")))?;
+    let mut prefix_key = user_key(script, 91);
+    prefix_key.push(0x03);
+    let prefix_a = storage_row_with(
+        branch,
+        [prefix_key.clone(), b"a".to_vec()].concat(),
+        6,
+        60,
+        Timestamp::EPOCH,
+        b"prefix-a".to_vec(),
+    )?;
+    let prefix_b = tombstone_row(branch, [prefix_key.clone(), b"b".to_vec()].concat(), 7, 70)?;
+    state
+        .append_committed_row(prefix_a.clone())
+        .map_err(|err| TestkitError::new(format!("prefix append failed: {err}")))?;
+    state
+        .append_committed_row(prefix_b.clone())
+        .map_err(|err| TestkitError::new(format!("prefix tombstone append failed: {err}")))?;
+    let after_prefix = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("post-prefix capture failed: {err}")))?;
+    let prefix_rows = after_prefix
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key(branch, prefix_key.clone())?),
+            BranchReadBound::latest(),
+        )
+        .map_err(|err| TestkitError::new(format!("prefix scan failed: {err}")))?;
+    if visible_user_keys(&prefix_rows) != vec![prefix_a.physical_key().user_key().to_vec()] {
+        return Err(TestkitError::new("prefix scan result drifted"));
+    }
+    outcome.prefix_scans += 1;
+    outcome.scan_tombstone_suppressions += 1;
+
+    let range_rows = after_prefix
+        .scan_range(
+            &BranchScanBounds::range(
+                branch,
+                "default",
+                StorageSpaceId::engine(0x20)
+                    .map_err(|err| TestkitError::new(format!("storage space failed: {err}")))?,
+                BranchUserKeyBound::included(prefix_key.clone()),
+                BranchUserKeyBound::excluded([prefix_key.clone(), b"z".to_vec()].concat()),
+            )
+            .map_err(|err| TestkitError::new(format!("range bounds failed: {err}")))?,
+            BranchReadBound::latest(),
+        )
+        .map_err(|err| TestkitError::new(format!("range scan failed: {err}")))?;
+    if visible_user_keys(&range_rows) != vec![prefix_a.physical_key().user_key().to_vec()] {
+        return Err(TestkitError::new("range scan result drifted"));
+    }
+    outcome.range_scans += 1;
+
+    let pinned_before_append = view
+        .latest(&physical_key(branch, prefix_key.clone())?)
+        .map_err(|err| TestkitError::new(format!("pinned prefix read failed: {err}")))?;
+    if pinned_before_append.is_some() {
+        return Err(TestkitError::new("pinned view saw append after capture"));
+    }
+    outcome.pinned_append_isolations += 1;
+
+    let before_rotation_view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("pre-rotation capture failed: {err}")))?;
+    check_successful_rotation(state, 3, 2)?;
+    let pinned_after_rotation = before_rotation_view
+        .latest(prefix_a.physical_key())
+        .map_err(|err| TestkitError::new(format!("pinned rotation read failed: {err}")))?;
+    if pinned_after_rotation
+        .as_ref()
+        .is_none_or(|row| row.row() != &prefix_a)
+    {
+        return Err(TestkitError::new(
+            "pinned view lost active row after rotation",
+        ));
+    }
+    outcome.pinned_rotation_isolations += 1;
+    Ok(())
+}
+
+fn check_read_view_rejections(
+    script: &[u8],
+    read_key: &PhysicalKey,
+    state: &BranchLocalState,
+    outcome: &mut ReadOutcome,
+) -> Result<(), TestkitError> {
+    let after_prefix = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("rejection view capture failed: {err}")))?;
+    expect_invalid_branch_row(after_prefix.latest(&physical_key(
+        branch_id(script_byte(script, 79).wrapping_add(1)),
+        read_key.user_key().to_vec(),
+    )?))?;
+    outcome.wrong_branch_read_rejections += 1;
+
+    if !matches!(
+        after_prefix.read_point(
+            read_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+        ),
+        Err(BranchRuntimeError::InvalidReadBound { .. })
+    ) {
+        return Err(TestkitError::new("timestamp read was not deferred"));
+    }
+    if !matches!(
+        after_prefix.scan_prefix(
+            &BranchScanBounds::prefix(read_key),
+            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+        ),
+        Err(BranchRuntimeError::InvalidReadBound { .. })
+    ) {
+        return Err(TestkitError::new("timestamp scan was not deferred"));
+    }
+    outcome.timestamp_bound_deferrals += 1;
+
+    Ok(())
+}
+
+fn check_branch_owned_immutable(script: &[u8]) -> Result<ImmutableOutcome, TestkitError> {
+    let mut outcome = ImmutableOutcome::default();
+    let branch = branch_id(script_byte(script, 100));
+    check_immutable_l0_reads_and_scans(script, branch, &mut outcome)?;
+    check_immutable_l1_and_invalid_installs(script, branch, &mut outcome)?;
+    check_immutable_frozen_replacement(branch, &mut outcome)?;
+    check_active_frozen_immutable_merge(branch, &mut outcome)?;
+    Ok(outcome)
+}
+
+fn check_immutable_l0_reads_and_scans(
+    script: &[u8],
+    branch: BranchId,
+    outcome: &mut ImmutableOutcome,
+) -> Result<(), TestkitError> {
+    let mut state = BranchLocalState::empty(branch);
+    let pinned = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("immutable pinned capture failed: {err}")))?;
+    let live = storage_row_with(
+        branch,
+        [b"owned-prefix-".to_vec(), user_key(script, 101)].concat(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        vec![script_byte(script, 105)],
+    )?;
+    let old_deleted = storage_row_with(
+        branch,
+        b"owned-prefix-deleted".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    )?;
+    let tombstone = tombstone_row(branch, b"owned-prefix-deleted".to_vec(), 4, 40)?;
+    let high = storage_row_with(
+        branch,
+        vec![b'o', b'w', b'n', b'e', b'd', 0x80],
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"high".to_vec(),
+    )?;
+    let table = branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "generated-owned-l0",
+        vec![live.clone(), old_deleted, tombstone, high.clone()],
+    )?;
+    outcome.immutable_descriptor_cases += 1;
+    let install: BranchImmutableInstallOutcome = state
+        .install_l0_table(table)
+        .map_err(|err| TestkitError::new(format!("immutable L0 install failed: {err}")))?;
+    if install.table_index() != 0 || install.owned_table_count() != 1 {
+        return Err(TestkitError::new("immutable L0 install outcome drifted"));
+    }
+    outcome.immutable_l0_installs += 1;
+
+    let live_key = live.physical_key().clone();
+    if pinned
+        .latest(&live_key)
+        .map_err(|err| TestkitError::new(format!("pinned immutable read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "pinned view saw L0 install after capture",
+        ));
+    }
+    outcome.pinned_immutable_install_isolations += 1;
+
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("immutable view capture failed: {err}")))?;
+    let latest = view
+        .latest(&live_key)
+        .map_err(|err| TestkitError::new(format!("immutable latest failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("immutable latest missed live row"))?;
+    if latest.row() != &live || !matches!(latest.source(), BranchRowSource::OwnedTable { .. }) {
+        return Err(TestkitError::new("immutable latest source drifted"));
+    }
+    outcome.immutable_latest_reads += 1;
+    outcome.immutable_source_attributions += 1;
+
+    if view
+        .latest(&physical_key(branch, b"owned-prefix-deleted".to_vec())?)
+        .map_err(|err| TestkitError::new(format!("immutable tombstone read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "immutable tombstone fell through to old put",
+        ));
+    }
+    outcome.immutable_tombstone_shadows += 1;
+
+    let prefix = BranchScanBounds::prefix(&physical_key(branch, b"owned-prefix-".to_vec())?);
+    let prefix_rows = view
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .map_err(|err| TestkitError::new(format!("immutable prefix scan failed: {err}")))?;
+    if visible_user_keys(&prefix_rows) != vec![live.physical_key().user_key().to_vec()] {
+        return Err(TestkitError::new("immutable prefix scan drifted"));
+    }
+    outcome.immutable_prefix_scans += 1;
+
+    let range = BranchScanBounds::closed(&live_key, high.physical_key())
+        .map_err(|err| TestkitError::new(format!("immutable range bounds failed: {err}")))?;
+    let range_rows = view
+        .scan_range(&range, BranchReadBound::latest())
+        .map_err(|err| TestkitError::new(format!("immutable range scan failed: {err}")))?;
+    if visible_user_keys(&range_rows)
+        != vec![
+            live.physical_key().user_key().to_vec(),
+            high.physical_key().user_key().to_vec(),
+        ]
+    {
+        return Err(TestkitError::new("immutable range scan drifted"));
+    }
+    outcome.immutable_range_scans += 1;
+    Ok(())
+}
+
+fn check_immutable_l1_and_invalid_installs(
+    script: &[u8],
+    branch: BranchId,
+    outcome: &mut ImmutableOutcome,
+) -> Result<(), TestkitError> {
+    let config = BranchRuntimeConfig::new(3, 64, 32)
+        .map_err(|err| TestkitError::new(format!("immutable config failed: {err}")))?;
+    let mut state = BranchLocalState::new(branch, config)
+        .map_err(|err| TestkitError::new(format!("immutable state failed: {err}")))?;
+    let level = BranchLevel::new(1);
+    let first = branch_owned_table(
+        branch,
+        level,
+        "generated-l1-a-c",
+        vec![
+            storage_row_with(
+                branch,
+                b"l1-a".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                Vec::new(),
+            )?,
+            storage_row_with(
+                branch,
+                b"l1-c".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                vec![script_byte(script, 106)],
+            )?,
+        ],
+    )?;
+    let second = branch_owned_table(
+        branch,
+        level,
+        "generated-l1-z",
+        vec![storage_row_with(
+            branch,
+            b"l1-z".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            Vec::new(),
+        )?],
+    )?;
+    state
+        .install_owned_table_at_level(level, first)
+        .map_err(|err| TestkitError::new(format!("immutable L1 first failed: {err}")))?;
+    state
+        .install_owned_table_at_level(level, second)
+        .map_err(|err| TestkitError::new(format!("immutable L1 second failed: {err}")))?;
+    outcome.immutable_l1_installs += 2;
+
+    let before_overlap = state.clone();
+    let overlap = branch_owned_table(
+        branch,
+        level,
+        "generated-l1-overlap",
+        vec![storage_row_with(
+            branch,
+            b"l1-b".to_vec(),
+            2,
+            20,
+            Timestamp::EPOCH,
+            Vec::new(),
+        )?],
+    )?;
+    expect_invalid_state(state.install_owned_table_at_level(level, overlap))?;
+    if state != before_overlap {
+        return Err(TestkitError::new("overlapping L1 install mutated state"));
+    }
+    outcome.immutable_l1_overlap_rejections += 1;
+
+    let wrong_level = branch_owned_table(
+        branch,
+        BranchLevel::new(2),
+        "generated-wrong-level",
+        vec![storage_row(branch, 8)?],
+    )?;
+    expect_invalid_state(state.install_owned_table_at_level(level, wrong_level))?;
+    outcome.invalid_immutable_install_rejections += 1;
+
+    let other = branch_id(script_byte(script, 100).wrapping_add(1));
+    let wrong_branch = branch_owned_table(
+        other,
+        BranchLevel::ZERO,
+        "generated-wrong-branch",
+        vec![storage_row_with(
+            other,
+            b"wrong-branch-owned".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"secret-payload".to_vec(),
+        )?],
+    )?;
+    expect_invalid_branch_row(state.install_l0_table(wrong_branch))?;
+    outcome.invalid_immutable_install_rejections += 1;
+    Ok(())
+}
+
+fn check_immutable_frozen_replacement(
+    branch: BranchId,
+    outcome: &mut ImmutableOutcome,
+) -> Result<(), TestkitError> {
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"generated-flush".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"flush".to_vec(),
+    )?;
+    state
+        .append_committed_row(row.clone())
+        .map_err(|err| TestkitError::new(format!("flush append failed: {err}")))?;
+    check_successful_rotation(&mut state, 1, 1)?;
+    let replacement = branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "generated-flush-l0",
+        vec![row.clone()],
+    )?;
+    let outcome_value = state
+        .replace_frozen_with_l0_table(0, replacement)
+        .map_err(|err| TestkitError::new(format!("frozen replacement failed: {err}")))?;
+    if outcome_value.replaced_frozen_index() != Some(0)
+        || state.frozen_table_count() != 0
+        || state.owned_table_count() != 1
+    {
+        return Err(TestkitError::new("frozen replacement outcome drifted"));
+    }
+    outcome.frozen_replacements += 1;
+    Ok(())
+}
+
+fn check_active_frozen_immutable_merge(
+    branch: BranchId,
+    outcome: &mut ImmutableOutcome,
+) -> Result<(), TestkitError> {
+    let mut state = BranchLocalState::empty(branch);
+    let frozen_newer = storage_row_with(
+        branch,
+        b"merge-owned".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    )?;
+    let active_older = storage_row_with(
+        branch,
+        b"merge-owned".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    )?;
+    let owned_middle = storage_row_with(
+        branch,
+        b"merge-owned".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"owned".to_vec(),
+    )?;
+    state
+        .append_committed_row(frozen_newer)
+        .map_err(|err| TestkitError::new(format!("merge frozen append failed: {err}")))?;
+    check_successful_rotation(&mut state, 1, 1)?;
+    state
+        .append_committed_row(active_older)
+        .map_err(|err| TestkitError::new(format!("merge active append failed: {err}")))?;
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "generated-merge-owned",
+            vec![owned_middle],
+        )?)
+        .map_err(|err| TestkitError::new(format!("merge owned install failed: {err}")))?;
+    let key = physical_key(branch, b"merge-owned".to_vec())?;
+    let view = state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("merge view failed: {err}")))?;
+    let bounded = view
+        .at_version(&key, CommitVersion::new(5))
+        .map_err(|err| TestkitError::new(format!("merge version read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("merge version read missed owned row"))?;
+    if !matches!(bounded.source(), BranchRowSource::OwnedTable { .. }) {
+        return Err(TestkitError::new(
+            "merge version read did not select owned source",
+        ));
+    }
+    if history_versions(
+        &view
+            .history(&key, BranchHistoryOptions::all())
+            .map_err(|err| TestkitError::new(format!("merge history failed: {err}")))?,
+    ) != vec![7, 5, 2]
+    {
+        return Err(TestkitError::new("active/frozen/immutable history drifted"));
+    }
+    outcome.immutable_version_bounded_reads += 1;
+    outcome.immutable_history_reads += 1;
+    outcome.active_frozen_immutable_merge_reads += 1;
+    Ok(())
+}
+
+fn check_branch_inheritance(script: &[u8]) -> Result<InheritanceOutcome, TestkitError> {
+    let mut outcome = InheritanceOutcome::default();
+    let mut fixture = check_fork_capture_and_latest(script, &mut outcome)?;
+    check_child_put_shadow_and_history(&mut fixture, &mut outcome)?;
+    check_manual_inherited_tombstone_and_scans(&fixture, &mut outcome)?;
+    check_chained_inheritance(script, &mut outcome)?;
+    check_invalid_inherited_layers(fixture.child, &mut outcome)?;
+    Ok(outcome)
+}
+
+struct DirectInheritanceFixture {
+    source: BranchId,
+    child: BranchId,
+    child_key: PhysicalKey,
+    rewritten_inherited: StorageRow,
+    child_state: BranchLocalState,
+}
+
+struct SourceForkFixture {
+    source: BranchId,
+    child: BranchId,
+    source_state: BranchLocalState,
+    inherited: StorageRow,
+}
+
+fn build_inheritance_source(script: &[u8]) -> Result<SourceForkFixture, TestkitError> {
+    let source = branch_id(script_byte(script, 108));
+    let child = branch_id(script_byte(script, 108).wrapping_add(1));
+    let mut source_state = BranchLocalState::empty(source);
+    let inherited = storage_row_with(
+        source,
+        b"generated-inherited".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    )?;
+    source_state
+        .install_l0_table(branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-inheritance-source",
+            vec![inherited.clone()],
+        )?)
+        .map_err(|err| TestkitError::new(format!("inheritance source install failed: {err}")))?;
+    source_state
+        .append_committed_row(storage_row_with(
+            source,
+            b"generated-source-active-only".to_vec(),
+            6,
+            60,
+            Timestamp::EPOCH,
+            b"active-only".to_vec(),
+        )?)
+        .map_err(|err| TestkitError::new(format!("inheritance source append failed: {err}")))?;
+
+    Ok(SourceForkFixture {
+        source,
+        child,
+        source_state,
+        inherited,
+    })
+}
+
+fn check_fork_capture_and_latest(
+    script: &[u8],
+    outcome: &mut InheritanceOutcome,
+) -> Result<DirectInheritanceFixture, TestkitError> {
+    let SourceForkFixture {
+        source,
+        child,
+        mut source_state,
+        inherited,
+    } = build_inheritance_source(script)?;
+
+    let (child_state, fork_outcome): (BranchLocalState, BranchForkOutcome) = source_state
+        .fork_into_empty_child(child)
+        .map_err(|err| TestkitError::new(format!("fork capture failed: {err}")))?;
+    if fork_outcome.source_branch_id() != source
+        || fork_outcome.destination_branch_id() != child
+        || fork_outcome.fork_version() != CommitVersion::new(6)
+        || fork_outcome.inherited_layer_count() != 1
+        || fork_outcome.inherited_table_count() != 1
+        || child_state.owned_table_count() != 0
+        || child_state.inherited_layer_count() != 1
+    {
+        return Err(TestkitError::new("fork capture outcome drifted"));
+    }
+    outcome.inherited_fork_captures += 1;
+    outcome.inherited_layer_validations += 1;
+
+    let view = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("child inherited view failed: {err}")))?;
+    let child_key = physical_key(child, b"generated-inherited".to_vec())?;
+    let rewritten = rewrite_row_branch(&inherited, source, child)
+        .map_err(|err| TestkitError::new(format!("expected inherited rewrite failed: {err}")))?;
+    let latest = view
+        .latest(&child_key)
+        .map_err(|err| TestkitError::new(format!("inherited latest failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("inherited latest missed row"))?;
+    if latest.row() != &rewritten
+        || latest.source()
+            != (BranchRowSource::Inherited {
+                source_branch_id: source,
+                layer_index: 0,
+            })
+    {
+        return Err(TestkitError::new("inherited latest/source rewrite drifted"));
+    }
+    outcome.inherited_latest_reads += 1;
+    outcome.inherited_key_rewrites += 1;
+
+    if view
+        .latest(&physical_key(
+            child,
+            b"generated-source-active-only".to_vec(),
+        )?)
+        .map_err(|err| TestkitError::new(format!("source active-only read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "fork inherited source active row without flush",
+        ));
+    }
+    outcome.inherited_post_fork_invisibility += 1;
+
+    source_state
+        .install_l0_table(branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "generated-inheritance-source-later",
+            vec![storage_row_with(
+                source,
+                b"generated-source-later".to_vec(),
+                9,
+                90,
+                Timestamp::EPOCH,
+                b"later".to_vec(),
+            )?],
+        )?)
+        .map_err(|err| TestkitError::new(format!("source later install failed: {err}")))?;
+    if view
+        .latest(&physical_key(child, b"generated-source-later".to_vec())?)
+        .map_err(|err| TestkitError::new(format!("pinned inherited read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "pinned inherited view saw later source mutation",
+        ));
+    }
+    outcome.pinned_inherited_view_isolations += 1;
+
+    Ok(DirectInheritanceFixture {
+        source,
+        child,
+        child_key,
+        rewritten_inherited: rewritten,
+        child_state,
+    })
+}
+
+fn check_child_put_shadow_and_history(
+    fixture: &mut DirectInheritanceFixture,
+    outcome: &mut InheritanceOutcome,
+) -> Result<(), TestkitError> {
+    fixture
+        .child_state
+        .append_committed_row(storage_row_with(
+            fixture.child,
+            b"generated-inherited".to_vec(),
+            7,
+            70,
+            Timestamp::EPOCH,
+            b"child".to_vec(),
+        )?)
+        .map_err(|err| TestkitError::new(format!("child shadow put failed: {err}")))?;
+    let shadow_view = fixture
+        .child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("child shadow view failed: {err}")))?;
+    let child_put = shadow_view
+        .latest(&fixture.child_key)
+        .map_err(|err| TestkitError::new(format!("child shadow latest failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("child shadow latest missed put"))?;
+    if child_put.source() != BranchRowSource::Active {
+        return Err(TestkitError::new("child put did not shadow inherited row"));
+    }
+    outcome.inherited_child_put_shadows += 1;
+    let inherited_before_child = shadow_view
+        .at_version(&fixture.child_key, CommitVersion::new(4))
+        .map_err(|err| TestkitError::new(format!("inherited bounded read failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("bounded inherited read missed row"))?;
+    if inherited_before_child.row() != &fixture.rewritten_inherited {
+        return Err(TestkitError::new("bounded inherited read drifted"));
+    }
+    outcome.inherited_version_bounded_reads += 1;
+
+    let history = shadow_view
+        .history(&fixture.child_key, BranchHistoryOptions::all())
+        .map_err(|err| TestkitError::new(format!("inherited history failed: {err}")))?;
+    if history_versions(&history) != vec![7, 3] {
+        return Err(TestkitError::new("inherited history versions drifted"));
+    }
+    outcome.inherited_history_reads += 1;
+    Ok(())
+}
+
+fn check_manual_inherited_tombstone_and_scans(
+    fixture: &DirectInheritanceFixture,
+    outcome: &mut InheritanceOutcome,
+) -> Result<(), TestkitError> {
+    let tombstone_key = physical_key(fixture.child, b"generated-delete-shadow".to_vec())?;
+    let layer = branch_inherited_layer(
+        fixture.source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            fixture.source,
+            BranchLevel::ZERO,
+            "generated-delete-shadow-source",
+            vec![
+                storage_row_with(
+                    fixture.source,
+                    b"generated-delete-shadow".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"source".to_vec(),
+                )?,
+                storage_row_with(
+                    fixture.source,
+                    b"generated-post-fork".to_vec(),
+                    8,
+                    80,
+                    Timestamp::EPOCH,
+                    b"post".to_vec(),
+                )?,
+                storage_row_with(
+                    fixture.source,
+                    b"generated-scan-visible".to_vec(),
+                    3,
+                    30,
+                    Timestamp::EPOCH,
+                    b"visible-scan".to_vec(),
+                )?,
+            ],
+        )?]],
+    )?;
+    let mut tombstone_child = BranchLocalState::empty(fixture.child);
+    tombstone_child
+        .attach_inherited_layers(vec![layer])
+        .map_err(|err| TestkitError::new(format!("manual inherited attach failed: {err}")))?;
+    tombstone_child
+        .append_committed_row(tombstone_row(
+            fixture.child,
+            b"generated-delete-shadow".to_vec(),
+            6,
+            60,
+        )?)
+        .map_err(|err| TestkitError::new(format!("child inherited tombstone failed: {err}")))?;
+    let tombstone_view = tombstone_child
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("tombstone inherited view failed: {err}")))?;
+    if tombstone_view
+        .latest(&tombstone_key)
+        .map_err(|err| TestkitError::new(format!("tombstone shadow read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new(
+            "child tombstone fell through to inherited put",
+        ));
+    }
+    outcome.inherited_child_tombstone_shadows += 1;
+    if tombstone_view
+        .latest(&physical_key(
+            fixture.child,
+            b"generated-post-fork".to_vec(),
+        )?)
+        .map_err(|err| TestkitError::new(format!("post-fork inherited read failed: {err}")))?
+        .is_some()
+    {
+        return Err(TestkitError::new("manual fork gate exposed post-fork row"));
+    }
+    outcome.inherited_post_fork_invisibility += 1;
+
+    let prefix = BranchScanBounds::prefix(&physical_key(fixture.child, b"generated-".to_vec())?);
+    let prefix_rows = tombstone_view
+        .scan_prefix(&prefix, BranchReadBound::latest())
+        .map_err(|err| TestkitError::new(format!("inherited prefix scan failed: {err}")))?;
+    if visible_user_keys(&prefix_rows) != vec![b"generated-scan-visible".to_vec()] {
+        return Err(TestkitError::new(
+            "inherited prefix scan did not rewrite and filter visible rows",
+        ));
+    }
+    outcome.inherited_prefix_scans += 1;
+
+    let range = BranchScanBounds::closed(
+        &physical_key(fixture.child, b"generated-delete-shadow".to_vec())?,
+        &physical_key(fixture.child, b"generated-scan-visible".to_vec())?,
+    )
+    .map_err(|err| TestkitError::new(format!("inherited range bounds failed: {err}")))?;
+    let range_rows = tombstone_view
+        .scan_range(&range, BranchReadBound::latest())
+        .map_err(|err| TestkitError::new(format!("inherited range scan failed: {err}")))?;
+    if visible_user_keys(&range_rows) != vec![b"generated-scan-visible".to_vec()] {
+        return Err(TestkitError::new(
+            "inherited range scan did not rewrite and filter visible rows",
+        ));
+    }
+    outcome.inherited_range_scans += 1;
+    Ok(())
+}
+
+fn check_chained_inheritance(
+    script: &[u8],
+    outcome: &mut InheritanceOutcome,
+) -> Result<(), TestkitError> {
+    let grandparent = branch_id(script_byte(script, 109));
+    let parent = branch_id(script_byte(script, 109).wrapping_add(1));
+    let child = branch_id(script_byte(script, 109).wrapping_add(2));
+    let grandparent_row = storage_row_with(
+        grandparent,
+        b"generated-chain".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"grandparent".to_vec(),
+    )?;
+    let parent_row = storage_row_with(
+        parent,
+        b"generated-chain".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"parent".to_vec(),
+    )?;
+    let mut grandparent_state = BranchLocalState::empty(grandparent);
+    grandparent_state
+        .install_l0_table(branch_owned_table(
+            grandparent,
+            BranchLevel::ZERO,
+            "generated-chain-grandparent",
+            vec![grandparent_row],
+        )?)
+        .map_err(|err| TestkitError::new(format!("chain grandparent install failed: {err}")))?;
+    let (mut parent_state, _) = grandparent_state
+        .fork_into_empty_child(parent)
+        .map_err(|err| TestkitError::new(format!("chain parent fork failed: {err}")))?;
+    parent_state
+        .install_l0_table(branch_owned_table(
+            parent,
+            BranchLevel::ZERO,
+            "generated-chain-parent",
+            vec![parent_row.clone()],
+        )?)
+        .map_err(|err| TestkitError::new(format!("chain parent install failed: {err}")))?;
+    let (child_state, outcome_value) = parent_state
+        .fork_into_empty_child(child)
+        .map_err(|err| TestkitError::new(format!("chain child fork failed: {err}")))?;
+    if outcome_value.inherited_layer_count() != 2 {
+        return Err(TestkitError::new("chain inherited layer count drifted"));
+    }
+    let visible = child_state
+        .capture_read_view()
+        .map_err(|err| TestkitError::new(format!("chain child view failed: {err}")))?
+        .latest(&physical_key(child, b"generated-chain".to_vec())?)
+        .map_err(|err| TestkitError::new(format!("chain latest failed: {err}")))?
+        .ok_or_else(|| TestkitError::new("chain latest missed row"))?;
+    if visible.source()
+        != (BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        })
+    {
+        return Err(TestkitError::new("nearest inherited layer did not win"));
+    }
+    outcome.inherited_chained_ancestry += 1;
+    Ok(())
+}
+
+fn check_invalid_inherited_layers(
+    child: BranchId,
+    outcome: &mut InheritanceOutcome,
+) -> Result<(), TestkitError> {
+    let source = branch_id(0xf1);
+    let table = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "generated-invalid-inherited-source",
+        vec![storage_row_with(
+            source,
+            b"invalid-inherited".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"secret-payload".to_vec(),
+        )?],
+    )?;
+    expect_invalid_inherited_layer(BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(
+            source,
+            CommitVersion::new(1),
+            InheritedLayerStatus::Active,
+            2,
+        ),
+        vec![vec![table.clone()]],
+    ))?;
+    let mut child_state = BranchLocalState::empty(child);
+    expect_invalid_inherited_layer(child_state.attach_inherited_layers(vec![
+        branch_inherited_layer(
+            child,
+            CommitVersion::new(1),
+            InheritedLayerStatus::Active,
+            Vec::new(),
+        )?,
+    ]))?;
+    outcome.invalid_inherited_layer_rejections += 2;
+    Ok(())
+}
+
 fn check_branch_local_append_path(
     script: &[u8],
     branch: BranchId,
@@ -1330,6 +2693,18 @@ fn expect_duplicate_internal_key<T>(
     }
 }
 
+fn expect_invalid_inherited_layer<T>(
+    result: Result<T, BranchRuntimeError>,
+) -> Result<(), TestkitError> {
+    match result {
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. }) => Ok(()),
+        Err(err) => Err(TestkitError::new(format!(
+            "invalid inherited layer returned wrong error: {err}"
+        ))),
+        Ok(_) => Err(TestkitError::new("invalid inherited layer was accepted")),
+    }
+}
+
 fn branch_state_facts(state: &BranchLocalState) -> Result<BranchStateFacts, TestkitError> {
     state.facts().map_err(|error| state_fact_error(&error))
 }
@@ -1362,6 +2737,64 @@ fn branch_id(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; BranchId::BYTE_LEN])
 }
 
+fn branch_owned_table(
+    branch_id: BranchId,
+    level: BranchLevel,
+    identity: &str,
+    rows: Vec<StorageRow>,
+) -> Result<BranchOwnedTable, TestkitError> {
+    let reader = immutable_reader(identity, rows)?;
+    let descriptor = branch_table_descriptor(level, &reader)?;
+    BranchOwnedTable::new(branch_id, descriptor, reader)
+        .map_err(|err| TestkitError::new(format!("branch-owned table failed: {err}")))
+}
+
+fn branch_inherited_layer(
+    source_branch_id: BranchId,
+    fork_version: CommitVersion,
+    status: InheritedLayerStatus,
+    owned_levels: Vec<Vec<BranchOwnedTable>>,
+) -> Result<BranchInheritedLayer, TestkitError> {
+    let table_count = owned_levels.iter().map(Vec::len).sum();
+    let descriptor =
+        InheritedLayerDescriptor::new(source_branch_id, fork_version, status, table_count);
+    BranchInheritedLayer::new(descriptor, owned_levels)
+        .map_err(|err| TestkitError::new(format!("branch inherited layer failed: {err}")))
+}
+
+fn branch_table_descriptor(
+    level: BranchLevel,
+    reader: &ImmutableTableReader,
+) -> Result<BranchTableDescriptor, TestkitError> {
+    BranchTableDescriptor::new(
+        reader.facts().identity().clone(),
+        reader.facts().clone(),
+        level,
+    )
+    .map_err(|err| TestkitError::new(format!("branch table descriptor failed: {err}")))
+}
+
+fn immutable_reader(
+    identity: &str,
+    rows: Vec<StorageRow>,
+) -> Result<ImmutableTableReader, TestkitError> {
+    let mut rows = rows.into_iter().map(TableRow::new).collect::<Vec<_>>();
+    sort_table_rows_by_key(&mut rows);
+    let identity = TableIdentity::new(identity)
+        .map_err(|err| TestkitError::new(format!("table identity failed: {err}")))?;
+    let builder = ImmutableTableBuilder::new(TableBuilderConfig::default())
+        .map_err(|err| TestkitError::new(format!("table builder failed: {err}")))?;
+    let artifact = builder
+        .build_from_rows(identity.clone(), &rows)
+        .map_err(|err| TestkitError::new(format!("immutable table build failed: {err}")))?;
+    ImmutableTableReader::open_bytes(
+        identity,
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .map_err(|err| TestkitError::new(format!("immutable table reader failed: {err}")))
+}
+
 fn table_facts(identity: &str) -> Result<TableRuntimeFacts, TestkitError> {
     TableRuntimeFacts::new(
         TableIdentity::new(identity)
@@ -1387,6 +2820,18 @@ fn matching_versions(rows: &[TableRow], bound: BranchEffectiveReadBound) -> Vec<
     rows.iter()
         .filter(|row| bound.matches_row(row.row()).matches_effective_bound())
         .map(|row| row.commit_version().as_u64())
+        .collect()
+}
+
+fn history_versions(rows: &[BranchHistoryRow]) -> Vec<u64> {
+    rows.iter()
+        .map(|row| row.row().commit_version().as_u64())
+        .collect()
+}
+
+fn visible_user_keys(rows: &[BranchVisibleRow]) -> Vec<Vec<u8>> {
+    rows.iter()
+        .map(|row| row.row().physical_key().user_key().to_vec())
         .collect()
 }
 

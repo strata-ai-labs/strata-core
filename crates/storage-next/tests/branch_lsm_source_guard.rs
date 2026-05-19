@@ -72,6 +72,9 @@ fn branch_lsm_source_does_not_use_io_backend_or_lifecycle_apis() {
         "crate::service::wal",
         "crate::service::checkpoint",
         "crate::testkit",
+        "SystemTime",
+        "Instant::now",
+        "Timestamp::now",
     ];
 
     for file in branch_lsm_source_files(&root) {
@@ -127,9 +130,11 @@ fn branch_lsm_runtime_stays_crate_private() {
 fn branch_lsm_source_has_no_premature_behavior_entrypoints() {
     let root = common::crate_root();
 
-    // L6C owns branch-local committed-row append and active rotation. Later
-    // behavior-owning L6 slices should narrow this guard as they add concrete
-    // read, fork, install, or compaction entrypoints.
+    // L6C owns branch-local committed-row append and active rotation. L6D owns
+    // pinned own-branch read-view methods. L6E owns branch-owned immutable
+    // level install methods. L6F owns storage-level fork/inheritance helpers.
+    // Later behavior-owning L6 slices should narrow this guard as they add
+    // materialization, compaction, or snapshot install entrypoints.
     for file in branch_lsm_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read branch LSM source");
         for (line_number, line) in text.lines().enumerate() {
@@ -181,6 +186,18 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
         "std::fs::read(\"branch\")",
         "std::fs"
     ));
+    assert!(contains_forbidden_substring(
+        "SystemTime::now()",
+        "SystemTime"
+    ));
+    assert!(contains_forbidden_substring(
+        "Instant::now()",
+        "Instant::now"
+    ));
+    assert!(contains_forbidden_substring(
+        "Timestamp::now()",
+        "Timestamp::now"
+    ));
     assert!(contains_ascii_word("let _: PathBuf;", "PathBuf"));
     assert!(contains_forbidden_substring(
         "use crate::backend;",
@@ -207,20 +224,31 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
     assert!(contains_premature_behavior_entrypoint(
         "pub(crate) fn fork_branch() {}"
     ));
+}
 
+#[test]
+fn branch_lsm_source_guard_allows_owned_l6_entrypoints() {
     assert!(!is_public_surface_leak("pub(crate) struct BranchRuntime;"));
-    assert!(!contains_premature_behavior_entrypoint(
-        "pub(crate) fn append_committed_row() {}"
-    ));
-    assert!(!contains_premature_behavior_entrypoint(
-        "pub(crate) fn rotate_active() {}"
-    ));
-    assert!(!contains_premature_behavior_entrypoint(
-        "pub(crate) const fn latest() -> Self"
-    ));
-    assert!(!contains_premature_behavior_entrypoint(
-        "pub(crate) const fn fork_version(self) -> CommitVersion"
-    ));
+    for line in [
+        "pub(crate) fn append_committed_row() {}",
+        "pub(crate) fn rotate_active() {}",
+        "pub(crate) fn capture_read_view(&self) {}",
+        "pub(crate) fn latest(&self) {}",
+        "pub(crate) fn at_version(&self) {}",
+        "pub(crate) fn read_point(&self) {}",
+        "pub(crate) fn history(&self) {}",
+        "pub(crate) fn scan_prefix(&self) {}",
+        "pub(crate) fn scan_range(&self) {}",
+        "pub(crate) fn install_l0_table(&mut self) {}",
+        "pub(crate) fn install_owned_table_at_level(&mut self) {}",
+        "pub(crate) fn replace_frozen_with_l0_table(&mut self) {}",
+        "pub(crate) fn attach_inherited_layers(&mut self) {}",
+        "pub(crate) fn fork_into_empty_child(&self) {}",
+        "pub(crate) const fn latest() -> Self",
+        "pub(crate) const fn fork_version(self) -> CommitVersion",
+    ] {
+        assert!(!contains_premature_behavior_entrypoint(line));
+    }
     assert!(!contains_forbidden_product_vocabulary(
         "BranchId CommitVersion Timestamp StorageRow TableRuntimeFacts"
     ));
