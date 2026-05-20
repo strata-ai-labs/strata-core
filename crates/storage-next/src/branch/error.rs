@@ -44,6 +44,9 @@ pub(crate) enum BranchRuntimeError {
     InvalidCompaction {
         reason: &'static str,
     },
+    InvalidSnapshotInstall {
+        reason: &'static str,
+    },
     TableRuntime {
         source: TableRuntimeError,
     },
@@ -113,6 +116,10 @@ impl PartialEq for BranchRuntimeError {
             | (
                 Self::InvalidCompaction { reason: left },
                 Self::InvalidCompaction { reason: right },
+            )
+            | (
+                Self::InvalidSnapshotInstall { reason: left },
+                Self::InvalidSnapshotInstall { reason: right },
             ) => left == right,
             (
                 Self::InsufficientTimestampHistory {
@@ -205,6 +212,12 @@ impl fmt::Display for BranchRuntimeError {
             Self::InvalidCompaction { reason } => {
                 write!(formatter, "branch compaction request is invalid: {reason}")
             }
+            Self::InvalidSnapshotInstall { reason } => {
+                write!(
+                    formatter,
+                    "branch snapshot install request is invalid: {reason}"
+                )
+            }
             Self::TableRuntime { source } => {
                 write!(formatter, "table runtime operation failed: {source}")
             }
@@ -233,6 +246,7 @@ impl Error for BranchRuntimeError {
             | Self::InvalidInheritedLayer { .. }
             | Self::InvalidReachability { .. }
             | Self::InvalidCompaction { .. }
+            | Self::InvalidSnapshotInstall { .. }
             | Self::Publish { source: None, .. } => None,
         }
     }

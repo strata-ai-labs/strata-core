@@ -437,6 +437,9 @@ Detailed slice test plan:
 
 ### 17. Snapshot Row Install
 
+Detailed plan:
+`docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-test-plan.md`
+
 1. Empty install is a no-op or typed error according to documented contract.
 2. Valid single-branch install creates readable rows.
 3. Valid multi-branch install creates readable rows in each branch.
@@ -444,8 +447,9 @@ Detailed slice test plan:
 5. Row whose physical key branch id disagrees with install target is rejected.
 6. Duplicate internal key in install plan is rejected before mutation.
 7. Invalid row ordering is rejected before mutation.
-8. Table build failure leaves no partial branch-state install visible.
-9. Publication failure leaves no partial branch-state install visible.
+8. Table build/staging failure leaves no partial branch-state install visible.
+9. Durable publication failure remains L8; L6K must expose only staged
+   in-memory install facts until L8 completes publication.
 10. Install result reports table and branch facts needed by L8.
 
 ### 18. Fault Windows
@@ -481,6 +485,9 @@ table-count, and row-count stress runs may be separate ignored or manual
 stress commands.
 
 ### 20. Fuzz Targets
+
+Detailed closeout test plan:
+`docs/architecture/implementation-plans/M4/L6/l6l-l6-conformance-closeout-test-plan.md`
 
 Required L6 fuzz targets:
 
@@ -521,6 +528,7 @@ Mandatory modes:
 | branch generated | generated branch model check | `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties` |
 | no-default generated | prove no accidental localfs/default dependency | `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties` |
 | source guards | L6 purity | `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard` |
+| closeout inventory | generated/fuzz/doc inventory | `cargo test -p strata-storage-next --locked --test branch_lsm_closeout` |
 | wasm/no-default | browser-compatible branch mechanics | `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked` |
 | lint | all-target/all-feature lint surface | `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` |
 | full package | regression safety net | `cargo test -p strata-storage-next --locked` |
@@ -546,10 +554,18 @@ Not L6 test gaps:
 6. compaction scheduling;
 7. retention scheduling;
 8. quarantine/repair orchestration;
-9. product branch merge/cherry-pick/revert/restore semantics;
-10. public branch naming UX;
-11. query planner or secondary index semantics;
-12. engine-facing DTO mapping.
+9. branch-registry workflows such as duplicate branch create, fork on a
+   missing source branch, and fork-at-history requests;
+10. branch clear/delete APIs and pinned-view behavior across those public
+    lifecycle operations;
+11. product branch merge/cherry-pick/revert/restore semantics;
+12. public branch naming UX;
+13. materialization durability uncertainty, visible-but-not-durable publish
+    windows, durable recovery records, and backend fault reconciliation;
+14. materialization provenance diagnostics across re-forked materialized
+    replacement tables;
+15. query planner or secondary index semantics;
+16. engine-facing DTO mapping.
 
 These belong to L7, L8, L9, or engine-next.
 

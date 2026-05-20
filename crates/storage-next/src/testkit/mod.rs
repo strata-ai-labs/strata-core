@@ -11,7 +11,12 @@ mod quarantine_fuzz;
 mod service_fuzz;
 mod table_runtime;
 
-pub use branch_lsm::{check_branch_lsm_scaffold_contract, BranchLsmScaffoldOutcome};
+pub use branch_lsm::{
+    check_branch_lsm_fault_window_contract, check_branch_lsm_inheritance_contract,
+    check_branch_lsm_install_contract, check_branch_lsm_reads_contract,
+    check_branch_lsm_reference_model_contract, check_branch_lsm_scaffold_contract,
+    BranchLsmScaffoldOutcome,
+};
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
 };

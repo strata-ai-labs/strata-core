@@ -203,8 +203,8 @@ publication so pinned read views can survive branch mutations.
 | `L6H` | Materialization mechanics | Convert retained inherited rows into child-owned L5 table artifacts, rewrite keys, install replacement tables, remove inherited layer atomically from reader perspective, and expose recovery facts. Detailed plans: `docs/architecture/implementation-plans/M4/L6/l6h-materialization-mechanics-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L6/l6h-materialization-mechanics-test-plan.md`. | Materialization preserves all visible reads, is idempotent over staged facts, and never removes inherited layer before replacement is visible. | Materialization changes physical ownership without changing read results. |
 | `L6I` | Reachability and shared table refs | Add branch/table reachability fact model, runtime shared-table registry, inherited references, release facts, and rebuild-from-manifest model hooks. Detailed plans: `docs/architecture/implementation-plans/M4/L6/l6i-reachability-shared-table-refs-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L6/l6i-reachability-shared-table-refs-test-plan.md`. | Shared table not released while inherited, branch delete/clear release facts, registry rebuild model tests. | L6 can tell L8 which tables are reachable and which may be released. |
 | `L6J` | Branch compaction integration | Select branch-owned compaction candidates, supply L5 caller policies for tombstone/TTL/version safety, install output tables into levels, and preserve pinned views. Detailed plans: `docs/architecture/implementation-plans/M4/L6/l6j-branch-compaction-integration-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L6/l6j-branch-compaction-integration-test-plan.md`. | Candidate selection, unsafe tombstone rejection, output install, old table release facts, read parity before/after compaction. | L6 can perform branch-level compaction state transitions without scheduling or backend IO. |
-| `L6K` | Snapshot row install | Preflight generic decoded storage rows, validate target branches and row ordering, build/install branch-local tables all-or-nothing, and report install facts. | All-or-nothing invalid row/branch/duplicate tests, multi-branch install, read parity after install. | L8 can hand generic snapshot rows to L6 without primitive DTOs. |
-| `L6L` | L6 conformance closeout | Consolidate generated tests, source guards, fuzz targets, old-code behavior map, and deferred ledger for L7/L8/L9. | Full L6 conformance matrix and sensitivity probes. | M4-L6 closes and L7 can commit into branch state. |
+| `L6K` | Snapshot row install | Preflight generic decoded storage rows, validate target branches and row ordering, build/install branch-local tables all-or-nothing, and report install facts. Detailed plans: `docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-test-plan.md`. | All-or-nothing invalid row/branch/duplicate tests, multi-branch install, read parity after install. | L8 can hand generic snapshot rows to L6 without primitive DTOs. |
+| `L6L` | L6 conformance closeout | Consolidate generated tests, source guards, fuzz targets, old-code behavior map, and deferred ledger for L7/L8/L9. Detailed plans: `docs/architecture/implementation-plans/M4/L6/l6l-l6-conformance-closeout-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L6/l6l-l6-conformance-closeout-test-plan.md`. | Full L6 conformance matrix, closeout inventory, fuzz inventory, and sensitivity probes. | M4-L6 closes and L7 can commit into branch state. |
 
 ## Read Semantics
 
@@ -300,8 +300,13 @@ Snapshot row install must:
 2. validate branch id in every row key;
 3. reject duplicate internal keys in the install plan;
 4. validate ordering and table build plans;
-5. publish/install only after preflight succeeds;
+5. stage/build table artifacts locally and install only after preflight
+   succeeds;
 6. leave no partial branch-state mutation visible on failure.
+
+Durable table-object publication, branch manifest publication, and
+crash-window reconciliation remain L8/L4 responsibilities. L6K exposes
+branch-state staging, install, and reachability facts only.
 
 ## Source Guard Policy
 

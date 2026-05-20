@@ -7,9 +7,10 @@ use super::{
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    FrozenTable, ImmutableTableReader, MutableTable, TableInternalKeyBytes, TableKeyRange,
-    TablePhysicalKeyBytes, TableRow, TableRuntimeFacts,
+    FrozenTable, ImmutableTableReader, MutableTable, TableInternalKeyBytes, TablePhysicalKeyBytes,
+    TableRow, TableRuntimeFacts,
 };
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -470,7 +471,30 @@ pub(crate) struct BranchOwnedTable {
     branch_id: BranchId,
     descriptor: BranchTableDescriptor,
     reader: ImmutableTableReader,
-    materialization_layer_index: Option<usize>,
+    materialization_source: Option<BranchMaterializationSource>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMaterializationSource {
+    source_branch_id: BranchId,
+    fork_version: CommitVersion,
+}
+
+impl BranchMaterializationSource {
+    pub(crate) const fn new(source_branch_id: BranchId, fork_version: CommitVersion) -> Self {
+        Self {
+            source_branch_id,
+            fork_version,
+        }
+    }
+
+    pub(crate) const fn source_branch_id(self) -> BranchId {
+        self.source_branch_id
+    }
+
+    pub(crate) const fn fork_version(self) -> CommitVersion {
+        self.fork_version
+    }
 }
 
 impl BranchOwnedTable {
@@ -486,13 +510,13 @@ impl BranchOwnedTable {
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
         reader: ImmutableTableReader,
-        materialization_layer_index: usize,
+        materialization_source: BranchMaterializationSource,
     ) -> BranchRuntimeResult<Self> {
         Self::new_with_materialization_layer(
             branch_id,
             descriptor,
             reader,
-            Some(materialization_layer_index),
+            Some(materialization_source),
         )
     }
 
@@ -500,11 +524,16 @@ impl BranchOwnedTable {
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
         reader: ImmutableTableReader,
-        materialization_layer_index: Option<usize>,
+        materialization_source: Option<BranchMaterializationSource>,
     ) -> BranchRuntimeResult<Self> {
         if descriptor.facts() != reader.facts() {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table descriptor facts must match reader facts",
+            });
+        }
+        if reader.rows().is_empty() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "branch-owned table must not be empty",
             });
         }
         if reader
@@ -520,7 +549,7 @@ impl BranchOwnedTable {
             branch_id,
             descriptor,
             reader,
-            materialization_layer_index,
+            materialization_source,
         })
     }
 
@@ -540,8 +569,8 @@ impl BranchOwnedTable {
         self.descriptor.level()
     }
 
-    pub(crate) const fn materialization_layer_index(&self) -> Option<usize> {
-        self.materialization_layer_index
+    pub(crate) const fn materialization_source(&self) -> Option<BranchMaterializationSource> {
+        self.materialization_source
     }
 
     pub(crate) fn rows(&self) -> &[TableRow] {
@@ -586,11 +615,31 @@ impl BranchInheritedLayer {
                     reason: "inherited table rows must match source branch",
                 });
             }
+            if table
+                .rows()
+                .iter()
+                .any(|row| row.commit_version().as_u64() > descriptor.fork_version().as_u64())
+            {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited table rows must not be newer than the fork version",
+                });
+            }
         }
         Ok(Self {
             descriptor,
             owned_levels,
         })
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn new_unchecked_for_test(
+        descriptor: InheritedLayerDescriptor,
+        owned_levels: Vec<Vec<BranchOwnedTable>>,
+    ) -> Self {
+        Self {
+            descriptor,
+            owned_levels,
+        }
     }
 
     pub(crate) const fn descriptor(&self) -> InheritedLayerDescriptor {
@@ -611,6 +660,18 @@ impl BranchInheritedLayer {
 
     pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
         &self.owned_levels
+    }
+
+    pub(crate) fn with_status(&self, status: InheritedLayerStatus) -> BranchRuntimeResult<Self> {
+        Self::new(
+            InheritedLayerDescriptor::new(
+                self.source_branch_id(),
+                self.fork_version(),
+                status,
+                self.table_count(),
+            ),
+            self.owned_levels.clone(),
+        )
     }
 
     pub(crate) fn table_count(&self) -> usize {
@@ -938,6 +999,7 @@ impl BranchReadView {
         bound: BranchReadBound,
         rows: &mut Vec<CandidateRow>,
     ) -> BranchRuntimeResult<()> {
+        let mut seen_table_identities = BTreeSet::<&str>::new();
         for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
             if !layer.is_readable() {
                 continue;
@@ -951,6 +1013,9 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
+                if !seen_table_identities.insert(table.descriptor().identity().as_str()) {
+                    continue;
+                }
                 for row in table.rows().iter().filter(|row| {
                     row.physical_key() == &source_key
                         && inherited_bound
@@ -979,6 +1044,7 @@ impl BranchReadView {
         bound: BranchReadBound,
         grouped: &mut BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>>,
     ) -> BranchRuntimeResult<()> {
+        let mut seen_table_identities = BTreeSet::<&str>::new();
         for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
             if !layer.is_readable() {
                 continue;
@@ -986,6 +1052,9 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
+                if !seen_table_identities.insert(table.descriptor().identity().as_str()) {
+                    continue;
+                }
                 for row in table.rows().iter().filter(|row| {
                     inherited_bound
                         .matches_row(row.row())
@@ -1092,20 +1161,43 @@ fn sort_candidates_newest_first(candidates: &mut [CandidateRow]) {
             .commit_version()
             .as_u64()
             .cmp(&left.row.commit_version().as_u64())
-            .then_with(|| source_order(left.source).cmp(&source_order(right.source)))
+            .then_with(|| source_order_cmp(left.source, right.source))
     });
 }
 
-fn source_order(source: BranchRowSource) -> usize {
-    match source {
-        BranchRowSource::Active => 0,
-        BranchRowSource::Frozen { index } => index.saturating_add(1),
-        BranchRowSource::OwnedTable { table_index, .. } => {
-            table_index.saturating_add(usize::MAX / 4)
+fn source_order_cmp(left: BranchRowSource, right: BranchRowSource) -> Ordering {
+    match (left, right) {
+        (BranchRowSource::Active, BranchRowSource::Active) => Ordering::Equal,
+        (BranchRowSource::Active, _) => Ordering::Less,
+        (_, BranchRowSource::Active) => Ordering::Greater,
+        (BranchRowSource::Frozen { index: left }, BranchRowSource::Frozen { index: right }) => {
+            left.cmp(&right)
         }
-        BranchRowSource::Inherited { layer_index, .. } => {
-            layer_index.saturating_add(usize::MAX / 2)
-        }
+        (BranchRowSource::Frozen { .. }, _) => Ordering::Less,
+        (_, BranchRowSource::Frozen { .. }) => Ordering::Greater,
+        (
+            BranchRowSource::OwnedTable {
+                level: left_level,
+                table_index: left_index,
+            },
+            BranchRowSource::OwnedTable {
+                level: right_level,
+                table_index: right_index,
+            },
+        ) => left_level
+            .raw()
+            .cmp(&right_level.raw())
+            .then_with(|| left_index.cmp(&right_index)),
+        (BranchRowSource::OwnedTable { .. }, _) => Ordering::Less,
+        (_, BranchRowSource::OwnedTable { .. }) => Ordering::Greater,
+        (
+            BranchRowSource::Inherited {
+                layer_index: left, ..
+            },
+            BranchRowSource::Inherited {
+                layer_index: right, ..
+            },
+        ) => left.cmp(&right),
     }
 }
 
@@ -1298,19 +1390,56 @@ fn validate_inherited_layers(
 
 fn validate_non_overlapping_tables(tables: &[BranchOwnedTable]) -> BranchRuntimeResult<()> {
     for pair in tables.windows(2) {
-        let left = pair[0].facts().key_range();
-        let right = pair[1].facts().key_range();
-        if left.first_key() > right.first_key() || table_ranges_overlap(left, right) {
+        let left_first = require_table_physical_first_key(&pair[0])?;
+        let right_first = require_table_physical_first_key(&pair[1])?;
+        if left_first > right_first || table_physical_ranges_overlap(&pair[0], &pair[1]) {
             return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "branch-owned nonzero levels must be sorted and non-overlapping",
+                reason: "branch-owned nonzero levels must be sorted and non-overlapping by physical key range",
             });
         }
     }
     Ok(())
 }
 
-pub(super) fn table_ranges_overlap(left: &TableKeyRange, right: &TableKeyRange) -> bool {
-    left.first_key() <= right.last_key() && right.first_key() <= left.last_key()
+pub(super) fn table_physical_ranges_overlap(
+    left: &BranchOwnedTable,
+    right: &BranchOwnedTable,
+) -> bool {
+    let Some((left_first, left_last)) = table_physical_key_bounds(left) else {
+        return false;
+    };
+    let Some((right_first, right_last)) = table_physical_key_bounds(right) else {
+        return false;
+    };
+    left_first <= right_last && right_first <= left_last
+}
+
+pub(super) fn table_physical_first_key(table: &BranchOwnedTable) -> Option<TablePhysicalKeyBytes> {
+    table_physical_key_bounds(table).map(|(first, _)| first)
+}
+
+pub(super) fn require_table_physical_first_key(
+    table: &BranchOwnedTable,
+) -> BranchRuntimeResult<TablePhysicalKeyBytes> {
+    table_physical_first_key(table).ok_or(BranchRuntimeError::InvalidBranchState {
+        reason: "branch-owned table must contain at least one physical key",
+    })
+}
+
+fn table_physical_key_bounds(
+    table: &BranchOwnedTable,
+) -> Option<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
+    let mut keys = table
+        .rows()
+        .iter()
+        .map(|row| TablePhysicalKeyBytes::from_row(row.row()));
+    let first = keys.next()?;
+    let (min, max) = keys.fold((first.clone(), first), |(min, max), key| {
+        let next_min = if key < min { key.clone() } else { min };
+        let next_max = if key > max { key } else { max };
+        (next_min, next_max)
+    });
+    Some((min, max))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1336,7 +1465,6 @@ impl ObservedReadViewFacts {
         if layer.status() == InheritedLayerStatus::Materialized {
             return Ok(());
         }
-        self.record_commit_version(layer.fork_version());
         for table in layer.owned_levels().iter().flatten() {
             for row in table.rows() {
                 if row.physical_key().branch_id() != layer.source_branch_id() {

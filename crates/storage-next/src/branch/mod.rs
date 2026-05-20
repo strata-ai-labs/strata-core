@@ -61,9 +61,9 @@ pub(crate) use identity::{
 )]
 pub(crate) use read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
-    BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowBoundMatch,
-    BranchRowCandidateFacts, BranchRowSource, BranchScanBounds, BranchTimestampCoverage,
-    BranchUserKeyBound, BranchVisibleRow,
+    BranchMaterializationSource, BranchOwnedTable, BranchReadBound, BranchReadView,
+    BranchRowBoundMatch, BranchRowCandidateFacts, BranchRowSource, BranchScanBounds,
+    BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
 #[cfg_attr(
     not(test),
@@ -73,11 +73,14 @@ pub(crate) use read::{
     )
 )]
 pub(crate) use state::{
-    BranchAppendOutcome, BranchCompactionCandidate, BranchCompactionKind,
-    BranchCompactionNoopReason, BranchCompactionOutcome, BranchCompactionPlan,
-    BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchForkOutcome, BranchImmutableInstallOutcome, BranchMaterializationOutcome,
-    BranchMaterializationRecovery, BranchMaterializationRequest,
+    install_snapshot_rows_into_branches, BranchAppendOutcome, BranchCompactionCandidate,
+    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionOutcome,
+    BranchCompactionPlan, BranchCompactionRecovery, BranchCompactionRequest,
+    BranchCompactionRetentionPolicy, BranchForkOutcome, BranchImmutableInstallOutcome,
+    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
+    BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
+    BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
+    BranchSnapshotTargetStatePolicy,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

@@ -839,9 +839,9 @@ deferred, and what old code became eligible for retirement.
 - L6K owns snapshot row install.
 - Retained historical fork-version requests and above-source-max rejection are
   deferred until the retained-history proof API exists.
-- Optional `branch_lsm_inheritance` fuzz target remains deferred until the L6
-  fuzz inventory slice. The generated branch-LSM property harness now covers
-  the L6F inheritance categories with dedicated counters/scripts.
+- Dedicated inheritance fuzz coverage is delivered by the L6L
+  `branch_lsm_inheritance` target. The generated branch-LSM property harness
+  also covers the L6F inheritance categories with dedicated counters/scripts.
 
 ### Tests Ported Or Added
 
@@ -1427,9 +1427,10 @@ deferred, and what old code became eligible for retirement.
   counters.
 - Extended `branch_lsm_properties.rs` so every L6J generated compaction counter
   must be nonzero.
-- Updated the branch source guard to mark compaction planning/install as L6J
-  owned while continuing to reject snapshot install, backend IO, lifecycle, and
-  product DTO vocabulary.
+- At the L6J point, updated the branch source guard to mark compaction
+  planning/install as L6J owned while still rejecting snapshot install,
+  backend IO, lifecycle, and product DTO vocabulary. L6K narrows that guard
+  again for row-native snapshot install.
 
 ### Sensitivity Probes
 
@@ -1484,3 +1485,310 @@ deferred, and what old code became eligible for retirement.
   current storage still depends on them.
 - Follow-up: L6K/L6L/L8 will close snapshot install, full L6 conformance, and
   durable compaction lifecycle orchestration.
+
+## L6K: Snapshot Row Install
+
+### Current Files Read
+
+- `crates/storage/src/durability/decoded_snapshot_install.rs`
+- `crates/storage-next/src/row/mod.rs`
+- `crates/storage-next/src/table/{builder.rs,reader.rs,key.rs,facts.rs}`
+- `crates/storage-next/src/branch/{state.rs,read.rs,facts.rs,error.rs}`
+- `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
+- `docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-test-plan.md`
+
+### Behavior Preserved
+
+- Preserved decoded-row snapshot install as a generic storage boundary. L6K
+  receives storage-next `StorageRow` values, not engine snapshot DTOs.
+- Preserved full preflight before mutation. Missing targets, duplicate branch
+  groups, branch-id mismatches, duplicate internal keys, unsorted groups, and
+  non-empty targets are rejected before branch-state visibility changes.
+- Preserved multi-branch all-or-nothing behavior by staging every target branch
+  state and swapping the caller-owned branch set only after all table artifacts
+  build, decode, install, and emit reachability facts.
+- Preserved tombstones, timestamps, TTL facts, empty values, high-bit keys, and
+  multiple versions as normal retained storage rows.
+
+### Intentional V1 Changes
+
+- Replaced old `DecodedSnapshotEntry`/`TypeTag`/primitive value vocabulary with
+  row-native `StorageRow` groups keyed by storage `BranchId`.
+- Kept the V1 target policy conservative: existing targets must be empty, and
+  missing targets are rejected unless the request explicitly supplies a create
+  policy and `BranchRuntimeConfig`.
+- Built branch-owned L0 table artifacts through L5 and reopened them before
+  branch-state mutation. L6K does not publish table objects or manifests.
+- Generated output identities from a caller seed, branch id, table index, and
+  row fingerprint so same-seed installs across branches do not alias.
+
+### Deferred
+
+- Durable snapshot byte decoding and section routing remain L3/L8 work.
+- Durable table-object publication, branch manifest publication, and
+  crash-window reconciliation remain L4/L8 work.
+- Product restore semantics, branch deletion/clear orchestration, and
+  StrataHub import/export remain above L6.
+- Fuzz inventory remains part of L6L closeout; L6K now contributes generated
+  branch-LSM property counters through the shared scaffold harness.
+
+### Tests Ported Or Added
+
+- Added direct branch tests for empty install no-op, missing branch rejection,
+  explicit missing-branch creation, non-empty target rejection, row branch
+  mismatch rejection, duplicate internal-key rejection, unsorted group
+  rejection, output-identity collision rejection, multi-branch install,
+  post-install latest/version reads, and reachability facts.
+- Extended `crates/storage-next/src/testkit/branch_lsm.rs` with generated
+  snapshot install cases for empty no-op, single-branch install, multi-branch
+  install, reject-vs-create missing branch policy, non-empty target rejection,
+  empty group rejection, duplicate group rejection, branch mismatch rejection,
+  duplicate/unsorted row rejection, output identity collision rejection,
+  table-build failure atomicity, latest/version/as-of/history/prefix/range
+  parity, tombstone/TTL preservation, pinned-view isolation, reachability,
+  empty user keys, high-bit keys, empty values, larger valid values,
+  `Timestamp::MAX`, shared user keys across branches, and alternate storage
+  spaces.
+- Updated `crates/storage-next/tests/branch_lsm_properties.rs` so the generated
+  branch-LSM property harness requires every L6K snapshot install counter to be
+  nonzero.
+- Updated the branch source guard to treat row-native snapshot install as an
+  L6K-owned entrypoint while continuing to reject backend IO, L4 services,
+  lifecycle, old storage DTOs, product values, and engine vocabulary.
+
+### Sensitivity Probes
+
+- `branch_snapshot_install_rejects_missing_and_non_empty_targets_without_mutation`
+  catches accidental implicit branch creation or merge-into-live-branch
+  behavior.
+- `branch_snapshot_install_rejects_invalid_rows_before_any_branch_mutates`
+  catches branch-id mismatch, duplicate key, and unsorted input acceptance.
+- `branch_snapshot_install_rejects_output_identity_collisions_without_mutation`
+  catches table identity aliasing against already reachable branch tables.
+- `branch_snapshot_install_builds_l0_tables_and_preserves_reads` catches table
+  build/open omissions, per-branch output aliasing, read-parity drift, and
+  reachability fact omission.
+- `branch_lsm_property_harness_runs_scaffold_contract` catches missing
+  generated coverage for snapshot install validation, atomicity, read parity,
+  tombstone/TTL handling, pinned-view isolation, reachability, and row-native
+  boundary cases.
+- `branch_lsm_source_guard` catches L6K crossing into snapshot codecs, backend
+  IO, durable services, lifecycle, engine, old storage DTO, or product-value
+  vocabulary.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch_snapshot`
+- `cargo test -p strata-storage-next --locked --lib branch`
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties`
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old decoded snapshot install remains because current storage
+  still depends on it.
+- Follow-up: L6L closeout adds fuzz hooks and the final conformance ledger.
+
+## L6L: L6 Conformance Closeout
+
+### Current Files Read
+
+- `crates/storage-next/src/branch/`
+- `crates/storage-next/src/testkit/branch_lsm.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/branch_lsm_properties.rs`
+- `crates/storage-next/tests/branch_lsm_source_guard.rs`
+- `crates/storage-next/fuzz/Cargo.toml`
+- `crates/storage-next/fuzz/fuzz_targets/`
+- `crates/storage-next/fuzz/corpus/`
+- `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-implementation-plan.md`
+- `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-test-plan.md`
+- all L6A through L6K slice plans and this porting log
+
+### Behavior Preserved
+
+- Preserved the L6A through L6K storage contract as an in-memory,
+  branch-isolated LSM runtime. L6 still owns branch-local rows, pinned read
+  views, inherited layers, timestamp/TTL filtering, materialization mechanics,
+  reachability facts, branch compaction state transitions, and row-native
+  snapshot install.
+- Preserved the L6 boundary: no commit allocator, lifecycle scheduler, backend
+  handle, object layout constructor, durable service call, product DTO,
+  StrataHub remote concept, or public branch API is introduced by closeout.
+- Preserved the generated property harness as the broad conformance route. L6L
+  adds closeout inventory around it rather than replacing it.
+- Preserved old-code evidence in the log. Every old branch, merge iterator,
+  memtable, segmented compaction, and decoded snapshot-install behavior is
+  marked preserved, intentionally changed, retired, or deferred.
+
+### Intentional V1 Changes
+
+- Added three dedicated branch-LSM fuzz contracts:
+  `check_branch_lsm_reads_contract`,
+  `check_branch_lsm_inheritance_contract`, and
+  `check_branch_lsm_install_contract`.
+- Added `check_branch_lsm_reference_model_contract`, which replays generated
+  append/rotate/L0-install operation scripts against both `BranchLocalState`
+  and an independent row-list `ModelBranch` for latest/getv/as-of/history and
+  scan parity.
+- Added `check_branch_lsm_fault_window_contract`, which exercises L6-local
+  failed preflight windows and verifies duplicate append, wrong-branch install,
+  materialization identity collision, and snapshot table-build failures leave
+  state unchanged.
+- Tightened materialization retry semantics so a retry that finds replacement
+  tables already visible removes the source layer by stable
+  `(source_branch_id, fork_version)` identity instead of by the original array
+  index.
+- Tightened branch facts so inherited fork-version descriptors no longer
+  synthesize `max_commit_version` without row timestamps; observed max version
+  now comes from actual retained rows.
+- Wired canonical captured read views to complete-since coverage derived from
+  observed timestamp facts, making insufficient-history errors reachable
+  without a test-only override.
+- Added three matching fuzz targets: `branch_lsm_reads`,
+  `branch_lsm_inheritance`, and `branch_lsm_install`.
+- Added checked-in seed corpora for those branch fuzz targets.
+- Added `branch_lsm_closeout.rs` to verify the closeout inventory: generated
+  counters, source-guard categories, fuzz target registration, dedicated
+  contract usage, non-empty corpora, and porting-log coverage.
+- Strengthened the branch source guard so L6 also rejects `crate::object`,
+  StrataHub, remote-tracking, provider-capability, dataset, and branch-name
+  product vocabulary in production branch code.
+
+### Deferred
+
+- commit-version allocation belongs to L7.
+- commit conflict validation belongs to L7.
+- WAL-before-visible discipline belongs to L7/L8.
+- durable branch manifest publication belongs to L8.
+- durable recovery and checkpoint orchestration belong to L8.
+- compaction scheduling, retention scheduling, physical table deletion,
+  quarantine handoff, and release execution belong to L8.
+- public branch naming, product branch workflows, restore/revert/cherry-pick,
+  and `Versioned<T>` product mapping belong to L9/engine.
+- branch-registry workflows such as duplicate branch create, fork on a missing source branch,
+  and fork-at-history requests belong to the L7/L9 branch
+  registry/API surface. L6 exposes `BranchLocalState`, not a named branch
+  catalog, so these cases are deliberately not implemented here.
+- branch clear/delete APIs, including pinned-view behavior across public
+  clear/delete operations, belong to the L8/L9 lifecycle/API surface. L6I
+  exposes release planning facts but does not expose product lifecycle
+  operations.
+- visible-but-not-durable materialization windows, durable materialization
+  recovery records, backend fault reconciliation, and richer recovery variants
+  belong to L8 durable orchestration.
+- cross-fork materialization provenance diagnostics are deferred until L8
+  defines durable materialization recovery facts; L6 keeps replacement refs
+  reachable and identity-safe but does not preserve grand-ancestor diagnostic
+  chains.
+- StrataHub push, pull, clone, sync, remote-tracking refs, and provider
+  capability discovery belong above storage-next.
+- query planning and secondary indexing belong above the L6 branch LSM.
+- post-V1 retained-history proofs may allow older fork-version requests and
+  safe old-version/tombstone/TTL pruning.
+
+### Tests Ported Or Added
+
+- Added `check_branch_lsm_reads_contract` for latest/getv/as-of/history,
+  prefix/range scans, row-chain visibility, timestamp/TTL reads, and
+  branch-owned immutable read paths.
+- Added `check_branch_lsm_inheritance_contract` for fork gates, inherited key
+  rewriting, child-local shadowing, inherited timestamp reads,
+  materialization parity, and reachability facts.
+- Added `check_branch_lsm_install_contract` for branch-owned table install,
+  compaction install, snapshot row install, and release/protection facts.
+- Added `check_branch_lsm_reference_model_contract` for generated operation
+  scripts checked against an independent `ModelBranch` rather than hand-written
+  constants.
+- Added `check_branch_lsm_fault_window_contract` for L6-local no-mutation
+  windows after failed validation or staged install/build work.
+- Added `branch_lsm_reads`, `branch_lsm_inheritance`, and
+  `branch_lsm_install` fuzz target registrations plus seed corpora.
+- Added `branch_lsm_closeout.rs` so closeout fails if fuzz targets are missing,
+  targets call only `check_branch_lsm_scaffold_contract`, generated counters
+  are not asserted by `branch_lsm_properties.rs`, source guards lose required
+  categories, or this log misses an L6A through L6L section.
+- Extended `branch_lsm_source_guard.rs` with product/remote vocabulary and
+  `crate::object` probes.
+
+### Sensitivity Probes
+
+- `branch_lsm_closeout_generated_harness_exposes_every_counter` catches new
+  generated counters that are not required by the property harness.
+- `branch_lsm_closeout_fuzz_inventory_matches_branch_targets` catches missing
+  fuzz target files, missing `fuzz/Cargo.toml` entries, missing seed corpora,
+  or placeholder targets that call the broad scaffold contract instead of a
+  dedicated branch-LSM contract.
+- `branch_lsm_closeout_source_guard_suite_covers_required_boundary_categories`
+  catches source-guard drift around commit/lifecycle/engine/backend/object/
+  layout/service imports, filesystem/environment/time APIs, product DTOs,
+  StrataHub vocabulary, and public branch API leakage.
+- `branch_lsm_closeout_porting_log_records_full_l6_ledger` catches closeout
+  documentation drift for L6A through L6L sections, branch fuzz coverage,
+  mandatory commands, and owner-layer deferrals.
+- The direct/generated L6 tests and closeout ledger structurally enforce the
+  L6L sensitivity probes for tombstone fallthrough, TTL bound handling,
+  fork-version gates, child-local shadowing, inherited materialization ordering,
+  shared table release protection, unsafe old-version/tombstone/TTL pruning,
+  snapshot branch-id mismatch rejection, duplicate snapshot row rejection, and
+  no-mutation behavior after failed preflight.
+- Direct branch-owned installs now reject table identity collisions against all
+  reachable owned and inherited tables, nonzero-level overlap checks use
+  physical-key ranges, and snapshot `from_rows` normalizes each branch group by
+  internal key before validation.
+- `check_branch_lsm_reference_model_contract` catches correlated expectation
+  bugs in generated own-branch read tests by comparing production output to a
+  separately implemented `ModelBranch` for operation-script replay.
+- Materialization generated coverage now checks the post-materialization state
+  against `ModelBranch` in addition to the before/after parity check, and it
+  includes the child-owned immutable same-internal-key rejection case.
+- `check_branch_lsm_fault_window_contract` catches state mutation during
+  L6-local failed preflight windows without introducing backend or lifecycle
+  responsibilities.
+- `branch_materialization_retry_removes_layer_when_replacements_are_already_visible`
+  catches retry paths that self-collide on previously visible replacement
+  identities or remove an inherited layer by stale index instead of stable
+  source identity.
+- `branch_fork_rejects_inherited_only_source_without_own_applied_version`
+  catches synthetic fork versions derived only from inherited descriptors.
+- `branch_materialization_handles_empty_and_already_materialized_layers`
+  catches empty inherited layers that synthesize a max commit version without
+  timestamp facts.
+- `branch_timestamp_coverage_rejects_only_proven_insufficient_history` catches
+  canonical captured views that leave timestamp coverage unknown after row
+  facts prove an earliest available timestamp.
+- The branch source guard itself catches accidental introduction of
+  `VersionedValue`, product `Value`/`Key`, `StrataHub`, `RemoteTrackingRef`,
+  `ProviderCapability`, `Dataset`, `BranchName`, backend calls, L4 service
+  calls, `crate::commit`, `crate::lifecycle`, `crate::backend`,
+  `crate::service`, wall-clock reads, and public branch exports in production
+  L6 code.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_closeout`
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties`
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties`
+- `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+- `cargo test -p strata-storage-next --locked`
+- `cargo fmt --package strata-storage-next --check`
+- `git diff --check`
+- Optional/manual: `cd crates/storage-next/fuzz && cargo +nightly fuzz run branch_lsm_reads -- -max_total_time=60`
+- Optional/manual: `cd crates/storage-next/fuzz && cargo +nightly fuzz run branch_lsm_inheritance -- -max_total_time=60`
+- Optional/manual: `cd crates/storage-next/fuzz && cargo +nightly fuzz run branch_lsm_install -- -max_total_time=60`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old branch/segmented storage remains until the architecture
+  rewrite swaps higher layers onto storage-next.
+- Follow-up: L7 can commit into branch state; L8 can publish/recover branch
+  manifests and execute lifecycle cleanup; L9/engine can expose product branch
+  workflows and StrataHub integration without adding those responsibilities to
+  L6.

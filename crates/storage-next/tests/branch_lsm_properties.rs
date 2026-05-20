@@ -161,6 +161,30 @@ const REQUIRED_HARNESS_TOKENS: &[&str] = &[
     "compaction_release_candidate_cases",
     "compaction_protected_release_cases",
     "invalid_compaction_request_rejection_cases",
+    "snapshot_empty_install_noop_cases",
+    "snapshot_single_branch_install_cases",
+    "snapshot_multi_branch_install_cases",
+    "snapshot_missing_branch_rejection_cases",
+    "snapshot_missing_branch_create_cases",
+    "snapshot_non_empty_target_rejection_cases",
+    "snapshot_empty_group_rejection_cases",
+    "snapshot_duplicate_branch_group_rejection_cases",
+    "snapshot_duplicate_row_rejection_cases",
+    "snapshot_unsorted_row_rejection_cases",
+    "snapshot_branch_mismatch_rejection_cases",
+    "snapshot_output_identity_collision_rejection_cases",
+    "snapshot_table_build_failure_atomicity_cases",
+    "snapshot_latest_parity_cases",
+    "snapshot_version_parity_cases",
+    "snapshot_timestamp_parity_cases",
+    "snapshot_history_parity_cases",
+    "snapshot_prefix_scan_parity_cases",
+    "snapshot_range_scan_parity_cases",
+    "snapshot_tombstone_preservation_cases",
+    "snapshot_ttl_preservation_cases",
+    "snapshot_pinned_view_isolation_cases",
+    "snapshot_reachability_cases",
+    "snapshot_source_boundary_guard_cases",
 ];
 
 #[test]
@@ -341,6 +365,30 @@ const REQUIRED_OUTCOME_COUNTERS: &[BranchLsmOutcomeCounter] = &[
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::compaction_release_candidate_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::compaction_protected_release_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::invalid_compaction_request_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_empty_install_noop_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_single_branch_install_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_multi_branch_install_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_missing_branch_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_missing_branch_create_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_non_empty_target_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_empty_group_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_duplicate_branch_group_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_duplicate_row_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_unsorted_row_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_branch_mismatch_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_output_identity_collision_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_table_build_failure_atomicity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_latest_parity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_version_parity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_timestamp_parity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_history_parity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_prefix_scan_parity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_range_scan_parity_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_tombstone_preservation_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_ttl_preservation_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_pinned_view_isolation_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_reachability_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_source_boundary_guard_cases,
 ];
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -381,4 +429,34 @@ fn branch_lsm_property_harness_runs_scaffold_contract() {
             Ok(())
         })
         .expect("generated branch LSM scaffold property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn branch_lsm_property_harness_runs_independent_reference_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::{
+        check_branch_lsm_fault_window_contract, check_branch_lsm_reference_model_contract,
+    };
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/branch_lsm_reference_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=256), |script| {
+            check_branch_lsm_reference_model_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            check_branch_lsm_fault_window_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            Ok(())
+        })
+        .expect("generated branch LSM reference model property");
 }

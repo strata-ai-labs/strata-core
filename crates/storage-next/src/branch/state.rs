@@ -1,24 +1,33 @@
 //! Branch-local state and descriptor shells.
 
 use super::{
-    read::{inherited_table_count, table_ranges_overlap},
-    require_row_branch, rewrite_row_branch, BranchInheritedLayer, BranchLevel, BranchOwnedTable,
-    BranchReachabilitySnapshot, BranchReadView, BranchRuntimeConfig, BranchRuntimeError,
-    BranchRuntimeResult, BranchStateFacts, BranchTableDescriptor, BranchTableRef,
-    InheritedLayerDescriptor, InheritedLayerStatus,
+    read::{
+        inherited_table_count, require_table_physical_first_key, table_physical_ranges_overlap,
+    },
+    require_row_branch, rewrite_row_branch, BranchInheritedLayer, BranchLevel,
+    BranchMaterializationSource, BranchOwnedTable, BranchReachabilitySnapshot, BranchReadView,
+    BranchRuntimeConfig, BranchRuntimeError, BranchRuntimeResult, BranchStateFacts,
+    BranchTableDescriptor, BranchTableRef, BranchTimestampCoverage, InheritedLayerDescriptor,
+    InheritedLayerStatus,
 };
 use crate::row::StorageRow;
 use crate::table::{
     FrozenTable, ImmutableTableBuilder, ImmutableTableReader, KeepAllTableCompactionPolicy,
     MutableTable, TableBuilderConfig, TableCompactionConfig, TableCompactionReport,
     TableCompactionSource, TableCompactionSourceId, TableCompactor, TableIdentity,
-    TableInternalKeyBytes, TablePhysicalKeyBytes, TableReaderConfig, TableRuntimeError,
+    TableInternalKeyBytes, TableReaderConfig, TableRuntimeError,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
 const _: () = assert!(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE > 0);
+const SNAPSHOT_INSTALL_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
+const _: () = assert!(SNAPSHOT_INSTALL_ROWS_PER_OUTPUT_TABLE > 0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BranchStateDescriptor {
@@ -194,6 +203,7 @@ impl BranchForkOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BranchMaterializationRecovery {
     ReplacementVisibleLayerRemoved,
+    ReplacementAlreadyVisibleLayerRemoved,
     LayerAlreadyMaterialized,
 }
 
@@ -611,6 +621,285 @@ impl BranchCompactionOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchSnapshotMissingBranchPolicy {
+    Reject,
+    Create { config: BranchRuntimeConfig },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchSnapshotTargetStatePolicy {
+    RequireEmpty,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct BranchSnapshotInstallGroup {
+    branch_id: BranchId,
+    rows: Vec<StorageRow>,
+}
+
+impl BranchSnapshotInstallGroup {
+    pub(crate) fn new(branch_id: BranchId, rows: Vec<StorageRow>) -> Self {
+        Self { branch_id, rows }
+    }
+
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) fn rows(&self) -> &[StorageRow] {
+        &self.rows
+    }
+}
+
+impl fmt::Debug for BranchSnapshotInstallGroup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BranchSnapshotInstallGroup")
+            .field("branch_id", &self.branch_id)
+            .field("row_count", &self.rows.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct BranchSnapshotInstallRequest {
+    output_identity_seed: TableIdentity,
+    missing_branch_policy: BranchSnapshotMissingBranchPolicy,
+    target_state_policy: BranchSnapshotTargetStatePolicy,
+    table_builder_config: TableBuilderConfig,
+    max_rows_per_table: usize,
+    groups: Vec<BranchSnapshotInstallGroup>,
+}
+
+impl BranchSnapshotInstallRequest {
+    pub(crate) fn new(
+        output_identity_seed: impl Into<String>,
+        groups: Vec<BranchSnapshotInstallGroup>,
+    ) -> BranchRuntimeResult<Self> {
+        let output_identity_seed = TableIdentity::new(output_identity_seed.into())
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        Ok(Self {
+            output_identity_seed,
+            missing_branch_policy: BranchSnapshotMissingBranchPolicy::Reject,
+            target_state_policy: BranchSnapshotTargetStatePolicy::RequireEmpty,
+            table_builder_config: TableBuilderConfig::default(),
+            max_rows_per_table: SNAPSHOT_INSTALL_ROWS_PER_OUTPUT_TABLE,
+            groups,
+        })
+    }
+
+    pub(crate) fn from_rows(
+        output_identity_seed: impl Into<String>,
+        rows: Vec<StorageRow>,
+    ) -> BranchRuntimeResult<Self> {
+        let mut groups = Vec::<BranchSnapshotInstallGroup>::new();
+        for row in rows {
+            let branch_id = row.physical_key().branch_id();
+            if let Some(group) = groups.iter_mut().find(|group| group.branch_id == branch_id) {
+                group.rows.push(row);
+            } else {
+                groups.push(BranchSnapshotInstallGroup::new(branch_id, vec![row]));
+            }
+        }
+        groups.sort_by_key(|group| *group.branch_id.as_bytes());
+        for group in &mut groups {
+            group.rows.sort_by_key(TableInternalKeyBytes::from_row);
+        }
+        Self::new(output_identity_seed, groups)
+    }
+
+    pub(crate) const fn output_identity_seed(&self) -> &TableIdentity {
+        &self.output_identity_seed
+    }
+
+    pub(crate) const fn missing_branch_policy(&self) -> BranchSnapshotMissingBranchPolicy {
+        self.missing_branch_policy
+    }
+
+    pub(crate) const fn target_state_policy(&self) -> BranchSnapshotTargetStatePolicy {
+        self.target_state_policy
+    }
+
+    pub(crate) const fn table_builder_config(&self) -> TableBuilderConfig {
+        self.table_builder_config
+    }
+
+    pub(crate) const fn max_rows_per_table(&self) -> usize {
+        self.max_rows_per_table
+    }
+
+    pub(crate) fn groups(&self) -> &[BranchSnapshotInstallGroup] {
+        &self.groups
+    }
+
+    pub(crate) fn with_missing_branch_policy(
+        mut self,
+        missing_branch_policy: BranchSnapshotMissingBranchPolicy,
+    ) -> Self {
+        self.missing_branch_policy = missing_branch_policy;
+        self
+    }
+
+    pub(crate) fn with_table_builder_config(
+        mut self,
+        table_builder_config: TableBuilderConfig,
+    ) -> Self {
+        self.table_builder_config = table_builder_config;
+        self
+    }
+
+    pub(crate) fn with_max_rows_per_table(
+        mut self,
+        max_rows_per_table: usize,
+    ) -> BranchRuntimeResult<Self> {
+        if max_rows_per_table == 0 {
+            return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                reason: "max rows per output table must be nonzero",
+            });
+        }
+        self.max_rows_per_table = max_rows_per_table;
+        Ok(self)
+    }
+}
+
+impl fmt::Debug for BranchSnapshotInstallRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BranchSnapshotInstallRequest")
+            .field("output_identity_seed", &self.output_identity_seed)
+            .field("missing_branch_policy", &self.missing_branch_policy)
+            .field("target_state_policy", &self.target_state_policy)
+            .field("table_builder_config", &self.table_builder_config)
+            .field("max_rows_per_table", &self.max_rows_per_table)
+            .field("groups", &self.groups)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchSnapshotInstallRecovery {
+    EmptyPlanNoop,
+    Installed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchSnapshotInstallBranchOutcome {
+    branch_id: BranchId,
+    branch_created: bool,
+    rows_installed: u64,
+    tables_created: usize,
+    max_commit_version: Option<CommitVersion>,
+    timestamp_min: Option<Timestamp>,
+    timestamp_max: Option<Timestamp>,
+    table_identities: Vec<TableIdentity>,
+}
+
+impl BranchSnapshotInstallBranchOutcome {
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn branch_created(&self) -> bool {
+        self.branch_created
+    }
+
+    pub(crate) const fn rows_installed(&self) -> u64 {
+        self.rows_installed
+    }
+
+    pub(crate) const fn tables_created(&self) -> usize {
+        self.tables_created
+    }
+
+    pub(crate) const fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.max_commit_version
+    }
+
+    pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
+        self.timestamp_min
+    }
+
+    pub(crate) const fn timestamp_max(&self) -> Option<Timestamp> {
+        self.timestamp_max
+    }
+
+    pub(crate) fn table_identities(&self) -> &[TableIdentity] {
+        &self.table_identities
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchSnapshotInstallOutcome {
+    recovery: BranchSnapshotInstallRecovery,
+    branch_outcomes: Vec<BranchSnapshotInstallBranchOutcome>,
+    rows_installed: u64,
+    tables_created: usize,
+    branches_created: usize,
+    branches_replaced: usize,
+}
+
+impl BranchSnapshotInstallOutcome {
+    fn empty() -> Self {
+        Self {
+            recovery: BranchSnapshotInstallRecovery::EmptyPlanNoop,
+            branch_outcomes: Vec::new(),
+            rows_installed: 0,
+            tables_created: 0,
+            branches_created: 0,
+            branches_replaced: 0,
+        }
+    }
+
+    fn installed(branch_outcomes: Vec<BranchSnapshotInstallBranchOutcome>) -> Self {
+        let rows_installed = branch_outcomes
+            .iter()
+            .map(BranchSnapshotInstallBranchOutcome::rows_installed)
+            .sum();
+        let tables_created = branch_outcomes
+            .iter()
+            .map(BranchSnapshotInstallBranchOutcome::tables_created)
+            .sum();
+        let branches_created = branch_outcomes
+            .iter()
+            .filter(|outcome| outcome.branch_created())
+            .count();
+        let branches_replaced = branch_outcomes.len().saturating_sub(branches_created);
+        Self {
+            recovery: BranchSnapshotInstallRecovery::Installed,
+            branch_outcomes,
+            rows_installed,
+            tables_created,
+            branches_created,
+            branches_replaced,
+        }
+    }
+
+    pub(crate) const fn recovery(&self) -> BranchSnapshotInstallRecovery {
+        self.recovery
+    }
+
+    pub(crate) fn branch_outcomes(&self) -> &[BranchSnapshotInstallBranchOutcome] {
+        &self.branch_outcomes
+    }
+
+    pub(crate) const fn rows_installed(&self) -> u64 {
+        self.rows_installed
+    }
+
+    pub(crate) const fn tables_created(&self) -> usize {
+        self.tables_created
+    }
+
+    pub(crate) const fn branches_created(&self) -> usize {
+        self.branches_created
+    }
+
+    pub(crate) const fn branches_replaced(&self) -> usize {
+        self.branches_replaced
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchLocalState {
     branch_id: BranchId,
@@ -622,8 +911,50 @@ pub(crate) struct BranchLocalState {
     max_commit_version: Option<CommitVersion>,
     timestamp_min: Option<Timestamp>,
     timestamp_max: Option<Timestamp>,
+    timestamp_coverage: BranchTimestampCoverage,
     put_rows: u64,
     tombstone_rows: u64,
+}
+
+#[derive(Clone)]
+struct StagedSnapshotBranch {
+    branch_id: BranchId,
+    state: BranchLocalState,
+    outcome: BranchSnapshotInstallBranchOutcome,
+}
+
+pub(crate) fn install_snapshot_rows_into_branches(
+    branches: &mut Vec<BranchLocalState>,
+    request: &BranchSnapshotInstallRequest,
+) -> BranchRuntimeResult<BranchSnapshotInstallOutcome> {
+    validate_snapshot_request(request)?;
+    validate_branch_state_set(branches)?;
+    if request.groups().is_empty() {
+        return Ok(BranchSnapshotInstallOutcome::empty());
+    }
+
+    let staged = stage_snapshot_install_branches(branches, request)?;
+    let outcome = BranchSnapshotInstallOutcome::installed(
+        staged
+            .iter()
+            .map(|branch| branch.outcome.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    let mut replacement = branches.clone();
+    for staged_branch in staged {
+        if let Some(index) = replacement
+            .iter()
+            .position(|state| state.branch_id() == staged_branch.branch_id)
+        {
+            replacement[index] = staged_branch.state;
+        } else {
+            replacement.push(staged_branch.state);
+        }
+    }
+    *branches = replacement;
+
+    Ok(outcome)
 }
 
 impl BranchLocalState {
@@ -642,6 +973,7 @@ impl BranchLocalState {
             max_commit_version: None,
             timestamp_min: None,
             timestamp_max: None,
+            timestamp_coverage: BranchTimestampCoverage::unknown(),
             put_rows: 0,
             tombstone_rows: 0,
         })
@@ -715,6 +1047,14 @@ impl BranchLocalState {
         self.timestamp_max
     }
 
+    pub(crate) const fn timestamp_coverage(&self) -> BranchTimestampCoverage {
+        self.timestamp_coverage
+    }
+
+    pub(crate) fn set_timestamp_coverage(&mut self, coverage: BranchTimestampCoverage) {
+        self.timestamp_coverage = coverage;
+    }
+
     pub(crate) const fn put_rows(&self) -> u64 {
         self.put_rows
     }
@@ -738,6 +1078,7 @@ impl BranchLocalState {
     }
 
     pub(crate) fn capture_read_view(&self) -> BranchRuntimeResult<BranchReadView> {
+        let observed = self.observe_rows();
         BranchReadView::new_with_inherited(
             self.branch_id,
             self.active.clone(),
@@ -746,18 +1087,19 @@ impl BranchLocalState {
             self.inherited_layers.clone(),
             self.facts()?,
         )
+        .map(|view| view.with_timestamp_coverage(self.effective_timestamp_coverage(observed)))
     }
 
     pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
         let mut table_refs = Vec::new();
         for tables in &self.owned_levels {
             for (table_index, table) in tables.iter().enumerate() {
-                let table_ref = if let Some(materialization_layer_index) =
-                    table.materialization_layer_index()
+                let table_ref = if let Some(materialization_source) = table.materialization_source()
                 {
                     BranchTableRef::replacement(
                         self.branch_id,
-                        materialization_layer_index,
+                        materialization_source.source_branch_id(),
+                        materialization_source.fork_version(),
                         table.level(),
                         table_index,
                         table.descriptor().identity().clone(),
@@ -881,7 +1223,7 @@ impl BranchLocalState {
             self.owned_levels[level_index].insert(0, table);
             0
         } else {
-            insert_sorted_by_range(&mut self.owned_levels[level_index], table)
+            insert_sorted_by_range(&mut self.owned_levels[level_index], table)?
         };
         self.refresh_observed_row_facts();
         Ok(self.install_outcome(level, table_index, None))
@@ -921,7 +1263,10 @@ impl BranchLocalState {
                 .first()
                 .map_or(self.branch_id, BranchInheritedLayer::source_branch_id),
             destination_branch_id: self.branch_id,
-            fork_version: self.max_commit_version.unwrap_or(CommitVersion::ZERO),
+            fork_version: self
+                .inherited_layers
+                .first()
+                .map_or(CommitVersion::ZERO, BranchInheritedLayer::fork_version),
             inherited_layer_count,
             inherited_table_count,
         })
@@ -936,8 +1281,21 @@ impl BranchLocalState {
                 reason: "fork source and destination branches must differ",
             });
         }
+        if !self.active.is_empty() || !self.frozen.is_empty() {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "fork source must flush active and frozen rows before inheritance capture",
+            });
+        }
+        let own_rows = self.observe_own_rows();
+        if own_rows.max_commit_version.is_none() {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "fork source must contain at least one retained row",
+            });
+        }
 
-        let fork_version = self.max_commit_version.unwrap_or(CommitVersion::ZERO);
+        let fork_version = own_rows
+            .max_commit_version
+            .expect("fork source own-row precondition checked");
         let mut layers = Vec::with_capacity(self.inherited_layers.len() + 1);
         layers.push(BranchInheritedLayer::new(
             InheritedLayerDescriptor::new(
@@ -966,6 +1324,30 @@ impl BranchLocalState {
         Ok((child, outcome))
     }
 
+    pub(crate) fn mark_inherited_layer_materializing(
+        &mut self,
+        layer_index: usize,
+    ) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
+        let layer = self.inherited_layers.get(layer_index).ok_or(
+            BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization layer index must exist",
+            },
+        )?;
+        match layer.status() {
+            InheritedLayerStatus::Active => {
+                self.inherited_layers[layer_index] =
+                    layer.with_status(InheritedLayerStatus::Materializing)?;
+                self.reachability_snapshot()
+            }
+            InheritedLayerStatus::Materializing | InheritedLayerStatus::Materialized => {
+                self.reachability_snapshot()
+            }
+            InheritedLayerStatus::Unavailable => Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "unavailable inherited layers cannot be materialized",
+            }),
+        }
+    }
+
     pub(crate) fn materialize_inherited_layer(
         &mut self,
         request: &BranchMaterializationRequest,
@@ -982,6 +1364,8 @@ impl BranchLocalState {
         )?;
         let source_branch_id = layer.source_branch_id();
         let fork_version = layer.fork_version();
+        let materialization_source =
+            BranchMaterializationSource::new(source_branch_id, fork_version);
 
         match layer.status() {
             InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
@@ -1008,6 +1392,29 @@ impl BranchLocalState {
         }
 
         let materialized = self.collect_materialization_rows(request.layer_index())?;
+        if materialized.rows.is_empty() {
+            if let Some(summary) =
+                self.existing_materialization_replacement_summary(materialization_source)
+            {
+                let mut staged = self.clone();
+                staged.remove_inherited_layer_by_source(materialization_source)?;
+                *self = staged;
+                self.refresh_observed_row_facts();
+                return Ok(BranchMaterializationOutcome {
+                    child_branch_id: self.branch_id,
+                    source_branch_id,
+                    fork_version,
+                    layer_index: request.layer_index(),
+                    rows_materialized: summary.rows,
+                    tables_created: 0,
+                    skipped_post_fork_rows: materialized.skipped_post_fork_rows,
+                    skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
+                    inherited_layers_remaining: self.inherited_layers.len(),
+                    replacement_owned_table_count: summary.tables,
+                    recovery: BranchMaterializationRecovery::ReplacementAlreadyVisibleLayerRemoved,
+                });
+            }
+        }
         let replacement_tables = self.build_materialized_l0_tables(
             request.layer_index(),
             request.output_identity_prefix(),
@@ -1020,11 +1427,10 @@ impl BranchLocalState {
         })?;
         let tables_created = replacement_tables.len();
 
-        let level_index = usize::from(BranchLevel::ZERO.raw());
-        for table in replacement_tables.into_iter().rev() {
-            self.owned_levels[level_index].insert(0, table);
-        }
-        self.inherited_layers.remove(request.layer_index());
+        let mut staged = self.clone();
+        staged.install_materialization_replacement_tables(replacement_tables)?;
+        staged.remove_inherited_layer_by_source(materialization_source)?;
+        *self = staged;
         self.refresh_observed_row_facts();
 
         Ok(BranchMaterializationOutcome {
@@ -1040,6 +1446,67 @@ impl BranchLocalState {
             replacement_owned_table_count: tables_created,
             recovery: BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
         })
+    }
+
+    fn install_materialization_replacement_tables(
+        &mut self,
+        replacement_tables: Vec<BranchOwnedTable>,
+    ) -> BranchRuntimeResult<()> {
+        let output_identities = replacement_tables
+            .iter()
+            .map(|table| table.descriptor().identity().clone())
+            .collect::<Vec<_>>();
+        validate_materialization_output_identities(
+            &output_identities,
+            &self.owned_levels,
+            &self.inherited_layers,
+        )?;
+        let level_index = usize::from(BranchLevel::ZERO.raw());
+        for table in replacement_tables {
+            self.validate_install(BranchLevel::ZERO, &table, None)?;
+            self.owned_levels[level_index].push(table);
+        }
+        self.refresh_observed_row_facts();
+        Ok(())
+    }
+
+    fn remove_inherited_layer_by_source(
+        &mut self,
+        source: BranchMaterializationSource,
+    ) -> BranchRuntimeResult<()> {
+        let index = self
+            .inherited_layers
+            .iter()
+            .position(|layer| {
+                layer.source_branch_id() == source.source_branch_id()
+                    && layer.fork_version() == source.fork_version()
+            })
+            .ok_or(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization source layer must still exist",
+            })?;
+        self.inherited_layers.remove(index);
+        self.refresh_observed_row_facts();
+        Ok(())
+    }
+
+    fn existing_materialization_replacement_summary(
+        &self,
+        source: BranchMaterializationSource,
+    ) -> Option<ExistingMaterializationReplacementSummary> {
+        let mut summary = ExistingMaterializationReplacementSummary::default();
+        for table in self.owned_levels.iter().flatten() {
+            if table.materialization_source() == Some(source) {
+                summary.tables = summary.tables.saturating_add(1);
+                summary.rows = summary
+                    .rows
+                    .saturating_add(u64::try_from(table.rows().len()).ok()?);
+            }
+        }
+        if summary.tables == 0 {
+            None
+        } else {
+            Some(summary)
+        }
     }
 
     pub(crate) fn plan_branch_compaction(
@@ -1553,12 +2020,15 @@ impl BranchLocalState {
                             "materialized inherited rows must not contain duplicate internal keys",
                     });
                 }
-                if higher_precedence_rows
-                    .get(&key)
-                    .is_some_and(|rows| rows.iter().any(|existing| existing == &rewritten))
-                {
-                    skipped_exact_duplicate_rows = skipped_exact_duplicate_rows.saturating_add(1);
-                    continue;
+                if let Some(rows) = higher_precedence_rows.get(&key) {
+                    if rows.iter().any(|existing| existing == &rewritten) {
+                        skipped_exact_duplicate_rows =
+                            skipped_exact_duplicate_rows.saturating_add(1);
+                        continue;
+                    }
+                    return Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "materialized inherited rows must not collide with higher-precedence rows",
+                    });
                 }
                 rows.push(rewritten);
             }
@@ -1663,11 +2133,12 @@ impl BranchLocalState {
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             let descriptor =
                 BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)?;
+            let layer = &self.inherited_layers[layer_index];
             tables.push(BranchOwnedTable::new_materialization_replacement(
                 self.branch_id,
                 descriptor,
                 reader,
-                layer_index,
+                BranchMaterializationSource::new(layer.source_branch_id(), layer.fork_version()),
             )?);
         }
         Ok(tables)
@@ -1692,12 +2163,27 @@ impl BranchLocalState {
                 reason: "inherited layer count exceeds branch runtime configuration",
             });
         }
+        let mut previous_fork_version = None::<CommitVersion>;
+        let mut source_branches = BTreeSet::<[u8; BranchId::BYTE_LEN]>::new();
         for layer in layers {
             if layer.source_branch_id() == self.branch_id {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "inherited layer source branch must differ from child branch",
                 });
             }
+            if !source_branches.insert(*layer.source_branch_id().as_bytes()) {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited layer source branches must be unique",
+                });
+            }
+            if previous_fork_version
+                .is_some_and(|previous| layer.fork_version().as_u64() > previous.as_u64())
+            {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited layers must be ordered nearest-first by fork version",
+                });
+            }
+            previous_fork_version = Some(layer.fork_version());
             if layer.status() == InheritedLayerStatus::Unavailable {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "unavailable inherited layers cannot attach",
@@ -1755,6 +2241,15 @@ impl BranchLocalState {
                 reason: "branch-owned table level is outside configured level count",
             });
         }
+        if branch_reachable_table_identity_exists(
+            table.descriptor().identity(),
+            &self.owned_levels,
+            &self.inherited_layers,
+        ) {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "branch-owned table identity must not collide with reachable table",
+            });
+        }
         for row in table.rows() {
             self.require_absent_internal_key_except_frozen(row.key(), skip_frozen_index)?;
         }
@@ -1769,13 +2264,12 @@ impl BranchLocalState {
         level_index: usize,
         table: &BranchOwnedTable,
     ) -> BranchRuntimeResult<()> {
-        let range = table.facts().key_range();
         if self.owned_levels[level_index]
             .iter()
-            .any(|existing| table_ranges_overlap(existing.facts().key_range(), range))
+            .any(|existing| table_physical_ranges_overlap(existing, table))
         {
             return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "branch-owned nonzero level tables must not overlap",
+                reason: "branch-owned nonzero level tables must not overlap by physical key range",
             });
         }
         Ok(())
@@ -1832,7 +2326,20 @@ impl BranchLocalState {
         self.tombstone_rows = observed.tombstone_rows;
     }
 
-    fn observe_rows(&self) -> ObservedBranchRows {
+    fn effective_timestamp_coverage(
+        &self,
+        observed: ObservedBranchRows,
+    ) -> BranchTimestampCoverage {
+        match self.timestamp_coverage {
+            BranchTimestampCoverage::Unknown => observed.timestamp_min.map_or(
+                BranchTimestampCoverage::Unknown,
+                BranchTimestampCoverage::complete_since,
+            ),
+            known => known,
+        }
+    }
+
+    fn observe_own_rows(&self) -> ObservedBranchRows {
         let mut observed = ObservedBranchRows::default();
         for row in self.active.iter() {
             observed.record(row.row());
@@ -1847,6 +2354,11 @@ impl BranchLocalState {
                 observed.record(row.row());
             }
         }
+        observed
+    }
+
+    fn observe_rows(&self) -> ObservedBranchRows {
+        let mut observed = self.observe_own_rows();
         for layer in &self.inherited_layers {
             observed.record_inherited_layer(layer);
         }
@@ -1854,11 +2366,257 @@ impl BranchLocalState {
     }
 }
 
+fn validate_snapshot_request(request: &BranchSnapshotInstallRequest) -> BranchRuntimeResult<()> {
+    request
+        .table_builder_config()
+        .validate()
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+    if request.max_rows_per_table() == 0 {
+        return Err(BranchRuntimeError::InvalidSnapshotInstall {
+            reason: "max rows per output table must be nonzero",
+        });
+    }
+    let mut group_branches = BTreeSet::<[u8; BranchId::BYTE_LEN]>::new();
+    let mut internal_keys = BTreeSet::<TableInternalKeyBytes>::new();
+    let mut previous_branch = None::<[u8; BranchId::BYTE_LEN]>;
+    for group in request.groups() {
+        let branch_bytes = *group.branch_id().as_bytes();
+        if previous_branch.is_some_and(|previous| branch_bytes < previous) {
+            return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                reason: "snapshot install branch groups must be sorted by branch id",
+            });
+        }
+        previous_branch = Some(branch_bytes);
+        if !group_branches.insert(*group.branch_id().as_bytes()) {
+            return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                reason: "snapshot install branch groups must be unique",
+            });
+        }
+        if group.rows().is_empty() {
+            return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                reason: "snapshot install branch groups must not be empty",
+            });
+        }
+        let mut previous_key = None::<TableInternalKeyBytes>;
+        for row in group.rows() {
+            require_row_branch(group.branch_id(), row)?;
+            let key = TableInternalKeyBytes::from_row(row);
+            if let Some(previous) = &previous_key {
+                if key == *previous {
+                    return Err(BranchRuntimeError::TableRuntime {
+                        source: TableRuntimeError::DuplicateInternalKey {
+                            key: key.as_slice().to_vec(),
+                        },
+                    });
+                }
+                if key < *previous {
+                    return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                        reason: "snapshot install rows must be strictly sorted by internal key",
+                    });
+                }
+            }
+            if !internal_keys.insert(key.clone()) {
+                return Err(BranchRuntimeError::TableRuntime {
+                    source: TableRuntimeError::DuplicateInternalKey {
+                        key: key.as_slice().to_vec(),
+                    },
+                });
+            }
+            previous_key = Some(key);
+        }
+    }
+    Ok(())
+}
+
+fn validate_branch_state_set(branches: &[BranchLocalState]) -> BranchRuntimeResult<()> {
+    let mut seen = BTreeSet::<[u8; BranchId::BYTE_LEN]>::new();
+    for branch in branches {
+        if !seen.insert(*branch.branch_id().as_bytes()) {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "branch state set must not contain duplicate branches",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn stage_snapshot_install_branches(
+    branches: &[BranchLocalState],
+    request: &BranchSnapshotInstallRequest,
+) -> BranchRuntimeResult<Vec<StagedSnapshotBranch>> {
+    let mut output_identities = BTreeSet::<String>::new();
+    let mut staged = Vec::with_capacity(request.groups().len());
+    for group in request.groups() {
+        let (mut state, branch_created) =
+            snapshot_target_state(branches, group.branch_id(), request)?;
+        let tables = build_snapshot_l0_tables(
+            group.branch_id(),
+            request.output_identity_seed(),
+            request.table_builder_config(),
+            request.max_rows_per_table(),
+            group.rows(),
+        )?;
+        let table_identities = tables
+            .iter()
+            .map(|table| table.descriptor().identity().clone())
+            .collect::<Vec<_>>();
+        for identity in &table_identities {
+            if !output_identities.insert(identity.as_str().to_owned()) {
+                return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                    reason: "snapshot output identities must be unique",
+                });
+            }
+            if branches.iter().any(|branch| {
+                branch_reachable_table_identity_exists(
+                    identity,
+                    &branch.owned_levels,
+                    &branch.inherited_layers,
+                )
+            }) {
+                return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                    reason:
+                        "snapshot output identity must not collide with existing reachable table",
+                });
+            }
+        }
+        for table in tables.into_iter().rev() {
+            state.install_l0_table(table)?;
+        }
+        state.reachability_snapshot()?;
+        let facts = state.facts()?;
+        let rows_installed = u64::try_from(group.rows().len()).map_err(|_| {
+            BranchRuntimeError::InvalidSnapshotInstall {
+                reason: "snapshot install row count must fit in u64",
+            }
+        })?;
+        staged.push(StagedSnapshotBranch {
+            branch_id: group.branch_id(),
+            state,
+            outcome: BranchSnapshotInstallBranchOutcome {
+                branch_id: group.branch_id(),
+                branch_created,
+                rows_installed,
+                tables_created: table_identities.len(),
+                max_commit_version: facts.max_commit_version(),
+                timestamp_min: facts.timestamp_min(),
+                timestamp_max: facts.timestamp_max(),
+                table_identities,
+            },
+        });
+    }
+    Ok(staged)
+}
+
+fn snapshot_target_state(
+    branches: &[BranchLocalState],
+    branch_id: BranchId,
+    request: &BranchSnapshotInstallRequest,
+) -> BranchRuntimeResult<(BranchLocalState, bool)> {
+    match branches.iter().find(|state| state.branch_id() == branch_id) {
+        Some(existing) => {
+            if request.target_state_policy() == BranchSnapshotTargetStatePolicy::RequireEmpty
+                && !existing.is_empty()
+            {
+                return Err(BranchRuntimeError::InvalidSnapshotInstall {
+                    reason: "snapshot install target branch must be empty",
+                });
+            }
+            Ok((BranchLocalState::new(branch_id, existing.config())?, false))
+        }
+        None => match request.missing_branch_policy() {
+            BranchSnapshotMissingBranchPolicy::Reject => {
+                Err(BranchRuntimeError::BranchNotFound { branch_id })
+            }
+            BranchSnapshotMissingBranchPolicy::Create { config } => {
+                Ok((BranchLocalState::new(branch_id, config)?, true))
+            }
+        },
+    }
+}
+
+fn build_snapshot_l0_tables(
+    branch_id: BranchId,
+    output_identity_seed: &TableIdentity,
+    table_builder_config: TableBuilderConfig,
+    max_rows_per_table: usize,
+    rows: &[StorageRow],
+) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
+    let builder = ImmutableTableBuilder::new(table_builder_config)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+    let mut tables = Vec::new();
+    for (output_index, chunk) in rows.chunks(max_rows_per_table).enumerate() {
+        let identity =
+            snapshot_table_identity(output_identity_seed, branch_id, output_index, chunk)?;
+        let artifact = builder
+            .build_from_storage_rows(identity.clone(), chunk)
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let reader = ImmutableTableReader::open_bytes(
+            identity.clone(),
+            artifact.into_bytes(),
+            TableReaderConfig::default(),
+        )
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let descriptor =
+            BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)?;
+        tables.push(BranchOwnedTable::new(branch_id, descriptor, reader)?);
+    }
+    Ok(tables)
+}
+
+fn snapshot_table_identity(
+    output_identity_seed: &TableIdentity,
+    branch_id: BranchId,
+    output_index: usize,
+    rows: &[StorageRow],
+) -> BranchRuntimeResult<TableIdentity> {
+    let fingerprint = snapshot_rows_fingerprint(rows);
+    TableIdentity::new(format!(
+        "{}-snapshot-{}-{}-{fingerprint}",
+        output_identity_seed.as_str(),
+        branch_id,
+        output_index,
+    ))
+    .map_err(|source| BranchRuntimeError::TableRuntime { source })
+}
+
+fn snapshot_rows_fingerprint(rows: &[StorageRow]) -> String {
+    let mut hash = Sha256::new();
+    for row in rows {
+        hash.update(TableInternalKeyBytes::from_row(row).as_slice());
+        hash.update(row.commit_timestamp().as_micros().to_le_bytes());
+        hash.update(row.expires_at().as_micros().to_le_bytes());
+        hash.update([u8::from(row.is_tombstone())]);
+        hash.update(
+            u64::try_from(row.value().len())
+                .expect("row value length fits in u64")
+                .to_le_bytes(),
+        );
+        hash.update(row.value());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MaterializedRows {
     rows: Vec<StorageRow>,
     skipped_post_fork_rows: u64,
     skipped_exact_duplicate_rows: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExistingMaterializationReplacementSummary {
+    rows: u64,
+    tables: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1891,7 +2649,6 @@ impl ObservedBranchRows {
         if layer.status() == InheritedLayerStatus::Materialized {
             return;
         }
-        self.record_commit_version(layer.fork_version());
         for table in layer.owned_levels().iter().flatten() {
             for row in table.rows() {
                 if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
@@ -1927,10 +2684,11 @@ fn branch_table_ref_for_owned(
     table_index: usize,
     table: &BranchOwnedTable,
 ) -> BranchRuntimeResult<BranchTableRef> {
-    if let Some(materialization_layer_index) = table.materialization_layer_index() {
+    if let Some(materialization_source) = table.materialization_source() {
         BranchTableRef::replacement(
             branch_id,
-            materialization_layer_index,
+            materialization_source.source_branch_id(),
+            materialization_source.fork_version(),
             level,
             table_index,
             table.descriptor().identity().clone(),
@@ -2015,7 +2773,7 @@ fn insert_compaction_outputs(
         }
     } else {
         for table in output_tables {
-            insert_sorted_by_range(output_level, table);
+            insert_sorted_by_range(output_level, table)?;
         }
     }
     Ok(())
@@ -2036,6 +2794,28 @@ fn validate_compaction_output_identities(
         if branch_reachable_table_identity_exists(identity, owned_levels, inherited_layers) {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: "compaction output identity must not collide with existing reachable table",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_materialization_output_identities(
+    output_identities: &[TableIdentity],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+) -> BranchRuntimeResult<()> {
+    let mut output_seen = BTreeSet::<&str>::new();
+    for identity in output_identities {
+        if !output_seen.insert(identity.as_str()) {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization output identities must be unique",
+            });
+        }
+        if branch_reachable_table_identity_exists(identity, owned_levels, inherited_layers) {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason:
+                    "materialization output identity must not collide with existing reachable table",
             });
         }
     }
@@ -2066,11 +2846,24 @@ fn validate_compaction_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchR
                 reason: "compaction level index must fit in BranchLevel",
             }
         })?);
+        let mut previous_first_key = None;
         for (left_index, table) in level.iter().enumerate() {
             if table.level() != branch_level {
                 return Err(BranchRuntimeError::InvalidCompaction {
                     reason: "compaction table level must match installed level",
                 });
+            }
+            if branch_level != BranchLevel::ZERO {
+                let first_key = require_table_physical_first_key(table)?;
+                if previous_first_key
+                    .as_ref()
+                    .is_some_and(|previous| previous > &first_key)
+                {
+                    return Err(BranchRuntimeError::InvalidCompaction {
+                        reason: "compaction output leaves nonzero-level tables out of physical-key order",
+                    });
+                }
+                previous_first_key = Some(first_key);
             }
             for row in table.rows() {
                 if !seen_keys.insert(row.key().clone()) {
@@ -2082,51 +2875,19 @@ fn validate_compaction_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchR
                 }
             }
             if branch_level != BranchLevel::ZERO
-                && level.iter().skip(left_index + 1).any(|right| {
-                    table_ranges_overlap(table.facts().key_range(), right.facts().key_range())
-                })
+                && level
+                    .iter()
+                    .skip(left_index + 1)
+                    .any(|right| table_physical_ranges_overlap(table, right))
             {
                 return Err(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction output leaves overlapping nonzero-level tables",
+                    reason:
+                        "compaction output leaves overlapping nonzero-level physical key ranges",
                 });
             }
         }
     }
     Ok(())
-}
-
-fn table_physical_ranges_overlap(left: &BranchOwnedTable, right: &BranchOwnedTable) -> bool {
-    let Some((left_first, left_last)) = table_physical_key_bounds(left) else {
-        return false;
-    };
-    let Some((right_first, right_last)) = table_physical_key_bounds(right) else {
-        return false;
-    };
-    left_first.as_slice() <= right_last.as_slice() && right_first.as_slice() <= left_last.as_slice()
-}
-
-fn table_physical_key_bounds(
-    table: &BranchOwnedTable,
-) -> Option<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
-    let mut keys = table
-        .rows()
-        .iter()
-        .map(|row| TablePhysicalKeyBytes::from_row(row.row()));
-    let first = keys.next()?;
-    let (min, max) = keys.fold((first.clone(), first), |(min, max), key| {
-        let next_min = if key.as_slice() < min.as_slice() {
-            key.clone()
-        } else {
-            min
-        };
-        let next_max = if key.as_slice() > max.as_slice() {
-            key
-        } else {
-            max
-        };
-        (next_min, next_max)
-    });
-    Some((min, max))
 }
 
 fn materialized_table_identity(
@@ -2140,12 +2901,17 @@ fn materialized_table_identity(
     .map_err(|source| BranchRuntimeError::TableRuntime { source })
 }
 
-fn insert_sorted_by_range(tables: &mut Vec<BranchOwnedTable>, table: BranchOwnedTable) -> usize {
-    let first_key = table.facts().key_range().first_key();
-    let index =
-        tables.partition_point(|existing| existing.facts().key_range().first_key() < first_key);
+fn insert_sorted_by_range(
+    tables: &mut Vec<BranchOwnedTable>,
+    table: BranchOwnedTable,
+) -> BranchRuntimeResult<usize> {
+    let first_key = require_table_physical_first_key(&table)?;
+    let mut index = 0;
+    while index < tables.len() && require_table_physical_first_key(&tables[index])? < first_key {
+        index += 1;
+    }
     tables.insert(index, table);
-    index
+    Ok(index)
 }
 
 fn require_rows_match_frozen(

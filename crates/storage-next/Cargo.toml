@@ -17,6 +17,7 @@ perf-trace = []
 
 [dependencies]
 crc32fast = { workspace = true }
+sha2 = { workspace = true }
 strata-core-next = { path = "../core-next" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

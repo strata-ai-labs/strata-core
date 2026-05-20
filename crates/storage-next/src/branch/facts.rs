@@ -58,6 +58,11 @@ impl BranchStateFacts {
             }
             (Some(_), Some(_)) | (None, None) => {}
         }
+        if max_commit_version.is_some() != timestamp_min.is_some() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "max commit version and timestamp range must both be present or absent",
+            });
+        }
 
         if active_rows == 0
             && frozen_table_count == 0
@@ -262,7 +267,8 @@ pub(crate) enum BranchTableReferenceKind {
         layer_index: usize,
     },
     Replacement {
-        materialization_layer_index: usize,
+        source_branch_id: BranchId,
+        fork_version: CommitVersion,
     },
 }
 
@@ -329,7 +335,8 @@ impl BranchTableRef {
 
     pub(crate) fn replacement(
         owner_branch_id: BranchId,
-        materialization_layer_index: usize,
+        source_branch_id: BranchId,
+        fork_version: CommitVersion,
         level: BranchLevel,
         table_index: usize,
         table_identity: TableIdentity,
@@ -341,7 +348,8 @@ impl BranchTableRef {
             level,
             table_index,
             BranchTableReferenceKind::Replacement {
-                materialization_layer_index,
+                source_branch_id,
+                fork_version,
             },
         )
     }
@@ -460,12 +468,15 @@ impl BranchTableRef {
         let mut source_branch = [0; BranchId::BYTE_LEN];
         let mut fork_version = 0;
         let mut layer_index = 0;
-        let mut replacement_layer_index = 0;
         match self.reference_kind {
             BranchTableReferenceKind::Owned => {}
             BranchTableReferenceKind::Replacement {
-                materialization_layer_index,
-            } => replacement_layer_index = materialization_layer_index,
+                source_branch_id,
+                fork_version: version,
+            } => {
+                source_branch = *source_branch_id.as_bytes();
+                fork_version = version.as_u64();
+            }
             BranchTableReferenceKind::Inherited {
                 source_branch_id,
                 fork_version: version,
@@ -489,7 +500,6 @@ impl BranchTableRef {
             source_branch,
             fork_version,
             layer_index,
-            replacement_layer_index,
             level: self.level.raw(),
             table_index: self.table_index,
         }
@@ -505,7 +515,6 @@ struct BranchTableRefSortKey {
     source_branch: [u8; BranchId::BYTE_LEN],
     fork_version: u64,
     layer_index: usize,
-    replacement_layer_index: usize,
     level: u8,
     table_index: usize,
 }

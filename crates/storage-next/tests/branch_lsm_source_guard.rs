@@ -63,15 +63,27 @@ fn branch_lsm_source_does_not_use_io_backend_or_lifecycle_apis() {
         "env::var_os",
         "OpenOptions",
         "pread",
+        "rename(",
+        "remove_file",
         "mmap",
         "memmap",
         "crate::backend",
+        "crate::object",
         "crate::format",
         "crate::layout",
         "crate::service",
         "crate::service::wal",
         "crate::service::checkpoint",
+        "crate::service::quarantine",
         "crate::testkit",
+        "WalService",
+        "CheckpointService",
+        "QuarantineService",
+        "RetentionService",
+        "append_wal",
+        "recover_database",
+        "schedule_retention",
+        "quarantine_object",
         "SystemTime",
         "Instant::now",
         "Timestamp::now",
@@ -135,8 +147,9 @@ fn branch_lsm_source_has_no_premature_behavior_entrypoints() {
     // level install methods. L6F owns storage-level fork/inheritance helpers.
     // L6H owns materialization mechanics. L6I owns reachability snapshots and
     // shared table registry facts. L6J owns branch-local compaction planning
-    // and keep-all owned-table replacement. Later behavior-owning L6 slices
-    // should narrow this guard as they add snapshot install entrypoints.
+    // and keep-all owned-table replacement. L6K owns row-native snapshot
+    // install. Later behavior-owning L6 slices should narrow this guard as
+    // they add entrypoints.
     for file in branch_lsm_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read branch LSM source");
         for (line_number, line) in text.lines().enumerate() {
@@ -170,6 +183,15 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
     assert!(contains_forbidden_product_vocabulary(
         "let _: SegmentRefRegistry;"
     ));
+    assert!(contains_forbidden_product_vocabulary("let _: StrataHub;"));
+    assert!(contains_forbidden_product_vocabulary(
+        "let _: RemoteTrackingRef;"
+    ));
+    assert!(contains_forbidden_product_vocabulary(
+        "let _: ProviderCapability;"
+    ));
+    assert!(contains_forbidden_product_vocabulary("let _: Dataset;"));
+    assert!(contains_forbidden_product_vocabulary("let _: BranchName;"));
 
     assert!(contains_forbidden_substring(
         "use crate::commit;",
@@ -188,6 +210,37 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
         "strata_engine"
     ));
     assert!(contains_forbidden_substring(
+        "use crate::backend;",
+        "crate::backend"
+    ));
+    assert!(contains_forbidden_substring(
+        "use crate::object;",
+        "crate::object"
+    ));
+    assert!(contains_forbidden_substring(
+        "use crate::layout;",
+        "crate::layout"
+    ));
+    assert!(contains_forbidden_substring(
+        "use crate::service;",
+        "crate::service"
+    ));
+    assert!(is_public_surface_leak("pub struct BranchRuntime;"));
+    assert!(is_public_surface_leak("pub fn read_latest() {}"));
+    assert!(contains_premature_behavior_entrypoint(
+        "pub(crate) fn read_latest() {}"
+    ));
+    assert!(contains_premature_behavior_entrypoint(
+        "pub(crate) fn fork_branch() {}"
+    ));
+    assert!(contains_premature_behavior_entrypoint(
+        "pub(crate) fn install_snapshot_bytes() {}"
+    ));
+}
+
+#[test]
+fn branch_lsm_source_guard_catches_io_and_orchestration_terms() {
+    assert!(contains_forbidden_substring(
         "std::fs::read(\"branch\")",
         "std::fs"
     ));
@@ -204,24 +257,30 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
         "Timestamp::now"
     ));
     assert!(contains_ascii_word("let _: PathBuf;", "PathBuf"));
+    assert!(contains_forbidden_substring("rename(old, new)", "rename("));
     assert!(contains_forbidden_substring(
-        "use crate::backend;",
-        "crate::backend"
+        "remove_file(path)",
+        "remove_file"
     ));
     assert!(contains_forbidden_substring(
-        "use crate::service;",
-        "crate::service"
+        "use crate::service::wal::WalService;",
+        "crate::service::wal"
     ));
-    assert!(is_public_surface_leak("pub struct BranchRuntime;"));
-    assert!(is_public_surface_leak("pub fn read_latest() {}"));
-    assert!(contains_premature_behavior_entrypoint(
-        "pub(crate) fn read_latest() {}"
+    assert!(contains_forbidden_substring(
+        "use crate::service::checkpoint::CheckpointService;",
+        "crate::service::checkpoint"
     ));
-    assert!(contains_premature_behavior_entrypoint(
-        "pub(crate) fn install_snapshot_rows() {}"
+    assert!(contains_forbidden_substring(
+        "use crate::service::quarantine::QuarantineService;",
+        "crate::service::quarantine"
     ));
-    assert!(contains_premature_behavior_entrypoint(
-        "pub(crate) fn fork_branch() {}"
+    assert!(contains_forbidden_substring(
+        "schedule_retention(plan)",
+        "schedule_retention"
+    ));
+    assert!(contains_forbidden_substring(
+        "quarantine_object(row)",
+        "quarantine_object"
     ));
 }
 
@@ -247,6 +306,7 @@ fn branch_lsm_source_guard_allows_owned_l6_entrypoints() {
         "pub(crate) fn reachability_snapshot(&self) {}",
         "pub(crate) fn plan_branch_compaction(&self) {}",
         "pub(crate) fn compact_branch_owned_tables(&mut self) {}",
+        "pub(crate) fn install_snapshot_rows_into_branches() {}",
         "pub(crate) const fn latest() -> Self",
         "pub(crate) const fn fork_version(self) -> CommitVersion",
     ] {
@@ -328,6 +388,12 @@ fn contains_forbidden_product_vocabulary(line: &str) -> bool {
         "Search",
         "TransactionContext",
         "SegmentRefRegistry",
+        "StrataHub",
+        "RemoteTrackingRef",
+        "RemoteRef",
+        "ProviderCapability",
+        "Dataset",
+        "BranchName",
     ]
     .iter()
     .any(|needle| line.contains(needle))
@@ -364,6 +430,9 @@ fn contains_call_like_identifier(line: &str, identifier: &str) -> bool {
 }
 
 fn contains_premature_behavior_entrypoint(line: &str) -> bool {
+    if line.contains("fn install_snapshot_rows_into_branches") {
+        return false;
+    }
     [
         "fn read_latest",
         "fn getv",

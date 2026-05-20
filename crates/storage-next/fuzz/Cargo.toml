@@ -75,6 +75,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "branch_lsm_reads"
+path = "fuzz_targets/branch_lsm_reads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "branch_lsm_inheritance"
+path = "fuzz_targets/branch_lsm_inheritance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "branch_lsm_install"
+path = "fuzz_targets/branch_lsm_install.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_wal_commit_payload"
 path = "fuzz_targets/format_wal_commit_payload.rs"
 test = false

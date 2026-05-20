@@ -652,9 +652,13 @@ L6 owns installing decoded rows into branch storage state:
 - validate row key ordering and branch target
 - group rows into branch-local table build plans
 - build immutable tables through L5
-- publish table objects through L4
-- install tables into branch-local state
+- stage branch-owned table refs and expose publication facts to L8
+- install staged tables into branch-local state
 - return generic install facts
+
+L6 does not publish table objects or branch manifests itself. L8 composes L6
+snapshot row install with L4 publication, manifest updates, and crash-window
+reconciliation.
 
 Snapshot install must be all-or-nothing at the branch-state boundary. L6 should
 preflight the full decoded-row install plan before publishing any branch-state
@@ -665,7 +669,7 @@ mutation:
 - validate version and timestamp metadata
 - reject duplicate rows within the same install plan
 - build all required table artifacts or stage them before branch visibility
-- install only after all validation and required publication succeeds
+- install only after all validation and required staging succeeds
 
 If any row or table artifact fails validation, no partial branch install should
 be visible.
