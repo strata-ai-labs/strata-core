@@ -221,3 +221,110 @@ Verified for L7B:
 6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 7. `cargo fmt --package strata-storage-next --check`
 8. `git diff --check`
+
+## L7C: Version And Timestamp Clocks
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7c-version-and-timestamp-clocks-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7c-version-and-timestamp-clocks-test-plan.md`
+7. `crates/storage-next/src/commit/`
+8. `crates/core-next/src/version.rs`
+9. `crates/core-next/src/time.rs`
+10. `crates/storage/src/txn/manager.rs`
+11. `crates/storage/src/segmented/mod.rs`
+
+### Preserved As Behavior
+
+1. Commit versions are storage-owned, global, nonzero, and monotonically
+   increasing.
+2. Version allocation uses typed overflow behavior at `CommitVersion::MAX`
+   instead of wrapping.
+3. Recovery catch-up advances the allocator floor above recovered versions.
+4. Version gaps are allowed after later post-allocation failures.
+5. Mutating commit fact allocation produces one `CommitStamp` carrying one
+   version and one timestamp.
+6. Runtime-generated timestamps are monotonic nondecreasing within one runtime.
+7. Equal timestamps are allowed; L7G timeline ordering uses commit version as
+   the deterministic tiebreaker.
+
+### Intentionally Changed Or Retired
+
+1. L7C does not port durable storage transaction ids from the old transaction
+   manager.
+2. L7C has no transaction-id allocator and no transaction-id catch-up hook.
+3. Version availability is preflighted before timestamp resolution, then
+   timestamp resolution happens before version consumption. This avoids both
+   reading a timestamp source when the version allocator is exhausted and
+   creating avoidable version gaps on timestamp-source failure.
+4. Explicit timestamps below the monotonic floor are rejected instead of being
+   silently clamped.
+5. The production timestamp source is an abstraction; no direct clock read is
+   embedded in `Timestamp`.
+6. L7C still does not stamp rows, apply L6 state, append WAL, publish
+   visibility, or write timeline rows.
+
+### Deferred By Owner Slice
+
+1. `L7D`: read-only diagnostic execution and visible-version facts.
+2. `L7E`: branch registry, branch-generation guard, per-branch write guard,
+   and quiesce skeleton.
+3. `L7F`: no-allocation-on-conflict validation over L6 read views.
+4. `L7G`: timeline row generation and duplicate-timestamp lookup tiebreaking.
+5. `L7H`: cache/no-WAL apply into L6 and version-gap behavior after apply
+   failure.
+6. `L7I`: WAL record construction from stamped rows.
+7. `L7K`: replay entrypoints that call version and timestamp catch-up after
+   durable facts are recovered.
+8. `L7M`: broader generated/fuzz/fault scripts over the full commit protocol.
+9. `L7N`: closeout inventory and full sensitivity ledger.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/allocator.rs`
+2. Allocator direct tests in `crates/storage-next/src/commit/tests/allocator.rs`
+3. Allocator generated checks in
+   `crates/storage-next/src/testkit/commit_runtime_allocator.rs`
+4. Allocator counter assertions in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+5. Transaction-id vocabulary additions in
+   `crates/storage-next/tests/commit_runtime_source_guard.rs`
+
+### Sensitivity Probes
+
+Planned L7C probes:
+
+1. Return `CommitVersion::ZERO` from first allocation; direct and generated
+   allocation tests must fail.
+2. Wrap from `CommitVersion::MAX` to zero or read the timestamp source after
+   overflow is already known; overflow tests must fail.
+3. Ignore recovered-version catch-up; catch-up tests must fail.
+4. Consume a version before timestamp source failure; source-failure tests must
+   fail.
+5. Clamp explicit timestamps below the floor instead of rejecting; explicit
+   timestamp tests must fail.
+6. Allow generated timestamps to move backward; monotonic guard tests must
+   fail.
+7. Reject equal timestamps; equal timestamp tests must fail.
+8. Allocate a stamp for a read-only diagnostic batch; read-only no-allocation
+   tests must fail.
+9. Add transaction-id allocator or catch-up vocabulary; source guard must fail.
+10. Import L6, WAL, backend, layout, or engine code into the allocator; source
+    guard must fail.
+
+### Command Evidence
+
+Verified for L7C:
+
+1. `cargo test -p strata-storage-next --locked --lib commit`
+2. `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_properties`
+3. `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test commit_runtime_properties`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+5. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+7. `cargo fmt --package strata-storage-next --check`
+8. `git diff --check`

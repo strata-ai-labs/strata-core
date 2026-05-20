@@ -8,12 +8,22 @@
     )
 )]
 
+mod allocator;
 mod batch;
 mod config;
 mod error;
 mod facts;
 mod result;
 
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use allocator::{
+    CommitFactAllocation, CommitFactAllocator, CommitManualTimestampSource,
+    CommitTimestampAllocationSource, CommitTimestampGuard, CommitTimestampSource,
+    CommitVersionAllocator,
+};
 #[allow(
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"

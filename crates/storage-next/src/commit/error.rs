@@ -4,7 +4,7 @@ use crate::row::StorageSpaceId;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
-use strata_core_next::BranchId;
+use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Clone, Debug)]
 pub(crate) enum CommitRuntimeError {
@@ -46,6 +46,16 @@ pub(crate) enum CommitRuntimeError {
     DurabilityUnavailable {
         reason: &'static str,
     },
+    VersionAllocatorOverflow {
+        last_allocated: CommitVersion,
+    },
+    TimestampUnavailable {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    InvalidTimestampPolicy {
+        reason: &'static str,
+    },
     LowerLayer {
         layer: CommitLowerLayer,
         reason: &'static str,
@@ -76,6 +86,23 @@ impl CommitRuntimeError {
     ) -> Self {
         Self::LowerLayer {
             layer,
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) const fn timestamp_unavailable(reason: &'static str) -> Self {
+        Self::TimestampUnavailable {
+            reason,
+            source: None,
+        }
+    }
+
+    pub(crate) fn timestamp_unavailable_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::TimestampUnavailable {
             reason,
             source: Some(Arc::new(source)),
         }
@@ -120,6 +147,22 @@ impl PartialEq for CommitRuntimeError {
             | (
                 Self::DurabilityUnavailable { reason: left },
                 Self::DurabilityUnavailable { reason: right },
+            )
+            | (
+                Self::TimestampUnavailable { reason: left, .. },
+                Self::TimestampUnavailable { reason: right, .. },
+            )
+            | (
+                Self::InvalidTimestampPolicy { reason: left },
+                Self::InvalidTimestampPolicy { reason: right },
+            ) => left == right,
+            (
+                Self::VersionAllocatorOverflow {
+                    last_allocated: left,
+                },
+                Self::VersionAllocatorOverflow {
+                    last_allocated: right,
+                },
             ) => left == right,
             (
                 Self::DuplicateMutationKey {
@@ -219,6 +262,18 @@ impl fmt::Display for CommitRuntimeError {
             Self::DurabilityUnavailable { reason } => {
                 write!(formatter, "commit durability is unavailable: {reason}")
             }
+            Self::VersionAllocatorOverflow { last_allocated } => {
+                write!(
+                    formatter,
+                    "commit version allocator overflowed after version {last_allocated}"
+                )
+            }
+            Self::TimestampUnavailable { reason, .. } => {
+                write!(formatter, "commit timestamp is unavailable: {reason}")
+            }
+            Self::InvalidTimestampPolicy { reason } => {
+                write!(formatter, "commit timestamp policy is invalid: {reason}")
+            }
             Self::LowerLayer { layer, reason, .. } => {
                 write!(formatter, "commit lower layer {layer} failed: {reason}")
             }
@@ -232,8 +287,13 @@ impl Error for CommitRuntimeError {
             Self::LowerLayer {
                 source: Some(source),
                 ..
+            }
+            | Self::TimestampUnavailable {
+                source: Some(source),
+                ..
             } => Some(source.as_ref()),
-            Self::InvalidConfig { .. }
+            Self::TimestampUnavailable { source: None, .. }
+            | Self::InvalidConfig { .. }
             | Self::InvalidCommitState { .. }
             | Self::InvalidCommitPhase { .. }
             | Self::InvalidVisibilityFacts { .. }
@@ -245,6 +305,8 @@ impl Error for CommitRuntimeError {
             | Self::StorageOwnedMutationSpace { .. }
             | Self::BranchUnavailable { .. }
             | Self::DurabilityUnavailable { .. }
+            | Self::VersionAllocatorOverflow { .. }
+            | Self::InvalidTimestampPolicy { .. }
             | Self::LowerLayer { source: None, .. } => None,
         }
     }

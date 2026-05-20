@@ -172,9 +172,11 @@ fn commit_runtime_source_guard_catches_product_vocabulary() {
     assert!(contains_forbidden_product_vocabulary(
         "let _: TransactionId;"
     ));
+    assert!(contains_forbidden_product_vocabulary("let _: TxnId;"));
     assert!(contains_forbidden_product_vocabulary(
         "let _: TransactionID;"
     ));
+    assert!(contains_forbidden_product_vocabulary("next_txn_id();"));
     assert!(contains_forbidden_product_vocabulary(
         "let transaction_id = 7;"
     ));
@@ -339,7 +341,9 @@ fn contains_forbidden_product_vocabulary(line: &str) -> bool {
         "Vector",
         "Search",
         "TransactionId",
+        "TxnId",
         "TransactionID",
+        "next_txn_id",
         "transaction_id",
         "transaction id",
         "transaction-id",

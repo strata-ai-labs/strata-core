@@ -235,6 +235,13 @@ fn commit_runtime_error_variants_are_constructible() {
         CommitRuntimeError::DurabilityUnavailable {
             reason: "wal writer halted",
         },
+        CommitRuntimeError::VersionAllocatorOverflow {
+            last_allocated: CommitVersion::MAX,
+        },
+        CommitRuntimeError::timestamp_unavailable("clock unavailable"),
+        CommitRuntimeError::InvalidTimestampPolicy {
+            reason: "timestamp moved backward",
+        },
         CommitRuntimeError::lower_layer(CommitLowerLayer::WalService, "append failed"),
     ];
 

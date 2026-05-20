@@ -1,13 +1,16 @@
+mod allocator;
 mod batch;
 mod scaffold;
 
 use super::{
     CommitBatch, CommitBatchKind, CommitBatchOptions, CommitCasFact, CommitConflictValidationMode,
     CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitExpiry,
-    CommitLowerLayer, CommitMutation, CommitObservedVersion, CommitOrigin, CommitPhase,
-    CommitReadFact, CommitReadOnlyDiagnostics, CommitRetentionHint, CommitRuntimeConfig,
-    CommitRuntimeError, CommitRuntimeResult, CommitRuntimeStats, CommitStamp,
-    CommitTimestampPolicy, CommitValidationFacts, CommitVisibilityFacts,
+    CommitFactAllocation, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
+    CommitMutation, CommitObservedVersion, CommitOrigin, CommitPhase, CommitReadFact,
+    CommitReadOnlyDiagnostics, CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError,
+    CommitRuntimeResult, CommitRuntimeStats, CommitStamp, CommitTimestampAllocationSource,
+    CommitTimestampGuard, CommitTimestampPolicy, CommitTimestampSource, CommitValidationFacts,
+    CommitVersionAllocator, CommitVisibilityFacts, ValidatedCommitBatch,
 };
 use crate::row::{PhysicalKey, StorageSpaceId};
 use std::error::Error;

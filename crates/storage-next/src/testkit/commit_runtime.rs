@@ -13,6 +13,7 @@ use std::error::Error;
 use std::fmt;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
+use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
 use super::TestkitError;
 
 /// Summary of one generated commit-runtime scaffold contract check.
@@ -36,6 +37,16 @@ pub struct CommitRuntimeScaffoldOutcome {
     stamping_cases: usize,
     expiry_rejections: usize,
     stamping_rejections: usize,
+    version_allocations: usize,
+    version_catch_ups: usize,
+    version_overflows: usize,
+    generated_timestamps: usize,
+    clamped_timestamps: usize,
+    explicit_timestamps: usize,
+    invalid_explicit_timestamps: usize,
+    timestamp_source_failures: usize,
+    read_only_no_allocations: usize,
+    no_transaction_id_checks: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -128,6 +139,56 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn stamping_rejection_cases(self) -> usize {
         self.stamping_rejections
     }
+
+    /// Number of version allocation cases exercised.
+    pub const fn version_allocation_cases(self) -> usize {
+        self.version_allocations
+    }
+
+    /// Number of version catch-up cases exercised.
+    pub const fn version_catch_up_cases(self) -> usize {
+        self.version_catch_ups
+    }
+
+    /// Number of version overflow cases exercised.
+    pub const fn version_overflow_cases(self) -> usize {
+        self.version_overflows
+    }
+
+    /// Number of runtime-generated timestamp cases exercised.
+    pub const fn generated_timestamp_cases(self) -> usize {
+        self.generated_timestamps
+    }
+
+    /// Number of clamped timestamp cases exercised.
+    pub const fn clamped_timestamp_cases(self) -> usize {
+        self.clamped_timestamps
+    }
+
+    /// Number of explicit timestamp cases exercised.
+    pub const fn explicit_timestamp_cases(self) -> usize {
+        self.explicit_timestamps
+    }
+
+    /// Number of invalid explicit timestamp cases exercised.
+    pub const fn invalid_explicit_timestamp_cases(self) -> usize {
+        self.invalid_explicit_timestamps
+    }
+
+    /// Number of timestamp source failure cases exercised.
+    pub const fn timestamp_source_failure_cases(self) -> usize {
+        self.timestamp_source_failures
+    }
+
+    /// Number of read-only no-allocation cases exercised.
+    pub const fn read_only_no_allocation_cases(self) -> usize {
+        self.read_only_no_allocations
+    }
+
+    /// Number of no transaction-id surface checks exercised.
+    pub const fn no_transaction_id_check_cases(self) -> usize {
+        self.no_transaction_id_checks
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -153,6 +214,16 @@ pub fn check_commit_runtime_scaffold_contract(
         stamping_cases: 0,
         expiry_rejections: 0,
         stamping_rejections: 0,
+        version_allocations: 0,
+        version_catch_ups: 0,
+        version_overflows: 0,
+        generated_timestamps: 0,
+        clamped_timestamps: 0,
+        explicit_timestamps: 0,
+        invalid_explicit_timestamps: 0,
+        timestamp_source_failures: 0,
+        read_only_no_allocations: 0,
+        no_transaction_id_checks: 0,
     };
 
     check_valid_config(script)?;
@@ -188,6 +259,18 @@ pub fn check_commit_runtime_scaffold_contract(
     check_stamping(script)?;
     outcome.stamping_cases += 1;
     outcome.stamping_rejections += check_stamping_rejections()?;
+
+    let allocator_outcome = check_commit_runtime_allocator_contract(script)?;
+    outcome.version_allocations += allocator_outcome.version_allocations;
+    outcome.version_catch_ups += allocator_outcome.version_catch_ups;
+    outcome.version_overflows += allocator_outcome.version_overflows;
+    outcome.generated_timestamps += allocator_outcome.generated_timestamps;
+    outcome.clamped_timestamps += allocator_outcome.clamped_timestamps;
+    outcome.explicit_timestamps += allocator_outcome.explicit_timestamps;
+    outcome.invalid_explicit_timestamps += allocator_outcome.invalid_explicit_timestamps;
+    outcome.timestamp_source_failures += allocator_outcome.timestamp_source_failures;
+    outcome.read_only_no_allocations += allocator_outcome.read_only_no_allocations;
+    outcome.no_transaction_id_checks += allocator_outcome.no_transaction_id_checks;
 
     Ok(outcome)
 }

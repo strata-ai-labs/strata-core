@@ -6,6 +6,7 @@ use std::fmt;
 
 mod branch_lsm;
 mod commit_runtime;
+mod commit_runtime_allocator;
 mod format_fuzz;
 mod integration_harness;
 mod quarantine_fuzz;
