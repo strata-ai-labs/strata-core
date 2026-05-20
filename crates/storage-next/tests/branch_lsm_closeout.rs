@@ -119,7 +119,7 @@ fn branch_lsm_closeout_direct_branch_tests_cover_required_surfaces() {
     let branch_tests = read_branch_test_sources(&crate_root);
 
     assert_contains_all(
-        "src/branch/tests.rs and src/branch/tests/*.rs",
+        "src/branch/tests module",
         &branch_tests,
         &[
             "branch_runtime_config_rejects_unusable_zero_limits",
@@ -290,37 +290,32 @@ fn read_file(path: &Path) -> String {
 fn read_branch_test_sources(crate_root: &Path) -> String {
     let mut text = read_file(&crate_root.join("src/branch/tests.rs"));
     let test_dir = crate_root.join("src/branch/tests");
-    let mut entries = fs::read_dir(&test_dir)
-        .unwrap_or_else(|error| panic!("read {}: {error}", test_dir.display()))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|error| panic!("read entries in {}: {error}", test_dir.display()));
-    entries.sort_by_key(std::fs::DirEntry::path);
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
-            text.push('\n');
-            text.push_str(&read_file(&path));
-        }
-    }
+    append_rs_files_recursive(&test_dir, &mut text);
     text
 }
 
 fn read_branch_lsm_testkit_sources(crate_root: &Path) -> String {
     let mut text = read_file(&crate_root.join("src/testkit/branch_lsm.rs"));
     let module_dir = crate_root.join("src/testkit/branch_lsm");
-    let mut entries = fs::read_dir(&module_dir)
-        .unwrap_or_else(|error| panic!("read {}: {error}", module_dir.display()))
+    append_rs_files_recursive(&module_dir, &mut text);
+    text
+}
+
+fn append_rs_files_recursive(dir: &Path, text: &mut String) {
+    let mut entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
         .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|error| panic!("read entries in {}: {error}", module_dir.display()));
+        .unwrap_or_else(|error| panic!("read entries in {}: {error}", dir.display()));
     entries.sort_by_key(std::fs::DirEntry::path);
     for entry in entries {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+        if path.is_dir() {
+            append_rs_files_recursive(&path, text);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
             text.push('\n');
             text.push_str(&read_file(&path));
         }
     }
-    text
 }
 
 fn assert_contains_all(label: &str, text: &str, needles: &[&str]) {

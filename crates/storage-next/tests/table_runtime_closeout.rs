@@ -10,7 +10,7 @@ use std::path::Path;
 #[test]
 fn table_runtime_closeout_generated_harness_exposes_every_counter() {
     let crate_root = common::crate_root();
-    let testkit = read_file(&crate_root.join("src/testkit/table_runtime.rs"));
+    let testkit = read_table_runtime_testkit_sources(&crate_root);
     let properties = read_file(&crate_root.join("tests/table_runtime_properties.rs"));
 
     let counter_methods = [
@@ -33,7 +33,11 @@ fn table_runtime_closeout_generated_harness_exposes_every_counter() {
         "error_source_cases",
         "stats_cases",
     ];
-    assert_contains_all("src/testkit/table_runtime.rs", &testkit, &counter_methods);
+    assert_contains_all(
+        "src/testkit/table_runtime module",
+        &testkit,
+        &counter_methods,
+    );
     assert_contains_all(
         "tests/table_runtime_properties.rs",
         &properties,
@@ -163,6 +167,24 @@ fn table_runtime_closeout_fuzz_inventory_matches_existing_table_targets() {
 
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+fn read_table_runtime_testkit_sources(crate_root: &Path) -> String {
+    let mut text = read_file(&crate_root.join("src/testkit/table_runtime.rs"));
+    let module_dir = crate_root.join("src/testkit/table_runtime");
+    let mut entries = fs::read_dir(&module_dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", module_dir.display()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("read entries in {}: {error}", module_dir.display()));
+    entries.sort_by_key(std::fs::DirEntry::path);
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            text.push('\n');
+            text.push_str(&read_file(&path));
+        }
+    }
+    text
 }
 
 fn assert_contains_all(label: &str, text: &str, needles: &[&str]) {
