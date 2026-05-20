@@ -121,6 +121,8 @@ pub(crate) struct StorageRow {
     physical_key: PhysicalKey,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
+    // V1 uses Timestamp::EPOCH as the no-expiry sentinel. An explicit
+    // expire-at-epoch row is not representable in this row shape.
     expires_at: Timestamp,
     value: Vec<u8>,
     is_tombstone: bool,

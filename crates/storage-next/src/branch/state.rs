@@ -207,6 +207,72 @@ pub(crate) enum BranchMaterializationRecovery {
     LayerAlreadyMaterialized,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMaterializationHandle {
+    child_branch_id: BranchId,
+    source_branch_id: BranchId,
+    fork_version: CommitVersion,
+    layer_index: usize,
+}
+
+impl BranchMaterializationHandle {
+    pub(crate) const fn new(
+        child_branch_id: BranchId,
+        source_branch_id: BranchId,
+        fork_version: CommitVersion,
+        layer_index: usize,
+    ) -> Self {
+        Self {
+            child_branch_id,
+            source_branch_id,
+            fork_version,
+            layer_index,
+        }
+    }
+
+    pub(crate) const fn child_branch_id(self) -> BranchId {
+        self.child_branch_id
+    }
+
+    pub(crate) const fn source_branch_id(self) -> BranchId {
+        self.source_branch_id
+    }
+
+    pub(crate) const fn fork_version(self) -> CommitVersion {
+        self.fork_version
+    }
+
+    pub(crate) const fn layer_index(self) -> usize {
+        self.layer_index
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMaterializationIntent {
+    handle: BranchMaterializationHandle,
+    reachability_snapshot: BranchReachabilitySnapshot,
+}
+
+impl BranchMaterializationIntent {
+    pub(crate) const fn new(
+        handle: BranchMaterializationHandle,
+        reachability_snapshot: BranchReachabilitySnapshot,
+    ) -> Self {
+        Self {
+            handle,
+            reachability_snapshot,
+        }
+    }
+
+    pub(crate) const fn handle(&self) -> BranchMaterializationHandle {
+        self.handle
+    }
+
+    pub(crate) const fn reachability_snapshot(&self) -> &BranchReachabilitySnapshot {
+        &self.reachability_snapshot
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchMaterializationRequest {
     child_branch_id: BranchId,
@@ -245,6 +311,19 @@ impl BranchMaterializationRequest {
             layer_index,
             Some(source_branch_id),
             Some(fork_version),
+            output_identity_prefix,
+        )
+    }
+
+    pub(crate) fn from_handle(
+        handle: BranchMaterializationHandle,
+        output_identity_prefix: impl Into<String>,
+    ) -> BranchRuntimeResult<Self> {
+        Self::new_for_source(
+            handle.child_branch_id(),
+            handle.layer_index(),
+            handle.source_branch_id(),
+            handle.fork_version(),
             output_identity_prefix,
         )
     }
@@ -1373,20 +1452,26 @@ impl BranchLocalState {
     pub(crate) fn mark_inherited_layer_materializing(
         &mut self,
         layer_index: usize,
-    ) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
+    ) -> BranchRuntimeResult<BranchMaterializationIntent> {
         let layer = self.inherited_layers.get(layer_index).ok_or(
             BranchRuntimeError::InvalidInheritedLayer {
                 reason: "materialization layer index must exist",
             },
         )?;
+        let handle = BranchMaterializationHandle::new(
+            self.branch_id,
+            layer.source_branch_id(),
+            layer.fork_version(),
+            layer_index,
+        );
         match layer.status() {
             InheritedLayerStatus::Active => {
                 self.inherited_layers[layer_index] =
                     layer.with_status(InheritedLayerStatus::Materializing)?;
-                self.reachability_snapshot()
+                self.materialization_intent(handle)
             }
             InheritedLayerStatus::Materializing | InheritedLayerStatus::Materialized => {
-                self.reachability_snapshot()
+                self.materialization_intent(handle)
             }
             InheritedLayerStatus::Unavailable => Err(BranchRuntimeError::InvalidInheritedLayer {
                 reason: "unavailable inherited layers cannot be materialized",
@@ -1436,8 +1521,11 @@ impl BranchLocalState {
         }
 
         let materialized = self.collect_materialization_rows(request.layer_index())?;
-        let existing_summary =
-            self.existing_materialization_replacement_summary(materialization_source);
+        let existing_summary = self.existing_materialization_replacement_summary(
+            materialization_source,
+            request.output_identity_prefix(),
+            request.layer_index(),
+        );
         if materialized.rows.is_empty() {
             if let Some(summary) = existing_summary {
                 let mut staged = self.clone();
@@ -1462,7 +1550,7 @@ impl BranchLocalState {
         let replacement_tables = self.build_materialized_l0_tables(
             request.layer_index(),
             request.output_identity_prefix(),
-            existing_summary.map_or(0, |summary| summary.tables),
+            existing_summary.map_or(0, |summary| summary.next_output_index),
             &materialized.rows,
         )?;
         let new_rows_materialized = u64::try_from(materialized.rows.len()).map_err(|_| {
@@ -1499,6 +1587,16 @@ impl BranchLocalState {
         })
     }
 
+    fn materialization_intent(
+        &self,
+        handle: BranchMaterializationHandle,
+    ) -> BranchRuntimeResult<BranchMaterializationIntent> {
+        Ok(BranchMaterializationIntent::new(
+            handle,
+            self.reachability_snapshot()?,
+        ))
+    }
+
     fn materialized_layer_noop_outcome(
         &self,
         source_branch_id: BranchId,
@@ -1525,7 +1623,11 @@ impl BranchLocalState {
         request: &BranchMaterializationRequest,
     ) -> BranchRuntimeResult<BranchMaterializationOutcome> {
         if let Some(source) = request.materialization_source() {
-            if let Some(summary) = self.existing_materialization_replacement_summary(source) {
+            if let Some(summary) = self.existing_materialization_replacement_summary(
+                source,
+                request.output_identity_prefix(),
+                request.layer_index(),
+            ) {
                 return Ok(BranchMaterializationOutcome {
                     child_branch_id: self.branch_id,
                     source_branch_id: source.source_branch_id(),
@@ -1593,6 +1695,8 @@ impl BranchLocalState {
     fn existing_materialization_replacement_summary(
         &self,
         source: BranchMaterializationSource,
+        output_identity_prefix: &str,
+        layer_index: usize,
     ) -> Option<ExistingMaterializationReplacementSummary> {
         let mut summary = ExistingMaterializationReplacementSummary::default();
         for table in self.owned_levels.iter().flatten() {
@@ -1602,6 +1706,15 @@ impl BranchLocalState {
                 };
                 summary.tables = summary.tables.saturating_add(1);
                 summary.rows = summary.rows.saturating_add(row_count);
+                if let Some(output_index) = materialized_table_output_index(
+                    table.descriptor().identity(),
+                    output_identity_prefix,
+                    layer_index,
+                ) {
+                    summary.next_output_index = summary
+                        .next_output_index
+                        .max(output_index.saturating_add(1));
+                }
             }
         }
         if summary.tables == 0 {
@@ -2300,6 +2413,11 @@ impl BranchLocalState {
                 reason: "inherited layers can only attach to an empty own branch state",
             });
         }
+        if layers.is_empty() {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "inherited layer attach must include at least one layer",
+            });
+        }
         if layers.len() > self.config.max_inherited_layers() {
             return Err(BranchRuntimeError::InvalidInheritedLayer {
                 reason: "inherited layer count exceeds branch runtime configuration",
@@ -2746,6 +2864,7 @@ struct MaterializedRows {
 struct ExistingMaterializationReplacementSummary {
     rows: u64,
     tables: usize,
+    next_output_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3026,6 +3145,19 @@ fn materialized_table_identity(
         "{output_identity_prefix}-layer-{layer_index}-table-{output_index}"
     ))
     .map_err(|source| BranchRuntimeError::TableRuntime { source })
+}
+
+fn materialized_table_output_index(
+    identity: &TableIdentity,
+    output_identity_prefix: &str,
+    layer_index: usize,
+) -> Option<usize> {
+    let prefix = format!("{output_identity_prefix}-layer-{layer_index}-table-");
+    let suffix = identity.as_str().strip_prefix(&prefix)?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    suffix.parse().ok()
 }
 
 fn insert_sorted_by_range(

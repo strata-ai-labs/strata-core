@@ -358,6 +358,13 @@ fn branch_inherited_layer_status_and_count_edges_are_enforced() {
         limited_child.attach_inherited_layers(vec![first, second]),
         Err(BranchRuntimeError::InvalidInheritedLayer { .. })
     ));
+
+    let mut empty_attach_child = BranchLocalState::empty(child);
+    assert!(matches!(
+        empty_attach_child.attach_inherited_layers(Vec::<BranchInheritedLayer>::new()),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ));
+    assert!(empty_attach_child.inherited_layers().is_empty());
 }
 
 #[test]
@@ -2005,6 +2012,130 @@ fn branch_materialization_retry_continues_after_partial_replacement_install() {
     );
 }
 
+fn materialization_index_gap_rows(source: BranchId) -> Vec<StorageRow> {
+    (0..4_097usize)
+        .map(|index| {
+            storage_row_with(
+                source,
+                format!("materialize-index-gap-{index:04}").into_bytes(),
+                u64::try_from(index + 1).expect("version fits"),
+                u64::try_from(index + 1).expect("timestamp fits"),
+                Timestamp::EPOCH,
+                format!("source-{index}").into_bytes(),
+            )
+        })
+        .collect()
+}
+
+fn preinstall_materialization_replacement(
+    child_state: &mut BranchLocalState,
+    child: BranchId,
+    identity: &str,
+    materialization_source: BranchMaterializationSource,
+    rows: Vec<StorageRow>,
+) {
+    let reader = immutable_reader(identity, rows);
+    let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+    child_state
+        .install_l0_table(
+            BranchOwnedTable::new_materialization_replacement(
+                child,
+                descriptor,
+                reader,
+                materialization_source,
+            )
+            .expect("materialization replacement"),
+        )
+        .expect("preinstall replacement");
+}
+
+#[test]
+fn branch_materialization_retry_skips_over_noncontiguous_replacement_indices() {
+    let source = branch_id(117);
+    let child = branch_id(118);
+    let source_rows = materialization_index_gap_rows(source);
+    let fork_version = CommitVersion::new(u64::try_from(source_rows.len()).expect("fork fits"));
+    let layer = branch_inherited_layer(
+        source,
+        fork_version,
+        InheritedLayerStatus::Active,
+        vec![vec![
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "materialize-index-gap-source-a",
+                source_rows[..4_096].to_vec(),
+            ),
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "materialize-index-gap-source-b",
+                source_rows[4_096..].to_vec(),
+            ),
+        ]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach gapped retry layer");
+    let materialization_source = BranchMaterializationSource::new(source, fork_version);
+    let first_rewritten =
+        rewrite_row_branch(&source_rows[0], source, child).expect("rewrite first row");
+    preinstall_materialization_replacement(
+        &mut child_state,
+        child,
+        "materialize-gap-compacted",
+        materialization_source,
+        vec![first_rewritten],
+    );
+
+    let second_rewritten =
+        rewrite_row_branch(&source_rows[1], source, child).expect("rewrite second row");
+    preinstall_materialization_replacement(
+        &mut child_state,
+        child,
+        "materialize-gap-layer-0-table-2",
+        materialization_source,
+        vec![second_rewritten],
+    );
+
+    let outcome = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "materialize-gap")
+                .expect("gapped request"),
+        )
+        .expect("gapped retry materialization");
+
+    assert_eq!(
+        outcome.recovery(),
+        BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
+    );
+    assert_eq!(
+        outcome.rows_materialized(),
+        u64::try_from(source_rows.len()).expect("rows fit"),
+    );
+    assert_eq!(outcome.tables_created(), 1);
+    assert_eq!(outcome.skipped_exact_duplicate_rows(), 2);
+    assert_eq!(outcome.replacement_owned_table_count(), 3);
+    assert_eq!(child_state.inherited_layer_count(), 0);
+
+    let last_row = rewrite_row_branch(source_rows.last().expect("last source row"), source, child)
+        .expect("rewrite last row");
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("gapped retry view")
+            .latest(last_row.physical_key())
+            .expect("gapped retry latest")
+            .as_ref(),
+        &last_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 2,
+        },
+    );
+}
+
 #[test]
 fn branch_materialization_stable_source_retry_is_idempotent_after_layer_removal() {
     let source = branch_id(115);
@@ -2206,9 +2337,15 @@ fn branch_materialization_intent_marks_source_reachability_before_replacement() 
         .attach_inherited_layers(vec![layer])
         .expect("attach active inherited layer");
 
-    let snapshot = child_state
+    let intent = child_state
         .mark_inherited_layer_materializing(0)
         .expect("mark materializing");
+    let handle = intent.handle();
+    assert_eq!(handle.child_branch_id(), child);
+    assert_eq!(handle.source_branch_id(), source);
+    assert_eq!(handle.fork_version(), CommitVersion::new(5));
+    assert_eq!(handle.layer_index(), 0);
+    let snapshot = intent.reachability_snapshot();
     assert_eq!(
         child_state.inherited_layers()[0].status(),
         InheritedLayerStatus::Materializing,
@@ -2228,7 +2365,18 @@ fn branch_materialization_intent_marks_source_reachability_before_replacement() 
     let retry = child_state
         .mark_inherited_layer_materializing(0)
         .expect("materializing retry");
-    assert_eq!(retry, snapshot);
+    assert_eq!(retry, intent);
+    let request = BranchMaterializationRequest::from_handle(handle, "materialization-intent")
+        .expect("request from handle");
+    assert_eq!(request.child_branch_id(), child);
+    assert_eq!(request.layer_index(), 0);
+    assert_eq!(
+        request.materialization_source(),
+        Some(BranchMaterializationSource::new(
+            source,
+            CommitVersion::new(5)
+        )),
+    );
     assert!(matches!(
         child_state.mark_inherited_layer_materializing(1),
         Err(BranchRuntimeError::InvalidInheritedLayer { .. })
