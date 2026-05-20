@@ -1496,10 +1496,11 @@ impl BranchLocalState {
         let mut summary = ExistingMaterializationReplacementSummary::default();
         for table in self.owned_levels.iter().flatten() {
             if table.materialization_source() == Some(source) {
+                let Ok(row_count) = u64::try_from(table.rows().len()) else {
+                    return None;
+                };
                 summary.tables = summary.tables.saturating_add(1);
-                summary.rows = summary
-                    .rows
-                    .saturating_add(u64::try_from(table.rows().len()).ok()?);
+                summary.rows = summary.rows.saturating_add(row_count);
             }
         }
         if summary.tables == 0 {

@@ -4,7 +4,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "branch runtime scaffolding is consumed by later M4 branch slices"
+        reason = "branch runtime scaffolding is consumed by later branch-layer work"
     )
 )]
 

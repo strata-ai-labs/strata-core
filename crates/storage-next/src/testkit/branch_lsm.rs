@@ -1236,30 +1236,30 @@ pub fn check_branch_lsm_scaffold_contract(
 /// Runs the branch-read-specific fuzz contract over generated branch states.
 pub fn check_branch_lsm_reads_contract(script: &[u8]) -> Result<(), TestkitError> {
     check_branch_lsm_reference_model_contract(script)?;
-    let _ = check_row_chains_and_fork_edges(script)?;
-    let _ = check_branch_read_view(script)?;
-    let _ = check_branch_timestamp_visibility(script)?;
-    let _ = check_branch_owned_immutable(script)?;
+    check_row_chains_and_fork_edges(script)?;
+    check_branch_read_view(script)?;
+    check_branch_timestamp_visibility(script)?;
+    check_branch_owned_immutable(script)?;
     Ok(())
 }
 
 /// Runs the branch-inheritance-specific fuzz contract over generated forks.
 pub fn check_branch_lsm_inheritance_contract(script: &[u8]) -> Result<(), TestkitError> {
     check_branch_lsm_fault_window_contract(script)?;
-    let _ = check_branch_inheritance(script)?;
-    let _ = check_branch_timestamp_visibility(script)?;
-    let _ = check_branch_materialization(script)?;
-    let _ = check_branch_reachability(script)?;
+    check_branch_inheritance(script)?;
+    check_branch_timestamp_visibility(script)?;
+    check_branch_materialization(script)?;
+    check_branch_reachability(script)?;
     Ok(())
 }
 
 /// Runs the branch-install-specific fuzz contract over generated install plans.
 pub fn check_branch_lsm_install_contract(script: &[u8]) -> Result<(), TestkitError> {
     check_branch_lsm_fault_window_contract(script)?;
-    let _ = check_branch_owned_immutable(script)?;
-    let _ = check_branch_compaction(script)?;
-    let _ = check_branch_snapshot_install(script)?;
-    let _ = check_branch_reachability(script)?;
+    check_branch_owned_immutable(script)?;
+    check_branch_compaction(script)?;
+    check_branch_snapshot_install(script)?;
+    check_branch_reachability(script)?;
     Ok(())
 }
 
@@ -1289,9 +1289,9 @@ pub fn check_branch_lsm_reference_model_contract(script: &[u8]) -> Result<(), Te
                 append_model_row(&mut state, &mut model, row)?;
                 next_version = next_version.saturating_add(1);
             }
-            2 => {
-                let _ = state.rotate_active();
-            }
+            2 => match state.rotate_active() {
+                BranchRotationOutcome::Rotated { .. } | BranchRotationOutcome::Skipped { .. } => {}
+            },
             3 => {
                 let first = model_put_row(branch, opcode, next_version, step)?;
                 let second = model_put_row(branch, opcode.wrapping_add(1), next_version + 1, step)?;
