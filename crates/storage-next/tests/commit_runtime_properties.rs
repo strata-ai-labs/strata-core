@@ -51,6 +51,16 @@ fn commit_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.timestamp_source_failure_cases() == 0
                 || outcome.read_only_no_allocation_cases() == 0
                 || outcome.no_transaction_id_check_cases() == 0
+                || outcome.read_only_outcome_cases() == 0
+                || outcome.read_only_disabled_rejection_cases() == 0
+                || outcome.visible_tracker_initialization_cases() == 0
+                || outcome.visible_tracker_monotonic_publish_cases() == 0
+                || outcome.visible_tracker_regression_rejection_cases() == 0
+                || outcome.outcome_invalid_visibility_fact_cases() == 0
+                || outcome.outcome_constructor_rejection_cases() == 0
+                || outcome.mutation_count_fact_cases() == 0
+                || outcome.cross_branch_read_only_fact_cases() == 0
+                || outcome.read_only_outcome_no_allocation_cases() == 0
             {
                 return Err(TestCaseError::fail(
                     "commit runtime scaffold contract did not exercise all categories",

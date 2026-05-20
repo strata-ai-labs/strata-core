@@ -14,6 +14,7 @@ use std::fmt;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
+use super::commit_runtime_outcome::check_commit_runtime_outcome_contract;
 use super::TestkitError;
 
 /// Summary of one generated commit-runtime scaffold contract check.
@@ -47,6 +48,16 @@ pub struct CommitRuntimeScaffoldOutcome {
     timestamp_source_failures: usize,
     read_only_no_allocations: usize,
     no_transaction_id_checks: usize,
+    read_only_outcomes: usize,
+    read_only_disabled_rejections: usize,
+    visible_tracker_initializations: usize,
+    visible_tracker_monotonic_publishes: usize,
+    visible_tracker_regression_rejections: usize,
+    outcome_invalid_visibility_facts: usize,
+    outcome_constructor_rejections: usize,
+    mutation_count_facts: usize,
+    cross_branch_read_only_facts: usize,
+    read_only_outcome_no_allocations: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -189,6 +200,56 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn no_transaction_id_check_cases(self) -> usize {
         self.no_transaction_id_checks
     }
+
+    /// Number of read-only outcome success cases exercised.
+    pub const fn read_only_outcome_cases(self) -> usize {
+        self.read_only_outcomes
+    }
+
+    /// Number of disabled read-only rejection cases exercised.
+    pub const fn read_only_disabled_rejection_cases(self) -> usize {
+        self.read_only_disabled_rejections
+    }
+
+    /// Number of visible-version tracker initialization cases exercised.
+    pub const fn visible_tracker_initialization_cases(self) -> usize {
+        self.visible_tracker_initializations
+    }
+
+    /// Number of visible-version monotonic publish cases exercised.
+    pub const fn visible_tracker_monotonic_publish_cases(self) -> usize {
+        self.visible_tracker_monotonic_publishes
+    }
+
+    /// Number of visible-version regression rejection cases exercised.
+    pub const fn visible_tracker_regression_rejection_cases(self) -> usize {
+        self.visible_tracker_regression_rejections
+    }
+
+    /// Number of outcome invalid visibility fact cases exercised.
+    pub const fn outcome_invalid_visibility_fact_cases(self) -> usize {
+        self.outcome_invalid_visibility_facts
+    }
+
+    /// Number of outcome constructor rejection cases exercised.
+    pub const fn outcome_constructor_rejection_cases(self) -> usize {
+        self.outcome_constructor_rejections
+    }
+
+    /// Number of mutation count fact cases exercised.
+    pub const fn mutation_count_fact_cases(self) -> usize {
+        self.mutation_count_facts
+    }
+
+    /// Number of cross-branch read-only fact cases exercised.
+    pub const fn cross_branch_read_only_fact_cases(self) -> usize {
+        self.cross_branch_read_only_facts
+    }
+
+    /// Number of read-only outcome no-allocation cases exercised.
+    pub const fn read_only_outcome_no_allocation_cases(self) -> usize {
+        self.read_only_outcome_no_allocations
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -224,6 +285,16 @@ pub fn check_commit_runtime_scaffold_contract(
         timestamp_source_failures: 0,
         read_only_no_allocations: 0,
         no_transaction_id_checks: 0,
+        read_only_outcomes: 0,
+        read_only_disabled_rejections: 0,
+        visible_tracker_initializations: 0,
+        visible_tracker_monotonic_publishes: 0,
+        visible_tracker_regression_rejections: 0,
+        outcome_invalid_visibility_facts: 0,
+        outcome_constructor_rejections: 0,
+        mutation_count_facts: 0,
+        cross_branch_read_only_facts: 0,
+        read_only_outcome_no_allocations: 0,
     };
 
     check_valid_config(script)?;
@@ -271,6 +342,20 @@ pub fn check_commit_runtime_scaffold_contract(
     outcome.timestamp_source_failures += allocator_outcome.timestamp_source_failures;
     outcome.read_only_no_allocations += allocator_outcome.read_only_no_allocations;
     outcome.no_transaction_id_checks += allocator_outcome.no_transaction_id_checks;
+
+    let outcome_contract = check_commit_runtime_outcome_contract(script)?;
+    outcome.read_only_outcomes += outcome_contract.read_only_outcomes;
+    outcome.read_only_disabled_rejections += outcome_contract.read_only_disabled_rejections;
+    outcome.visible_tracker_initializations += outcome_contract.visible_tracker_initializations;
+    outcome.visible_tracker_monotonic_publishes +=
+        outcome_contract.visible_tracker_monotonic_publishes;
+    outcome.visible_tracker_regression_rejections +=
+        outcome_contract.visible_tracker_regression_rejections;
+    outcome.outcome_invalid_visibility_facts += outcome_contract.invalid_visibility_facts;
+    outcome.outcome_constructor_rejections += outcome_contract.outcome_constructor_rejections;
+    outcome.mutation_count_facts += outcome_contract.mutation_count_facts;
+    outcome.cross_branch_read_only_facts += outcome_contract.cross_branch_read_only_facts;
+    outcome.read_only_outcome_no_allocations += outcome_contract.read_only_no_allocation_proofs;
 
     Ok(outcome)
 }

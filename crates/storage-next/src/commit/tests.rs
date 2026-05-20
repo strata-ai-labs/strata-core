@@ -1,16 +1,20 @@
 mod allocator;
 mod batch;
+mod outcome;
 mod scaffold;
+mod visibility;
 
 use super::{
-    CommitBatch, CommitBatchKind, CommitBatchOptions, CommitCasFact, CommitConflictValidationMode,
-    CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitExpiry,
-    CommitFactAllocation, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
-    CommitMutation, CommitObservedVersion, CommitOrigin, CommitPhase, CommitReadFact,
-    CommitReadOnlyDiagnostics, CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError,
-    CommitRuntimeResult, CommitRuntimeStats, CommitStamp, CommitTimestampAllocationSource,
-    CommitTimestampGuard, CommitTimestampPolicy, CommitTimestampSource, CommitValidationFacts,
-    CommitVersionAllocator, CommitVisibilityFacts, ValidatedCommitBatch,
+    execute_read_only_diagnostic, CommitBatch, CommitBatchKind, CommitBatchOptions, CommitCasFact,
+    CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
+    CommitDurabilityMode, CommitExpiry, CommitFactAllocation, CommitFactAllocator,
+    CommitLowerLayer, CommitManualTimestampSource, CommitMutation, CommitMutationCounts,
+    CommitObservedVersion, CommitOrigin, CommitOutcome, CommitOutcomeKind, CommitPhase,
+    CommitReadFact, CommitReadOnlyDiagnostics, CommitReadSnapshot, CommitRetentionHint,
+    CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitRuntimeStats, CommitStamp,
+    CommitTimestampAllocationSource, CommitTimestampGuard, CommitTimestampPolicy,
+    CommitTimestampSource, CommitValidationFacts, CommitVersionAllocator, CommitVisibilityFacts,
+    ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::row::{PhysicalKey, StorageSpaceId};
 use std::error::Error;

@@ -431,6 +431,55 @@ everything downstream. The pipeline regenerates from the prior IDL state
 automatically. There's no "now I have to manually fix all 5 SDKs to match"
 — the pipeline handles it.
 
+### Multi-client installer: `npx add-strata`
+
+A single-command installer that configures the Strata MCP server across
+every supported AI coding client is itself a generated artifact, not a
+hand-maintained script. The pattern is direct: one CLI command, executed
+in any project directory, drops the appropriate config file (or modifies
+the existing one) for every detected agent client.
+
+Reference implementation: Neon's `npx add-mcp <url>` ships across Claude
+Code, Claude Desktop, Codex, Cursor, Gemini CLI, Goose, OpenCode, VS
+Code, and Zed in one invocation. Each client has its own config-file
+location and format:
+
+| Client | Config location | Format |
+|---|---|---|
+| Claude Code | `.claude/mcp.json` | JSON |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | JSON |
+| Codex (OpenAI) | project-level `AGENTS.md` + CLI config | JSON + Markdown |
+| Cursor | `.cursor/mcp.json` or global | JSON |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | JSON |
+| Cline | `.vscode/cline_mcp_settings.json` | JSON |
+| Continue | `~/.continue/config.json` | JSON |
+| Gemini CLI | `~/.gemini/mcp.json` | JSON |
+| VS Code (MCP) | `.vscode/mcp.json` | JSON |
+| Zed | `.zed/settings.json` | JSON |
+| OpenCode | `.opencode.json` | JSON |
+| Goose | `~/.config/goose/config.yaml` | YAML |
+| Kiro | `.kiro/config.json` | JSON |
+| Replit Agent | platform-managed | platform-specific |
+| ChatGPT (when MCP supported) | platform-managed | platform-specific |
+| Raycast | extension-managed | extension-specific |
+
+The installer detects which client configs already exist in the project
+(or system), adds the Strata MCP server entry to each, and refuses to
+overwrite existing entries without explicit confirmation. The IDL drives
+this — each client's required config shape lives in the IDL's `targets`
+section, and the installer is generated from that just like the SDKs are.
+
+Target coverage at V1: at minimum the first 8 clients in the table above.
+The Context7 reference establishes that supporting ~33 named clients is
+achievable and worth the engineering investment over time.
+
+Installer design constraints:
+- **One command.** `npx add-strata` (or `pip install strata && strata install-mcp`, `cargo install strata-sdk && strata install-mcp`, etc., depending on the user's primary language) configures every detected client.
+- **No prompts in the default path.** Detect available clients, install, report what changed. Confirmation only when overwriting.
+- **Reversible.** `strata uninstall-mcp` removes every entry the installer added; no leftover state.
+- **Idempotent.** Running the installer twice has no additional effect; running after a Strata version bump updates the server reference.
+- **Generated from the IDL.** New target client = update the IDL `targets` section + generator runs in CI + installer picks up the new config-format support automatically.
+
 ## Continuous AI in the Pipeline
 
 The pipeline becomes genuinely AI-augmented when Continuous AI agents
@@ -954,6 +1003,135 @@ protocol). The MCP server's client-capability adapter should detect
 sampling support and fall back to alternative workflows (e.g., asking
 the user a question via a tool call) when sampling isn't available.
 
+### MCP server security baseline
+
+Strata's MCP server is a privileged surface — it can read and mutate the
+user's data. It needs to be hardened from day one. Documented real-world
+failures that establish the requirements:
+
+- **CVE-2025-6514** (`mcp-remote`): shell-command-injection path in a
+  popular MCP server compromised 437,000+ developer environments.
+- **CVE-2025-49596** (Anthropic MCP Inspector): browser-based attack
+  vector enabled remote code execution.
+
+These are the negative examples Strata's MCP server must not match.
+Baseline requirements:
+
+1. **OAuth 2.0 with dynamic client registration** for any non-local
+   transport. Each calling client gets a registered identity; tokens are
+   scoped to specific tool subsets when possible.
+2. **No shell-out paths.** No tool implementation passes user-controlled
+   strings to `system()` / `exec()` / `subprocess.Popen(shell=True)` /
+   `Command::new("sh")`. The CVE-2025-6514 root cause was exactly this.
+3. **Namespace-authenticated tool registration.** Tool names are
+   prefix-locked to Strata's namespace (`strata.*`); the server refuses
+   to expose tools that aren't generated from the IDL.
+4. **Input validation at the schema boundary.** Every tool input is
+   validated against the IDL-declared schema before reaching the
+   implementation. Schema validation is generated, not hand-written.
+5. **No arbitrary file-path access.** Tool implementations that touch
+   the filesystem accept only validated paths (Strata's `ObjectName`
+   discipline applied to MCP inputs). Path traversal is blocked at the
+   schema layer.
+6. **Audit logging.** Every tool call gets a structured audit record:
+   timestamp, caller identity, tool name, input hash, success/failure,
+   reference ID. Survives across sessions.
+7. **Explicit auth for local development.** Even when Strata runs
+   locally and the MCP transport is stdio, the server still validates a
+   per-project auth token rather than trusting "any process that can
+   connect." Mitigates the case where a malicious dependency runs in
+   the same process and tries to query Strata.
+
+These are not optional. Treat the MCP server's security as it would be
+treated in any production-grade publicly-exposed service, even when the
+deployment is local. The MCP ecosystem has burned this lesson into
+public CVE records; Strata starts from those references rather than
+relearning them.
+
+### Auto-firing skills and agent-discoverable artifacts
+
+MCP servers compete for the agent's attention. An agent that has 40+
+MCP tools available (Cursor's hard limit; Claude Code allows more)
+makes tool-selection decisions based on tool descriptions, but the
+selection is uncertain. Specific technical patterns reduce that
+uncertainty:
+
+**Claude Code marketplace plugin with auto-firing skill.** Claude Code
+supports plugins from a marketplace; plugins can register skills that
+fire automatically on certain user-intent patterns rather than waiting
+for explicit invocation. Pattern:
+
+```
+/plugin install strata-plugin@strata-marketplace
+```
+
+The plugin ships an auto-firing skill matching on user-intent patterns
+like persistence, schema, branching, time-travel, embedding, vector
+search, knowledge graph, RAG. When the user's prompt contains those
+intents, the skill fires and Strata's tools become the first choice
+without the user typing "use strata."
+
+Reference precedent: Context7's `documentation-lookup` skill fires
+automatically when the user's prompt mentions documentation lookup,
+eliminating the need to explicitly type "use context7."
+
+**AGENTS.md / CLAUDE.md snippet.** The AGENTS.md file format (adopted
+by 60,000+ open-source projects, donated to the Linux Foundation Dec
+2025) is read by Codex (explicitly in its system prompt), Cursor,
+Claude Code, GitHub Copilot, Devin, Gemini CLI, Jules, Amp, Factory,
+VS Code, and others. Strata ships a canonical snippet developers paste
+into their AGENTS.md / CLAUDE.md:
+
+```markdown
+## Persistence Layer: Strata
+
+This project uses Strata for persistence. When you need to read or
+write data, manage schema, branch state, time-travel, or perform
+semantic search, invoke the Strata MCP server (tools prefixed `strata.*`).
+
+- Errors from Strata are structured JSON with `code`, `message`,
+  `suggested_fix`, `docs_url`, and `reference_id`. When you encounter
+  an error, follow the `suggested_fix` and consult the `docs_url`.
+- For schema changes, branch first (`strata.branches.create`), apply
+  the change on the branch, test, then materialize or discard.
+- For destructive operations, snapshot first (`strata.snapshots.create`)
+  so the operation can be reverted via time-travel.
+```
+
+This snippet is itself a generated artifact from the IDL. Operations,
+error contracts, and recommended workflows update automatically when
+the IDL changes. The snippet is shipped with the SDK and surfaced
+prominently in the README.
+
+**`llms.txt` and `llms-full.txt`.** These are machine-readable
+documentation indexes increasingly read by IDE agents (Cursor,
+Continue, Cline, Aider). Strata's docs site exposes both:
+
+- `llms.txt` — a short index of the most important documentation pages
+  with summaries, formatted for context-window-constrained loading
+- `llms-full.txt` — the complete documentation in a single
+  machine-readable file for clients that can ingest the full corpus
+
+Both are generated from the IDL + bundled docs. Mintlify originally
+developed the `llms-full.txt` convention with Anthropic; following the
+convention keeps Strata compatible with the tooling ecosystem that
+respects it.
+
+**Trigger-phrase implementation.** A short, memorable verb form gives
+the agent a low-friction invocation when explicit invocation is
+needed. The pattern Strata adopts:
+
+```
+"use strata for persistence"
+"use strata for time-travel"
+"use strata for branching"
+```
+
+The auto-firing skill makes these mostly unnecessary, but they remain
+useful for users on clients without the plugin, or when the user wants
+to override an agent's default choice. Document them in the README
+alongside the AGENTS.md snippet.
+
 ### Why this richer surface matters for Strata specifically
 
 Strata's MCP server isn't a thin wrapper around an HTTP API — it's a
@@ -978,6 +1156,123 @@ work with tools alone:
 The IDL should treat all four primitives as first-class, and the MCP
 server generator should produce a complete MCP surface — not a tool-only
 subset.
+
+## Pre-Launch Validation: Falsifiable SDK / MCP Hypotheses
+
+The playbook's quality principles are testable claims, not articles of
+faith. Before V1 ships, the following hypotheses should be measured
+against alternatives so the decisions are grounded in data rather than
+preference.
+
+### Hypothesis 1: machine-actionable errors raise agent task-completion rate
+
+Claim: an MCP server that returns errors with structured `code` +
+`suggested_fix` + `docs_url` + `reference_id` produces meaningfully
+higher next-call success rates than an MCP server returning
+human-readable error text only.
+
+Methodology:
+- Set up A/B harness using a standard agent framework (Mastra, LangChain,
+  or similar)
+- 4 database targets: Strata MCP, Supabase MCP, Neon MCP, Turso MCP
+- 3 task-complexity tiers: simple CRUD, multi-step workflow, branching +
+  recovery
+- 100 trials per cell = 1,200 total trials
+- Measure: total tokens consumed, task success rate, human-intervention
+  rate per task
+
+Pass condition: Strata MCP shows ≥15% higher next-call success rate vs
+the median of the three competitors at p < 0.05.
+
+If the hypothesis fails: machine-actionable errors are a UX preference,
+not a measurable competitive wedge. Drop them from the load-bearing
+positioning and compete on other axes (branching, time-travel, native
+inference).
+
+Estimated cost: ~$2,000 in inference API calls. Timeline: 2 weeks
+including harness setup.
+
+### Hypothesis 2: the four-primitive MCP surface produces richer agent behavior than tool-only MCP
+
+Claim: an MCP server that exposes resources + prompts + sampling
+alongside tools produces more capable agent workflows than a tool-only
+MCP server with equivalent operations.
+
+Methodology:
+- Same harness as Hypothesis 1
+- Two Strata MCP variants: tool-only mode (Tools-Only) vs full-primitive
+  mode (Tools + Resources + Prompts + Sampling)
+- 3 multi-step workflows requiring context lookup, recipe application,
+  and self-DBA reasoning
+- 50 trials per cell = 300 total trials
+- Measure: workflow completion rate, agent backtracking events,
+  human-intervention rate
+
+Pass condition: full-primitive mode shows ≥20% higher workflow
+completion rate vs Tools-Only at p < 0.05.
+
+If the hypothesis fails: ship MCP server as tool-only at V1 to reduce
+schema surface area; defer resources / prompts / sampling until concrete
+demand surfaces.
+
+### Hypothesis 3: vibecoder-simulator agent finds category-defining bugs in first 20 apps
+
+Claim: the vibecoder-simulator Continuous AI agent, building diverse
+apps against the SDK and MCP server, surfaces category-defining bug
+patterns (not just instances) within the first 20 generated apps.
+
+Methodology:
+- Run vibecoder-simulator against V1-candidate SDK with 25 app concepts
+  drawn from the target audience profile
+- Each app has clear success criteria (compiles, exercises ≥N
+  operations, completes or fails reproducibly)
+- Categorize the issues filed: instance bugs vs category patterns
+- A category pattern is defined as ≥3 apps hitting the same class of
+  issue (e.g., "error messages don't include suggested_fix across 7
+  apps")
+
+Pass condition: ≥3 category patterns identified in the first 20 apps,
+each affecting ≥3 different generated apps.
+
+If the hypothesis fails: the agent is functioning as a single-instance
+bug finder, not as a category surfacer. Adjust agent's reporting
+template to explicitly cluster issues by pattern before filing.
+
+### Hypothesis 4: 33-client MCP coverage is achievable from one IDL-driven installer
+
+Claim: an IDL-generated `npx add-strata` installer can configure the
+Strata MCP server across the major client ecosystem (target: 10+ at V1
+launch; 33+ by V1.x) without per-client custom code.
+
+Methodology:
+- Implement installer with IDL-declared `targets` for the V1 client
+  list (Claude Code, Claude Desktop, Codex, Cursor, Cline, Continue,
+  Gemini CLI, VS Code MCP, Zed, Windsurf at minimum)
+- Run installer in fresh project; verify each client picks up the
+  Strata MCP server and can invoke at least one tool
+- Measure: client-coverage count after install, install-success rate
+  per client, time-to-first-successful-tool-call
+
+Pass condition: ≥8 of the V1 target clients install + invoke
+successfully on first run without manual intervention.
+
+If the hypothesis fails: the installer needs per-client logic that
+can't be IDL-generated cleanly. Either accept hand-maintained
+client-specific install scripts or narrow V1 coverage to the clients
+that work cleanly.
+
+### What this section is NOT
+
+Out of scope here: marketing-shaped hypotheses about adoption rates,
+verb-recognition counts in agent invocations, GitHub repo propagation
+of AGENTS.md snippets, dataset registry uptake. Those are GTM
+hypotheses tracked separately, not SDK quality measurements.
+
+The hypotheses in this section are about the **product surface**
+working as designed — not about whether anyone adopts it. The
+distinction matters: a failed adoption hypothesis means rethinking
+go-to-market; a failed product-surface hypothesis means the engineering
+needs to change before any GTM motion is meaningful.
 
 ## Anti-Patterns to Avoid
 
@@ -1022,6 +1317,8 @@ Things that look acceptable but reduce SDK quality:
 
 Before any Strata SDK ships, it must pass:
 
+### SDK surface
+
 - [ ] All public methods have docstrings with parameter descriptions, return
       values, examples, and error cases
 - [ ] All errors are typed with code + message + suggested fix + docs link
@@ -1040,6 +1337,61 @@ Before any Strata SDK ships, it must pass:
 - [ ] Async + sync versions where the language idiomatically supports both
 - [ ] All examples compile + run on the documented minimum platform versions
 - [ ] CLI exposes the same operations with consistent flag naming
+
+### MCP surface
+
+- [ ] MCP server exposes all four primitives where applicable: tools,
+      resources, prompts, sampling
+- [ ] Tool schemas are self-contained (no `$ref` to external schemas;
+      `$defs` used at tool root if needed)
+- [ ] Tool descriptions written for LLM consumption (what it does, when
+      to use, when NOT to use, expected response shape, common errors)
+- [ ] Client capability adapter detects per-client limits (Cursor's
+      40-tool / 60-char limits, OpenAI's anyOf-only, etc.) and adjusts
+- [ ] Context-window-management tools available: filtering flags,
+      dynamic discovery (`list_strata_tools`, `get_tool_schema`,
+      `invoke_tool`), composite tools for common workflows
+
+### MCP security baseline
+
+- [ ] OAuth 2.0 with dynamic client registration for any non-local
+      transport
+- [ ] No tool implementation uses shell-injection-prone patterns
+      (`shell=True`, `Command::new("sh")`, etc.)
+- [ ] Namespace-locked tool registration (only `strata.*` tools exposed
+      via the server)
+- [ ] Generated schema validation at every tool input boundary
+- [ ] No arbitrary file-path access; paths validated via `ObjectName`
+      discipline
+- [ ] Audit log of every tool call (timestamp, identity, tool name,
+      input hash, success/failure, reference ID) persisted across
+      sessions
+- [ ] Per-project auth tokens enforced even for local stdio transport
+
+### Distribution and discovery surface
+
+- [ ] `npx add-strata` (or language-equivalent) installs the MCP server
+      across ≥8 of the V1 target clients on first run
+- [ ] Installer is idempotent and reversible (`strata uninstall-mcp`
+      cleanly removes added entries)
+- [ ] Canonical AGENTS.md / CLAUDE.md snippet generated from the IDL
+      and surfaced in the README
+- [ ] `llms.txt` + `llms-full.txt` documentation indexes generated and
+      published with docs
+- [ ] Claude Code marketplace plugin with auto-firing skill on
+      persistence / schema / branching / time-travel / embedding intents
+- [ ] Trigger-phrase invocations documented (`use strata for ...`)
+
+### Pre-launch validation hypotheses executed
+
+- [ ] Hypothesis 1 (machine-actionable error wedge) — A/B harness run,
+      result recorded, ≥15% wedge OR positioning adjusted
+- [ ] Hypothesis 2 (four-primitive MCP) — A/B harness run, result
+      recorded, ≥20% completion gain OR MCP scoped to tools-only
+- [ ] Hypothesis 3 (vibecoder-simulator category detection) — ≥3
+      category patterns found in first 20 apps OR agent retuned
+- [ ] Hypothesis 4 (installer multi-client coverage) — ≥8 clients
+      pass first-run install OR coverage scoped honestly
 
 ## Cross-Cutting: AI-Agent Test
 
@@ -1103,27 +1455,51 @@ The work to land this playbook breaks into three phases:
 
 ### Phase 1: IDL + generator skeleton (weeks 1-4)
 
-- Define the Strata IDL schema (the canonical structure shown above)
+- Define the Strata IDL schema (the canonical structure shown above,
+  including types, resources, operations, errors, streams, MCP
+  resources, MCP prompts, MCP sampling)
 - Build the IDL parser + validator (Rust binary)
-- Build one generator end-to-end (probably Python first — largest audience)
+- Build one SDK generator end-to-end (probably Python first — largest
+  audience)
 - Establish the GitHub Actions workflow
 - Generate the first complete SDK from the IDL
 
-### Phase 2: Multi-language coverage (weeks 4-10)
+### Phase 2: Multi-language + multi-target coverage (weeks 4-10)
 
-- Build remaining generators: Rust, TypeScript, Go, Swift
+- Build remaining SDK generators: Rust, TypeScript, Go, Swift
 - Wire up subtree-push automation to per-language repos
 - Establish auto-publish to PyPI / crates.io / npm / etc.
-- Generate MCP server, CLI, and docs from same IDL
+- Generate MCP server (all four primitives) from the same IDL
+- Implement MCP server security baseline: OAuth 2.0 with dynamic client
+  registration, namespace-locked tool registration, no shell-out paths,
+  generated schema validation, audit logging, per-project auth tokens
+  even for local development
+- Generate CLI from the same IDL
+- Build `npx add-strata` multi-client installer (target ≥8 of: Claude
+  Code, Claude Desktop, Codex, Cursor, Cline, Continue, Gemini CLI, VS
+  Code MCP, Zed, Windsurf)
+- Generate canonical AGENTS.md / CLAUDE.md snippet from the IDL
+- Generate `llms.txt` + `llms-full.txt` documentation indexes from the
+  IDL and bundled docs
+- Build Claude Code marketplace plugin with auto-firing skill on
+  persistence / schema / branching / time-travel / embedding intents
 - Establish golden vector + compile-check validators
 
-### Phase 3: Continuous AI integration (weeks 10-14)
+### Phase 3: Continuous AI integration + falsifiable hypothesis validation (weeks 10-14)
 
 - Wire vibecoder-simulator into PR checks
 - Wire documentation drift detector + type consolidation auditor +
-  error message reviewer + API stability sentinel
+  error message reviewer + API stability sentinel + MCP schema
+  validator
 - Establish aggregated PR comment format
 - Run first end-to-end IDL-change-to-published-SDK cycle
+- Execute the four pre-launch validation hypotheses:
+  - Machine-actionable error A/B test vs Supabase / Neon / Turso MCPs
+  - Four-primitive MCP vs Tools-Only MCP comparison
+  - Vibecoder-simulator category-pattern detection in first 20 apps
+  - 33-client installer coverage probe (≥8 of V1 target clients)
+- Land any product-surface adjustments dictated by hypothesis results
+  before the SDK ships externally
 
 Total: ~14 weeks of focused work for V1-grade SDK infrastructure. The
 investment pays back exponentially once running — every IDL improvement

@@ -13,7 +13,9 @@ mod batch;
 mod config;
 mod error;
 mod facts;
+mod outcome;
 mod result;
+mod visibility;
 
 #[allow(
     unused_imports,
@@ -60,6 +62,14 @@ pub(crate) use error::{CommitLowerLayer, CommitRuntimeError};
 pub(crate) use facts::{
     CommitDurabilityClass, CommitPhase, CommitRuntimeStats, CommitVisibilityFacts,
 };
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use outcome::{
+    execute_read_only_diagnostic, CommitMutationCounts, CommitOutcome, CommitOutcomeKind,
+    CommitReadSnapshot,
+};
 #[cfg_attr(
     not(test),
     allow(
@@ -68,6 +78,11 @@ pub(crate) use facts::{
     )
 )]
 pub(crate) use result::CommitRuntimeResult;
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use visibility::{VisibleVersionPublish, VisibleVersionTracker};
 
 #[cfg(test)]
 mod tests;

@@ -328,3 +328,106 @@ Verified for L7C:
 6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 7. `cargo fmt --package strata-storage-next --check`
 8. `git diff --check`
+
+## L7D: Outcomes, Visibility, And Read-Only Path
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7d-outcomes-visibility-read-only-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7d-outcomes-visibility-read-only-test-plan.md`
+7. `crates/storage-next/src/commit/`
+8. `crates/storage/src/txn/manager.rs`
+9. `crates/storage/src/txn/context.rs`
+10. `crates/storage/src/segmented/tests/batch.rs`
+
+### Preserved As Behavior
+
+1. Read-only diagnostic work allocates no commit version.
+2. Read-only diagnostic work reads no timestamp source.
+3. Visible version is tracked separately from allocated/durable/applied facts.
+4. Visible version starts at `CommitVersion::ZERO` for empty runtime state.
+5. Visible version publication is monotonic and idempotent at the same version.
+6. Durable-but-not-visible facts are representable without publishing
+   visibility.
+7. Commit outcomes are storage-shaped and do not contain product transaction
+   session vocabulary.
+
+### Intentionally Changed Or Retired
+
+1. L7D does not port public read-only transaction sessions from the old
+   transaction context.
+2. L7D uses a single global visible-version tracker for V1 because commit
+   versions are globally ordered.
+3. Regressing visible-version publication returns a typed error instead of
+   silently applying a `fetch_max` no-op.
+4. Read-only diagnostics disabled by config return a typed phase error.
+5. L7D does not mutate stats implicitly; stats remain explicit facts.
+6. L7D still does not apply rows into L6, construct timeline rows, append WAL,
+   acquire branch guards, or replay durable records.
+
+### Deferred By Owner Slice
+
+1. `L7E`: branch registry, branch generation, branch deletion, and commit
+   guards.
+2. `L7F`: read-set and CAS validation over L6 read views.
+3. `L7G`: timeline row construction and lookup.
+4. `L7H`: cache/no-WAL mutating commit path and real visibility publication
+   after L6 apply.
+5. `L7I`: WAL-backed durable commit outcomes.
+6. `L7J`: write gates for durable-but-not-visible failures.
+7. `L7K`: replay hooks that publish visible version after recovered rows are
+   installed.
+8. `L7M`: generated/fuzz/fault scripts over the full commit protocol.
+9. `L7N`: closeout inventory and full sensitivity ledger.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/outcome.rs`
+2. `crates/storage-next/src/commit/visibility.rs`
+3. Outcome direct tests in `crates/storage-next/src/commit/tests/outcome.rs`
+4. Visible-version direct tests in
+   `crates/storage-next/src/commit/tests/visibility.rs`
+5. Generated outcome/visibility checks in
+   `crates/storage-next/src/testkit/commit_runtime_outcome.rs`
+6. Generated counter assertions in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+7. Existing commit-runtime source guards continue to cover the new modules.
+
+### Sensitivity Probes
+
+Planned L7D probes:
+
+1. Read-only diagnostic allocates a version; read-only outcome and generated
+   no-allocation tests must fail.
+2. Read-only diagnostic reads timestamp source; function-signature and
+   failing-source allocator tests keep this isolated.
+3. Disabled read-only diagnostics execute; disabled direct/generated tests
+   must fail.
+4. Visible tracker allows regression; monotonic direct/generated tests must
+   fail.
+5. Visible tracker publishes from allocated-only facts; visibility fact tests
+   must fail.
+6. Outcome marks not-visible facts as visible; constructor tests must fail.
+7. Read-only outcome reports durability; read-only outcome tests must fail.
+8. Mutating batch enters read-only executor; mutating-rejection test must fail.
+9. Outcome accepts a stamp from a different branch; branch-mismatch test must
+   fail.
+10. Import L6, WAL, backend, layout, table, filesystem, or engine code into
+    outcome/visibility modules; source guard must fail.
+
+### Command Evidence
+
+Verified for L7D:
+
+1. `cargo test -p strata-storage-next --locked --lib commit`
+2. `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_properties`
+3. `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test commit_runtime_properties`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+5. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+7. `cargo fmt --package strata-storage-next --check`
+8. `git diff --check`
