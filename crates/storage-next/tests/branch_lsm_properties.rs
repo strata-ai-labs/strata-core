@@ -9,6 +9,14 @@ use std::fs;
 const REQUIRED_HARNESS_TOKENS: &[&str] = &[
     "branch_lsm_property_harness_runs_scaffold_contract",
     "check_branch_lsm_scaffold_contract",
+    "check_branch_lsm_reference_model_contract",
+    "check_branch_lsm_inheritance_model_contract",
+    "check_branch_lsm_install_model_contract",
+    "ModelBranchStore",
+    "ModelInheritedLayer",
+    "assert_model_store_read_surface",
+    "inheritance_model_cases",
+    "install_model_cases",
     "read_bound_cases",
     "descriptor_cases",
     "error_source_cases",
@@ -309,6 +317,7 @@ const REQUIRED_OUTCOME_COUNTERS: &[BranchLsmOutcomeCounter] = &[
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::inherited_chained_ancestry_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::invalid_inherited_layer_rejection_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::pinned_inherited_view_isolation_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::inheritance_model_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::materialization_attempt_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::successful_materialization_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::empty_materialization_cases,
@@ -389,6 +398,7 @@ const REQUIRED_OUTCOME_COUNTERS: &[BranchLsmOutcomeCounter] = &[
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_pinned_view_isolation_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_reachability_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::snapshot_source_boundary_guard_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::install_model_cases,
 ];
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]

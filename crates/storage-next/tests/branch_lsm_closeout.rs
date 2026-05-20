@@ -10,7 +10,7 @@ use std::path::Path;
 #[test]
 fn branch_lsm_closeout_generated_harness_exposes_every_counter() {
     let crate_root = common::crate_root();
-    let testkit = read_file(&crate_root.join("src/testkit/branch_lsm.rs"));
+    let testkit = read_branch_lsm_testkit_sources(&crate_root);
     let properties = read_file(&crate_root.join("tests/branch_lsm_properties.rs"));
 
     let counter_methods = branch_lsm_counter_methods(&testkit);
@@ -29,15 +29,24 @@ fn branch_lsm_closeout_generated_harness_exposes_every_counter() {
     }
 
     assert_contains_all(
-        "src/testkit/branch_lsm.rs",
+        "src/testkit/branch_lsm module",
         &testkit,
         &[
             "check_branch_lsm_reads_contract",
             "check_branch_lsm_inheritance_contract",
             "check_branch_lsm_install_contract",
             "check_branch_lsm_reference_model_contract",
+            "check_branch_lsm_inheritance_model_contract",
+            "check_branch_lsm_install_model_contract",
+            "check_model_backed_inheritance_script",
+            "check_model_backed_install_script",
             "check_branch_lsm_fault_window_contract",
             "ModelBranch",
+            "ModelBranchStore",
+            "ModelInheritedLayer",
+            "assert_model_store_read_surface",
+            "inheritance_model_cases",
+            "install_model_cases",
         ],
     );
 }
@@ -45,11 +54,11 @@ fn branch_lsm_closeout_generated_harness_exposes_every_counter() {
 #[test]
 fn branch_lsm_closeout_generated_harness_covers_required_category_groups() {
     let crate_root = common::crate_root();
-    let testkit = read_file(&crate_root.join("src/testkit/branch_lsm.rs"));
+    let testkit = read_branch_lsm_testkit_sources(&crate_root);
     let properties = read_file(&crate_root.join("tests/branch_lsm_properties.rs"));
 
     assert_contains_all(
-        "src/testkit/branch_lsm.rs",
+        "src/testkit/branch_lsm module",
         &testkit,
         &[
             "check_valid_config",
@@ -270,7 +279,7 @@ fn branch_lsm_closeout_fuzz_inventory_matches_branch_targets() {
             !target_text.contains("check_branch_lsm_scaffold_contract"),
             "{target} must exercise its dedicated branch-LSM contract"
         );
-        assert_nonempty_corpus(&crate_root, target);
+        assert_enriched_corpus(&crate_root, target);
     }
 }
 
@@ -285,6 +294,24 @@ fn read_branch_test_sources(crate_root: &Path) -> String {
         .unwrap_or_else(|error| panic!("read {}: {error}", test_dir.display()))
         .collect::<Result<Vec<_>, _>>()
         .unwrap_or_else(|error| panic!("read entries in {}: {error}", test_dir.display()));
+    entries.sort_by_key(std::fs::DirEntry::path);
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            text.push('\n');
+            text.push_str(&read_file(&path));
+        }
+    }
+    text
+}
+
+fn read_branch_lsm_testkit_sources(crate_root: &Path) -> String {
+    let mut text = read_file(&crate_root.join("src/testkit/branch_lsm.rs"));
+    let module_dir = crate_root.join("src/testkit/branch_lsm");
+    let mut entries = fs::read_dir(&module_dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", module_dir.display()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("read entries in {}: {error}", module_dir.display()));
     entries.sort_by_key(std::fs::DirEntry::path);
     for entry in entries {
         let path = entry.path();
@@ -347,29 +374,45 @@ fn branch_lsm_counter_methods(testkit: &str) -> Vec<String> {
     counters
 }
 
-fn assert_nonempty_corpus(crate_root: &Path, target: &str) {
+fn assert_enriched_corpus(crate_root: &Path, target: &str) {
     let corpus = crate_root.join(format!("fuzz/corpus/{target}"));
     assert!(
         corpus.is_dir(),
         "missing checked-in fuzz corpus directory {}",
         corpus.display()
     );
-    let has_seed = fs::read_dir(&corpus)
-        .unwrap_or_else(|error| panic!("read {}: {error}", corpus.display()))
-        .any(|entry| {
-            let Ok(entry) = entry else {
-                return false;
-            };
-            let path = entry.path();
-            path.is_file()
-                && path
-                    .metadata()
-                    .map(|metadata| metadata.len() != 0)
-                    .unwrap_or(false)
-        });
+    let mut seed_count = 0usize;
+    let mut named_script_count = 0usize;
+    for entry in
+        fs::read_dir(&corpus).unwrap_or_else(|error| panic!("read {}: {error}", corpus.display()))
+    {
+        let entry =
+            entry.unwrap_or_else(|error| panic!("read {} entry: {error}", corpus.display()));
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .metadata()
+                .map(|metadata| metadata.len() != 0)
+                .unwrap_or(false)
+        {
+            seed_count += 1;
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains("script"))
+            {
+                named_script_count += 1;
+            }
+        }
+    }
     assert!(
-        has_seed,
-        "fuzz corpus directory {} should contain at least one non-empty seed",
-        corpus.display()
+        seed_count >= 2,
+        "fuzz corpus directory {} should contain at least two non-empty seeds",
+        corpus.display(),
+    );
+    assert!(
+        named_script_count != 0,
+        "fuzz corpus directory {} should contain a named scenario script seed",
+        corpus.display(),
     );
 }

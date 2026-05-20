@@ -1792,3 +1792,128 @@ deferred, and what old code became eligible for retirement.
   manifests and execute lifecycle cleanup; L9/engine can expose product branch
   workflows and StrataHub integration without adding those responsibilities to
   L6.
+
+## L6M: Assurance Depth
+
+### Scope
+
+L6M closes the assurance-depth gap left after the first L6 closeout. It does
+not add a new branch-runtime feature. It strengthens the generated and fuzz
+routes so inheritance, materialization, snapshot install, and compaction install
+are checked against an independent model rather than only fixed fixtures or
+production-derived before/after values.
+
+### Implemented
+
+- Added an inheritance-aware `ModelBranchStore` in
+  the split `crates/storage-next/src/testkit/branch_lsm` testkit module.
+- Split `crates/storage-next/src/testkit/branch_lsm.rs` into a small module
+  front door plus `crates/storage-next/src/testkit/branch_lsm/scaffold.rs` so
+  the original path is no longer a multi-thousand-line implementation file.
+- Added `ModelInheritedLayer` with source branch, fork version, and source-row
+  facts so generated checks can model inherited visibility independently.
+- Added `assert_model_store_read_surface`, which compares production latest,
+  versioned, timestamp, history, prefix, and range reads against the model.
+- Added `check_branch_lsm_inheritance_model_contract`, covering inherited layer
+  reads, fork-version gates, branch-id rewriting, child-local put shadowing,
+  child-local tombstone shadowing, chained ancestry, and materialization read
+  parity.
+- Added `check_branch_lsm_install_model_contract`, covering snapshot install and
+  compaction install parity against the model.
+- Added script-driven model cases under those contracts so generated property
+  checks exercise decoded operation streams in addition to fixed edge fixtures.
+- Wired the model-backed contracts into the existing
+  `check_branch_lsm_inheritance_contract` and
+  `check_branch_lsm_install_contract` routes.
+- Added `inheritance_model_cases` and `install_model_cases` outcome counters
+  and wired them into `check_branch_lsm_scaffold_contract`, so
+  `branch_lsm_properties.rs` fails if these model routes stop running.
+- Strengthened `branch_lsm_properties.rs` so the generated property harness
+  requires the model-backed contracts and model symbols.
+- Strengthened `branch_lsm_closeout.rs` so closeout requires the model-backed
+  routes and checks every branch fuzz corpus has at least two non-empty seeds
+  plus a named scenario script.
+- Added scenario corpus seeds:
+  - `fuzz/corpus/branch_lsm_reads/basic-script`
+  - `fuzz/corpus/branch_lsm_reads/range-history-script`
+  - `fuzz/corpus/branch_lsm_inheritance/fork-shadow-script`
+  - `fuzz/corpus/branch_lsm_inheritance/materialization-script`
+  - `fuzz/corpus/branch_lsm_install/snapshot-install-script`
+  - `fuzz/corpus/branch_lsm_install/compaction-install-script`
+- Updated `crates/storage-next/fuzz/.gitignore` to track only the named branch
+  LSM scenario seeds while continuing to ignore generated fuzz corpus outputs.
+- Added `l6m-assurance-depth-implementation-plan.md`.
+- Added `l6m-assurance-depth-test-plan.md`.
+
+### Intentional Boundaries
+
+- L6M does not introduce backend IO, durable recovery records, WAL ordering,
+  commit allocation, commit conflict validation, branch registry APIs, branch
+  clear/delete APIs, fork-at-history, or public product DTO mapping.
+- The branch fuzz targets remain the three L6L targets:
+  `branch_lsm_reads`, `branch_lsm_inheritance`, and `branch_lsm_install`.
+  L6M deepens the contracts behind those targets instead of adding a fourth
+  target.
+- The model uses storage-owned row/key constructors and stable encoding helpers,
+  but it does not call `BranchReadView` or production candidate selection to
+  compute expected visibility.
+- Porting-log and sensitivity evidence stays in this document. Runtime tests do
+  not assert document paths or prose-only requirements.
+
+### Sensitivity Probe Ledger
+
+| Probe | Mutation | Mutation Site | Expected Failure | Status |
+| --- | --- | --- | --- | --- |
+| S1 | Sort row-chain commit versions ascending instead of newest-first. | `src/branch/read.rs` candidate ordering and model visibility comparisons. | `branch_lsm_properties` via `check_branch_lsm_reference_model_contract` and `assert_model_store_read_surface`. | Structurally enforced by independent model parity. |
+| S2 | Ignore tombstones in latest reads. | `src/branch/read.rs` visible-row filtering. | Direct branch read tests and model-backed latest/history checks. | Structurally enforced. |
+| S3 | Evaluate TTL using wall-clock time instead of the requested as-of timestamp. | `src/branch/read.rs` TTL filtering. | Direct timestamp/TTL tests and model-backed timestamp checks. | Structurally enforced. |
+| S4 | Omit inherited fork-version gate. | `src/branch/read.rs` inherited candidate collection. | `check_branch_lsm_inheritance_model_contract`; model excludes rows above each layer fork version. | Structurally enforced. |
+| S5 | Skip inherited source-to-child branch-id rewrite. | `src/branch/read.rs` inherited candidate rewrite path. | `check_branch_lsm_inheritance_model_contract`; model groups rewritten keys under the child branch. | Structurally enforced. |
+| S6 | Search inherited layers before child-local state. | `src/branch/read.rs` source precedence. | Child put shadowing checks in direct tests and model-backed inheritance checks. | Structurally enforced. |
+| S7 | Let child-local tombstones fall through to inherited puts. | `src/branch/read.rs` source precedence and tombstone filtering. | Child tombstone shadowing checks in direct tests and model-backed inheritance checks. | Structurally enforced. |
+| S8 | Remove an inherited layer before replacement tables are visible. | `src/branch/state.rs` materialization stage/swap path. | Direct materialization retry/idempotency tests and model-backed materialization parity. | Structurally enforced for L6-local atomic state changes. |
+| S9 | Mark a table releasable while another branch or inherited layer references it. | `src/branch/state.rs` reachability/release planning. | Direct reachability/release tests and L6L closeout category checks. | Structurally enforced for L6-local release facts. |
+| S10 | Let compaction drop old versions without a retention proof. | `src/branch/state.rs` branch compaction policy validation. | Direct branch compaction rejection tests. | Structurally enforced. |
+| S11 | Let compaction drop tombstones without proving no resurrection. | `src/branch/state.rs` branch compaction policy validation. | Direct branch compaction rejection tests. | Structurally enforced. |
+| S12 | Accept snapshot row branch mismatch. | `src/branch/state.rs` snapshot install validation. | Direct snapshot install invalid-row tests. | Structurally enforced. |
+| S13 | Accept duplicate snapshot internal keys. | `src/branch/state.rs` snapshot install validation. | Direct snapshot duplicate rejection tests. | Structurally enforced. |
+| S14 | Mutate one snapshot target before later target validation fails. | `src/branch/state.rs` snapshot install preflight/build staging. | Direct all-or-nothing snapshot install tests and `check_branch_lsm_install_model_contract`. | Structurally enforced. |
+| S15 | Reintroduce `VersionedValue`, product `Value`, product `Key`, or similar old DTO vocabulary into production branch code. | `src/branch/**/*.rs`. | `branch_lsm_source_guard`. | Source-guard enforced. |
+| S16 | Import `crate::commit`, `crate::lifecycle`, `crate::backend`, `crate::service`, object layout, filesystem, environment, wall-clock, or StrataHub vocabulary in production L6 code. | `src/branch/**/*.rs`. | `branch_lsm_source_guard`. | Source-guard enforced. |
+
+### Fault Window Classification
+
+- Fork-reachability-before-visibility is not an L6-local durable IO window.
+  L6 can produce inherited-layer state transitions and reachability facts, but
+  it does not publish branch manifests or expose a durable two-phase fork
+  operation. The ambiguous durable window is deferred to L8, where manifest
+  publication and recovery records exist.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch` passed.
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties` passed.
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties` passed.
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard` passed.
+- `cargo test -p strata-storage-next --locked --test branch_lsm_closeout` passed.
+- `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked` passed.
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` passed.
+- `cargo test -p strata-storage-next --locked` passed as an extra full-package
+  regression check.
+- `cargo fmt --package strata-storage-next --check` passed.
+- `git diff --check` passed.
+- Optional/manual fuzz smoke:
+  - `cd crates/storage-next/fuzz && cargo +nightly fuzz run branch_lsm_reads -- -max_total_time=60`
+  - `cd crates/storage-next/fuzz && cargo +nightly fuzz run branch_lsm_inheritance -- -max_total_time=60`
+  - `cd crates/storage-next/fuzz && cargo +nightly fuzz run branch_lsm_install -- -max_total_time=60`
+  - Not run in this implementation pass; target registration, dedicated
+    contract calls, and enriched corpora are enforced by
+    `branch_lsm_closeout.rs`.
+
+### Result
+
+L6M turns the L6 generated harness from broad scenario coverage into
+model-backed assurance for the highest-risk branch semantics: inherited
+visibility, fork gates, branch-id rewriting, child-local shadowing,
+materialization parity, snapshot install, and compaction install. Remaining
+durable fault windows are explicitly owned by L8.

@@ -28,4 +28,16 @@
 !/corpus/service_quarantine/
 /corpus/service_quarantine/*
 !/corpus/service_quarantine/basic
+!/corpus/branch_lsm_reads/
+/corpus/branch_lsm_reads/*
+!/corpus/branch_lsm_reads/basic-script
+!/corpus/branch_lsm_reads/range-history-script
+!/corpus/branch_lsm_inheritance/
+/corpus/branch_lsm_inheritance/*
+!/corpus/branch_lsm_inheritance/fork-shadow-script
+!/corpus/branch_lsm_inheritance/materialization-script
+!/corpus/branch_lsm_install/
+/corpus/branch_lsm_install/*
+!/corpus/branch_lsm_install/snapshot-install-script
+!/corpus/branch_lsm_install/compaction-install-script
 /target/
