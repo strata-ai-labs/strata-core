@@ -67,9 +67,12 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
         "mmap",
         "memmap",
         "crate::table",
+        "crate::branch",
         "crate::backend",
         "crate::layout",
         "crate::object",
+        "crate::service::wal",
+        "crate::format::wal",
         "crate::testkit",
         "TableRuntime",
         "TableRow",
@@ -83,6 +86,11 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
 
     for file in commit_runtime_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read commit runtime source");
+        assert!(
+            !contains_forbidden_storage_path(&text),
+            "{} uses forbidden lower-layer bypass or IO path",
+            file.strip_prefix(&root).unwrap_or(&file).display()
+        );
         for (line_number, line) in text.lines().enumerate() {
             for needle in forbidden_substrings {
                 assert!(
@@ -92,6 +100,12 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
                     line_number + 1
                 );
             }
+            assert!(
+                !contains_forbidden_storage_path(line),
+                "{}:{} uses forbidden lower-layer bypass or IO path: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
             assert!(
                 !contains_forbidden_backend_operation(line),
                 "{}:{} uses backend operation vocabulary directly: {line}",
@@ -131,7 +145,7 @@ fn commit_runtime_stays_crate_private() {
 }
 
 #[test]
-fn commit_runtime_source_guard_catches_required_forbidden_terms() {
+fn commit_runtime_source_guard_catches_product_vocabulary() {
     assert!(contains_forbidden_product_vocabulary(
         "let _: TransactionContext;"
     ));
@@ -173,7 +187,10 @@ fn commit_runtime_source_guard_catches_required_forbidden_terms() {
     assert!(contains_forbidden_product_vocabulary(
         "recover transaction IDs;"
     ));
+}
 
+#[test]
+fn commit_runtime_source_guard_catches_forbidden_imports_and_public_surface() {
     assert!(contains_forbidden_substring(
         "use strata_engine_next::CommitRuntime;",
         "strata_engine"
@@ -191,6 +208,10 @@ fn commit_runtime_source_guard_catches_required_forbidden_terms() {
         "crate::table"
     ));
     assert!(contains_forbidden_substring(
+        "use crate::branch::BranchState;",
+        "crate::branch"
+    ));
+    assert!(contains_forbidden_substring(
         "use crate::backend;",
         "crate::backend"
     ));
@@ -198,7 +219,35 @@ fn commit_runtime_source_guard_catches_required_forbidden_terms() {
         "use crate::layout;",
         "crate::layout"
     ));
+    assert!(contains_forbidden_substring(
+        "use crate::service::wal::WalService;",
+        "crate::service::wal"
+    ));
+    assert!(contains_forbidden_substring(
+        "use crate::format::wal::WalRecord;",
+        "crate::format::wal"
+    ));
+    assert!(contains_forbidden_storage_path(
+        "use crate::{branch::BranchState};"
+    ));
+    assert!(contains_forbidden_storage_path(
+        "use crate::format::{wal::WalRecord};"
+    ));
+    assert!(contains_forbidden_storage_path(
+        "use crate::service::{wal::WalService};"
+    ));
+    assert!(contains_forbidden_storage_path(
+        "use crate::{format::{wal::WalRecord}};"
+    ));
+    assert!(contains_forbidden_storage_path(
+        "use crate::{\n    format::{\n        wal::WalRecord,\n    },\n};"
+    ));
+    assert!(contains_forbidden_storage_path("use std::{fs, path};"));
+    assert!(contains_forbidden_storage_path(
+        "use std::{\n    fs,\n    path,\n};"
+    ));
     assert!(is_public_surface_leak("pub struct CommitRuntime;"));
+    assert!(is_public_surface_leak("pub enum CommitBatch {}"));
     assert!(is_public_surface_leak("pub fn commit() {}"));
     assert!(is_public_surface_leak("pub async fn commit() {}"));
     assert!(is_public_surface_leak("pub unsafe fn commit() {}"));
@@ -234,6 +283,13 @@ fn commit_runtime_source_guard_catches_io_and_backend_terms() {
 #[test]
 fn commit_runtime_source_guard_allows_owned_terms() {
     assert!(!is_public_surface_leak("pub(crate) struct CommitRuntime;"));
+    assert!(!contains_forbidden_substring(
+        "use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};",
+        "crate::branch"
+    ));
+    assert!(!contains_forbidden_storage_path(
+        "use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};"
+    ));
     assert!(!contains_forbidden_product_vocabulary(
         "BranchId CommitVersion Timestamp StorageRow WalRecord WalService"
     ));
@@ -254,7 +310,9 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) {
         let entry = entry.expect("read commit source entry");
         let path = entry.path();
         if path.is_dir() {
-            collect_rs_files(&path, files);
+            if path.file_name().is_none_or(|name| name != "tests") {
+                collect_rs_files(&path, files);
+            }
         } else if path.extension().is_some_and(|extension| extension == "rs")
             && path.file_name().is_some_and(|name| name != "tests.rs")
         {
@@ -305,6 +363,39 @@ fn contains_forbidden_product_vocabulary(line: &str) -> bool {
 
 fn contains_forbidden_substring(line: &str, needle: &str) -> bool {
     line.contains(needle)
+}
+
+fn contains_forbidden_storage_path(line: &str) -> bool {
+    let compact: String = line
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    [
+        "crate::table",
+        "crate::{table",
+        "crate::branch",
+        "crate::{branch",
+        "crate::backend",
+        "crate::{backend",
+        "crate::layout",
+        "crate::{layout",
+        "crate::object",
+        "crate::{object",
+        "crate::service::wal",
+        "crate::service::{wal",
+        "crate::{service::wal",
+        "crate::{service::{wal",
+        "crate::format::wal",
+        "crate::format::{wal",
+        "crate::{format::wal",
+        "crate::{format::{wal",
+        "std::fs",
+        "std::{fs",
+        "std::path",
+        "std::{path",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle))
 }
 
 fn contains_forbidden_backend_operation(line: &str) -> bool {

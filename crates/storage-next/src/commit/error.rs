@@ -1,8 +1,10 @@
 //! Commit-runtime error vocabulary.
 
+use crate::row::StorageSpaceId;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
+use strata_core_next::BranchId;
 
 #[derive(Clone, Debug)]
 pub(crate) enum CommitRuntimeError {
@@ -18,6 +20,25 @@ pub(crate) enum CommitRuntimeError {
     },
     InvalidVisibilityFacts {
         reason: &'static str,
+    },
+    InvalidBatch {
+        reason: &'static str,
+    },
+    InvalidMutation {
+        reason: &'static str,
+    },
+    InvalidValidationFacts {
+        reason: &'static str,
+    },
+    DuplicateMutationKey {
+        space_id: StorageSpaceId,
+    },
+    BranchMismatch {
+        expected: BranchId,
+        actual: BranchId,
+    },
+    StorageOwnedMutationSpace {
+        space_id: StorageSpaceId,
     },
     BranchUnavailable {
         reason: &'static str,
@@ -86,6 +107,12 @@ impl PartialEq for CommitRuntimeError {
                 Self::InvalidVisibilityFacts { reason: left },
                 Self::InvalidVisibilityFacts { reason: right },
             )
+            | (Self::InvalidBatch { reason: left }, Self::InvalidBatch { reason: right })
+            | (Self::InvalidMutation { reason: left }, Self::InvalidMutation { reason: right })
+            | (
+                Self::InvalidValidationFacts { reason: left },
+                Self::InvalidValidationFacts { reason: right },
+            )
             | (
                 Self::BranchUnavailable { reason: left },
                 Self::BranchUnavailable { reason: right },
@@ -94,6 +121,32 @@ impl PartialEq for CommitRuntimeError {
                 Self::DurabilityUnavailable { reason: left },
                 Self::DurabilityUnavailable { reason: right },
             ) => left == right,
+            (
+                Self::DuplicateMutationKey {
+                    space_id: left_space,
+                },
+                Self::DuplicateMutationKey {
+                    space_id: right_space,
+                },
+            )
+            | (
+                Self::StorageOwnedMutationSpace {
+                    space_id: left_space,
+                },
+                Self::StorageOwnedMutationSpace {
+                    space_id: right_space,
+                },
+            ) => left_space == right_space,
+            (
+                Self::BranchMismatch {
+                    expected: left_expected,
+                    actual: left_actual,
+                },
+                Self::BranchMismatch {
+                    expected: right_expected,
+                    actual: right_actual,
+                },
+            ) => left_expected == right_expected && left_actual == right_actual,
             (
                 Self::LowerLayer {
                     layer: left_layer,
@@ -131,6 +184,35 @@ impl fmt::Display for CommitRuntimeError {
             Self::InvalidVisibilityFacts { reason } => {
                 write!(formatter, "commit visibility facts are invalid: {reason}")
             }
+            Self::InvalidBatch { reason } => {
+                write!(formatter, "commit batch is invalid: {reason}")
+            }
+            Self::InvalidMutation { reason } => {
+                write!(formatter, "commit mutation is invalid: {reason}")
+            }
+            Self::InvalidValidationFacts { reason } => {
+                write!(formatter, "commit validation facts are invalid: {reason}")
+            }
+            Self::DuplicateMutationKey { space_id } => {
+                write!(
+                    formatter,
+                    "commit mutation has a duplicate physical key in storage space 0x{:02x}",
+                    space_id.raw()
+                )
+            }
+            Self::BranchMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "commit branch mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::StorageOwnedMutationSpace { space_id } => {
+                write!(
+                    formatter,
+                    "commit caller key targets storage-owned space 0x{:02x}",
+                    space_id.raw()
+                )
+            }
             Self::BranchUnavailable { reason } => {
                 write!(formatter, "commit branch is unavailable: {reason}")
             }
@@ -155,6 +237,12 @@ impl Error for CommitRuntimeError {
             | Self::InvalidCommitState { .. }
             | Self::InvalidCommitPhase { .. }
             | Self::InvalidVisibilityFacts { .. }
+            | Self::InvalidBatch { .. }
+            | Self::InvalidMutation { .. }
+            | Self::InvalidValidationFacts { .. }
+            | Self::DuplicateMutationKey { .. }
+            | Self::BranchMismatch { .. }
+            | Self::StorageOwnedMutationSpace { .. }
             | Self::BranchUnavailable { .. }
             | Self::DurabilityUnavailable { .. }
             | Self::LowerLayer { source: None, .. } => None,

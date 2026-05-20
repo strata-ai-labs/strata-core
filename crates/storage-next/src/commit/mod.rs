@@ -8,11 +8,22 @@
     )
 )]
 
+mod batch;
 mod config;
 mod error;
 mod facts;
 mod result;
 
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use batch::{
+    CommitBatch, CommitBatchKind, CommitBatchOptions, CommitCasFact, CommitConflictValidationMode,
+    CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry, CommitMutation,
+    CommitObservedVersion, CommitOrigin, CommitReadFact, CommitRetentionHint, CommitStamp,
+    CommitTimestampPolicy, CommitValidationFacts, StampedCommitRows, ValidatedCommitBatch,
+};
 #[cfg_attr(
     not(test),
     allow(
