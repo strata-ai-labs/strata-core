@@ -196,9 +196,9 @@ Rules:
 6. `descriptor.table_count` must equal the number of inherited tables;
 7. layer count must be bounded by branch runtime config;
 8. layers are stored nearest ancestor first;
-9. copied active/materializing inherited layers reset status to `Active` in
-   the child, while materialized layers are skipped because their replacement
-   child-owned state is already the readable source;
+9. copied active/materializing inherited layers preserve their readable status
+   in the child, while materialized layers are skipped because their
+   replacement child-owned state is already the readable source;
 10. an empty source-owned layer is allowed only when it exists to preserve a
     valid fork-version boundary; otherwise prefer zero inherited layers.
 

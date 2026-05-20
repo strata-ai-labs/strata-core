@@ -82,6 +82,50 @@ fn branch_inherited_layer_constructor_rejects_count_and_source_mismatches() {
     assert_eq!(layer.fork_version(), CommitVersion::new(3));
     assert_eq!(layer.table_count(), 1);
 
+    let duplicate_identity = BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(
+            source,
+            CommitVersion::new(3),
+            InheritedLayerStatus::Active,
+            2,
+        ),
+        vec![vec![
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "inherited-duplicate-identity",
+                vec![storage_row_with(
+                    source,
+                    b"inherited-duplicate-a".to_vec(),
+                    1,
+                    10,
+                    Timestamp::EPOCH,
+                    b"a".to_vec(),
+                )],
+            ),
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "inherited-duplicate-identity",
+                vec![storage_row_with(
+                    source,
+                    b"inherited-duplicate-b".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"b".to_vec(),
+                )],
+            ),
+        ]],
+    )
+    .expect_err("duplicate inherited table identities rejected");
+    assert_eq!(
+        duplicate_identity,
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "inherited layer tables must not contain duplicate table identities",
+        }
+    );
+
     let stale_count = BranchInheritedLayer::new(
         InheritedLayerDescriptor::new(
             source,
@@ -376,7 +420,7 @@ fn branch_attach_reports_nearest_inherited_layer_fork_version() {
 }
 
 #[test]
-fn branch_fork_preserves_layer_order_and_resets_readable_inherited_statuses() {
+fn branch_fork_preserves_layer_order_and_readable_inherited_statuses() {
     let fixture = fork_status_fixture();
     assert_eq!(fixture.outcome.fork_version(), CommitVersion::new(6));
     assert_eq!(fixture.outcome.inherited_layer_count(), 2);
@@ -395,8 +439,8 @@ fn branch_fork_preserves_layer_order_and_resets_readable_inherited_statuses() {
     );
     assert_eq!(
         fixture.child_state.inherited_layers()[1].status(),
-        InheritedLayerStatus::Active,
-        "copied materializing inherited layers reset to active"
+        InheritedLayerStatus::Materializing,
+        "copied materializing inherited layers retain their recovery status"
     );
 
     let view = fixture.child_state.capture_read_view().expect("child view");
@@ -588,39 +632,55 @@ fn branch_fork_rejects_empty_source_without_ambiguous_zero_version() {
 }
 
 #[test]
-fn branch_fork_rejects_inherited_only_source_without_own_applied_version() {
+fn branch_fork_uses_inherited_rows_when_source_has_no_own_rows() {
     let source = branch_id(83);
     let inherited_only = branch_id(84);
     let child = branch_id(85);
+    let row = storage_row_with(
+        source,
+        b"fork-own-source".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    );
     let mut source_state = BranchLocalState::empty(source);
     source_state
         .install_l0_table(branch_owned_table(
             source,
             BranchLevel::ZERO,
             "fork-own-source",
-            vec![storage_row_with(
-                source,
-                b"fork-own-source".to_vec(),
-                3,
-                30,
-                Timestamp::EPOCH,
-                b"source".to_vec(),
-            )],
+            vec![row.clone()],
         ))
         .expect("install source table");
     let (inherited_only_state, _) = source_state
         .fork_into_empty_child(inherited_only)
         .expect("fork inherited-only parent");
 
-    let error = inherited_only_state
+    let (child_state, outcome) = inherited_only_state
         .fork_into_empty_child(child)
-        .expect_err("inherited-only source cannot mint synthetic fork version");
+        .expect("inherited-only source can fork from retained inherited rows");
 
+    assert_eq!(outcome.fork_version(), CommitVersion::new(3));
+    assert_eq!(outcome.inherited_layer_count(), 2);
     assert_eq!(
-        error,
-        BranchRuntimeError::InvalidInheritedLayer {
-            reason: "fork source must contain at least one retained row",
-        }
+        child_state.inherited_layers()[0].source_branch_id(),
+        inherited_only
+    );
+    assert_eq!(child_state.inherited_layers()[0].table_count(), 0);
+    assert_eq!(child_state.inherited_layers()[1].source_branch_id(), source);
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("child view")
+            .latest(&physical_key(child, b"fork-own-source".to_vec()))
+            .expect("latest")
+            .as_ref(),
+        &rewrite_row_branch(&row, source, child).expect("rewrite inherited row"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 1,
+        },
     );
 }
 
@@ -1848,6 +1908,164 @@ fn branch_materialization_retry_removes_layer_when_replacements_are_already_visi
 }
 
 #[test]
+fn branch_materialization_retry_continues_after_partial_replacement_install() {
+    let source = branch_id(113);
+    let child = branch_id(114);
+    let first_chunk_len = 4_096usize;
+    let source_rows = (0..=first_chunk_len)
+        .map(|index| {
+            storage_row_with(
+                source,
+                format!("materialize-partial-{index:04}").into_bytes(),
+                u64::try_from(index + 1).expect("version fits"),
+                u64::try_from(index + 1).expect("timestamp fits"),
+                Timestamp::EPOCH,
+                format!("source-{index}").into_bytes(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(u64::try_from(source_rows.len()).expect("fork fits")),
+        InheritedLayerStatus::Active,
+        vec![vec![
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "materialize-partial-source-a",
+                source_rows[..first_chunk_len].to_vec(),
+            ),
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "materialize-partial-source-b",
+                source_rows[first_chunk_len..].to_vec(),
+            ),
+        ]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach partial retry layer");
+    let rewritten_first_chunk = source_rows[..first_chunk_len]
+        .iter()
+        .map(|row| rewrite_row_branch(row, source, child).expect("rewrite first chunk"))
+        .collect::<Vec<_>>();
+    let reader = immutable_reader("materialize-partial-layer-0-table-0", rewritten_first_chunk);
+    let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+    let replacement = BranchOwnedTable::new_materialization_replacement(
+        child,
+        descriptor,
+        reader,
+        BranchMaterializationSource::new(
+            source,
+            CommitVersion::new(u64::try_from(source_rows.len()).expect("fork fits")),
+        ),
+    )
+    .expect("partial replacement table");
+    child_state
+        .install_l0_table(replacement)
+        .expect("preinstall first partial replacement");
+
+    let outcome = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "materialize-partial")
+                .expect("partial request"),
+        )
+        .expect("retry partial materialization");
+
+    assert_eq!(
+        outcome.recovery(),
+        BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
+    );
+    assert_eq!(
+        outcome.rows_materialized(),
+        u64::try_from(source_rows.len()).expect("rows fit")
+    );
+    assert_eq!(outcome.tables_created(), 1);
+    assert_eq!(outcome.skipped_exact_duplicate_rows(), 4_096);
+    assert_eq!(outcome.inherited_layers_remaining(), 0);
+    assert_eq!(outcome.replacement_owned_table_count(), 2);
+    assert_eq!(child_state.inherited_layer_count(), 0);
+
+    let last_row = rewrite_row_branch(source_rows.last().expect("last source row"), source, child)
+        .expect("rewrite last row");
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("partial retry view")
+            .latest(last_row.physical_key())
+            .expect("partial retry latest")
+            .as_ref(),
+        &last_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 1,
+        },
+    );
+}
+
+#[test]
+fn branch_materialization_stable_source_retry_is_idempotent_after_layer_removal() {
+    let source = branch_id(115);
+    let child = branch_id(116);
+    let fork_version = CommitVersion::new(4);
+    let source_row = storage_row_with(
+        source,
+        b"materialize-stable-retry".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"source".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        fork_version,
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "materialize-stable-retry-source",
+            vec![source_row.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach stable retry layer");
+    child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "materialize-stable-retry")
+                .expect("initial request"),
+        )
+        .expect("initial materialization");
+
+    let before_retry = child_state.clone();
+    let retry = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new_for_source(
+                child,
+                0,
+                source,
+                fork_version,
+                "materialize-stable-retry",
+            )
+            .expect("stable retry request"),
+        )
+        .expect("stable retry after layer removal");
+
+    assert_eq!(
+        retry.recovery(),
+        BranchMaterializationRecovery::LayerAlreadyMaterialized,
+    );
+    assert_eq!(retry.rows_materialized(), 1);
+    assert_eq!(retry.tables_created(), 0);
+    assert_eq!(retry.inherited_layers_remaining(), 0);
+    assert_eq!(retry.replacement_owned_table_count(), 1);
+    assert_eq!(child_state, before_retry);
+}
+
+#[test]
 fn branch_materialization_rejects_bad_request_without_mutation() {
     let source = branch_id(103);
     let child = branch_id(104);
@@ -1883,6 +2101,23 @@ fn branch_materialization_rejects_bad_request_without_mutation() {
     assert_eq!(
         child_state, before,
         "wrong-branch materialization must not mutate state",
+    );
+    assert!(matches!(
+        child_state.materialize_inherited_layer(
+            &BranchMaterializationRequest::new_for_source(
+                child,
+                0,
+                branch_id(105),
+                CommitVersion::new(5),
+                "materialized-wrong-source",
+            )
+            .expect("wrong source request"),
+        ),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
+    ));
+    assert_eq!(
+        child_state, before,
+        "wrong-source materialization must not mutate state",
     );
 }
 

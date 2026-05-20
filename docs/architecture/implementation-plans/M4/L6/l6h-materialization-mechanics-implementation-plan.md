@@ -99,9 +99,9 @@ L6H implements:
      inherited copy;
    - same physical key at different commit versions is not a duplicate and
      must be retained unless a later retention proof says otherwise;
-   - same internal key with different timestamp, expiry, tombstone bit, or
-     value bytes is not a duplicate for materialization parity and must be
-     retained;
+   - same internal key already present in a higher-precedence child-local or
+     nearer inherited source rejects materialization unless the rewritten row
+     facts are byte-identical;
 10. L5 table building for the retained rewritten rows;
 11. output splitting when the retained row set would exceed L5 table limits;
 12. child-owned replacement table installation into L0;
@@ -223,10 +223,15 @@ then remaining inherited layers nearest-first
 
 An exact rewritten storage-row duplicate is safe to skip when a higher
 precedence source already owns the same internal key and the same row facts.
-Different commit versions for the same physical key are not duplicates. Same
-internal key with different timestamp, expiry, tombstone bit, or value bytes is
-also not a duplicate for L6H materialization; retaining it is required to keep
-history and timestamp-bounded reads stable across the ownership transition.
+Different commit versions for the same physical key are not duplicates when
+their L5 internal keys remain distinct.
+
+If a higher-precedence child-local or nearer inherited source already owns the
+same rewritten internal key with different row facts, L6H rejects the
+materialization without mutation. Storage-next branch-owned immutable state
+preserves the L5 invariant that duplicate internal keys cannot coexist in the
+same branch-owned table set; retaining both rows would make later compaction
+and reachability ambiguous. Exact rewritten duplicates remain safe to skip.
 
 If two rows inside the same target layer rewrite to the same internal key, the
 operation must fail with a typed invalid inherited layer error. That case means
@@ -277,21 +282,20 @@ L6H should expose storage-owned facts sufficient for L8 reconciliation:
 
 ```text
 BranchMaterializationRecovery =
-  NoRecoveryNeeded
-  RetryFromReadableLayer
-  ReplacementVisibleLayerStillReadable
   ReplacementVisibleLayerRemoved
+  ReplacementAlreadyVisibleLayerRemoved
   LayerAlreadyMaterialized
 ```
 
-Names may change. The key requirement is that callers can distinguish:
+L6 uses an in-memory atomic stage-and-swap: replacement installation and source
+layer removal commit together from the reader perspective. That means L6 does
+not expose durable in-flight recovery states. The key requirement is that
+callers can distinguish:
 
-1. no state was changed;
-2. a readable inherited layer remains and retry is safe;
-3. replacement tables are visible but the inherited layer is also still
-   readable;
-4. replacement tables are visible and the inherited layer is gone;
-5. the request is stale because another materialization already completed.
+1. replacement tables were installed and the inherited layer was removed;
+2. replacement tables were already visible from a previous attempt and the
+   inherited layer was removed by this retry;
+3. the request is stale because another materialization already completed.
 
 L6H does not write durable recovery records. It returns facts that L8 can
 durably publish or replay.

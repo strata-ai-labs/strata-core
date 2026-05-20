@@ -230,8 +230,8 @@ Generated scripts should exercise:
    inherited row is visible to an earlier as-of timestamp.
 3. A child row with identical rewritten row facts suppresses the inherited
    duplicate without changing reads.
-4. A child row with the same internal key but different row facts does not
-   suppress the inherited row.
+4. A child row with the same internal key but different row facts rejects
+   materialization without mutation.
 5. A nearer inherited row with identical rewritten row facts suppresses a
    farther inherited exact duplicate.
 6. Same physical key with different commit versions is retained, not treated

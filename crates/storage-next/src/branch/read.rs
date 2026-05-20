@@ -599,6 +599,7 @@ impl BranchInheritedLayer {
             });
         }
         validate_owned_levels(&owned_levels)?;
+        validate_inherited_layer_unique_table_identities(&owned_levels)?;
         validate_inherited_layer_unique_keys(&owned_levels)?;
         for table in owned_levels.iter().flatten() {
             if table.branch_id() != descriptor.source_branch_id() {
@@ -679,13 +680,14 @@ impl BranchInheritedLayer {
     }
 
     pub(crate) fn clone_active_for_fork(&self) -> BranchRuntimeResult<Option<Self>> {
-        match self.status() {
+        let status = self.status();
+        match status {
             InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {
                 Ok(Some(Self::new(
                     InheritedLayerDescriptor::new(
                         self.source_branch_id(),
                         self.fork_version(),
-                        InheritedLayerStatus::Active,
+                        status,
                         self.table_count(),
                     ),
                     self.owned_levels.clone(),
@@ -999,7 +1001,6 @@ impl BranchReadView {
         bound: BranchReadBound,
         rows: &mut Vec<CandidateRow>,
     ) -> BranchRuntimeResult<()> {
-        let mut seen_table_identities = BTreeSet::<&str>::new();
         for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
             if !layer.is_readable() {
                 continue;
@@ -1013,9 +1014,6 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
-                if !seen_table_identities.insert(table.descriptor().identity().as_str()) {
-                    continue;
-                }
                 for row in table.rows().iter().filter(|row| {
                     row.physical_key() == &source_key
                         && inherited_bound
@@ -1044,7 +1042,6 @@ impl BranchReadView {
         bound: BranchReadBound,
         grouped: &mut BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>>,
     ) -> BranchRuntimeResult<()> {
-        let mut seen_table_identities = BTreeSet::<&str>::new();
         for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
             if !layer.is_readable() {
                 continue;
@@ -1052,9 +1049,6 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
-                if !seen_table_identities.insert(table.descriptor().identity().as_str()) {
-                    continue;
-                }
                 for row in table.rows().iter().filter(|row| {
                     inherited_bound
                         .matches_row(row.row())
@@ -1149,6 +1143,8 @@ fn select_visible_row(
 }
 
 fn row_is_expired_at(row: &StorageRow, read_timestamp: Option<Timestamp>) -> bool {
+    // L6 only applies TTL when the caller supplies an as-of timestamp. Latest
+    // and version reads have no wall-clock input at this layer.
     read_timestamp.is_some_and(|timestamp| {
         !row.is_tombstone() && row.expires_at() != Timestamp::EPOCH && row.expires_at() <= timestamp
     })
@@ -1192,12 +1188,16 @@ fn source_order_cmp(left: BranchRowSource, right: BranchRowSource) -> Ordering {
         (_, BranchRowSource::OwnedTable { .. }) => Ordering::Greater,
         (
             BranchRowSource::Inherited {
-                layer_index: left, ..
+                source_branch_id: left_source,
+                layer_index: left_index,
             },
             BranchRowSource::Inherited {
-                layer_index: right, ..
+                source_branch_id: right_source,
+                layer_index: right_index,
             },
-        ) => left.cmp(&right),
+        ) => left_index
+            .cmp(&right_index)
+            .then_with(|| left_source.as_bytes().cmp(right_source.as_bytes())),
     }
 }
 
@@ -1348,6 +1348,20 @@ fn validate_inherited_layer_unique_keys(
     Ok(())
 }
 
+fn validate_inherited_layer_unique_table_identities(
+    owned_levels: &[Vec<BranchOwnedTable>],
+) -> BranchRuntimeResult<()> {
+    let mut identities = BTreeSet::<&str>::new();
+    for table in owned_levels.iter().flatten() {
+        if !identities.insert(table.descriptor().identity().as_str()) {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "inherited layer tables must not contain duplicate table identities",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_inherited_layers(
     branch_id: BranchId,
     layers: &[BranchInheritedLayer],
@@ -1368,6 +1382,7 @@ fn validate_inherited_layers(
                 reason: "inherited layer table count must match descriptor",
             });
         }
+        validate_inherited_layer_unique_table_identities(layer.owned_levels())?;
         for table in layer.owned_levels().iter().flatten() {
             if table.branch_id() != layer.source_branch_id() {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {

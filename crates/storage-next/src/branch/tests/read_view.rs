@@ -1304,22 +1304,16 @@ fn branch_timestamp_coverage_rejects_only_proven_insufficient_history() {
     let canonical = state.capture_read_view().expect("canonical coverage");
     assert_eq!(
         canonical.timestamp_coverage(),
-        BranchTimestampCoverage::complete_since(Timestamp::from_micros(50))
+        BranchTimestampCoverage::unknown()
     );
-    let canonical_error = canonical
-        .read_point(
-            &key,
-            BranchReadBound::at_timestamp(Timestamp::from_micros(49)),
-        )
-        .expect_err("canonical coverage rejects before earliest observed row");
     assert_eq!(
-        canonical_error,
-        BranchRuntimeError::InsufficientTimestampHistory {
-            branch_id: branch,
-            requested_timestamp: Timestamp::from_micros(49),
-            earliest_available_timestamp: Some(Timestamp::from_micros(50)),
-            source: BranchTimestampHistorySource::Combined,
-        }
+        canonical
+            .read_point(
+                &key,
+                BranchReadBound::at_timestamp(Timestamp::from_micros(49)),
+            )
+            .expect("unknown coverage does not invent an insufficiency proof"),
+        None
     );
 
     let complete_since = state

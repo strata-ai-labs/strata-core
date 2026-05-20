@@ -211,6 +211,8 @@ pub(crate) enum BranchMaterializationRecovery {
 pub(crate) struct BranchMaterializationRequest {
     child_branch_id: BranchId,
     layer_index: usize,
+    source_branch_id: Option<BranchId>,
+    fork_version: Option<CommitVersion>,
     output_identity_prefix: String,
 }
 
@@ -221,6 +223,39 @@ impl BranchMaterializationRequest {
         output_identity_prefix: impl Into<String>,
     ) -> BranchRuntimeResult<Self> {
         let output_identity_prefix = output_identity_prefix.into();
+        Self::new_inner(
+            child_branch_id,
+            layer_index,
+            None,
+            None,
+            output_identity_prefix,
+        )
+    }
+
+    pub(crate) fn new_for_source(
+        child_branch_id: BranchId,
+        layer_index: usize,
+        source_branch_id: BranchId,
+        fork_version: CommitVersion,
+        output_identity_prefix: impl Into<String>,
+    ) -> BranchRuntimeResult<Self> {
+        let output_identity_prefix = output_identity_prefix.into();
+        Self::new_inner(
+            child_branch_id,
+            layer_index,
+            Some(source_branch_id),
+            Some(fork_version),
+            output_identity_prefix,
+        )
+    }
+
+    fn new_inner(
+        child_branch_id: BranchId,
+        layer_index: usize,
+        source_branch_id: Option<BranchId>,
+        fork_version: Option<CommitVersion>,
+        output_identity_prefix: String,
+    ) -> BranchRuntimeResult<Self> {
         if output_identity_prefix.is_empty() {
             return Err(BranchRuntimeError::InvalidConfig {
                 field: "output_identity_prefix",
@@ -239,6 +274,8 @@ impl BranchMaterializationRequest {
         Ok(Self {
             child_branch_id,
             layer_index,
+            source_branch_id,
+            fork_version,
             output_identity_prefix,
         })
     }
@@ -249,6 +286,16 @@ impl BranchMaterializationRequest {
 
     pub(crate) const fn layer_index(&self) -> usize {
         self.layer_index
+    }
+
+    pub(crate) const fn materialization_source(&self) -> Option<BranchMaterializationSource> {
+        match (self.source_branch_id, self.fork_version) {
+            (Some(source_branch_id), Some(fork_version)) => Some(BranchMaterializationSource::new(
+                source_branch_id,
+                fork_version,
+            )),
+            _ => None,
+        }
     }
 
     pub(crate) fn output_identity_prefix(&self) -> &str {
@@ -1078,7 +1125,6 @@ impl BranchLocalState {
     }
 
     pub(crate) fn capture_read_view(&self) -> BranchRuntimeResult<BranchReadView> {
-        let observed = self.observe_rows();
         BranchReadView::new_with_inherited(
             self.branch_id,
             self.active.clone(),
@@ -1087,7 +1133,7 @@ impl BranchLocalState {
             self.inherited_layers.clone(),
             self.facts()?,
         )
-        .map(|view| view.with_timestamp_coverage(self.effective_timestamp_coverage(observed)))
+        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
     }
 
     pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
@@ -1286,16 +1332,16 @@ impl BranchLocalState {
                 reason: "fork source must flush active and frozen rows before inheritance capture",
             });
         }
-        let own_rows = self.observe_own_rows();
-        if own_rows.max_commit_version.is_none() {
+        let observed_rows = self.observe_rows();
+        if observed_rows.max_commit_version.is_none() {
             return Err(BranchRuntimeError::InvalidInheritedLayer {
                 reason: "fork source must contain at least one retained row",
             });
         }
 
-        let fork_version = own_rows
+        let fork_version = observed_rows
             .max_commit_version
-            .expect("fork source own-row precondition checked");
+            .expect("fork source retained-row precondition checked");
         let mut layers = Vec::with_capacity(self.inherited_layers.len() + 1);
         layers.push(BranchInheritedLayer::new(
             InheritedLayerDescriptor::new(
@@ -1357,32 +1403,30 @@ impl BranchLocalState {
                 reason: "materialization request branch id must match branch state",
             });
         }
-        let layer = self.inherited_layers.get(request.layer_index()).ok_or(
-            BranchRuntimeError::InvalidInheritedLayer {
-                reason: "materialization layer index must exist",
-            },
-        )?;
+        let Some(layer) = self.inherited_layers.get(request.layer_index()) else {
+            return self.materialize_absent_layer_retry(request);
+        };
         let source_branch_id = layer.source_branch_id();
         let fork_version = layer.fork_version();
         let materialization_source =
             BranchMaterializationSource::new(source_branch_id, fork_version);
+        if request
+            .materialization_source()
+            .is_some_and(|expected| expected != materialization_source)
+        {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization request source identity must match target layer",
+            });
+        }
 
         match layer.status() {
             InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
             InheritedLayerStatus::Materialized => {
-                return Ok(BranchMaterializationOutcome {
-                    child_branch_id: self.branch_id,
+                return Ok(self.materialized_layer_noop_outcome(
                     source_branch_id,
                     fork_version,
-                    layer_index: request.layer_index(),
-                    rows_materialized: 0,
-                    tables_created: 0,
-                    skipped_post_fork_rows: 0,
-                    skipped_exact_duplicate_rows: 0,
-                    inherited_layers_remaining: self.inherited_layers.len(),
-                    replacement_owned_table_count: 0,
-                    recovery: BranchMaterializationRecovery::LayerAlreadyMaterialized,
-                });
+                    request.layer_index(),
+                ));
             }
             InheritedLayerStatus::Unavailable => {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
@@ -1392,10 +1436,10 @@ impl BranchLocalState {
         }
 
         let materialized = self.collect_materialization_rows(request.layer_index())?;
+        let existing_summary =
+            self.existing_materialization_replacement_summary(materialization_source);
         if materialized.rows.is_empty() {
-            if let Some(summary) =
-                self.existing_materialization_replacement_summary(materialization_source)
-            {
+            if let Some(summary) = existing_summary {
                 let mut staged = self.clone();
                 staged.remove_inherited_layer_by_source(materialization_source)?;
                 *self = staged;
@@ -1418,14 +1462,21 @@ impl BranchLocalState {
         let replacement_tables = self.build_materialized_l0_tables(
             request.layer_index(),
             request.output_identity_prefix(),
+            existing_summary.map_or(0, |summary| summary.tables),
             &materialized.rows,
         )?;
-        let rows_materialized = u64::try_from(materialized.rows.len()).map_err(|_| {
+        let new_rows_materialized = u64::try_from(materialized.rows.len()).map_err(|_| {
             BranchRuntimeError::InvalidBranchState {
                 reason: "materialized row count must fit in u64",
             }
         })?;
+        let rows_materialized = existing_summary
+            .map_or(0, |summary| summary.rows)
+            .saturating_add(new_rows_materialized);
         let tables_created = replacement_tables.len();
+        let replacement_owned_table_count = existing_summary
+            .map_or(0, |summary| summary.tables)
+            .saturating_add(tables_created);
 
         let mut staged = self.clone();
         staged.install_materialization_replacement_tables(replacement_tables)?;
@@ -1443,8 +1494,55 @@ impl BranchLocalState {
             skipped_post_fork_rows: materialized.skipped_post_fork_rows,
             skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
             inherited_layers_remaining: self.inherited_layers.len(),
-            replacement_owned_table_count: tables_created,
+            replacement_owned_table_count,
             recovery: BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
+        })
+    }
+
+    fn materialized_layer_noop_outcome(
+        &self,
+        source_branch_id: BranchId,
+        fork_version: CommitVersion,
+        layer_index: usize,
+    ) -> BranchMaterializationOutcome {
+        BranchMaterializationOutcome {
+            child_branch_id: self.branch_id,
+            source_branch_id,
+            fork_version,
+            layer_index,
+            rows_materialized: 0,
+            tables_created: 0,
+            skipped_post_fork_rows: 0,
+            skipped_exact_duplicate_rows: 0,
+            inherited_layers_remaining: self.inherited_layers.len(),
+            replacement_owned_table_count: 0,
+            recovery: BranchMaterializationRecovery::LayerAlreadyMaterialized,
+        }
+    }
+
+    fn materialize_absent_layer_retry(
+        &self,
+        request: &BranchMaterializationRequest,
+    ) -> BranchRuntimeResult<BranchMaterializationOutcome> {
+        if let Some(source) = request.materialization_source() {
+            if let Some(summary) = self.existing_materialization_replacement_summary(source) {
+                return Ok(BranchMaterializationOutcome {
+                    child_branch_id: self.branch_id,
+                    source_branch_id: source.source_branch_id(),
+                    fork_version: source.fork_version(),
+                    layer_index: request.layer_index(),
+                    rows_materialized: summary.rows,
+                    tables_created: 0,
+                    skipped_post_fork_rows: 0,
+                    skipped_exact_duplicate_rows: 0,
+                    inherited_layers_remaining: self.inherited_layers.len(),
+                    replacement_owned_table_count: summary.tables,
+                    recovery: BranchMaterializationRecovery::LayerAlreadyMaterialized,
+                });
+            }
+        }
+        Err(BranchRuntimeError::InvalidInheritedLayer {
+            reason: "materialization layer index must exist",
         })
     }
 
@@ -1461,6 +1559,9 @@ impl BranchLocalState {
             &self.owned_levels,
             &self.inherited_layers,
         )?;
+        // Materialized rows represent an inherited snapshot, so they sit behind
+        // ordinary child-owned L0 tables even though they become owned by the
+        // child branch.
         let level_index = usize::from(BranchLevel::ZERO.raw());
         for table in replacement_tables {
             self.validate_install(BranchLevel::ZERO, &table, None)?;
@@ -1566,7 +1667,12 @@ impl BranchLocalState {
             .compact(request.output_identity_seed(), &sources, &mut policy)
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         let (artifacts, report) = output.into_parts();
-        let output_tables = self.compaction_output_tables(candidate.output_level(), artifacts)?;
+        let materialization_source = Self::compaction_output_materialization_source(candidate);
+        let output_tables = self.compaction_output_tables(
+            candidate.output_level(),
+            artifacts,
+            materialization_source,
+        )?;
         let output_identities = output_tables
             .iter()
             .map(|table| table.descriptor().identity().clone())
@@ -1938,6 +2044,7 @@ impl BranchLocalState {
         &self,
         output_level: BranchLevel,
         artifacts: Vec<crate::table::BuiltTableArtifact>,
+        materialization_source: Option<BranchMaterializationSource>,
     ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
         let mut tables = Vec::with_capacity(artifacts.len());
         for artifact in artifacts {
@@ -1951,9 +2058,44 @@ impl BranchLocalState {
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             let descriptor =
                 BranchTableDescriptor::new(identity, reader.facts().clone(), output_level)?;
-            tables.push(BranchOwnedTable::new(self.branch_id, descriptor, reader)?);
+            let table = if let Some(source) = materialization_source {
+                BranchOwnedTable::new_materialization_replacement(
+                    self.branch_id,
+                    descriptor,
+                    reader,
+                    source,
+                )?
+            } else {
+                BranchOwnedTable::new(self.branch_id, descriptor, reader)?
+            };
+            tables.push(table);
         }
         Ok(tables)
+    }
+
+    fn compaction_output_materialization_source(
+        candidate: &BranchCompactionCandidate,
+    ) -> Option<BranchMaterializationSource> {
+        let mut source = None::<BranchMaterializationSource>;
+        for table_ref in candidate
+            .input_refs()
+            .iter()
+            .chain(candidate.overlap_refs().iter())
+        {
+            let super::BranchTableReferenceKind::Replacement {
+                source_branch_id,
+                fork_version,
+            } = table_ref.reference_kind()
+            else {
+                return None;
+            };
+            let table_source = BranchMaterializationSource::new(source_branch_id, fork_version);
+            if source.is_some_and(|existing| existing != table_source) {
+                return None;
+            }
+            source = Some(table_source);
+        }
+        source
     }
 
     fn compaction_output_refs(
@@ -1978,12 +2120,7 @@ impl BranchLocalState {
                     .ok_or(BranchRuntimeError::InvalidCompaction {
                         reason: "compaction output table must be installed",
                     })?;
-                BranchTableRef::owned(
-                    self.branch_id,
-                    output_level,
-                    table_index,
-                    table.descriptor().identity().clone(),
-                )
+                branch_table_ref_for_owned(self.branch_id, output_level, table_index, table)
             })
             .collect()
     }
@@ -2108,6 +2245,7 @@ impl BranchLocalState {
         &self,
         layer_index: usize,
         output_identity_prefix: &str,
+        output_index_start: usize,
         rows: &[StorageRow],
     ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
         if rows.is_empty() {
@@ -2121,8 +2259,11 @@ impl BranchLocalState {
             .chunks(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE)
             .enumerate()
         {
-            let identity =
-                materialized_table_identity(output_identity_prefix, layer_index, output_index)?;
+            let identity = materialized_table_identity(
+                output_identity_prefix,
+                layer_index,
+                output_index_start.saturating_add(output_index),
+            )?;
             let artifact = builder
                 .build_from_storage_rows(identity.clone(), chunk)
                 .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
@@ -2325,19 +2466,6 @@ impl BranchLocalState {
         self.timestamp_max = observed.timestamp_max;
         self.put_rows = observed.put_rows;
         self.tombstone_rows = observed.tombstone_rows;
-    }
-
-    fn effective_timestamp_coverage(
-        &self,
-        observed: ObservedBranchRows,
-    ) -> BranchTimestampCoverage {
-        match self.timestamp_coverage {
-            BranchTimestampCoverage::Unknown => observed.timestamp_min.map_or(
-                BranchTimestampCoverage::Unknown,
-                BranchTimestampCoverage::complete_since,
-            ),
-            known => known,
-        }
     }
 
     fn observe_own_rows(&self) -> ObservedBranchRows {
@@ -2868,10 +2996,8 @@ fn validate_compaction_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchR
             }
             for row in table.rows() {
                 if !seen_keys.insert(row.key().clone()) {
-                    return Err(BranchRuntimeError::TableRuntime {
-                        source: TableRuntimeError::DuplicateInternalKey {
-                            key: row.key().as_slice().to_vec(),
-                        },
+                    return Err(BranchRuntimeError::InvalidCompaction {
+                        reason: "compaction levels must not contain duplicate internal keys",
                     });
                 }
             }

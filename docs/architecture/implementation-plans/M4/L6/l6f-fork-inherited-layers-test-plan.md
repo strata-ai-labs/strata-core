@@ -184,8 +184,8 @@ Generate:
 7. materialized layers that are skipped;
 8. unavailable layers that fail read-view construction;
 9. empty source-owned layer when preserving only a fork boundary;
-10. copied active/materializing inherited layers whose status is reset to
-    active, plus materialized layers that are skipped.
+10. copied active/materializing inherited layers whose readable status is
+    preserved, plus materialized layers that are skipped.
 
 ### Operation Scripts
 

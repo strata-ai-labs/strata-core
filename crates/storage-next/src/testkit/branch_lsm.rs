@@ -4354,24 +4354,17 @@ fn check_timestamp_coverage(
         &key,
         BranchReadBound::at_timestamp(Timestamp::from_micros(49)),
     ) {
-        Err(BranchRuntimeError::InsufficientTimestampHistory {
-            branch_id,
-            requested_timestamp,
-            earliest_available_timestamp: Some(earliest),
-            source: BranchTimestampHistorySource::Combined,
-        }) if branch_id == branch
-            && requested_timestamp == Timestamp::from_micros(49)
-            && earliest == Timestamp::from_micros(50) => {}
         Err(err) => {
             return Err(TestkitError::new(format!(
-                "canonical coverage returned wrong error: {err}",
+                "unknown coverage returned unexpected error: {err}",
             )))
         }
-        Ok(_) => {
+        Ok(Some(_)) => {
             return Err(TestkitError::new(
-                "canonical coverage accepted insufficient timestamp",
+                "unknown coverage returned a row outside the timestamp bound",
             ))
         }
+        Ok(None) => {}
     }
     outcome.unknown_timestamp_coverage_reads += 1;
 

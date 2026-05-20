@@ -2035,6 +2035,76 @@ fn branch_compaction_materialized_replacements_are_inputs_but_outputs_are_plain_
 }
 
 #[test]
+fn branch_compaction_preserves_replacement_refs_for_single_materialization_source() {
+    let source = branch_id(139);
+    let child = branch_id(140);
+    let materialization_source = BranchMaterializationSource::new(source, CommitVersion::new(7));
+    let mut state = BranchLocalState::empty(child);
+    for (identity, key, version) in [
+        (
+            "compact-replacement-a",
+            b"compact-replacement-a".to_vec(),
+            6,
+        ),
+        (
+            "compact-replacement-b",
+            b"compact-replacement-b".to_vec(),
+            7,
+        ),
+    ] {
+        let reader = immutable_reader(
+            identity,
+            vec![storage_row_with(
+                child,
+                key,
+                version,
+                version * 10,
+                Timestamp::EPOCH,
+                identity.as_bytes().to_vec(),
+            )],
+        );
+        let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+        state
+            .install_l0_table(
+                BranchOwnedTable::new_materialization_replacement(
+                    child,
+                    descriptor,
+                    reader,
+                    materialization_source,
+                )
+                .expect("replacement table"),
+            )
+            .expect("install replacement input");
+    }
+
+    let request = BranchCompactionRequest::new(
+        child,
+        BranchCompactionKind::CompactL0,
+        "compact-replacement-output",
+    )
+    .expect("request");
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact replacements");
+
+    assert!(outcome.output_refs().iter().all(|table_ref| matches!(
+        table_ref.reference_kind(),
+        BranchTableReferenceKind::Replacement {
+            source_branch_id,
+            fork_version,
+        } if source_branch_id == source && fork_version == CommitVersion::new(7)
+    )));
+    let snapshot = state.reachability_snapshot().expect("post snapshot");
+    assert!(snapshot.table_refs().iter().all(|table_ref| matches!(
+        table_ref.reference_kind(),
+        BranchTableReferenceKind::Replacement {
+            source_branch_id,
+            fork_version,
+        } if source_branch_id == source && fork_version == CommitVersion::new(7)
+    )));
+}
+
+#[test]
 fn branch_compaction_l5_build_failure_preserves_state_without_partial_outputs() {
     let branch = branch_id(134);
     let mut state = BranchLocalState::empty(branch);
