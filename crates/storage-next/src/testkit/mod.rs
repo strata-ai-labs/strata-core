@@ -5,6 +5,7 @@
 use std::fmt;
 
 mod branch_lsm;
+mod commit_runtime;
 mod format_fuzz;
 mod integration_harness;
 mod quarantine_fuzz;
@@ -17,6 +18,7 @@ pub use branch_lsm::{
     check_branch_lsm_reference_model_contract, check_branch_lsm_scaffold_contract,
     BranchLsmScaffoldOutcome,
 };
+pub use commit_runtime::{check_commit_runtime_scaffold_contract, CommitRuntimeScaffoldOutcome};
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
 };

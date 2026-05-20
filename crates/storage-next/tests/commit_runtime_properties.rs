@@ -1,0 +1,43 @@
+//! Generated commit-runtime scaffold property harness.
+
+#![deny(unsafe_code)]
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn commit_runtime_property_harness_runs_scaffold_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_commit_runtime_scaffold_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/commit_runtime.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=64), |script| {
+            let outcome = check_commit_runtime_scaffold_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.valid_config_cases() == 0
+                || outcome.invalid_config_cases() == 0
+                || outcome.phase_fact_cases() == 0
+                || outcome.visibility_fact_cases() == 0
+                || outcome.invalid_visibility_fact_cases() == 0
+                || outcome.error_display_cases() == 0
+                || outcome.error_source_cases() == 0
+                || outcome.stats_cases() == 0
+                || outcome.source_guard_fixture_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "commit runtime scaffold contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated commit runtime scaffold property");
+}

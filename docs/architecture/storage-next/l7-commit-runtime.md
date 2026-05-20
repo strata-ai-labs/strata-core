@@ -117,7 +117,7 @@ L7 Commit Runtime
   applies committed rows through L6
   |
   +--> L4 Log / Manifest / Snapshot Services
-  |      append WAL record, apply standard/always durability policy
+  |      append WAL record envelope, apply standard/always durability policy
   |
   +--> L6 Branch-Isolated LSM Runtime
          install rows/tombstones into branch-local mutable state
@@ -140,9 +140,9 @@ transactions.
   read-your-writes behavior, read set, delete set, CAS set, TTL map, write
   modes, transaction lifecycle, and apply summary.
 - `crates/storage/src/txn/manager.rs`: storage-owned transaction manager,
-  commit version allocation, transaction ID allocation, branch commit locks,
-  commit quiescing, visible-version tracking, pending-version tracking, branch
-  deletion barriers, and no-WAL commit path.
+  commit version allocation, retired transaction ID allocation evidence, branch
+  commit locks, commit quiescing, visible-version tracking, pending-version
+  tracking, branch deletion barriers, and no-WAL commit path.
 - `crates/storage/src/txn/validation.rs`: read-set and CAS validation. Current
   semantics are snapshot isolation with first-committer-wins over read-set/CAS
   facts; blind writes do not conflict.
@@ -564,9 +564,13 @@ timestamp-to-version substrate.
 The timeline is storage-native V1 substrate:
 
 ```text
-branch id + commit timestamp -> commit version
-branch id + commit version    -> commit timestamp
+branch id + commit timestamp + commit version -> commit version
+branch id + commit version                    -> commit timestamp
 ```
+
+Timestamp lookup returns the greatest retained commit version at or before the
+requested timestamp. If multiple commits share a timestamp, the greatest commit
+version is the deterministic tiebreaker.
 
 The physical representation is a storage-owned system-row family under
 `storage_space_id = 0x01`, defined in
@@ -585,10 +589,12 @@ During WAL replay:
 2. L3 decodes commit payloads.
 3. L8 submits recovered rows to L6 using the version and timestamp from the WAL.
 4. L7's version clock catches up above the maximum recovered commit version.
-5. L7's transaction ID allocator catches up above the maximum recovered
-   transaction ID if storage keeps transaction IDs.
-6. L7 restores visible-version facts only after recovery has installed durable
+5. L7 restores visible-version facts only after recovery has installed durable
    rows into L6.
+
+V1 storage-next does not keep durable storage transaction IDs. If a future
+private optimization reintroduces them, it must also add allocator catch-up
+rules and tests.
 
 Recovery replay should bypass normal conflict validation. The WAL record already
 represents a committed durability fact.
@@ -628,7 +634,6 @@ Important failures:
 - commit conflict
 - commit timed out or exceeded configured limits
 - version counter overflow
-- transaction ID counter overflow if transaction IDs remain
 - WAL writer halted
 - WAL append/sync failed
 - commit durable but not visible
@@ -715,7 +720,7 @@ Durability tests:
 1. WAL append failure leaves no visible rows.
 2. Crash after WAL append and before visibility replays the commit.
 3. L6 apply failure after WAL append returns durable-but-not-visible.
-4. Recovery catches up version and transaction ID allocators.
+4. Recovery catches up the commit-version allocator.
 5. WAL timestamps are preserved through recovery.
 6. WAL-free cache mode does not claim crash durability.
 
@@ -752,7 +757,7 @@ The first storage-next L7 implementation needs:
 11. Atomic L6 apply for puts and tombstones.
 12. Visible-version publication after L6 apply.
 13. Durable-but-not-visible error classification.
-14. Recovery catch-up hooks for version and transaction ID allocators.
+14. Recovery catch-up hooks for the commit-version allocator.
 15. Direct L7 tests for conflict, ordering, WAL failure, version gaps, and
     crash-point behavior.
 
@@ -770,6 +775,7 @@ Not required for V1:
 8. Nested transactions.
 9. Two-phase commit.
 10. External transaction IDs as a public API.
+11. Durable storage transaction IDs and transaction-ID allocator catch-up.
 
 ## Open Questions
 

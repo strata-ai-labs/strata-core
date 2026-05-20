@@ -29,7 +29,7 @@ roadmap labels in production code vocabulary.
 |---|---|---|---|
 | `M4-L5` | Table runtime | `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md` | Table mechanics pass direct model/property/conformance tests without branch, commit, recovery, or engine concepts. |
 | `M4-L6` | Branch LSM runtime | `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-implementation-plan.md` | Branch-aware reads match model tests across inheritance, tombstones, TTL, and retention boundaries. |
-| `M4-L7` | Commit runtime | TBD | Cache, standard, and always commit paths classify ambiguous outcomes and preserve ordering. |
+| `M4-L7` | Commit runtime | `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md` | Cache, standard, and always commit paths classify ambiguous outcomes and preserve ordering. |
 | `M4-L8` | Lifecycle, recovery, maintenance | TBD | Recovery converges to committed visible state or a structured failure without inventing or losing durable data. |
 | `M4-L9` | Storage API boundary | TBD | Engine-next can use storage through L9 without reaching lower modules. |
 
