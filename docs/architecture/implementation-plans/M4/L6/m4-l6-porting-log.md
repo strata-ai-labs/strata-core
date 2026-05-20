@@ -1354,3 +1354,133 @@ deferred, and what old code became eligible for retirement.
 - Follow-up: L6J/L6K/L8 will retire more old branch behavior after branch
   compaction safety, snapshot install, durable reachability publication, and
   lifecycle recovery land in storage-next.
+
+## L6J: Branch Compaction Integration
+
+### Current Files Read
+
+- `crates/storage/src/segmented/compaction.rs`
+- `crates/storage/src/segmented/tests/compaction.rs`
+- `crates/storage/src/segmented/tests/concurrency.rs`
+- `crates/storage/src/segmented/ref_registry.rs`
+- `crates/storage-next/src/table/compaction.rs`
+- `crates/storage-next/src/branch/{state.rs,read.rs,facts.rs,error.rs}`
+- `docs/architecture/implementation-plans/M4/L6/l6j-branch-compaction-integration-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L6/l6j-branch-compaction-integration-test-plan.md`
+
+### Behavior Preserved
+
+- Preserved compaction as a branch-local table replacement: selected immutable
+  tables are merged through the table runtime, replacement tables are installed,
+  and old table refs are reported for later lifecycle cleanup.
+- Preserved L0 overlap semantics. L0 keep-all compaction may rewrite overlapping
+  L0 tables without changing latest, version-bounded, timestamp-bounded, or
+  history reads.
+- Preserved next-level overlap inclusion for L0-to-L1 and nonzero-level
+  compactions. Candidate selection now uses physical-key overlap so different
+  versions of the same logical key are compacted together even when internal-key
+  ranges differ by commit version.
+- Preserved the old safety split between replacement and cleanup: L6J emits
+  removed refs but does not delete objects, publish manifests, or treat
+  compaction as a release proof by itself.
+- Preserved concurrent-state safety at the in-memory boundary by revalidating
+  candidate refs immediately before building sources and again before install.
+
+### Intentional V1 Changes
+
+- Did not port old score-based background scheduling, async task loops,
+  filesystem segment paths, manifest writes, rate limiting, environment
+  logging, or physical segment deletion.
+- Did not port pruning heuristics. L6J accepts only keep-all compaction for now;
+  old-version, tombstone, and TTL pruning requests are rejected as typed
+  `InvalidCompaction` errors until a later slice supplies explicit retention
+  proofs.
+- Rebuilt compaction over L5 `TableCompactor` and storage-next branch-owned
+  table refs rather than old segment ids.
+- Kept active rows, frozen rows, inherited source tables, and materializing
+  source refs out of direct compaction inputs. Materialized replacement tables
+  are treated as ordinary owned-like tables for future compaction.
+
+### Deferred
+
+- Retention-proof-backed old-version, tombstone, and TTL pruning.
+- Score-based scheduling, compaction picking policy, and background execution.
+- Durable branch manifest publication and crash-window reconciliation.
+- Physical table-object deletion, quarantine handoff, and release execution.
+- Snapshot row install integration remains L6K.
+
+### Tests Ported Or Added
+
+- Added branch-local tests for unsafe pruning rejection, L0 keep-all compaction,
+  L0-to-L1 overlap inclusion, nonzero-level promotion, explicit no-op plans,
+  stale-plan revalidation, and output-identity collision rejection without
+  mutation.
+- Expanded the direct L6J suite with invalid level/table-index requests,
+  mutable/frozen/inherited source exclusion, keep-all read parity across
+  active/frozen/inherited rows, tombstones, TTL rows, high-bit keys, and split
+  outputs, materialized-replacement compaction inputs, L5 build-failure
+  atomicity, registry-disagreement protection, and branch-clear release facts
+  for compaction outputs.
+- Extended the generated branch-LSM testkit with compaction no-op, L0,
+  L0-to-L1, nonzero-level, keep-all parity, output split, stale-candidate,
+  unsafe-pruning, release-candidate, protected-release, and invalid-request
+  counters.
+- Extended `branch_lsm_properties.rs` so every L6J generated compaction counter
+  must be nonzero.
+- Updated the branch source guard to mark compaction planning/install as L6J
+  owned while continuing to reject snapshot install, backend IO, lifecycle, and
+  product DTO vocabulary.
+
+### Sensitivity Probes
+
+- `branch_compaction_rejects_pruning_policies_without_mutation` catches
+  accidental row-dropping policy enablement before retention proofs exist.
+- `branch_compaction_l0_keep_all_installs_replacement_and_preserves_pinned_view`
+  catches keep-all read-parity loss and pinned read-view invalidation across an
+  L0 rewrite.
+- `branch_compaction_l0_to_level_one_includes_overlaps_and_preserves_non_overlaps`
+  catches missing physical-key overlap inclusion and accidental deletion of
+  unrelated L1 tables.
+- `branch_compaction_nonzero_level_promotes_overlapping_tables_only` catches
+  nonzero-level overlap omission and target-level ordering drift.
+- `branch_compaction_install_revalidates_stale_plan_before_mutation` catches
+  stale candidate refs being applied after a concurrent branch-state mutation.
+- `branch_compaction_rejects_output_identity_collision_without_mutation` catches
+  replacement output ids that would alias a surviving branch-owned table.
+- `branch_compaction_rejects_inherited_output_identity_collision_without_mutation`
+  catches replacement output ids that would alias an inherited reachable table.
+- `branch_compaction_candidates_exclude_mutable_and_inherited_sources` catches
+  active, frozen, inherited, or value-bearing facts entering candidate refs.
+- `branch_compaction_keep_all_read_parity_covers_mutable_inherited_ttl_and_split_outputs`
+  catches keep-all parity drift across read modes, tombstone filtering, TTL
+  visibility, high-bit keys, active/frozen/inherited rows, and split outputs.
+- `branch_compaction_materialized_replacements_are_inputs_but_outputs_are_plain_owned_refs`
+  catches rejected materialized-replacement inputs and replacement provenance
+  leaking into ordinary compaction outputs.
+- `branch_compaction_l5_build_failure_preserves_state_without_partial_outputs`
+  catches partial output visibility after an L5 output-build failure.
+- `branch_compaction_release_facts_cover_shared_refs_disagreement_and_clear_outputs`
+  catches registry-disagreement misclassification and branch-clear release of
+  stale removed refs instead of visible output refs.
+- The generated branch-LSM property harness catches missing generated coverage
+  for compaction no-ops, candidate shapes, keep-all read parity, output splits,
+  stale candidates, unsafe pruning rejection, and release/protection facts.
+
+### Verification
+
+- `cargo test -p strata-storage-next --locked --lib branch_compaction`
+- `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard`
+- `cargo test -p strata-storage-next --features testkit --locked --test branch_lsm_properties`
+- `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test branch_lsm_properties`
+- `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+- `cargo fmt --package strata-storage-next --check`
+- `git diff --check`
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old segmented compaction and compaction tests remain because
+  current storage still depends on them.
+- Follow-up: L6K/L6L/L8 will close snapshot install, full L6 conformance, and
+  durable compaction lifecycle orchestration.

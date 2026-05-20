@@ -41,6 +41,9 @@ pub(crate) enum BranchRuntimeError {
     InvalidReachability {
         reason: &'static str,
     },
+    InvalidCompaction {
+        reason: &'static str,
+    },
     TableRuntime {
         source: TableRuntimeError,
     },
@@ -106,6 +109,10 @@ impl PartialEq for BranchRuntimeError {
             | (
                 Self::InvalidReachability { reason: left },
                 Self::InvalidReachability { reason: right },
+            )
+            | (
+                Self::InvalidCompaction { reason: left },
+                Self::InvalidCompaction { reason: right },
             ) => left == right,
             (
                 Self::InsufficientTimestampHistory {
@@ -195,6 +202,9 @@ impl fmt::Display for BranchRuntimeError {
             Self::InvalidReachability { reason } => {
                 write!(formatter, "branch reachability facts are invalid: {reason}")
             }
+            Self::InvalidCompaction { reason } => {
+                write!(formatter, "branch compaction request is invalid: {reason}")
+            }
             Self::TableRuntime { source } => {
                 write!(formatter, "table runtime operation failed: {source}")
             }
@@ -222,6 +232,7 @@ impl Error for BranchRuntimeError {
             | Self::InsufficientTimestampHistory { .. }
             | Self::InvalidInheritedLayer { .. }
             | Self::InvalidReachability { .. }
+            | Self::InvalidCompaction { .. }
             | Self::Publish { source: None, .. } => None,
         }
     }

@@ -419,6 +419,9 @@ Detailed slice test plan:
 
 ### 16. Branch Compaction Integration
 
+Detailed slice test plan:
+`docs/architecture/implementation-plans/M4/L6/l6j-branch-compaction-integration-test-plan.md`
+
 1. Candidate selection is branch-local.
 2. L6 supplies L5 with explicit keep/drop policy.
 3. Keep-all branch compaction preserves all reads.

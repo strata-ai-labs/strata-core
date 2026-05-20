@@ -73,8 +73,11 @@ pub(crate) use read::{
     )
 )]
 pub(crate) use state::{
-    BranchAppendOutcome, BranchForkOutcome, BranchImmutableInstallOutcome,
-    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
+    BranchAppendOutcome, BranchCompactionCandidate, BranchCompactionKind,
+    BranchCompactionNoopReason, BranchCompactionOutcome, BranchCompactionPlan,
+    BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
+    BranchForkOutcome, BranchImmutableInstallOutcome, BranchMaterializationOutcome,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

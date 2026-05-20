@@ -134,8 +134,9 @@ fn branch_lsm_source_has_no_premature_behavior_entrypoints() {
     // pinned own-branch read-view methods. L6E owns branch-owned immutable
     // level install methods. L6F owns storage-level fork/inheritance helpers.
     // L6H owns materialization mechanics. L6I owns reachability snapshots and
-    // shared table registry facts. Later behavior-owning L6 slices should
-    // narrow this guard as they add compaction or snapshot install entrypoints.
+    // shared table registry facts. L6J owns branch-local compaction planning
+    // and keep-all owned-table replacement. Later behavior-owning L6 slices
+    // should narrow this guard as they add snapshot install entrypoints.
     for file in branch_lsm_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read branch LSM source");
         for (line_number, line) in text.lines().enumerate() {
@@ -220,9 +221,6 @@ fn branch_lsm_source_guard_catches_required_forbidden_terms() {
         "pub(crate) fn install_snapshot_rows() {}"
     ));
     assert!(contains_premature_behavior_entrypoint(
-        "pub(crate) fn compact_branch() {}"
-    ));
-    assert!(contains_premature_behavior_entrypoint(
         "pub(crate) fn fork_branch() {}"
     ));
 }
@@ -247,6 +245,8 @@ fn branch_lsm_source_guard_allows_owned_l6_entrypoints() {
         "pub(crate) fn fork_into_empty_child(&self) {}",
         "pub(crate) fn materialize_inherited_layer(&mut self) {}",
         "pub(crate) fn reachability_snapshot(&self) {}",
+        "pub(crate) fn plan_branch_compaction(&self) {}",
+        "pub(crate) fn compact_branch_owned_tables(&mut self) {}",
         "pub(crate) const fn latest() -> Self",
         "pub(crate) const fn fork_version(self) -> CommitVersion",
     ] {
@@ -376,7 +376,6 @@ fn contains_premature_behavior_entrypoint(line: &str) -> bool {
         "fn create_inherited",
         "fn install_immutable",
         "fn install_snapshot",
-        "fn compact",
         "fn fork_branch",
     ]
     .iter()
