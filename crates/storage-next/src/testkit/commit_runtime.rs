@@ -14,6 +14,7 @@ use std::fmt;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
+use super::commit_runtime_branch_guards::check_commit_runtime_branch_guard_contract;
 use super::commit_runtime_outcome::check_commit_runtime_outcome_contract;
 use super::TestkitError;
 
@@ -58,6 +59,21 @@ pub struct CommitRuntimeScaffoldOutcome {
     mutation_count_facts: usize,
     cross_branch_read_only_facts: usize,
     read_only_outcome_no_allocations: usize,
+    branch_registration_successes: usize,
+    duplicate_registration_rejections: usize,
+    missing_branch_rejections: usize,
+    deleting_branch_rejections: usize,
+    generation_exact_matches: usize,
+    generation_mismatches: usize,
+    generation_not_supplied: usize,
+    stale_generation_after_recreate: usize,
+    same_branch_guard_contentions: usize,
+    different_branch_simultaneous_guards: usize,
+    quiesce_start_successes: usize,
+    quiesce_rejected_with_active_guards: usize,
+    mutating_guard_rejected_during_quiesce: usize,
+    read_only_allowed_during_quiesce: usize,
+    guard_release_and_reacquire: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -250,6 +266,81 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn read_only_outcome_no_allocation_cases(self) -> usize {
         self.read_only_outcome_no_allocations
     }
+
+    /// Number of branch registration success cases exercised.
+    pub const fn branch_registration_success_cases(self) -> usize {
+        self.branch_registration_successes
+    }
+
+    /// Number of duplicate branch registration rejection cases exercised.
+    pub const fn duplicate_registration_rejection_cases(self) -> usize {
+        self.duplicate_registration_rejections
+    }
+
+    /// Number of missing branch rejection cases exercised.
+    pub const fn missing_branch_rejection_cases(self) -> usize {
+        self.missing_branch_rejections
+    }
+
+    /// Number of deleting/deleted branch rejection cases exercised.
+    pub const fn deleting_branch_rejection_cases(self) -> usize {
+        self.deleting_branch_rejections
+    }
+
+    /// Number of exact generation match cases exercised.
+    pub const fn generation_exact_match_cases(self) -> usize {
+        self.generation_exact_matches
+    }
+
+    /// Number of generation mismatch cases exercised.
+    pub const fn generation_mismatch_cases(self) -> usize {
+        self.generation_mismatches
+    }
+
+    /// Number of not-supplied generation cases exercised.
+    pub const fn generation_not_supplied_cases(self) -> usize {
+        self.generation_not_supplied
+    }
+
+    /// Number of stale generation after recreate cases exercised.
+    pub const fn stale_generation_after_recreate_cases(self) -> usize {
+        self.stale_generation_after_recreate
+    }
+
+    /// Number of same-branch guard contention cases exercised.
+    pub const fn same_branch_guard_contention_cases(self) -> usize {
+        self.same_branch_guard_contentions
+    }
+
+    /// Number of simultaneous different-branch guard cases exercised.
+    pub const fn different_branch_simultaneous_guard_cases(self) -> usize {
+        self.different_branch_simultaneous_guards
+    }
+
+    /// Number of successful quiesce start cases exercised.
+    pub const fn quiesce_start_success_cases(self) -> usize {
+        self.quiesce_start_successes
+    }
+
+    /// Number of quiesce-with-active-guard rejection cases exercised.
+    pub const fn quiesce_rejected_with_active_guard_cases(self) -> usize {
+        self.quiesce_rejected_with_active_guards
+    }
+
+    /// Number of mutating guard rejected during quiesce cases exercised.
+    pub const fn mutating_guard_rejected_during_quiesce_cases(self) -> usize {
+        self.mutating_guard_rejected_during_quiesce
+    }
+
+    /// Number of read-only during quiesce cases exercised.
+    pub const fn read_only_allowed_during_quiesce_cases(self) -> usize {
+        self.read_only_allowed_during_quiesce
+    }
+
+    /// Number of guard release and reacquire cases exercised.
+    pub const fn guard_release_and_reacquire_cases(self) -> usize {
+        self.guard_release_and_reacquire
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -295,6 +386,21 @@ pub fn check_commit_runtime_scaffold_contract(
         mutation_count_facts: 0,
         cross_branch_read_only_facts: 0,
         read_only_outcome_no_allocations: 0,
+        branch_registration_successes: 0,
+        duplicate_registration_rejections: 0,
+        missing_branch_rejections: 0,
+        deleting_branch_rejections: 0,
+        generation_exact_matches: 0,
+        generation_mismatches: 0,
+        generation_not_supplied: 0,
+        stale_generation_after_recreate: 0,
+        same_branch_guard_contentions: 0,
+        different_branch_simultaneous_guards: 0,
+        quiesce_start_successes: 0,
+        quiesce_rejected_with_active_guards: 0,
+        mutating_guard_rejected_during_quiesce: 0,
+        read_only_allowed_during_quiesce: 0,
+        guard_release_and_reacquire: 0,
     };
 
     check_valid_config(script)?;
@@ -331,6 +437,17 @@ pub fn check_commit_runtime_scaffold_contract(
     outcome.stamping_cases += 1;
     outcome.stamping_rejections += check_stamping_rejections()?;
 
+    absorb_allocator_contract(script, &mut outcome)?;
+    absorb_outcome_contract(script, &mut outcome)?;
+    absorb_branch_guard_contract(script, &mut outcome)?;
+
+    Ok(outcome)
+}
+
+fn absorb_allocator_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
     let allocator_outcome = check_commit_runtime_allocator_contract(script)?;
     outcome.version_allocations += allocator_outcome.version_allocations;
     outcome.version_catch_ups += allocator_outcome.version_catch_ups;
@@ -342,7 +459,13 @@ pub fn check_commit_runtime_scaffold_contract(
     outcome.timestamp_source_failures += allocator_outcome.timestamp_source_failures;
     outcome.read_only_no_allocations += allocator_outcome.read_only_no_allocations;
     outcome.no_transaction_id_checks += allocator_outcome.no_transaction_id_checks;
+    Ok(())
+}
 
+fn absorb_outcome_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
     let outcome_contract = check_commit_runtime_outcome_contract(script)?;
     outcome.read_only_outcomes += outcome_contract.read_only_outcomes;
     outcome.read_only_disabled_rejections += outcome_contract.read_only_disabled_rejections;
@@ -356,8 +479,36 @@ pub fn check_commit_runtime_scaffold_contract(
     outcome.mutation_count_facts += outcome_contract.mutation_count_facts;
     outcome.cross_branch_read_only_facts += outcome_contract.cross_branch_read_only_facts;
     outcome.read_only_outcome_no_allocations += outcome_contract.read_only_no_allocation_proofs;
+    Ok(())
+}
 
-    Ok(outcome)
+fn absorb_branch_guard_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let branch_guard_contract = check_commit_runtime_branch_guard_contract(script)?;
+    outcome.branch_registration_successes += branch_guard_contract.branch_registration_successes;
+    outcome.duplicate_registration_rejections +=
+        branch_guard_contract.duplicate_registration_rejections;
+    outcome.missing_branch_rejections += branch_guard_contract.missing_branch_rejections;
+    outcome.deleting_branch_rejections += branch_guard_contract.deleting_branch_rejections;
+    outcome.generation_exact_matches += branch_guard_contract.generation_exact_matches;
+    outcome.generation_mismatches += branch_guard_contract.generation_mismatches;
+    outcome.generation_not_supplied += branch_guard_contract.generation_not_supplied;
+    outcome.stale_generation_after_recreate +=
+        branch_guard_contract.stale_generation_after_recreate;
+    outcome.same_branch_guard_contentions += branch_guard_contract.same_branch_guard_contentions;
+    outcome.different_branch_simultaneous_guards +=
+        branch_guard_contract.different_branch_simultaneous_guards;
+    outcome.quiesce_start_successes += branch_guard_contract.quiesce_start_successes;
+    outcome.quiesce_rejected_with_active_guards +=
+        branch_guard_contract.quiesce_rejected_with_active_guards;
+    outcome.mutating_guard_rejected_during_quiesce +=
+        branch_guard_contract.mutating_guard_rejected_during_quiesce;
+    outcome.read_only_allowed_during_quiesce +=
+        branch_guard_contract.read_only_allowed_during_quiesce;
+    outcome.guard_release_and_reacquire += branch_guard_contract.guard_release_and_reacquire;
+    Ok(())
 }
 
 fn check_valid_config(script: &[u8]) -> Result<(), TestkitError> {

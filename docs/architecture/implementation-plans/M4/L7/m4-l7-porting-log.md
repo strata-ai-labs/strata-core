@@ -431,3 +431,105 @@ Verified for L7D:
 6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 7. `cargo fmt --package strata-storage-next --check`
 8. `git diff --check`
+
+## L7E: Branch Registry And Commit Guards
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+4. `docs/architecture/implementation-plans/M4/L7/l7e-branch-registry-commit-guards-implementation-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7e-branch-registry-commit-guards-test-plan.md`
+6. `crates/storage-next/src/commit/`
+7. `crates/storage/src/txn/manager.rs`
+8. `crates/storage/src/txn/lock_ordering.rs`
+9. `crates/engine/src/database/transaction.rs`
+
+### Preserved As Behavior
+
+1. Branch commit admission is separated from version allocation, timestamp
+   allocation, WAL append, and L6 apply.
+2. Missing branches reject before allocation.
+3. Deleting or deleted branches reject before allocation.
+4. Optional branch-generation facts are enforced exactly when supplied.
+5. Same-branch mutating guard acquisition is serialized.
+6. Different-branch mutating guards can be live at the same time.
+7. Quiesce blocks new mutating guard acquisition.
+8. Guard tokens release through RAII on clean and error paths.
+9. Read-only diagnostics remain outside the mutating guard path.
+
+### Intentionally Changed Or Retired
+
+1. L7E does not port public branch lifecycle commands from engine code.
+2. L7E does not port public transaction sessions or transaction ids from the
+   old transaction manager.
+3. L7E keeps quiesce nonblocking. L7L owns wait/timeout behavior and
+   deterministic scheduler coverage.
+4. L7E treats branch generation as an optional storage fact. L9 owns public
+   branch-id reuse semantics; L7E only rejects stale exact facts when supplied.
+5. L7E stores registry descriptors in explicit runtime state, not process-global
+   state.
+6. L7E still does not validate read-set/CAS conflicts, construct timeline rows,
+   apply L6 rows, append WAL, publish visibility, or replay durable records.
+
+### Deferred By Owner Slice
+
+1. `L7F`: read-set and CAS validation over L6 read views.
+2. `L7G`: timeline row construction and lookup.
+3. `L7H`: cache/no-WAL apply into L6 after admission.
+4. `L7I`: WAL append after admission and before L6 apply.
+5. `L7J`: durable-but-not-visible write gate.
+6. `L7K`: replay and allocator catch-up.
+7. `L7L`: blocking quiesce, timeout facts, deterministic interleaving
+   scheduler, and optional loom coverage.
+8. `L8`: checkpoint/recovery orchestration that uses quiesce.
+9. `L9`: public branch lifecycle API and branch-generation ownership.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/branch_registry.rs`
+2. `crates/storage-next/src/commit/guard.rs`
+3. Branch registry direct tests in
+   `crates/storage-next/src/commit/tests/branch_registry.rs`
+4. Guard/quiesce direct tests in
+   `crates/storage-next/src/commit/tests/guard.rs`
+5. Generated branch-guard checks in
+   `crates/storage-next/src/testkit/commit_runtime_branch_guards.rs`
+6. Generated counter assertions in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+7. Existing commit-runtime source guards continue to cover the new production
+   modules.
+
+### Sensitivity Probes
+
+Planned L7E probes:
+
+1. Treat missing branch as active; missing-branch direct/generated tests must
+   fail.
+2. Ignore deleting/deleted markers; branch-not-writable tests must fail.
+3. Ignore supplied generation mismatch; generation-mismatch tests must fail.
+4. Treat stale generation after recreate as valid; recreate-generation tests
+   must fail.
+5. Allow same-branch double guard; guard serialization tests must fail.
+6. Leak guard token on drop; reacquire-after-drop tests must fail.
+7. Allow mutating guard during quiesce; quiesce-blocking tests must fail.
+8. Start quiesce while mutating guards are active; active-guard quiesce tests
+   must fail.
+9. Route read-only diagnostics through the mutating guard path; read-only
+   during quiesce tests must fail.
+10. Import L6, WAL, backend, layout, table internals, filesystem, or engine code
+    into registry/guard modules; source guard must fail.
+
+### Command Evidence
+
+Verified for L7E:
+
+1. `cargo test -p strata-storage-next --locked --lib commit`
+2. `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_properties`
+3. `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test commit_runtime_properties`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+5. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+7. `cargo fmt --package strata-storage-next --check`
+8. `git diff --check`

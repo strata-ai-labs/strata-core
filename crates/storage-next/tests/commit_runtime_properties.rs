@@ -20,7 +20,7 @@ fn commit_runtime_property_harness_runs_scaffold_contract() {
     });
 
     runner
-        .run(&vec(any::<u8>(), 0..=64), |script| {
+        .run(&vec(any::<u8>(), 0..=66), |script| {
             let outcome = check_commit_runtime_scaffold_contract(&script)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             if outcome.valid_config_cases() == 0
@@ -61,6 +61,21 @@ fn commit_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.mutation_count_fact_cases() == 0
                 || outcome.cross_branch_read_only_fact_cases() == 0
                 || outcome.read_only_outcome_no_allocation_cases() == 0
+                || outcome.branch_registration_success_cases() == 0
+                || outcome.duplicate_registration_rejection_cases() == 0
+                || outcome.missing_branch_rejection_cases() == 0
+                || outcome.deleting_branch_rejection_cases() == 0
+                || outcome.generation_exact_match_cases() == 0
+                || outcome.generation_mismatch_cases() == 0
+                || outcome.generation_not_supplied_cases() == 0
+                || outcome.stale_generation_after_recreate_cases() == 0
+                || outcome.same_branch_guard_contention_cases() == 0
+                || outcome.different_branch_simultaneous_guard_cases() == 0
+                || outcome.quiesce_start_success_cases() == 0
+                || outcome.quiesce_rejected_with_active_guard_cases() == 0
+                || outcome.mutating_guard_rejected_during_quiesce_cases() == 0
+                || outcome.read_only_allowed_during_quiesce_cases() == 0
+                || outcome.guard_release_and_reacquire_cases() == 0
             {
                 return Err(TestCaseError::fail(
                     "commit runtime scaffold contract did not exercise all categories",

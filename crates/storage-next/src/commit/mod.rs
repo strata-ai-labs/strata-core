@@ -10,9 +10,11 @@
 
 mod allocator;
 mod batch;
+mod branch_registry;
 mod config;
 mod error;
 mod facts;
+mod guard;
 mod outcome;
 mod result;
 mod visibility;
@@ -35,6 +37,15 @@ pub(crate) use batch::{
     CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry, CommitMutation,
     CommitObservedVersion, CommitOrigin, CommitReadFact, CommitRetentionHint, CommitStamp,
     CommitTimestampPolicy, CommitValidationFacts, StampedCommitRows, ValidatedCommitBatch,
+};
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use branch_registry::{
+    admit_mutating_commit, CommitBranchAdmission, CommitBranchAdmissionGuard,
+    CommitBranchDescriptor, CommitBranchGeneration, CommitBranchGenerationGuard,
+    CommitBranchRegistry, CommitBranchState,
 };
 #[cfg_attr(
     not(test),
@@ -62,6 +73,11 @@ pub(crate) use error::{CommitLowerLayer, CommitRuntimeError};
 pub(crate) use facts::{
     CommitDurabilityClass, CommitPhase, CommitRuntimeStats, CommitVisibilityFacts,
 };
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use guard::{CommitBranchGuard, CommitBranchGuardSet, CommitQuiesceGuard};
 #[allow(
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"

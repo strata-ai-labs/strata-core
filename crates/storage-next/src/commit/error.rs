@@ -37,6 +37,32 @@ pub(crate) enum CommitRuntimeError {
         expected: BranchId,
         actual: BranchId,
     },
+    BranchAlreadyExists {
+        branch_id: BranchId,
+    },
+    BranchNotFound {
+        branch_id: BranchId,
+    },
+    BranchNotWritable {
+        branch_id: BranchId,
+        reason: &'static str,
+    },
+    BranchGenerationMismatch {
+        branch_id: BranchId,
+        expected: u64,
+        actual: u64,
+    },
+    BranchGenerationExhausted {
+        branch_id: BranchId,
+        generation: u64,
+    },
+    BranchGuardUnavailable {
+        branch_id: BranchId,
+        reason: &'static str,
+    },
+    CommitQuiesceUnavailable {
+        reason: &'static str,
+    },
     StorageOwnedMutationSpace {
         space_id: StorageSpaceId,
     },
@@ -110,6 +136,10 @@ impl CommitRuntimeError {
 }
 
 impl PartialEq for CommitRuntimeError {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "manual equality intentionally ignores stored source chains"
+    )]
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -139,6 +169,10 @@ impl PartialEq for CommitRuntimeError {
             | (
                 Self::InvalidValidationFacts { reason: left },
                 Self::InvalidValidationFacts { reason: right },
+            )
+            | (
+                Self::CommitQuiesceUnavailable { reason: left },
+                Self::CommitQuiesceUnavailable { reason: right },
             )
             | (
                 Self::BranchUnavailable { reason: left },
@@ -190,6 +224,60 @@ impl PartialEq for CommitRuntimeError {
                     actual: right_actual,
                 },
             ) => left_expected == right_expected && left_actual == right_actual,
+            (
+                Self::BranchAlreadyExists { branch_id: left },
+                Self::BranchAlreadyExists { branch_id: right },
+            )
+            | (
+                Self::BranchNotFound { branch_id: left },
+                Self::BranchNotFound { branch_id: right },
+            ) => left == right,
+            (
+                Self::BranchNotWritable {
+                    branch_id: left_branch,
+                    reason: left_reason,
+                },
+                Self::BranchNotWritable {
+                    branch_id: right_branch,
+                    reason: right_reason,
+                },
+            )
+            | (
+                Self::BranchGuardUnavailable {
+                    branch_id: left_branch,
+                    reason: left_reason,
+                },
+                Self::BranchGuardUnavailable {
+                    branch_id: right_branch,
+                    reason: right_reason,
+                },
+            ) => left_branch == right_branch && left_reason == right_reason,
+            (
+                Self::BranchGenerationMismatch {
+                    branch_id: left_branch,
+                    expected: left_expected,
+                    actual: left_actual,
+                },
+                Self::BranchGenerationMismatch {
+                    branch_id: right_branch,
+                    expected: right_expected,
+                    actual: right_actual,
+                },
+            ) => {
+                left_branch == right_branch
+                    && left_expected == right_expected
+                    && left_actual == right_actual
+            }
+            (
+                Self::BranchGenerationExhausted {
+                    branch_id: left_branch,
+                    generation: left_generation,
+                },
+                Self::BranchGenerationExhausted {
+                    branch_id: right_branch,
+                    generation: right_generation,
+                },
+            ) => left_branch == right_branch && left_generation == right_generation,
             (
                 Self::LowerLayer {
                     layer: left_layer,
@@ -249,6 +337,13 @@ impl fmt::Display for CommitRuntimeError {
                     "commit branch mismatch: expected {expected}, actual {actual}"
                 )
             }
+            Self::BranchAlreadyExists { .. }
+            | Self::BranchNotFound { .. }
+            | Self::BranchNotWritable { .. }
+            | Self::BranchGenerationMismatch { .. }
+            | Self::BranchGenerationExhausted { .. }
+            | Self::BranchGuardUnavailable { .. }
+            | Self::CommitQuiesceUnavailable { .. } => format_branch_error(self, formatter),
             Self::StorageOwnedMutationSpace { space_id } => {
                 write!(
                     formatter,
@@ -281,6 +376,55 @@ impl fmt::Display for CommitRuntimeError {
     }
 }
 
+fn format_branch_error(
+    error: &CommitRuntimeError,
+    formatter: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match error {
+        CommitRuntimeError::BranchAlreadyExists { branch_id } => {
+            write!(formatter, "commit branch {branch_id} already exists")
+        }
+        CommitRuntimeError::BranchNotFound { branch_id } => {
+            write!(formatter, "commit branch {branch_id} was not found")
+        }
+        CommitRuntimeError::BranchNotWritable { branch_id, reason } => {
+            write!(
+                formatter,
+                "commit branch {branch_id} is not writable: {reason}"
+            )
+        }
+        CommitRuntimeError::BranchGenerationMismatch {
+            branch_id,
+            expected,
+            actual,
+        } => {
+            write!(
+                formatter,
+                "commit branch {branch_id} generation mismatch: expected {expected}, actual {actual}"
+            )
+        }
+        CommitRuntimeError::BranchGenerationExhausted {
+            branch_id,
+            generation,
+        } => {
+            write!(
+                formatter,
+                "commit branch {branch_id} generation is exhausted at {generation}"
+            )
+        }
+        CommitRuntimeError::BranchGuardUnavailable { branch_id, reason } => {
+            write!(
+                formatter,
+                "commit branch {branch_id} guard is unavailable: {reason}"
+            )
+        }
+        CommitRuntimeError::CommitQuiesceUnavailable { reason } => {
+            write!(formatter, "commit quiesce is unavailable: {reason}")
+        }
+        _ => unreachable!("branch error formatter received non-branch error"),
+    }
+}
+
 impl Error for CommitRuntimeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -302,6 +446,13 @@ impl Error for CommitRuntimeError {
             | Self::InvalidValidationFacts { .. }
             | Self::DuplicateMutationKey { .. }
             | Self::BranchMismatch { .. }
+            | Self::BranchAlreadyExists { .. }
+            | Self::BranchNotFound { .. }
+            | Self::BranchNotWritable { .. }
+            | Self::BranchGenerationMismatch { .. }
+            | Self::BranchGenerationExhausted { .. }
+            | Self::BranchGuardUnavailable { .. }
+            | Self::CommitQuiesceUnavailable { .. }
             | Self::StorageOwnedMutationSpace { .. }
             | Self::BranchUnavailable { .. }
             | Self::DurabilityUnavailable { .. }

@@ -1,11 +1,15 @@
 mod allocator;
 mod batch;
+mod branch_registry;
+mod guard;
 mod outcome;
 mod scaffold;
 mod visibility;
 
 use super::{
-    execute_read_only_diagnostic, CommitBatch, CommitBatchKind, CommitBatchOptions, CommitCasFact,
+    execute_read_only_diagnostic, CommitBatch, CommitBatchKind, CommitBatchOptions,
+    CommitBranchDescriptor, CommitBranchGeneration, CommitBranchGenerationGuard,
+    CommitBranchGuardSet, CommitBranchRegistry, CommitBranchState, CommitCasFact,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
     CommitDurabilityMode, CommitExpiry, CommitFactAllocation, CommitFactAllocator,
     CommitLowerLayer, CommitManualTimestampSource, CommitMutation, CommitMutationCounts,
@@ -44,4 +48,16 @@ fn storage_owned_key(branch_id: BranchId, user_key: Vec<u8>) -> PhysicalKey {
         user_key,
     )
     .expect("storage-owned physical key")
+}
+
+fn read_only_batch(branch: BranchId, options: CommitBatchOptions) -> ValidatedCommitBatch {
+    CommitBatch::read_only_diagnostic(branch, CommitValidationFacts::empty(), options)
+        .validate(&CommitRuntimeConfig::default())
+        .expect("valid read-only diagnostic batch")
+}
+
+fn assert_bounded_storage_debug(debug: &str) {
+    assert!(!debug.contains("VersionedValue"));
+    assert!(!debug.contains("Transaction"));
+    assert!(!debug.contains("rollback"));
 }
