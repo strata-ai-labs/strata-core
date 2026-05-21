@@ -370,6 +370,48 @@ fn unresolved_durable_gate_rejects_different_fact_and_exact_clear() {
     );
 }
 
+#[test]
+fn unresolved_durable_gate_replaces_only_exact_existing_fact() {
+    let gate = CommitUnresolvedDurableGate::new();
+    let branch = branch_id(87);
+    let original = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch, 8),
+        CommitDurabilityClass::Standard,
+        "apply failed",
+    )
+    .expect("original");
+    let replacement = CommitUnresolvedDurable::applied_not_visible(
+        stamp(branch, 8),
+        CommitDurabilityClass::Standard,
+        "visible publish failed",
+    )
+    .expect("replacement");
+    let different = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch, 9),
+        CommitDurabilityClass::Standard,
+        "different",
+    )
+    .expect("different");
+
+    assert_eq!(
+        gate.replace_exact(original, replacement),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "cannot replace empty unresolved durable gate",
+        })
+    );
+    gate.record_unresolved(original).expect("record original");
+    assert_eq!(
+        gate.replace_exact(different, replacement),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "cannot replace different unresolved durable commit",
+        })
+    );
+
+    gate.replace_exact(original, replacement)
+        .expect("replace original");
+    assert_eq!(gate.unresolved().expect("gate read"), Some(replacement));
+}
+
 fn stamp(branch: BranchId, version: u64) -> CommitStamp {
     CommitStamp::new(
         branch,

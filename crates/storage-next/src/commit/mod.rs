@@ -20,6 +20,7 @@ mod error;
 mod facts;
 mod guard;
 mod outcome;
+mod replay;
 mod result;
 mod timeline;
 mod visibility;
@@ -118,6 +119,13 @@ pub(crate) use guard::{CommitBranchGuard, CommitBranchGuardSet, CommitQuiesceGua
 pub(crate) use outcome::{
     execute_read_only_diagnostic, CommitMutationCounts, CommitOutcome, CommitOutcomeKind,
     CommitReadSnapshot,
+};
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use replay::{
+    CommitReplayAction, CommitReplayReport, CommitReplayRequest, CommitReplayRuntime,
 };
 #[cfg_attr(
     not(test),

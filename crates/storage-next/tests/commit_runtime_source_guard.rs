@@ -305,7 +305,7 @@ fn commit_runtime_source_guard_catches_forbidden_imports_and_public_surface() {
 }
 
 #[test]
-fn commit_runtime_source_guard_allows_durable_wal_boundary_only_in_durable_module() {
+fn commit_runtime_source_guard_allows_durable_wal_and_replay_boundaries() {
     assert!(!contains_forbidden_storage_path_for_file(
         "use crate::branch::BranchLocalState;",
         Path::new("src/commit/durable.rs")
@@ -321,6 +321,14 @@ fn commit_runtime_source_guard_allows_durable_wal_boundary_only_in_durable_modul
     assert!(contains_forbidden_storage_path_for_file(
         "use crate::service::{WalAppend, WalService, WalServiceError};",
         Path::new("src/commit/cache.rs")
+    ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::branch::{BranchHistoryOptions, BranchReadView, BranchRowSource};",
+        Path::new("src/commit/replay.rs")
+    ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::format::WalRecord;",
+        Path::new("src/commit/replay.rs")
     ));
 }
 
@@ -477,9 +485,15 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
             .collect();
         let without_allowed = compact
             .replace("usecrate::branch::{BranchReadBound,BranchReadView};", "")
+            .replace(
+                "usecrate::branch::{BranchHistoryOptions,BranchReadView,BranchRowSource};",
+                "",
+            )
             .replace("usecrate::branch::{BranchLocalState,BranchReadView};", "")
             .replace("usecrate::branch::BranchReadView;", "")
             .replace("crate::branch::BranchReadBound", "")
+            .replace("crate::branch::BranchHistoryOptions", "")
+            .replace("crate::branch::BranchRowSource", "")
             .replace("crate::branch::BranchReadView", "")
             .replace("usecrate::branch::BranchLocalState;", "")
             .replace("crate::branch::BranchLocalState", "")
@@ -495,6 +509,7 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
             .replace("crate::service::wal::WalService", "")
             .replace("crate::service::wal::WalServiceError", "")
             .replace("usecrate::format::{WalCommitPayload,WalRecord};", "")
+            .replace("usecrate::format::WalRecord;", "")
             .replace("crate::format::WalCommitPayload", "")
             .replace("crate::format::WalRecord", "");
         return contains_forbidden_storage_path(&without_allowed);
@@ -566,6 +581,12 @@ fn is_allowed_commit_runtime_boundary_line(file: &Path, line: &str) -> bool {
                 | "use crate::format::{WalCommitPayload, WalRecord};"
                 | "use crate::service::{WalAppend, WalService, WalServiceError};"
         )
+        || file_name == "replay.rs"
+            && matches!(
+                trimmed,
+                "use crate::branch::{BranchHistoryOptions, BranchReadView, BranchRowSource};"
+                    | "use crate::format::WalRecord;"
+            )
 }
 
 fn contains_forbidden_backend_operation(line: &str) -> bool {

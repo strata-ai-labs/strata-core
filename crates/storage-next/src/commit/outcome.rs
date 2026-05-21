@@ -98,6 +98,14 @@ impl CommitMutationCounts {
         Ok(Self::from_parts_unchecked(puts, deletes, timeline_rows))
     }
 
+    pub(crate) const fn from_replayed_rows(
+        puts: usize,
+        deletes: usize,
+        timeline_rows: usize,
+    ) -> Self {
+        Self::from_parts_unchecked(puts, deletes, timeline_rows)
+    }
+
     pub(crate) const fn read_only() -> Self {
         Self::from_parts_unchecked(0, 0, 0)
     }

@@ -835,3 +835,127 @@ Verified for L7J during implementation:
 9. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
 10. `cargo fmt --package strata-storage-next --check`
 11. `git diff --check`
+
+## L7K: Recovery Replay And Allocator Catch-Up
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7k-recovery-replay-allocator-catch-up-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7k-recovery-replay-allocator-catch-up-test-plan.md`
+7. `crates/storage/src/segmented/mod.rs`
+8. `crates/storage/src/durability/recovery.rs`
+9. `crates/storage-next/src/format/wal.rs`
+10. `crates/storage-next/src/commit/allocator.rs`
+11. `crates/storage-next/src/commit/durable.rs`
+12. `crates/storage-next/src/commit/durable_gate.rs`
+13. `crates/storage-next/src/commit/outcome.rs`
+14. `crates/storage-next/src/commit/visibility.rs`
+15. `crates/storage-next/src/branch/state.rs`
+
+### Preserved As Behavior
+
+1. Replay uses the durable WAL record's original branch id, commit version, and
+   timestamp.
+2. Replay does not allocate a new commit version.
+3. Replay does not request a new timestamp.
+4. Replay does not run read-set or CAS conflict validation.
+5. Replay installs storage-owned timeline rows with user rows.
+6. Exact duplicate replay is idempotent.
+7. Duplicate mismatch and partial replay state fail closed.
+8. Matching unresolved durable gates clear only after visible publication.
+
+### Intentionally Changed Or Added
+
+1. Added `CommitReplayRuntime`, `CommitReplayRequest`,
+   `CommitReplayAction`, and `CommitReplayReport`.
+2. Added replay validation for durable class, target branch, duplicate internal
+   rows, and required commit-timeline row pairs.
+3. Added own-row duplicate classification using L6 read views while ignoring
+   inherited-only rows as installed replay state.
+4. Added allocator version/timestamp catch-up only after L6 install or exact
+   duplicate confirmation.
+5. Added replay visible publication through the same visible-publisher boundary
+   used by the durable path.
+6. Added `CommitUnresolvedDurableGate::replace_exact` so replay can advance a
+   stale `DurableNotApplied` gate to `AppliedNotVisible` if rows apply but
+   visible publication fails.
+7. Updated commit-runtime source guards to allow replay's narrow decoded-WAL
+   and L6 read-view boundaries without allowing WAL scanning, service imports,
+   table internals, backend, layout, object, or IO APIs.
+8. Relaxed the row module's stale dead-code expectation to an allow because L7
+   now consumes enough row helpers that the previous expectation became
+   unfulfilled under clippy.
+9. Replay outcome counts now bypass live batch admission limits for
+   already-durable WAL rows while still validating the runtime config itself.
+10. Direct replay coverage now includes fresh `Always` replay, mixed
+    put/delete replay, second-replay idempotency, timeline-present/user-missing
+    partial state, timestamp/expiry/tombstone mismatch dimensions, lower
+    allocator-floor replay, stale-conflict bypass, WAL outer-fact rejection,
+    empty-payload rejection, matching-gate apply clear, matching-gate apply
+    failure preservation, gate-clear failure after visible publication, value
+    byte non-leakage, and L6 read-view/apply source preservation.
+
+### Deferred By Owner Slice
+
+1. `L7M`: generated replay scripts, fuzz inputs, and replay counters.
+2. `L8`: WAL scanning, recovery ordering, checkpoint selection, process-open
+   recovery health, and replay orchestration.
+3. `L9`: public recovery commands and user-facing error mapping.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/replay.rs`
+2. Direct replay tests in `crates/storage-next/src/commit/tests/replay.rs`
+3. `CommitUnresolvedDurableGate::replace_exact` test in
+   `crates/storage-next/src/commit/tests/durable_gate.rs`
+4. Source-guard updates in
+   `crates/storage-next/tests/commit_runtime_source_guard.rs`
+
+### Sensitivity Probes
+
+Planned L7K probes:
+
+1. Allocate a fresh version during replay; replay direct tests must fail.
+2. Generate a fresh timestamp during replay; replay direct tests must fail.
+3. Omit timeline row validation; missing-timeline replay test must fail.
+4. Publish visibility before L6 install; visible-failure replay tests must
+   fail.
+5. Treat partial replay rows as success; partial replay test must fail.
+6. Treat duplicate row mismatch as idempotent; mismatch replay test must fail.
+7. Skip allocator catch-up after exact duplicate replay; idempotent replay test
+   must fail.
+8. Clear an unresolved gate before visible publication succeeds; visible
+   failure replay tests must fail.
+9. Leave a stale `DurableNotApplied` gate after rows apply and visible publish
+   fails; gate-advance replay test must fail.
+10. Add table/backend/layout/filesystem/product imports to `commit/replay.rs`;
+    source guard tests must fail.
+11. Re-admit replayed durable rows through current batch-size caps; replay
+    config-limit test must fail.
+12. Drop L6 read-view or apply source chains; replay source-chain tests must
+    fail.
+13. Accept WAL payload rows whose outer branch/version/timestamp disagree with
+    the record envelope; replay outer-fact construction tests must fail.
+14. Clear an unresolved durable gate that changed after visible publication;
+    gate-clear failure replay test must fail.
+15. Print replay row value bytes in mismatch errors; replay value-non-leakage
+    assertion must fail.
+
+### Command Evidence
+
+Verified for L7K during implementation:
+
+1. `cargo test -p strata-storage-next --locked --lib commit::tests::replay`
+2. `cargo test -p strata-storage-next --locked --lib commit::tests::durable_gate`
+3. `cargo test -p strata-storage-next --locked --lib commit`
+4. `cargo test -p strata-storage-next --no-default-features --locked --lib commit`
+5. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+6. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_properties`
+7. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_faults`
+8. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+9. `cargo fmt --package strata-storage-next --check`
+10. `git diff --check`

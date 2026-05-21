@@ -244,6 +244,27 @@ impl CommitUnresolvedDurableGate {
         }
     }
 
+    pub(crate) fn replace_exact(
+        &self,
+        expected: CommitUnresolvedDurable,
+        replacement: CommitUnresolvedDurable,
+    ) -> CommitRuntimeResult<()> {
+        replacement.validate()?;
+        let mut slot = self.lock()?;
+        match *slot {
+            Some(existing) if existing == expected => {
+                *slot = Some(replacement);
+                Ok(())
+            }
+            Some(_) => Err(CommitRuntimeError::InvalidCommitState {
+                reason: "cannot replace different unresolved durable commit",
+            }),
+            None => Err(CommitRuntimeError::InvalidCommitState {
+                reason: "cannot replace empty unresolved durable gate",
+            }),
+        }
+    }
+
     fn lock(&self) -> CommitRuntimeResult<MutexGuard<'_, Option<CommitUnresolvedDurable>>> {
         self.unresolved
             .lock()

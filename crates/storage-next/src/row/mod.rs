@@ -2,9 +2,9 @@
 
 #![cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "row records are consumed by format, table, branch, and commit slices added later"
+        reason = "row records are consumed across storage layers; feature matrices can make individual helpers temporarily unused"
     )
 )]
 

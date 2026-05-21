@@ -7,6 +7,7 @@ mod durable;
 mod durable_gate;
 mod guard;
 mod outcome;
+mod replay;
 mod scaffold;
 mod timeline;
 mod visibility;
@@ -22,6 +23,7 @@ use super::{
     CommitFactAllocation, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
     CommitMutation, CommitMutationCounts, CommitObservedVersion, CommitOrigin, CommitOutcome,
     CommitOutcomeKind, CommitPhase, CommitReadFact, CommitReadOnlyDiagnostics, CommitReadSnapshot,
+    CommitReplayAction, CommitReplayReport, CommitReplayRequest, CommitReplayRuntime,
     CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult,
     CommitRuntimeStats, CommitStamp, CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup,
     CommitTimelineMiss, CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView,
@@ -33,7 +35,7 @@ use super::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::config::mode::DurabilityPolicy;
-use crate::format::WalRecord;
+use crate::format::{FormatError, WalCommitPayload, WalRecord};
 use crate::row::{PhysicalKey, StorageSpaceId};
 use std::error::Error;
 use std::fmt;
