@@ -37,6 +37,9 @@ pub(crate) struct CommitTimelineFact {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CommitTimelineBounds {
+    // These are independent loose bounds over the retained timeline rows. They
+    // do not claim that max_version occurred at max_timestamp, or that retained
+    // history is complete between the extrema.
     min_timestamp: Option<Timestamp>,
     max_timestamp: Option<Timestamp>,
     min_version: Option<CommitVersion>,

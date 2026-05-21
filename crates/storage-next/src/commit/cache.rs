@@ -100,7 +100,13 @@ impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
                 )
             })?;
 
-        self.visible.publish_from_facts(facts)?;
+        self.visible.publish_from_facts(facts).map_err(|error| {
+            CommitRuntimeError::AppliedButNotVisible {
+                branch_id: batch.batch().branch_id(),
+                commit_version: stamp.commit_version(),
+                reason: applied_not_visible_reason(&error),
+            }
+        })?;
 
         CommitOutcome::visible(
             batch.batch().branch_id(),
@@ -223,4 +229,12 @@ fn visible_cache_facts(stamp: CommitStamp) -> CommitRuntimeResult<CommitVisibili
         Some(stamp.commit_version()),
         Some(stamp.commit_version()),
     )
+}
+
+fn applied_not_visible_reason(error: &CommitRuntimeError) -> &'static str {
+    match error {
+        CommitRuntimeError::InvalidVisibilityFacts { reason }
+        | CommitRuntimeError::InvalidCommitState { reason } => reason,
+        _ => "visible publication failed after branch apply",
+    }
 }

@@ -59,6 +59,23 @@ impl CommitVisibilityFacts {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn from_parts_unchecked(
+        allocated_version: Option<CommitVersion>,
+        durable_version: Option<CommitVersion>,
+        applied_version: Option<CommitVersion>,
+        visible_version: Option<CommitVersion>,
+        timeline_version: Option<CommitVersion>,
+    ) -> Self {
+        Self {
+            allocated: allocated_version,
+            durable: durable_version,
+            applied: applied_version,
+            visible: visible_version,
+            timeline: timeline_version,
+        }
+    }
+
     pub(crate) const fn allocated_version(self) -> Option<CommitVersion> {
         self.allocated
     }

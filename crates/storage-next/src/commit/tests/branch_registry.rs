@@ -484,6 +484,40 @@ fn mutating_admission_serializes_same_branch_and_keeps_other_branch_available() 
 }
 
 #[test]
+fn mutating_admission_guard_failure_leaves_registry_unchanged() {
+    let branch = branch_id(79);
+    let mut registry = CommitBranchRegistry::new();
+    let guard_set = CommitBranchGuardSet::new();
+    let descriptor = registry
+        .register_active(branch, generation(1))
+        .expect("register branch");
+    let held_guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("hold branch guard");
+    let batch = mutating_delete_batch(branch, 0x20, b"blocked".to_vec());
+
+    assert_eq!(
+        super::super::admit_mutating_commit(
+            &registry,
+            &guard_set,
+            &batch,
+            CommitBranchGenerationGuard::exact(generation(1)),
+        )
+        .expect_err("held guard rejects admission"),
+        CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: branch,
+            reason: "branch commit guard is already active",
+        }
+    );
+
+    assert_eq!(registry.lookup(branch), Ok(descriptor));
+    assert_eq!(registry.len(), 1);
+    assert_eq!(guard_set.active_guard_count(), Ok(1));
+    drop(held_guard);
+    assert_eq!(guard_set.active_guard_count(), Ok(0));
+}
+
+#[test]
 fn mutating_admission_rejects_during_quiesce_before_branch_guard() {
     let branch = branch_id(80);
     let mut registry = CommitBranchRegistry::new();

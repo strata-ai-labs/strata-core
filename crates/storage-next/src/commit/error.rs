@@ -73,6 +73,11 @@ pub(crate) enum CommitRuntimeError {
     CommitConflict {
         conflict: CommitConflict,
     },
+    AppliedButNotVisible {
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        reason: &'static str,
+    },
     StorageOwnedMutationSpace {
         space_id: StorageSpaceId,
     },
@@ -302,6 +307,22 @@ impl PartialEq for CommitRuntimeError {
                 },
             ) => left_conflict == right_conflict,
             (
+                Self::AppliedButNotVisible {
+                    branch_id: left_branch,
+                    commit_version: left_version,
+                    reason: left_reason,
+                },
+                Self::AppliedButNotVisible {
+                    branch_id: right_branch,
+                    commit_version: right_version,
+                    reason: right_reason,
+                },
+            ) => {
+                left_branch == right_branch
+                    && left_version == right_version
+                    && left_reason == right_reason
+            }
+            (
                 Self::LowerLayer {
                     layer: left_layer,
                     reason: left_reason,
@@ -373,17 +394,15 @@ impl fmt::Display for CommitRuntimeError {
             | Self::BranchGenerationExhausted { .. }
             | Self::BranchGuardUnavailable { .. }
             | Self::CommitQuiesceUnavailable { .. } => format_branch_error(self, formatter),
-            Self::CommitConflict { conflict } => {
+            Self::CommitConflict { conflict } => format_conflict_error(conflict, formatter),
+            Self::AppliedButNotVisible {
+                branch_id,
+                commit_version,
+                reason,
+            } => {
                 write!(
                     formatter,
-                    "commit {:?} conflict for branch {} storage space 0x{:02x} key fingerprint 0x{:016x} user key bytes {}: expected {}, actual {}",
-                    conflict.kind(),
-                    conflict.branch_id(),
-                    conflict.storage_space_id().raw(),
-                    conflict.key_fingerprint(),
-                    conflict.user_key_len(),
-                    ObservedVersionDisplay(conflict.expected()),
-                    ObservedVersionDisplay(conflict.actual()),
+                    "commit version {commit_version} for branch {branch_id} was applied but not made visible: {reason}"
                 )
             }
             Self::StorageOwnedMutationSpace { space_id } => {
@@ -416,6 +435,23 @@ impl fmt::Display for CommitRuntimeError {
             }
         }
     }
+}
+
+fn format_conflict_error(
+    conflict: &CommitConflict,
+    formatter: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(
+        formatter,
+        "commit {:?} conflict for branch {} storage space 0x{:02x} key fingerprint 0x{:016x} user key bytes {}: expected {}, actual {}",
+        conflict.kind(),
+        conflict.branch_id(),
+        conflict.storage_space_id().raw(),
+        conflict.key_fingerprint(),
+        conflict.user_key_len(),
+        ObservedVersionDisplay(conflict.expected()),
+        ObservedVersionDisplay(conflict.actual()),
+    )
 }
 
 fn format_branch_error(
@@ -509,6 +545,7 @@ impl Error for CommitRuntimeError {
             | Self::BranchGuardUnavailable { .. }
             | Self::CommitQuiesceUnavailable { .. }
             | Self::CommitConflict { .. }
+            | Self::AppliedButNotVisible { .. }
             | Self::StorageOwnedMutationSpace { .. }
             | Self::BranchUnavailable { .. }
             | Self::DurabilityUnavailable { .. }

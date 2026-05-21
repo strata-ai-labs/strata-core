@@ -32,6 +32,8 @@ pub(crate) struct CommitBranchDescriptor {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CommitBranchRegistry {
+    // BranchId intentionally does not expose Ord, so this registry keeps a
+    // small explicit list instead of the BTreeMap shape from the planning doc.
     descriptors: Vec<CommitBranchDescriptor>,
 }
 
@@ -261,15 +263,12 @@ impl CommitBranchRegistry {
     }
 
     fn replace_descriptor(&mut self, descriptor: CommitBranchDescriptor) {
-        if let Some(current) = self
+        let current = self
             .descriptors
             .iter_mut()
             .find(|entry| entry.branch_id() == descriptor.branch_id())
-        {
-            *current = descriptor;
-        } else {
-            self.descriptors.push(descriptor);
-        }
+            .expect("replace_descriptor callers must look up the branch first");
+        *current = descriptor;
     }
 }
 

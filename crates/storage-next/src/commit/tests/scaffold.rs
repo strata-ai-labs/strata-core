@@ -232,6 +232,11 @@ fn commit_runtime_error_variants_are_constructible() {
         CommitRuntimeError::BranchUnavailable {
             reason: "branch closed",
         },
+        CommitRuntimeError::AppliedButNotVisible {
+            branch_id: branch,
+            commit_version: CommitVersion::new(3),
+            reason: "visible publication failed",
+        },
         CommitRuntimeError::DurabilityUnavailable {
             reason: "wal writer halted",
         },

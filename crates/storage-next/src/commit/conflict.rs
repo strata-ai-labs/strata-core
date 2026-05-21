@@ -123,6 +123,11 @@ impl CommitConflictReport {
 }
 
 impl<'a> CommitBranchReadViewConflictSource<'a> {
+    /// Builds a conflict source over an already-captured branch read view.
+    ///
+    /// This type does not provide isolation by itself. Commit executors must
+    /// hold the per-branch commit guard from admission through conflict
+    /// validation, apply, and visibility publication.
     pub(crate) const fn new(read_view: &'a BranchReadView) -> Self {
         Self {
             read_view,
@@ -130,6 +135,8 @@ impl<'a> CommitBranchReadViewConflictSource<'a> {
         }
     }
 
+    /// Builds a conflict source capped at the executor's current visible
+    /// version so unpublished L6 rows are not treated as committed facts.
     pub(crate) const fn new_at_version(
         read_view: &'a BranchReadView,
         visible_version: strata_core_next::CommitVersion,
@@ -221,6 +228,8 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 fn physical_key_fingerprint(key: &PhysicalKey) -> u64 {
+    // Diagnostic-only fingerprint: stable and cheap, but not an identity or a
+    // collision-resistant hash. Conflict correctness always compares full keys.
     let mut hash = FNV_OFFSET_BASIS;
     hash = hash_len_and_bytes(hash, key.branch_id().as_bytes());
     hash = hash_byte(hash, key.storage_space_id().raw());

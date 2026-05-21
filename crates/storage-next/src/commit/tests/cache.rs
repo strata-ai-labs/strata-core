@@ -503,6 +503,56 @@ fn cache_commit_guard_contention_rejects_before_allocation() {
 }
 
 #[test]
+fn cache_commit_guard_contention_serializes_conflict_validation_window() {
+    let branch = branch_id(40);
+    let key = physical_key(branch, 0x20, b"guarded-conflict-window".to_vec());
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    fixture.seed_visible_row(StorageRow::put(
+        key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"existing".to_vec(),
+    ));
+    fixture.catch_up_to(CommitVersion::new(1), Timestamp::from_micros(1_000));
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(1));
+    let held_guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("held guard");
+    let stale_validation = CommitValidationFacts::new(
+        vec![CommitReadFact::new(key, CommitObservedVersion::Missing)],
+        Vec::new(),
+    );
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"new".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        stale_validation,
+        CommitBatchOptions::default(),
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: branch,
+            reason: "branch commit guard is already active",
+        })
+    );
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+    assert_eq!(fixture.state.active_row_count(), 1);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::new(1));
+    drop(held_guard);
+}
+
+#[test]
 fn cache_commit_row_limit_counts_timeline_rows_after_allocation_without_apply() {
     let branch = branch_id(24);
     let config =

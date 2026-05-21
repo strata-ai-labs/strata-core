@@ -539,6 +539,46 @@ fn timeline_view_reports_bounds_without_claiming_completeness() {
 }
 
 #[test]
+fn timeline_view_sorts_shuffled_rows_deterministically() {
+    let ordered = timeline_rows([
+        entry(10, 1, 1_000),
+        entry(10, 2, 2_000),
+        entry(10, 3, 2_000),
+        entry(10, 4, 4_000),
+    ]);
+    let shuffled = [
+        ordered[5].clone(),
+        ordered[0].clone(),
+        ordered[7].clone(),
+        ordered[2].clone(),
+        ordered[1].clone(),
+        ordered[4].clone(),
+        ordered[3].clone(),
+        ordered[6].clone(),
+    ];
+
+    let ordered_view = CommitTimelineView::from_rows(branch_id(10), ordered.iter())
+        .expect("ordered timeline view");
+    let shuffled_view = CommitTimelineView::from_rows(branch_id(10), shuffled.iter())
+        .expect("shuffled timeline view");
+
+    assert_eq!(ordered_view, shuffled_view);
+    assert_eq!(
+        shuffled_view
+            .entries()
+            .iter()
+            .map(|entry| (entry.commit_timestamp(), entry.commit_version()))
+            .collect::<Vec<_>>(),
+        vec![
+            (Timestamp::from_micros(1_000), CommitVersion::new(1)),
+            (Timestamp::from_micros(2_000), CommitVersion::new(2)),
+            (Timestamp::from_micros(2_000), CommitVersion::new(3)),
+            (Timestamp::from_micros(4_000), CommitVersion::new(4)),
+        ]
+    );
+}
+
+#[test]
 fn timeline_view_rejects_missing_or_conflicting_index_pairs() {
     let base_entry = entry(8, 10, 10_000);
     let rows = CommitTimelineRows::from_entry(base_entry).expect("timeline rows");

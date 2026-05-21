@@ -357,6 +357,36 @@ fn visible_outcome_constructor_validates_visible_shape() {
 }
 
 #[test]
+fn outcome_constructor_validates_visibility_facts_before_outcome_shape() {
+    let branch = branch_id(66);
+    let stamp =
+        CommitStamp::new(branch, CommitVersion::new(1), Timestamp::from_micros(10)).expect("stamp");
+    let invalid_facts = CommitVisibilityFacts::from_parts_unchecked(
+        Some(CommitVersion::new(1)),
+        None,
+        Some(CommitVersion::new(2)),
+        Some(CommitVersion::new(2)),
+        Some(CommitVersion::new(2)),
+    );
+
+    assert_eq!(
+        CommitOutcome::new(
+            branch,
+            CommitOutcomeKind::Visible,
+            CommitPhase::AppliedNotVisible,
+            CommitDurabilityClass::NotDurable,
+            Some(stamp),
+            mutation_counts(1, 0, 0),
+            invalid_facts,
+            None,
+        ),
+        Err(CommitRuntimeError::InvalidVisibilityFacts {
+            reason: "applied version must not exceed allocated version",
+        })
+    );
+}
+
+#[test]
 fn not_visible_outcome_constructor_accepts_valid_progress_facts() {
     let branch = branch_id(66);
     let stamp =
