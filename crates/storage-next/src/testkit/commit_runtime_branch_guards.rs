@@ -2,14 +2,17 @@
 
 use crate::commit::{
     admit_mutating_commit, execute_read_only_diagnostic, CommitBatch, CommitBatchOptions,
-    CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
-    CommitBranchRegistry, CommitBranchState, CommitMutation, CommitReadOnlyDiagnostics,
-    CommitRuntimeConfig, CommitRuntimeError, CommitValidationFacts, VisibleVersionTracker,
+    CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuard, CommitBranchGuardSet,
+    CommitBranchRegistry, CommitBranchState, CommitMutation, CommitQuiesceGuard,
+    CommitReadOnlyDiagnostics, CommitRuntimeConfig, CommitRuntimeError, CommitValidationFacts,
+    VisibleVersionTracker,
 };
 use crate::row::{PhysicalKey, StorageSpaceId};
 use strata_core_next::{BranchId, CommitVersion};
 
 use super::TestkitError;
+
+const GUARD_SCRIPT_PREFIX: [u8; 15] = [0, 1, 4, 2, 4, 3, 4, 0, 6, 5, 0, 0, 2, 7, 8];
 
 pub(crate) struct CommitRuntimeBranchGuardContract {
     pub(crate) branch_registration_successes: usize,
@@ -27,6 +30,7 @@ pub(crate) struct CommitRuntimeBranchGuardContract {
     pub(crate) mutating_guard_rejected_during_quiesce: usize,
     pub(crate) read_only_allowed_during_quiesce: usize,
     pub(crate) guard_release_and_reacquire: usize,
+    pub(crate) deterministic_guard_interleavings: usize,
 }
 
 pub(crate) fn check_commit_runtime_branch_guard_contract(
@@ -50,6 +54,7 @@ pub(crate) fn check_commit_runtime_branch_guard_contract(
         )?,
         read_only_allowed_during_quiesce: check_read_only_allowed_during_quiesce(script)?,
         guard_release_and_reacquire: check_guard_release_and_reacquire(script)?,
+        deterministic_guard_interleavings: check_deterministic_guard_interleaving(script)?,
     })
 }
 
@@ -368,6 +373,227 @@ fn check_guard_release_and_reacquire(script: &[u8]) -> Result<usize, TestkitErro
         return Err(TestkitError::new("branch guard leaked after drop"));
     }
     Ok(1)
+}
+
+struct GuardScriptState {
+    branch_a_guard: Option<CommitBranchGuard>,
+    branch_b_guard: Option<CommitBranchGuard>,
+    quiesce: Option<CommitQuiesceGuard>,
+}
+
+impl GuardScriptState {
+    const fn new() -> Self {
+        Self {
+            branch_a_guard: None,
+            branch_b_guard: None,
+            quiesce: None,
+        }
+    }
+
+    fn active_branch_guards(&self) -> usize {
+        usize::from(self.branch_a_guard.is_some()) + usize::from(self.branch_b_guard.is_some())
+    }
+}
+
+fn check_deterministic_guard_interleaving(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch_a = branch_id(script_byte(script, 66));
+    let branch_b = branch_id(script_byte(script, 66).wrapping_add(1));
+    let branch_c = branch_id(script_byte(script, 66).wrapping_add(2));
+    let guard_set = CommitBranchGuardSet::new();
+    let mut state = GuardScriptState::new();
+
+    for operation in GUARD_SCRIPT_PREFIX {
+        apply_guard_script_operation(
+            operation, &guard_set, &mut state, branch_a, branch_b, branch_c,
+        )?;
+        assert_guard_script_state(&guard_set, &state)?;
+    }
+    for operation in script.iter().copied().take(32).map(|byte| byte % 9) {
+        apply_guard_script_operation(
+            operation, &guard_set, &mut state, branch_a, branch_b, branch_c,
+        )?;
+        assert_guard_script_state(&guard_set, &state)?;
+    }
+
+    drop(state.branch_a_guard.take());
+    drop(state.branch_b_guard.take());
+    drop(state.quiesce.take());
+    assert_guard_script_state(&guard_set, &state)?;
+    Ok(1)
+}
+
+fn apply_guard_script_operation(
+    operation: u8,
+    guard_set: &CommitBranchGuardSet,
+    state: &mut GuardScriptState,
+    branch_a: BranchId,
+    branch_b: BranchId,
+    branch_c: BranchId,
+) -> Result<(), TestkitError> {
+    match operation {
+        0 => acquire_script_branch_guard(guard_set, state, branch_a, true),
+        1 => acquire_script_branch_guard(guard_set, state, branch_b, false),
+        2 => {
+            drop(state.branch_a_guard.take());
+            Ok(())
+        }
+        3 => {
+            drop(state.branch_b_guard.take());
+            Ok(())
+        }
+        4 => begin_script_quiesce(guard_set, state),
+        5 => {
+            drop(state.quiesce.take());
+            Ok(())
+        }
+        6 => check_script_read_only_diagnostic(guard_set, state, branch_c),
+        7 => check_script_open_probe(guard_set, state, branch_c),
+        8 => {
+            if guard_set.is_quiescing().map_err(testkit_error)? != state.quiesce.is_some() {
+                return Err(TestkitError::new("quiesce probe disagreed with held token"));
+            }
+            Ok(())
+        }
+        _ => unreachable!("guard script operation is modulo constrained"),
+    }
+}
+
+fn acquire_script_branch_guard(
+    guard_set: &CommitBranchGuardSet,
+    state: &mut GuardScriptState,
+    branch: BranchId,
+    branch_a: bool,
+) -> Result<(), TestkitError> {
+    let occupied = if branch_a {
+        state.branch_a_guard.is_some()
+    } else {
+        state.branch_b_guard.is_some()
+    };
+    match guard_set.try_acquire_branch_guard(branch) {
+        Ok(guard) if state.quiesce.is_none() && !occupied => {
+            if branch_a {
+                state.branch_a_guard = Some(guard);
+            } else {
+                state.branch_b_guard = Some(guard);
+            }
+            Ok(())
+        }
+        Err(CommitRuntimeError::CommitQuiesceUnavailable { .. }) if state.quiesce.is_some() => {
+            Ok(())
+        }
+        Err(CommitRuntimeError::BranchGuardUnavailable { branch_id, .. })
+            if state.quiesce.is_none() && occupied && branch_id == branch =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(TestkitError::new(
+            "guard script acquired a branch guard in an impossible state",
+        )),
+        Err(error) => Err(TestkitError::new(format!(
+            "guard script returned unexpected guard error: {error}"
+        ))),
+    }
+}
+
+fn begin_script_quiesce(
+    guard_set: &CommitBranchGuardSet,
+    state: &mut GuardScriptState,
+) -> Result<(), TestkitError> {
+    match guard_set.try_begin_quiesce() {
+        Ok(quiesce) if state.quiesce.is_none() && state.active_branch_guards() == 0 => {
+            state.quiesce = Some(quiesce);
+            Ok(())
+        }
+        Err(CommitRuntimeError::CommitQuiesceUnavailable { .. })
+            if state.quiesce.is_some() || state.active_branch_guards() > 0 =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(TestkitError::new(
+            "guard script began quiesce in an impossible state",
+        )),
+        Err(error) => Err(TestkitError::new(format!(
+            "guard script returned unexpected quiesce error: {error}"
+        ))),
+    }
+}
+
+fn check_script_read_only_diagnostic(
+    guard_set: &CommitBranchGuardSet,
+    state: &GuardScriptState,
+    branch: BranchId,
+) -> Result<(), TestkitError> {
+    let before_active = guard_set.active_guard_count().map_err(testkit_error)?;
+    let before_quiesce = guard_set.is_quiescing().map_err(testkit_error)?;
+    let batch = CommitBatch::read_only_diagnostic(
+        branch,
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    )
+    .validate(&CommitRuntimeConfig::default())
+    .map_err(testkit_error)?;
+    let outcome = execute_read_only_diagnostic(
+        &batch,
+        &CommitRuntimeConfig::default(),
+        VisibleVersionTracker::new(CommitVersion::new(3)),
+    )
+    .map_err(testkit_error)?;
+    if outcome.branch_id() != branch
+        || guard_set.active_guard_count().map_err(testkit_error)? != before_active
+        || guard_set.is_quiescing().map_err(testkit_error)? != before_quiesce
+    {
+        return Err(TestkitError::new(
+            "read-only diagnostic changed guard or quiesce state",
+        ));
+    }
+    if before_active != state.active_branch_guards() || before_quiesce != state.quiesce.is_some() {
+        return Err(TestkitError::new(
+            "read-only guard script state drifted before diagnostic",
+        ));
+    }
+    Ok(())
+}
+
+fn check_script_open_probe(
+    guard_set: &CommitBranchGuardSet,
+    state: &GuardScriptState,
+    branch: BranchId,
+) -> Result<(), TestkitError> {
+    match guard_set.try_acquire_branch_guard(branch) {
+        Ok(guard) if state.quiesce.is_none() => {
+            drop(guard);
+            Ok(())
+        }
+        Err(CommitRuntimeError::CommitQuiesceUnavailable { .. }) if state.quiesce.is_some() => {
+            Ok(())
+        }
+        Ok(_) => Err(TestkitError::new(
+            "open probe acquired a guard while quiesce was expected",
+        )),
+        Err(error) => Err(TestkitError::new(format!(
+            "open probe returned unexpected guard error: {error}"
+        ))),
+    }
+}
+
+fn assert_guard_script_state(
+    guard_set: &CommitBranchGuardSet,
+    state: &GuardScriptState,
+) -> Result<(), TestkitError> {
+    let active = guard_set.active_guard_count().map_err(testkit_error)?;
+    let quiescing = guard_set.is_quiescing().map_err(testkit_error)?;
+    if active != state.active_branch_guards() {
+        return Err(TestkitError::new("guard script active count drifted"));
+    }
+    if quiescing != state.quiesce.is_some() {
+        return Err(TestkitError::new("guard script quiesce state drifted"));
+    }
+    if quiescing && active != 0 {
+        return Err(TestkitError::new(
+            "guard script allowed quiesce with active branch guards",
+        ));
+    }
+    Ok(())
 }
 
 fn registered_registry(

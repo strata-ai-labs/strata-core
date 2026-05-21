@@ -639,7 +639,7 @@ Important failures:
 - commit durable but not visible
 - L6 apply failed before visibility
 - visibility publish failed
-- commit quiesce timeout
+- commit quiesce unavailable or caller-level maintenance deadline
 - unsupported durability capability for backend
 
 Failure phases:

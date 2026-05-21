@@ -304,6 +304,9 @@ pub(crate) fn admit_mutating_commit(
         });
     }
     let branch_id = batch.batch().branch_id();
+    // Validate branch lifecycle and generation before acquiring the branch
+    // guard. A guard-acquisition failure therefore cannot mutate registry
+    // descriptors, and later commit phases hold the guard by RAII.
     let admission = registry.validate_target(branch_id, generation_guard)?;
     let guard = guard_set.try_acquire_branch_guard(branch_id)?;
     Ok(CommitBranchAdmissionGuard {

@@ -276,8 +276,8 @@ Rules:
 6. guard tokens must not be cloneable;
 7. guards do not allocate versions or timestamps.
 
-L7L may replace the nonblocking rejection behavior with wait/timeout support,
-but it must keep the same lock order and token ownership model.
+L7L hardens the nonblocking rejection behavior and keeps the same lock order
+and token ownership model. L8 owns retry and caller-level deadline policy.
 
 ### `CommitQuiesceState`
 
@@ -299,9 +299,9 @@ Rules:
 4. dropping the quiesce token reopens the guard set;
 5. read-only diagnostics follow the documented L7E policy below.
 
-L7E does not sleep, block a thread, or implement timeouts. L7L owns deterministic
-scheduler tests, wait semantics, timeout classification, and optional loom
-coverage.
+L7E does not sleep, block a thread, or implement timeouts. L7L owns
+deterministic guard/quiesce interleaving tests, while L8 owns retry and
+caller-level deadline classification.
 
 ## Read-Only Policy During Quiesce
 
@@ -436,8 +436,8 @@ Exit gate: source guard passes with the new files in scope.
 4. L7I: WAL append after admission and before L6 apply.
 5. L7J: durable-but-not-visible write gate and unresolved durable commit block.
 6. L7K: replay and allocator catch-up.
-7. L7L: blocking quiesce, timeout facts, deterministic interleaving scheduler,
-   and optional loom coverage.
+7. L7L: nonblocking quiesce hardening and deterministic guard/quiesce
+   interleaving coverage.
 8. L8: checkpoint/recovery orchestration that uses quiesce.
 9. L9: public branch lifecycle API and branch-generation ownership.
 

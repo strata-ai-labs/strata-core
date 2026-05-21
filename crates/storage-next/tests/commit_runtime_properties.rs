@@ -115,6 +115,7 @@ fn guard_categories_exercised(
         && outcome.mutating_guard_rejected_during_quiesce_cases() > 0
         && outcome.read_only_allowed_during_quiesce_cases() > 0
         && outcome.guard_release_and_reacquire_cases() > 0
+        && outcome.deterministic_guard_interleaving_cases() > 0
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]

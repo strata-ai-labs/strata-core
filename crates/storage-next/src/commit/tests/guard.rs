@@ -207,6 +207,78 @@ fn cloned_guard_sets_share_quiesce_state() {
 }
 
 #[test]
+fn scripted_guard_interleaving_keeps_quiesce_and_branch_guards_exclusive() {
+    let branch_a = branch_id(121);
+    let branch_b = branch_id(122);
+    let probe_branch = branch_id(123);
+    let guard_set = CommitBranchGuardSet::new();
+
+    let guard_a = guard_set
+        .try_acquire_branch_guard(branch_a)
+        .expect("branch A guard");
+    let guard_b = guard_set
+        .try_acquire_branch_guard(branch_b)
+        .expect("branch B guard");
+    assert_eq!(guard_set.active_guard_count(), Ok(2));
+    assert_eq!(
+        guard_set
+            .try_begin_quiesce()
+            .expect_err("active guards reject quiesce"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce cannot start while branch guards are active",
+        }
+    );
+
+    drop(guard_a);
+    assert_eq!(guard_set.active_guard_count(), Ok(1));
+    assert_eq!(
+        guard_set
+            .try_begin_quiesce()
+            .expect_err("remaining guard rejects quiesce"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce cannot start while branch guards are active",
+        }
+    );
+    drop(guard_b);
+
+    let quiesce = guard_set.try_begin_quiesce().expect("begin quiesce");
+    assert_eq!(guard_set.is_quiescing(), Ok(true));
+    assert_eq!(
+        guard_set
+            .try_acquire_branch_guard(branch_a)
+            .expect_err("quiesce blocks branch A"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce is active",
+        }
+    );
+    assert_eq!(
+        guard_set
+            .try_acquire_branch_guard(probe_branch)
+            .expect_err("quiesce blocks independent branch"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce is active",
+        }
+    );
+    drop(quiesce);
+
+    let guard_a = guard_set
+        .try_acquire_branch_guard(branch_a)
+        .expect("branch A guard after quiesce");
+    assert_eq!(
+        guard_set
+            .try_acquire_branch_guard(branch_a)
+            .expect_err("same branch still serialized"),
+        CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: branch_a,
+            reason: "branch commit guard is already active",
+        }
+    );
+    drop(guard_a);
+    assert_eq!(guard_set.active_guard_count(), Ok(0));
+    assert_eq!(guard_set.is_quiescing(), Ok(false));
+}
+
+#[test]
 fn read_only_diagnostic_does_not_use_mutating_guard_during_quiesce() {
     let branch = branch_id(115);
     let guard_set = CommitBranchGuardSet::new();

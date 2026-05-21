@@ -617,6 +617,58 @@ fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
 }
 
 #[test]
+fn durable_rejects_unpublished_branch_rows_before_allocation_or_wal_append() {
+    let branch = branch_id(65);
+    let hidden_key = physical_key(branch, 0x20, b"durable-hidden".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture
+        .state
+        .append_committed_row(StorageRow::put(
+            hidden_key,
+            CommitVersion::new(2),
+            Timestamp::from_micros(2_000),
+            Timestamp::EPOCH,
+            b"hidden".to_vec(),
+        ))
+        .expect("seed unpublished row");
+    let batch = durable_batch(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-after-hidden".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "branch has applied rows above current visible version",
+        })
+    );
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(fixture.wal.append_attempts, 0);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    let guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("guard released after unpublished-row rejection");
+    drop(guard);
+}
+
+#[test]
 fn durable_timestamp_source_failure_rejects_before_version_allocation_or_wal_append() {
     let branch = branch_id(71);
     let mut registry = CommitBranchRegistry::new();
@@ -729,6 +781,11 @@ fn durable_conflict_rejects_before_allocation_or_wal_append() {
     assert_eq!(fixture.wal.append_attempts, 0);
     assert_eq!(fixture.state.active_row_count(), 1);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::new(1));
+    let branch_guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after durable conflict");
+    drop(branch_guard);
 }
 
 #[test]
@@ -898,6 +955,11 @@ fn durable_clean_wal_failure_leaves_no_visible_rows_but_allocation_may_gap() {
         .latest(&key)
         .expect("latest read")
         .is_none());
+    let branch_guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after clean WAL failure");
+    drop(branch_guard);
 
     fixture.wal.mode = FakeWalMode::Succeed {
         forced_durable: false,
@@ -992,6 +1054,11 @@ fn durable_writer_halted_failure_is_clean_durability_unavailable() {
     assert_eq!(fixture.state.active_row_count(), 0);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
     assert_eq!(fixture.durable_gate.unresolved().expect("gate read"), None);
+    let branch_guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after writer halt");
+    drop(branch_guard);
 }
 
 #[test]

@@ -2,24 +2,23 @@
 
 use super::{
     admit_mutating_commit, validate_commit_conflicts, CommitBatch, CommitBatchKind,
-    CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchReadViewConflictSource,
-    CommitBranchRegistry, CommitDurabilityClass, CommitDurabilityMode, CommitFactAllocation,
-    CommitFactAllocator, CommitLowerLayer, CommitMutationCounts, CommitOutcome,
-    CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp, CommitTimelineEntry,
-    CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurableGate, CommitVisibilityFacts,
-    StampedCommitRows, ValidatedCommitBatch, VisibleVersionTracker,
+    CommitBranchApplyTarget, CommitBranchGenerationGuard, CommitBranchGuardSet,
+    CommitBranchReadViewConflictSource, CommitBranchRegistry, CommitDurabilityClass,
+    CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitMutationCounts,
+    CommitOutcome, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
+    CommitTimelineEntry, CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurableGate,
+    CommitVisibilityFacts, CommitVisiblePublisher, StampedCommitRows, ValidatedCommitBatch,
 };
-use crate::branch::BranchLocalState;
 use crate::row::StorageRow;
 
 #[derive(Debug)]
-pub(crate) struct CommitCacheRuntime<'a, S> {
+pub(crate) struct CommitCacheRuntime<'a, S, B, V> {
     config: &'a CommitRuntimeConfig,
     registry: &'a CommitBranchRegistry,
     guard_set: &'a CommitBranchGuardSet,
     allocator: &'a mut CommitFactAllocator<S>,
-    branch: &'a mut BranchLocalState,
-    visible: &'a mut VisibleVersionTracker,
+    branch: &'a mut B,
+    visible: &'a mut V,
     durable_gate: &'a CommitUnresolvedDurableGate,
 }
 
@@ -31,14 +30,14 @@ pub(crate) struct CacheCommitRows {
     mutation_counts: CommitMutationCounts,
 }
 
-impl<'a, S> CommitCacheRuntime<'a, S> {
+impl<'a, S, B, V> CommitCacheRuntime<'a, S, B, V> {
     pub(crate) fn new(
         config: &'a CommitRuntimeConfig,
         registry: &'a CommitBranchRegistry,
         guard_set: &'a CommitBranchGuardSet,
         allocator: &'a mut CommitFactAllocator<S>,
-        branch: &'a mut BranchLocalState,
-        visible: &'a mut VisibleVersionTracker,
+        branch: &'a mut B,
+        visible: &'a mut V,
         durable_gate: &'a CommitUnresolvedDurableGate,
     ) -> Self {
         Self {
@@ -53,7 +52,12 @@ impl<'a, S> CommitCacheRuntime<'a, S> {
     }
 }
 
-impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
+impl<S, B, V> CommitCacheRuntime<'_, S, B, V>
+where
+    S: CommitTimestampSource,
+    B: CommitBranchApplyTarget,
+    V: CommitVisiblePublisher,
+{
     pub(crate) fn execute(
         &mut self,
         batch: CommitBatch,
@@ -67,8 +71,13 @@ impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
                 actual: self.branch.branch_id(),
             });
         }
+        // The unresolved durable gate is global for V1 visible-version safety,
+        // so check it before target-branch admission or allocation.
         let _unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
+        // Keep this guard alive through conflict validation, L6 apply, and
+        // visible publication. That is the single-process safety window for
+        // target-branch read-set/CAS checks.
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;
         let current_visible_version = self.visible.visible_version();
@@ -77,13 +86,7 @@ impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
             current_visible_version,
         )?;
 
-        let read_view = self.branch.capture_read_view().map_err(|source| {
-            CommitRuntimeError::lower_layer_with(
-                CommitLowerLayer::BranchRuntime,
-                "branch read view capture failed",
-                source,
-            )
-        })?;
+        let read_view = self.branch.capture_read_view()?;
         let conflict_source =
             CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
         validate_commit_conflicts(&batch, &conflict_source)?;
@@ -95,16 +98,14 @@ impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
         let facts = visible_cache_facts(stamp)?;
 
         self.branch
-            .append_committed_rows_atomically(rows.combined_rows())
-            .map_err(|source| {
-                CommitRuntimeError::lower_layer_with(
-                    CommitLowerLayer::BranchRuntime,
-                    "branch state rejected commit rows",
-                    source,
-                )
-            })?;
+            .append_committed_rows_atomically(rows.combined_rows())?;
 
         self.visible.publish_from_facts(facts).map_err(|error| {
+            // The concrete visible tracker accepts these facts after the
+            // allocation/visible-version checks above. This branch exists for
+            // injected test publishers and future publication surfaces; the
+            // target-branch ahead-of-visible guard prevents normal follow-on
+            // commits from exposing the unpublished branch state.
             CommitRuntimeError::AppliedButNotVisible {
                 branch_id: batch.batch().branch_id(),
                 commit_version: stamp.commit_version(),

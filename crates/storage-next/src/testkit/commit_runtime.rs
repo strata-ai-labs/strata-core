@@ -78,6 +78,7 @@ pub struct CommitRuntimeScaffoldOutcome {
     mutating_guard_rejected_during_quiesce: usize,
     read_only_allowed_during_quiesce: usize,
     guard_release_and_reacquire: usize,
+    deterministic_guard_interleavings: usize,
     read_present_matches: usize,
     read_present_mismatches: usize,
     read_present_becomes_missing: usize,
@@ -419,6 +420,11 @@ impl CommitRuntimeScaffoldOutcome {
     /// Number of guard release and reacquire cases exercised.
     pub const fn guard_release_and_reacquire_cases(self) -> usize {
         self.guard_release_and_reacquire
+    }
+
+    /// Number of deterministic guard/quiesce interleaving cases exercised.
+    pub const fn deterministic_guard_interleaving_cases(self) -> usize {
+        self.deterministic_guard_interleavings
     }
 
     /// Number of read-set present match cases exercised.
@@ -912,6 +918,8 @@ fn absorb_branch_guard_contract(
     outcome.read_only_allowed_during_quiesce +=
         branch_guard_contract.read_only_allowed_during_quiesce;
     outcome.guard_release_and_reacquire += branch_guard_contract.guard_release_and_reacquire;
+    outcome.deterministic_guard_interleavings +=
+        branch_guard_contract.deterministic_guard_interleavings;
     Ok(())
 }
 

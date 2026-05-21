@@ -421,8 +421,9 @@ Target order:
 Rules:
 
 1. A mutating commit cannot start while quiesce is active.
-2. Quiesce waits for in-flight mutating commits to finish or return a typed
-   timeout.
+2. V1 quiesce is nonblocking: it returns a typed unavailable error while
+   in-flight mutating commits hold branch guards, and L8 owns retry/deadline
+   policy.
 3. Same-branch commits are ordered deterministically.
 4. Different-branch commits must not corrupt global visible-version facts.
 5. Branch deletion blocks new commits before version allocation.
@@ -505,7 +506,7 @@ Full open/recovery sequencing belongs to L8.
 | Slice | Title | Implementation scope | Test scope | Exit gate |
 |---|---|---|---|---|
 | `L7K` | Recovery replay and allocator catch-up hooks | Add replay entrypoints for already-durable rows, idempotent duplicate handling, conflict bypass, commit-version allocator catch-up, and visible publication after replay. Detailed plans: `docs/architecture/implementation-plans/M4/L7/l7k-recovery-replay-allocator-catch-up-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L7/l7k-recovery-replay-allocator-catch-up-test-plan.md`. | Replay idempotency, version allocator catch-up, timestamp preservation, fact mismatch rejection, duplicate durable record handling. | L8 can replay WAL records into L6 without normal commit validation. |
-| `L7L` | Concurrency and quiesce hardening | Complete quiesce semantics, lock-order assertions, deterministic same-branch ordering, cross-branch visible-version safety, deterministic scheduler tests, optional loom coverage for small lock-order primitives, and timeout facts. | Concurrent commit scripts, quiesce drain/block, lock-order guard, generated scheduler interleavings, optional loom lock-order tests, timeout classification. | Commit guards are strong enough for L8 checkpoint/recovery gates. |
+| `L7L` | Concurrency and quiesce hardening | Complete in-process quiesce semantics, lock-order assertions, deterministic same-branch ordering, cross-branch visible-version safety, and deterministic scheduler-style guard tests. Detailed plans: `docs/architecture/implementation-plans/M4/L7/l7l-concurrency-quiesce-hardening-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L7/l7l-concurrency-quiesce-hardening-test-plan.md`. | Same-branch guard contention, quiesce fast-fail/block/release, guard release after cache/durable failures, cross-branch visible safety, deterministic guard interleavings. | Commit guards are strong enough for L8 checkpoint/recovery gates. |
 | `L7M` | Generated harness, fuzz, and fault scripts | Add commit-runtime testkit model, generated commit scripts, fuzz targets, enriched corpora, and backend fault windows. | Property/fuzz coverage for cache, durable, conflict, timeline, quiesce, and phase failures. | Generated assurance covers the full commit protocol, not only unit examples. |
 | `L7N` | Conformance closeout | Consolidate source guards, command matrix, old-code behavior ledger, sensitivity probes, deferred map, and closeout inventory tests. | Closeout inventory, source guard, fuzz inventory, sensitivity-probe ledger, full command set. | M4-L7 closes and L8 can recover durable commits. |
 
@@ -540,7 +541,7 @@ Required categories:
 8. CAS conflict;
 9. commit version overflow;
 10. commit timestamp unavailable or invalid;
-11. commit quiesce timeout;
+11. commit quiesce unavailable;
 12. unsupported durability mode;
 13. WAL append failure;
 14. WAL writer halted;

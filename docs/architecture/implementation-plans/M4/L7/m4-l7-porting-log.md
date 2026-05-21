@@ -67,7 +67,8 @@ Parent test plan:
 8. `L7I`: `WalRecord` construction and `WalRecordEnvelope` append through L4.
 9. `L7J`: durable-but-not-visible classification and write gate.
 10. `L7K`: replay and commit-version allocator catch-up hooks.
-11. `L7L`: concurrency, quiesce, lock-order, and scheduler/loom hardening.
+11. `L7L`: concurrency, quiesce, lock-order, and deterministic guard
+    interleaving hardening.
 12. `L7M`: generated/fuzz/fault depth beyond the scaffold route.
 13. `L7N`: closeout inventory, full command evidence, and sensitivity ledger.
 
@@ -464,8 +465,8 @@ Verified for L7D:
 1. L7E does not port public branch lifecycle commands from engine code.
 2. L7E does not port public transaction sessions or transaction ids from the
    old transaction manager.
-3. L7E keeps quiesce nonblocking. L7L owns wait/timeout behavior and
-   deterministic scheduler coverage.
+3. L7E keeps quiesce nonblocking. L7L owns deterministic guard/quiesce
+   coverage, while L8 owns retry and caller-level deadline behavior.
 4. L7E treats branch generation as an optional storage fact. L9 owns public
    branch-id reuse semantics; L7E only rejects stale exact facts when supplied.
 5. L7E stores registry descriptors in explicit runtime state, not process-global
@@ -481,8 +482,8 @@ Verified for L7D:
 4. `L7I`: WAL append after admission and before L6 apply.
 5. `L7J`: durable-but-not-visible write gate.
 6. `L7K`: replay and allocator catch-up.
-7. `L7L`: blocking quiesce, timeout facts, deterministic interleaving
-   scheduler, and optional loom coverage.
+7. `L7L`: deterministic guard/quiesce interleavings and runtime ordering
+   hardening.
 8. `L8`: checkpoint/recovery orchestration that uses quiesce.
 9. `L9`: public branch lifecycle API and branch-generation ownership.
 
@@ -959,3 +960,135 @@ Verified for L7K during implementation:
 8. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 9. `cargo fmt --package strata-storage-next --check`
 10. `git diff --check`
+
+## L7L: Concurrency And Quiesce Hardening
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7l-concurrency-quiesce-hardening-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7l-concurrency-quiesce-hardening-test-plan.md`
+7. `crates/storage/src/txn/manager.rs`
+8. `crates/storage/src/txn/lock_ordering.rs`
+9. `crates/storage-next/src/commit/guard.rs`
+10. `crates/storage-next/src/commit/branch_registry.rs`
+11. `crates/storage-next/src/commit/conflict.rs`
+12. `crates/storage-next/src/commit/cache.rs`
+13. `crates/storage-next/src/commit/durable.rs`
+14. `crates/storage-next/src/commit/durable_gate.rs`
+15. `crates/storage-next/src/commit/replay.rs`
+16. `crates/storage-next/src/testkit/commit_runtime_branch_guards.rs`
+
+### Preserved As Behavior
+
+1. Same-branch mutating commit admission is serialized by a branch guard.
+2. Different branches can hold branch guards concurrently.
+3. Mutating admission validates branch lifecycle and generation before
+   allocation.
+4. Read-only diagnostics do not require a mutating branch guard.
+5. Cache commits hold the branch guard through conflict validation, L6 apply,
+   and visible publication.
+6. Durable commits hold the branch guard through WAL append, L6 apply, gate
+   recording, and visible publication.
+7. Replay remains a separate already-durable path. L8 owns quiescing normal
+   writes before replay when process-wide exclusion is required.
+
+### Intentionally Changed Or Added
+
+1. Documented V1 quiesce as nonblocking: active branch guards return
+   `CommitQuiesceUnavailable`, and L8 owns retry/deadline policy.
+2. Added guard/quiesce contract comments in `commit/guard.rs`.
+3. Added admission and runtime-order comments in `branch_registry.rs`,
+   `cache.rs`, and `durable.rs`.
+4. Added a replay handoff comment documenting why replay bypasses normal
+   mutating admission.
+5. Added a direct scripted guard interleaving test that proves quiesce and
+   branch guards stay mutually exclusive across a fixed operation sequence.
+6. Added a deterministic guard/quiesce interleaving contract to the generated
+   commit-runtime scaffold outcome.
+7. Reused the L7 durable apply/visible traits for cache commits so tests can
+   inject L6 apply and visible-publication failure windows without fake global
+   state.
+8. Added cache L6 apply failure and cache visible-publication failure tests that
+   assert branch-guard release, value-free error output, and same-branch
+   follow-on rejection after an injected applied-not-visible state.
+9. Added durable guard-release assertions for conflict, clean WAL failure, and
+   writer-halted failure windows.
+10. Added durable target-branch applied-above-visible rejection coverage before
+   allocation or WAL append.
+11. Extended commit-runtime source guards to reject direct sleeps and async
+   runtime dependencies in `src/commit`.
+12. Updated the parent L7 plans to remove stale loom/blocking-wait language for
+   L7L and point to the dedicated L7L plan files.
+
+### Deferred By Owner Slice
+
+1. `L7M`: broad generated multi-branch commit scripts, fuzz targets, and
+   richer fault corpora.
+2. `L7N`: closeout inventory and sensitivity ledger enforcement.
+3. `L8`: checkpoint/recovery retry loops and any caller-level deadline policy
+   around nonblocking quiesce attempts.
+4. `L9`: public branch clear/delete orchestration and user-facing maintenance
+   commands.
+
+### Tests And Guards Added
+
+1. Direct guard script test in `crates/storage-next/src/commit/tests/guard.rs`
+2. Cache L6 apply and visible-publication failure tests in
+   `crates/storage-next/src/commit/tests/cache.rs`
+3. Durable guard-release and applied-above-visible pre-WAL tests in
+   `crates/storage-next/src/commit/tests/durable.rs`
+4. Deterministic guard interleaving helper in
+   `crates/storage-next/src/testkit/commit_runtime_branch_guards.rs`
+5. New generated scaffold counter and property assertion in
+   `crates/storage-next/src/testkit/commit_runtime.rs` and
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+6. Source-guard checks in
+   `crates/storage-next/tests/commit_runtime_source_guard.rs`
+
+### Sensitivity Probes
+
+Planned L7L probes:
+
+1. Allow same-branch double guard acquisition; direct guard and generated
+   guard-contention tests must fail.
+2. Reject different-branch guard acquisition; direct and generated
+   different-branch guard tests must fail.
+3. Allow quiesce while branch guards are active; direct scripted and generated
+   quiesce-active-guard tests must fail.
+4. Allow branch guard acquisition while quiesce is active; direct scripted and
+   generated quiesce-blocking tests must fail.
+5. Forget to clear quiesce on token drop; direct quiesce release tests must
+   fail.
+6. Move allocation before branch admission; cache/durable no-allocation tests
+   must fail.
+7. Drop the branch guard before conflict validation completes; cache guarded
+   conflict-window tests must fail.
+8. Ignore unresolved durable gate for cache commit; cache gate-blocking tests
+   must fail.
+9. Ignore unresolved durable gate for durable commit; durable gate-blocking
+   tests must fail.
+10. Accept target-branch applied rows above the visible version; cache and
+    durable applied-above-visible tests must fail.
+11. Add direct sleeps, async runtime dependencies, or public commit APIs to
+    `src/commit`; source guard tests must fail.
+
+### Command Evidence
+
+Verified for L7L during implementation:
+
+1. `cargo test -p strata-storage-next --locked --lib commit::tests::guard`
+2. `cargo test -p strata-storage-next --locked --lib commit::tests::branch_registry`
+3. `cargo test -p strata-storage-next --locked --lib commit::tests::cache`
+4. `cargo test -p strata-storage-next --locked --lib commit::tests::durable`
+5. `cargo test -p strata-storage-next --locked --lib commit`
+6. `cargo test -p strata-storage-next --no-default-features --locked --lib commit`
+7. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_properties`
+8. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_faults`
+9. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+10. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+11. `cargo fmt --package strata-storage-next --check`
+12. `git diff --check`

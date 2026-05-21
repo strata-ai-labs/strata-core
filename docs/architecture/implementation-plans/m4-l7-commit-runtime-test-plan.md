@@ -268,7 +268,7 @@ Generate phase failures:
 10. WAL append durable success followed by L6 apply failure;
 11. timeline install failure before visibility;
 12. visibility publication failure;
-13. quiesce timeout;
+13. quiesce unavailable or caller-level deadline;
 14. replay duplicate exact match;
 15. replay duplicate mismatch;
 16. allocator catch-up failure.
@@ -439,17 +439,16 @@ Part: L7-Core.
 
 ### 10. Quiesce And Lock Ordering
 
-1. Quiesce waits for in-flight mutating commits.
-2. Quiesce blocks new mutating commits.
+1. V1 quiesce returns a typed unavailable error while in-flight mutating
+   commits hold branch guards; L8 owns retry and deadline policy.
+2. Quiesce blocks new mutating commits after the token is acquired.
 3. Read-only diagnostic path during quiesce follows documented policy.
-4. Quiesce timeout returns a typed error.
+4. Quiesce unavailable facts are typed and do not allocate or mutate storage.
 5. Quiesce release lets later commits proceed.
 6. Lock-order guard catches inverted acquisition order in tests.
-7. Generated interleavings from the commit-runtime deterministic scheduler
-   never deadlock.
-8. Optional loom tests cover the smallest lock-order/quiesce primitives when
-   the dependency is enabled; if not enabled, closeout records the scheduler as
-   the substitute.
+7. Deterministic scheduler-style guard interleavings never leave stuck guards.
+8. L7 does not add blocking waits, wall-clock sleeps, or async runtime
+   dependencies for quiesce.
 9. Quiesce does not publish visibility or mutate versions itself.
 10. Checkpoint/fork/recovery callers can use quiesce without importing L6
    internals.

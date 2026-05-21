@@ -1,6 +1,7 @@
 use super::*;
 use crate::branch::{
-    BranchHistoryOptions, BranchLocalState, BranchReadBound, BranchRuntimeConfig, BranchScanBounds,
+    BranchHistoryOptions, BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig,
+    BranchScanBounds,
 };
 use crate::row::StorageRow;
 
@@ -585,6 +586,161 @@ fn cache_commit_row_limit_counts_timeline_rows_after_allocation_without_apply() 
 }
 
 #[test]
+fn cache_commit_l6_apply_failure_releases_guard_without_visible_publication() {
+    let branch = branch_id(37);
+    let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);
+    let mut state = FailingCacheApplyTarget::new(branch, true);
+    let mut visible = FailingCacheVisiblePublisher::new(false);
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"cache-apply-failure".to_vec()),
+            b"super-secret-cache-apply-value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    let error = execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &durable_gate,
+        batch,
+    )
+    .expect_err("cache apply failure rejects");
+
+    assert!(matches!(
+        error,
+        CommitRuntimeError::LowerLayer {
+            layer: CommitLowerLayer::BranchRuntime,
+            reason: "injected cache branch apply failure",
+            ..
+        }
+    ));
+    assert!(!format!("{error:?}").contains("super-secret-cache-apply-value"));
+    assert_eq!(
+        allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+    assert_eq!(state.state.active_row_count(), 0);
+    assert_eq!(visible.publish_attempts, 0);
+    assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
+    assert_eq!(durable_gate.unresolved().expect("gate read"), None);
+    let branch_guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after cache apply failure");
+    drop(branch_guard);
+}
+
+#[test]
+fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard() {
+    let branch = branch_id(38);
+    let key = physical_key(branch, 0x20, b"cache-visible-failure".to_vec());
+    let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);
+    let mut state = FailingCacheApplyTarget::new(branch, false);
+    let mut visible = FailingCacheVisiblePublisher::new(true);
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            key.clone(),
+            b"super-secret-cache-visible-value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    let error = execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &durable_gate,
+        batch,
+    )
+    .expect_err("cache visible failure rejects");
+
+    assert_eq!(
+        error,
+        CommitRuntimeError::AppliedButNotVisible {
+            branch_id: branch,
+            commit_version: CommitVersion::new(1),
+            reason: "injected cache visible publication failure",
+        }
+    );
+    assert!(!format!("{error:?}").contains("super-secret-cache-visible-value"));
+    assert_eq!(
+        state.state.active_row_count(),
+        1 + CommitTimelineRows::timeline_row_count()
+    );
+    assert_eq!(visible.publish_attempts, 1);
+    assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
+    assert_eq!(durable_gate.unresolved().expect("gate read"), None);
+    assert_eq!(
+        state
+            .state
+            .capture_read_view()
+            .expect("read view")
+            .latest(&key)
+            .expect("latest read")
+            .expect("applied row")
+            .row()
+            .value(),
+        b"super-secret-cache-visible-value"
+    );
+    let branch_guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after cache visible failure");
+    drop(branch_guard);
+
+    visible.fail_publish = false;
+    let follow_on = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"cache-visible-follow-on".to_vec()),
+            b"follow-on".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+    let follow_on_error = execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &durable_gate,
+        follow_on,
+    )
+    .expect_err("applied-above-visible branch rejects follow-on");
+
+    assert_eq!(
+        follow_on_error,
+        CommitRuntimeError::InvalidCommitState {
+            reason: "branch has applied rows above current visible version",
+        }
+    );
+    assert_eq!(
+        allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+    assert_eq!(
+        state.state.active_row_count(),
+        1 + CommitTimelineRows::timeline_row_count()
+    );
+    assert_eq!(visible.publish_attempts, 1);
+}
+
+#[test]
 fn cache_commit_rejects_unpublished_branch_rows_before_allocation() {
     let branch = branch_id(33);
     let hidden_key = physical_key(branch, 0x20, b"hidden".to_vec());
@@ -745,6 +901,11 @@ fn cache_commit_rejects_allocator_visible_mismatch_before_apply() {
     );
     assert_eq!(fixture.visible.visible_version(), CommitVersion::new(9));
     assert_eq!(fixture.state.active_row_count(), 0);
+    let branch_guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after visible mismatch");
+    drop(branch_guard);
     assert!(fixture
         .state
         .capture_read_view()
@@ -886,6 +1047,164 @@ struct CacheFixture {
     state: BranchLocalState,
     visible: VisibleVersionTracker,
     durable_gate: CommitUnresolvedDurableGate,
+}
+
+#[derive(Debug)]
+struct FailingCacheApplyTarget {
+    state: BranchLocalState,
+    fail_append: bool,
+}
+
+impl FailingCacheApplyTarget {
+    fn new(branch: BranchId, fail_append: bool) -> Self {
+        Self {
+            state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
+            fail_append,
+        }
+    }
+}
+
+impl CommitBranchApplyTarget for FailingCacheApplyTarget {
+    fn branch_id(&self) -> BranchId {
+        self.state.branch_id()
+    }
+
+    fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.state.max_commit_version()
+    }
+
+    fn capture_read_view(&self) -> CommitRuntimeResult<BranchReadView> {
+        self.state.capture_read_view().map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "branch read view capture failed",
+                source,
+            )
+        })
+    }
+
+    fn append_committed_rows_atomically(
+        &mut self,
+        rows: Vec<StorageRow>,
+    ) -> CommitRuntimeResult<()> {
+        if self.fail_append {
+            return Err(CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "injected cache branch apply failure",
+                InjectedCacheApplySource,
+            ));
+        }
+        self.state
+            .append_committed_rows_atomically(rows)
+            .map(|_| ())
+            .map_err(|source| {
+                CommitRuntimeError::lower_layer_with(
+                    CommitLowerLayer::BranchRuntime,
+                    "branch state rejected commit rows",
+                    source,
+                )
+            })
+    }
+}
+
+#[derive(Debug)]
+struct FailingCacheVisiblePublisher {
+    tracker: VisibleVersionTracker,
+    fail_publish: bool,
+    publish_attempts: usize,
+}
+
+impl FailingCacheVisiblePublisher {
+    const fn new(fail_publish: bool) -> Self {
+        Self {
+            tracker: VisibleVersionTracker::new(CommitVersion::ZERO),
+            fail_publish,
+            publish_attempts: 0,
+        }
+    }
+}
+
+impl CommitVisiblePublisher for FailingCacheVisiblePublisher {
+    fn visible_version(&self) -> CommitVersion {
+        self.tracker.visible_version()
+    }
+
+    fn publish_from_facts(
+        &mut self,
+        facts: CommitVisibilityFacts,
+    ) -> CommitRuntimeResult<VisibleVersionPublish> {
+        self.publish_attempts = self.publish_attempts.saturating_add(1);
+        if self.fail_publish {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "injected cache visible publication failure",
+            });
+        }
+        self.tracker.publish_from_facts(facts)
+    }
+}
+
+#[derive(Debug)]
+struct InjectedCacheApplySource;
+
+impl std::fmt::Display for InjectedCacheApplySource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("injected cache apply source")
+    }
+}
+
+impl std::error::Error for InjectedCacheApplySource {}
+
+fn injected_cache_runtime_parts(
+    branch: BranchId,
+) -> (
+    CommitBranchRegistry,
+    CommitBranchGuardSet,
+    CommitFactAllocator<CommitManualTimestampSource>,
+    CommitUnresolvedDurableGate,
+) {
+    let mut registry = CommitBranchRegistry::new();
+    registry
+        .register_active(
+            branch,
+            CommitBranchGeneration::new(1).expect("branch generation"),
+        )
+        .expect("register branch");
+    let allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    );
+
+    (
+        registry,
+        CommitBranchGuardSet::new(),
+        allocator,
+        CommitUnresolvedDurableGate::new(),
+    )
+}
+
+fn execute_injected_cache_commit(
+    registry: &CommitBranchRegistry,
+    guard_set: &CommitBranchGuardSet,
+    allocator: &mut CommitFactAllocator<CommitManualTimestampSource>,
+    state: &mut FailingCacheApplyTarget,
+    visible: &mut FailingCacheVisiblePublisher,
+    durable_gate: &CommitUnresolvedDurableGate,
+    batch: CommitBatch,
+) -> CommitRuntimeResult<CommitOutcome> {
+    CommitCacheRuntime::new(
+        &CommitRuntimeConfig::default(),
+        registry,
+        guard_set,
+        allocator,
+        state,
+        visible,
+        durable_gate,
+    )
+    .execute(
+        batch,
+        CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+    )
 }
 
 impl CacheFixture {

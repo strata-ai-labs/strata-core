@@ -82,6 +82,14 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
         "SystemTime",
         "Instant::now",
         "Timestamp::now",
+        "std::thread::sleep",
+        "thread::sleep",
+        "std::time",
+        "std::time::Duration",
+        "std::time::Instant",
+        "tokio::",
+        "async_std::",
+        "smol::",
     ];
 
     for file in commit_runtime_source_files(&root) {
@@ -349,6 +357,26 @@ fn commit_runtime_source_guard_catches_io_and_backend_terms() {
     assert!(contains_forbidden_substring(
         "Timestamp::now()",
         "Timestamp::now"
+    ));
+    assert!(contains_forbidden_substring(
+        "std::thread::sleep(deadline)",
+        "std::thread::sleep"
+    ));
+    assert!(contains_forbidden_substring(
+        "std::time::Instant::now()",
+        "std::time"
+    ));
+    assert!(contains_forbidden_substring(
+        "tokio::spawn(task)",
+        "tokio::"
+    ));
+    assert!(contains_forbidden_substring(
+        "async_std::task::sleep(deadline)",
+        "async_std::"
+    ));
+    assert!(contains_forbidden_substring(
+        "smol::Timer::after(deadline)",
+        "smol::"
     ));
     assert!(contains_ascii_word("let _: PathBuf;", "PathBuf"));
     assert!(contains_forbidden_backend_operation(
