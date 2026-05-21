@@ -96,6 +96,34 @@ doc = false
 bench = false
 
 [[bin]]
+name = "commit_runtime_batch"
+path = "fuzz_targets/commit_runtime_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commit_runtime_conflict"
+path = "fuzz_targets/commit_runtime_conflict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commit_runtime_durable"
+path = "fuzz_targets/commit_runtime_durable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commit_runtime_timeline"
+path = "fuzz_targets/commit_runtime_timeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_wal_commit_payload"
 path = "fuzz_targets/format_wal_commit_payload.rs"
 test = false

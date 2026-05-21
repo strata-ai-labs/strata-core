@@ -34,6 +34,87 @@ fn commit_runtime_property_harness_runs_scaffold_contract() {
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn commit_runtime_property_harness_compares_generated_scripts_to_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_commit_runtime_script_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/commit_runtime_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=191), |script| {
+            let outcome = check_commit_runtime_script_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.decoded_scripts == 0
+                || outcome.model_parity_checks == 0
+                || outcome.cache_successes == 0
+                || outcome.durable_successes == 0
+                || outcome.wal_failures == 0
+                || outcome.post_wal_failures == 0
+                || outcome.conflict_rejections == 0
+                || outcome.read_only_diagnostics == 0
+                || outcome.guard_or_quiesce_rejections == 0
+                || outcome.branch_lifecycle_transitions == 0
+                || outcome.branch_lifecycle_rejections == 0
+                || outcome.replay_successes == 0
+                || outcome.timeline_checks == 0
+            {
+                return Err(TestCaseError::fail(
+                    "commit runtime generated script did not exercise all L7M categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated commit runtime model property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn commit_runtime_generated_contract_entrypoints_are_deterministic() {
+    use strata_storage_next::testkit::{
+        check_commit_runtime_batch_contract, check_commit_runtime_conflict_contract,
+        check_commit_runtime_durable_contract, check_commit_runtime_fault_contract,
+        check_commit_runtime_script_contract, check_commit_runtime_timeline_contract,
+    };
+
+    let script = b"commit-runtime-entrypoint-determinism-v1";
+    let first = check_commit_runtime_script_contract(script).expect("script contract");
+    let second = check_commit_runtime_script_contract(script).expect("script contract again");
+    assert_eq!(first, second);
+
+    let batch = check_commit_runtime_batch_contract(script).expect("batch contract");
+    assert!(batch.cache_successes > 0);
+    assert!(batch.read_only_diagnostics > 0);
+    assert!(batch.branch_lifecycle_transitions > 0);
+    assert!(batch.branch_lifecycle_rejections > 0);
+
+    let conflict = check_commit_runtime_conflict_contract(script).expect("conflict contract");
+    assert!(conflict.conflict_rejections > 0);
+
+    let durable = check_commit_runtime_durable_contract(script).expect("durable contract");
+    assert!(durable.durable_successes > 0);
+    assert!(durable.wal_failures > 0);
+    assert!(durable.post_wal_failures > 0);
+    assert!(durable.replay_successes > 0);
+
+    let timeline = check_commit_runtime_timeline_contract(script).expect("timeline contract");
+    assert!(timeline.timeline_checks > 0);
+
+    let fault = check_commit_runtime_fault_contract(script).expect("fault contract");
+    assert!(fault.wal_failures > 0);
+    assert!(fault.post_wal_failures > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 fn all_categories_exercised(
     outcome: &strata_storage_next::testkit::CommitRuntimeScaffoldOutcome,
 ) -> bool {

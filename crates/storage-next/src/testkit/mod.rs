@@ -11,7 +11,10 @@ mod commit_runtime_branch_guards;
 mod commit_runtime_cache;
 mod commit_runtime_conflicts;
 mod commit_runtime_durable;
+mod commit_runtime_model;
 mod commit_runtime_outcome;
+mod commit_runtime_runner;
+mod commit_runtime_script;
 mod commit_runtime_timeline;
 mod format_fuzz;
 mod integration_harness;
@@ -26,6 +29,13 @@ pub use branch_lsm::{
     BranchLsmScaffoldOutcome,
 };
 pub use commit_runtime::{check_commit_runtime_scaffold_contract, CommitRuntimeScaffoldOutcome};
+pub use commit_runtime_runner::{
+    check_commit_runtime_batch_contract, check_commit_runtime_conflict_contract,
+    check_commit_runtime_conflict_script_contract, check_commit_runtime_durable_contract,
+    check_commit_runtime_durable_script_contract, check_commit_runtime_fault_contract,
+    check_commit_runtime_script_contract, check_commit_runtime_timeline_contract,
+    check_commit_runtime_timeline_script_contract, CommitRuntimeAssuranceOutcome,
+};
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
 };

@@ -3,11 +3,10 @@
 #![cfg(feature = "fault-injection")]
 #![deny(unsafe_code)]
 
-mod common;
-
 use std::num::NonZeroU64;
 use strata_storage_next::testkit::{
-    check_commit_runtime_scaffold_contract, BackendOperation, FaultKind, FaultRule, FaultScript,
+    check_commit_runtime_fault_contract, check_commit_runtime_scaffold_contract, BackendOperation,
+    FaultKind, FaultRule, FaultScript,
 };
 
 #[test]
@@ -20,7 +19,6 @@ fn commit_runtime_fault_harness_exercises_protocol_boundaries() {
     )]);
 
     assert_ne!(script, FaultScript::empty());
-    assert!(common::crate_root().join("src/commit/mod.rs").is_file());
 
     let outcome = check_commit_runtime_scaffold_contract(b"commit-runtime-fault-boundaries-v1")
         .expect("commit runtime fault contract");
@@ -36,4 +34,13 @@ fn commit_runtime_fault_harness_exercises_protocol_boundaries() {
     assert!(outcome.durable_unresolved_gate_cache_block_cases() > 0);
     assert!(outcome.durable_clean_wal_no_gate_cases() > 0);
     assert!(outcome.durable_uncertain_wal_no_gate_cases() > 0);
+
+    let generated = check_commit_runtime_fault_contract(b"commit-runtime-generated-faults-v1")
+        .expect("generated commit runtime fault script");
+    assert!(generated.wal_failures >= 4);
+    assert!(generated.post_wal_failures >= 2);
+    assert!(generated.replay_successes >= 2);
+    assert!(generated.guard_or_quiesce_rejections > 0);
+    assert!(generated.branch_lifecycle_transitions > 0);
+    assert!(generated.branch_lifecycle_rejections > 0);
 }

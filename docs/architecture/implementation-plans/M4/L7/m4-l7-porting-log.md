@@ -1092,3 +1092,134 @@ Verified for L7L during implementation:
 10. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 11. `cargo fmt --package strata-storage-next --check`
 12. `git diff --check`
+
+## L7M: Generated Fuzz And Fault Assurance
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+4. `docs/architecture/implementation-plans/M4/L7/l7m-generated-fuzz-fault-assurance-implementation-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7m-generated-fuzz-fault-assurance-test-plan.md`
+6. `crates/storage-next/src/commit/cache.rs`
+7. `crates/storage-next/src/commit/durable.rs`
+8. `crates/storage-next/src/commit/conflict.rs`
+9. `crates/storage-next/src/commit/timeline.rs`
+10. `crates/storage-next/src/commit/replay.rs`
+11. `crates/storage-next/src/testkit/commit_runtime.rs`
+12. `crates/storage-next/tests/commit_runtime_properties.rs`
+13. `crates/storage-next/tests/commit_runtime_faults.rs`
+
+### Preserved As Behavior
+
+1. The existing scaffold contract remains as a broad fixed-scenario smoke
+   route for allocator, batch, branch-guard, outcome, conflict, timeline,
+   cache, durable, and replay helpers.
+2. L7M does not add a production commit mode and does not change the commit
+   protocol.
+3. Cache commits remain no-WAL commits that install L6 rows and publish the
+   visible version atomically from the caller's perspective.
+4. Durable commits still append WAL records before L6 apply and record
+   unresolved durable facts for post-WAL failure windows.
+5. Replay remains the only path that consumes already-durable WAL records and
+   clears matching unresolved durable facts.
+
+### Intentionally Changed Or Added
+
+1. Added a bounded generated script decoder in
+   `crates/storage-next/src/testkit/commit_runtime_script.rs`, including
+   generated branch lifecycle operations. The generated script is capped at
+   the L7M-planned 64 operations.
+2. Added an independent in-memory oracle in
+   `crates/storage-next/src/testkit/commit_runtime_model.rs` for visible
+   rows, timeline facts, unresolved durable facts, guard/quiesce state, and
+   branch lifecycle/generation facts.
+3. Added a production runner in
+   `crates/storage-next/src/testkit/commit_runtime_runner.rs` that compares the
+   oracle to the real cache, durable, conflict, timeline, guard/quiesce, and
+   replay surfaces after every generated operation. The public fuzz contracts
+   now validate their own focus category instead of only routing to the broad
+   scaffold. Generated timestamps deliberately include adjacent equal values
+   so timeline timestamp/version tiebreak parity is exercised.
+4. Added generated property coverage in
+   `crates/storage-next/tests/commit_runtime_properties.rs` that requires all
+   L7M categories to be exercised.
+5. Expanded `commit_runtime_faults.rs` so post-WAL apply, post-WAL visibility,
+   WAL clean/uncertain/writer-halted/segment-overflow, replay, and
+   guard/quiesce failures run through the generated model route.
+6. Added four fuzz targets:
+   `commit_runtime_batch`, `commit_runtime_conflict`,
+   `commit_runtime_durable`, and `commit_runtime_timeline`.
+7. Added checked-in seed corpora for all four commit-runtime fuzz targets.
+
+### Deferred By Owner Slice
+
+1. `L7N`: final closeout inventory, sensitivity-ledger rows, and any remaining
+   documentation-only consistency checks.
+2. `L8`: lifecycle/recovery orchestration around replay discovery,
+   checkpointing, quiesce retry policy, and process restart.
+3. `L9`: public database APIs and user-facing branch maintenance commands.
+
+### Tests And Guards Added
+
+1. `CommitRuntimeAssuranceOutcome` and script contract exports in
+   `crates/storage-next/src/testkit/mod.rs`
+2. Model-vs-runtime property test in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+3. Generated fault-script assertions in
+   `crates/storage-next/tests/commit_runtime_faults.rs`
+4. Fuzz target routing and seed corpus checks in
+   `crates/storage-next/tests/commit_runtime_fuzz_inventory.rs`
+5. Fuzz targets under `crates/storage-next/fuzz/fuzz_targets/`
+6. Seed corpora under `crates/storage-next/fuzz/corpus/commit_runtime_*`
+7. Script decoder and independent-model unit tests under
+   `crates/storage-next/src/testkit/commit_runtime_script.rs` and
+   `crates/storage-next/src/testkit/commit_runtime_model.rs`
+
+### Sensitivity Probes
+
+Planned L7M probes for L7N to run and record:
+
+1. Remove generated cache commits from the script; the L7M property category
+   assertion must fail.
+2. Remove generated durable success from the script; the L7M property category
+   assertion must fail.
+3. Remove WAL clean/uncertain/writer-halted/segment-overflow faults; generated
+   fault assertions must fail.
+4. Do not record unresolved durable facts after post-WAL apply/visible
+   failures; model parity or replay assertions must fail.
+5. Allow unresolved durable facts to admit new cache/durable commits; model
+   parity must fail.
+6. Publish visibility without applying model rows; visible-value parity must
+   fail.
+7. Skip timeline rows during cache/durable/replay apply; timeline parity must
+   fail.
+8. Ignore read-set conflict validation; generated conflict operations must
+   diverge from the model.
+9. Allow branch guard acquisition during quiesce or quiesce with active branch
+   guards; guard/quiesce parity must fail.
+10. Forget allocator catch-up during replay; allocator parity must fail.
+11. Route any commit-runtime fuzz target to the wrong contract function; L7N
+    source/fuzz inventory should fail.
+12. Drop generated branch lifecycle transitions or lifecycle rejection; L7M
+    property and focused batch-contract assertions must fail.
+
+### Command Evidence
+
+Verified for L7M during implementation:
+
+1. `cargo check -p strata-storage-next --tests --locked`
+2. `cargo test -p strata-storage-next --test commit_runtime_properties --features testkit --locked -- --nocapture`
+3. `cargo test -p strata-storage-next --test commit_runtime_faults --features 'testkit fault-injection' --locked -- --nocapture`
+4. `cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bins`
+5. `cargo test -p strata-storage-next --test commit_runtime_source_guard --locked`
+6. `cargo test -p strata-storage-next --locked --lib commit`
+7. `cargo test -p strata-storage-next --locked --lib commit_runtime --features testkit`
+8. `cargo test -p strata-storage-next --test commit_runtime_fuzz_inventory --locked`
+9. `cargo test -p strata-storage-next --test commit_runtime_fuzz_inventory --features testkit --locked`
+10. `cargo check -p strata-storage-next --no-default-features --locked --tests`
+11. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_properties --test commit_runtime_faults`
+12. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+13. `cargo fmt --package strata-storage-next --check`
+14. `git diff --check`
