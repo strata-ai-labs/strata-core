@@ -357,6 +357,67 @@ fn visible_outcome_constructor_validates_visible_shape() {
 }
 
 #[test]
+fn visible_outcome_constructor_rejects_durability_fact_mismatches() {
+    let branch = branch_id(66);
+    let stamp =
+        CommitStamp::new(branch, CommitVersion::new(8), Timestamp::from_micros(80)).expect("stamp");
+    let counts = mutation_counts(1, 1, 0);
+    let cache_visible_facts = CommitVisibilityFacts::new(
+        Some(stamp.commit_version()),
+        None,
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+    )
+    .expect("cache visible facts");
+    let durable_visible_facts = CommitVisibilityFacts::new(
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+    )
+    .expect("durable visible facts");
+
+    assert_eq!(
+        CommitOutcome::visible(
+            branch,
+            stamp,
+            CommitDurabilityClass::Standard,
+            counts,
+            cache_visible_facts,
+        ),
+        Err(CommitRuntimeError::InvalidVisibilityFacts {
+            reason: "durable outcome must preserve durable version",
+        })
+    );
+    assert_eq!(
+        CommitOutcome::visible(
+            branch,
+            stamp,
+            CommitDurabilityClass::NotDurable,
+            counts,
+            durable_visible_facts,
+        ),
+        Err(CommitRuntimeError::InvalidVisibilityFacts {
+            reason: "non-durable outcome must not preserve durable version",
+        })
+    );
+    assert_eq!(
+        CommitOutcome::visible(
+            branch,
+            stamp,
+            CommitDurabilityClass::Uncertain,
+            counts,
+            durable_visible_facts,
+        ),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "outcome must not claim uncertain durability",
+        })
+    );
+}
+
+#[test]
 fn outcome_constructor_validates_visibility_facts_before_outcome_shape() {
     let branch = branch_id(66);
     let stamp =
@@ -508,6 +569,56 @@ fn not_visible_outcome_constructor_rejects_inconsistent_progress_facts() {
 }
 
 #[test]
+fn not_visible_outcome_constructor_rejects_durable_facts_or_class() {
+    let branch = branch_id(66);
+    let stamp =
+        CommitStamp::new(branch, CommitVersion::new(8), Timestamp::from_micros(80)).expect("stamp");
+    let counts = mutation_counts(1, 1, 0);
+    let allocated_facts =
+        CommitVisibilityFacts::new(Some(stamp.commit_version()), None, None, None, None)
+            .expect("allocated facts");
+    let durable_facts = CommitVisibilityFacts::new(
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+        None,
+        None,
+        None,
+    )
+    .expect("durable facts");
+
+    assert_eq!(
+        CommitOutcome::new(
+            branch,
+            CommitOutcomeKind::NotVisible,
+            CommitPhase::AllocatedNotDurable,
+            CommitDurabilityClass::Standard,
+            Some(stamp),
+            counts,
+            allocated_facts,
+            None,
+        ),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "not-visible outcome must not claim durability",
+        })
+    );
+    assert_eq!(
+        CommitOutcome::new(
+            branch,
+            CommitOutcomeKind::NotVisible,
+            CommitPhase::AllocatedNotDurable,
+            CommitDurabilityClass::NotDurable,
+            Some(stamp),
+            counts,
+            durable_facts,
+            None,
+        ),
+        Err(CommitRuntimeError::InvalidVisibilityFacts {
+            reason: "not-visible outcome must not preserve durable version",
+        })
+    );
+}
+
+#[test]
 fn outcome_constructor_rejects_stamp_branch_mismatch() {
     let branch = branch_id(69);
     let other = branch_id(70);
@@ -626,7 +737,19 @@ fn durable_but_not_visible_outcome_rejects_inconsistent_progress_facts() {
             durable_facts,
         ),
         Err(CommitRuntimeError::InvalidCommitState {
-            reason: "durable-but-not-visible outcome must claim durability",
+            reason: "durable-but-not-visible outcome must claim durable WAL success",
+        })
+    );
+    assert_eq!(
+        CommitOutcome::durable_but_not_visible(
+            branch,
+            stamp,
+            CommitDurabilityClass::Uncertain,
+            counts,
+            durable_facts,
+        ),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "durable-but-not-visible outcome must claim durable WAL success",
         })
     );
     assert_eq!(
@@ -837,6 +960,44 @@ fn replay_outcome_preserves_commit_facts_without_read_snapshot() {
 
     assert_eq!(outcome.kind(), CommitOutcomeKind::Replay);
     assert_eq!(outcome.commit_version(), Some(stamp.commit_version()));
+
+    assert_eq!(
+        CommitOutcome::new(
+            branch,
+            CommitOutcomeKind::Replay,
+            CommitPhase::Replay,
+            CommitDurabilityClass::NotDurable,
+            Some(stamp),
+            mutation_counts(1, 0, 0),
+            facts,
+            None,
+        ),
+        Err(CommitRuntimeError::InvalidVisibilityFacts {
+            reason: "non-durable outcome must not preserve durable version",
+        })
+    );
+    assert_eq!(
+        CommitOutcome::new(
+            branch,
+            CommitOutcomeKind::Replay,
+            CommitPhase::Replay,
+            CommitDurabilityClass::Always,
+            Some(stamp),
+            mutation_counts(1, 0, 0),
+            CommitVisibilityFacts::new(
+                Some(stamp.commit_version()),
+                None,
+                Some(stamp.commit_version()),
+                Some(stamp.commit_version()),
+                Some(stamp.commit_version()),
+            )
+            .expect("cache replay facts"),
+            None,
+        ),
+        Err(CommitRuntimeError::InvalidVisibilityFacts {
+            reason: "durable outcome must preserve durable version",
+        })
+    );
 }
 
 fn stamp(branch: BranchId, version: u64) -> CommitStamp {

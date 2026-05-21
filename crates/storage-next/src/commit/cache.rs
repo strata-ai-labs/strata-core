@@ -217,6 +217,10 @@ fn require_branch_not_ahead_of_visible(
     branch_max_commit_version: Option<strata_core_next::CommitVersion>,
     current_visible_version: strata_core_next::CommitVersion,
 ) -> CommitRuntimeResult<()> {
+    // The V1 visible-version tracker is global, but this executor owns only the
+    // target branch state. Cross-branch applied-not-visible rows are excluded by
+    // the global unresolved durable gate and recovery ownership; this local
+    // check fails closed for the branch this commit can actually expose.
     if branch_max_commit_version.is_some_and(|version| version > current_visible_version) {
         return Err(CommitRuntimeError::InvalidCommitState {
             reason: "branch has applied rows above current visible version",

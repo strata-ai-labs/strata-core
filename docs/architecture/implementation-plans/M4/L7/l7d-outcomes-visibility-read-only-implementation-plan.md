@@ -166,6 +166,14 @@ apply; it only provides the monotonic fact container. Later slices must not
 publish a global visible version if doing so could expose lower-version rows
 that were applied but intentionally not visible.
 
+In V1, cache and durable executors receive only the target `BranchLocalState`.
+They therefore perform a target-branch `max_commit_version <= visible_version`
+preflight and rely on the process-global unresolved durable gate plus L8
+recovery ownership to exclude cross-branch applied-not-visible durable rows.
+Externally seeding a non-target branch with rows above the global visible
+version without also installing the corresponding unresolved/recovery fact is
+invalid runtime construction, not a commit executor responsibility.
+
 This keeps the policy explicit:
 
 1. `allocated_version` can be ahead of `visible_version`;

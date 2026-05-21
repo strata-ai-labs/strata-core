@@ -329,6 +329,7 @@ impl CommitOutcome {
                 reason: "visible outcome must use visible phase",
             });
         }
+        self.require_durability_matches_facts()?;
         if self.read_snapshot.is_some() {
             return Err(CommitRuntimeError::InvalidCommitState {
                 reason: "mutating outcome must not carry a read snapshot",
@@ -355,6 +356,16 @@ impl CommitOutcome {
         ) {
             return Err(CommitRuntimeError::InvalidCommitPhase {
                 reason: "not-visible outcome must use an allocated or applied non-visible phase",
+            });
+        }
+        if self.durability != CommitDurabilityClass::NotDurable {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "not-visible outcome must not claim durability",
+            });
+        }
+        if self.visibility_facts.durable_version().is_some() {
+            return Err(CommitRuntimeError::InvalidVisibilityFacts {
+                reason: "not-visible outcome must not preserve durable version",
             });
         }
         if self.phase == CommitPhase::AppliedNotVisible
@@ -387,9 +398,12 @@ impl CommitOutcome {
                 reason: "durable-but-not-visible outcome must use a durable non-visible phase",
             });
         }
-        if self.durability == CommitDurabilityClass::NotDurable {
+        if !matches!(
+            self.durability,
+            CommitDurabilityClass::Standard | CommitDurabilityClass::Always
+        ) {
             return Err(CommitRuntimeError::InvalidCommitState {
-                reason: "durable-but-not-visible outcome must claim durability",
+                reason: "durable-but-not-visible outcome must claim durable WAL success",
             });
         }
         if self.visibility_facts.allocated_version() != self.commit_version {
@@ -437,6 +451,7 @@ impl CommitOutcome {
                 reason: "replay outcome must use replay phase",
             });
         }
+        self.require_durability_matches_facts()?;
         if self.read_snapshot.is_some() {
             return Err(CommitRuntimeError::InvalidCommitState {
                 reason: "replay outcome must not carry a read snapshot",
@@ -449,6 +464,32 @@ impl CommitOutcome {
         match (self.commit_version, self.commit_timestamp) {
             (Some(version), Some(_)) if version != CommitVersion::ZERO => Ok(()),
             _ => Err(CommitRuntimeError::InvalidCommitState { reason }),
+        }
+    }
+
+    fn require_durability_matches_facts(&self) -> CommitRuntimeResult<()> {
+        match self.durability {
+            CommitDurabilityClass::NotDurable
+                if self.visibility_facts.durable_version().is_some() =>
+            {
+                Err(CommitRuntimeError::InvalidVisibilityFacts {
+                    reason: "non-durable outcome must not preserve durable version",
+                })
+            }
+            CommitDurabilityClass::NotDurable => Ok(()),
+            CommitDurabilityClass::Standard | CommitDurabilityClass::Always
+                if self.visibility_facts.durable_version() == self.commit_version =>
+            {
+                Ok(())
+            }
+            CommitDurabilityClass::Standard | CommitDurabilityClass::Always => {
+                Err(CommitRuntimeError::InvalidVisibilityFacts {
+                    reason: "durable outcome must preserve durable version",
+                })
+            }
+            CommitDurabilityClass::Uncertain => Err(CommitRuntimeError::InvalidCommitState {
+                reason: "outcome must not claim uncertain durability",
+            }),
         }
     }
 }
