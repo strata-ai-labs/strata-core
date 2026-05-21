@@ -632,6 +632,90 @@ fn cache_commit_rejects_unpublished_branch_rows_before_allocation() {
 }
 
 #[test]
+fn cache_commit_rejects_unresolved_durable_gate_before_allocation() {
+    let branch = branch_id(34);
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    fixture
+        .durable_gate
+        .record_unresolved(unresolved_durable_fact(branch, CommitVersion::new(7)))
+        .expect("record unresolved durable fact");
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"blocked-by-durable".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    assert!(matches!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: blocked_branch,
+            commit_version,
+            ..
+        }) if blocked_branch == branch && commit_version == CommitVersion::new(7)
+    ));
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(fixture.state.active_row_count(), 0);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    let _guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after blocked cache commit");
+}
+
+#[test]
+fn cache_commit_rejects_any_unresolved_durable_gate_before_allocation() {
+    let blocked_branch = branch_id(35);
+    let target_branch = branch_id(36);
+    let mut fixture = CacheFixture::new(target_branch, CommitRuntimeConfig::default());
+    fixture
+        .durable_gate
+        .record_unresolved(unresolved_durable_fact(
+            blocked_branch,
+            CommitVersion::new(8),
+        ))
+        .expect("record unresolved durable fact");
+    let batch = mutating_batch(
+        target_branch,
+        vec![CommitMutation::put(
+            physical_key(target_branch, 0x20, b"blocked-by-other-branch".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    assert!(matches!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id,
+            commit_version,
+            ..
+        }) if branch_id == blocked_branch && commit_version == CommitVersion::new(8)
+    ));
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(fixture.state.active_row_count(), 0);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    let _guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(target_branch)
+        .expect("target branch guard was never retained");
+}
+
+#[test]
 fn cache_commit_rejects_allocator_visible_mismatch_before_apply() {
     let branch = branch_id(25);
     let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
@@ -801,6 +885,7 @@ struct CacheFixture {
     allocator: CommitFactAllocator<CommitManualTimestampSource>,
     state: BranchLocalState,
     visible: VisibleVersionTracker,
+    durable_gate: CommitUnresolvedDurableGate,
 }
 
 impl CacheFixture {
@@ -823,6 +908,7 @@ impl CacheFixture {
             ),
             state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
             visible: VisibleVersionTracker::default(),
+            durable_gate: CommitUnresolvedDurableGate::new(),
         }
     }
 
@@ -842,6 +928,7 @@ impl CacheFixture {
             &mut self.allocator,
             &mut self.state,
             &mut self.visible,
+            &self.durable_gate,
         )
         .execute(batch, CommitBranchGenerationGuard::exact(generation))
     }
@@ -880,4 +967,13 @@ fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> Comm
         rows.iter().map(crate::branch::BranchVisibleRow::row),
     )
     .expect("timeline view")
+}
+
+fn unresolved_durable_fact(branch: BranchId, version: CommitVersion) -> CommitUnresolvedDurable {
+    CommitUnresolvedDurable::durable_not_applied_with_facts(
+        CommitStamp::new(branch, version, Timestamp::from_micros(7_000)).expect("stamp"),
+        CommitDurabilityClass::Standard,
+        "seed unresolved durable fact",
+    )
+    .expect("unresolved durable fact")
 }

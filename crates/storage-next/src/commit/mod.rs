@@ -15,6 +15,7 @@ mod cache;
 mod config;
 mod conflict;
 mod durable;
+mod durable_gate;
 mod error;
 mod facts;
 mod guard;
@@ -77,7 +78,15 @@ pub(crate) use conflict::{
     reason = "commit scaffold exports define the local surface for later slices"
 )]
 pub(crate) use durable::{
-    CommitDurableRuntime, CommitWalAppendError, CommitWalAppendFacts, CommitWalAppender,
+    CommitBranchApplyTarget, CommitDurableRuntime, CommitVisiblePublisher, CommitWalAppendError,
+    CommitWalAppendFacts, CommitWalAppender,
+};
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use durable_gate::{
+    CommitUnresolvedDurable, CommitUnresolvedDurableGate, CommitUnresolvedDurableKind,
 };
 #[cfg_attr(
     not(test),

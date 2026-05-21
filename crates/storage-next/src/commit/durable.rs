@@ -6,22 +6,26 @@ use super::{
     CommitBranchReadViewConflictSource, CommitBranchRegistry, CommitDurabilityClass,
     CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitLowerLayer,
     CommitOutcome, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
-    CommitTimestampSource, CommitVisibilityFacts, ValidatedCommitBatch, VisibleVersionTracker,
+    CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
+    CommitVisibilityFacts, ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker,
 };
-use crate::branch::BranchLocalState;
+use crate::branch::{BranchLocalState, BranchReadView};
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{WalCommitPayload, WalRecord};
+use crate::row::StorageRow;
 use crate::service::{WalAppend, WalService, WalServiceError};
+use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Debug)]
-pub(crate) struct CommitDurableRuntime<'a, S, W> {
+pub(crate) struct CommitDurableRuntime<'a, S, W, B = BranchLocalState, V = VisibleVersionTracker> {
     config: &'a CommitRuntimeConfig,
     registry: &'a CommitBranchRegistry,
     guard_set: &'a CommitBranchGuardSet,
     allocator: &'a mut CommitFactAllocator<S>,
-    branch: &'a mut BranchLocalState,
-    visible: &'a mut VisibleVersionTracker,
+    branch: &'a mut B,
+    visible: &'a mut V,
     wal: &'a mut W,
+    durable_gate: &'a CommitUnresolvedDurableGate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,15 +57,82 @@ pub(crate) trait CommitWalAppender {
     ) -> Result<CommitWalAppendFacts, CommitWalAppendError>;
 }
 
-impl<'a, S, W> CommitDurableRuntime<'a, S, W> {
+pub(crate) trait CommitBranchApplyTarget {
+    fn branch_id(&self) -> BranchId;
+    fn max_commit_version(&self) -> Option<CommitVersion>;
+    fn capture_read_view(&self) -> CommitRuntimeResult<BranchReadView>;
+    fn append_committed_rows_atomically(
+        &mut self,
+        rows: Vec<StorageRow>,
+    ) -> CommitRuntimeResult<()>;
+}
+
+pub(crate) trait CommitVisiblePublisher {
+    fn visible_version(&self) -> CommitVersion;
+    fn publish_from_facts(
+        &mut self,
+        facts: CommitVisibilityFacts,
+    ) -> CommitRuntimeResult<VisibleVersionPublish>;
+}
+
+impl CommitBranchApplyTarget for BranchLocalState {
+    fn branch_id(&self) -> BranchId {
+        BranchLocalState::branch_id(self)
+    }
+
+    fn max_commit_version(&self) -> Option<CommitVersion> {
+        BranchLocalState::max_commit_version(self)
+    }
+
+    fn capture_read_view(&self) -> CommitRuntimeResult<BranchReadView> {
+        BranchLocalState::capture_read_view(self).map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "branch read view capture failed",
+                source,
+            )
+        })
+    }
+
+    fn append_committed_rows_atomically(
+        &mut self,
+        rows: Vec<StorageRow>,
+    ) -> CommitRuntimeResult<()> {
+        BranchLocalState::append_committed_rows_atomically(self, rows)
+            .map(|_| ())
+            .map_err(|source| {
+                CommitRuntimeError::lower_layer_with(
+                    CommitLowerLayer::BranchRuntime,
+                    "branch state rejected commit rows",
+                    source,
+                )
+            })
+    }
+}
+
+impl CommitVisiblePublisher for VisibleVersionTracker {
+    fn visible_version(&self) -> CommitVersion {
+        VisibleVersionTracker::visible_version(*self)
+    }
+
+    fn publish_from_facts(
+        &mut self,
+        facts: CommitVisibilityFacts,
+    ) -> CommitRuntimeResult<VisibleVersionPublish> {
+        VisibleVersionTracker::publish_from_facts(self, facts)
+    }
+}
+
+impl<'a, S, W, B, V> CommitDurableRuntime<'a, S, W, B, V> {
     pub(crate) fn new(
         config: &'a CommitRuntimeConfig,
         registry: &'a CommitBranchRegistry,
         guard_set: &'a CommitBranchGuardSet,
         allocator: &'a mut CommitFactAllocator<S>,
-        branch: &'a mut BranchLocalState,
-        visible: &'a mut VisibleVersionTracker,
+        branch: &'a mut B,
+        visible: &'a mut V,
         wal: &'a mut W,
+        durable_gate: &'a CommitUnresolvedDurableGate,
     ) -> Self {
         Self {
             config,
@@ -71,11 +142,18 @@ impl<'a, S, W> CommitDurableRuntime<'a, S, W> {
             branch,
             visible,
             wal,
+            durable_gate,
         }
     }
 }
 
-impl<S: CommitTimestampSource, W: CommitWalAppender> CommitDurableRuntime<'_, S, W> {
+impl<S, W, B, V> CommitDurableRuntime<'_, S, W, B, V>
+where
+    S: CommitTimestampSource,
+    W: CommitWalAppender,
+    B: CommitBranchApplyTarget,
+    V: CommitVisiblePublisher,
+{
     pub(crate) fn execute(
         &mut self,
         batch: CommitBatch,
@@ -94,6 +172,7 @@ impl<S: CommitTimestampSource, W: CommitWalAppender> CommitDurableRuntime<'_, S,
                 actual: self.branch.branch_id(),
             });
         }
+        let mut unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;
@@ -103,13 +182,7 @@ impl<S: CommitTimestampSource, W: CommitWalAppender> CommitDurableRuntime<'_, S,
             current_visible_version,
         )?;
 
-        let read_view = self.branch.capture_read_view().map_err(|source| {
-            CommitRuntimeError::lower_layer_with(
-                CommitLowerLayer::BranchRuntime,
-                "branch read view capture failed",
-                source,
-            )
-        })?;
+        let read_view = self.branch.capture_read_view()?;
         let conflict_source =
             CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
         validate_commit_conflicts(&batch, &conflict_source)?;
@@ -130,26 +203,32 @@ impl<S: CommitTimestampSource, W: CommitWalAppender> CommitDurableRuntime<'_, S,
             stamp.commit_version(),
         )?;
 
-        self.branch
-            .append_committed_rows_atomically(combined_rows)
-            .map_err(|source| {
-                CommitRuntimeError::durable_but_not_visible_with(
-                    batch.batch().branch_id(),
-                    stamp.commit_version(),
-                    "branch state rejected durable commit rows after WAL append",
-                    source,
-                )
-            })?;
-
-        let facts = visible_durable_facts(stamp)?;
-        self.visible.publish_from_facts(facts).map_err(|error| {
-            CommitRuntimeError::durable_but_not_visible_with(
+        if let Err(source) = self.branch.append_committed_rows_atomically(combined_rows) {
+            let reason = "branch state rejected durable commit rows after WAL append";
+            unresolved_admission.record_unresolved(
+                CommitUnresolvedDurable::durable_not_applied_with_facts(stamp, durability, reason)?,
+            )?;
+            return Err(CommitRuntimeError::durable_but_not_visible_with(
                 batch.batch().branch_id(),
                 stamp.commit_version(),
-                durable_visible_reason(&error),
+                reason,
+                source,
+            ));
+        }
+
+        let facts = visible_durable_facts(stamp)?;
+        if let Err(error) = self.visible.publish_from_facts(facts) {
+            let reason = durable_visible_reason(&error);
+            unresolved_admission.record_unresolved(
+                CommitUnresolvedDurable::applied_not_visible(stamp, durability, reason)?,
+            )?;
+            return Err(CommitRuntimeError::durable_but_not_visible_with(
+                batch.batch().branch_id(),
+                stamp.commit_version(),
+                reason,
                 error,
-            )
-        })?;
+            ));
+        }
 
         CommitOutcome::visible(
             batch.batch().branch_id(),

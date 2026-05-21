@@ -727,3 +727,111 @@ Verified for L7G:
 7. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 8. `cargo fmt --package strata-storage-next --check`
 9. `git diff --check`
+
+## L7J: Durable-But-Not-Visible Classification
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7j-durable-but-not-visible-classification-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7j-durable-but-not-visible-classification-test-plan.md`
+7. `crates/storage/src/durability/commit_adapter.rs`
+8. `crates/storage/src/txn/manager.rs`
+9. `crates/storage-next/src/commit/durable.rs`
+10. `crates/storage-next/src/commit/cache.rs`
+11. `crates/storage-next/src/commit/outcome.rs`
+12. `crates/storage-next/src/commit/visibility.rs`
+13. `crates/storage-next/src/branch/state.rs`
+
+### Preserved As Behavior
+
+1. A commit that has not crossed the WAL durability boundary remains a clean
+   pre-visible failure or a durability-uncertain failure.
+2. A commit that has crossed the WAL durability boundary but fails before
+   normal visibility is classified distinctly as durable-but-not-visible.
+3. Forward mutating progress halts while durable commit state is unresolved.
+4. Lower-layer failure details remain attached to the returned
+   durable-but-not-visible error.
+5. Successful L7I durable commit ordering remains unchanged:
+   WAL append, L6 apply, then visible publication.
+
+### Intentionally Changed Or Added
+
+1. Added `CommitUnresolvedDurable` and `CommitUnresolvedDurableKind` as bounded
+   crate-private handoff facts for L7K/L8.
+2. Added `CommitUnresolvedDurableGate` as an in-process write gate. It is not
+   process-global and can only be cleared by an exact fact match.
+3. Added `CommitRuntimeError::UnresolvedDurableCommit` for later mutating
+   commits blocked by the gate.
+4. Durable runtime now records `DurableNotApplied` when WAL append succeeds but
+   L6 apply fails.
+5. Durable runtime now records `AppliedNotVisible` when WAL append and L6 apply
+   succeed but visible publication fails.
+6. Cache runtime checks the same gate before allocation or mutation.
+7. Durable runtime now uses narrow apply/visible traits so tests can inject
+   post-WAL L6 and visible-publish fault windows without mocking the entire L6
+   branch runtime.
+
+### Deferred By Owner Slice
+
+1. `L7K`: WAL replay and clearing the gate after exact replay/reconcile.
+2. `L8`: process-open recovery orchestration and durable gate reconstruction.
+3. `L9`: public error mapping and user-facing recovery messaging.
+4. Checkpoint/manifest interaction remains outside L7J.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/durable_gate.rs`
+2. Direct gate tests in
+   `crates/storage-next/src/commit/tests/durable_gate.rs`
+3. Durable post-WAL fault-window tests in
+   `crates/storage-next/src/commit/tests/durable.rs`
+4. Cache gate-blocking test in `crates/storage-next/src/commit/tests/cache.rs`
+5. Generated durable contract checks in
+   `crates/storage-next/src/testkit/commit_runtime_durable.rs`
+6. Generated counter assertions in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+7. Source-guard allowance for durable runtime's narrow L6 read-view boundary.
+
+### Sensitivity Probes
+
+Planned L7J probes:
+
+1. Collapse post-WAL L6 apply failure into a clean lower-layer error;
+   durable-not-applied direct and generated tests must fail.
+2. Return visible success after visible publication failure; applied-not-visible
+   direct and generated tests must fail.
+3. Record applied/visible facts for `DurableNotApplied`; gate validation tests
+   must fail.
+4. Omit applied/timeline facts for `AppliedNotVisible`; gate validation and
+   visible-failure tests must fail.
+5. Allow `NotDurable` or `Uncertain` unresolved durable facts; gate validation
+   tests must fail.
+6. Do not record the gate before returning durable-but-not-visible; direct and
+   generated post-WAL fault tests must fail.
+7. Allow cache commit through a set gate; cache gate-blocking test must fail.
+8. Allow durable commit through a set gate; durable gate-blocking test must
+   fail.
+9. Overwrite one unresolved fact with a different fact; gate-state tests must
+   fail.
+10. Add table/backend/layout/filesystem/product imports to `commit/durable.rs`
+    or the new gate module; source guard tests must fail.
+
+### Command Evidence
+
+Verified for L7J during implementation:
+
+1. `cargo check -p strata-storage-next --lib --locked`
+2. `cargo test -p strata-storage-next --lib commit::tests::durable_gate --locked`
+3. `cargo test -p strata-storage-next --lib commit::tests::cache --locked`
+4. `cargo test -p strata-storage-next --lib commit::tests::durable --locked`
+5. `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_properties`
+6. `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test commit_runtime_properties`
+7. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+8. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+9. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+10. `cargo fmt --package strata-storage-next --check`
+11. `git diff --check`

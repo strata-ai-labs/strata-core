@@ -140,6 +140,19 @@ pub struct CommitRuntimeScaffoldOutcome {
     durable_unforced_always_rejections: usize,
     durable_guard_release_after_failure: usize,
     durable_read_only_rejections: usize,
+    durable_unresolved_fact_validations: usize,
+    durable_unresolved_fact_rejections: usize,
+    durable_unresolved_gate_records: usize,
+    durable_unresolved_gate_idempotent_records: usize,
+    durable_unresolved_gate_different_fact_rejections: usize,
+    durable_unresolved_gate_exact_clears: usize,
+    durable_not_applied_gates: usize,
+    durable_applied_not_visible_gates: usize,
+    durable_unresolved_gate_blocks: usize,
+    durable_unresolved_gate_cache_blocks: usize,
+    durable_unresolved_gate_read_only_diagnostics: usize,
+    durable_clean_wal_no_gate: usize,
+    durable_uncertain_wal_no_gate: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -717,6 +730,71 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn durable_read_only_rejection_cases(self) -> usize {
         self.durable_read_only_rejections
     }
+
+    /// Number of valid unresolved durable fact cases exercised.
+    pub const fn durable_unresolved_fact_validation_cases(self) -> usize {
+        self.durable_unresolved_fact_validations
+    }
+
+    /// Number of invalid unresolved durable fact cases exercised.
+    pub const fn durable_unresolved_fact_rejection_cases(self) -> usize {
+        self.durable_unresolved_fact_rejections
+    }
+
+    /// Number of first-record unresolved durable gate cases exercised.
+    pub const fn durable_unresolved_gate_record_cases(self) -> usize {
+        self.durable_unresolved_gate_records
+    }
+
+    /// Number of idempotent unresolved durable gate record cases exercised.
+    pub const fn durable_unresolved_gate_idempotent_record_cases(self) -> usize {
+        self.durable_unresolved_gate_idempotent_records
+    }
+
+    /// Number of different-fact unresolved durable gate rejection cases exercised.
+    pub const fn durable_unresolved_gate_different_fact_rejection_cases(self) -> usize {
+        self.durable_unresolved_gate_different_fact_rejections
+    }
+
+    /// Number of exact-clear unresolved durable gate cases exercised.
+    pub const fn durable_unresolved_gate_exact_clear_cases(self) -> usize {
+        self.durable_unresolved_gate_exact_clears
+    }
+
+    /// Number of durable-not-applied gate cases exercised.
+    pub const fn durable_not_applied_gate_cases(self) -> usize {
+        self.durable_not_applied_gates
+    }
+
+    /// Number of applied-not-visible gate cases exercised.
+    pub const fn durable_applied_not_visible_gate_cases(self) -> usize {
+        self.durable_applied_not_visible_gates
+    }
+
+    /// Number of unresolved durable gate blocking cases exercised.
+    pub const fn durable_unresolved_gate_block_cases(self) -> usize {
+        self.durable_unresolved_gate_blocks
+    }
+
+    /// Number of cache commits blocked by unresolved durable gates.
+    pub const fn durable_unresolved_gate_cache_block_cases(self) -> usize {
+        self.durable_unresolved_gate_cache_blocks
+    }
+
+    /// Number of read-only diagnostic cases allowed by unresolved durable gates.
+    pub const fn durable_unresolved_gate_read_only_diagnostic_cases(self) -> usize {
+        self.durable_unresolved_gate_read_only_diagnostics
+    }
+
+    /// Number of clean WAL failure cases that leave no unresolved durable gate.
+    pub const fn durable_clean_wal_no_gate_cases(self) -> usize {
+        self.durable_clean_wal_no_gate
+    }
+
+    /// Number of uncertain WAL failure cases that leave no durable-but-not-visible gate.
+    pub const fn durable_uncertain_wal_no_gate_cases(self) -> usize {
+        self.durable_uncertain_wal_no_gate
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -932,6 +1010,22 @@ fn absorb_durable_contract(
     outcome.durable_unforced_always_rejections += durable_contract.unforced_always_rejections;
     outcome.durable_guard_release_after_failure += durable_contract.guard_release_after_failure;
     outcome.durable_read_only_rejections += durable_contract.read_only_rejections;
+    outcome.durable_unresolved_fact_validations += durable_contract.unresolved_fact_validation;
+    outcome.durable_unresolved_fact_rejections += durable_contract.unresolved_fact_rejections;
+    outcome.durable_unresolved_gate_records += durable_contract.unresolved_gate_records;
+    outcome.durable_unresolved_gate_idempotent_records +=
+        durable_contract.unresolved_gate_idempotent_records;
+    outcome.durable_unresolved_gate_different_fact_rejections +=
+        durable_contract.unresolved_gate_different_fact_rejections;
+    outcome.durable_unresolved_gate_exact_clears += durable_contract.unresolved_gate_exact_clears;
+    outcome.durable_not_applied_gates += durable_contract.durable_not_applied_gates;
+    outcome.durable_applied_not_visible_gates += durable_contract.applied_not_visible_gates;
+    outcome.durable_unresolved_gate_blocks += durable_contract.unresolved_gate_blocks;
+    outcome.durable_unresolved_gate_cache_blocks += durable_contract.unresolved_gate_cache_blocks;
+    outcome.durable_unresolved_gate_read_only_diagnostics +=
+        durable_contract.unresolved_gate_read_only_diagnostics;
+    outcome.durable_clean_wal_no_gate += durable_contract.clean_wal_no_gate;
+    outcome.durable_uncertain_wal_no_gate += durable_contract.uncertain_wal_no_gate;
     Ok(())
 }
 

@@ -6,8 +6,8 @@ use super::{
     CommitBranchRegistry, CommitDurabilityClass, CommitDurabilityMode, CommitFactAllocation,
     CommitFactAllocator, CommitLowerLayer, CommitMutationCounts, CommitOutcome,
     CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp, CommitTimelineEntry,
-    CommitTimelineRows, CommitTimestampSource, CommitVisibilityFacts, StampedCommitRows,
-    ValidatedCommitBatch, VisibleVersionTracker,
+    CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurableGate, CommitVisibilityFacts,
+    StampedCommitRows, ValidatedCommitBatch, VisibleVersionTracker,
 };
 use crate::branch::BranchLocalState;
 use crate::row::StorageRow;
@@ -20,6 +20,7 @@ pub(crate) struct CommitCacheRuntime<'a, S> {
     allocator: &'a mut CommitFactAllocator<S>,
     branch: &'a mut BranchLocalState,
     visible: &'a mut VisibleVersionTracker,
+    durable_gate: &'a CommitUnresolvedDurableGate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +39,7 @@ impl<'a, S> CommitCacheRuntime<'a, S> {
         allocator: &'a mut CommitFactAllocator<S>,
         branch: &'a mut BranchLocalState,
         visible: &'a mut VisibleVersionTracker,
+        durable_gate: &'a CommitUnresolvedDurableGate,
     ) -> Self {
         Self {
             config,
@@ -46,6 +48,7 @@ impl<'a, S> CommitCacheRuntime<'a, S> {
             allocator,
             branch,
             visible,
+            durable_gate,
         }
     }
 }
@@ -64,6 +67,7 @@ impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
                 actual: self.branch.branch_id(),
             });
         }
+        let _unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;

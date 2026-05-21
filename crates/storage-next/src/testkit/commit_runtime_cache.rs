@@ -617,6 +617,7 @@ struct CacheContractFixture {
     allocator: CommitFactAllocator<CommitManualTimestampSource>,
     state: BranchLocalState,
     visible: VisibleVersionTracker,
+    durable_gate: crate::commit::CommitUnresolvedDurableGate,
 }
 
 impl CacheContractFixture {
@@ -644,6 +645,7 @@ impl CacheContractFixture {
             state: BranchLocalState::new(branch, BranchRuntimeConfig::default())
                 .map_err(testkit_error)?,
             visible: VisibleVersionTracker::default(),
+            durable_gate: crate::commit::CommitUnresolvedDurableGate::new(),
         })
     }
 
@@ -663,6 +665,7 @@ impl CacheContractFixture {
             &mut self.allocator,
             &mut self.state,
             &mut self.visible,
+            &self.durable_gate,
         )
         .execute(batch, CommitBranchGenerationGuard::exact(generation))
     }

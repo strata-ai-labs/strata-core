@@ -477,6 +477,7 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
             .collect();
         let without_allowed = compact
             .replace("usecrate::branch::{BranchReadBound,BranchReadView};", "")
+            .replace("usecrate::branch::{BranchLocalState,BranchReadView};", "")
             .replace("usecrate::branch::BranchReadView;", "")
             .replace("crate::branch::BranchReadBound", "")
             .replace("crate::branch::BranchReadView", "")
@@ -561,6 +562,7 @@ fn is_allowed_commit_runtime_boundary_line(file: &Path, line: &str) -> bool {
         && matches!(
             trimmed,
             "use crate::branch::BranchLocalState;"
+                | "use crate::branch::{BranchLocalState, BranchReadView};"
                 | "use crate::format::{WalCommitPayload, WalRecord};"
                 | "use crate::service::{WalAppend, WalService, WalServiceError};"
         )

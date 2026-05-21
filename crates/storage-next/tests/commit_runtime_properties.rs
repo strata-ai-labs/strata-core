@@ -201,4 +201,17 @@ fn durable_categories_exercised(
         && outcome.durable_unforced_always_rejection_cases() > 0
         && outcome.durable_guard_release_after_failure_cases() > 0
         && outcome.durable_read_only_rejection_cases() > 0
+        && outcome.durable_unresolved_fact_validation_cases() > 0
+        && outcome.durable_unresolved_fact_rejection_cases() > 0
+        && outcome.durable_unresolved_gate_record_cases() > 0
+        && outcome.durable_unresolved_gate_idempotent_record_cases() > 0
+        && outcome.durable_unresolved_gate_different_fact_rejection_cases() > 0
+        && outcome.durable_unresolved_gate_exact_clear_cases() > 0
+        && outcome.durable_not_applied_gate_cases() > 0
+        && outcome.durable_applied_not_visible_gate_cases() > 0
+        && outcome.durable_unresolved_gate_block_cases() > 0
+        && outcome.durable_unresolved_gate_cache_block_cases() > 0
+        && outcome.durable_unresolved_gate_read_only_diagnostic_cases() > 0
+        && outcome.durable_clean_wal_no_gate_cases() > 0
+        && outcome.durable_uncertain_wal_no_gate_cases() > 0
 }

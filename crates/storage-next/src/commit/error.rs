@@ -85,6 +85,11 @@ pub(crate) enum CommitRuntimeError {
         reason: &'static str,
         source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
+    UnresolvedDurableCommit {
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        reason: &'static str,
+    },
     AppliedButNotVisible {
         branch_id: BranchId,
         commit_version: CommitVersion,
@@ -375,6 +380,18 @@ impl PartialEq for CommitRuntimeError {
                 },
             )
             | (
+                Self::UnresolvedDurableCommit {
+                    branch_id: left_branch,
+                    commit_version: left_version,
+                    reason: left_reason,
+                },
+                Self::UnresolvedDurableCommit {
+                    branch_id: right_branch,
+                    commit_version: right_version,
+                    reason: right_reason,
+                },
+            )
+            | (
                 Self::AppliedButNotVisible {
                     branch_id: left_branch,
                     commit_version: left_version,
@@ -487,6 +504,16 @@ impl fmt::Display for CommitRuntimeError {
                 write!(
                     formatter,
                     "commit version {commit_version} for branch {branch_id} is durable but not visible: {reason}"
+                )
+            }
+            Self::UnresolvedDurableCommit {
+                branch_id,
+                commit_version,
+                reason,
+            } => {
+                write!(
+                    formatter,
+                    "commit version {commit_version} for branch {branch_id} is unresolved and blocks mutating commits: {reason}"
                 )
             }
             Self::AppliedButNotVisible {
@@ -650,6 +677,7 @@ impl Error for CommitRuntimeError {
             | Self::CommitQuiesceUnavailable { .. }
             | Self::CommitConflict { .. }
             | Self::AppliedButNotVisible { .. }
+            | Self::UnresolvedDurableCommit { .. }
             | Self::StorageOwnedMutationSpace { .. }
             | Self::BranchUnavailable { .. }
             | Self::DurabilityUnavailable { .. }

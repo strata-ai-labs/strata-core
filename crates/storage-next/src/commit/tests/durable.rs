@@ -1,6 +1,8 @@
 use super::*;
-use crate::branch::{BranchLocalState, BranchReadBound, BranchRuntimeConfig, BranchScanBounds};
-use crate::row::StorageRow;
+use crate::branch::{
+    BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
+};
+use crate::row::{PhysicalKey, StorageRow};
 use std::error::Error as _;
 
 #[test]
@@ -111,7 +113,8 @@ fn durable_standard_commit_appends_through_real_l4_wal_service() {
     );
     let mut state =
         BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("branch state");
-    let mut visible = VisibleVersionTracker::default();
+    let mut visible = FailingVisiblePublisher::new(false);
+    let durable_gate = CommitUnresolvedDurableGate::new();
     let mut wal = crate::service::WalService::open(
         &backend,
         [0x58; 16],
@@ -139,6 +142,7 @@ fn durable_standard_commit_appends_through_real_l4_wal_service() {
         &mut state,
         &mut visible,
         &mut wal,
+        &durable_gate,
     )
     .execute(
         batch,
@@ -194,6 +198,7 @@ fn durable_always_commit_appends_through_real_l4_wal_service() {
     let mut state =
         BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("branch state");
     let mut visible = VisibleVersionTracker::default();
+    let durable_gate = CommitUnresolvedDurableGate::new();
     let mut wal = crate::service::WalService::open(
         &backend,
         [0x59; 16],
@@ -221,6 +226,7 @@ fn durable_always_commit_appends_through_real_l4_wal_service() {
         &mut state,
         &mut visible,
         &mut wal,
+        &durable_gate,
     )
     .execute(
         batch,
@@ -629,6 +635,7 @@ fn durable_timestamp_source_failure_rejects_before_version_allocation_or_wal_app
     let mut state =
         BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("branch state");
     let mut visible = VisibleVersionTracker::default();
+    let durable_gate = CommitUnresolvedDurableGate::new();
     let mut wal = RecordingWalAppender::new(
         DurabilityPolicy::Standard,
         FakeWalMode::Succeed {
@@ -645,6 +652,7 @@ fn durable_timestamp_source_failure_rejects_before_version_allocation_or_wal_app
             &mut state,
             &mut visible,
             &mut wal,
+            &durable_gate,
         )
         .execute(
             durable_batch(
@@ -744,7 +752,7 @@ fn durable_row_limit_failure_after_allocation_leaves_version_gap_without_wal_app
             CommitDurabilityMode::Standard,
             vec![CommitMutation::put(
                 key.clone(),
-                b"value".to_vec(),
+                b"super-secret-apply-value".to_vec(),
                 CommitExpiry::None,
                 CommitRetentionHint::Append,
             )],
@@ -796,7 +804,7 @@ fn durable_version_overflow_rejects_before_wal_append() {
             CommitDurabilityMode::Standard,
             vec![CommitMutation::put(
                 physical_key(branch, 0x20, b"overflow".to_vec()),
-                b"value".to_vec(),
+                b"super-secret-visible-value".to_vec(),
                 CommitExpiry::None,
                 CommitRetentionHint::Append,
             )],
@@ -882,6 +890,7 @@ fn durable_clean_wal_failure_leaves_no_visible_rows_but_allocation_may_gap() {
     assert_eq!(fixture.wal.records.len(), 0);
     assert_eq!(fixture.state.active_row_count(), 0);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(fixture.durable_gate.unresolved().expect("gate read"), None);
     assert!(fixture
         .state
         .capture_read_view()
@@ -906,6 +915,7 @@ fn durable_clean_wal_failure_leaves_no_visible_rows_but_allocation_may_gap() {
     let outcome = fixture.execute(retry).expect("retry succeeds");
     assert_eq!(outcome.commit_version(), Some(CommitVersion::new(2)));
     assert_eq!(fixture.wal.records.len(), 1);
+    assert_eq!(fixture.durable_gate.unresolved().expect("gate read"), None);
 }
 
 #[test]
@@ -945,6 +955,7 @@ fn durable_clean_wal_failure_preserves_source_chain() {
     );
     assert_eq!(fixture.state.active_row_count(), 0);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(fixture.durable_gate.unresolved().expect("gate read"), None);
 }
 
 #[test]
@@ -980,6 +991,7 @@ fn durable_writer_halted_failure_is_clean_durability_unavailable() {
     assert_eq!(fixture.wal.records.len(), 0);
     assert_eq!(fixture.state.active_row_count(), 0);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(fixture.durable_gate.unresolved().expect("gate read"), None);
 }
 
 #[test]
@@ -1018,10 +1030,193 @@ fn durable_uncertain_wal_failure_is_distinct_and_leaves_no_visible_rows() {
     assert_eq!(fixture.wal.records.len(), 0);
     assert_eq!(fixture.state.active_row_count(), 0);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(fixture.durable_gate.unresolved().expect("gate read"), None);
     let _guard = fixture
         .guard_set
         .try_acquire_branch_guard(branch)
         .expect("guard can be reacquired after uncertain WAL failure");
+}
+
+#[test]
+fn durable_apply_failure_after_wal_success_records_durable_not_applied_gate() {
+    let branch = branch_id(73);
+    let key = physical_key(branch, 0x20, b"apply-failure".to_vec());
+    let mut registry = CommitBranchRegistry::new();
+    register_active_branch(&mut registry, branch);
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    );
+    let mut state = FailingApplyTarget::new(branch, true);
+    let mut visible = FailingVisiblePublisher::new(false);
+    let mut wal = RecordingWalAppender::new(
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let durable_gate = CommitUnresolvedDurableGate::new();
+
+    let error = CommitDurableRuntime::new(
+        &CommitRuntimeConfig::default(),
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &mut wal,
+        &durable_gate,
+    )
+    .execute(
+        durable_batch(
+            branch,
+            CommitDurabilityMode::Standard,
+            vec![CommitMutation::put(
+                key,
+                b"super-secret-apply-value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+        ),
+        CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+    )
+    .expect_err("apply failure is classified after WAL success");
+
+    assert_apply_failure_error_and_wal(&error, &wal, branch);
+    assert_apply_failure_state_and_source(&error, &state, &visible);
+    let unresolved = durable_gate
+        .unresolved()
+        .expect("gate read")
+        .expect("unresolved durable fact");
+    assert_durable_not_applied_unresolved(unresolved, branch);
+    let branch_guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after gate record");
+    drop(branch_guard);
+    assert_unresolved_gate_blocks_other_durable_branch(
+        &mut registry,
+        &guard_set,
+        &mut allocator,
+        &mut wal,
+        &durable_gate,
+        branch,
+    );
+}
+
+#[test]
+fn durable_visibility_failure_after_apply_records_applied_not_visible_gate() {
+    let branch = branch_id(74);
+    let key = physical_key(branch, 0x20, b"visible-failure".to_vec());
+    let mut registry = CommitBranchRegistry::new();
+    register_active_branch(&mut registry, branch);
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    );
+    let mut state = FailingApplyTarget::new(branch, false);
+    let mut visible = FailingVisiblePublisher::new(true);
+    let mut wal = RecordingWalAppender::new(
+        DurabilityPolicy::Always,
+        FakeWalMode::Succeed {
+            forced_durable: true,
+        },
+    );
+    let durable_gate = CommitUnresolvedDurableGate::new();
+
+    let error = CommitDurableRuntime::new(
+        &CommitRuntimeConfig::default(),
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &mut wal,
+        &durable_gate,
+    )
+    .execute(
+        durable_batch(
+            branch,
+            CommitDurabilityMode::Always,
+            vec![CommitMutation::put(
+                key.clone(),
+                b"super-secret-visible-value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+        ),
+        CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+    )
+    .expect_err("visibility failure is classified after apply");
+
+    assert_visibility_failure_error_and_state(&error, &state, &visible, &wal, branch, &key);
+    let unresolved = durable_gate
+        .unresolved()
+        .expect("gate read")
+        .expect("unresolved durable fact");
+    assert_applied_not_visible_unresolved(unresolved, branch);
+    assert_unresolved_gate_blocks_durable_retry(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &mut wal,
+        &durable_gate,
+    );
+}
+
+#[test]
+fn unresolved_durable_gate_blocks_durable_commit_before_allocation_and_wal_append() {
+    let branch = branch_id(75);
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture
+        .durable_gate
+        .record_unresolved(unresolved_durable_fact(branch, CommitVersion::new(9)))
+        .expect("record unresolved durable fact");
+
+    let error = fixture
+        .execute(durable_batch(
+            branch,
+            CommitDurabilityMode::Standard,
+            vec![CommitMutation::put(
+                physical_key(branch, 0x20, b"blocked".to_vec()),
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+        ))
+        .expect_err("unresolved durable gate blocks commit");
+
+    assert!(matches!(
+        error,
+        CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: blocked_branch,
+            commit_version,
+            ..
+        } if blocked_branch == branch && commit_version == CommitVersion::new(9)
+    ));
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(fixture.wal.append_attempts, 0);
+    assert_eq!(fixture.state.active_row_count(), 0);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    let _guard = fixture
+        .guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("branch guard released after blocked durable commit");
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1095,6 +1290,100 @@ impl CommitWalAppender for RecordingWalAppender {
     }
 }
 
+#[derive(Debug)]
+struct FailingApplyTarget {
+    state: BranchLocalState,
+    fail_append: bool,
+}
+
+impl FailingApplyTarget {
+    fn new(branch: BranchId, fail_append: bool) -> Self {
+        Self {
+            state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
+            fail_append,
+        }
+    }
+}
+
+impl CommitBranchApplyTarget for FailingApplyTarget {
+    fn branch_id(&self) -> BranchId {
+        self.state.branch_id()
+    }
+
+    fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.state.max_commit_version()
+    }
+
+    fn capture_read_view(&self) -> CommitRuntimeResult<BranchReadView> {
+        self.state.capture_read_view().map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "branch read view capture failed",
+                source,
+            )
+        })
+    }
+
+    fn append_committed_rows_atomically(
+        &mut self,
+        rows: Vec<StorageRow>,
+    ) -> CommitRuntimeResult<()> {
+        if self.fail_append {
+            return Err(CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "injected branch apply failure",
+                InjectedBranchApplySource,
+            ));
+        }
+        self.state
+            .append_committed_rows_atomically(rows)
+            .map(|_| ())
+            .map_err(|source| {
+                CommitRuntimeError::lower_layer_with(
+                    CommitLowerLayer::BranchRuntime,
+                    "branch state rejected commit rows",
+                    source,
+                )
+            })
+    }
+}
+
+#[derive(Debug)]
+struct FailingVisiblePublisher {
+    tracker: VisibleVersionTracker,
+    fail_publish: bool,
+    publish_attempts: usize,
+}
+
+impl FailingVisiblePublisher {
+    const fn new(fail_publish: bool) -> Self {
+        Self {
+            tracker: VisibleVersionTracker::new(CommitVersion::ZERO),
+            fail_publish,
+            publish_attempts: 0,
+        }
+    }
+}
+
+impl CommitVisiblePublisher for FailingVisiblePublisher {
+    fn visible_version(&self) -> CommitVersion {
+        self.tracker.visible_version()
+    }
+
+    fn publish_from_facts(
+        &mut self,
+        facts: CommitVisibilityFacts,
+    ) -> CommitRuntimeResult<VisibleVersionPublish> {
+        self.publish_attempts = self.publish_attempts.saturating_add(1);
+        if self.fail_publish {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "injected visible publication failure",
+            });
+        }
+        self.tracker.publish_from_facts(facts)
+    }
+}
+
 struct DurableFixture {
     config: CommitRuntimeConfig,
     registry: CommitBranchRegistry,
@@ -1103,6 +1392,7 @@ struct DurableFixture {
     state: BranchLocalState,
     visible: VisibleVersionTracker,
     wal: RecordingWalAppender,
+    durable_gate: CommitUnresolvedDurableGate,
 }
 
 impl DurableFixture {
@@ -1131,6 +1421,7 @@ impl DurableFixture {
             state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
             visible: VisibleVersionTracker::default(),
             wal: RecordingWalAppender::new(policy, wal_mode),
+            durable_gate: CommitUnresolvedDurableGate::new(),
         }
     }
 
@@ -1151,6 +1442,7 @@ impl DurableFixture {
             &mut self.state,
             &mut self.visible,
             &mut self.wal,
+            &self.durable_gate,
         )
         .execute(batch, CommitBranchGenerationGuard::exact(generation))
     }
@@ -1196,6 +1488,15 @@ fn durable_batch_with_validation(
             CommitOrigin::StorageRuntime,
         ),
     )
+}
+
+fn register_active_branch(registry: &mut CommitBranchRegistry, branch: BranchId) {
+    registry
+        .register_active(
+            branch,
+            CommitBranchGeneration::new(1).expect("branch generation"),
+        )
+        .expect("register branch");
 }
 
 fn assert_unallocated_unattempted(fixture: &DurableFixture) {
@@ -1251,6 +1552,253 @@ fn assert_payload_contains_timeline_rows(record: &WalRecord) {
     assert_eq!(timeline_rows, CommitTimelineRows::timeline_row_count());
 }
 
+fn assert_apply_failure_error_and_wal(
+    error: &CommitRuntimeError,
+    wal: &RecordingWalAppender,
+    branch: BranchId,
+) {
+    assert!(matches!(
+        error,
+        CommitRuntimeError::DurableButNotVisible {
+            branch_id: failed_branch,
+            commit_version,
+            reason: "branch state rejected durable commit rows after WAL append",
+            ..
+        } if *failed_branch == branch && *commit_version == CommitVersion::new(1)
+    ));
+    assert_eq!(wal.records.len(), 1);
+    assert_record_rows_share_commit_facts(
+        &wal.records[0],
+        branch,
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+    );
+    assert_payload_contains_timeline_rows(&wal.records[0]);
+}
+
+fn assert_apply_failure_state_and_source(
+    error: &CommitRuntimeError,
+    state: &FailingApplyTarget,
+    visible: &FailingVisiblePublisher,
+) {
+    assert_eq!(state.state.active_row_count(), 0);
+    assert_eq!(visible.publish_attempts, 0);
+    assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
+    assert_eq!(
+        error
+            .source()
+            .expect("durable error source")
+            .source()
+            .expect("nested apply source")
+            .to_string(),
+        "injected branch apply source"
+    );
+}
+
+fn assert_durable_not_applied_unresolved(unresolved: CommitUnresolvedDurable, branch: BranchId) {
+    assert!(!format!("{unresolved:?}").contains("super-secret-apply-value"));
+    assert_eq!(
+        unresolved.kind(),
+        CommitUnresolvedDurableKind::DurableNotApplied
+    );
+    assert_eq!(unresolved.branch_id(), branch);
+    assert_eq!(unresolved.commit_version(), CommitVersion::new(1));
+    assert_eq!(unresolved.durability(), CommitDurabilityClass::Standard);
+    assert_eq!(
+        unresolved.visibility_facts(),
+        CommitVisibilityFacts::new(
+            Some(CommitVersion::new(1)),
+            Some(CommitVersion::new(1)),
+            None,
+            None,
+            None,
+        )
+        .expect("durable-not-applied facts")
+    );
+}
+
+fn assert_unresolved_gate_blocks_other_durable_branch(
+    registry: &mut CommitBranchRegistry,
+    guard_set: &CommitBranchGuardSet,
+    allocator: &mut CommitFactAllocator<CommitManualTimestampSource>,
+    wal: &mut RecordingWalAppender,
+    durable_gate: &CommitUnresolvedDurableGate,
+    blocked_branch: BranchId,
+) {
+    let other_branch = branch_id(76);
+    register_active_branch(registry, other_branch);
+    let mut other_state = FailingApplyTarget::new(other_branch, false);
+    let mut other_visible = FailingVisiblePublisher::new(false);
+
+    assert!(matches!(
+        CommitDurableRuntime::new(
+            &CommitRuntimeConfig::default(),
+            registry,
+            guard_set,
+            allocator,
+            &mut other_state,
+            &mut other_visible,
+            wal,
+            durable_gate,
+        )
+        .execute(
+            durable_batch(
+                other_branch,
+                CommitDurabilityMode::Standard,
+                vec![CommitMutation::put(
+                    physical_key(other_branch, 0x20, b"other-blocked".to_vec()),
+                    b"value".to_vec(),
+                    CommitExpiry::None,
+                    CommitRetentionHint::Append,
+                )],
+            ),
+            CommitBranchGenerationGuard::exact(
+                CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        ),
+        Err(CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id,
+            commit_version,
+            ..
+        }) if branch_id == blocked_branch && commit_version == CommitVersion::new(1)
+    ));
+    assert_eq!(wal.append_attempts, 1);
+    assert_eq!(
+        allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+    assert_eq!(other_state.state.active_row_count(), 0);
+    assert_eq!(other_visible.publish_attempts, 0);
+}
+
+fn assert_visibility_failure_error_and_state(
+    error: &CommitRuntimeError,
+    state: &FailingApplyTarget,
+    visible: &FailingVisiblePublisher,
+    wal: &RecordingWalAppender,
+    branch: BranchId,
+    key: &PhysicalKey,
+) {
+    assert!(matches!(
+        error,
+        CommitRuntimeError::DurableButNotVisible {
+            branch_id: failed_branch,
+            commit_version,
+            reason: "injected visible publication failure",
+            ..
+        } if *failed_branch == branch && *commit_version == CommitVersion::new(1)
+    ));
+    assert_eq!(
+        state.state.active_row_count(),
+        1 + CommitTimelineRows::timeline_row_count()
+    );
+    assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
+    assert_eq!(visible.publish_attempts, 1);
+    assert_eq!(
+        error.source().expect("durable error source").to_string(),
+        "commit state is invalid: injected visible publication failure"
+    );
+    assert_eq!(wal.records.len(), 1);
+    assert_record_rows_share_commit_facts(
+        &wal.records[0],
+        branch,
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+    );
+    assert_payload_contains_timeline_rows(&wal.records[0]);
+    let read_view = state.state.capture_read_view().expect("read view");
+    assert_eq!(
+        read_view
+            .latest(key)
+            .expect("latest read")
+            .expect("visible row")
+            .row()
+            .value(),
+        b"super-secret-visible-value"
+    );
+}
+
+fn assert_applied_not_visible_unresolved(unresolved: CommitUnresolvedDurable, branch: BranchId) {
+    assert!(!format!("{unresolved:?}").contains("super-secret-visible-value"));
+    assert_eq!(
+        unresolved.kind(),
+        CommitUnresolvedDurableKind::AppliedNotVisible
+    );
+    assert_eq!(unresolved.branch_id(), branch);
+    assert_eq!(unresolved.commit_version(), CommitVersion::new(1));
+    assert_eq!(unresolved.durability(), CommitDurabilityClass::Always);
+    assert_eq!(
+        unresolved.visibility_facts(),
+        CommitVisibilityFacts::new(
+            Some(CommitVersion::new(1)),
+            Some(CommitVersion::new(1)),
+            Some(CommitVersion::new(1)),
+            None,
+            Some(CommitVersion::new(1)),
+        )
+        .expect("applied-not-visible facts")
+    );
+    assert_eq!(unresolved.reason(), "injected visible publication failure");
+}
+
+fn assert_unresolved_gate_blocks_durable_retry(
+    registry: &CommitBranchRegistry,
+    guard_set: &CommitBranchGuardSet,
+    allocator: &mut CommitFactAllocator<CommitManualTimestampSource>,
+    state: &mut FailingApplyTarget,
+    visible: &mut FailingVisiblePublisher,
+    wal: &mut RecordingWalAppender,
+    durable_gate: &CommitUnresolvedDurableGate,
+) {
+    let branch = state.branch_id();
+    assert!(matches!(
+        CommitDurableRuntime::new(
+            &CommitRuntimeConfig::default(),
+            registry,
+            guard_set,
+            allocator,
+            state,
+            visible,
+            wal,
+            durable_gate,
+        )
+        .execute(
+            durable_batch(
+                branch,
+                CommitDurabilityMode::Always,
+                vec![CommitMutation::put(
+                    physical_key(branch, 0x20, b"retry-blocked".to_vec()),
+                    b"value".to_vec(),
+                    CommitExpiry::None,
+                    CommitRetentionHint::Append,
+                )],
+            ),
+            CommitBranchGenerationGuard::exact(
+                CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        ),
+        Err(CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id,
+            commit_version,
+            ..
+        }) if branch_id == branch && commit_version == CommitVersion::new(1)
+    ));
+    assert_eq!(wal.append_attempts, 1);
+    assert_eq!(
+        allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+}
+
+fn unresolved_durable_fact(branch: BranchId, version: CommitVersion) -> CommitUnresolvedDurable {
+    CommitUnresolvedDurable::durable_not_applied_with_facts(
+        CommitStamp::new(branch, version, Timestamp::from_micros(9_000)).expect("stamp"),
+        CommitDurabilityClass::Standard,
+        "seed unresolved durable fact",
+    )
+    .expect("unresolved durable fact")
+}
+
 #[derive(Debug)]
 struct InjectedWalSource;
 
@@ -1261,6 +1809,17 @@ impl fmt::Display for InjectedWalSource {
 }
 
 impl std::error::Error for InjectedWalSource {}
+
+#[derive(Debug)]
+struct InjectedBranchApplySource;
+
+impl fmt::Display for InjectedBranchApplySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("injected branch apply source")
+    }
+}
+
+impl std::error::Error for InjectedBranchApplySource {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FailingTimestampSource;

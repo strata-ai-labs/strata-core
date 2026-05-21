@@ -1,20 +1,25 @@
 //! Generated durable/WAL commit contract helpers.
 
-use crate::branch::{BranchLocalState, BranchReadBound, BranchRuntimeConfig, BranchScanBounds};
+use crate::branch::{
+    BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
+};
 use crate::commit::{
-    CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
-    CommitBranchGuardSet, CommitBranchRegistry, CommitConflictValidationMode,
+    execute_read_only_diagnostic, CommitBatch, CommitBatchOptions, CommitBranchApplyTarget,
+    CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
+    CommitBranchRegistry, CommitCacheRuntime, CommitConflictValidationMode,
     CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime,
     CommitExpiry, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
     CommitMutation, CommitOrigin, CommitOutcome, CommitOutcomeKind, CommitPhase,
-    CommitReadOnlyDiagnostics, CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError,
-    CommitTimelineRows, CommitTimelineView, CommitTimestampGuard, CommitTimestampPolicy,
-    CommitValidationFacts, CommitVersionAllocator, CommitWalAppendError, CommitWalAppendFacts,
-    CommitWalAppender, VisibleVersionTracker, COMMIT_TIMELINE_SPACE,
+    CommitReadOnlyDiagnostics, CommitReadSnapshot, CommitRetentionHint, CommitRuntimeConfig,
+    CommitRuntimeError, CommitStamp, CommitTimelineRows, CommitTimelineView, CommitTimestampGuard,
+    CommitTimestampPolicy, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
+    CommitUnresolvedDurableKind, CommitValidationFacts, CommitVersionAllocator,
+    CommitVisibilityFacts, CommitVisiblePublisher, CommitWalAppendError, CommitWalAppendFacts,
+    CommitWalAppender, VisibleVersionPublish, VisibleVersionTracker, COMMIT_TIMELINE_SPACE,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::WalRecord;
-use crate::row::{PhysicalKey, StorageSpaceId};
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::TestkitError;
@@ -30,6 +35,19 @@ pub(crate) struct CommitRuntimeDurableContract {
     pub(crate) unforced_always_rejections: usize,
     pub(crate) guard_release_after_failure: usize,
     pub(crate) read_only_rejections: usize,
+    pub(crate) unresolved_fact_validation: usize,
+    pub(crate) unresolved_fact_rejections: usize,
+    pub(crate) unresolved_gate_records: usize,
+    pub(crate) unresolved_gate_idempotent_records: usize,
+    pub(crate) unresolved_gate_different_fact_rejections: usize,
+    pub(crate) unresolved_gate_exact_clears: usize,
+    pub(crate) durable_not_applied_gates: usize,
+    pub(crate) applied_not_visible_gates: usize,
+    pub(crate) unresolved_gate_blocks: usize,
+    pub(crate) unresolved_gate_cache_blocks: usize,
+    pub(crate) unresolved_gate_read_only_diagnostics: usize,
+    pub(crate) clean_wal_no_gate: usize,
+    pub(crate) uncertain_wal_no_gate: usize,
 }
 
 pub(crate) fn check_commit_runtime_durable_contract(
@@ -46,6 +64,19 @@ pub(crate) fn check_commit_runtime_durable_contract(
         unforced_always_rejections: check_unforced_always_rejection(script)?,
         guard_release_after_failure: check_guard_release_after_failure(script)?,
         read_only_rejections: check_read_only_rejection(script)?,
+        unresolved_fact_validation: check_unresolved_fact_validation(script)?,
+        unresolved_fact_rejections: check_unresolved_fact_rejection(script)?,
+        unresolved_gate_records: check_unresolved_gate_first_record(script)?,
+        unresolved_gate_idempotent_records: check_unresolved_gate_idempotent_record(script)?,
+        unresolved_gate_different_fact_rejections: check_unresolved_gate_different_fact(script)?,
+        unresolved_gate_exact_clears: check_unresolved_gate_exact_clear(script)?,
+        durable_not_applied_gates: check_durable_not_applied_gate(script)?,
+        applied_not_visible_gates: check_applied_not_visible_gate(script)?,
+        unresolved_gate_blocks: check_unresolved_gate_blocks(script)?,
+        unresolved_gate_cache_blocks: check_unresolved_gate_blocks_cache(script)?,
+        unresolved_gate_read_only_diagnostics: check_unresolved_gate_allows_read_only(script)?,
+        clean_wal_no_gate: check_clean_wal_no_gate(script)?,
+        uncertain_wal_no_gate: check_uncertain_wal_no_gate(script)?,
     })
 }
 
@@ -230,6 +261,7 @@ fn check_clean_wal_failure(script: &[u8]) -> Result<usize, TestkitError> {
     )?;
     require_allocated_not_applied(&fixture)?;
     require_readback(&fixture, &key, None)?;
+    require_gate_empty(&fixture.durable_gate)?;
     Ok(1)
 }
 
@@ -270,6 +302,7 @@ fn check_uncertain_wal_failure(script: &[u8]) -> Result<usize, TestkitError> {
     )?;
     require_allocated_not_applied(&fixture)?;
     require_readback(&fixture, &key, None)?;
+    require_gate_empty(&fixture.durable_gate)?;
     Ok(1)
 }
 
@@ -452,6 +485,471 @@ fn check_read_only_rejection(script: &[u8]) -> Result<usize, TestkitError> {
     Ok(1)
 }
 
+fn check_unresolved_fact_validation(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch = branch_id(script_byte(script, 30));
+    let version = CommitVersion::new(2 + u64::from(script_byte(script, 31)));
+    let stamp = CommitStamp::new(branch, version, timestamp(script_byte(script, 32)))
+        .map_err(testkit_error)?;
+    let durable_not_applied = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp,
+        CommitDurabilityClass::Standard,
+        "generated durable-not-applied fact",
+    )
+    .map_err(testkit_error)?;
+    let applied_not_visible = CommitUnresolvedDurable::applied_not_visible(
+        stamp,
+        CommitDurabilityClass::Always,
+        "generated applied-not-visible fact",
+    )
+    .map_err(testkit_error)?;
+
+    if durable_not_applied.kind() != CommitUnresolvedDurableKind::DurableNotApplied
+        || durable_not_applied
+            .visibility_facts()
+            .applied_version()
+            .is_some()
+        || applied_not_visible.kind() != CommitUnresolvedDurableKind::AppliedNotVisible
+        || applied_not_visible.visibility_facts().timeline_version() != Some(version)
+    {
+        return Err(TestkitError::new(
+            "generated unresolved durable facts were not valid",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_unresolved_fact_rejection(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch = branch_id(script_byte(script, 33));
+    let stamp = CommitStamp::new(
+        branch,
+        CommitVersion::new(3),
+        timestamp(script_byte(script, 34)),
+    )
+    .map_err(testkit_error)?;
+
+    expect_error(
+        CommitUnresolvedDurable::durable_not_applied_with_facts(
+            stamp,
+            CommitDurabilityClass::NotDurable,
+            "invalid generated fact",
+        ),
+        |error| {
+            error
+                == &CommitRuntimeError::InvalidCommitState {
+                    reason: "unresolved durable commit must claim durable WAL success",
+                }
+        },
+        "invalid unresolved durable fact was accepted",
+    )?;
+    Ok(1)
+}
+
+fn check_unresolved_gate_first_record(script: &[u8]) -> Result<usize, TestkitError> {
+    let gate = CommitUnresolvedDurableGate::new();
+    let fact = unresolved_fact(
+        branch_id(script_byte(script, 35)),
+        4,
+        script_byte(script, 36),
+    )?;
+    gate.record_unresolved(fact).map_err(testkit_error)?;
+    if gate.unresolved().map_err(testkit_error)? != Some(fact) {
+        return Err(TestkitError::new(
+            "generated unresolved durable gate did not record first fact",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_unresolved_gate_idempotent_record(script: &[u8]) -> Result<usize, TestkitError> {
+    let gate = CommitUnresolvedDurableGate::new();
+    let fact = unresolved_fact(
+        branch_id(script_byte(script, 37)),
+        5,
+        script_byte(script, 38),
+    )?;
+    gate.record_unresolved(fact).map_err(testkit_error)?;
+    gate.record_unresolved(fact).map_err(testkit_error)?;
+    if gate.unresolved().map_err(testkit_error)? != Some(fact) {
+        return Err(TestkitError::new(
+            "generated unresolved durable gate idempotent record changed state",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_unresolved_gate_different_fact(script: &[u8]) -> Result<usize, TestkitError> {
+    let gate = CommitUnresolvedDurableGate::new();
+    let branch = branch_id(script_byte(script, 39));
+    let first = unresolved_fact(branch, 6, script_byte(script, 40))?;
+    let second = unresolved_fact(branch, 7, script_byte(script, 41))?;
+    gate.record_unresolved(first).map_err(testkit_error)?;
+
+    expect_error(
+        gate.record_unresolved(second),
+        |error| {
+            error
+                == &CommitRuntimeError::InvalidCommitState {
+                    reason: "different unresolved durable commit is already recorded",
+                }
+        },
+        "different generated unresolved durable fact overwrote existing gate state",
+    )?;
+    Ok(1)
+}
+
+fn check_unresolved_gate_exact_clear(script: &[u8]) -> Result<usize, TestkitError> {
+    let gate = CommitUnresolvedDurableGate::new();
+    let fact = unresolved_fact(
+        branch_id(script_byte(script, 42)),
+        8,
+        script_byte(script, 43),
+    )?;
+    gate.record_unresolved(fact).map_err(testkit_error)?;
+    gate.clear_exact(fact).map_err(testkit_error)?;
+    if gate.unresolved().map_err(testkit_error)?.is_some() {
+        return Err(TestkitError::new(
+            "generated unresolved durable gate exact clear left state behind",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_durable_not_applied_gate(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch = branch_id(script_byte(script, 23));
+    let key = physical_key(branch, 0x20, b"durable-not-applied".to_vec());
+    let timestamp = timestamp(script_byte(script, 24));
+    let mut registry = CommitBranchRegistry::new();
+    registry
+        .register_active(
+            branch,
+            CommitBranchGeneration::new(1).map_err(testkit_error)?,
+        )
+        .map_err(testkit_error)?;
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(timestamp),
+    );
+    let mut state = FailingApplyTarget::new(branch, true)?;
+    let mut visible = VisibleVersionTracker::default();
+    let mut wal = RecordingWalAppender::new(
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let durable_gate = CommitUnresolvedDurableGate::new();
+
+    expect_error(
+        CommitDurableRuntime::new(
+            &CommitRuntimeConfig::default(),
+            &registry,
+            &guard_set,
+            &mut allocator,
+            &mut state,
+            &mut visible,
+            &mut wal,
+            &durable_gate,
+        )
+        .execute(
+            durable_batch(
+                branch,
+                CommitDurabilityMode::Standard,
+                vec![CommitMutation::put(
+                    key,
+                    b"value".to_vec(),
+                    CommitExpiry::None,
+                    CommitRetentionHint::Append,
+                )],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        ),
+        |error| {
+            matches!(
+                error,
+                CommitRuntimeError::DurableButNotVisible {
+                    branch_id: failed_branch,
+                    commit_version,
+                    reason: "branch state rejected durable commit rows after WAL append",
+                    ..
+                } if *failed_branch == branch && *commit_version == CommitVersion::new(1)
+            )
+        },
+        "durable apply failure did not record durable-not-applied state",
+    )?;
+    let unresolved = durable_gate
+        .unresolved()
+        .map_err(testkit_error)?
+        .ok_or_else(|| TestkitError::new("durable-not-applied gate was empty"))?;
+    if unresolved.kind() != CommitUnresolvedDurableKind::DurableNotApplied
+        || unresolved.commit_version() != CommitVersion::new(1)
+        || unresolved.visibility_facts().applied_version().is_some()
+        || wal.records.len() != 1
+        || state.state.active_row_count() != 0
+        || visible.visible_version() != CommitVersion::ZERO
+    {
+        return Err(TestkitError::new(
+            "durable-not-applied gate facts were incorrect",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_applied_not_visible_gate(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch = branch_id(script_byte(script, 25));
+    let key = physical_key(branch, 0x20, b"applied-not-visible".to_vec());
+    let timestamp = timestamp(script_byte(script, 26));
+    let mut registry = CommitBranchRegistry::new();
+    registry
+        .register_active(
+            branch,
+            CommitBranchGeneration::new(1).map_err(testkit_error)?,
+        )
+        .map_err(testkit_error)?;
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(timestamp),
+    );
+    let mut state = FailingApplyTarget::new(branch, false)?;
+    let mut visible = FailingVisiblePublisher::new(true);
+    let mut wal = RecordingWalAppender::new(
+        DurabilityPolicy::Always,
+        FakeWalMode::Succeed {
+            forced_durable: true,
+        },
+    );
+    let durable_gate = CommitUnresolvedDurableGate::new();
+
+    expect_error(
+        CommitDurableRuntime::new(
+            &CommitRuntimeConfig::default(),
+            &registry,
+            &guard_set,
+            &mut allocator,
+            &mut state,
+            &mut visible,
+            &mut wal,
+            &durable_gate,
+        )
+        .execute(
+            durable_batch(
+                branch,
+                CommitDurabilityMode::Always,
+                vec![CommitMutation::put(
+                    key,
+                    b"value".to_vec(),
+                    CommitExpiry::None,
+                    CommitRetentionHint::Append,
+                )],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        ),
+        |error| {
+            matches!(
+                error,
+                CommitRuntimeError::DurableButNotVisible {
+                    branch_id: failed_branch,
+                    commit_version,
+                    reason: "injected visible publication failure",
+                    ..
+                } if *failed_branch == branch && *commit_version == CommitVersion::new(1)
+            )
+        },
+        "visible publication failure did not record applied-not-visible state",
+    )?;
+    let unresolved = durable_gate
+        .unresolved()
+        .map_err(testkit_error)?
+        .ok_or_else(|| TestkitError::new("applied-not-visible gate was empty"))?;
+    if unresolved.kind() != CommitUnresolvedDurableKind::AppliedNotVisible
+        || unresolved.commit_version() != CommitVersion::new(1)
+        || unresolved.visibility_facts().applied_version() != Some(CommitVersion::new(1))
+        || unresolved.visibility_facts().visible_version().is_some()
+        || wal.records.len() != 1
+        || state.state.active_row_count() != 1 + CommitTimelineRows::timeline_row_count()
+        || visible.tracker.visible_version() != CommitVersion::ZERO
+    {
+        return Err(TestkitError::new(
+            "applied-not-visible gate facts were incorrect",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_unresolved_gate_blocks(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch = branch_id(script_byte(script, 27));
+    let mut fixture = DurableContractFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+        timestamp(script_byte(script, 28)),
+    )?;
+    fixture
+        .durable_gate
+        .record_unresolved(
+            crate::commit::CommitUnresolvedDurable::durable_not_applied_with_facts(
+                crate::commit::CommitStamp::new(
+                    branch,
+                    CommitVersion::new(7),
+                    timestamp(script_byte(script, 29)),
+                )
+                .map_err(testkit_error)?,
+                CommitDurabilityClass::Standard,
+                "seed unresolved durable fact",
+            )
+            .map_err(testkit_error)?,
+        )
+        .map_err(testkit_error)?;
+
+    expect_error(
+        fixture.execute(durable_batch(
+            branch,
+            CommitDurabilityMode::Standard,
+            vec![CommitMutation::put(
+                physical_key(branch, 0x20, b"blocked".to_vec()),
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+        )),
+        |error| {
+            matches!(
+                error,
+                CommitRuntimeError::UnresolvedDurableCommit {
+                    branch_id: blocked_branch,
+                    commit_version,
+                    ..
+                } if *blocked_branch == branch && *commit_version == CommitVersion::new(7)
+            )
+        },
+        "unresolved durable gate did not block later durable commit",
+    )?;
+    require_unallocated_unattempted(&fixture)?;
+    Ok(1)
+}
+
+fn check_unresolved_gate_blocks_cache(script: &[u8]) -> Result<usize, TestkitError> {
+    let blocked_branch = branch_id(script_byte(script, 44));
+    let target_branch = branch_id(script_byte(script, 45));
+    let mut registry = CommitBranchRegistry::new();
+    registry
+        .register_active(
+            target_branch,
+            CommitBranchGeneration::new(1).map_err(testkit_error)?,
+        )
+        .map_err(testkit_error)?;
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(timestamp(script_byte(script, 46))),
+    );
+    let mut state = BranchLocalState::new(target_branch, BranchRuntimeConfig::default())
+        .map_err(testkit_error)?;
+    let mut visible = VisibleVersionTracker::default();
+    let durable_gate = CommitUnresolvedDurableGate::new();
+    let fact = unresolved_fact(blocked_branch, 9, script_byte(script, 47))?;
+    durable_gate
+        .record_unresolved(fact)
+        .map_err(testkit_error)?;
+
+    expect_error(
+        CommitCacheRuntime::new(
+            &CommitRuntimeConfig::default(),
+            &registry,
+            &guard_set,
+            &mut allocator,
+            &mut state,
+            &mut visible,
+            &durable_gate,
+        )
+        .execute(
+            durable_batch(
+                target_branch,
+                CommitDurabilityMode::Cache,
+                vec![CommitMutation::put(
+                    physical_key(target_branch, 0x20, b"cache-blocked".to_vec()),
+                    b"value".to_vec(),
+                    CommitExpiry::None,
+                    CommitRetentionHint::Append,
+                )],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        ),
+        |error| {
+            matches!(
+                error,
+                CommitRuntimeError::UnresolvedDurableCommit {
+                    branch_id,
+                    commit_version,
+                    ..
+                } if *branch_id == blocked_branch
+                    && *commit_version == fact.commit_version()
+            )
+        },
+        "unresolved durable gate did not block generated cache commit",
+    )?;
+    if allocator.version_allocator().last_allocated() != CommitVersion::ZERO
+        || state.active_row_count() != 0
+        || visible.visible_version() != CommitVersion::ZERO
+    {
+        return Err(TestkitError::new(
+            "generated cache blocked by unresolved durable gate mutated state",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_unresolved_gate_allows_read_only(script: &[u8]) -> Result<usize, TestkitError> {
+    let branch = branch_id(script_byte(script, 48));
+    let durable_gate = CommitUnresolvedDurableGate::new();
+    durable_gate
+        .record_unresolved(unresolved_fact(branch, 10, script_byte(script, 49))?)
+        .map_err(testkit_error)?;
+    let visible = CommitVersion::new(3 + u64::from(script_byte(script, 50) % 7));
+    let config = CommitRuntimeConfig::new(1, 1, 1, CommitReadOnlyDiagnostics::Enabled)
+        .map_err(testkit_error)?;
+    let batch = CommitBatch::read_only_diagnostic(
+        branch,
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Standard,
+            CommitConflictValidationMode::Validate,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGenerated,
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+    .validate(&config)
+    .map_err(testkit_error)?;
+    let outcome =
+        execute_read_only_diagnostic(&batch, &config, VisibleVersionTracker::new(visible))
+            .map_err(testkit_error)?;
+
+    if outcome.kind() != CommitOutcomeKind::ReadOnly
+        || outcome.read_snapshot() != Some(CommitReadSnapshot::new(branch, visible))
+    {
+        return Err(TestkitError::new(
+            "generated read-only diagnostic was blocked or reported wrong visible version",
+        ));
+    }
+    Ok(1)
+}
+
+fn check_clean_wal_no_gate(script: &[u8]) -> Result<usize, TestkitError> {
+    check_clean_wal_failure(script)
+}
+
+fn check_uncertain_wal_no_gate(script: &[u8]) -> Result<usize, TestkitError> {
+    check_uncertain_wal_failure(script)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FakeWalMode {
     Succeed { forced_durable: bool },
@@ -509,6 +1007,96 @@ impl CommitWalAppender for RecordingWalAppender {
     }
 }
 
+#[derive(Debug)]
+struct FailingApplyTarget {
+    state: BranchLocalState,
+    fail_append: bool,
+}
+
+impl FailingApplyTarget {
+    fn new(branch: BranchId, fail_append: bool) -> Result<Self, TestkitError> {
+        Ok(Self {
+            state: BranchLocalState::new(branch, BranchRuntimeConfig::default())
+                .map_err(testkit_error)?,
+            fail_append,
+        })
+    }
+}
+
+impl CommitBranchApplyTarget for FailingApplyTarget {
+    fn branch_id(&self) -> BranchId {
+        self.state.branch_id()
+    }
+
+    fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.state.max_commit_version()
+    }
+
+    fn capture_read_view(&self) -> crate::commit::CommitRuntimeResult<BranchReadView> {
+        self.state.capture_read_view().map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "branch read view capture failed",
+                source,
+            )
+        })
+    }
+
+    fn append_committed_rows_atomically(
+        &mut self,
+        rows: Vec<StorageRow>,
+    ) -> crate::commit::CommitRuntimeResult<()> {
+        if self.fail_append {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "injected branch apply failure",
+            });
+        }
+        self.state
+            .append_committed_rows_atomically(rows)
+            .map(|_| ())
+            .map_err(|source| {
+                CommitRuntimeError::lower_layer_with(
+                    CommitLowerLayer::BranchRuntime,
+                    "branch state rejected commit rows",
+                    source,
+                )
+            })
+    }
+}
+
+#[derive(Debug)]
+struct FailingVisiblePublisher {
+    tracker: VisibleVersionTracker,
+    fail_publish: bool,
+}
+
+impl FailingVisiblePublisher {
+    const fn new(fail_publish: bool) -> Self {
+        Self {
+            tracker: VisibleVersionTracker::new(CommitVersion::ZERO),
+            fail_publish,
+        }
+    }
+}
+
+impl CommitVisiblePublisher for FailingVisiblePublisher {
+    fn visible_version(&self) -> CommitVersion {
+        self.tracker.visible_version()
+    }
+
+    fn publish_from_facts(
+        &mut self,
+        facts: CommitVisibilityFacts,
+    ) -> crate::commit::CommitRuntimeResult<VisibleVersionPublish> {
+        if self.fail_publish {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "injected visible publication failure",
+            });
+        }
+        self.tracker.publish_from_facts(facts)
+    }
+}
+
 struct DurableContractFixture {
     config: CommitRuntimeConfig,
     registry: CommitBranchRegistry,
@@ -517,6 +1105,7 @@ struct DurableContractFixture {
     state: BranchLocalState,
     visible: VisibleVersionTracker,
     wal: RecordingWalAppender,
+    durable_gate: CommitUnresolvedDurableGate,
 }
 
 impl DurableContractFixture {
@@ -547,6 +1136,7 @@ impl DurableContractFixture {
                 .map_err(testkit_error)?,
             visible: VisibleVersionTracker::default(),
             wal: RecordingWalAppender::new(policy, wal_mode),
+            durable_gate: CommitUnresolvedDurableGate::new(),
         })
     }
 
@@ -559,6 +1149,7 @@ impl DurableContractFixture {
             &mut self.state,
             &mut self.visible,
             &mut self.wal,
+            &self.durable_gate,
         )
         .execute(
             batch,
@@ -719,6 +1310,15 @@ fn require_unallocated_unattempted(fixture: &DurableContractFixture) -> Result<(
     Ok(())
 }
 
+fn require_gate_empty(gate: &CommitUnresolvedDurableGate) -> Result<(), TestkitError> {
+    if gate.unresolved().map_err(testkit_error)?.is_some() {
+        return Err(TestkitError::new(
+            "durable gate recorded unresolved state before durable success",
+        ));
+    }
+    Ok(())
+}
+
 fn single_record(fixture: &DurableContractFixture) -> Result<&WalRecord, TestkitError> {
     if fixture.wal.records.len() != 1 || fixture.wal.append_attempts != 1 {
         return Err(TestkitError::new(
@@ -744,6 +1344,24 @@ fn timeline_view(
     CommitTimelineView::from_rows(
         branch,
         rows.iter().map(crate::branch::BranchVisibleRow::row),
+    )
+    .map_err(testkit_error)
+}
+
+fn unresolved_fact(
+    branch: BranchId,
+    version: u64,
+    timestamp_byte: u8,
+) -> Result<CommitUnresolvedDurable, TestkitError> {
+    CommitUnresolvedDurable::durable_not_applied_with_facts(
+        CommitStamp::new(
+            branch,
+            CommitVersion::new(version),
+            timestamp(timestamp_byte),
+        )
+        .map_err(testkit_error)?,
+        CommitDurabilityClass::Standard,
+        "generated unresolved durable fact",
     )
     .map_err(testkit_error)
 }
