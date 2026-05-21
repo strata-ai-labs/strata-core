@@ -4,7 +4,7 @@ use super::{
     CommitBatchKind, CommitConflictValidationMode, CommitLowerLayer, CommitObservedVersion,
     CommitRuntimeError, CommitRuntimeResult, ValidatedCommitBatch,
 };
-use crate::branch::BranchReadView;
+use crate::branch::{BranchReadBound, BranchReadView};
 use crate::row::{PhysicalKey, StorageSpaceId};
 use strata_core_next::BranchId;
 
@@ -42,6 +42,7 @@ pub(crate) trait CommitConflictReadSource {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CommitBranchReadViewConflictSource<'a> {
     read_view: &'a BranchReadView,
+    bound: BranchReadBound,
 }
 
 impl CommitConflict {
@@ -123,7 +124,20 @@ impl CommitConflictReport {
 
 impl<'a> CommitBranchReadViewConflictSource<'a> {
     pub(crate) const fn new(read_view: &'a BranchReadView) -> Self {
-        Self { read_view }
+        Self {
+            read_view,
+            bound: BranchReadBound::latest(),
+        }
+    }
+
+    pub(crate) const fn new_at_version(
+        read_view: &'a BranchReadView,
+        visible_version: strata_core_next::CommitVersion,
+    ) -> Self {
+        Self {
+            read_view,
+            bound: BranchReadBound::at_version(visible_version),
+        }
     }
 }
 
@@ -133,7 +147,7 @@ impl CommitConflictReadSource for CommitBranchReadViewConflictSource<'_> {
         key: &PhysicalKey,
     ) -> CommitRuntimeResult<CommitObservedVersion> {
         self.read_view
-            .latest(key)
+            .read_point(key, self.bound)
             .map(|row| {
                 row.map_or(CommitObservedVersion::Missing, |visible| {
                     CommitObservedVersion::Present(visible.row().commit_version())

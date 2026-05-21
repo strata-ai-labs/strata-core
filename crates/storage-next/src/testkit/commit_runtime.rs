@@ -15,6 +15,7 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
 use super::commit_runtime_branch_guards::check_commit_runtime_branch_guard_contract;
+use super::commit_runtime_cache::check_commit_runtime_cache_contract;
 use super::commit_runtime_conflicts::check_commit_runtime_conflict_contract;
 use super::commit_runtime_outcome::check_commit_runtime_outcome_contract;
 use super::commit_runtime_timeline::check_commit_runtime_timeline_contract;
@@ -112,6 +113,22 @@ pub struct CommitRuntimeScaffoldOutcome {
     timeline_row_order_independence: usize,
     timeline_bounds_reports: usize,
     timeline_caller_rejections: usize,
+    cache_put_commits: usize,
+    cache_delete_commits: usize,
+    cache_mixed_commits: usize,
+    cache_one_version_per_batch: usize,
+    cache_one_timestamp_per_batch: usize,
+    cache_timeline_rows_installed: usize,
+    cache_visible_publications: usize,
+    cache_not_durable_outcomes: usize,
+    cache_branch_admission_rejections: usize,
+    cache_conflict_rejections: usize,
+    cache_non_cache_rejections: usize,
+    cache_apply_failure_atomicity: usize,
+    cache_version_gap_after_failure: usize,
+    cache_applied_above_visible_rejections: usize,
+    cache_visible_allocator_mismatch_rejections: usize,
+    cache_guard_release_after_failure: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -559,6 +576,86 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn timeline_caller_rejection_cases(self) -> usize {
         self.timeline_caller_rejections
     }
+
+    /// Number of cache put commit cases exercised.
+    pub const fn cache_put_commit_cases(self) -> usize {
+        self.cache_put_commits
+    }
+
+    /// Number of cache delete commit cases exercised.
+    pub const fn cache_delete_commit_cases(self) -> usize {
+        self.cache_delete_commits
+    }
+
+    /// Number of mixed cache commit cases exercised.
+    pub const fn cache_mixed_commit_cases(self) -> usize {
+        self.cache_mixed_commits
+    }
+
+    /// Number of one-version-per-cache-batch cases exercised.
+    pub const fn cache_one_version_per_batch_cases(self) -> usize {
+        self.cache_one_version_per_batch
+    }
+
+    /// Number of one-timestamp-per-cache-batch cases exercised.
+    pub const fn cache_one_timestamp_per_batch_cases(self) -> usize {
+        self.cache_one_timestamp_per_batch
+    }
+
+    /// Number of cache timeline installation cases exercised.
+    pub const fn cache_timeline_rows_installed_cases(self) -> usize {
+        self.cache_timeline_rows_installed
+    }
+
+    /// Number of cache visible publication cases exercised.
+    pub const fn cache_visible_publication_cases(self) -> usize {
+        self.cache_visible_publications
+    }
+
+    /// Number of not-durable cache outcome cases exercised.
+    pub const fn cache_not_durable_outcome_cases(self) -> usize {
+        self.cache_not_durable_outcomes
+    }
+
+    /// Number of cache branch admission rejection cases exercised.
+    pub const fn cache_branch_admission_rejection_cases(self) -> usize {
+        self.cache_branch_admission_rejections
+    }
+
+    /// Number of cache conflict rejection cases exercised.
+    pub const fn cache_conflict_rejection_cases(self) -> usize {
+        self.cache_conflict_rejections
+    }
+
+    /// Number of non-cache durability rejection cases exercised by L7H.
+    pub const fn cache_non_cache_rejection_cases(self) -> usize {
+        self.cache_non_cache_rejections
+    }
+
+    /// Number of cache apply-failure atomicity cases exercised.
+    pub const fn cache_apply_failure_atomicity_cases(self) -> usize {
+        self.cache_apply_failure_atomicity
+    }
+
+    /// Number of post-allocation version-gap cases exercised.
+    pub const fn cache_version_gap_after_failure_cases(self) -> usize {
+        self.cache_version_gap_after_failure
+    }
+
+    /// Number of branch-applied-above-visible rejection cases exercised.
+    pub const fn cache_applied_above_visible_rejection_cases(self) -> usize {
+        self.cache_applied_above_visible_rejections
+    }
+
+    /// Number of allocator/visible mismatch rejection cases exercised.
+    pub const fn cache_visible_allocator_mismatch_rejection_cases(self) -> usize {
+        self.cache_visible_allocator_mismatch_rejections
+    }
+
+    /// Number of guard-release-after-cache-failure cases exercised.
+    pub const fn cache_guard_release_after_failure_cases(self) -> usize {
+        self.cache_guard_release_after_failure
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -606,6 +703,7 @@ pub fn check_commit_runtime_scaffold_contract(
     absorb_branch_guard_contract(script, &mut outcome)?;
     absorb_conflict_contract(script, &mut outcome)?;
     absorb_timeline_contract(script, &mut outcome)?;
+    absorb_cache_contract(script, &mut outcome)?;
 
     Ok(outcome)
 }
@@ -728,6 +826,32 @@ fn absorb_timeline_contract(
     outcome.timeline_row_order_independence += timeline_contract.row_order_independence;
     outcome.timeline_bounds_reports += timeline_contract.bounds_reports;
     outcome.timeline_caller_rejections += timeline_contract.caller_rejections;
+    Ok(())
+}
+
+fn absorb_cache_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let cache_contract = check_commit_runtime_cache_contract(script)?;
+    outcome.cache_put_commits += cache_contract.put_commits;
+    outcome.cache_delete_commits += cache_contract.delete_commits;
+    outcome.cache_mixed_commits += cache_contract.mixed_commits;
+    outcome.cache_one_version_per_batch += cache_contract.one_version_per_batch;
+    outcome.cache_one_timestamp_per_batch += cache_contract.one_timestamp_per_batch;
+    outcome.cache_timeline_rows_installed += cache_contract.timeline_rows_installed;
+    outcome.cache_visible_publications += cache_contract.visible_publications;
+    outcome.cache_not_durable_outcomes += cache_contract.not_durable_outcomes;
+    outcome.cache_branch_admission_rejections += cache_contract.branch_admission_rejections;
+    outcome.cache_conflict_rejections += cache_contract.conflict_rejections;
+    outcome.cache_non_cache_rejections += cache_contract.non_cache_rejections;
+    outcome.cache_apply_failure_atomicity += cache_contract.apply_failure_atomicity;
+    outcome.cache_version_gap_after_failure += cache_contract.version_gap_after_failure;
+    outcome.cache_applied_above_visible_rejections +=
+        cache_contract.applied_above_visible_rejections;
+    outcome.cache_visible_allocator_mismatch_rejections +=
+        cache_contract.visible_allocator_mismatch_rejections;
+    outcome.cache_guard_release_after_failure += cache_contract.guard_release_after_failure;
     Ok(())
 }
 

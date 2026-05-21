@@ -89,6 +89,15 @@ pub(crate) struct BranchAppendOutcome {
     approximate_active_bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchAppendBatchOutcome {
+    branch_id: BranchId,
+    appended_rows: usize,
+    active_rows: usize,
+    approximate_active_bytes: usize,
+    max_commit_version: Option<CommitVersion>,
+}
+
 impl BranchAppendOutcome {
     pub(crate) const fn branch_id(self) -> BranchId {
         self.branch_id
@@ -112,6 +121,28 @@ impl BranchAppendOutcome {
 
     pub(crate) const fn approximate_active_bytes(self) -> usize {
         self.approximate_active_bytes
+    }
+}
+
+impl BranchAppendBatchOutcome {
+    pub(crate) const fn branch_id(self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn appended_rows(self) -> usize {
+        self.appended_rows
+    }
+
+    pub(crate) const fn active_rows(self) -> usize {
+        self.active_rows
+    }
+
+    pub(crate) const fn approximate_active_bytes(self) -> usize {
+        self.approximate_active_bytes
+    }
+
+    pub(crate) const fn max_commit_version(self) -> Option<CommitVersion> {
+        self.max_commit_version
     }
 }
 
@@ -1306,6 +1337,37 @@ impl BranchLocalState {
             active_rows: self.active.len(),
             approximate_active_bytes: self.active.approximate_size_bytes(),
         })
+    }
+
+    pub(crate) fn append_committed_rows_atomically(
+        &mut self,
+        rows: impl IntoIterator<Item = StorageRow>,
+    ) -> BranchRuntimeResult<BranchAppendBatchOutcome> {
+        let rows = rows.into_iter().collect::<Vec<_>>();
+        if rows.is_empty() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "committed row batch must not be empty",
+            });
+        }
+
+        let mut staged = self.clone();
+        for row in rows {
+            staged.append_committed_row(row)?;
+        }
+
+        let outcome = BranchAppendBatchOutcome {
+            branch_id: staged.branch_id,
+            appended_rows: staged.active.len().checked_sub(self.active.len()).ok_or(
+                BranchRuntimeError::InvalidBranchState {
+                    reason: "staged active row count regressed",
+                },
+            )?,
+            active_rows: staged.active.len(),
+            approximate_active_bytes: staged.active.approximate_size_bytes(),
+            max_commit_version: staged.max_commit_version,
+        };
+        *self = staged;
+        Ok(outcome)
     }
 
     pub(crate) fn rotate_active(&mut self) -> BranchRotationOutcome {

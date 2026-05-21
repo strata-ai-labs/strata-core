@@ -34,6 +34,26 @@ fn branch_read_view_conflict_source_maps_visible_missing_and_tombstone_rows() {
 }
 
 #[test]
+fn branch_read_view_conflict_source_can_be_capped_at_visible_version() {
+    let branch = branch_id(221);
+    let key = physical_key(branch, 0x20, b"visible-bound".to_vec());
+    let view = read_view(branch, vec![put_row(key.clone(), 7)]);
+    let hidden_source =
+        CommitBranchReadViewConflictSource::new_at_version(&view, CommitVersion::new(6));
+    let visible_source =
+        CommitBranchReadViewConflictSource::new_at_version(&view, CommitVersion::new(7));
+
+    assert_eq!(
+        hidden_source.current_observed_version(&key),
+        Ok(CommitObservedVersion::Missing)
+    );
+    assert_eq!(
+        visible_source.current_observed_version(&key),
+        Ok(CommitObservedVersion::Present(CommitVersion::new(7)))
+    );
+}
+
+#[test]
 fn read_set_present_facts_match_or_report_storage_conflict() {
     let branch = branch_id(122);
     let key = physical_key(branch, 0x20, b"read-present".to_vec());

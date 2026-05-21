@@ -42,6 +42,7 @@ fn all_categories_exercised(
         && guard_categories_exercised(outcome)
         && conflict_categories_exercised(outcome)
         && timeline_categories_exercised(outcome)
+        && cache_categories_exercised(outcome)
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -161,4 +162,26 @@ fn timeline_categories_exercised(
         && outcome.timeline_row_order_independence_cases() > 0
         && outcome.timeline_bounds_report_cases() > 0
         && outcome.timeline_caller_rejection_cases() > 0
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn cache_categories_exercised(
+    outcome: &strata_storage_next::testkit::CommitRuntimeScaffoldOutcome,
+) -> bool {
+    outcome.cache_put_commit_cases() > 0
+        && outcome.cache_delete_commit_cases() > 0
+        && outcome.cache_mixed_commit_cases() > 0
+        && outcome.cache_one_version_per_batch_cases() > 0
+        && outcome.cache_one_timestamp_per_batch_cases() > 0
+        && outcome.cache_timeline_rows_installed_cases() > 0
+        && outcome.cache_visible_publication_cases() > 0
+        && outcome.cache_not_durable_outcome_cases() > 0
+        && outcome.cache_branch_admission_rejection_cases() > 0
+        && outcome.cache_conflict_rejection_cases() > 0
+        && outcome.cache_non_cache_rejection_cases() > 0
+        && outcome.cache_apply_failure_atomicity_cases() > 0
+        && outcome.cache_version_gap_after_failure_cases() > 0
+        && outcome.cache_applied_above_visible_rejection_cases() > 0
+        && outcome.cache_visible_allocator_mismatch_rejection_cases() > 0
+        && outcome.cache_guard_release_after_failure_cases() > 0
 }

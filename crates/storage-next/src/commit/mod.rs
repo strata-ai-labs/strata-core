@@ -11,6 +11,7 @@
 mod allocator;
 mod batch;
 mod branch_registry;
+mod cache;
 mod config;
 mod conflict;
 mod error;
@@ -49,6 +50,11 @@ pub(crate) use branch_registry::{
     CommitBranchDescriptor, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitBranchRegistry, CommitBranchState,
 };
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use cache::{CacheCommitRows, CommitCacheRuntime};
 #[cfg_attr(
     not(test),
     allow(

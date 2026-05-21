@@ -1,0 +1,226 @@
+//! Cache/no-WAL commit execution.
+
+use super::{
+    admit_mutating_commit, validate_commit_conflicts, CommitBatch, CommitBatchKind,
+    CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchReadViewConflictSource,
+    CommitBranchRegistry, CommitDurabilityClass, CommitDurabilityMode, CommitFactAllocation,
+    CommitFactAllocator, CommitLowerLayer, CommitMutationCounts, CommitOutcome,
+    CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp, CommitTimelineEntry,
+    CommitTimelineRows, CommitTimestampSource, CommitVisibilityFacts, StampedCommitRows,
+    ValidatedCommitBatch, VisibleVersionTracker,
+};
+use crate::branch::BranchLocalState;
+use crate::row::StorageRow;
+
+#[derive(Debug)]
+pub(crate) struct CommitCacheRuntime<'a, S> {
+    config: &'a CommitRuntimeConfig,
+    registry: &'a CommitBranchRegistry,
+    guard_set: &'a CommitBranchGuardSet,
+    allocator: &'a mut CommitFactAllocator<S>,
+    branch: &'a mut BranchLocalState,
+    visible: &'a mut VisibleVersionTracker,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheCommitRows {
+    stamp: CommitStamp,
+    user_rows: StampedCommitRows,
+    timeline_rows: CommitTimelineRows,
+    mutation_counts: CommitMutationCounts,
+}
+
+impl<'a, S> CommitCacheRuntime<'a, S> {
+    pub(crate) fn new(
+        config: &'a CommitRuntimeConfig,
+        registry: &'a CommitBranchRegistry,
+        guard_set: &'a CommitBranchGuardSet,
+        allocator: &'a mut CommitFactAllocator<S>,
+        branch: &'a mut BranchLocalState,
+        visible: &'a mut VisibleVersionTracker,
+    ) -> Self {
+        Self {
+            config,
+            registry,
+            guard_set,
+            allocator,
+            branch,
+            visible,
+        }
+    }
+}
+
+impl<S: CommitTimestampSource> CommitCacheRuntime<'_, S> {
+    pub(crate) fn execute(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+    ) -> CommitRuntimeResult<CommitOutcome> {
+        let batch = batch.validate(self.config)?;
+        require_cache_mutating_batch(&batch)?;
+        if batch.batch().branch_id() != self.branch.branch_id() {
+            return Err(CommitRuntimeError::BranchMismatch {
+                expected: batch.batch().branch_id(),
+                actual: self.branch.branch_id(),
+            });
+        }
+
+        let _admission_guard =
+            admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;
+        let current_visible_version = self.visible.visible_version();
+        require_branch_not_ahead_of_visible(
+            self.branch.max_commit_version(),
+            current_visible_version,
+        )?;
+
+        let read_view = self.branch.capture_read_view().map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "branch read view capture failed",
+                source,
+            )
+        })?;
+        let conflict_source =
+            CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
+        validate_commit_conflicts(&batch, &conflict_source)?;
+
+        let allocation = self.allocator.allocate_for_batch(&batch)?;
+        let stamp = require_mutating_allocation(allocation)?;
+        require_allocated_after_visible(stamp, current_visible_version)?;
+        let rows = CacheCommitRows::prepare(&batch, stamp, self.config)?;
+        let facts = visible_cache_facts(stamp)?;
+
+        self.branch
+            .append_committed_rows_atomically(rows.combined_rows())
+            .map_err(|source| {
+                CommitRuntimeError::lower_layer_with(
+                    CommitLowerLayer::BranchRuntime,
+                    "branch state rejected commit rows",
+                    source,
+                )
+            })?;
+
+        self.visible.publish_from_facts(facts)?;
+
+        CommitOutcome::visible(
+            batch.batch().branch_id(),
+            stamp,
+            CommitDurabilityClass::NotDurable,
+            rows.mutation_counts(),
+            facts,
+        )
+    }
+}
+
+impl CacheCommitRows {
+    pub(crate) fn prepare(
+        batch: &ValidatedCommitBatch,
+        stamp: CommitStamp,
+        config: &CommitRuntimeConfig,
+    ) -> CommitRuntimeResult<Self> {
+        let user_rows = batch.stamp_user_rows(stamp)?;
+        let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
+        let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
+        let user_counts = CommitMutationCounts::from_validated_batch(batch)?;
+        let mutation_counts = CommitMutationCounts::new(
+            user_counts.puts(),
+            user_counts.deletes(),
+            CommitTimelineRows::timeline_row_count(),
+            config,
+        )?;
+
+        Ok(Self {
+            stamp,
+            user_rows,
+            timeline_rows,
+            mutation_counts,
+        })
+    }
+
+    pub(crate) const fn stamp(&self) -> CommitStamp {
+        self.stamp
+    }
+
+    pub(crate) const fn user_rows(&self) -> &StampedCommitRows {
+        &self.user_rows
+    }
+
+    pub(crate) const fn timeline_rows(&self) -> &CommitTimelineRows {
+        &self.timeline_rows
+    }
+
+    pub(crate) const fn mutation_counts(&self) -> CommitMutationCounts {
+        self.mutation_counts
+    }
+
+    pub(crate) fn combined_rows(&self) -> Vec<StorageRow> {
+        let mut rows = Vec::with_capacity(
+            self.user_rows
+                .rows()
+                .len()
+                .saturating_add(CommitTimelineRows::timeline_row_count()),
+        );
+        rows.extend(self.user_rows.rows().iter().cloned());
+        rows.extend(self.timeline_rows.rows().into_iter().cloned());
+        rows
+    }
+}
+
+fn require_cache_mutating_batch(batch: &ValidatedCommitBatch) -> CommitRuntimeResult<()> {
+    if batch.batch().kind() != CommitBatchKind::Mutating {
+        return Err(CommitRuntimeError::InvalidBatch {
+            reason: "cache commit executor requires mutating batch",
+        });
+    }
+    if batch.batch().options().durability() != CommitDurabilityMode::Cache {
+        return Err(CommitRuntimeError::DurabilityUnavailable {
+            reason: "cache commit executor requires cache durability mode",
+        });
+    }
+    Ok(())
+}
+
+fn require_mutating_allocation(
+    allocation: CommitFactAllocation,
+) -> CommitRuntimeResult<CommitStamp> {
+    match allocation {
+        CommitFactAllocation::Mutating { stamp, .. } => Ok(stamp),
+        CommitFactAllocation::ReadOnly { .. } => Err(CommitRuntimeError::InvalidCommitState {
+            reason: "cache commit executor expected mutating allocation",
+        }),
+    }
+}
+
+fn require_allocated_after_visible(
+    stamp: CommitStamp,
+    current_visible_version: strata_core_next::CommitVersion,
+) -> CommitRuntimeResult<()> {
+    if stamp.commit_version() <= current_visible_version {
+        return Err(CommitRuntimeError::InvalidCommitState {
+            reason: "allocated commit version must be greater than current visible version",
+        });
+    }
+    Ok(())
+}
+
+fn require_branch_not_ahead_of_visible(
+    branch_max_commit_version: Option<strata_core_next::CommitVersion>,
+    current_visible_version: strata_core_next::CommitVersion,
+) -> CommitRuntimeResult<()> {
+    if branch_max_commit_version.is_some_and(|version| version > current_visible_version) {
+        return Err(CommitRuntimeError::InvalidCommitState {
+            reason: "branch has applied rows above current visible version",
+        });
+    }
+    Ok(())
+}
+
+fn visible_cache_facts(stamp: CommitStamp) -> CommitRuntimeResult<CommitVisibilityFacts> {
+    CommitVisibilityFacts::new(
+        Some(stamp.commit_version()),
+        None,
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+        Some(stamp.commit_version()),
+    )
+}

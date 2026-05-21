@@ -93,7 +93,7 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
         );
         for (line_number, line) in text.lines().enumerate() {
             for needle in forbidden_substrings {
-                if needle == "crate::branch" && is_allowed_branch_read_view_line(&file, line) {
+                if needle == "crate::branch" && is_allowed_branch_runtime_line(&file, line) {
                     continue;
                 }
                 assert!(
@@ -249,9 +249,21 @@ fn commit_runtime_source_guard_catches_forbidden_imports_and_public_surface() {
         "use crate::branch::BranchReadView;",
         Path::new("src/commit/conflict.rs")
     ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::branch::{BranchReadBound, BranchReadView};",
+        Path::new("src/commit/conflict.rs")
+    ));
     assert!(contains_forbidden_storage_path_for_file(
         "use crate::branch::BranchLocalState;",
         Path::new("src/commit/conflict.rs")
+    ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::branch::BranchLocalState;",
+        Path::new("src/commit/cache.rs")
+    ));
+    assert!(contains_forbidden_storage_path_for_file(
+        "use crate::branch::BranchReadView;",
+        Path::new("src/commit/cache.rs")
     ));
     assert!(contains_forbidden_storage_path_for_file(
         "use crate::branch::*;",
@@ -424,20 +436,24 @@ fn contains_forbidden_storage_path(line: &str) -> bool {
 fn contains_forbidden_storage_path_text_for_file(text: &str, file: &Path) -> bool {
     let filtered = text
         .lines()
-        .filter(|line| !is_allowed_branch_read_view_line(file, line))
+        .filter(|line| !is_allowed_branch_runtime_line(file, line))
         .collect::<String>();
     contains_forbidden_storage_path_for_file(&filtered, file)
 }
 
 fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
-    if is_allowed_branch_read_view_line(file, line) {
+    if is_allowed_branch_runtime_line(file, line) {
         let compact: String = line
             .chars()
             .filter(|character| !character.is_whitespace())
             .collect();
         let without_allowed = compact
+            .replace("usecrate::branch::{BranchReadBound,BranchReadView};", "")
             .replace("usecrate::branch::BranchReadView;", "")
-            .replace("crate::branch::BranchReadView", "");
+            .replace("crate::branch::BranchReadBound", "")
+            .replace("crate::branch::BranchReadView", "")
+            .replace("usecrate::branch::BranchLocalState;", "")
+            .replace("crate::branch::BranchLocalState", "");
         return contains_forbidden_storage_path(&without_allowed);
     }
 
@@ -475,9 +491,20 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
     .any(|needle| compact.contains(needle))
 }
 
-fn is_allowed_branch_read_view_line(file: &Path, line: &str) -> bool {
-    file.file_name().is_some_and(|name| name == "conflict.rs")
-        && line.trim() == "use crate::branch::BranchReadView;"
+fn is_allowed_branch_runtime_line(file: &Path, line: &str) -> bool {
+    let Some(file_name) = file.file_name() else {
+        return false;
+    };
+    let trimmed = line.trim();
+    if file_name == "conflict.rs" {
+        return matches!(
+            trimmed,
+            "use crate::branch::BranchReadView;"
+                | "use crate::branch::{BranchReadBound, BranchReadView};"
+        );
+    }
+
+    file_name == "cache.rs" && trimmed == "use crate::branch::BranchLocalState;"
 }
 
 fn contains_forbidden_backend_operation(line: &str) -> bool {

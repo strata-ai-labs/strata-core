@@ -1,6 +1,7 @@
 mod allocator;
 mod batch;
 mod branch_registry;
+mod cache;
 mod conflict;
 mod guard;
 mod outcome;
@@ -9,15 +10,15 @@ mod timeline;
 mod visibility;
 
 use super::{
-    execute_read_only_diagnostic, validate_commit_conflicts, CommitBatch, CommitBatchKind,
-    CommitBatchOptions, CommitBranchDescriptor, CommitBranchGeneration,
+    execute_read_only_diagnostic, validate_commit_conflicts, CacheCommitRows, CommitBatch,
+    CommitBatchKind, CommitBatchOptions, CommitBranchDescriptor, CommitBranchGeneration,
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchReadViewConflictSource,
-    CommitBranchRegistry, CommitBranchState, CommitCasFact, CommitConflict, CommitConflictKind,
-    CommitConflictReadSource, CommitConflictValidationMode, CommitDuplicateKeyPolicy,
-    CommitDurabilityClass, CommitDurabilityMode, CommitExpiry, CommitFactAllocation,
-    CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource, CommitMutation,
-    CommitMutationCounts, CommitObservedVersion, CommitOrigin, CommitOutcome, CommitOutcomeKind,
-    CommitPhase, CommitReadFact, CommitReadOnlyDiagnostics, CommitReadSnapshot,
+    CommitBranchRegistry, CommitBranchState, CommitCacheRuntime, CommitCasFact, CommitConflict,
+    CommitConflictKind, CommitConflictReadSource, CommitConflictValidationMode,
+    CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitExpiry,
+    CommitFactAllocation, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
+    CommitMutation, CommitMutationCounts, CommitObservedVersion, CommitOrigin, CommitOutcome,
+    CommitOutcomeKind, CommitPhase, CommitReadFact, CommitReadOnlyDiagnostics, CommitReadSnapshot,
     CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult,
     CommitRuntimeStats, CommitStamp, CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup,
     CommitTimelineMiss, CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView,
