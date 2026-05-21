@@ -93,7 +93,15 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
         );
         for (line_number, line) in text.lines().enumerate() {
             for needle in forbidden_substrings {
-                if needle == "crate::branch" && is_allowed_branch_runtime_line(&file, line) {
+                if is_allowed_commit_runtime_boundary_line(&file, line)
+                    && matches!(
+                        needle,
+                        "crate::branch"
+                            | "crate::service"
+                            | "crate::service::wal"
+                            | "crate::format::wal"
+                    )
+                {
                     continue;
                 }
                 assert!(
@@ -297,6 +305,26 @@ fn commit_runtime_source_guard_catches_forbidden_imports_and_public_surface() {
 }
 
 #[test]
+fn commit_runtime_source_guard_allows_durable_wal_boundary_only_in_durable_module() {
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::branch::BranchLocalState;",
+        Path::new("src/commit/durable.rs")
+    ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::service::{WalAppend, WalService, WalServiceError};",
+        Path::new("src/commit/durable.rs")
+    ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::format::{WalCommitPayload, WalRecord};",
+        Path::new("src/commit/durable.rs")
+    ));
+    assert!(contains_forbidden_storage_path_for_file(
+        "use crate::service::{WalAppend, WalService, WalServiceError};",
+        Path::new("src/commit/cache.rs")
+    ));
+}
+
+#[test]
 fn commit_runtime_source_guard_catches_io_and_backend_terms() {
     assert!(contains_forbidden_substring(
         "std::fs::read(\"commit\")",
@@ -436,13 +464,13 @@ fn contains_forbidden_storage_path(line: &str) -> bool {
 fn contains_forbidden_storage_path_text_for_file(text: &str, file: &Path) -> bool {
     let filtered = text
         .lines()
-        .filter(|line| !is_allowed_branch_runtime_line(file, line))
+        .filter(|line| !is_allowed_commit_runtime_boundary_line(file, line))
         .collect::<String>();
     contains_forbidden_storage_path_for_file(&filtered, file)
 }
 
 fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
-    if is_allowed_branch_runtime_line(file, line) {
+    if is_allowed_commit_runtime_boundary_line(file, line) {
         let compact: String = line
             .chars()
             .filter(|character| !character.is_whitespace())
@@ -453,7 +481,21 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
             .replace("crate::branch::BranchReadBound", "")
             .replace("crate::branch::BranchReadView", "")
             .replace("usecrate::branch::BranchLocalState;", "")
-            .replace("crate::branch::BranchLocalState", "");
+            .replace("crate::branch::BranchLocalState", "")
+            .replace(
+                "usecrate::service::{WalAppend,WalService,WalServiceError};",
+                "",
+            )
+            .replace("crate::service::WalAppend", "")
+            .replace("crate::service::WalService", "")
+            .replace("crate::service::WalServiceError", "")
+            .replace("crate::service::wal::WalAppend", "")
+            .replace("crate::service::wal::WalOperation", "")
+            .replace("crate::service::wal::WalService", "")
+            .replace("crate::service::wal::WalServiceError", "")
+            .replace("usecrate::format::{WalCommitPayload,WalRecord};", "")
+            .replace("crate::format::WalCommitPayload", "")
+            .replace("crate::format::WalRecord", "");
         return contains_forbidden_storage_path(&without_allowed);
     }
 
@@ -505,6 +547,23 @@ fn is_allowed_branch_runtime_line(file: &Path, line: &str) -> bool {
     }
 
     file_name == "cache.rs" && trimmed == "use crate::branch::BranchLocalState;"
+}
+
+fn is_allowed_commit_runtime_boundary_line(file: &Path, line: &str) -> bool {
+    if is_allowed_branch_runtime_line(file, line) {
+        return true;
+    }
+    let Some(file_name) = file.file_name() else {
+        return false;
+    };
+    let trimmed = line.trim();
+    file_name == "durable.rs"
+        && matches!(
+            trimmed,
+            "use crate::branch::BranchLocalState;"
+                | "use crate::format::{WalCommitPayload, WalRecord};"
+                | "use crate::service::{WalAppend, WalService, WalServiceError};"
+        )
 }
 
 fn contains_forbidden_backend_operation(line: &str) -> bool {

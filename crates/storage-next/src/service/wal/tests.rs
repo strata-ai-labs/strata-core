@@ -40,6 +40,14 @@ fn wal_retention_proof_records_durable_source() {
     assert_eq!(flush.source(), WalRetentionProofSource::FlushWatermark);
 }
 
+#[test]
+fn wal_repair_uncertain_is_writer_halted_not_append_uncertain() {
+    let error = WalServiceError::RepairUncertain { segment_id: 7 };
+
+    assert!(error.is_writer_halted_append_failure());
+    assert!(!error.is_durability_uncertain_append_failure());
+}
+
 // This backend writes the bytes but lies about the append report. The WAL
 // service must reject the report without advancing its own offset and dirty
 // facts, because the durable bytes are now ahead of service state.

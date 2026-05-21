@@ -43,6 +43,7 @@ fn all_categories_exercised(
         && conflict_categories_exercised(outcome)
         && timeline_categories_exercised(outcome)
         && cache_categories_exercised(outcome)
+        && durable_categories_exercised(outcome)
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -184,4 +185,20 @@ fn cache_categories_exercised(
         && outcome.cache_applied_above_visible_rejection_cases() > 0
         && outcome.cache_visible_allocator_mismatch_rejection_cases() > 0
         && outcome.cache_guard_release_after_failure_cases() > 0
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn durable_categories_exercised(
+    outcome: &strata_storage_next::testkit::CommitRuntimeScaffoldOutcome,
+) -> bool {
+    outcome.durable_standard_commit_cases() > 0
+        && outcome.durable_always_commit_cases() > 0
+        && outcome.durable_wal_payload_parity_cases() > 0
+        && outcome.durable_clean_wal_failure_cases() > 0
+        && outcome.durable_uncertain_wal_failure_cases() > 0
+        && outcome.durable_cache_mode_rejection_cases() > 0
+        && outcome.durable_policy_mismatch_cases() > 0
+        && outcome.durable_unforced_always_rejection_cases() > 0
+        && outcome.durable_guard_release_after_failure_cases() > 0
+        && outcome.durable_read_only_rejection_cases() > 0
 }

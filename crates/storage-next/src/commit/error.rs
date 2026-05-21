@@ -73,6 +73,18 @@ pub(crate) enum CommitRuntimeError {
     CommitConflict {
         conflict: CommitConflict,
     },
+    DurabilityUncertain {
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    DurableButNotVisible {
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
     AppliedButNotVisible {
         branch_id: BranchId,
         commit_version: CommitVersion,
@@ -144,6 +156,34 @@ impl CommitRuntimeError {
         source: impl Error + Send + Sync + 'static,
     ) -> Self {
         Self::TimestampUnavailable {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn durability_uncertain_with(
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::DurabilityUncertain {
+            branch_id,
+            commit_version,
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn durable_but_not_visible_with(
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::DurableButNotVisible {
+            branch_id,
+            commit_version,
             reason,
             source: Some(Arc::new(source)),
         }
@@ -307,6 +347,34 @@ impl PartialEq for CommitRuntimeError {
                 },
             ) => left_conflict == right_conflict,
             (
+                Self::DurabilityUncertain {
+                    branch_id: left_branch,
+                    commit_version: left_version,
+                    reason: left_reason,
+                    ..
+                },
+                Self::DurabilityUncertain {
+                    branch_id: right_branch,
+                    commit_version: right_version,
+                    reason: right_reason,
+                    ..
+                },
+            )
+            | (
+                Self::DurableButNotVisible {
+                    branch_id: left_branch,
+                    commit_version: left_version,
+                    reason: left_reason,
+                    ..
+                },
+                Self::DurableButNotVisible {
+                    branch_id: right_branch,
+                    commit_version: right_version,
+                    reason: right_reason,
+                    ..
+                },
+            )
+            | (
                 Self::AppliedButNotVisible {
                     branch_id: left_branch,
                     commit_version: left_version,
@@ -342,6 +410,10 @@ impl PartialEq for CommitRuntimeError {
 impl Eq for CommitRuntimeError {}
 
 impl fmt::Display for CommitRuntimeError {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "centralized display keeps the commit error vocabulary easy to audit"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidConfig { field, reason } => {
@@ -395,6 +467,28 @@ impl fmt::Display for CommitRuntimeError {
             | Self::BranchGuardUnavailable { .. }
             | Self::CommitQuiesceUnavailable { .. } => format_branch_error(self, formatter),
             Self::CommitConflict { conflict } => format_conflict_error(conflict, formatter),
+            Self::DurabilityUncertain {
+                branch_id,
+                commit_version,
+                reason,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "commit version {commit_version} for branch {branch_id} has uncertain durability: {reason}"
+                )
+            }
+            Self::DurableButNotVisible {
+                branch_id,
+                commit_version,
+                reason,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "commit version {commit_version} for branch {branch_id} is durable but not visible: {reason}"
+                )
+            }
             Self::AppliedButNotVisible {
                 branch_id,
                 commit_version,
@@ -524,8 +618,18 @@ impl Error for CommitRuntimeError {
             | Self::TimestampUnavailable {
                 source: Some(source),
                 ..
+            }
+            | Self::DurabilityUncertain {
+                source: Some(source),
+                ..
+            }
+            | Self::DurableButNotVisible {
+                source: Some(source),
+                ..
             } => Some(source.as_ref()),
             Self::TimestampUnavailable { source: None, .. }
+            | Self::DurabilityUncertain { source: None, .. }
+            | Self::DurableButNotVisible { source: None, .. }
             | Self::InvalidConfig { .. }
             | Self::InvalidCommitState { .. }
             | Self::InvalidCommitPhase { .. }

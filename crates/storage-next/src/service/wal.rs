@@ -337,6 +337,24 @@ impl std::error::Error for WalServiceError {
     }
 }
 
+impl WalServiceError {
+    pub(crate) const fn is_writer_halted_append_failure(&self) -> bool {
+        matches!(self, Self::RepairUncertain { .. })
+    }
+
+    pub(crate) const fn is_durability_uncertain_append_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Backend {
+                operation: WalOperation::Sync,
+                ..
+            } | Self::UnexpectedAppendOffset { .. }
+                | Self::UnexpectedAppendLength { .. }
+                | Self::UnexpectedObjectSize { .. }
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WalAppend {
     segment_id: u64,
@@ -553,6 +571,10 @@ impl<'a> WalService<'a> {
 
     pub(crate) const fn active_metadata(&self) -> &SegmentMetadata {
         &self.active_metadata
+    }
+
+    pub(crate) const fn durability_policy(&self) -> DurabilityPolicy {
+        self.durability_policy
     }
 
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {

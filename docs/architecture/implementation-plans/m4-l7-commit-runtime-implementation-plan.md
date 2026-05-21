@@ -63,7 +63,7 @@ UX or engine product semantics.
 | `crates/storage/src/txn/manager.rs` | Transaction id/version allocation, branch commit locks, quiesce, visible-version tracking, pending versions, branch deletion barriers, no-WAL commit path. | Port storage-owned commit ordering, guards, visibility, and commit-version allocator catch-up. Retire storage transaction ids for V1 unless a later private optimization reintroduces them. Remove product transaction-session assumptions. |
 | `crates/storage/src/txn/validation.rs` | Read-set and CAS validation. | Preserve the internal snapshot-isolation style conflict model. Do not claim serializable transactions. |
 | `crates/storage/src/txn/lock_ordering.rs` | Explicit lock-order discipline for commit path. | Rebuild as L7 lock-order guard tests and comments close to the lock acquisition code. |
-| `crates/storage/src/durability/commit_adapter.rs` | WAL-before-storage bridge and ambiguous durability classification. | Port the protocol shape: construct a storage-next `WalRecord`, let the format layer validate row facts, append the envelope through L4, then apply to L6. Do not port old WAL bytes. |
+| `crates/storage/src/durability/commit_adapter.rs` | WAL-before-storage bridge and ambiguous durability classification. | Port the protocol shape: construct a storage-next `WalRecord`, let the format layer validate row facts, append the record through L4, then apply to L6. L4 owns envelope framing. Do not port old WAL bytes. |
 | `crates/storage/src/durability/payload.rs` | Current commit payload construction. | Replace with storage-next row-native `WalRecord` construction. The `WalCommitPayload` remains a format-layer detail validated by `WalRecord::new`. |
 | `crates/storage/src/durability/format/wal_record.rs` | Old durable commit record envelope. | Use as behavioral evidence only; storage-next already owns WAL record format. |
 | `crates/storage/src/segmented/mod.rs` | `apply_writes_atomic`, `apply_recovery_atomic`, version tracking, timestamp preservation. | Split L6 apply mechanics from L7 commit protocol and L8 replay orchestration. |
@@ -260,7 +260,7 @@ L7-Durable adds local durability to the already-defined commit semantics.
 It includes:
 
 1. `WalRecord` construction from stamped storage rows;
-2. `WalRecordEnvelope` append through L4;
+2. `WalRecord` append through L4, where L4 owns envelope framing;
 3. `standard` and `always` durability modes;
 4. WAL-before-visible ordering;
 5. clean WAL failure classification;
@@ -348,7 +348,7 @@ allocate commit version
 allocate commit timestamp
 stamp rows
 construct WalRecord through the format layer
-append WalRecordEnvelope through L4 using selected durability policy
+append WalRecord through L4 using selected durability policy
 apply rows atomically through L6
 publish visible version
 release guard
@@ -358,8 +358,8 @@ return CommitOutcome { durable: true, visible: true }
 L7 must not reimplement WAL payload validation. The format layer already
 constructs the row-native payload and validates the WAL record's outer branch,
 version, and timestamp against every payload row. L7's responsibility is to pass
-stamped rows into `WalRecord::new`, encode the resulting envelope, and append it
-through L4.
+stamped rows into `WalRecord::new` and append that record through L4
+`WalService::append`, which owns record encoding and envelope framing.
 
 Durability policies:
 
@@ -497,7 +497,7 @@ Full open/recovery sequencing belongs to L8.
 
 | Slice | Title | Implementation scope | Test scope | Exit gate |
 |---|---|---|---|---|
-| `L7I` | WAL record and envelope integration | Construct `WalRecord` through the format layer, append the encoded `WalRecordEnvelope` through L4, select `standard`/`always`, and only then call L6 apply. | WAL outer-fact parity through the existing format validator, append failure leaves no visible rows, always-vs-standard outcome facts, WAL-before-visible ordering. | Durable local commits are WAL-backed and visible only after L4 success. |
+| `L7I` | WAL record and envelope integration | Construct `WalRecord` through the format layer, append through L4 WAL service envelope framing, select `standard`/`always`, and only then call L6 apply. Detailed plans: `docs/architecture/implementation-plans/M4/L7/l7i-wal-record-envelope-integration-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L7/l7i-wal-record-envelope-integration-test-plan.md`. | WAL outer-fact parity through the existing format validator, append failure leaves no visible rows, always-vs-standard outcome facts, WAL-before-visible ordering. | Durable local commits are WAL-backed and visible only after L4 success. |
 | `L7J` | Durable-but-not-visible classification | Add typed phase errors/outcomes for failures after WAL durability and before L6 visibility. Add write gate state for unresolved durable commits. | Inject L6 apply failure after WAL success, visibility publish failure, unresolved durable commit blocks new writes until L8/reconcile hook. | Ambiguous durable commits are explicit and cannot be silently retried as normal writes. |
 
 ### Part 3: L7-Replay + Closeout

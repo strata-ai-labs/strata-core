@@ -17,6 +17,7 @@ use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
 use super::commit_runtime_branch_guards::check_commit_runtime_branch_guard_contract;
 use super::commit_runtime_cache::check_commit_runtime_cache_contract;
 use super::commit_runtime_conflicts::check_commit_runtime_conflict_contract;
+use super::commit_runtime_durable::check_commit_runtime_durable_contract;
 use super::commit_runtime_outcome::check_commit_runtime_outcome_contract;
 use super::commit_runtime_timeline::check_commit_runtime_timeline_contract;
 use super::TestkitError;
@@ -129,6 +130,16 @@ pub struct CommitRuntimeScaffoldOutcome {
     cache_applied_above_visible_rejections: usize,
     cache_visible_allocator_mismatch_rejections: usize,
     cache_guard_release_after_failure: usize,
+    durable_standard_commits: usize,
+    durable_always_commits: usize,
+    durable_wal_payload_parity: usize,
+    durable_clean_wal_failures: usize,
+    durable_uncertain_wal_failures: usize,
+    durable_cache_mode_rejections: usize,
+    durable_policy_mismatches: usize,
+    durable_unforced_always_rejections: usize,
+    durable_guard_release_after_failure: usize,
+    durable_read_only_rejections: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -656,6 +667,56 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn cache_guard_release_after_failure_cases(self) -> usize {
         self.cache_guard_release_after_failure
     }
+
+    /// Number of standard durable commit cases exercised.
+    pub const fn durable_standard_commit_cases(self) -> usize {
+        self.durable_standard_commits
+    }
+
+    /// Number of always-durable commit cases exercised.
+    pub const fn durable_always_commit_cases(self) -> usize {
+        self.durable_always_commits
+    }
+
+    /// Number of durable WAL payload parity cases exercised.
+    pub const fn durable_wal_payload_parity_cases(self) -> usize {
+        self.durable_wal_payload_parity
+    }
+
+    /// Number of clean WAL failure cases exercised.
+    pub const fn durable_clean_wal_failure_cases(self) -> usize {
+        self.durable_clean_wal_failures
+    }
+
+    /// Number of uncertain WAL failure cases exercised.
+    pub const fn durable_uncertain_wal_failure_cases(self) -> usize {
+        self.durable_uncertain_wal_failures
+    }
+
+    /// Number of durable-executor cache-mode rejection cases exercised.
+    pub const fn durable_cache_mode_rejection_cases(self) -> usize {
+        self.durable_cache_mode_rejections
+    }
+
+    /// Number of WAL durability policy mismatch cases exercised.
+    pub const fn durable_policy_mismatch_cases(self) -> usize {
+        self.durable_policy_mismatches
+    }
+
+    /// Number of always-durable unforced append rejection cases exercised.
+    pub const fn durable_unforced_always_rejection_cases(self) -> usize {
+        self.durable_unforced_always_rejections
+    }
+
+    /// Number of guard-release-after-durable-failure cases exercised.
+    pub const fn durable_guard_release_after_failure_cases(self) -> usize {
+        self.durable_guard_release_after_failure
+    }
+
+    /// Number of read-only durable executor rejection cases exercised.
+    pub const fn durable_read_only_rejection_cases(self) -> usize {
+        self.durable_read_only_rejections
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -704,6 +765,7 @@ pub fn check_commit_runtime_scaffold_contract(
     absorb_conflict_contract(script, &mut outcome)?;
     absorb_timeline_contract(script, &mut outcome)?;
     absorb_cache_contract(script, &mut outcome)?;
+    absorb_durable_contract(script, &mut outcome)?;
 
     Ok(outcome)
 }
@@ -852,6 +914,24 @@ fn absorb_cache_contract(
     outcome.cache_visible_allocator_mismatch_rejections +=
         cache_contract.visible_allocator_mismatch_rejections;
     outcome.cache_guard_release_after_failure += cache_contract.guard_release_after_failure;
+    Ok(())
+}
+
+fn absorb_durable_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let durable_contract = check_commit_runtime_durable_contract(script)?;
+    outcome.durable_standard_commits += durable_contract.standard_commits;
+    outcome.durable_always_commits += durable_contract.always_commits;
+    outcome.durable_wal_payload_parity += durable_contract.wal_payload_parity;
+    outcome.durable_clean_wal_failures += durable_contract.clean_wal_failures;
+    outcome.durable_uncertain_wal_failures += durable_contract.uncertain_wal_failures;
+    outcome.durable_cache_mode_rejections += durable_contract.cache_mode_rejections;
+    outcome.durable_policy_mismatches += durable_contract.policy_mismatches;
+    outcome.durable_unforced_always_rejections += durable_contract.unforced_always_rejections;
+    outcome.durable_guard_release_after_failure += durable_contract.guard_release_after_failure;
+    outcome.durable_read_only_rejections += durable_contract.read_only_rejections;
     Ok(())
 }
 

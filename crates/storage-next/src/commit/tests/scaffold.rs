@@ -237,6 +237,18 @@ fn commit_runtime_error_variants_are_constructible() {
             commit_version: CommitVersion::new(3),
             reason: "visible publication failed",
         },
+        CommitRuntimeError::DurabilityUncertain {
+            branch_id: branch,
+            commit_version: CommitVersion::new(4),
+            reason: "wal sync failed",
+            source: None,
+        },
+        CommitRuntimeError::DurableButNotVisible {
+            branch_id: branch,
+            commit_version: CommitVersion::new(5),
+            reason: "branch apply failed",
+            source: None,
+        },
         CommitRuntimeError::DurabilityUnavailable {
             reason: "wal writer halted",
         },
@@ -283,10 +295,20 @@ fn commit_runtime_error_source_chain_is_preserved() {
         "branch state rejected commit rows",
         WrappedSource,
     );
+    let uncertain = CommitRuntimeError::durability_uncertain_with(
+        branch_id(202),
+        CommitVersion::new(7),
+        "wal sync failed",
+        WrappedSource,
+    );
     let format_err = CommitRuntimeError::lower_layer(CommitLowerLayer::WalFormat, "decode failed");
 
     assert_eq!(
         err.source().map(ToString::to_string),
+        Some("wrapped source".to_owned())
+    );
+    assert_eq!(
+        uncertain.source().map(ToString::to_string),
         Some("wrapped source".to_owned())
     );
     assert!(format_err.to_string().contains("wal format"));

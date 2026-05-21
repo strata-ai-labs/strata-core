@@ -3,6 +3,7 @@ mod batch;
 mod branch_registry;
 mod cache;
 mod conflict;
+mod durable;
 mod guard;
 mod outcome;
 mod scaffold;
@@ -15,17 +16,20 @@ use super::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchReadViewConflictSource,
     CommitBranchRegistry, CommitBranchState, CommitCacheRuntime, CommitCasFact, CommitConflict,
     CommitConflictKind, CommitConflictReadSource, CommitConflictValidationMode,
-    CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitExpiry,
-    CommitFactAllocation, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
-    CommitMutation, CommitMutationCounts, CommitObservedVersion, CommitOrigin, CommitOutcome,
-    CommitOutcomeKind, CommitPhase, CommitReadFact, CommitReadOnlyDiagnostics, CommitReadSnapshot,
-    CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult,
-    CommitRuntimeStats, CommitStamp, CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup,
-    CommitTimelineMiss, CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView,
-    CommitTimestampAllocationSource, CommitTimestampGuard, CommitTimestampPolicy,
-    CommitTimestampSource, CommitValidationFacts, CommitVersionAllocator, CommitVisibilityFacts,
+    CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime,
+    CommitExpiry, CommitFactAllocation, CommitFactAllocator, CommitLowerLayer,
+    CommitManualTimestampSource, CommitMutation, CommitMutationCounts, CommitObservedVersion,
+    CommitOrigin, CommitOutcome, CommitOutcomeKind, CommitPhase, CommitReadFact,
+    CommitReadOnlyDiagnostics, CommitReadSnapshot, CommitRetentionHint, CommitRuntimeConfig,
+    CommitRuntimeError, CommitRuntimeResult, CommitRuntimeStats, CommitStamp, CommitTimelineEntry,
+    CommitTimelineFact, CommitTimelineLookup, CommitTimelineMiss, CommitTimelineRowKind,
+    CommitTimelineRows, CommitTimelineView, CommitTimestampAllocationSource, CommitTimestampGuard,
+    CommitTimestampPolicy, CommitTimestampSource, CommitValidationFacts, CommitVersionAllocator,
+    CommitVisibilityFacts, CommitWalAppendError, CommitWalAppendFacts, CommitWalAppender,
     ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker, COMMIT_TIMELINE_SPACE,
 };
+use crate::config::mode::DurabilityPolicy;
+use crate::format::WalRecord;
 use crate::row::{PhysicalKey, StorageSpaceId};
 use std::error::Error;
 use std::fmt;

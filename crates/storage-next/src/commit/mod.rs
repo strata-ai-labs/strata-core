@@ -14,6 +14,7 @@ mod branch_registry;
 mod cache;
 mod config;
 mod conflict;
+mod durable;
 mod error;
 mod facts;
 mod guard;
@@ -70,6 +71,13 @@ pub(crate) use config::{CommitReadOnlyDiagnostics, CommitRuntimeConfig};
 pub(crate) use conflict::{
     validate_commit_conflicts, CommitBranchReadViewConflictSource, CommitConflict,
     CommitConflictKind, CommitConflictReadSource, CommitConflictReport,
+};
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use durable::{
+    CommitDurableRuntime, CommitWalAppendError, CommitWalAppendFacts, CommitWalAppender,
 };
 #[cfg_attr(
     not(test),
