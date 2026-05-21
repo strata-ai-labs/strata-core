@@ -17,6 +17,7 @@ use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
 use super::commit_runtime_branch_guards::check_commit_runtime_branch_guard_contract;
 use super::commit_runtime_conflicts::check_commit_runtime_conflict_contract;
 use super::commit_runtime_outcome::check_commit_runtime_outcome_contract;
+use super::commit_runtime_timeline::check_commit_runtime_timeline_contract;
 use super::TestkitError;
 
 /// Summary of one generated commit-runtime scaffold contract check.
@@ -91,6 +92,26 @@ pub struct CommitRuntimeScaffoldOutcome {
     skip_mode_no_reads: usize,
     lower_layer_read_failures: usize,
     conflict_error_vocabulary: usize,
+    valid_timeline_entries: usize,
+    zero_timeline_version_rejections: usize,
+    timestamp_index_keys: usize,
+    version_index_keys: usize,
+    timeline_row_pairs: usize,
+    timeline_shared_commit_facts: usize,
+    timestamp_index_decodes: usize,
+    version_index_decodes: usize,
+    malformed_timeline_prefix_rejections: usize,
+    malformed_timeline_key_length_rejections: usize,
+    timeline_value_length_rejections: usize,
+    timeline_key_value_mismatch_rejections: usize,
+    timestamp_lookup_exact_matches: usize,
+    timestamp_lookup_between_matches: usize,
+    duplicate_timestamp_tiebreaks: usize,
+    version_timestamp_lookups: usize,
+    timeline_branch_isolations: usize,
+    timeline_row_order_independence: usize,
+    timeline_bounds_reports: usize,
+    timeline_caller_rejections: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -438,6 +459,106 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn conflict_error_vocabulary_cases(self) -> usize {
         self.conflict_error_vocabulary
     }
+
+    /// Number of valid timeline entry cases exercised.
+    pub const fn valid_timeline_entry_cases(self) -> usize {
+        self.valid_timeline_entries
+    }
+
+    /// Number of zero-version timeline entry rejection cases exercised.
+    pub const fn zero_timeline_version_rejection_cases(self) -> usize {
+        self.zero_timeline_version_rejections
+    }
+
+    /// Number of timestamp-index key cases exercised.
+    pub const fn timestamp_index_key_cases(self) -> usize {
+        self.timestamp_index_keys
+    }
+
+    /// Number of version-index key cases exercised.
+    pub const fn version_index_key_cases(self) -> usize {
+        self.version_index_keys
+    }
+
+    /// Number of two-row timeline construction cases exercised.
+    pub const fn timeline_row_pair_cases(self) -> usize {
+        self.timeline_row_pairs
+    }
+
+    /// Number of timeline shared commit-fact cases exercised.
+    pub const fn timeline_shared_commit_fact_cases(self) -> usize {
+        self.timeline_shared_commit_facts
+    }
+
+    /// Number of timestamp-index decode cases exercised.
+    pub const fn timestamp_index_decode_cases(self) -> usize {
+        self.timestamp_index_decodes
+    }
+
+    /// Number of version-index decode cases exercised.
+    pub const fn version_index_decode_cases(self) -> usize {
+        self.version_index_decodes
+    }
+
+    /// Number of malformed timeline prefix rejection cases exercised.
+    pub const fn malformed_timeline_prefix_rejection_cases(self) -> usize {
+        self.malformed_timeline_prefix_rejections
+    }
+
+    /// Number of malformed timeline key-length rejection cases exercised.
+    pub const fn malformed_timeline_key_length_rejection_cases(self) -> usize {
+        self.malformed_timeline_key_length_rejections
+    }
+
+    /// Number of timeline value-length rejection cases exercised.
+    pub const fn timeline_value_length_rejection_cases(self) -> usize {
+        self.timeline_value_length_rejections
+    }
+
+    /// Number of timeline key/value mismatch rejection cases exercised.
+    pub const fn timeline_key_value_mismatch_rejection_cases(self) -> usize {
+        self.timeline_key_value_mismatch_rejections
+    }
+
+    /// Number of exact timestamp lookup cases exercised.
+    pub const fn timestamp_lookup_exact_match_cases(self) -> usize {
+        self.timestamp_lookup_exact_matches
+    }
+
+    /// Number of between-timestamp lookup cases exercised.
+    pub const fn timestamp_lookup_between_match_cases(self) -> usize {
+        self.timestamp_lookup_between_matches
+    }
+
+    /// Number of duplicate timestamp tiebreak cases exercised.
+    pub const fn duplicate_timestamp_tiebreak_cases(self) -> usize {
+        self.duplicate_timestamp_tiebreaks
+    }
+
+    /// Number of version-to-timestamp lookup cases exercised.
+    pub const fn version_timestamp_lookup_cases(self) -> usize {
+        self.version_timestamp_lookups
+    }
+
+    /// Number of timeline branch isolation cases exercised.
+    pub const fn timeline_branch_isolation_cases(self) -> usize {
+        self.timeline_branch_isolations
+    }
+
+    /// Number of timeline row-order independence cases exercised.
+    pub const fn timeline_row_order_independence_cases(self) -> usize {
+        self.timeline_row_order_independence
+    }
+
+    /// Number of timeline bounds report cases exercised.
+    pub const fn timeline_bounds_report_cases(self) -> usize {
+        self.timeline_bounds_reports
+    }
+
+    /// Number of caller storage-owned timeline rejection cases exercised.
+    pub const fn timeline_caller_rejection_cases(self) -> usize {
+        self.timeline_caller_rejections
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
@@ -484,6 +605,7 @@ pub fn check_commit_runtime_scaffold_contract(
     absorb_outcome_contract(script, &mut outcome)?;
     absorb_branch_guard_contract(script, &mut outcome)?;
     absorb_conflict_contract(script, &mut outcome)?;
+    absorb_timeline_contract(script, &mut outcome)?;
 
     Ok(outcome)
 }
@@ -576,6 +698,36 @@ fn absorb_conflict_contract(
     outcome.skip_mode_no_reads += conflict_contract.skip_mode_no_reads;
     outcome.lower_layer_read_failures += conflict_contract.lower_layer_read_failures;
     outcome.conflict_error_vocabulary += conflict_contract.conflict_error_vocabulary;
+    Ok(())
+}
+
+fn absorb_timeline_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let timeline_contract = check_commit_runtime_timeline_contract(script)?;
+    outcome.valid_timeline_entries += timeline_contract.valid_entries;
+    outcome.zero_timeline_version_rejections += timeline_contract.zero_version_rejections;
+    outcome.timestamp_index_keys += timeline_contract.timestamp_index_keys;
+    outcome.version_index_keys += timeline_contract.version_index_keys;
+    outcome.timeline_row_pairs += timeline_contract.row_pairs;
+    outcome.timeline_shared_commit_facts += timeline_contract.shared_commit_facts;
+    outcome.timestamp_index_decodes += timeline_contract.timestamp_index_decodes;
+    outcome.version_index_decodes += timeline_contract.version_index_decodes;
+    outcome.malformed_timeline_prefix_rejections += timeline_contract.malformed_prefix_rejections;
+    outcome.malformed_timeline_key_length_rejections +=
+        timeline_contract.malformed_key_length_rejections;
+    outcome.timeline_value_length_rejections += timeline_contract.value_length_rejections;
+    outcome.timeline_key_value_mismatch_rejections +=
+        timeline_contract.key_value_mismatch_rejections;
+    outcome.timestamp_lookup_exact_matches += timeline_contract.timestamp_lookup_exact_matches;
+    outcome.timestamp_lookup_between_matches += timeline_contract.timestamp_lookup_between_matches;
+    outcome.duplicate_timestamp_tiebreaks += timeline_contract.duplicate_timestamp_tiebreaks;
+    outcome.version_timestamp_lookups += timeline_contract.version_timestamp_lookups;
+    outcome.timeline_branch_isolations += timeline_contract.branch_isolations;
+    outcome.timeline_row_order_independence += timeline_contract.row_order_independence;
+    outcome.timeline_bounds_reports += timeline_contract.bounds_reports;
+    outcome.timeline_caller_rejections += timeline_contract.caller_rejections;
     Ok(())
 }
 

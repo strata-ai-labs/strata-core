@@ -5,6 +5,7 @@ mod conflict;
 mod guard;
 mod outcome;
 mod scaffold;
+mod timeline;
 mod visibility;
 
 use super::{
@@ -18,9 +19,11 @@ use super::{
     CommitMutationCounts, CommitObservedVersion, CommitOrigin, CommitOutcome, CommitOutcomeKind,
     CommitPhase, CommitReadFact, CommitReadOnlyDiagnostics, CommitReadSnapshot,
     CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult,
-    CommitRuntimeStats, CommitStamp, CommitTimestampAllocationSource, CommitTimestampGuard,
-    CommitTimestampPolicy, CommitTimestampSource, CommitValidationFacts, CommitVersionAllocator,
-    CommitVisibilityFacts, ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker,
+    CommitRuntimeStats, CommitStamp, CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup,
+    CommitTimelineMiss, CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView,
+    CommitTimestampAllocationSource, CommitTimestampGuard, CommitTimestampPolicy,
+    CommitTimestampSource, CommitValidationFacts, CommitVersionAllocator, CommitVisibilityFacts,
+    ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker, COMMIT_TIMELINE_SPACE,
 };
 use crate::row::{PhysicalKey, StorageSpaceId};
 use std::error::Error;

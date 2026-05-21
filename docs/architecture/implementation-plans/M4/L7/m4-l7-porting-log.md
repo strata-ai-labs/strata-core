@@ -624,3 +624,106 @@ Verified for L7F:
 6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 7. `cargo fmt --package strata-storage-next --check`
 8. `git diff --check`
+
+## L7G: Commit Timeline Substrate
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+3. `docs/architecture/storage-next/storage-space-id-registry.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+5. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7g-commit-timeline-substrate-implementation-plan.md`
+7. `docs/architecture/implementation-plans/M4/L7/l7g-commit-timeline-substrate-test-plan.md`
+8. `crates/storage/src/txn/manager.rs`
+9. `crates/storage/src/segmented/mod.rs`
+10. `crates/storage-next/src/row/mod.rs`
+11. `crates/storage-next/src/format/key.rs`
+12. `crates/storage-next/src/commit/batch.rs`
+
+### Preserved As Behavior
+
+1. Commit versions remain monotonic storage facts allocated outside the
+   timeline substrate.
+2. Commit timestamps remain commit facts stamped onto rows.
+3. Timestamp reads continue to rely on storage commit facts rather than product
+   event-time payloads.
+4. Caller-supplied mutations into storage-owned row spaces remain rejected.
+
+### Intentionally Changed Or Added
+
+1. L7G adds an explicit storage-owned commit timeline row family under
+   `StorageSpaceId::COMMIT_TIMELINE`.
+2. One timeline entry creates exactly two rows: timestamp-to-version and
+   version-to-timestamp.
+3. Timestamp index keys include timestamp and commit version so equal
+   timestamps tie-break by greatest version.
+4. Timeline values duplicate key facts, allowing validators to reject
+   key/value/row-fact mismatches.
+5. `CommitTimelineView` builds branch-local retained timeline facts and skips
+   non-timeline rows without scanning user row histories.
+6. Timeline helpers are pure L7 row/fact helpers and do not call L6 mutation,
+   L4 WAL, backend, filesystem, or clock APIs.
+
+### Deferred By Owner Slice
+
+1. `L7H`: install timeline rows atomically with user rows in cache/no-WAL mode.
+2. `L7I`: include timeline rows in durable `WalRecord` payloads.
+3. `L7J`: classify durable-but-not-visible failures involving timeline rows.
+4. `L7K`: replay durable timeline rows without allocating new versions.
+5. `L7M`: fuzz target registration and expanded timeline corpora.
+6. `L8`: process-open recovery orchestration.
+7. `L9`: public timestamp selectors and branch-from-time APIs.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/timeline.rs`
+2. Direct timeline tests in `crates/storage-next/src/commit/tests/timeline.rs`
+3. Generated timeline checks in
+   `crates/storage-next/src/testkit/commit_runtime_timeline.rs`
+4. Generated counter assertions in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+5. Commit-runtime source guards include a timeline-specific boundary check for
+   `commit/timeline.rs` and reject L6, L4/WAL, backend, table, service,
+   filesystem, public API, and product-vocabulary leakage.
+
+### Sensitivity Probes
+
+Planned L7G probes:
+
+1. Omit timestamp-index row; missing-index direct/generated tests must fail.
+2. Omit version-index row; missing-index direct/generated tests must fail.
+3. Write timeline rows into an engine-owned storage-space id; malformed-row
+   tests must fail.
+4. Stamp timeline rows with a different commit version than the entry;
+   mismatched-row tests must fail.
+5. Stamp timeline rows with a different timestamp than the entry;
+   mismatched-row tests must fail.
+6. Sort duplicate timestamps by lowest version; duplicate-timestamp direct and
+   generated tests must fail.
+7. Resolve timestamp lookup across branch boundaries; branch-isolation tests
+   must fail.
+8. Trust timestamp-index value without checking key facts; key/value mismatch
+   tests must fail.
+9. Trust version-index key without checking row timestamp; mismatched-row tests
+   must fail.
+10. Accept tombstone timeline rows; malformed-row tests must fail.
+11. Let caller mutations target timeline storage space; caller-boundary tests
+    must fail.
+12. Import L6, WAL, backend, table, filesystem, or product APIs from
+    `commit/timeline.rs`; source guard tests must fail.
+
+### Command Evidence
+
+Verified for L7G:
+
+1. `cargo test -p strata-storage-next --locked --lib commit`
+2. `cargo test -p strata-storage-next --locked --lib commit::tests::timeline`
+3. `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_properties`
+4. `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test commit_runtime_properties`
+5. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+6. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+7. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+8. `cargo fmt --package strata-storage-next --check`
+9. `git diff --check`

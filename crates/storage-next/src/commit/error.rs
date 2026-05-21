@@ -31,6 +31,12 @@ pub(crate) enum CommitRuntimeError {
     InvalidValidationFacts {
         reason: &'static str,
     },
+    InvalidTimelineFact {
+        reason: &'static str,
+    },
+    TimelineConflict {
+        reason: &'static str,
+    },
     DuplicateMutationKey {
         space_id: StorageSpaceId,
     },
@@ -174,6 +180,11 @@ impl PartialEq for CommitRuntimeError {
                 Self::InvalidValidationFacts { reason: left },
                 Self::InvalidValidationFacts { reason: right },
             )
+            | (
+                Self::InvalidTimelineFact { reason: left },
+                Self::InvalidTimelineFact { reason: right },
+            )
+            | (Self::TimelineConflict { reason: left }, Self::TimelineConflict { reason: right })
             | (
                 Self::CommitQuiesceUnavailable { reason: left },
                 Self::CommitQuiesceUnavailable { reason: right },
@@ -336,6 +347,12 @@ impl fmt::Display for CommitRuntimeError {
             Self::InvalidValidationFacts { reason } => {
                 write!(formatter, "commit validation facts are invalid: {reason}")
             }
+            Self::InvalidTimelineFact { reason } => {
+                write!(formatter, "commit timeline fact is invalid: {reason}")
+            }
+            Self::TimelineConflict { reason } => {
+                write!(formatter, "commit timeline facts conflict: {reason}")
+            }
             Self::DuplicateMutationKey { space_id } => {
                 write!(
                     formatter,
@@ -480,6 +497,8 @@ impl Error for CommitRuntimeError {
             | Self::InvalidBatch { .. }
             | Self::InvalidMutation { .. }
             | Self::InvalidValidationFacts { .. }
+            | Self::InvalidTimelineFact { .. }
+            | Self::TimelineConflict { .. }
             | Self::DuplicateMutationKey { .. }
             | Self::BranchMismatch { .. }
             | Self::BranchAlreadyExists { .. }

@@ -18,6 +18,7 @@ mod facts;
 mod guard;
 mod outcome;
 mod result;
+mod timeline;
 mod visibility;
 
 #[allow(
@@ -103,6 +104,15 @@ pub(crate) use outcome::{
     )
 )]
 pub(crate) use result::CommitRuntimeResult;
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use timeline::{
+    CommitTimelineBounds, CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup,
+    CommitTimelineMiss, CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView,
+    COMMIT_TIMELINE_SPACE,
+};
 #[allow(
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"

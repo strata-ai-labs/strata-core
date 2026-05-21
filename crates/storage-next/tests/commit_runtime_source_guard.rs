@@ -70,6 +70,7 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
         "crate::backend",
         "crate::layout",
         "crate::object",
+        "crate::service",
         "crate::service::wal",
         "crate::format::wal",
         "crate::testkit",
@@ -191,6 +192,12 @@ fn commit_runtime_source_guard_catches_product_vocabulary() {
     assert!(contains_forbidden_product_vocabulary(
         "recover transaction IDs;"
     ));
+    assert!(contains_forbidden_product_vocabulary(
+        "query as_of timestamp;"
+    ));
+    assert!(contains_forbidden_product_vocabulary(
+        "let _: SessionContext;"
+    ));
 }
 
 #[test]
@@ -225,7 +232,11 @@ fn commit_runtime_source_guard_catches_forbidden_imports_and_public_surface() {
     ));
     assert!(contains_forbidden_substring(
         "use crate::service::wal::WalService;",
-        "crate::service::wal"
+        "crate::service"
+    ));
+    assert!(contains_forbidden_substring(
+        "use crate::service::manifest::DatabaseManifestService;",
+        "crate::service"
     ));
     assert!(contains_forbidden_substring(
         "use crate::format::wal::WalRecord;",
@@ -318,6 +329,23 @@ fn commit_runtime_source_guard_allows_owned_terms() {
     ));
 }
 
+#[test]
+fn commit_runtime_source_guard_pins_timeline_module_boundary() {
+    let root = common::crate_root();
+    let timeline = root.join("src/commit/timeline.rs");
+    let text = fs::read_to_string(&timeline).expect("read commit timeline source");
+
+    assert!(text.contains("use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};"));
+    assert!(text.contains("StorageSpaceId::COMMIT_TIMELINE"));
+    assert!(!contains_forbidden_storage_path_text_for_file(
+        &text, &timeline
+    ));
+    for line in text.lines() {
+        assert!(!contains_forbidden_product_vocabulary(line));
+        assert!(!contains_forbidden_backend_operation(line));
+    }
+}
+
 fn commit_runtime_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_rs_files(&root.join("src/commit"), &mut files);
@@ -376,6 +404,8 @@ fn contains_forbidden_product_vocabulary(line: &str) -> bool {
             "transaction-ids",
             "transaction_id",
             "transaction_ids",
+            "as_of",
+            "session",
         ]
         .iter()
         .any(|needle| lower.contains(needle))
@@ -426,6 +456,8 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
         "crate::{layout",
         "crate::object",
         "crate::{object",
+        "crate::service",
+        "crate::{service",
         "crate::service::wal",
         "crate::service::{wal",
         "crate::{service::wal",

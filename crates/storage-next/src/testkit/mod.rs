@@ -10,6 +10,7 @@ mod commit_runtime_allocator;
 mod commit_runtime_branch_guards;
 mod commit_runtime_conflicts;
 mod commit_runtime_outcome;
+mod commit_runtime_timeline;
 mod format_fuzz;
 mod integration_harness;
 mod quarantine_fuzz;
