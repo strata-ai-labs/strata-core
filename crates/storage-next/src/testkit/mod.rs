@@ -8,6 +8,7 @@ mod branch_lsm;
 mod commit_runtime;
 mod commit_runtime_allocator;
 mod commit_runtime_branch_guards;
+mod commit_runtime_conflicts;
 mod commit_runtime_outcome;
 mod format_fuzz;
 mod integration_harness;

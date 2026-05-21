@@ -15,11 +15,12 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::commit_runtime_allocator::check_commit_runtime_allocator_contract;
 use super::commit_runtime_branch_guards::check_commit_runtime_branch_guard_contract;
+use super::commit_runtime_conflicts::check_commit_runtime_conflict_contract;
 use super::commit_runtime_outcome::check_commit_runtime_outcome_contract;
 use super::TestkitError;
 
 /// Summary of one generated commit-runtime scaffold contract check.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommitRuntimeScaffoldOutcome {
     valid_config: usize,
     invalid_config: usize,
@@ -74,6 +75,22 @@ pub struct CommitRuntimeScaffoldOutcome {
     mutating_guard_rejected_during_quiesce: usize,
     read_only_allowed_during_quiesce: usize,
     guard_release_and_reacquire: usize,
+    read_present_matches: usize,
+    read_present_mismatches: usize,
+    read_present_becomes_missing: usize,
+    read_missing_matches: usize,
+    read_missing_becomes_present: usize,
+    cas_present_matches: usize,
+    cas_present_mismatches: usize,
+    cas_present_becomes_missing: usize,
+    cas_missing_matches: usize,
+    cas_missing_becomes_present: usize,
+    combined_read_before_cas: usize,
+    blind_put_no_conflicts: usize,
+    blind_delete_no_conflicts: usize,
+    skip_mode_no_reads: usize,
+    lower_layer_read_failures: usize,
+    conflict_error_vocabulary: usize,
 }
 
 impl CommitRuntimeScaffoldOutcome {
@@ -341,67 +358,93 @@ impl CommitRuntimeScaffoldOutcome {
     pub const fn guard_release_and_reacquire_cases(self) -> usize {
         self.guard_release_and_reacquire
     }
+
+    /// Number of read-set present match cases exercised.
+    pub const fn read_present_match_cases(self) -> usize {
+        self.read_present_matches
+    }
+
+    /// Number of read-set present mismatch cases exercised.
+    pub const fn read_present_mismatch_cases(self) -> usize {
+        self.read_present_mismatches
+    }
+
+    /// Number of read-set present-to-missing cases exercised.
+    pub const fn read_present_becomes_missing_cases(self) -> usize {
+        self.read_present_becomes_missing
+    }
+
+    /// Number of read-set missing match cases exercised.
+    pub const fn read_missing_match_cases(self) -> usize {
+        self.read_missing_matches
+    }
+
+    /// Number of read-set missing-to-present cases exercised.
+    pub const fn read_missing_becomes_present_cases(self) -> usize {
+        self.read_missing_becomes_present
+    }
+
+    /// Number of CAS present match cases exercised.
+    pub const fn cas_present_match_cases(self) -> usize {
+        self.cas_present_matches
+    }
+
+    /// Number of CAS present mismatch cases exercised.
+    pub const fn cas_present_mismatch_cases(self) -> usize {
+        self.cas_present_mismatches
+    }
+
+    /// Number of CAS present-to-missing cases exercised.
+    pub const fn cas_present_becomes_missing_cases(self) -> usize {
+        self.cas_present_becomes_missing
+    }
+
+    /// Number of CAS missing match cases exercised.
+    pub const fn cas_missing_match_cases(self) -> usize {
+        self.cas_missing_matches
+    }
+
+    /// Number of CAS missing-to-present cases exercised.
+    pub const fn cas_missing_becomes_present_cases(self) -> usize {
+        self.cas_missing_becomes_present
+    }
+
+    /// Number of combined read-before-CAS ordering cases exercised.
+    pub const fn combined_read_before_cas_cases(self) -> usize {
+        self.combined_read_before_cas
+    }
+
+    /// Number of blind put no-conflict cases exercised.
+    pub const fn blind_put_no_conflict_cases(self) -> usize {
+        self.blind_put_no_conflicts
+    }
+
+    /// Number of blind delete no-conflict cases exercised.
+    pub const fn blind_delete_no_conflict_cases(self) -> usize {
+        self.blind_delete_no_conflicts
+    }
+
+    /// Number of skip-mode no-read cases exercised.
+    pub const fn skip_mode_no_read_cases(self) -> usize {
+        self.skip_mode_no_reads
+    }
+
+    /// Number of lower-layer read failure cases exercised.
+    pub const fn lower_layer_read_failure_cases(self) -> usize {
+        self.lower_layer_read_failures
+    }
+
+    /// Number of conflict error vocabulary cases exercised.
+    pub const fn conflict_error_vocabulary_cases(self) -> usize {
+        self.conflict_error_vocabulary
+    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the commit runtime.
 pub fn check_commit_runtime_scaffold_contract(
     script: &[u8],
 ) -> Result<CommitRuntimeScaffoldOutcome, TestkitError> {
-    let mut outcome = CommitRuntimeScaffoldOutcome {
-        valid_config: 0,
-        invalid_config: 0,
-        phase_facts: 0,
-        visibility_facts: 0,
-        invalid_visibility_facts: 0,
-        error_displays: 0,
-        error_sources: 0,
-        stats: 0,
-        source_guard_fixtures: 0,
-        valid_batches: 0,
-        invalid_batches: 0,
-        duplicate_mutations: 0,
-        branch_mismatches: 0,
-        storage_owned_spaces: 0,
-        invalid_fact_cases: 0,
-        stamping_cases: 0,
-        expiry_rejections: 0,
-        stamping_rejections: 0,
-        version_allocations: 0,
-        version_catch_ups: 0,
-        version_overflows: 0,
-        generated_timestamps: 0,
-        clamped_timestamps: 0,
-        explicit_timestamps: 0,
-        invalid_explicit_timestamps: 0,
-        timestamp_source_failures: 0,
-        read_only_no_allocations: 0,
-        no_transaction_id_checks: 0,
-        read_only_outcomes: 0,
-        read_only_disabled_rejections: 0,
-        visible_tracker_initializations: 0,
-        visible_tracker_monotonic_publishes: 0,
-        visible_tracker_regression_rejections: 0,
-        outcome_invalid_visibility_facts: 0,
-        outcome_constructor_rejections: 0,
-        mutation_count_facts: 0,
-        cross_branch_read_only_facts: 0,
-        read_only_outcome_no_allocations: 0,
-        branch_registration_successes: 0,
-        duplicate_registration_rejections: 0,
-        missing_branch_rejections: 0,
-        deleting_branch_rejections: 0,
-        generation_exact_matches: 0,
-        generation_mismatches: 0,
-        generation_not_supplied: 0,
-        stale_generation_after_recreate: 0,
-        same_branch_guard_contentions: 0,
-        different_branch_simultaneous_guards: 0,
-        quiesce_start_successes: 0,
-        quiesce_rejected_with_active_guards: 0,
-        mutating_guard_rejected_during_quiesce: 0,
-        read_only_allowed_during_quiesce: 0,
-        guard_release_and_reacquire: 0,
-    };
+    let mut outcome = CommitRuntimeScaffoldOutcome::default();
 
     check_valid_config(script)?;
     outcome.valid_config += 1;
@@ -440,6 +483,7 @@ pub fn check_commit_runtime_scaffold_contract(
     absorb_allocator_contract(script, &mut outcome)?;
     absorb_outcome_contract(script, &mut outcome)?;
     absorb_branch_guard_contract(script, &mut outcome)?;
+    absorb_conflict_contract(script, &mut outcome)?;
 
     Ok(outcome)
 }
@@ -508,6 +552,30 @@ fn absorb_branch_guard_contract(
     outcome.read_only_allowed_during_quiesce +=
         branch_guard_contract.read_only_allowed_during_quiesce;
     outcome.guard_release_and_reacquire += branch_guard_contract.guard_release_and_reacquire;
+    Ok(())
+}
+
+fn absorb_conflict_contract(
+    script: &[u8],
+    outcome: &mut CommitRuntimeScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let conflict_contract = check_commit_runtime_conflict_contract(script)?;
+    outcome.read_present_matches += conflict_contract.read_present_matches;
+    outcome.read_present_mismatches += conflict_contract.read_present_mismatches;
+    outcome.read_present_becomes_missing += conflict_contract.read_present_becomes_missing;
+    outcome.read_missing_matches += conflict_contract.read_missing_matches;
+    outcome.read_missing_becomes_present += conflict_contract.read_missing_becomes_present;
+    outcome.cas_present_matches += conflict_contract.cas_present_matches;
+    outcome.cas_present_mismatches += conflict_contract.cas_present_mismatches;
+    outcome.cas_present_becomes_missing += conflict_contract.cas_present_becomes_missing;
+    outcome.cas_missing_matches += conflict_contract.cas_missing_matches;
+    outcome.cas_missing_becomes_present += conflict_contract.cas_missing_becomes_present;
+    outcome.combined_read_before_cas += conflict_contract.combined_read_before_cas;
+    outcome.blind_put_no_conflicts += conflict_contract.blind_put_no_conflicts;
+    outcome.blind_delete_no_conflicts += conflict_contract.blind_delete_no_conflicts;
+    outcome.skip_mode_no_reads += conflict_contract.skip_mode_no_reads;
+    outcome.lower_layer_read_failures += conflict_contract.lower_layer_read_failures;
+    outcome.conflict_error_vocabulary += conflict_contract.conflict_error_vocabulary;
     Ok(())
 }
 

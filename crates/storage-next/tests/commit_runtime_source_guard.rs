@@ -67,7 +67,6 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
         "mmap",
         "memmap",
         "crate::table",
-        "crate::branch",
         "crate::backend",
         "crate::layout",
         "crate::object",
@@ -87,12 +86,15 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
     for file in commit_runtime_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read commit runtime source");
         assert!(
-            !contains_forbidden_storage_path(&text),
+            !contains_forbidden_storage_path_text_for_file(&text, &file),
             "{} uses forbidden lower-layer bypass or IO path",
             file.strip_prefix(&root).unwrap_or(&file).display()
         );
         for (line_number, line) in text.lines().enumerate() {
             for needle in forbidden_substrings {
+                if needle == "crate::branch" && is_allowed_branch_read_view_line(&file, line) {
+                    continue;
+                }
                 assert!(
                     !line.contains(needle),
                     "{}:{} uses forbidden lower-layer bypass or IO API {needle:?}: {line}",
@@ -101,7 +103,7 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
                 );
             }
             assert!(
-                !contains_forbidden_storage_path(line),
+                !contains_forbidden_storage_path_for_file(line, &file),
                 "{}:{} uses forbidden lower-layer bypass or IO path: {line}",
                 file.strip_prefix(&root).unwrap_or(&file).display(),
                 line_number + 1
@@ -231,6 +233,22 @@ fn commit_runtime_source_guard_catches_forbidden_imports_and_public_surface() {
     ));
     assert!(contains_forbidden_storage_path(
         "use crate::{branch::BranchState};"
+    ));
+    assert!(!contains_forbidden_storage_path_for_file(
+        "use crate::branch::BranchReadView;",
+        Path::new("src/commit/conflict.rs")
+    ));
+    assert!(contains_forbidden_storage_path_for_file(
+        "use crate::branch::BranchLocalState;",
+        Path::new("src/commit/conflict.rs")
+    ));
+    assert!(contains_forbidden_storage_path_for_file(
+        "use crate::branch::*;",
+        Path::new("src/commit/conflict.rs")
+    ));
+    assert!(contains_forbidden_storage_path_for_file(
+        "use crate::branch::BranchCompactionRequest;",
+        Path::new("src/commit/conflict.rs")
     ));
     assert!(contains_forbidden_storage_path(
         "use crate::format::{wal::WalRecord};"
@@ -370,6 +388,29 @@ fn contains_forbidden_substring(line: &str, needle: &str) -> bool {
 }
 
 fn contains_forbidden_storage_path(line: &str) -> bool {
+    contains_forbidden_storage_path_for_file(line, Path::new("src/commit/other.rs"))
+}
+
+fn contains_forbidden_storage_path_text_for_file(text: &str, file: &Path) -> bool {
+    let filtered = text
+        .lines()
+        .filter(|line| !is_allowed_branch_read_view_line(file, line))
+        .collect::<String>();
+    contains_forbidden_storage_path_for_file(&filtered, file)
+}
+
+fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
+    if is_allowed_branch_read_view_line(file, line) {
+        let compact: String = line
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let without_allowed = compact
+            .replace("usecrate::branch::BranchReadView;", "")
+            .replace("crate::branch::BranchReadView", "");
+        return contains_forbidden_storage_path(&without_allowed);
+    }
+
     let compact: String = line
         .chars()
         .filter(|character| !character.is_whitespace())
@@ -400,6 +441,11 @@ fn contains_forbidden_storage_path(line: &str) -> bool {
     ]
     .iter()
     .any(|needle| compact.contains(needle))
+}
+
+fn is_allowed_branch_read_view_line(file: &Path, line: &str) -> bool {
+    file.file_name().is_some_and(|name| name == "conflict.rs")
+        && line.trim() == "use crate::branch::BranchReadView;"
 }
 
 fn contains_forbidden_backend_operation(line: &str) -> bool {

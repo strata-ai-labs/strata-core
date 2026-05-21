@@ -20,7 +20,7 @@ fn commit_runtime_property_harness_runs_scaffold_contract() {
     });
 
     runner
-        .run(&vec(any::<u8>(), 0..=66), |script| {
+        .run(&vec(any::<u8>(), 0..=79), |script| {
             let outcome = check_commit_runtime_scaffold_contract(&script)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             if outcome.valid_config_cases() == 0
@@ -76,6 +76,22 @@ fn commit_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.mutating_guard_rejected_during_quiesce_cases() == 0
                 || outcome.read_only_allowed_during_quiesce_cases() == 0
                 || outcome.guard_release_and_reacquire_cases() == 0
+                || outcome.read_present_match_cases() == 0
+                || outcome.read_present_mismatch_cases() == 0
+                || outcome.read_present_becomes_missing_cases() == 0
+                || outcome.read_missing_match_cases() == 0
+                || outcome.read_missing_becomes_present_cases() == 0
+                || outcome.cas_present_match_cases() == 0
+                || outcome.cas_present_mismatch_cases() == 0
+                || outcome.cas_present_becomes_missing_cases() == 0
+                || outcome.cas_missing_match_cases() == 0
+                || outcome.cas_missing_becomes_present_cases() == 0
+                || outcome.combined_read_before_cas_cases() == 0
+                || outcome.blind_put_no_conflict_cases() == 0
+                || outcome.blind_delete_no_conflict_cases() == 0
+                || outcome.skip_mode_no_read_cases() == 0
+                || outcome.lower_layer_read_failure_cases() == 0
+                || outcome.conflict_error_vocabulary_cases() == 0
             {
                 return Err(TestCaseError::fail(
                     "commit runtime scaffold contract did not exercise all categories",

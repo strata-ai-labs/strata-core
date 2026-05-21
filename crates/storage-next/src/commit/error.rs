@@ -1,5 +1,6 @@
 //! Commit-runtime error vocabulary.
 
+use super::{CommitConflict, CommitObservedVersion};
 use crate::row::StorageSpaceId;
 use std::error::Error;
 use std::fmt;
@@ -62,6 +63,9 @@ pub(crate) enum CommitRuntimeError {
     },
     CommitQuiesceUnavailable {
         reason: &'static str,
+    },
+    CommitConflict {
+        conflict: CommitConflict,
     },
     StorageOwnedMutationSpace {
         space_id: StorageSpaceId,
@@ -279,6 +283,14 @@ impl PartialEq for CommitRuntimeError {
                 },
             ) => left_branch == right_branch && left_generation == right_generation,
             (
+                Self::CommitConflict {
+                    conflict: left_conflict,
+                },
+                Self::CommitConflict {
+                    conflict: right_conflict,
+                },
+            ) => left_conflict == right_conflict,
+            (
                 Self::LowerLayer {
                     layer: left_layer,
                     reason: left_reason,
@@ -344,6 +356,19 @@ impl fmt::Display for CommitRuntimeError {
             | Self::BranchGenerationExhausted { .. }
             | Self::BranchGuardUnavailable { .. }
             | Self::CommitQuiesceUnavailable { .. } => format_branch_error(self, formatter),
+            Self::CommitConflict { conflict } => {
+                write!(
+                    formatter,
+                    "commit {:?} conflict for branch {} storage space 0x{:02x} key fingerprint 0x{:016x} user key bytes {}: expected {}, actual {}",
+                    conflict.kind(),
+                    conflict.branch_id(),
+                    conflict.storage_space_id().raw(),
+                    conflict.key_fingerprint(),
+                    conflict.user_key_len(),
+                    ObservedVersionDisplay(conflict.expected()),
+                    ObservedVersionDisplay(conflict.actual()),
+                )
+            }
             Self::StorageOwnedMutationSpace { space_id } => {
                 write!(
                     formatter,
@@ -425,6 +450,17 @@ fn format_branch_error(
     }
 }
 
+struct ObservedVersionDisplay(CommitObservedVersion);
+
+impl fmt::Display for ObservedVersionDisplay {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            CommitObservedVersion::Missing => formatter.write_str("missing"),
+            CommitObservedVersion::Present(version) => write!(formatter, "present({version})"),
+        }
+    }
+}
+
 impl Error for CommitRuntimeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -453,6 +489,7 @@ impl Error for CommitRuntimeError {
             | Self::BranchGenerationExhausted { .. }
             | Self::BranchGuardUnavailable { .. }
             | Self::CommitQuiesceUnavailable { .. }
+            | Self::CommitConflict { .. }
             | Self::StorageOwnedMutationSpace { .. }
             | Self::BranchUnavailable { .. }
             | Self::DurabilityUnavailable { .. }

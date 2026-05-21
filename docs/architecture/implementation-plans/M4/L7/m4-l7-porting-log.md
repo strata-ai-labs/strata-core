@@ -533,3 +533,94 @@ Verified for L7E:
 6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 7. `cargo fmt --package strata-storage-next --check`
 8. `git diff --check`
+
+## L7F: Conflict Validation
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+4. `docs/architecture/implementation-plans/M4/L7/l7f-conflict-validation-implementation-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7f-conflict-validation-test-plan.md`
+6. `crates/storage/src/txn/validation.rs`
+7. `crates/storage/src/txn/context.rs`
+8. `crates/storage-next/src/commit/batch.rs`
+9. `crates/storage-next/src/branch/read.rs`
+
+### Preserved As Behavior
+
+1. Read-set validation compares captured observed versions against the current
+   target branch read view.
+2. CAS validation compares expected versions against the current target branch
+   read view.
+3. Missing current rows are represented as `CommitObservedVersion::Missing`.
+4. Visible non-tombstone current rows are represented as
+   `CommitObservedVersion::Present(version)`.
+5. Tombstone-hidden rows map to missing through the L6 visible-row API.
+6. Blind puts and blind deletes do not conflict.
+7. Conflict validation mode `Skip` reads nothing.
+8. Lower-layer branch read failures are preserved as commit lower-layer errors
+   with source chains.
+
+### Intentionally Changed Or Retired
+
+1. L7F does not port public transaction sessions.
+2. L7F does not port product transaction ids.
+3. L7F does not claim serializable isolation; write skew remains possible.
+4. L7F does not implement read-your-writes staging overlays.
+5. L7F stores conflict diagnostics as storage facts, including a stable key
+   fingerprint for same-length-key disambiguation, not product keys or row
+   values.
+
+### Deferred By Owner Slice
+
+1. `L7H`: cache/no-WAL commit path integrates admission, conflict validation,
+   allocation, L6 apply, and visibility.
+2. `L7I`: durable WAL path runs conflict validation before WAL append.
+3. `L7K`: recovery replay bypasses normal read-set/CAS validation.
+4. `L7M`: fuzz targets and larger generated conflict scripts.
+5. `L9`: public APIs that decide when to supply read-set and CAS facts.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/src/commit/conflict.rs`
+2. Direct conflict tests in `crates/storage-next/src/commit/tests/conflict.rs`
+3. Generated conflict checks in
+   `crates/storage-next/src/testkit/commit_runtime_conflicts.rs`
+4. Generated counter assertions in
+   `crates/storage-next/tests/commit_runtime_properties.rs`
+5. Narrow L7-to-L6 source-guard allowance for
+   `crate::branch::BranchReadView` only in `commit/conflict.rs`
+
+### Sensitivity Probes
+
+Planned L7F probes:
+
+1. Treat every read-set fact as matched; read-set mismatch tests must fail.
+2. Treat every CAS fact as matched; CAS mismatch tests must fail.
+3. Compare only present/missing and ignore version; present-version mismatch
+   tests must fail.
+4. Treat tombstone-hidden rows as present; tombstone-as-missing tests must
+   fail.
+5. Reject blind writes; blind put/delete tests must fail.
+6. Read the source in skip mode; skip no-read tests must fail.
+7. Validate CAS before read-set; combined-ordering tests must fail.
+8. Drop lower-layer source errors; source-chain tests must fail.
+9. Validate against a non-target branch view; branch mismatch source tests must
+   fail.
+10. Include row value bytes or user-key bytes in conflict display; vocabulary
+    and display tests must fail.
+
+### Command Evidence
+
+Verified for L7F:
+
+1. `cargo test -p strata-storage-next --locked --lib commit`
+2. `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_properties`
+3. `cargo test -p strata-storage-next --no-default-features --features testkit --locked --test commit_runtime_properties`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+5. `cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked`
+6. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+7. `cargo fmt --package strata-storage-next --check`
+8. `git diff --check`

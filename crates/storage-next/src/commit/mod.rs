@@ -12,6 +12,7 @@ mod allocator;
 mod batch;
 mod branch_registry;
 mod config;
+mod conflict;
 mod error;
 mod facts;
 mod guard;
@@ -55,6 +56,14 @@ pub(crate) use branch_registry::{
     )
 )]
 pub(crate) use config::{CommitReadOnlyDiagnostics, CommitRuntimeConfig};
+#[allow(
+    unused_imports,
+    reason = "commit scaffold exports define the local surface for later slices"
+)]
+pub(crate) use conflict::{
+    validate_commit_conflicts, CommitBranchReadViewConflictSource, CommitConflict,
+    CommitConflictKind, CommitConflictReadSource, CommitConflictReport,
+};
 #[cfg_attr(
     not(test),
     allow(
