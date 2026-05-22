@@ -110,7 +110,33 @@ fn lifecycle_capability_validator_stays_preflight_only() {
 }
 
 #[test]
+fn lifecycle_cache_runtime_stays_cache_only() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/cache.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle cache source");
+    assert!(
+        !contains_forbidden_cache_runtime_dependency_text(&text),
+        "lifecycle cache runtime imports durable service or object-layout dependencies"
+    );
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_cache_runtime_dependency(line),
+            "src/lifecycle/cache.rs:{} imports or calls forbidden cache runtime dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
+    assert_general_source_guard_fixtures();
+    assert_capability_preflight_fixtures();
+    assert_cache_runtime_fixtures();
+    assert_public_surface_fixtures();
+}
+
+fn assert_general_source_guard_fixtures() {
     assert!(contains_forbidden_import_or_io(
         "use strata_engine_next::StorageRuntime;"
     ));
@@ -170,6 +196,15 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert!(imports_lifecycle_text(
         "use crate::{\n    lifecycle::LifecycleState,\n};"
     ));
+    assert!(!contains_forbidden_product_vocabulary(
+        "BranchId CommitVersion StorageRow WalService RecoveryHealth MaintenanceTask"
+    ));
+    assert!(!contains_forbidden_import_or_io(
+        "RecoveryHealth MaintenanceTask CloseOutcome"
+    ));
+}
+
+fn assert_capability_preflight_fixtures() {
     assert!(contains_forbidden_capability_preflight_dependency(
         "use crate::service::WalService;"
     ));
@@ -185,16 +220,43 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert!(contains_forbidden_capability_preflight_dependency(
         "backend.acquire_writer_lock(name)?;"
     ));
+}
+
+fn assert_cache_runtime_fixtures() {
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "use crate::service::WalService;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency_text(
+        "use crate::{\n    layout::ObjectLayout,\n};"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.read_object(name)?;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.read_range(name, range)?;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.write_object(name, bytes)?;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.delete_object(name)?;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.list_prefix(prefix)?;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.object_metadata(name)?;"
+    ));
+    assert!(contains_forbidden_cache_runtime_dependency(
+        "backend.publish_object(name, bytes, mode)?;"
+    ));
+}
+
+fn assert_public_surface_fixtures() {
     assert!(is_public_surface_leak("pub struct LifecycleRuntime;"));
 
     assert!(!is_public_surface_leak(
         "pub(crate) struct LifecycleRuntime;"
-    ));
-    assert!(!contains_forbidden_product_vocabulary(
-        "BranchId CommitVersion StorageRow WalService RecoveryHealth MaintenanceTask"
-    ));
-    assert!(!contains_forbidden_import_or_io(
-        "RecoveryHealth MaintenanceTask CloseOutcome"
     ));
 }
 
@@ -358,6 +420,56 @@ fn contains_forbidden_capability_preflight_dependency_text(text: &str) -> bool {
         ]
         .iter()
         .any(|needle| compact.contains(needle))
+}
+
+fn contains_forbidden_cache_runtime_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "crate::service",
+        "crate::layout",
+        "crate::format",
+        "objectlayout",
+        "walservice",
+        "snapshotservice",
+        "databasemanifestservice",
+        "tablemanifestservice",
+        "quarantineservice",
+        "tableobjectservice",
+        "read_object(",
+        "read_range(",
+        "write_object(",
+        "delete_object(",
+        "list_prefix(",
+        "object_metadata(",
+        "acquire_writer_lock(",
+        "append_object(",
+        "sync_object(",
+        "publish_object(",
+        "conditional_create(",
+        "conditional_update(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_cache_runtime_dependency_text(text: &str) -> bool {
+    let compact: String = uncommented_text(text)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    contains_forbidden_cache_runtime_dependency(text)
+        || [
+            "crate::{service",
+            "crate::{layout",
+            "crate::{format",
+            "usecrate::service",
+            "usecrate::layout",
+            "usecrate::format",
+        ]
+        .iter()
+        .any(|needle| compact.contains(needle))
+        || contains_forbidden_cache_runtime_dependency(&compact)
 }
 
 fn uncommented_text(text: &str) -> String {

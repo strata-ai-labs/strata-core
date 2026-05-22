@@ -39,6 +39,16 @@ pub struct LifecycleScaffoldOutcome {
     pub(super) object_candidate_create_update_cases: usize,
     pub(super) capability_preflight_cases: usize,
     pub(super) input_derived_capability_cases: usize,
+    pub(super) cache_open_accepted_cases: usize,
+    pub(super) cache_open_rejected_cases: usize,
+    pub(super) cache_baseline_cases: usize,
+    pub(super) cache_durable_absence_cases: usize,
+    pub(super) cache_commit_read_cases: usize,
+    pub(super) cache_close_cases: usize,
+    pub(super) cache_close_idempotence_cases: usize,
+    pub(super) cache_commit_after_close_rejected_cases: usize,
+    pub(super) cache_reopen_empty_cases: usize,
+    pub(super) input_derived_cache_cases: usize,
 }
 
 impl LifecycleScaffoldOutcome {
@@ -200,5 +210,55 @@ impl LifecycleScaffoldOutcome {
     /// Number of input-derived capability validation cases exercised.
     pub const fn input_derived_capability_cases(&self) -> usize {
         self.input_derived_capability_cases
+    }
+
+    /// Number of accepted cache lifecycle open cases exercised.
+    pub const fn cache_open_accepted_cases(&self) -> usize {
+        self.cache_open_accepted_cases
+    }
+
+    /// Number of rejected cache lifecycle open cases exercised.
+    pub const fn cache_open_rejected_cases(&self) -> usize {
+        self.cache_open_rejected_cases
+    }
+
+    /// Number of cache runtime baseline fact cases exercised.
+    pub const fn cache_baseline_cases(&self) -> usize {
+        self.cache_baseline_cases
+    }
+
+    /// Number of cache durable-service absence cases exercised.
+    pub const fn cache_durable_absence_cases(&self) -> usize {
+        self.cache_durable_absence_cases
+    }
+
+    /// Number of cache commit/read smoke cases exercised.
+    pub const fn cache_commit_read_cases(&self) -> usize {
+        self.cache_commit_read_cases
+    }
+
+    /// Number of cache close cases exercised.
+    pub const fn cache_close_cases(&self) -> usize {
+        self.cache_close_cases
+    }
+
+    /// Number of cache close idempotence cases exercised.
+    pub const fn cache_close_idempotence_cases(&self) -> usize {
+        self.cache_close_idempotence_cases
+    }
+
+    /// Number of cache commit-after-close rejection cases exercised.
+    pub const fn cache_commit_after_close_rejected_cases(&self) -> usize {
+        self.cache_commit_after_close_rejected_cases
+    }
+
+    /// Number of cache reopen-empty cases exercised.
+    pub const fn cache_reopen_empty_cases(&self) -> usize {
+        self.cache_reopen_empty_cases
+    }
+
+    /// Number of input-derived cache operation cases exercised.
+    pub const fn input_derived_cache_cases(&self) -> usize {
+        self.input_derived_cache_cases
     }
 }

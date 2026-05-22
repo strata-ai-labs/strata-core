@@ -128,6 +128,139 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8D - Cache Open And Close
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/state.rs`
+- `crates/storage-next/src/lifecycle/capability.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/branch/read.rs`
+- `crates/storage-next/src/commit/cache.rs`
+- `crates/storage-next/src/commit/branch_registry.rs`
+- `crates/storage-next/src/commit/allocator.rs`
+- `crates/storage-next/src/commit/visibility.rs`
+- `crates/storage-next/src/commit/durable_gate.rs`
+- `crates/storage-next/src/backend/memory.rs`
+- `crates/engine/src/database/recovery.rs`
+- `crates/engine/src/database/lifecycle.rs`
+- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/implementation-plans/M4/L8/l8d-cache-open-close-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8d-cache-open-close-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/cache.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/cache.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/outcome.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8d-cache-open-close-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8d-cache-open-close-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Cache mode opens as volatile storage state only.
+- Cache open composes existing L6 `BranchLocalState` and L7
+  `CommitCacheRuntime` rather than adding a bespoke row store or commit path.
+- Cache open runs L8C backend capability preflight before assembling branch or
+  commit runtime state.
+- Cache open reports `StorageMode::Cache`, `StorageOpenDisposition::Created`,
+  healthy recovery, no recovered durable visible version, and maintenance not
+  ready.
+- Cache close is a lifecycle state transition and does not perform durable
+  shutdown work.
+
+### Intentional Changes
+
+- Added `LifecycleCacheOpenRequest` to carry the cache open plan, initial
+  branch id, and branch generation as storage facts.
+- Added `LifecycleCacheRuntime<S>` for crate-private volatile cache runtime
+  state.
+- Added cache commit execution by constructing short-lived `CommitCacheRuntime`
+  instances over owned L6/L7 state.
+- Added cache read-view access through `BranchLocalState::capture_read_view`.
+- Added idempotent cache close using the L8B state machine.
+- Extended generated lifecycle counters with cache open, close, commit/read,
+  durable-absence, and reopen-empty categories.
+- Added a source guard that keeps `lifecycle/cache.rs` out of durable service,
+  layout, format, object publication, sync, append, and writer-lock APIs.
+
+### Retired From V1 L8D
+
+- Cache recovery from backend object inventory.
+- Cache-mode manifest, WAL, snapshot, table-object, and quarantine service
+  construction.
+- Cache-mode writer-lock acquisition or release.
+- Product open/close, freeze-hook, follower, IPC, primitive, or StrataHub
+  behavior.
+
+### Deferred By Owner Slice
+
+- Durable local service assembly and writer-lock acquisition: L8E.
+- Durable recovery orchestration: L8F.
+- L7 replay/bootstrap from durable facts: L8G.
+- Maintenance scheduling, flush, checkpoint, compaction, retention, quarantine,
+  repair, and full durable close: later L8 slices.
+- Public storage open/read/commit API wrapping: L9.
+
+### Tests Added
+
+- `cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims`
+- `cache_open_rejects_non_cache_plan_before_backend_preflight`
+- `cache_open_request_validation_rejects_invalid_plan_shapes`
+- `cache_open_runs_capability_preflight_without_backend_side_effects`
+- `cache_runtime_executes_cache_commit_and_reads_through_l6`
+- `cache_runtime_generated_timestamp_proves_zero_allocator_and_empty_timestamp_guard`
+- `cache_runtime_rejects_wrong_mode_batch_and_preserves_state`
+- `cache_runtime_rejects_read_only_wrong_branch_stale_generation_and_conflict`
+- `cache_close_is_idempotent_blocks_commits_and_reads_and_avoids_backend_calls`
+- `cache_close_without_commits_completes_and_preserves_diagnostic_facts`
+- `cache_reopen_starts_empty_even_when_prior_runtime_committed_rows`
+- `lifecycle_cache_runtime_stays_cache_only`
+- Generated lifecycle counters for cache open accepted/rejected, cache baseline,
+  durable absence, commit/read smoke, close, close idempotence,
+  commit-after-close rejection, reopen-empty, and input-derived cache operation
+  routes.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Skip cache capability preflight | Construct runtime before `validate_backend_capabilities_for_open` | `cache_open_runs_capability_preflight_without_backend_side_effects` |
+| Backend side effect during cache open | Call `list_prefix`, `read_object`, or writer-lock APIs | `cache_open_runs_capability_preflight_without_backend_side_effects` |
+| Cache durable recovery claim | Report recovered visible version or degraded health | `cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims` |
+| Durable service import | Import WAL/manifest/snapshot/table/quarantine services in `lifecycle/cache.rs` | `lifecycle_cache_runtime_stays_cache_only` |
+| Nonzero cache baseline | Start visible tracker above `CommitVersion::ZERO` | `cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims` |
+| Persistent cache reopen | Reuse prior volatile branch rows on reopen | `cache_reopen_starts_empty_even_when_prior_runtime_committed_rows` |
+| Post-close mutation | Allow commit or ordinary read after close | `cache_close_is_idempotent_blocks_commits_and_reads_and_avoids_backend_calls` |
+| Manual cache stamping | Bypass `CommitCacheRuntime` for user rows or timeline rows | `cache_runtime_executes_cache_commit_and_reads_through_l6` |
+
+### Verification
+
+Commands run for L8D:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::cache
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --all-features --locked --lib lifecycle
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_properties
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8C - Storage Mode Capability Validation
 
 Status: implemented

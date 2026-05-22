@@ -8,6 +8,7 @@
     )
 )]
 
+mod cache;
 mod capability;
 mod config;
 mod error;
@@ -17,6 +18,11 @@ mod outcome;
 mod result;
 mod state;
 
+#[allow(
+    unused_imports,
+    reason = "lifecycle cache runtime exports define the local surface for later slices"
+)]
+pub(crate) use cache::{LifecycleCacheOpenRequest, LifecycleCacheRuntime};
 #[allow(
     unused_imports,
     reason = "lifecycle scaffold exports define the local surface for later slices"

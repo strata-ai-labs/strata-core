@@ -69,4 +69,14 @@ fn all_categories_exercised(
         && outcome.object_candidate_create_update_cases() > 0
         && outcome.capability_preflight_cases() > 0
         && outcome.input_derived_capability_cases() > 0
+        && outcome.cache_open_accepted_cases() > 0
+        && outcome.cache_open_rejected_cases() > 0
+        && outcome.cache_baseline_cases() > 0
+        && outcome.cache_durable_absence_cases() > 0
+        && outcome.cache_commit_read_cases() > 0
+        && outcome.cache_close_cases() > 0
+        && outcome.cache_close_idempotence_cases() > 0
+        && outcome.cache_commit_after_close_rejected_cases() > 0
+        && outcome.cache_reopen_empty_cases() > 0
+        && outcome.input_derived_cache_cases() > 0
 }

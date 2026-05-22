@@ -1,5 +1,6 @@
 //! Lifecycle scaffold conformance helpers.
 
+mod cache;
 mod capability;
 mod outcome;
 
@@ -32,6 +33,7 @@ pub fn check_lifecycle_scaffold_contract(
     check_lifecycle_operation_admission(script, &mut outcome)?;
     check_open_plans(script, &mut outcome)?;
     capability::check_lifecycle_capability_contract(script, &mut outcome)?;
+    cache::check_lifecycle_cache_contract(script, &mut outcome)?;
     check_open_outcomes(script, &mut outcome)?;
     check_recovery_health(&mut outcome)?;
     check_maintenance_tasks(&mut outcome)?;
