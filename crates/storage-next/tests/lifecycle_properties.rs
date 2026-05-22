@@ -1,0 +1,53 @@
+//! Generated lifecycle scaffold property harness.
+
+#![deny(unsafe_code)]
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_runs_scaffold_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_scaffold_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=63), |script| {
+            let outcome = check_lifecycle_scaffold_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if !all_categories_exercised(&outcome) {
+                return Err(TestCaseError::fail(
+                    "lifecycle scaffold contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle scaffold property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn all_categories_exercised(
+    outcome: &strata_storage_next::testkit::LifecycleScaffoldOutcome,
+) -> bool {
+    outcome.valid_config_cases() > 0
+        && outcome.invalid_config_cases() > 0
+        && outcome.lifecycle_state_cases() > 0
+        && outcome.storage_mode_cases() > 0
+        && outcome.open_plan_cases() > 0
+        && outcome.open_outcome_cases() > 0
+        && outcome.recovery_health_cases() > 0
+        && outcome.maintenance_task_cases() > 0
+        && outcome.reclaim_fact_cases() > 0
+        && outcome.error_display_cases() > 0
+        && outcome.error_source_cases() > 0
+        && outcome.stats_cases() > 0
+        && outcome.source_guard_fixture_cases() > 0
+}

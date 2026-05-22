@@ -18,6 +18,7 @@ mod commit_runtime_script;
 mod commit_runtime_timeline;
 mod format_fuzz;
 mod integration_harness;
+mod lifecycle;
 mod quarantine_fuzz;
 mod service_fuzz;
 mod table_runtime;
@@ -48,6 +49,7 @@ pub use integration_harness::{
     run_storage_stress_harness, CrashRecoveryHarnessOutcome, ServiceFaultWindowHarnessOutcome,
     StorageStressHarnessOutcome,
 };
+pub use lifecycle::{check_lifecycle_scaffold_contract, LifecycleScaffoldOutcome};
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
