@@ -2,6 +2,7 @@
 
 mod cache;
 mod capability;
+mod durable;
 mod outcome;
 
 pub use outcome::LifecycleScaffoldOutcome;
@@ -34,6 +35,7 @@ pub fn check_lifecycle_scaffold_contract(
     check_open_plans(script, &mut outcome)?;
     capability::check_lifecycle_capability_contract(script, &mut outcome)?;
     cache::check_lifecycle_cache_contract(script, &mut outcome)?;
+    durable::check_lifecycle_durable_contract(script, &mut outcome)?;
     check_open_outcomes(script, &mut outcome)?;
     check_recovery_health(&mut outcome)?;
     check_maintenance_tasks(&mut outcome)?;

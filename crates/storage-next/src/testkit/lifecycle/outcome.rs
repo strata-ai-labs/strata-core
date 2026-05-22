@@ -49,6 +49,19 @@ pub struct LifecycleScaffoldOutcome {
     pub(super) cache_commit_after_close_rejected_cases: usize,
     pub(super) cache_reopen_empty_cases: usize,
     pub(super) input_derived_cache_cases: usize,
+    pub(super) durable_assembly_standard_cases: usize,
+    pub(super) durable_assembly_always_cases: usize,
+    pub(super) durable_assembly_rejected_cases: usize,
+    pub(super) durable_manifest_create_cases: usize,
+    pub(super) durable_manifest_existing_cases: usize,
+    pub(super) durable_writer_lock_failure_cases: usize,
+    pub(super) durable_manifest_identity_mismatch_cases: usize,
+    pub(super) durable_manifest_create_race_cases: usize,
+    pub(super) durable_manifest_publish_fault_cases: usize,
+    pub(super) durable_wal_open_failure_cases: usize,
+    pub(super) durable_recovering_admission_cases: usize,
+    pub(super) durable_no_recovery_side_effect_cases: usize,
+    pub(super) input_derived_durable_cases: usize,
 }
 
 impl LifecycleScaffoldOutcome {
@@ -260,5 +273,70 @@ impl LifecycleScaffoldOutcome {
     /// Number of input-derived cache operation cases exercised.
     pub const fn input_derived_cache_cases(&self) -> usize {
         self.input_derived_cache_cases
+    }
+
+    /// Number of durable-standard service assembly cases exercised.
+    pub const fn durable_assembly_standard_cases(&self) -> usize {
+        self.durable_assembly_standard_cases
+    }
+
+    /// Number of durable-always service assembly cases exercised.
+    pub const fn durable_assembly_always_cases(&self) -> usize {
+        self.durable_assembly_always_cases
+    }
+
+    /// Number of rejected durable assembly cases exercised.
+    pub const fn durable_assembly_rejected_cases(&self) -> usize {
+        self.durable_assembly_rejected_cases
+    }
+
+    /// Number of durable manifest create cases exercised.
+    pub const fn durable_manifest_create_cases(&self) -> usize {
+        self.durable_manifest_create_cases
+    }
+
+    /// Number of durable existing-manifest cases exercised.
+    pub const fn durable_manifest_existing_cases(&self) -> usize {
+        self.durable_manifest_existing_cases
+    }
+
+    /// Number of durable writer-lock failure cases exercised.
+    pub const fn durable_writer_lock_failure_cases(&self) -> usize {
+        self.durable_writer_lock_failure_cases
+    }
+
+    /// Number of durable manifest identity mismatch cases exercised.
+    pub const fn durable_manifest_identity_mismatch_cases(&self) -> usize {
+        self.durable_manifest_identity_mismatch_cases
+    }
+
+    /// Number of durable manifest create-race cases exercised.
+    pub const fn durable_manifest_create_race_cases(&self) -> usize {
+        self.durable_manifest_create_race_cases
+    }
+
+    /// Number of durable manifest publish-fault cases exercised.
+    pub const fn durable_manifest_publish_fault_cases(&self) -> usize {
+        self.durable_manifest_publish_fault_cases
+    }
+
+    /// Number of durable WAL open-failure cases exercised.
+    pub const fn durable_wal_open_failure_cases(&self) -> usize {
+        self.durable_wal_open_failure_cases
+    }
+
+    /// Number of durable recovering-state admission cases exercised.
+    pub const fn durable_recovering_admission_cases(&self) -> usize {
+        self.durable_recovering_admission_cases
+    }
+
+    /// Number of durable no-recovery-side-effect cases exercised.
+    pub const fn durable_no_recovery_side_effect_cases(&self) -> usize {
+        self.durable_no_recovery_side_effect_cases
+    }
+
+    /// Number of input-derived durable assembly cases exercised.
+    pub const fn input_derived_durable_cases(&self) -> usize {
+        self.input_derived_durable_cases
     }
 }

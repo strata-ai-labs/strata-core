@@ -11,6 +11,7 @@
 mod cache;
 mod capability;
 mod config;
+mod durable;
 mod error;
 mod facts;
 mod health;
@@ -37,6 +38,14 @@ pub(crate) use capability::{
 )]
 pub(crate) use config::{
     LifecycleCloseTimeoutPolicy, LifecycleConfig, LifecycleLossyRecoveryPolicy,
+};
+#[allow(
+    unused_imports,
+    reason = "durable lifecycle assembly exports define the local surface for recovery slices"
+)]
+pub(crate) use durable::{
+    LifecycleDurableAssemblyFacts, LifecycleDurableLocalOpenRequest, LifecycleDurableLocalServices,
+    LifecycleDurableLocalShell,
 };
 #[allow(
     unused_imports,

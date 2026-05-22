@@ -6,6 +6,7 @@ use strata_core_next::CommitVersion;
 
 mod cache;
 mod capability;
+mod durable;
 mod state;
 
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [

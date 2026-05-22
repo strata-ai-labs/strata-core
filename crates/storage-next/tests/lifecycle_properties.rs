@@ -79,4 +79,17 @@ fn all_categories_exercised(
         && outcome.cache_commit_after_close_rejected_cases() > 0
         && outcome.cache_reopen_empty_cases() > 0
         && outcome.input_derived_cache_cases() > 0
+        && outcome.durable_assembly_standard_cases() > 0
+        && outcome.durable_assembly_always_cases() > 0
+        && outcome.durable_assembly_rejected_cases() > 0
+        && outcome.durable_manifest_create_cases() > 0
+        && outcome.durable_manifest_existing_cases() > 0
+        && outcome.durable_writer_lock_failure_cases() > 0
+        && outcome.durable_manifest_identity_mismatch_cases() > 0
+        && outcome.durable_manifest_create_race_cases() > 0
+        && outcome.durable_manifest_publish_fault_cases() > 0
+        && outcome.durable_wal_open_failure_cases() > 0
+        && outcome.durable_recovering_admission_cases() > 0
+        && outcome.durable_no_recovery_side_effect_cases() > 0
+        && outcome.input_derived_durable_cases() > 0
 }

@@ -261,6 +261,172 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8E - Durable Open/Create Service Assembly
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/state.rs`
+- `crates/storage-next/src/lifecycle/capability.rs`
+- `crates/storage-next/src/backend/mod.rs`
+- `crates/storage-next/src/backend/local_fs.rs`
+- `crates/storage-next/src/layout/mod.rs`
+- `crates/storage-next/src/format/manifest.rs`
+- `crates/storage-next/src/service/manifest.rs`
+- `crates/storage-next/src/service/wal.rs`
+- `crates/storage-next/src/service/sidecar.rs`
+- `crates/storage-next/src/service/snapshot.rs`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/service/checkpoint.rs`
+- `crates/storage-next/src/service/quarantine.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/commit/allocator.rs`
+- `crates/storage-next/src/commit/branch_registry.rs`
+- `crates/storage-next/src/commit/visibility.rs`
+- `crates/storage-next/src/commit/durable_gate.rs`
+- `crates/engine/src/database/open.rs`
+- `crates/engine/src/database/recovery.rs`
+- `crates/engine/src/database/lifecycle.rs`
+- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/implementation-plans/M4/L8/l8e-durable-open-create-service-assembly-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8e-durable-open-create-service-assembly-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/durable.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/service/wal.rs`
+- `crates/storage-next/src/testkit/lifecycle/durable.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/outcome.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8e-durable-open-create-service-assembly-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8e-durable-open-create-service-assembly-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Durable local standard and durable local always assemble the same durable L4
+  service bundle while preserving `DurabilityPolicy::Standard` vs
+  `DurabilityPolicy::Always`.
+- Durable assembly runs L8C capability preflight before writer-lock acquisition
+  or durable object access.
+- Durable assembly acquires the backend writer guard through
+  `ObjectLayout::writer_lock()` and owns the guard in the returned shell.
+- Missing database manifest creates an initial durable manifest.
+- Existing database manifest loads without replacement and preserves snapshot,
+  snapshot-id, flush, and active-WAL recovery facts.
+- WAL opens on the manifest active segment.
+- The returned durable shell stays in `LifecycleState::Recovering`; ordinary
+  reads, commits, and ordinary maintenance are not admitted before L8F/L8G
+  finish recovery.
+
+### Intentional Changes
+
+- Added `LifecycleDurableLocalOpenRequest` for durable assembly inputs.
+- Added `LifecycleDurableAssemblyFacts` for manifest, writer-lock,
+  active-WAL, and durability policy facts.
+- Added `LifecycleDurableLocalServices<'a>` as the crate-private L4 service
+  bundle.
+- Added `LifecycleDurableLocalShell<'a, S>` as the recovery-stage shell.
+- Made `WalServiceConfig::validate` crate-visible so lifecycle can reject
+  invalid WAL config before publishing an initial manifest.
+- Extended generated lifecycle counters with durable standard/always assembly,
+  durable rejection, manifest create/open, manifest create-race, manifest
+  publish-fault, WAL-open failure, lock failure, identity mismatch,
+  recovering-state admission, no-recovery side effects, and input-derived
+  durable-mode routes.
+- Added a source guard that keeps `lifecycle/durable.rs` to assembly work and
+  blocks hardcoded writer-lock names, WAL record replay, checkpoint execution,
+  and quarantine/recovery calls in this slice.
+
+### Retired From V1 L8E
+
+- Product open policy, registry wiring, primitive reconstruction, IPC, and
+  external synchronization behavior.
+- Object-durable candidate production open.
+- Read-only/follower durable open.
+- Background WAL sync thread startup.
+
+### Deferred By Owner Slice
+
+- Snapshot, table, WAL-tail, and quarantine recovery orchestration: L8F.
+- L7 replay, allocator catch-up, visible-version restore, timeline validation,
+  and final `StorageOpenOutcome`: L8G.
+- Maintenance scheduling, flush, checkpoint, WAL truncation, compaction,
+  materialization, retention, quarantine mutation, purge, and repair: later L8
+  slices.
+- Durable close drain, final sync, and explicit writer-guard release: L8N.
+- Public open/read/commit wrapping: L9.
+
+### Tests Added
+
+- `durable_assembly_creates_manifest_opens_wal_and_remains_recovering`
+- `durable_assembly_loads_existing_manifest_and_preserves_recovery_facts`
+- `durable_request_rejects_non_durable_modes_without_backend_calls`
+- `durable_request_rejects_codec_mismatch_before_backend_calls`
+- `durable_request_rejects_invalid_wal_config_before_backend_calls`
+- `durable_capability_rejection_happens_before_writer_lock`
+- `durable_writer_lock_failure_happens_before_manifest_access`
+- `durable_manifest_identity_mismatch_rejects_before_wal_open`
+- `durable_manifest_codec_mismatch_rejects_before_wal_open`
+- `durable_manifest_publish_uncertainty_preserves_source_chain`
+- `durable_manifest_create_precondition_race_reloads_existing_manifest`
+- `durable_manifest_create_precondition_race_reloads_and_revalidates_identity`
+- `durable_existing_manifest_decode_failures_reject_before_wal_open`
+- `durable_wal_open_failures_are_typed_and_do_not_mark_open`
+- `durable_wal_header_database_mismatch_rejects_existing_segment`
+- `durable_localfs_writer_lock_excludes_second_shell_until_drop`
+- `lifecycle_durable_runtime_stays_assembly_only`
+- Generated lifecycle counters for durable standard/always assembly, durable
+  rejection, manifest create/open, manifest create-race, manifest
+  publish-fault, WAL-open failure, writer-lock failure, manifest identity
+  mismatch, recovering-state admission, no-recovery side effects, and
+  input-derived durable routes.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Skip capability preflight | Acquire writer guard before `validate_backend_capabilities_for_open` | `durable_capability_rejection_happens_before_writer_lock` |
+| Hardcode writer-lock object | Use `"locks/writer"` literal in lifecycle durable source | `lifecycle_durable_runtime_stays_assembly_only` |
+| Manifest before lock | Load manifest before writer guard acquisition | `durable_writer_lock_failure_happens_before_manifest_access` |
+| Reject missing manifest | Treat absent manifest as recovery failure | `durable_assembly_creates_manifest_opens_wal_and_remains_recovering` |
+| Replace existing manifest | Publish manifest during existing open | `durable_assembly_loads_existing_manifest_and_preserves_recovery_facts` |
+| Ignore database id mismatch | Continue after wrong manifest database id | `durable_manifest_identity_mismatch_rejects_before_wal_open` |
+| Ignore codec mismatch | Continue after wrong manifest codec id | `durable_manifest_codec_mismatch_rejects_before_wal_open` |
+| Ignore create-race identity | Treat precondition race as opened without reload validation | `durable_manifest_create_precondition_race_reloads_and_revalidates_identity` |
+| Accept corrupt manifest | Continue after malformed or future database manifest bytes | `durable_existing_manifest_decode_failures_reject_before_wal_open` |
+| Ignore WAL metadata failure | Continue after active WAL segment metadata failure | `durable_wal_open_failures_are_typed_and_do_not_mark_open` |
+| Ignore WAL header mismatch | Continue after active WAL segment database id mismatch | `durable_wal_header_database_mismatch_rejects_existing_segment` |
+| Open hardcoded WAL segment | Ignore manifest active WAL segment | `durable_assembly_loads_existing_manifest_and_preserves_recovery_facts` |
+| Drop writer guard early | Do not retain `BackendWriterGuard` in shell | `durable_assembly_creates_manifest_opens_wal_and_remains_recovering` |
+| Permit second local writer | Allow two durable local shells on the same localfs root | `durable_localfs_writer_lock_excludes_second_shell_until_drop` |
+| Mark shell open early | Transition directly to `Open` after service assembly | `durable_assembly_creates_manifest_opens_wal_and_remains_recovering` |
+| Collapse always to standard | Pass standard policy for durable always | `durable_assembly_loads_existing_manifest_and_preserves_recovery_facts` |
+| Collapse publish uncertainty | Map durability-unconfirmed publish to generic failure | `durable_manifest_publish_uncertainty_preserves_source_chain` |
+| Replay during assembly | Construct WAL records or replay runtime in L8E | `lifecycle_durable_runtime_stays_assembly_only` |
+
+### Verification
+
+Commands run for L8E:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::durable
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --all-features --locked --test object_layout_properties
+cargo test -p strata-storage-next --all-features --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8C - Storage Mode Capability Validation
 
 Status: implemented

@@ -249,7 +249,7 @@ pub(crate) struct BackendWriterGuard {
 
 impl BackendWriterGuard {
     #[cfg_attr(
-        not(feature = "localfs"),
+        all(not(feature = "localfs"), not(feature = "testkit"), not(test)),
         expect(
             dead_code,
             reason = "writer guards are only constructed by backends with single-writer support"
@@ -263,7 +263,14 @@ impl BackendWriterGuard {
     }
 
     #[cfg_attr(
-        not(feature = "localfs"),
+        any(test, feature = "testkit"),
+        allow(
+            dead_code,
+            reason = "test and testkit builds construct guard wrappers without always reading the lock object"
+        )
+    )]
+    #[cfg_attr(
+        all(not(feature = "localfs"), not(feature = "testkit"), not(test)),
         expect(
             dead_code,
             reason = "no-default builds only exercise the unsupported guard path"

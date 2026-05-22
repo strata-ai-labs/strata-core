@@ -60,7 +60,7 @@ impl WalServiceConfig {
         self.codec_id
     }
 
-    fn validate(self) -> WalServiceResult<()> {
+    pub(crate) fn validate(self) -> WalServiceResult<()> {
         if self.segment_size < MIN_SEGMENT_SIZE {
             Err(WalServiceError::InvalidConfig {
                 field: "segment_size",

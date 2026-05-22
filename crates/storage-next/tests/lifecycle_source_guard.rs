@@ -129,10 +129,26 @@ fn lifecycle_cache_runtime_stays_cache_only() {
 }
 
 #[test]
+fn lifecycle_durable_runtime_stays_assembly_only() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/durable.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle durable source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_durable_runtime_dependency(line),
+            "src/lifecycle/durable.rs:{} calls forbidden durable assembly dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
     assert_general_source_guard_fixtures();
     assert_capability_preflight_fixtures();
     assert_cache_runtime_fixtures();
+    assert_durable_runtime_fixtures();
     assert_public_surface_fixtures();
 }
 
@@ -249,6 +265,24 @@ fn assert_cache_runtime_fixtures() {
     ));
     assert!(contains_forbidden_cache_runtime_dependency(
         "backend.publish_object(name, bytes, mode)?;"
+    ));
+}
+
+fn assert_durable_runtime_fixtures() {
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "let name = \"locks/writer\";"
+    ));
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "CommitReplayRuntime::new();"
+    ));
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "WalRecord::new(version, branch, timestamp, payload);"
+    ));
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "checkpoint_service.checkpoint(request)?;"
+    ));
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "quarantine.load_inventory(branch, db, codec)?;"
     ));
 }
 
@@ -470,6 +504,24 @@ fn contains_forbidden_cache_runtime_dependency_text(text: &str) -> bool {
         .iter()
         .any(|needle| compact.contains(needle))
         || contains_forbidden_cache_runtime_dependency(&compact)
+}
+
+fn contains_forbidden_durable_runtime_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "\"locks/writer\"",
+        "commitreplay",
+        "walrecord",
+        ".checkpoint(",
+        "load_inventory(",
+        "repair_latest_tail(",
+        "delete_covered_segments(",
+        "list_snapshots(",
+        "open_reader(",
+        "execute_cache_commit(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn uncommented_text(text: &str) -> String {
