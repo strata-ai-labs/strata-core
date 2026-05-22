@@ -8,10 +8,16 @@ use strata_core_next::CommitVersion;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StorageOpenOutcome {
     mode: StorageMode,
-    opened_existing: bool,
+    disposition: StorageOpenDisposition,
     recovered_visible_version: Option<CommitVersion>,
     recovery_health: RecoveryHealth,
     maintenance_ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StorageOpenDisposition {
+    Created,
+    OpenedExisting,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,7 +49,7 @@ pub(crate) enum CloseOutcomeStatus {
 impl StorageOpenOutcome {
     pub(crate) fn new(
         mode: StorageMode,
-        opened_existing: bool,
+        disposition: StorageOpenDisposition,
         recovered_visible_version: Option<CommitVersion>,
         recovery_health: RecoveryHealth,
         maintenance_ready: bool,
@@ -53,9 +59,14 @@ impl StorageOpenOutcome {
                 reason: "cache mode cannot report recovered durable visibility",
             });
         }
+        if matches!(mode, StorageMode::Cache) && !recovery_health.is_healthy() {
+            return Err(LifecycleError::InvalidOpenPlan {
+                reason: "cache mode cannot report durable recovery degradation",
+            });
+        }
         Ok(Self {
             mode,
-            opened_existing,
+            disposition,
             recovered_visible_version,
             recovery_health,
             maintenance_ready,
@@ -66,8 +77,12 @@ impl StorageOpenOutcome {
         self.mode
     }
 
+    pub(crate) const fn disposition(&self) -> StorageOpenDisposition {
+        self.disposition
+    }
+
     pub(crate) const fn opened_existing(&self) -> bool {
-        self.opened_existing
+        matches!(self.disposition, StorageOpenDisposition::OpenedExisting)
     }
 
     pub(crate) const fn recovered_visible_version(&self) -> Option<CommitVersion> {

@@ -29,7 +29,7 @@ The suite must fail if L8A:
 
 Use these locations:
 
-1. `crates/storage-next/src/lifecycle/tests.rs` for module-local scaffold tests.
+1. `crates/storage-next/src/lifecycle/tests/mod.rs` for module-local scaffold tests.
 2. `crates/storage-next/tests/lifecycle_source_guard.rs` for production L8
    source-boundary scans.
 3. `crates/storage-next/tests/lifecycle_properties.rs` for generated scaffold

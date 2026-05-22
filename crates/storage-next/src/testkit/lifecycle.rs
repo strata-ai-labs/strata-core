@@ -4,10 +4,11 @@ use super::TestkitError;
 use crate::lifecycle::{
     CloseOutcome, CloseOutcomeStatus, ClosePhase, LifecycleCloseTimeoutPolicy, LifecycleCodecId,
     LifecycleConfig, LifecycleError, LifecycleLossyRecoveryPolicy, LifecycleLowerLayer,
-    LifecycleState, LifecycleStats, MaintenanceOutcome, MaintenanceOutcomeStatus,
-    MaintenanceTaskKind, QuarantineStage, RecoveryDegradationClass, RecoveryFault,
-    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, RetentionDecision, StorageMode,
-    StorageOpenOutcome, StorageOpenPlan,
+    LifecycleOperationKind, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleTransitionTrigger, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTaskKind,
+    QuarantineStage, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth,
+    RecoveryStrictness, RetentionDecision, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
+    StorageOpenPlan,
 };
 use std::error::Error;
 use std::fmt;
@@ -24,6 +25,14 @@ pub struct LifecycleScaffoldOutcome {
     invalid_config_cases: usize,
     lifecycle_state_cases: usize,
     storage_mode_cases: usize,
+    valid_transition_cases: usize,
+    invalid_transition_cases: usize,
+    operation_admission_accept_cases: usize,
+    operation_admission_reject_cases: usize,
+    close_retry_cases: usize,
+    closed_idempotence_cases: usize,
+    failed_state_sticky_cases: usize,
+    input_derived_state_cases: usize,
     open_plan_cases: usize,
     open_outcome_cases: usize,
     recovery_health_cases: usize,
@@ -54,6 +63,46 @@ impl LifecycleScaffoldOutcome {
     /// Number of storage mode cases exercised.
     pub const fn storage_mode_cases(&self) -> usize {
         self.storage_mode_cases
+    }
+
+    /// Number of valid lifecycle transition cases exercised.
+    pub const fn valid_transition_cases(&self) -> usize {
+        self.valid_transition_cases
+    }
+
+    /// Number of invalid lifecycle transition cases exercised.
+    pub const fn invalid_transition_cases(&self) -> usize {
+        self.invalid_transition_cases
+    }
+
+    /// Number of accepted operation-admission cases exercised.
+    pub const fn operation_admission_accept_cases(&self) -> usize {
+        self.operation_admission_accept_cases
+    }
+
+    /// Number of rejected operation-admission cases exercised.
+    pub const fn operation_admission_reject_cases(&self) -> usize {
+        self.operation_admission_reject_cases
+    }
+
+    /// Number of close retry cases exercised.
+    pub const fn close_retry_cases(&self) -> usize {
+        self.close_retry_cases
+    }
+
+    /// Number of closed-state idempotence cases exercised.
+    pub const fn closed_idempotence_cases(&self) -> usize {
+        self.closed_idempotence_cases
+    }
+
+    /// Number of failed-state stickiness cases exercised.
+    pub const fn failed_state_sticky_cases(&self) -> usize {
+        self.failed_state_sticky_cases
+    }
+
+    /// Number of input-derived state machine routes exercised.
+    pub const fn input_derived_state_cases(&self) -> usize {
+        self.input_derived_state_cases
     }
 
     /// Number of open plan cases exercised.
@@ -111,6 +160,8 @@ pub fn check_lifecycle_scaffold_contract(
     check_invalid_config(&mut outcome)?;
     check_lifecycle_states(&mut outcome)?;
     check_storage_modes(&mut outcome)?;
+    check_lifecycle_state_transitions(script, &mut outcome)?;
+    check_lifecycle_operation_admission(script, &mut outcome)?;
     check_open_plans(script, &mut outcome)?;
     check_open_outcomes(script, &mut outcome)?;
     check_recovery_health(&mut outcome)?;
@@ -197,6 +248,287 @@ fn check_storage_modes(outcome: &mut LifecycleScaffoldOutcome) -> Result<(), Tes
     Ok(())
 }
 
+fn check_lifecycle_state_transitions(
+    script: &[u8],
+    outcome: &mut LifecycleScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    check_valid_lifecycle_transitions(outcome)?;
+    check_failed_lifecycle_transitions(outcome)?;
+    check_invalid_lifecycle_transitions(outcome)?;
+    check_input_derived_lifecycle_transition(script, outcome)?;
+    Ok(())
+}
+
+fn check_valid_lifecycle_transitions(
+    outcome: &mut LifecycleScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    for (start, trigger, expected) in [
+        (
+            LifecycleState::New,
+            LifecycleTransitionTrigger::OpenRequested,
+            LifecycleState::Opening,
+        ),
+        (
+            LifecycleState::Opening,
+            LifecycleTransitionTrigger::CacheOpenReady,
+            LifecycleState::Open,
+        ),
+        (
+            LifecycleState::Opening,
+            LifecycleTransitionTrigger::DurableRecoveryRequired,
+            LifecycleState::Recovering,
+        ),
+        (
+            LifecycleState::Recovering,
+            LifecycleTransitionTrigger::RecoveryAccepted,
+            LifecycleState::Open,
+        ),
+        (
+            LifecycleState::Open,
+            LifecycleTransitionTrigger::CloseRequested,
+            LifecycleState::Closing,
+        ),
+        (
+            LifecycleState::Closing,
+            LifecycleTransitionTrigger::CloseCompleted,
+            LifecycleState::Closed,
+        ),
+        (
+            LifecycleState::Closing,
+            LifecycleTransitionTrigger::CloseRetried,
+            LifecycleState::Closing,
+        ),
+        (
+            LifecycleState::Closed,
+            LifecycleTransitionTrigger::CloseRetried,
+            LifecycleState::Closed,
+        ),
+    ] {
+        let mut machine = lifecycle_machine_in_state(start)?;
+        let transition = machine
+            .transition(trigger)
+            .map_err(|error| testkit_error(&error))?;
+        ensure(transition.from() == start, "transition lost source state")?;
+        ensure(
+            transition.to() == expected,
+            "transition reached wrong state",
+        )?;
+        ensure(machine.state() == expected, "machine state was not updated")?;
+        if matches!(trigger, LifecycleTransitionTrigger::CloseRetried) {
+            outcome.close_retry_cases += 1;
+        }
+        if start == LifecycleState::Closed {
+            ensure(
+                transition.is_idempotent(),
+                "closed close retry was not idempotent",
+            )?;
+            outcome.closed_idempotence_cases += 1;
+        }
+        outcome.valid_transition_cases += 1;
+    }
+    Ok(())
+}
+
+fn check_failed_lifecycle_transitions(
+    outcome: &mut LifecycleScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    for start in [
+        LifecycleState::Opening,
+        LifecycleState::Recovering,
+        LifecycleState::Closing,
+    ] {
+        let mut machine = lifecycle_machine_in_state(start)?;
+        let transition = machine
+            .transition(LifecycleTransitionTrigger::PhaseFailed {
+                reason: "phase failed",
+            })
+            .map_err(|error| testkit_error(&error))?;
+        let failure = transition
+            .failure()
+            .ok_or_else(|| TestkitError::new("failure transition did not record failure fact"))?;
+        ensure(
+            failure.failed_state() == start,
+            "failure transition lost failed state",
+        )?;
+        ensure(
+            machine.state() == LifecycleState::Failed,
+            "failure transition did not enter failed state",
+        )?;
+        ensure(
+            LifecycleStateMachine::admit_state(
+                LifecycleState::Failed,
+                LifecycleOperationKind::HealthQuery,
+            )
+            .is_allowed(),
+            "failed state rejected health query",
+        )?;
+        ensure(
+            !LifecycleStateMachine::admit_state(
+                LifecycleState::Failed,
+                LifecycleOperationKind::Commit,
+            )
+            .is_allowed(),
+            "failed state admitted commit",
+        )?;
+        outcome.valid_transition_cases += 1;
+        outcome.failed_state_sticky_cases += 1;
+    }
+    Ok(())
+}
+
+fn check_invalid_lifecycle_transitions(
+    outcome: &mut LifecycleScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    for (start, trigger) in [
+        (
+            LifecycleState::New,
+            LifecycleTransitionTrigger::CacheOpenReady,
+        ),
+        (
+            LifecycleState::New,
+            LifecycleTransitionTrigger::RecoveryAccepted,
+        ),
+        (
+            LifecycleState::Opening,
+            LifecycleTransitionTrigger::CloseCompleted,
+        ),
+        (
+            LifecycleState::Recovering,
+            LifecycleTransitionTrigger::CloseRequested,
+        ),
+        (
+            LifecycleState::Open,
+            LifecycleTransitionTrigger::DurableRecoveryRequired,
+        ),
+        (
+            LifecycleState::Closed,
+            LifecycleTransitionTrigger::OpenRequested,
+        ),
+        (
+            LifecycleState::Closed,
+            LifecycleTransitionTrigger::RecoveryAccepted,
+        ),
+        (
+            LifecycleState::Failed,
+            LifecycleTransitionTrigger::OpenRequested,
+        ),
+        (
+            LifecycleState::Failed,
+            LifecycleTransitionTrigger::CloseCompleted,
+        ),
+        (
+            LifecycleState::Failed,
+            LifecycleTransitionTrigger::CloseRetried,
+        ),
+        (
+            LifecycleState::New,
+            LifecycleTransitionTrigger::PhaseFailed { reason: "no phase" },
+        ),
+        (
+            LifecycleState::Open,
+            LifecycleTransitionTrigger::PhaseFailed {
+                reason: "open ordinary phase",
+            },
+        ),
+        (
+            LifecycleState::Closed,
+            LifecycleTransitionTrigger::PhaseFailed {
+                reason: "already closed",
+            },
+        ),
+        (
+            LifecycleState::Failed,
+            LifecycleTransitionTrigger::PhaseFailed {
+                reason: "already failed",
+            },
+        ),
+    ] {
+        let mut machine = lifecycle_machine_in_state(start)?;
+        let before = machine.state();
+        let error = machine
+            .transition(trigger)
+            .expect_err("invalid transition rejects");
+        ensure(
+            matches!(error, LifecycleError::InvalidLifecycleState { .. }),
+            "invalid transition did not return lifecycle-state error",
+        )?;
+        ensure(
+            machine.state() == before,
+            "invalid transition mutated state",
+        )?;
+        outcome.invalid_transition_cases += 1;
+    }
+    Ok(())
+}
+
+fn check_input_derived_lifecycle_transition(
+    script: &[u8],
+    outcome: &mut LifecycleScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let mut dynamic = lifecycle_machine_in_state(state_from_script(script_byte(script, 9)))?;
+    let trigger = trigger_from_script(script_byte(script, 10));
+    match dynamic.transition(trigger) {
+        Ok(_) => outcome.valid_transition_cases += 1,
+        Err(LifecycleError::InvalidLifecycleState { .. }) => {
+            outcome.invalid_transition_cases += 1;
+        }
+        Err(error) => return Err(testkit_error(&error)),
+    }
+    outcome.input_derived_state_cases += 1;
+    Ok(())
+}
+
+fn check_lifecycle_operation_admission(
+    script: &[u8],
+    outcome: &mut LifecycleScaffoldOutcome,
+) -> Result<(), TestkitError> {
+    let states = [
+        LifecycleState::New,
+        LifecycleState::Opening,
+        LifecycleState::Recovering,
+        LifecycleState::Open,
+        LifecycleState::Closing,
+        LifecycleState::Closed,
+        LifecycleState::Failed,
+    ];
+    let operations = [
+        LifecycleOperationKind::Open,
+        LifecycleOperationKind::OrdinaryRead,
+        LifecycleOperationKind::Commit,
+        LifecycleOperationKind::RecoveryStep,
+        LifecycleOperationKind::OrdinaryMaintenance,
+        LifecycleOperationKind::CloseRequiredDrain,
+        LifecycleOperationKind::HealthQuery,
+        LifecycleOperationKind::Close,
+        LifecycleOperationKind::CloseRetry,
+    ];
+    for state in states {
+        for operation in operations {
+            let admission = LifecycleStateMachine::admit_state(state, operation);
+            if admission.is_allowed() {
+                outcome.operation_admission_accept_cases += 1;
+            } else {
+                ensure(
+                    admission.rejection_reason().is_some(),
+                    "rejected admission did not preserve reason",
+                )?;
+                outcome.operation_admission_reject_cases += 1;
+            }
+        }
+    }
+
+    let state = state_from_script(script_byte(script, 11));
+    let operation = operation_from_script(script_byte(script, 12));
+    let admission = LifecycleStateMachine::admit_state(state, operation);
+    if admission.is_allowed() {
+        outcome.operation_admission_accept_cases += 1;
+    } else {
+        outcome.operation_admission_reject_cases += 1;
+    }
+    outcome.input_derived_state_cases += 1;
+    Ok(())
+}
+
 fn check_open_plans(
     script: &[u8],
     outcome: &mut LifecycleScaffoldOutcome,
@@ -244,7 +576,7 @@ fn check_open_outcomes(
     let version = CommitVersion::new(u64::from(script_byte(script, 3)) + 1);
     let open = StorageOpenOutcome::new(
         StorageMode::DurableLocalStandard,
-        true,
+        StorageOpenDisposition::OpenedExisting,
         Some(version),
         RecoveryHealth::Healthy,
         true,
@@ -258,7 +590,31 @@ fn check_open_outcomes(
         open.maintenance_ready(),
         "open outcome did not preserve readiness",
     )?;
-    outcome.open_outcome_cases += 1;
+    ensure(
+        open.opened_existing(),
+        "open outcome did not preserve open disposition",
+    )?;
+    let degraded = RecoveryHealth::degraded(
+        RecoveryDegradationClass::Telemetry,
+        vec![
+            RecoveryFault::new(RecoveryFaultKind::IoFailure, "cache recovery")
+                .map_err(|error| testkit_error(&error))?,
+        ],
+    )
+    .map_err(|error| testkit_error(&error))?;
+    let error = StorageOpenOutcome::new(
+        StorageMode::Cache,
+        StorageOpenDisposition::Created,
+        None,
+        degraded,
+        false,
+    )
+    .expect_err("cache degraded recovery rejects");
+    ensure(
+        matches!(error, LifecycleError::InvalidOpenPlan { .. }),
+        "cache degraded recovery did not return invalid open plan",
+    )?;
+    outcome.open_outcome_cases += 2;
     Ok(())
 }
 
@@ -420,6 +776,98 @@ fn check_source_guard_fixtures(outcome: &mut LifecycleScaffoldOutcome) -> Result
         outcome.source_guard_fixture_cases += 1;
     }
     Ok(())
+}
+
+fn lifecycle_machine_in_state(
+    state: LifecycleState,
+) -> Result<LifecycleStateMachine, TestkitError> {
+    let mut machine = LifecycleStateMachine::new();
+    match state {
+        LifecycleState::New => {}
+        LifecycleState::Opening => {
+            transition_machine(&mut machine, LifecycleTransitionTrigger::OpenRequested)?;
+        }
+        LifecycleState::Recovering => {
+            transition_machine(&mut machine, LifecycleTransitionTrigger::OpenRequested)?;
+            transition_machine(
+                &mut machine,
+                LifecycleTransitionTrigger::DurableRecoveryRequired,
+            )?;
+        }
+        LifecycleState::Open => {
+            transition_machine(&mut machine, LifecycleTransitionTrigger::OpenRequested)?;
+            transition_machine(&mut machine, LifecycleTransitionTrigger::CacheOpenReady)?;
+        }
+        LifecycleState::Closing => {
+            machine = lifecycle_machine_in_state(LifecycleState::Open)?;
+            transition_machine(&mut machine, LifecycleTransitionTrigger::CloseRequested)?;
+        }
+        LifecycleState::Closed => {
+            machine = lifecycle_machine_in_state(LifecycleState::Closing)?;
+            transition_machine(&mut machine, LifecycleTransitionTrigger::CloseCompleted)?;
+        }
+        LifecycleState::Failed => {
+            machine = lifecycle_machine_in_state(LifecycleState::Opening)?;
+            transition_machine(
+                &mut machine,
+                LifecycleTransitionTrigger::PhaseFailed {
+                    reason: "phase failed",
+                },
+            )?;
+        }
+    }
+    Ok(machine)
+}
+
+fn transition_machine(
+    machine: &mut LifecycleStateMachine,
+    trigger: LifecycleTransitionTrigger,
+) -> Result<(), TestkitError> {
+    machine
+        .transition(trigger)
+        .map(|_| ())
+        .map_err(|error| testkit_error(&error))
+}
+
+fn state_from_script(byte: u8) -> LifecycleState {
+    match byte % 7 {
+        0 => LifecycleState::New,
+        1 => LifecycleState::Opening,
+        2 => LifecycleState::Recovering,
+        3 => LifecycleState::Open,
+        4 => LifecycleState::Closing,
+        5 => LifecycleState::Closed,
+        _ => LifecycleState::Failed,
+    }
+}
+
+fn trigger_from_script(byte: u8) -> LifecycleTransitionTrigger {
+    match byte % 8 {
+        0 => LifecycleTransitionTrigger::OpenRequested,
+        1 => LifecycleTransitionTrigger::CacheOpenReady,
+        2 => LifecycleTransitionTrigger::DurableRecoveryRequired,
+        3 => LifecycleTransitionTrigger::RecoveryAccepted,
+        4 => LifecycleTransitionTrigger::CloseRequested,
+        5 => LifecycleTransitionTrigger::CloseCompleted,
+        6 => LifecycleTransitionTrigger::CloseRetried,
+        _ => LifecycleTransitionTrigger::PhaseFailed {
+            reason: "script failure",
+        },
+    }
+}
+
+fn operation_from_script(byte: u8) -> LifecycleOperationKind {
+    match byte % 9 {
+        0 => LifecycleOperationKind::Open,
+        1 => LifecycleOperationKind::OrdinaryRead,
+        2 => LifecycleOperationKind::Commit,
+        3 => LifecycleOperationKind::RecoveryStep,
+        4 => LifecycleOperationKind::OrdinaryMaintenance,
+        5 => LifecycleOperationKind::CloseRequiredDrain,
+        6 => LifecycleOperationKind::HealthQuery,
+        7 => LifecycleOperationKind::Close,
+        _ => LifecycleOperationKind::CloseRetry,
+    }
 }
 
 fn script_byte(script: &[u8], index: usize) -> u8 {

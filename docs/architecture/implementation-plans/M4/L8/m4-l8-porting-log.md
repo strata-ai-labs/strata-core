@@ -36,7 +36,7 @@ Status: implemented
 - `crates/storage-next/src/lifecycle/health.rs`
 - `crates/storage-next/src/lifecycle/outcome.rs`
 - `crates/storage-next/src/lifecycle/result.rs`
-- `crates/storage-next/src/lifecycle/tests.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
 - `crates/storage-next/src/testkit/lifecycle.rs`
 - `crates/storage-next/tests/lifecycle_properties.rs`
 - `crates/storage-next/tests/lifecycle_source_guard.rs`
@@ -95,7 +95,7 @@ Status: implemented
 
 ### Tests Added
 
-- Module-local scaffold tests in `src/lifecycle/tests.rs`.
+- Module-local scaffold tests in `src/lifecycle/tests/mod.rs`.
 - Source-boundary guard in `tests/lifecycle_source_guard.rs`.
 - Generated scaffold property harness in `tests/lifecycle_properties.rs`.
 - Hidden testkit route `check_lifecycle_scaffold_contract`.
@@ -116,6 +116,125 @@ Status: implemented
 ### Verification
 
 Commands to run for L8A:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
+## L8B - Lifecycle State And Open Plan
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
+- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/state.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/state.rs`
+- `crates/storage-next/src/testkit/lifecycle.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+
+### Preserved As Storage Vocabulary
+
+- Side-effect-free lifecycle state transitions for new, opening, recovering,
+  open, closing, closed, and failed.
+- Transition triggers for open requested, cache ready, durable recovery needed,
+  recovery accepted, close requested, close completed, close retried, and phase
+  failure.
+- Operation admission facts for open, ordinary read, commit, recovery step,
+  ordinary maintenance, close-required drain, health query, close, and close
+  retry.
+- Failure facts that preserve the failed storage phase and reason.
+- Close facts that distinguish requested, retry-pending, complete, and
+  already-closed idempotence.
+- Storage open disposition facts for created vs opened-existing outcomes.
+
+### Intentional Changes
+
+- `StorageOpenOutcome` now stores `StorageOpenDisposition` instead of a raw
+  boolean while keeping the derived `opened_existing()` getter.
+- Cache-mode open outcomes reject durable recovery degradation as well as
+  recovered durable visible versions.
+- State transition validation is centralized in `lifecycle/state.rs`; invalid
+  transitions return `LifecycleError::InvalidLifecycleState` without mutating
+  machine state.
+- Closed close retry is the only idempotent state transition in L8B.
+- Closed close and closed close retry are explicitly admitted as idempotent
+  operations; closing close retry remains retryable but not complete.
+- Direct lifecycle tests were split into `src/lifecycle/tests/mod.rs` and
+  `src/lifecycle/tests/state.rs` before the file grew past the local
+  maintainability threshold.
+
+### Retired From V1 L8B
+
+- Raw public open policy booleans in storage open outcome facts.
+- Any product API, engine handle, StrataHub, follower, or public maintenance
+  vocabulary in lifecycle state/admission code.
+- Any backend, service, WAL, manifest, snapshot, branch, commit, maintenance, or
+  close side effects in the L8B state layer.
+
+### Deferred By Owner Slice
+
+- Backend and service capability validation: L8C.
+- Cache-mode runtime open and close baseline: L8D.
+- Durable service assembly: L8E.
+- Recovery orchestration, WAL replay, and L7 replay/bootstrap: L8F-L8G.
+- Maintenance executor and task queue execution: L8H.
+- Close drain, durable sync, and guard release side effects: L8N.
+- Cross-slice fault, crash, fuzz, and closeout inventory: L8O-L8P.
+
+### Tests Added
+
+- `lifecycle_state_machine_initial_state_admits_only_open_and_health`
+- `lifecycle_state_machine_accepts_open_and_recovery_transitions`
+- `lifecycle_state_machine_accepts_close_and_retry_transitions`
+- `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state`
+- `lifecycle_operation_admission_matrix_is_state_specific`
+- `lifecycle_failure_facts_preserve_phase_and_reject_empty_reasons`
+- `lifecycle_close_retry_and_closed_idempotence_are_distinct`
+- Open-outcome validation coverage for cache durable recovery degradation.
+- Generated lifecycle scaffold counters for valid transitions, invalid
+  transitions, admission accepts, admission rejects, close retry,
+  closed-idempotence, failed-state stickiness, and input-derived state routes.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Transition skip | Allow `New + CacheOpenReady -> Open` | `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state` |
+| Recovery exposure | Allow ordinary read in `Recovering` | `lifecycle_operation_admission_matrix_is_state_specific` |
+| Commit outside open | Allow commit in `Opening` or `Closing` | `lifecycle_operation_admission_matrix_is_state_specific` |
+| Close false success | Treat `Closing + CloseRetried` as `Closed` | `lifecycle_close_retry_and_closed_idempotence_are_distinct` |
+| Failed-state loosened | Allow open or close retry in `Failed` | `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state` |
+| Empty failure reason | Accept `PhaseFailed { reason: "" }` | `lifecycle_failure_facts_preserve_phase_and_reject_empty_reasons` |
+| Cache degraded recovery | Accept degraded recovery health in cache mode | `storage_open_outcome_rejects_cache_durable_recovery_claims` |
+
+### Verification
+
+Commands to run for L8B:
 
 ```bash
 cargo test -p strata-storage-next --locked --lib lifecycle

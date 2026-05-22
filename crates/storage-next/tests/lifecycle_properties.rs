@@ -41,6 +41,14 @@ fn all_categories_exercised(
         && outcome.invalid_config_cases() > 0
         && outcome.lifecycle_state_cases() > 0
         && outcome.storage_mode_cases() > 0
+        && outcome.valid_transition_cases() > 0
+        && outcome.invalid_transition_cases() > 0
+        && outcome.operation_admission_accept_cases() > 0
+        && outcome.operation_admission_reject_cases() > 0
+        && outcome.close_retry_cases() > 0
+        && outcome.closed_idempotence_cases() > 0
+        && outcome.failed_state_sticky_cases() > 0
+        && outcome.input_derived_state_cases() > 0
         && outcome.open_plan_cases() > 0
         && outcome.open_outcome_cases() > 0
         && outcome.recovery_health_cases() > 0

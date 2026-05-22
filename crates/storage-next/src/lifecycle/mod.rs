@@ -14,6 +14,7 @@ mod facts;
 mod health;
 mod outcome;
 mod result;
+mod state;
 
 #[allow(
     unused_imports,
@@ -48,13 +49,22 @@ pub(crate) use health::{
 )]
 pub(crate) use outcome::{
     CloseOutcome, CloseOutcomeStatus, MaintenanceOutcome, MaintenanceOutcomeStatus,
-    StorageOpenOutcome,
+    StorageOpenDisposition, StorageOpenOutcome,
 };
 #[allow(
     unused_imports,
     reason = "lifecycle scaffold exports define the local surface for later slices"
 )]
 pub(crate) use result::LifecycleResult;
+#[allow(
+    unused_imports,
+    reason = "lifecycle state exports define the local surface for later slices"
+)]
+pub(crate) use state::{
+    LifecycleAdmissionEffect, LifecycleCloseFact, LifecycleFailureFact,
+    LifecycleOperationAdmission, LifecycleOperationKind, LifecycleStateMachine,
+    LifecycleTransitionEffect, LifecycleTransitionOutcome, LifecycleTransitionTrigger,
+};
 
 #[cfg(test)]
 mod tests;

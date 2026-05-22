@@ -3,6 +3,8 @@ use std::error::Error;
 use std::fmt;
 use strata_core_next::CommitVersion;
 
+mod state;
+
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [
     "Database::open",
     "OpenOptions",
@@ -177,6 +179,17 @@ fn storage_open_plan_validates_storage_mode_and_lossy_policy() {
         durable_always.storage_mode(),
         StorageMode::DurableLocalAlways
     );
+    let durable_always_lossy = StorageOpenPlan::new(
+        StorageMode::DurableLocalAlways,
+        LifecycleCodecId::identity(),
+        RecoveryStrictness::AllowExplicitLossyFallback,
+        lossy_config,
+    )
+    .expect("durable always lossy plan");
+    assert_eq!(
+        durable_always_lossy.recovery_policy(),
+        RecoveryStrictness::AllowExplicitLossyFallback
+    );
 
     let object_candidate = StorageOpenPlan::new(
         StorageMode::ObjectDurableCandidate,
@@ -188,6 +201,17 @@ fn storage_open_plan_validates_storage_mode_and_lossy_policy() {
     assert_eq!(
         object_candidate.storage_mode(),
         StorageMode::ObjectDurableCandidate
+    );
+    let object_candidate_lossy = StorageOpenPlan::new(
+        StorageMode::ObjectDurableCandidate,
+        LifecycleCodecId::identity(),
+        RecoveryStrictness::AllowExplicitLossyFallback,
+        lossy_config,
+    )
+    .expect("object durable candidate lossy plan");
+    assert_eq!(
+        object_candidate_lossy.recovery_policy(),
+        RecoveryStrictness::AllowExplicitLossyFallback
     );
 
     assert_eq!(
@@ -237,48 +261,120 @@ fn lifecycle_codec_id_rejects_invalid_values() {
 }
 
 #[test]
-fn storage_open_outcome_reports_storage_facts() {
-    let outcome = StorageOpenOutcome::new(
+fn storage_open_outcome_reports_durable_storage_facts() {
+    let durable_always = StorageOpenOutcome::new(
         StorageMode::DurableLocalAlways,
-        true,
+        StorageOpenDisposition::OpenedExisting,
         Some(CommitVersion::new(42)),
         RecoveryHealth::Healthy,
         true,
     )
     .expect("open outcome");
 
-    assert_eq!(outcome.mode(), StorageMode::DurableLocalAlways);
-    assert!(outcome.opened_existing());
+    assert_eq!(durable_always.mode(), StorageMode::DurableLocalAlways);
     assert_eq!(
-        outcome.recovered_visible_version(),
+        durable_always.disposition(),
+        StorageOpenDisposition::OpenedExisting
+    );
+    assert!(durable_always.opened_existing());
+    assert_eq!(
+        durable_always.recovered_visible_version(),
         Some(CommitVersion::new(42))
     );
-    assert!(outcome.recovery_health().is_healthy());
-    assert!(outcome.maintenance_ready());
+    assert!(durable_always.recovery_health().is_healthy());
+    assert!(durable_always.maintenance_ready());
 
+    let durable_standard = StorageOpenOutcome::new(
+        StorageMode::DurableLocalStandard,
+        StorageOpenDisposition::Created,
+        Some(CommitVersion::new(9)),
+        RecoveryHealth::Healthy,
+        false,
+    )
+    .expect("durable standard open outcome");
+    assert_eq!(durable_standard.mode(), StorageMode::DurableLocalStandard);
+    assert_eq!(
+        durable_standard.recovered_visible_version(),
+        Some(CommitVersion::new(9))
+    );
+    assert_eq!(
+        durable_standard.disposition(),
+        StorageOpenDisposition::Created
+    );
+    assert!(!durable_standard.maintenance_ready());
+}
+
+#[test]
+fn storage_open_outcome_reports_cache_and_object_candidate_facts() {
     let cache_outcome = StorageOpenOutcome::new(
         StorageMode::Cache,
-        false,
+        StorageOpenDisposition::Created,
         None,
         RecoveryHealth::Healthy,
         false,
     )
     .expect("cache open outcome");
     assert_eq!(cache_outcome.mode(), StorageMode::Cache);
+    assert_eq!(cache_outcome.disposition(), StorageOpenDisposition::Created);
     assert!(!cache_outcome.opened_existing());
     assert_eq!(cache_outcome.recovered_visible_version(), None);
     assert!(!cache_outcome.maintenance_ready());
 
+    let object_candidate = StorageOpenOutcome::new(
+        StorageMode::ObjectDurableCandidate,
+        StorageOpenDisposition::Created,
+        None,
+        RecoveryHealth::Healthy,
+        false,
+    )
+    .expect("object candidate open outcome");
+    assert_eq!(object_candidate.mode(), StorageMode::ObjectDurableCandidate);
+    assert_eq!(object_candidate.recovered_visible_version(), None);
+    assert!(!object_candidate.maintenance_ready());
+}
+
+#[test]
+fn storage_open_outcome_rejects_cache_durable_recovery_claims() {
     assert_eq!(
         StorageOpenOutcome::new(
             StorageMode::Cache,
-            false,
+            StorageOpenDisposition::Created,
             Some(CommitVersion::new(1)),
             RecoveryHealth::Healthy,
             true,
         ),
         Err(LifecycleError::InvalidOpenPlan {
             reason: "cache mode cannot report recovered durable visibility",
+        })
+    );
+    assert_eq!(
+        StorageOpenOutcome::new(
+            StorageMode::Cache,
+            StorageOpenDisposition::OpenedExisting,
+            Some(CommitVersion::new(2)),
+            RecoveryHealth::Healthy,
+            false,
+        ),
+        Err(LifecycleError::InvalidOpenPlan {
+            reason: "cache mode cannot report recovered durable visibility",
+        })
+    );
+
+    let degraded = RecoveryHealth::degraded(
+        RecoveryDegradationClass::Telemetry,
+        vec![RecoveryFault::new(RecoveryFaultKind::IoFailure, "durable recovery").expect("fault")],
+    )
+    .expect("degraded health");
+    assert_eq!(
+        StorageOpenOutcome::new(
+            StorageMode::Cache,
+            StorageOpenDisposition::OpenedExisting,
+            None,
+            degraded,
+            true,
+        ),
+        Err(LifecycleError::InvalidOpenPlan {
+            reason: "cache mode cannot report durable recovery degradation",
         })
     );
 }
@@ -540,7 +636,7 @@ fn lifecycle_debug_output_stays_storage_shaped() {
             "{:?}",
             StorageOpenOutcome::new(
                 StorageMode::DurableLocalStandard,
-                true,
+                StorageOpenDisposition::OpenedExisting,
                 Some(CommitVersion::new(7)),
                 RecoveryHealth::Healthy,
                 true,
