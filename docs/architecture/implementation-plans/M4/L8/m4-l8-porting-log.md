@@ -37,7 +37,7 @@ Status: implemented
 - `crates/storage-next/src/lifecycle/outcome.rs`
 - `crates/storage-next/src/lifecycle/result.rs`
 - `crates/storage-next/src/lifecycle/tests/mod.rs`
-- `crates/storage-next/src/testkit/lifecycle.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
 - `crates/storage-next/tests/lifecycle_properties.rs`
 - `crates/storage-next/tests/lifecycle_source_guard.rs`
 
@@ -128,6 +128,126 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8C - Storage Mode Capability Validation
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/backend/mod.rs`
+- `crates/storage-next/src/config/mode.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8c-storage-mode-capability-validation-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8c-storage-mode-capability-validation-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/capability.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/capability.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/capability.rs`
+- `crates/storage-next/src/testkit/lifecycle/outcome.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- Lifecycle storage modes map to the existing `StorageModeRequest` capability
+  checks instead of duplicating backend capability matrices.
+- Cache mode accepts browser-like object capabilities without requiring object
+  metadata or durable primitives.
+- Durable local standard and durable local always share durable backend
+  requirements while preserving `DurabilityPolicy::Standard` vs
+  `DurabilityPolicy::Always` for later open/runtime wiring.
+- Object-durable candidate remains candidate-tagged and accepts either
+  `ConditionalPublish` or `ConditionalCreate + ConditionalUpdate` fencing.
+- Capability mismatch is a typed lifecycle error carrying the requested storage
+  mode and exact missing `BackendCapability` list.
+
+### Intentional Changes
+
+- Added `validate_storage_mode_capabilities(plan, capabilities)` for pure
+  capability-fact validation.
+- Added `validate_backend_capabilities_for_open(plan, backend)`, which calls
+  only `backend.capabilities()`.
+- Added `LifecycleCapabilityOutcome` and `ObjectDurableFenceMode` as
+  crate-private lifecycle facts.
+- Added display names for lifecycle `StorageMode` so capability errors remain
+  bounded and storage-shaped.
+- Split the generated lifecycle testkit into `lifecycle/mod.rs`,
+  `lifecycle/outcome.rs`, and `lifecycle/capability.rs`.
+
+### Retired From V1 L8C
+
+- Ad hoc lifecycle capability strings.
+- Capability validation that constructs services, opens manifests, opens WALs,
+  acquires writer locks, or mutates L6/L7 state.
+- Product open wording in capability mismatch errors.
+
+### Deferred By Owner Slice
+
+- Cache-mode runtime open and close: L8D.
+- Durable service assembly and writer-lock acquisition: L8E.
+- Recovery orchestration, WAL replay, and L7 bootstrap: L8F-L8G.
+- Maintenance execution, retention, quarantine, repair, and close side effects:
+  L8H-L8P.
+- Production object-durable mode claims beyond candidate capability validation:
+  post-V1 object durability design.
+
+### Tests Added
+
+- `capability_validation_maps_lifecycle_modes_to_storage_mode_requests`
+- `cache_capability_validation_accepts_browser_like_backend_without_metadata`
+- `durable_local_modes_reject_each_missing_durable_capability`
+- `object_candidate_accepts_either_publish_fence_or_create_update_pair`
+- `object_candidate_reports_base_and_partial_fence_missing_capabilities`
+- `backend_capability_preflight_reads_only_capabilities`
+- `lifecycle_capability_validator_stays_preflight_only`
+- Generated lifecycle counters for accepted/rejected capability cases, per-mode
+  capability cases, missing-capability categories, object-candidate fence
+  variants, backend preflight across every mode, and input-derived capability
+  masks.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Cache over-requires metadata | Add `ObjectMetadata` to cache requirements | `cache_capability_validation_accepts_browser_like_backend_without_metadata` |
+| Durable under-requires append | Remove `AppendObject` from durable requirements | `durable_local_modes_reject_each_missing_durable_capability` |
+| Durable policy collapse | Map durable always to standard policy | `capability_validation_maps_lifecycle_modes_to_storage_mode_requests` |
+| Object fence missing | Accept object candidate without any fence | `object_candidate_reports_base_and_partial_fence_missing_capabilities` |
+| Fence preference drift | Prefer create/update when conditional publish is also present | `object_candidate_accepts_either_publish_fence_or_create_update_pair` |
+| Preflight side effect | Call read/list/write/publish/append/lock during validation | `backend_capability_preflight_reads_only_capabilities` |
+| Untyped mismatch | Report only a string reason for capability mismatch | `object_candidate_reports_base_and_partial_fence_missing_capabilities` |
+
+### Verification
+
+Commands run for L8C:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --all-features --locked --lib lifecycle
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8B - Lifecycle State And Open Plan
 
 Status: implemented
@@ -138,7 +258,7 @@ Status: implemented
 - `crates/storage-next/src/lifecycle/facts.rs`
 - `crates/storage-next/src/lifecycle/outcome.rs`
 - `crates/storage-next/src/lifecycle/tests/mod.rs`
-- `crates/storage-next/src/testkit/lifecycle.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
 - `crates/storage-next/tests/lifecycle_properties.rs`
 - `crates/storage-next/tests/lifecycle_source_guard.rs`
 - `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
@@ -154,7 +274,7 @@ Status: implemented
 - `crates/storage-next/src/lifecycle/mod.rs`
 - `crates/storage-next/src/lifecycle/tests/mod.rs`
 - `crates/storage-next/src/lifecycle/tests/state.rs`
-- `crates/storage-next/src/testkit/lifecycle.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
 - `crates/storage-next/tests/lifecycle_properties.rs`
 
 ### Preserved As Storage Vocabulary

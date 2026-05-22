@@ -1,6 +1,7 @@
 //! Lifecycle fact vocabulary.
 
 use super::{LifecycleConfig, LifecycleError, LifecycleLossyRecoveryPolicy, LifecycleResult};
+use std::fmt;
 
 const MAX_LIFECYCLE_CODEC_ID_BYTES: usize = 128;
 
@@ -21,6 +22,23 @@ pub(crate) enum StorageMode {
     DurableLocalStandard,
     DurableLocalAlways,
     ObjectDurableCandidate,
+}
+
+impl StorageMode {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Cache => "cache",
+            Self::DurableLocalStandard => "durable-local-standard",
+            Self::DurableLocalAlways => "durable-local-always",
+            Self::ObjectDurableCandidate => "object-durable-candidate",
+        }
+    }
+}
+
+impl fmt::Display for StorageMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

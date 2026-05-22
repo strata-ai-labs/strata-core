@@ -91,6 +91,25 @@ fn lower_layers_do_not_import_lifecycle_upward() {
 }
 
 #[test]
+fn lifecycle_capability_validator_stays_preflight_only() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/capability.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle capability source");
+    assert!(
+        !contains_forbidden_capability_preflight_dependency_text(&text),
+        "lifecycle capability validator imports service/runtime assembly dependencies"
+    );
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_capability_preflight_dependency(line),
+            "src/lifecycle/capability.rs:{} imports or calls forbidden preflight dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
     assert!(contains_forbidden_import_or_io(
         "use strata_engine_next::StorageRuntime;"
@@ -150,6 +169,21 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert!(imports_lifecycle("use crate::lifecycle::LifecycleState;"));
     assert!(imports_lifecycle_text(
         "use crate::{\n    lifecycle::LifecycleState,\n};"
+    ));
+    assert!(contains_forbidden_capability_preflight_dependency(
+        "use crate::service::WalService;"
+    ));
+    assert!(contains_forbidden_capability_preflight_dependency(
+        "use crate::layout::ObjectLayout;"
+    ));
+    assert!(contains_forbidden_capability_preflight_dependency_text(
+        "use crate::{\n    commit::CommitRuntime,\n};"
+    ));
+    assert!(contains_forbidden_capability_preflight_dependency(
+        "backend.read_object(name)?;"
+    ));
+    assert!(contains_forbidden_capability_preflight_dependency(
+        "backend.acquire_writer_lock(name)?;"
     ));
     assert!(is_public_surface_leak("pub struct LifecycleRuntime;"));
 
@@ -274,6 +308,56 @@ fn imports_lifecycle_text(text: &str) -> bool {
         || (compact.contains("crate::{") && compact.contains("lifecycle::"))
         || compact.contains("super::lifecycle")
         || (compact.contains("super::{") && compact.contains("lifecycle::"))
+}
+
+fn contains_forbidden_capability_preflight_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "crate::service",
+        "crate::layout",
+        "crate::format",
+        "crate::table",
+        "crate::branch",
+        "crate::commit",
+        "objectlayout",
+        "walservice",
+        "databasemanifest",
+        "snapshotservice",
+        "tableobjectservice",
+        "read_object(",
+        "read_range(",
+        "write_object(",
+        "delete_object(",
+        "list_prefix(",
+        "object_metadata(",
+        "append_object(",
+        "sync_object(",
+        "publish_object(",
+        "conditional_create(",
+        "conditional_update(",
+        "acquire_writer_lock(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_capability_preflight_dependency_text(text: &str) -> bool {
+    let compact: String = uncommented_text(text)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    contains_forbidden_capability_preflight_dependency(text)
+        || [
+            "crate::{service",
+            "crate::{layout",
+            "crate::{format",
+            "crate::{table",
+            "crate::{branch",
+            "crate::{commit",
+        ]
+        .iter()
+        .any(|needle| compact.contains(needle))
 }
 
 fn uncommented_text(text: &str) -> String {

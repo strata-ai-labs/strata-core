@@ -1,5 +1,10 @@
 //! Lifecycle scaffold conformance helpers.
 
+mod capability;
+mod outcome;
+
+pub use outcome::LifecycleScaffoldOutcome;
+
 use super::TestkitError;
 use crate::lifecycle::{
     CloseOutcome, CloseOutcomeStatus, ClosePhase, LifecycleCloseTimeoutPolicy, LifecycleCodecId,
@@ -14,143 +19,6 @@ use std::error::Error;
 use std::fmt;
 use strata_core_next::CommitVersion;
 
-/// Coverage counters returned by the lifecycle scaffold contract.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "counter suffix keeps the public testkit getter vocabulary explicit"
-)]
-pub struct LifecycleScaffoldOutcome {
-    valid_config_cases: usize,
-    invalid_config_cases: usize,
-    lifecycle_state_cases: usize,
-    storage_mode_cases: usize,
-    valid_transition_cases: usize,
-    invalid_transition_cases: usize,
-    operation_admission_accept_cases: usize,
-    operation_admission_reject_cases: usize,
-    close_retry_cases: usize,
-    closed_idempotence_cases: usize,
-    failed_state_sticky_cases: usize,
-    input_derived_state_cases: usize,
-    open_plan_cases: usize,
-    open_outcome_cases: usize,
-    recovery_health_cases: usize,
-    maintenance_task_cases: usize,
-    reclaim_fact_cases: usize,
-    error_display_cases: usize,
-    error_source_cases: usize,
-    stats_cases: usize,
-    source_guard_fixture_cases: usize,
-}
-
-impl LifecycleScaffoldOutcome {
-    /// Number of valid config cases exercised.
-    pub const fn valid_config_cases(&self) -> usize {
-        self.valid_config_cases
-    }
-
-    /// Number of invalid config cases exercised.
-    pub const fn invalid_config_cases(&self) -> usize {
-        self.invalid_config_cases
-    }
-
-    /// Number of lifecycle state cases exercised.
-    pub const fn lifecycle_state_cases(&self) -> usize {
-        self.lifecycle_state_cases
-    }
-
-    /// Number of storage mode cases exercised.
-    pub const fn storage_mode_cases(&self) -> usize {
-        self.storage_mode_cases
-    }
-
-    /// Number of valid lifecycle transition cases exercised.
-    pub const fn valid_transition_cases(&self) -> usize {
-        self.valid_transition_cases
-    }
-
-    /// Number of invalid lifecycle transition cases exercised.
-    pub const fn invalid_transition_cases(&self) -> usize {
-        self.invalid_transition_cases
-    }
-
-    /// Number of accepted operation-admission cases exercised.
-    pub const fn operation_admission_accept_cases(&self) -> usize {
-        self.operation_admission_accept_cases
-    }
-
-    /// Number of rejected operation-admission cases exercised.
-    pub const fn operation_admission_reject_cases(&self) -> usize {
-        self.operation_admission_reject_cases
-    }
-
-    /// Number of close retry cases exercised.
-    pub const fn close_retry_cases(&self) -> usize {
-        self.close_retry_cases
-    }
-
-    /// Number of closed-state idempotence cases exercised.
-    pub const fn closed_idempotence_cases(&self) -> usize {
-        self.closed_idempotence_cases
-    }
-
-    /// Number of failed-state stickiness cases exercised.
-    pub const fn failed_state_sticky_cases(&self) -> usize {
-        self.failed_state_sticky_cases
-    }
-
-    /// Number of input-derived state machine routes exercised.
-    pub const fn input_derived_state_cases(&self) -> usize {
-        self.input_derived_state_cases
-    }
-
-    /// Number of open plan cases exercised.
-    pub const fn open_plan_cases(&self) -> usize {
-        self.open_plan_cases
-    }
-
-    /// Number of open outcome cases exercised.
-    pub const fn open_outcome_cases(&self) -> usize {
-        self.open_outcome_cases
-    }
-
-    /// Number of recovery health cases exercised.
-    pub const fn recovery_health_cases(&self) -> usize {
-        self.recovery_health_cases
-    }
-
-    /// Number of maintenance task cases exercised.
-    pub const fn maintenance_task_cases(&self) -> usize {
-        self.maintenance_task_cases
-    }
-
-    /// Number of retention, quarantine, and close fact cases exercised.
-    pub const fn reclaim_fact_cases(&self) -> usize {
-        self.reclaim_fact_cases
-    }
-
-    /// Number of error display cases exercised.
-    pub const fn error_display_cases(&self) -> usize {
-        self.error_display_cases
-    }
-
-    /// Number of error source-chain cases exercised.
-    pub const fn error_source_cases(&self) -> usize {
-        self.error_source_cases
-    }
-
-    /// Number of stats cases exercised.
-    pub const fn stats_cases(&self) -> usize {
-        self.stats_cases
-    }
-
-    /// Number of source-guard fixture cases exercised.
-    pub const fn source_guard_fixture_cases(&self) -> usize {
-        self.source_guard_fixture_cases
-    }
-}
-
 /// Exercises the lifecycle scaffold without opening or mutating storage.
 pub fn check_lifecycle_scaffold_contract(
     script: &[u8],
@@ -163,6 +31,7 @@ pub fn check_lifecycle_scaffold_contract(
     check_lifecycle_state_transitions(script, &mut outcome)?;
     check_lifecycle_operation_admission(script, &mut outcome)?;
     check_open_plans(script, &mut outcome)?;
+    capability::check_lifecycle_capability_contract(script, &mut outcome)?;
     check_open_outcomes(script, &mut outcome)?;
     check_recovery_health(&mut outcome)?;
     check_maintenance_tasks(&mut outcome)?;
@@ -870,11 +739,11 @@ fn operation_from_script(byte: u8) -> LifecycleOperationKind {
     }
 }
 
-fn script_byte(script: &[u8], index: usize) -> u8 {
+pub(super) fn script_byte(script: &[u8], index: usize) -> u8 {
     script.get(index).copied().unwrap_or(0)
 }
 
-fn ensure(condition: bool, message: &'static str) -> Result<(), TestkitError> {
+pub(super) fn ensure(condition: bool, message: &'static str) -> Result<(), TestkitError> {
     if condition {
         Ok(())
     } else {

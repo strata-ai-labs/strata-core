@@ -1,8 +1,10 @@
 use super::*;
+use crate::backend::BackendCapability;
 use std::error::Error;
 use std::fmt;
 use strata_core_next::CommitVersion;
 
+mod capability;
 mod state;
 
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [
@@ -564,9 +566,10 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
         ),
         (
             LifecycleError::CapabilityMismatch {
-                reason: "durable publish unavailable",
+                storage_mode: StorageMode::DurableLocalStandard,
+                missing: vec![BackendCapability::DurablePublish],
             },
-            "storage capability mismatch: durable publish unavailable",
+            "storage capability mismatch for durable-local-standard: missing durable_publish",
         ),
         (
             LifecycleError::RecoveryFailed {

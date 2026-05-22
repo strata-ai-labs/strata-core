@@ -34,7 +34,7 @@ Use these locations:
    source-boundary scans.
 3. `crates/storage-next/tests/lifecycle_properties.rs` for generated scaffold
    route checks.
-4. `crates/storage-next/src/testkit/lifecycle.rs` or
+4. `crates/storage-next/src/testkit/lifecycle/mod.rs` or
    `crates/storage-next/src/testkit/lifecycle/` for hidden scaffold contract
    helpers.
 5. `docs/architecture/implementation-plans/M4/L8/m4-l8-porting-log.md` for

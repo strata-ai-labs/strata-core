@@ -42,7 +42,7 @@ L8B establishes:
 11. `crates/storage-next/src/lifecycle/outcome.rs`
 12. `crates/storage-next/src/lifecycle/tests/mod.rs`
 13. `crates/storage-next/src/lifecycle/tests/state.rs`
-14. `crates/storage-next/src/testkit/lifecycle.rs`
+14. `crates/storage-next/src/testkit/lifecycle/mod.rs`
 15. `crates/storage-next/tests/lifecycle_properties.rs`
 16. `crates/storage-next/tests/lifecycle_source_guard.rs`
 17. `crates/engine/src/database/lifecycle.rs`

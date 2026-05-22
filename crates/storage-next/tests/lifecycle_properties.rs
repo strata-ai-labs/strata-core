@@ -58,4 +58,15 @@ fn all_categories_exercised(
         && outcome.error_source_cases() > 0
         && outcome.stats_cases() > 0
         && outcome.source_guard_fixture_cases() > 0
+        && outcome.accepted_capability_cases() > 0
+        && outcome.rejected_capability_cases() > 0
+        && outcome.cache_capability_cases() > 0
+        && outcome.durable_standard_capability_cases() > 0
+        && outcome.durable_always_capability_cases() > 0
+        && outcome.object_candidate_capability_cases() > 0
+        && outcome.missing_capability_cases() > 0
+        && outcome.object_candidate_conditional_publish_cases() > 0
+        && outcome.object_candidate_create_update_cases() > 0
+        && outcome.capability_preflight_cases() > 0
+        && outcome.input_derived_capability_cases() > 0
 }

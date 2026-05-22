@@ -30,7 +30,7 @@ Use:
 
 1. `crates/storage-next/src/lifecycle/tests/mod.rs` for direct fact/open-plan tests.
 2. `crates/storage-next/src/lifecycle/tests/state.rs` for direct state-machine tests.
-3. `crates/storage-next/src/testkit/lifecycle.rs` for generated state-script
+3. `crates/storage-next/src/testkit/lifecycle/mod.rs` for generated state-script
    contracts.
 4. `crates/storage-next/tests/lifecycle_properties.rs` for generated property
    route checks.

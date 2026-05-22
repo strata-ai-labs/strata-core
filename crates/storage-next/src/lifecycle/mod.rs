@@ -8,6 +8,7 @@
     )
 )]
 
+mod capability;
 mod config;
 mod error;
 mod facts;
@@ -16,6 +17,14 @@ mod outcome;
 mod result;
 mod state;
 
+#[allow(
+    unused_imports,
+    reason = "lifecycle scaffold exports define the local surface for later slices"
+)]
+pub(crate) use capability::{
+    validate_backend_capabilities_for_open, validate_storage_mode_capabilities,
+    LifecycleCapabilityOutcome, ObjectDurableFenceMode,
+};
 #[allow(
     unused_imports,
     reason = "lifecycle scaffold exports define the local surface for later slices"

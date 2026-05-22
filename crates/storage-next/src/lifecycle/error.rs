@@ -1,5 +1,7 @@
 //! Lifecycle error vocabulary.
 
+use super::StorageMode;
+use crate::backend::BackendCapability;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -17,7 +19,8 @@ pub(crate) enum LifecycleError {
         reason: &'static str,
     },
     CapabilityMismatch {
-        reason: &'static str,
+        storage_mode: StorageMode,
+        missing: Vec<BackendCapability>,
     },
     RecoveryFailed {
         reason: &'static str,
@@ -89,10 +92,6 @@ impl PartialEq for LifecycleError {
                 Self::InvalidLifecycleState { reason: right },
             )
             | (Self::InvalidOpenPlan { reason: left }, Self::InvalidOpenPlan { reason: right })
-            | (
-                Self::CapabilityMismatch { reason: left },
-                Self::CapabilityMismatch { reason: right },
-            )
             | (Self::RecoveryFailed { reason: left }, Self::RecoveryFailed { reason: right })
             | (
                 Self::MaintenanceFailed { reason: left },
@@ -102,6 +101,16 @@ impl PartialEq for LifecycleError {
             | (Self::CloseFailed { reason: left }, Self::CloseFailed { reason: right }) => {
                 left == right
             }
+            (
+                Self::CapabilityMismatch {
+                    storage_mode: left_mode,
+                    missing: left_missing,
+                },
+                Self::CapabilityMismatch {
+                    storage_mode: right_mode,
+                    missing: right_missing,
+                },
+            ) => left_mode == right_mode && left_missing == right_missing,
             (
                 Self::LowerLayer {
                     layer: left_layer,
@@ -133,8 +142,15 @@ impl fmt::Display for LifecycleError {
             Self::InvalidOpenPlan { reason } => {
                 write!(formatter, "invalid storage open plan: {reason}")
             }
-            Self::CapabilityMismatch { reason } => {
-                write!(formatter, "storage capability mismatch: {reason}")
+            Self::CapabilityMismatch {
+                storage_mode,
+                missing,
+            } => {
+                write!(
+                    formatter,
+                    "storage capability mismatch for {storage_mode}: missing {}",
+                    DisplayCapabilities(missing)
+                )
             }
             Self::RecoveryFailed { reason } => write!(formatter, "recovery failed: {reason}"),
             Self::MaintenanceFailed { reason } => {
@@ -145,6 +161,23 @@ impl fmt::Display for LifecycleError {
             Self::LowerLayer { layer, reason, .. } => {
                 write!(formatter, "lifecycle lower layer {layer} failed: {reason}")
             }
+        }
+    }
+}
+
+struct DisplayCapabilities<'a>(&'a [BackendCapability]);
+
+impl fmt::Display for DisplayCapabilities<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut capabilities = self.0.iter();
+        if let Some(first) = capabilities.next() {
+            write!(formatter, "{first}")?;
+            for capability in capabilities {
+                write!(formatter, ", {capability}")?;
+            }
+            Ok(())
+        } else {
+            formatter.write_str("none")
         }
     }
 }
