@@ -40,7 +40,7 @@ fn commit_runtime_property_harness_compares_generated_scripts_to_model() {
     use proptest::prelude::any;
     use proptest::test_runner::TestCaseError;
     use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
-    use strata_storage_next::testkit::check_commit_runtime_script_contract;
+    use strata_storage_next::testkit::check_commit_runtime_generated_input_contract;
 
     let mut runner = TestRunner::new(Config {
         cases: 32,
@@ -51,30 +51,40 @@ fn commit_runtime_property_harness_compares_generated_scripts_to_model() {
     });
 
     runner
-        .run(&vec(any::<u8>(), 0..=191), |script| {
-            let outcome = check_commit_runtime_script_contract(&script)
+        .run(&vec(any::<u8>(), 4..=191), |script| {
+            let outcome = check_commit_runtime_generated_input_contract(&script)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             if outcome.decoded_scripts == 0
                 || outcome.model_parity_checks == 0
-                || outcome.cache_successes == 0
-                || outcome.durable_successes == 0
-                || outcome.wal_failures == 0
-                || outcome.post_wal_failures == 0
-                || outcome.conflict_rejections == 0
-                || outcome.read_only_diagnostics == 0
-                || outcome.guard_or_quiesce_rejections == 0
-                || outcome.branch_lifecycle_transitions == 0
-                || outcome.branch_lifecycle_rejections == 0
-                || outcome.replay_successes == 0
-                || outcome.timeline_checks == 0
+                || outcome.input_derived_model_parity_checks == 0
             {
                 return Err(TestCaseError::fail(
-                    "commit runtime generated script did not exercise all L7M categories",
+                    "commit runtime generated script did not execute input-derived operations",
                 ));
             }
             Ok(())
         })
         .expect("generated commit runtime model property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn commit_runtime_generated_input_seed_exercises_all_required_routes() {
+    use strata_storage_next::testkit::check_commit_runtime_generated_input_contract;
+
+    let outcome = check_commit_runtime_generated_input_contract(&generated_route_seed())
+        .expect("generated-only route seed");
+    assert_required_generated_categories(&outcome);
+    assert_eq!(
+        outcome.input_derived_model_parity_checks,
+        outcome.model_parity_checks
+    );
+    assert!(outcome.clean_wal_failures > 0);
+    assert!(outcome.uncertain_wal_failures > 0);
+    assert!(outcome.writer_halted_failures > 0);
+    assert!(outcome.segment_id_overflow_failures > 0);
+    assert!(outcome.apply_after_wal_failures > 0);
+    assert!(outcome.visible_after_apply_failures > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -125,6 +135,66 @@ fn all_categories_exercised(
         && timeline_categories_exercised(outcome)
         && cache_categories_exercised(outcome)
         && durable_categories_exercised(outcome)
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn assert_required_generated_categories(
+    outcome: &strata_storage_next::testkit::CommitRuntimeAssuranceOutcome,
+) {
+    assert!(outcome.cache_successes > 0);
+    assert!(outcome.durable_successes > 0);
+    assert!(outcome.wal_failures > 0);
+    assert!(outcome.post_wal_failures > 0);
+    assert!(outcome.conflict_rejections > 0);
+    assert!(outcome.read_only_diagnostics > 0);
+    assert!(outcome.guard_or_quiesce_rejections > 0);
+    assert!(outcome.branch_lifecycle_transitions > 0);
+    assert!(outcome.branch_lifecycle_rejections > 0);
+    assert!(outcome.replay_successes > 0);
+    assert!(outcome.timeline_checks > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn generated_route_seed() -> Vec<u8> {
+    let mut seed = Vec::new();
+    for [selector, branch, key, value] in [
+        [0, 0, 1, 0x21],
+        [0, 0, 2, 0x20],
+        [6, 0, 0, 0],
+        [5, 0, 1, 0x22],
+        [1, 0, 1, 0],
+        [2, 1, 2, 0x31],
+        [3, 1, 3, 1],
+        [3, 1, 4, 2],
+        [3, 1, 5, 5],
+        [11, 0, 0, 0],
+        [3, 2, 6, 6],
+        [11, 0, 0, 0],
+        [3, 3, 7, 3],
+        [3, 3, 8, 4],
+        [7, 0, 0, 0],
+        [9, 0, 0, 0],
+        [8, 0, 0, 0],
+        [9, 0, 0, 0],
+        [7, 0, 0, 0],
+        [10, 0, 0, 0],
+        [7, 0, 0, 0],
+        [8, 0, 0, 0],
+        [0, 4, 9, 0x41],
+        [12, 4, 0, 0],
+        [0, 4, 9, 0x42],
+        [13, 4, 0, 0],
+        [14, 4, 0, 0],
+        [0, 4, 9, 0x43],
+        [14, 4, 0, 0],
+        [15, 0, 0, 0],
+        [15, 1, 0, 0],
+        [15, 2, 0, 0],
+        [15, 3, 0, 0],
+    ] {
+        seed.extend_from_slice(&[selector, branch, key, value]);
+    }
+    seed
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]

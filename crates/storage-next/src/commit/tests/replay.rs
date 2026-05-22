@@ -545,6 +545,32 @@ fn replay_rejects_record_without_timeline_pair() {
 }
 
 #[test]
+fn replay_rejects_timeline_only_payload_without_user_mutation() {
+    let branch = branch_id(120);
+    let version = CommitVersion::new(39);
+    let timestamp = Timestamp::from_micros(39_000);
+    let record = replay_record(branch, version, timestamp, Vec::new());
+    let mut fixture = ReplayFixture::new(branch);
+
+    let error = fixture
+        .replay(record, CommitDurabilityClass::Standard)
+        .expect_err("timeline-only replay rejects");
+
+    assert_eq!(
+        error,
+        CommitRuntimeError::InvalidCommitState {
+            reason: "replay payload is missing user mutation rows",
+        }
+    );
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(fixture.durable_gate.unresolved().expect("gate"), None);
+}
+
+#[test]
 fn replay_record_construction_rejects_outer_fact_mismatches() {
     let branch = branch_id(114);
     let version = CommitVersion::new(33);

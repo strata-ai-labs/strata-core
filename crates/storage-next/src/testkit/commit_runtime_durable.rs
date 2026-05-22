@@ -536,7 +536,7 @@ fn check_unresolved_fact_rejection(script: &[u8]) -> Result<usize, TestkitError>
         |error| {
             error
                 == &CommitRuntimeError::InvalidCommitState {
-                    reason: "unresolved durable commit must claim durable WAL success",
+                    reason: "durable-not-applied unresolved commit must claim durable WAL success",
                 }
         },
         "invalid unresolved durable fact was accepted",

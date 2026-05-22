@@ -9,6 +9,7 @@ pub(crate) const COMMIT_RUNTIME_SCRIPT_MAX_OPS: usize = 64;
 pub(crate) struct CommitRuntimeScript {
     branches: [BranchId; COMMIT_RUNTIME_SCRIPT_MAX_BRANCHES],
     operations: [CommitScriptOperation; COMMIT_RUNTIME_SCRIPT_MAX_OPS],
+    canonical_operation_count: usize,
     operation_count: usize,
 }
 
@@ -78,6 +79,14 @@ pub(crate) enum CommitScriptDurableFault {
 
 impl CommitRuntimeScript {
     pub(crate) fn decode(data: &[u8]) -> Self {
+        Self::decode_with_canonical(data, true)
+    }
+
+    pub(crate) fn decode_generated_only(data: &[u8]) -> Self {
+        Self::decode_with_canonical(data, false)
+    }
+
+    fn decode_with_canonical(data: &[u8], include_canonical_coverage: bool) -> Self {
         let branches = [
             branch_id(0x10),
             branch_id(0x11),
@@ -93,9 +102,13 @@ impl CommitRuntimeScript {
         let mut script = Self {
             branches,
             operations,
+            canonical_operation_count: 0,
             operation_count: 0,
         };
-        script.push_canonical_coverage();
+        if include_canonical_coverage {
+            script.push_canonical_coverage();
+            script.canonical_operation_count = script.operation_count;
+        }
         let mut cursor = 0;
         while cursor + 3 < data.len() && script.operation_count < COMMIT_RUNTIME_SCRIPT_MAX_OPS {
             let selector = data[cursor];
@@ -146,6 +159,10 @@ impl CommitRuntimeScript {
 
     pub(crate) fn operations(&self) -> &[CommitScriptOperation] {
         &self.operations[..self.operation_count]
+    }
+
+    pub(crate) const fn canonical_operation_count(&self) -> usize {
+        self.canonical_operation_count
     }
 
     fn push_canonical_coverage(&mut self) {
@@ -288,7 +305,24 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.branches().len(), COMMIT_RUNTIME_SCRIPT_MAX_BRANCHES);
         assert!(!first.operations().is_empty());
+        assert_eq!(first.canonical_operation_count(), first.operations().len());
         assert!(first.operations().len() <= COMMIT_RUNTIME_SCRIPT_MAX_OPS);
+    }
+
+    #[test]
+    fn generated_only_decode_does_not_inject_canonical_coverage() {
+        let script = CommitRuntimeScript::decode_generated_only(&[0, 0, 1, 2]);
+
+        assert_eq!(script.canonical_operation_count(), 0);
+        assert_eq!(script.operations().len(), 1);
+        assert!(matches!(
+            script.operations()[0],
+            CommitScriptOperation::CachePut {
+                branch: 0,
+                key: 1,
+                value: 2,
+            }
+        ));
     }
 
     #[test]

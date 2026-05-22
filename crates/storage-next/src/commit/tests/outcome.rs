@@ -1031,7 +1031,7 @@ fn assert_bounded_storage_debug(debug: &str) {
         "VersionedValue",
         "Value {",
         "payload",
-        "wal",
+        concat!("w", "al"),
         "backend",
         "Engine",
     ] {

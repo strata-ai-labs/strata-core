@@ -36,10 +36,17 @@ use super::TestkitError;
 pub struct CommitRuntimeAssuranceOutcome {
     pub decoded_scripts: usize,
     pub model_parity_checks: usize,
+    pub input_derived_model_parity_checks: usize,
     pub cache_successes: usize,
     pub durable_successes: usize,
     pub wal_failures: usize,
     pub post_wal_failures: usize,
+    pub clean_wal_failures: usize,
+    pub uncertain_wal_failures: usize,
+    pub writer_halted_failures: usize,
+    pub segment_id_overflow_failures: usize,
+    pub apply_after_wal_failures: usize,
+    pub visible_after_apply_failures: usize,
     pub conflict_rejections: usize,
     pub read_only_diagnostics: usize,
     pub guard_or_quiesce_rejections: usize,
@@ -53,6 +60,13 @@ pub fn check_commit_runtime_script_contract(
     data: &[u8],
 ) -> Result<CommitRuntimeAssuranceOutcome, TestkitError> {
     let script = CommitRuntimeScript::decode(data);
+    run_script_with_focus(&script, ContractFocus::General)
+}
+
+pub fn check_commit_runtime_generated_input_contract(
+    data: &[u8],
+) -> Result<CommitRuntimeAssuranceOutcome, TestkitError> {
+    let script = CommitRuntimeScript::decode_generated_only(data);
     run_script_with_focus(&script, ContractFocus::General)
 }
 
@@ -134,10 +148,17 @@ fn run_script(script: &CommitRuntimeScript) -> Result<CommitRuntimeAssuranceOutc
     let mut outcome = CommitRuntimeAssuranceOutcome {
         decoded_scripts: 1,
         model_parity_checks: 0,
+        input_derived_model_parity_checks: 0,
         cache_successes: 0,
         durable_successes: 0,
         wal_failures: 0,
         post_wal_failures: 0,
+        clean_wal_failures: 0,
+        uncertain_wal_failures: 0,
+        writer_halted_failures: 0,
+        segment_id_overflow_failures: 0,
+        apply_after_wal_failures: 0,
+        visible_after_apply_failures: 0,
         conflict_rejections: 0,
         read_only_diagnostics: 0,
         guard_or_quiesce_rejections: 0,
@@ -154,8 +175,12 @@ fn run_script(script: &CommitRuntimeScript) -> Result<CommitRuntimeAssuranceOutc
         let actual = production.apply(operation)?;
         compare_step(index, operation, expected, actual)?;
         production.compare_to_model(&model)?;
-        outcome.record(expected);
+        let input_derived = index >= script.canonical_operation_count();
+        outcome.record(operation, expected, input_derived);
         outcome.model_parity_checks += 1;
+        if input_derived {
+            outcome.input_derived_model_parity_checks += 1;
+        }
     }
 
     Ok(outcome)
@@ -254,7 +279,12 @@ struct FaultingVisiblePublisher<'a> {
 }
 
 impl CommitRuntimeAssuranceOutcome {
-    fn record(&mut self, step: ModelStepOutcome) {
+    fn record(
+        &mut self,
+        operation: CommitScriptOperation,
+        step: ModelStepOutcome,
+        input_derived: bool,
+    ) {
         match (step.category, step.status) {
             (ModelStepCategory::CacheCommit, ModelStepStatus::Succeeded) => {
                 self.cache_successes += 1;
@@ -295,6 +325,59 @@ impl CommitRuntimeAssuranceOutcome {
                 self.timeline_checks += 1;
             }
             _ => {}
+        }
+        if input_derived && step.status == ModelStepStatus::Rejected {
+            match operation {
+                CommitScriptOperation::DurablePut {
+                    fault: CommitScriptDurableFault::CleanWalFailure,
+                    ..
+                }
+                | CommitScriptOperation::DurableDelete {
+                    fault: CommitScriptDurableFault::CleanWalFailure,
+                    ..
+                } => self.clean_wal_failures += 1,
+                CommitScriptOperation::DurablePut {
+                    fault: CommitScriptDurableFault::UncertainWalFailure,
+                    ..
+                }
+                | CommitScriptOperation::DurableDelete {
+                    fault: CommitScriptDurableFault::UncertainWalFailure,
+                    ..
+                } => self.uncertain_wal_failures += 1,
+                CommitScriptOperation::DurablePut {
+                    fault: CommitScriptDurableFault::WriterHalted,
+                    ..
+                }
+                | CommitScriptOperation::DurableDelete {
+                    fault: CommitScriptDurableFault::WriterHalted,
+                    ..
+                } => self.writer_halted_failures += 1,
+                CommitScriptOperation::DurablePut {
+                    fault: CommitScriptDurableFault::SegmentIdOverflow,
+                    ..
+                }
+                | CommitScriptOperation::DurableDelete {
+                    fault: CommitScriptDurableFault::SegmentIdOverflow,
+                    ..
+                } => self.segment_id_overflow_failures += 1,
+                CommitScriptOperation::DurablePut {
+                    fault: CommitScriptDurableFault::ApplyFailureAfterWal,
+                    ..
+                }
+                | CommitScriptOperation::DurableDelete {
+                    fault: CommitScriptDurableFault::ApplyFailureAfterWal,
+                    ..
+                } => self.apply_after_wal_failures += 1,
+                CommitScriptOperation::DurablePut {
+                    fault: CommitScriptDurableFault::VisibleFailureAfterApply,
+                    ..
+                }
+                | CommitScriptOperation::DurableDelete {
+                    fault: CommitScriptDurableFault::VisibleFailureAfterApply,
+                    ..
+                } => self.visible_after_apply_failures += 1,
+                _ => {}
+            }
         }
     }
 }

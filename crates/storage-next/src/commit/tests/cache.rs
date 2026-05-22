@@ -682,7 +682,7 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
     );
     assert_eq!(visible.publish_attempts, 1);
     assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
-    assert_eq!(durable_gate.unresolved().expect("gate read"), None);
+    assert_cache_applied_not_visible_gate(&durable_gate, branch);
     assert_eq!(
         state
             .state
@@ -699,8 +699,37 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
         .try_acquire_branch_guard(branch)
         .expect("branch guard released after cache visible failure");
     drop(branch_guard);
+}
 
+#[test]
+fn cache_commit_visibility_gap_blocks_same_branch_follow_on() {
+    let branch = branch_id(41);
+    let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);
+    let mut state = FailingCacheApplyTarget::new(branch, false);
+    let mut visible = FailingCacheVisiblePublisher::new(true);
+    let first_batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"cache-visible-gap".to_vec()),
+            b"first".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+    execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &durable_gate,
+        first_batch,
+    )
+    .expect_err("cache visible failure rejects");
     visible.fail_publish = false;
+
     let follow_on = mutating_batch(
         branch,
         vec![CommitMutation::put(
@@ -721,14 +750,16 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
         &durable_gate,
         follow_on,
     )
-    .expect_err("applied-above-visible branch rejects follow-on");
+    .expect_err("unresolved cache visibility gap rejects follow-on");
 
-    assert_eq!(
+    assert!(matches!(
         follow_on_error,
-        CommitRuntimeError::InvalidCommitState {
-            reason: "branch has applied rows above current visible version",
-        }
-    );
+        CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: blocked_branch,
+            commit_version,
+            ..
+        } if blocked_branch == branch && commit_version == CommitVersion::new(1)
+    ));
     assert_eq!(
         allocator.version_allocator().last_allocated(),
         CommitVersion::new(1)
@@ -738,6 +769,79 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
         1 + CommitTimelineRows::timeline_row_count()
     );
     assert_eq!(visible.publish_attempts, 1);
+}
+
+#[test]
+fn cache_commit_visibility_gap_blocks_cross_branch_visible_advance() {
+    let branch = branch_id(39);
+    let other_branch = branch_id(40);
+    let (mut registry, guard_set, mut allocator, durable_gate) =
+        injected_cache_runtime_parts(branch);
+    let mut state = FailingCacheApplyTarget::new(branch, false);
+    let mut visible = FailingCacheVisiblePublisher::new(true);
+    let first_batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"cache-visible-gap".to_vec()),
+            b"first".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &durable_gate,
+        first_batch,
+    )
+    .expect_err("cache visible failure rejects");
+    assert_cache_applied_not_visible_gate(&durable_gate, branch);
+    visible.fail_publish = false;
+
+    registry
+        .register_active(
+            other_branch,
+            CommitBranchGeneration::new(1).expect("branch generation"),
+        )
+        .expect("register other branch");
+    let mut other_state = FailingCacheApplyTarget::new(other_branch, false);
+    let other_batch = mutating_batch(
+        other_branch,
+        vec![CommitMutation::put(
+            physical_key(other_branch, 0x20, b"cross-branch-after-cache-gap".to_vec()),
+            b"other".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+    let cross_branch_error = execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut other_state,
+        &mut visible,
+        &durable_gate,
+        other_batch,
+    )
+    .expect_err("unresolved cache visibility gap blocks other branches");
+    assert!(matches!(
+        cross_branch_error,
+        CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: blocked_branch,
+            commit_version,
+            ..
+        } if blocked_branch == branch && commit_version == CommitVersion::new(1)
+    ));
+    assert_eq!(other_state.state.active_row_count(), 0);
+    assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
 }
 
 #[test]
@@ -1286,6 +1390,27 @@ fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> Comm
         rows.iter().map(crate::branch::BranchVisibleRow::row),
     )
     .expect("timeline view")
+}
+
+fn assert_cache_applied_not_visible_gate(
+    durable_gate: &CommitUnresolvedDurableGate,
+    branch: BranchId,
+) {
+    let unresolved = durable_gate
+        .unresolved()
+        .expect("gate read")
+        .expect("cache applied-not-visible gate");
+    assert_eq!(unresolved.branch_id(), branch);
+    assert_eq!(unresolved.commit_version(), CommitVersion::new(1));
+    assert_eq!(unresolved.durability(), CommitDurabilityClass::NotDurable);
+    assert_eq!(
+        unresolved.kind(),
+        CommitUnresolvedDurableKind::AppliedNotVisible
+    );
+    assert_eq!(
+        unresolved.reason(),
+        "injected cache visible publication failure"
+    );
 }
 
 fn unresolved_durable_fact(branch: BranchId, version: CommitVersion) -> CommitUnresolvedDurable {

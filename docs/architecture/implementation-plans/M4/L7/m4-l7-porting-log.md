@@ -729,6 +729,136 @@ Verified for L7G:
 8. `cargo fmt --package strata-storage-next --check`
 9. `git diff --check`
 
+## L7H: Cache Commit Runtime
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+4. `docs/architecture/implementation-plans/M4/L7/l7h-cache-commit-runtime-implementation-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7h-cache-commit-runtime-test-plan.md`
+6. `crates/storage-next/src/commit/cache.rs`
+7. `crates/storage-next/src/commit/batch.rs`
+8. `crates/storage-next/src/commit/conflict.rs`
+9. `crates/storage-next/src/commit/visibility.rs`
+10. `crates/storage-next/src/branch/state.rs`
+
+### Preserved As Behavior
+
+1. Cache commits remain no-WAL, non-durable commits.
+2. Cache commits still use the same commit fact allocator, branch admission, and
+   conflict validation as durable commits.
+3. Cache commits install user rows and timeline rows in one L6 atomic append.
+4. Visible publication remains the final step.
+
+### Intentionally Changed Or Added
+
+1. Added `CommitCacheRuntime` as the V1 no-WAL executor.
+2. Cache commits reject durable modes, read-only batches, branch mismatches,
+   stale branch generations, unresolved global gates, and target branches with
+   unpublished rows before allocation.
+3. Cache visible-publication failure now records a global not-durable
+   applied-not-visible gate so a later cross-branch visible-version advance
+   cannot expose unpublished cache rows by side effect.
+4. Cache apply failure remains a pre-visible lower-layer failure: no gate is
+   recorded because rows were not installed.
+
+### Deferred By Owner Slice
+
+1. `L8`: process-open recovery and checkpoint coordination.
+2. `L9`: public cache-mode API decisions and user-facing error surfaces.
+3. `post-V1`: public rollback/repair workflow for not-durable
+   applied-not-visible cache state.
+
+### Tests And Guards Added
+
+1. Direct cache tests in `crates/storage-next/src/commit/tests/cache.rs`
+2. Generated cache checks in
+   `crates/storage-next/src/testkit/commit_runtime_cache.rs`
+3. Closeout inventory now points to direct cache fault-window tests.
+
+### Command Evidence
+
+Verified for L7H:
+
+1. `cargo test -p strata-storage-next --locked --lib commit::tests::cache`
+2. `cargo test -p strata-storage-next --locked --lib commit`
+3. `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit`
+5. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+6. `cargo fmt --package strata-storage-next --check`
+7. `git diff --check`
+
+## L7I: Durable WAL Commit Runtime
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7i-durable-wal-commit-runtime-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7i-durable-wal-commit-runtime-test-plan.md`
+7. `crates/storage-next/src/commit/durable.rs`
+8. `crates/storage-next/src/commit/durable_gate.rs`
+9. `crates/storage-next/src/format/wal.rs`
+10. `crates/storage-next/src/service/wal.rs`
+
+### Preserved As Behavior
+
+1. Durable commits append a row-native `WalRecord` before L6 apply.
+2. WAL append facts determine whether the requested durability policy was met.
+3. Clean WAL failures do not install rows, publish visibility, or record a gate.
+4. Uncertain WAL failures remain `DurabilityUncertain` and do not record a gate.
+5. Successful durable commits apply rows and publish visibility only after the
+   WAL boundary is crossed.
+
+### Intentionally Changed Or Added
+
+1. Added `CommitDurableRuntime` as the WAL-backed executor.
+2. Durable commits now build WAL records through the L3 row-native payload and
+   L4 WAL append surface instead of constructing private commit payload bytes.
+3. Durable apply and visible-publication failures record unresolved durable
+   facts for replay/reconciliation.
+4. Active durable admissions are globally serialized. This prevents two
+   cross-branch post-WAL failures from racing to record different unresolved
+   facts and misclassifying the loser.
+5. Always-mode append success without a forced durable append remains
+   `DurabilityUncertain`; L6 apply does not run, no gate is recorded, and replay
+   ownership is left to L8 if the WAL record survives process restart.
+
+### Deferred By Owner Slice
+
+1. `L7J`: richer durable-but-not-visible classification and unresolved-gate
+   integration.
+2. `L7K`: replay entrypoints and allocator catch-up.
+3. `L8`: process-open WAL discovery, durability-uncertain replay decisions, and
+   crash/reopen orchestration.
+4. `post-V1`: distributed fencing or multi-writer durable admission.
+
+### Tests And Guards Added
+
+1. Direct durable tests in `crates/storage-next/src/commit/tests/durable.rs`
+2. Direct gate tests in `crates/storage-next/src/commit/tests/durable_gate.rs`
+3. Generated durable checks in
+   `crates/storage-next/src/testkit/commit_runtime_durable.rs`
+4. Closeout inventory now points to direct durable and replay fault-window tests.
+
+### Command Evidence
+
+Verified for L7I:
+
+1. `cargo test -p strata-storage-next --locked --lib commit::tests::durable`
+2. `cargo test -p strata-storage-next --locked --lib commit::tests::durable_gate`
+3. `cargo test -p strata-storage-next --locked --lib commit`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit`
+5. `cargo test -p strata-storage-next --locked --test commit_runtime_faults --features 'testkit fault-injection'`
+6. `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit`
+7. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+8. `cargo fmt --package strata-storage-next --check`
+9. `git diff --check`
+
 ## L7J: Durable-But-Not-Visible Classification
 
 ### Source Evidence Read
@@ -1223,3 +1353,117 @@ Verified for L7M during implementation:
 12. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
 13. `cargo fmt --package strata-storage-next --check`
 14. `git diff --check`
+
+## L7N: L7 Conformance Closeout
+
+### Source Evidence Read
+
+1. `docs/architecture/storage-next/l7-commit-runtime.md`
+2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
+4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
+5. `docs/architecture/implementation-plans/M4/L7/l7n-l7-conformance-closeout-implementation-plan.md`
+6. `docs/architecture/implementation-plans/M4/L7/l7n-l7-conformance-closeout-test-plan.md`
+7. `crates/storage-next/src/commit/`
+8. `crates/storage-next/src/testkit/commit_runtime*.rs`
+9. `crates/storage-next/tests/commit_runtime_properties.rs`
+10. `crates/storage-next/tests/commit_runtime_faults.rs`
+11. `crates/storage-next/tests/commit_runtime_fuzz_inventory.rs`
+12. `crates/storage-next/tests/commit_runtime_source_guard.rs`
+13. `crates/storage-next/fuzz/Cargo.toml`
+14. `crates/storage-next/fuzz/fuzz_targets/commit_runtime_*.rs`
+15. `crates/storage-next/fuzz/corpus/commit_runtime_*`
+
+### Preserved As Behavior
+
+1. L7 remains a crate-private storage runtime, not a public transaction API.
+2. Cache commits remain no-WAL commits with non-durable visible outcomes.
+3. Durable commits remain WAL-before-L6-apply and classify post-WAL failures as
+   unresolved durable state.
+4. Replay remains the only path that consumes already-durable records and
+   catches up commit-version allocation.
+5. Timeline facts remain generated by storage and installed with user rows.
+6. Read-set and CAS validation remain optional internal validation modes; blind
+   writes remain accepted.
+
+### Intentionally Changed Or Added
+
+1. Added `crates/storage-next/tests/commit_runtime_closeout.rs` as the L7N
+   implementation inventory test. It checks generated counters, fault phase
+   assertions, fuzz target routing, seed corpus presence, and source-guard
+   inventory.
+2. Extended `commit_runtime_source_guard.rs` with
+   `lower_storage_layers_do_not_import_commit_runtime_upward`, so branch,
+   format, and service production sources cannot import the L7 runtime.
+3. Kept closeout tests focused on implementation artifacts. L7N does not add
+   tests that pass because planning documents exist or are linked.
+4. The L7N closeout inventory executes generated commit-runtime contracts when
+   the `testkit` feature is enabled and otherwise still checks source/fuzz
+   implementation artifacts.
+
+### Deferred By Owner
+
+1. `L8`: process-open WAL discovery, replay orchestration, recovery quiesce,
+   checkpoint/recovery coordination, and real crash/reopen classification.
+2. `L9`: public database APIs, user-visible transaction/session decisions,
+   branch lifecycle commands, and storage API response DTOs.
+3. `engine-next`: observer side effects, product branch operations, and any
+   product-level merge/cherry-pick/revert behavior.
+4. `post-V1`: durable transaction ids, cross-branch atomic commits,
+   serializable isolation claims, distributed fencing beyond current L4
+   capabilities, and query/index/search side effects.
+
+### Tests And Guards Added
+
+1. `crates/storage-next/tests/commit_runtime_closeout.rs`
+2. `lower_storage_layers_do_not_import_commit_runtime_upward` in
+   `crates/storage-next/tests/commit_runtime_source_guard.rs`
+
+### Sensitivity Probe Ledger
+
+L7N records the mutation target, the implemented test/guard evidence, and the
+command that executes that evidence for each closeout probe. These are
+coverage-backed sensitivity probes, not live mutation-test runs; no mutation
+edits were made or left in the committed tree.
+
+| Probe | Mutation target | Mutation | Implemented evidence | Verification command | Status |
+|---|---|---|---|---|---|
+| S1 | `src/commit/outcome.rs` / read-only constructors | Allocate a version for a read-only batch. | `commit_fact_allocator_read_only_path_does_not_touch_source_or_clocks`, `read_only_diagnostic_returns_snapshot_without_commit_facts`, and generated `read_only_diagnostics` counters. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S2 | `src/commit/batch.rs` / stamping helpers | Stamp two rows in one batch with different versions. | `cache_commit_row_preparation_uses_one_stamp_for_user_and_timeline_rows` and scaffold stamping counters asserted by `commit_runtime_properties`. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S3 | `src/commit/batch.rs` / stamping helpers | Stamp two rows in one batch with different timestamps. | `cache_commit_preserves_explicit_timestamp_for_user_and_timeline_rows`, `cache_commit_row_preparation_uses_one_stamp_for_user_and_timeline_rows`, and WAL payload parity counters. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S4 | `src/commit/durable.rs` / durable execution order | Apply to L6 before WAL append in durable mode. | Durable WAL-before-visible tests plus generated model parity in `commit_runtime_closeout_generated_contracts_exercise_required_categories`. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit` | Covered-by-test; live mutation not run |
+| S5 | `src/commit/durable.rs` / WAL failure handling | Treat WAL append failure or unforced Always append as visible success. | `commit_runtime_fault_harness_exercises_protocol_boundaries` asserts clean/uncertain WAL failures and no-gate behavior; `durable_always_commit_rejects_unforced_success_before_l6_apply` pins the orphaned-WAL/no-L6-apply path. | `cargo test -p strata-storage-next --locked --test commit_runtime_faults --features 'testkit fault-injection'`; `cargo test -p strata-storage-next --locked --lib commit` | Covered-by-test; live mutation not run |
+| S6 | `src/commit/durable.rs` / post-WAL failure mapping | Collapse durable-but-not-visible into clean failure. | L7J durable gate tests and `commit_runtime_fault_harness_exercises_protocol_boundaries` assert post-WAL gate cases. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_faults --features 'testkit fault-injection'` | Covered-by-test; live mutation not run |
+| S7 | `src/commit/conflict.rs` or cache/durable call order | Validate conflicts after version allocation. | `cache_commit_conflict_rejects_before_allocation_or_mutation` and generated conflict rejection counters. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S8 | `src/commit/conflict.rs` / blind write handling | Reject blind writes as conflicts. | `blind_put_no_conflict_cases` and `blind_delete_no_conflict_cases` are required by `commit_runtime_properties`. | `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S9 | `src/commit/batch.rs` / branch validation | Allow branch-mismatched rows in a batch. | `branch_mismatch_cases` are required by `commit_runtime_properties`. | `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S10 | `src/commit/timeline.rs` and cache/durable/replay callers | Omit timeline row generation. | Timeline row counters and generated `timeline_checks` are required by `commit_runtime_properties` and L7N closeout. | `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit`; `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit` | Covered-by-test; live mutation not run |
+| S11 | `src/commit/cache.rs` or `src/commit/durable.rs` | Publish visible version before full L6 apply. | Cache/durable visibility failure tests and generated model parity assert visible publication sequencing. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit` | Covered-by-test; live mutation not run |
+| S12 | `src/commit/branch_registry.rs` / branch admission | Ignore branch deleting marker. | `mutating_admission_rejects_deleting_and_deleted_before_guard` and generated branch lifecycle rejection counters. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S13 | `src/commit/guard.rs` / quiesce guard rules | Allow quiesce and mutating commit guard overlap. | `scripted_guard_interleaving_keeps_quiesce_and_branch_guards_exclusive` and generated guard/quiesce rejection counters. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit` | Covered-by-test; live mutation not run |
+| S14 | `src/commit/replay.rs` / duplicate handling | Replay duplicate mismatch as success. | `replay_rejects_duplicate_mismatch_without_mutating_state`, `replay_duplicate_mismatch_checks_timestamp_expiry_and_tombstone`, and L7N replay closeout inventory. | `cargo test -p strata-storage-next --locked --lib commit`; `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit` | Covered-by-test; live mutation not run |
+| S15 | `src/commit/*.rs` imports | Import backend or layout directly from `commit/`. | `commit_runtime_source_does_not_use_table_backend_layout_or_io_apis` and source-guard fixture assertions. | `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | Covered-by-guard; live mutation not run |
+| S16 | `src/commit/*.rs` public surface | Expose public `begin`/`commit`/`rollback` API. | `commit_runtime_stays_crate_private`, public-surface source-guard fixtures, and L7N source inventory. | `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`; `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit` | Covered-by-guard; live mutation not run |
+
+### Command Evidence
+
+Verified for L7N during implementation:
+
+1. `cargo fmt --package strata-storage-next --check`
+2. `cargo test -p strata-storage-next --locked --lib commit`
+3. `cargo test -p strata-storage-next --locked --lib commit_runtime --features testkit`
+4. `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard`
+5. `cargo test -p strata-storage-next --locked --test commit_runtime_fuzz_inventory --features testkit`
+6. `cargo test -p strata-storage-next --locked --test commit_runtime_closeout --features testkit`
+7. `cargo test -p strata-storage-next --locked --test commit_runtime_closeout`
+8. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_closeout`
+9. `cargo test -p strata-storage-next --locked --test commit_runtime_properties --features testkit`
+10. `cargo test -p strata-storage-next --locked --test commit_runtime_faults --features 'testkit fault-injection'`
+11. `cargo test -p strata-storage-next --all-features --locked --test commit_runtime_properties --test commit_runtime_faults --test commit_runtime_fuzz_inventory --test commit_runtime_closeout`
+12. `cargo test -p strata-storage-next --no-default-features --locked commit`
+13. `cargo check -p strata-storage-next --no-default-features --locked --tests`
+14. `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked`
+15. `cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bins`
+16. `cargo hack check -p strata-storage-next --feature-powerset --depth 2`
+17. `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+18. `git diff --check`

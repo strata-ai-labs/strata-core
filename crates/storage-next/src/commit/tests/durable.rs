@@ -180,7 +180,7 @@ fn durable_always_commit_appends_through_real_l4_wal_service() {
     let dir = tempfile::tempdir().expect("tempdir");
     let backend = crate::backend::local_fs::LocalFsBackend::new(dir.path());
     let branch = branch_id(59);
-    let key = physical_key(branch, 0x20, b"real-wal-always".to_vec());
+    let key = physical_key(branch, 0x20, b"real-durable-always".to_vec());
     let timestamp = Timestamp::from_micros(1_000);
     let mut registry = CommitBranchRegistry::new();
     registry
@@ -914,7 +914,7 @@ fn durable_commit_rejects_policy_mismatch_before_allocation_or_wal_append() {
 #[test]
 fn durable_clean_wal_failure_leaves_no_visible_rows_but_allocation_may_gap() {
     let branch = branch_id(56);
-    let key = physical_key(branch, 0x20, b"clean-wal-failure".to_vec());
+    let key = physical_key(branch, 0x20, b"clean-durable-failure".to_vec());
     let mut fixture = DurableFixture::new(
         branch,
         CommitRuntimeConfig::default(),
@@ -1284,6 +1284,76 @@ fn unresolved_durable_gate_blocks_durable_commit_before_allocation_and_wal_appen
         .guard_set
         .try_acquire_branch_guard(branch)
         .expect("branch guard released after blocked durable commit");
+}
+
+#[test]
+fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
+    let active_branch = branch_id(76);
+    let target_branch = branch_id(77);
+    let mut registry = CommitBranchRegistry::new();
+    register_active_branch(&mut registry, active_branch);
+    register_active_branch(&mut registry, target_branch);
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    );
+    let mut state =
+        BranchLocalState::new(target_branch, BranchRuntimeConfig::default()).expect("state");
+    let mut visible = VisibleVersionTracker::default();
+    let mut wal = RecordingWalAppender::new(
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let durable_gate = CommitUnresolvedDurableGate::new();
+    let active_admission = durable_gate
+        .admit_mutating_commit()
+        .expect("first branch durable admission");
+
+    let error = CommitDurableRuntime::new(
+        &CommitRuntimeConfig::default(),
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &mut wal,
+        &durable_gate,
+    )
+    .execute(
+        durable_batch(
+            target_branch,
+            CommitDurabilityMode::Standard,
+            vec![CommitMutation::put(
+                physical_key(target_branch, 0x20, b"blocked-by-active-durable".to_vec()),
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+        ),
+        CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+    )
+    .expect_err("active durable admission blocks cross-branch commit");
+
+    assert_eq!(
+        error,
+        CommitRuntimeError::InvalidCommitState {
+            reason: "durable commit admission is already active",
+        }
+    );
+    assert_eq!(
+        allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(wal.append_attempts, 0);
+    assert_eq!(state.active_row_count(), 0);
+    assert_eq!(visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(durable_gate.unresolved().expect("gate read"), None);
+    drop(active_admission);
+    assert!(durable_gate.require_open_for_mutation().is_ok());
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

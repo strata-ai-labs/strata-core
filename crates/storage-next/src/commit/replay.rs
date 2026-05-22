@@ -312,6 +312,7 @@ fn validate_replay_rows(
     rows: &[StorageRow],
     branch_id: strata_core_next::BranchId,
 ) -> CommitRuntimeResult<()> {
+    let mut has_user_mutation = false;
     for row in rows {
         if row.physical_key().branch_id() != branch_id {
             return Err(CommitRuntimeError::BranchMismatch {
@@ -319,13 +320,21 @@ fn validate_replay_rows(
                 actual: row.physical_key().branch_id(),
             });
         }
-        if row.physical_key().storage_space_id().is_storage_owned()
-            && row.physical_key().storage_space_id() != StorageSpaceId::COMMIT_TIMELINE
-        {
+        let storage_space_id = row.physical_key().storage_space_id();
+        if storage_space_id == StorageSpaceId::COMMIT_TIMELINE {
+            continue;
+        }
+        has_user_mutation = true;
+        if storage_space_id.is_storage_owned() {
             return Err(CommitRuntimeError::StorageOwnedMutationSpace {
-                space_id: row.physical_key().storage_space_id(),
+                space_id: storage_space_id,
             });
         }
+    }
+    if !has_user_mutation {
+        return Err(CommitRuntimeError::InvalidCommitState {
+            reason: "replay payload is missing user mutation rows",
+        });
     }
     validate_no_duplicate_internal_rows(rows)
 }

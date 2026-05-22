@@ -59,7 +59,7 @@ fn unresolved_durable_fact_validates_applied_not_visible_phase() {
 }
 
 #[test]
-fn unresolved_durable_fact_rejects_uncertain_or_cache_durability() {
+fn unresolved_durable_fact_rejects_non_durable_durable_not_applied_state() {
     for durability in [
         CommitDurabilityClass::NotDurable,
         CommitDurabilityClass::Uncertain,
@@ -71,10 +71,32 @@ fn unresolved_durable_fact_rejects_uncertain_or_cache_durability() {
                 "invalid durability",
             ),
             Err(CommitRuntimeError::InvalidCommitState {
-                reason: "unresolved durable commit must claim durable WAL success",
+                reason: "durable-not-applied unresolved commit must claim durable WAL success",
             })
         );
     }
+
+    let cache_applied_not_visible = CommitUnresolvedDurable::applied_not_visible(
+        stamp(branch_id(82), 5),
+        CommitDurabilityClass::NotDurable,
+        "cache visible publish failed",
+    )
+    .expect("not-durable applied-not-visible state");
+    assert_eq!(
+        cache_applied_not_visible.durability(),
+        CommitDurabilityClass::NotDurable
+    );
+
+    assert_eq!(
+        CommitUnresolvedDurable::applied_not_visible(
+            stamp(branch_id(82), 6),
+            CommitDurabilityClass::Uncertain,
+            "uncertain visible publish failed",
+        ),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "applied-not-visible unresolved commit cannot have uncertain durability",
+        })
+    );
 }
 
 #[test]
@@ -259,12 +281,24 @@ fn unresolved_durable_gate_instances_are_not_process_global() {
 }
 
 #[test]
-fn unresolved_durable_gate_empty_admissions_do_not_serialize_each_other() {
+fn unresolved_durable_gate_serializes_active_empty_admissions() {
     let gate = CommitUnresolvedDurableGate::new();
-    let _first = gate.admit_mutating_commit().expect("first admission");
-    let _second = gate.admit_mutating_commit().expect("second admission");
+    let first = gate.admit_mutating_commit().expect("first admission");
 
     assert_eq!(gate.unresolved().expect("gate read"), None);
+    assert!(matches!(
+        gate.admit_mutating_commit(),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "durable commit admission is already active",
+        })
+    ));
+    assert_eq!(
+        gate.require_open_for_mutation(),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "durable commit admission is already active",
+        })
+    );
+    drop(first);
     assert!(gate.require_open_for_mutation().is_ok());
 }
 

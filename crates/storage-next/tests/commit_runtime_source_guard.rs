@@ -422,6 +422,33 @@ fn commit_runtime_source_guard_pins_timeline_module_boundary() {
     }
 }
 
+#[test]
+fn lower_storage_layers_do_not_import_commit_runtime_upward() {
+    let root = common::crate_root();
+    for source_dir in ["src/branch", "src/format", "src/service"] {
+        let mut files = Vec::new();
+        collect_rs_files(&root.join(source_dir), &mut files);
+        for file in files {
+            let text = fs::read_to_string(&file).expect("read lower-layer source");
+            for (line_number, line) in text.lines().enumerate() {
+                let compact: String = line
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect();
+                assert!(
+                    !compact.contains("crate::commit")
+                        && !compact.contains("crate::{commit")
+                        && !compact.contains("super::commit")
+                        && !compact.contains("super::{commit"),
+                    "{}:{} imports upward into commit runtime: {line}",
+                    file.strip_prefix(&root).unwrap_or(&file).display(),
+                    line_number + 1
+                );
+            }
+        }
+    }
+}
+
 fn commit_runtime_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_rs_files(&root.join("src/commit"), &mut files);

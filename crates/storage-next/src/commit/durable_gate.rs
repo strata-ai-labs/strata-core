@@ -26,12 +26,19 @@ pub(crate) struct CommitUnresolvedDurable {
 
 #[derive(Debug, Default)]
 pub(crate) struct CommitUnresolvedDurableGate {
-    unresolved: Mutex<Option<CommitUnresolvedDurable>>,
+    state: Mutex<CommitUnresolvedDurableGateState>,
 }
 
 #[derive(Debug)]
 pub(crate) struct CommitUnresolvedDurableAdmission<'a> {
     gate: &'a CommitUnresolvedDurableGate,
+    active: bool,
+}
+
+#[derive(Debug, Default)]
+struct CommitUnresolvedDurableGateState {
+    unresolved: Option<CommitUnresolvedDurable>,
+    active_admission: bool,
 }
 
 impl CommitUnresolvedDurable {
@@ -80,13 +87,18 @@ impl CommitUnresolvedDurable {
         durability: CommitDurabilityClass,
         reason: &'static str,
     ) -> CommitRuntimeResult<Self> {
+        let durable_version = if durability == CommitDurabilityClass::NotDurable {
+            None
+        } else {
+            Some(stamp.commit_version())
+        };
         Self::new(
             stamp,
             durability,
             CommitUnresolvedDurableKind::AppliedNotVisible,
             CommitVisibilityFacts::new(
                 Some(stamp.commit_version()),
-                Some(stamp.commit_version()),
+                durable_version,
                 Some(stamp.commit_version()),
                 None,
                 Some(stamp.commit_version()),
@@ -125,26 +137,27 @@ impl CommitUnresolvedDurable {
 
     pub(crate) fn validate(self) -> CommitRuntimeResult<()> {
         self.visibility_facts.validate()?;
-        if !matches!(
-            self.durability,
-            CommitDurabilityClass::Standard | CommitDurabilityClass::Always
-        ) {
-            return Err(CommitRuntimeError::InvalidCommitState {
-                reason: "unresolved durable commit must claim durable WAL success",
-            });
-        }
         if self.visibility_facts.allocated_version() != Some(self.commit_version) {
             return Err(CommitRuntimeError::InvalidVisibilityFacts {
                 reason: "unresolved durable commit must preserve allocated version",
             });
         }
-        if self.visibility_facts.durable_version() != Some(self.commit_version) {
-            return Err(CommitRuntimeError::InvalidVisibilityFacts {
-                reason: "unresolved durable commit must preserve durable version",
-            });
-        }
         match self.kind {
             CommitUnresolvedDurableKind::DurableNotApplied => {
+                if !matches!(
+                    self.durability,
+                    CommitDurabilityClass::Standard | CommitDurabilityClass::Always
+                ) {
+                    return Err(CommitRuntimeError::InvalidCommitState {
+                        reason:
+                            "durable-not-applied unresolved commit must claim durable WAL success",
+                    });
+                }
+                if self.visibility_facts.durable_version() != Some(self.commit_version) {
+                    return Err(CommitRuntimeError::InvalidVisibilityFacts {
+                        reason: "unresolved durable commit must preserve durable version",
+                    });
+                }
                 if self.visibility_facts.applied_version().is_some()
                     || self.visibility_facts.timeline_version().is_some()
                     || self.visibility_facts.visible_version().is_some()
@@ -155,6 +168,29 @@ impl CommitUnresolvedDurable {
                 }
             }
             CommitUnresolvedDurableKind::AppliedNotVisible => {
+                if matches!(self.durability, CommitDurabilityClass::Uncertain) {
+                    return Err(CommitRuntimeError::InvalidCommitState {
+                        reason:
+                            "applied-not-visible unresolved commit cannot have uncertain durability",
+                    });
+                }
+                if matches!(
+                    self.durability,
+                    CommitDurabilityClass::Standard | CommitDurabilityClass::Always
+                ) && self.visibility_facts.durable_version() != Some(self.commit_version)
+                {
+                    return Err(CommitRuntimeError::InvalidVisibilityFacts {
+                        reason: "unresolved durable commit must preserve durable version",
+                    });
+                }
+                if self.durability == CommitDurabilityClass::NotDurable
+                    && self.visibility_facts.durable_version().is_some()
+                {
+                    return Err(CommitRuntimeError::InvalidVisibilityFacts {
+                        reason:
+                            "not-durable applied-not-visible commit must not claim durable progress",
+                    });
+                }
                 if self.visibility_facts.applied_version() != Some(self.commit_version) {
                     return Err(CommitRuntimeError::InvalidVisibilityFacts {
                         reason:
@@ -181,12 +217,15 @@ impl CommitUnresolvedDurable {
 impl CommitUnresolvedDurableGate {
     pub(crate) const fn new() -> Self {
         Self {
-            unresolved: Mutex::new(None),
+            state: Mutex::new(CommitUnresolvedDurableGateState {
+                unresolved: None,
+                active_admission: false,
+            }),
         }
     }
 
     pub(crate) fn unresolved(&self) -> CommitRuntimeResult<Option<CommitUnresolvedDurable>> {
-        Ok(*self.lock()?)
+        Ok(self.lock()?.unresolved)
     }
 
     pub(crate) fn require_open_for_mutation(&self) -> CommitRuntimeResult<()> {
@@ -196,15 +235,24 @@ impl CommitUnresolvedDurableGate {
     pub(crate) fn admit_mutating_commit(
         &self,
     ) -> CommitRuntimeResult<CommitUnresolvedDurableAdmission<'_>> {
-        let slot = self.lock()?;
-        if let Some(unresolved) = *slot {
+        let mut state = self.lock()?;
+        if let Some(unresolved) = state.unresolved {
             return Err(CommitRuntimeError::UnresolvedDurableCommit {
                 branch_id: unresolved.branch_id(),
                 commit_version: unresolved.commit_version(),
                 reason: "durable commit must be replayed or reconciled first",
             });
         }
-        Ok(CommitUnresolvedDurableAdmission { gate: self })
+        if state.active_admission {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "durable commit admission is already active",
+            });
+        }
+        state.active_admission = true;
+        Ok(CommitUnresolvedDurableAdmission {
+            gate: self,
+            active: true,
+        })
     }
 
     pub(crate) fn record_unresolved(
@@ -212,14 +260,14 @@ impl CommitUnresolvedDurableGate {
         unresolved: CommitUnresolvedDurable,
     ) -> CommitRuntimeResult<()> {
         unresolved.validate()?;
-        let mut slot = self.lock()?;
-        match *slot {
+        let mut state = self.lock()?;
+        match state.unresolved {
             Some(existing) if existing == unresolved => Ok(()),
             Some(_) => Err(CommitRuntimeError::InvalidCommitState {
                 reason: "different unresolved durable commit is already recorded",
             }),
             None => {
-                *slot = Some(unresolved);
+                state.unresolved = Some(unresolved);
                 Ok(())
             }
         }
@@ -229,10 +277,10 @@ impl CommitUnresolvedDurableGate {
         &self,
         unresolved: CommitUnresolvedDurable,
     ) -> CommitRuntimeResult<()> {
-        let mut slot = self.lock()?;
-        match *slot {
+        let mut state = self.lock()?;
+        match state.unresolved {
             Some(existing) if existing == unresolved => {
-                *slot = None;
+                state.unresolved = None;
                 Ok(())
             }
             Some(_) => Err(CommitRuntimeError::InvalidCommitState {
@@ -250,10 +298,10 @@ impl CommitUnresolvedDurableGate {
         replacement: CommitUnresolvedDurable,
     ) -> CommitRuntimeResult<()> {
         replacement.validate()?;
-        let mut slot = self.lock()?;
-        match *slot {
+        let mut state = self.lock()?;
+        match state.unresolved {
             Some(existing) if existing == expected => {
-                *slot = Some(replacement);
+                state.unresolved = Some(replacement);
                 Ok(())
             }
             Some(_) => Err(CommitRuntimeError::InvalidCommitState {
@@ -265,8 +313,8 @@ impl CommitUnresolvedDurableGate {
         }
     }
 
-    fn lock(&self) -> CommitRuntimeResult<MutexGuard<'_, Option<CommitUnresolvedDurable>>> {
-        self.unresolved
+    fn lock(&self) -> CommitRuntimeResult<MutexGuard<'_, CommitUnresolvedDurableGateState>> {
+        self.state
             .lock()
             .map_err(|_| CommitRuntimeError::InvalidCommitState {
                 reason: "unresolved durable gate lock poisoned",
@@ -280,5 +328,17 @@ impl CommitUnresolvedDurableAdmission<'_> {
         unresolved: CommitUnresolvedDurable,
     ) -> CommitRuntimeResult<()> {
         self.gate.record_unresolved(unresolved)
+    }
+}
+
+impl Drop for CommitUnresolvedDurableAdmission<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Ok(mut state) = self.gate.state.lock() {
+            state.active_admission = false;
+        }
+        self.active = false;
     }
 }

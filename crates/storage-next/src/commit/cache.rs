@@ -6,8 +6,9 @@ use super::{
     CommitBranchReadViewConflictSource, CommitBranchRegistry, CommitDurabilityClass,
     CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitMutationCounts,
     CommitOutcome, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
-    CommitTimelineEntry, CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurableGate,
-    CommitVisibilityFacts, CommitVisiblePublisher, StampedCommitRows, ValidatedCommitBatch,
+    CommitTimelineEntry, CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurable,
+    CommitUnresolvedDurableGate, CommitVisibilityFacts, CommitVisiblePublisher, StampedCommitRows,
+    ValidatedCommitBatch,
 };
 use crate::row::StorageRow;
 
@@ -73,7 +74,7 @@ where
         }
         // The unresolved durable gate is global for V1 visible-version safety,
         // so check it before target-branch admission or allocation.
-        let _unresolved_admission = self.durable_gate.admit_mutating_commit()?;
+        let mut unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
         // Keep this guard alive through conflict validation, L6 apply, and
         // visible publication. That is the single-process safety window for
@@ -100,18 +101,24 @@ where
         self.branch
             .append_committed_rows_atomically(rows.combined_rows())?;
 
-        self.visible.publish_from_facts(facts).map_err(|error| {
-            // The concrete visible tracker accepts these facts after the
-            // allocation/visible-version checks above. This branch exists for
-            // injected test publishers and future publication surfaces; the
-            // target-branch ahead-of-visible guard prevents normal follow-on
-            // commits from exposing the unpublished branch state.
-            CommitRuntimeError::AppliedButNotVisible {
+        if let Err(error) = self.visible.publish_from_facts(facts) {
+            // Cache mode has no WAL replay path. If publication fails after L6
+            // apply, block all later mutations through the global gate so a
+            // cross-branch visible-version advance cannot expose these rows by
+            // side effect.
+            let reason = applied_not_visible_reason(&error);
+            let unresolved = CommitUnresolvedDurable::applied_not_visible(
+                stamp,
+                CommitDurabilityClass::NotDurable,
+                reason,
+            )?;
+            unresolved_admission.record_unresolved(unresolved)?;
+            return Err(CommitRuntimeError::AppliedButNotVisible {
                 branch_id: batch.batch().branch_id(),
                 commit_version: stamp.commit_version(),
-                reason: applied_not_visible_reason(&error),
-            }
-        })?;
+                reason,
+            });
+        }
 
         CommitOutcome::visible(
             batch.batch().branch_id(),
@@ -220,8 +227,8 @@ fn require_branch_not_ahead_of_visible(
 ) -> CommitRuntimeResult<()> {
     // The V1 visible-version tracker is global, but this executor owns only the
     // target branch state. Cross-branch applied-not-visible rows are excluded by
-    // the global unresolved durable gate and recovery ownership; this local
-    // check fails closed for the branch this commit can actually expose.
+    // the global unresolved gate; this local check fails closed for the branch
+    // this commit can actually expose.
     if branch_max_commit_version.is_some_and(|version| version > current_visible_version) {
         return Err(CommitRuntimeError::InvalidCommitState {
             reason: "branch has applied rows above current visible version",

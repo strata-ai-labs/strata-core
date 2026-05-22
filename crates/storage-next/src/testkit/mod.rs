@@ -33,8 +33,9 @@ pub use commit_runtime_runner::{
     check_commit_runtime_batch_contract, check_commit_runtime_conflict_contract,
     check_commit_runtime_conflict_script_contract, check_commit_runtime_durable_contract,
     check_commit_runtime_durable_script_contract, check_commit_runtime_fault_contract,
-    check_commit_runtime_script_contract, check_commit_runtime_timeline_contract,
-    check_commit_runtime_timeline_script_contract, CommitRuntimeAssuranceOutcome,
+    check_commit_runtime_generated_input_contract, check_commit_runtime_script_contract,
+    check_commit_runtime_timeline_contract, check_commit_runtime_timeline_script_contract,
+    CommitRuntimeAssuranceOutcome,
 };
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
