@@ -208,7 +208,7 @@ impl LifecycleDurableAssemblyFacts {
     }
 }
 
-impl LifecycleDurableLocalServices<'_> {
+impl<'a> LifecycleDurableLocalServices<'a> {
     pub(crate) const fn capability_outcome(&self) -> &LifecycleCapabilityOutcome {
         &self.capability_outcome
     }
@@ -221,39 +221,43 @@ impl LifecycleDurableLocalServices<'_> {
         &self.writer_guard
     }
 
-    pub(crate) const fn wal(&self) -> &WalService<'_> {
+    pub(crate) const fn wal(&self) -> &WalService<'a> {
         &self.wal
     }
 
-    pub(crate) const fn manifest(&self) -> &DatabaseManifestService<'_> {
+    pub(crate) fn wal_mut(&mut self) -> &mut WalService<'a> {
+        &mut self.wal
+    }
+
+    pub(crate) const fn manifest(&self) -> &DatabaseManifestService<'a> {
         &self.manifest
     }
 
-    pub(crate) const fn table_manifest(&self) -> &TableManifestService<'_> {
+    pub(crate) const fn table_manifest(&self) -> &TableManifestService<'a> {
         &self.table_manifest
     }
 
-    pub(crate) const fn wal_sidecar(&self) -> &WalSegmentMetadataSidecarService<'_> {
+    pub(crate) const fn wal_sidecar(&self) -> &WalSegmentMetadataSidecarService<'a> {
         &self.wal_sidecar
     }
 
-    pub(crate) const fn snapshot(&self) -> &SnapshotService<'_> {
+    pub(crate) const fn snapshot(&self) -> &SnapshotService<'a> {
         &self.snapshot
     }
 
-    pub(crate) const fn table_object(&self) -> &TableObjectService<'_> {
+    pub(crate) const fn table_object(&self) -> &TableObjectService<'a> {
         &self.table_object
     }
 
-    pub(crate) const fn table_reader(&self) -> &TableObjectReaderService<'_> {
+    pub(crate) const fn table_reader(&self) -> &TableObjectReaderService<'a> {
         &self.table_reader
     }
 
-    pub(crate) const fn checkpoint(&self) -> &CheckpointService<'_> {
+    pub(crate) const fn checkpoint(&self) -> &CheckpointService<'a> {
         &self.checkpoint
     }
 
-    pub(crate) const fn quarantine(&self) -> &QuarantineService<'_> {
+    pub(crate) const fn quarantine(&self) -> &QuarantineService<'a> {
         &self.quarantine
     }
 }
@@ -358,12 +362,20 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         &self.services
     }
 
+    pub(crate) fn services_mut(&mut self) -> &mut LifecycleDurableLocalServices<'a> {
+        &mut self.services
+    }
+
     pub(crate) const fn assembly_facts(&self) -> &LifecycleDurableAssemblyFacts {
         self.services.assembly_facts()
     }
 
     pub(crate) const fn branch_state(&self) -> &BranchLocalState {
         &self.branch
+    }
+
+    pub(crate) fn branch_state_mut(&mut self) -> &mut BranchLocalState {
+        &mut self.branch
     }
 
     pub(crate) const fn registry(&self) -> &CommitBranchRegistry {

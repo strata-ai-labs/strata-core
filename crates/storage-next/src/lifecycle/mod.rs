@@ -16,6 +16,7 @@ mod error;
 mod facts;
 mod health;
 mod outcome;
+mod recovery;
 mod result;
 mod state;
 
@@ -74,6 +75,16 @@ pub(crate) use health::{
 pub(crate) use outcome::{
     CloseOutcome, CloseOutcomeStatus, MaintenanceOutcome, MaintenanceOutcomeStatus,
     StorageOpenDisposition, StorageOpenOutcome,
+};
+#[allow(
+    unused_imports,
+    reason = "lifecycle recovery exports define the local surface for L8G bootstrap"
+)]
+pub(crate) use recovery::{
+    encode_checkpoint_row_section, LifecycleRecoveredCheckpoint, LifecycleRecoveredQuarantine,
+    LifecycleRecoveredTable, LifecycleRecoveredTables, LifecycleRecoveredWal,
+    LifecycleRecoveryOutcome, LifecycleRecoveryRequest, LifecycleRecoveryRuntime,
+    LifecycleRecoveryTableObject, SNAPSHOT_ROW_SECTION_KIND,
 };
 #[allow(
     unused_imports,

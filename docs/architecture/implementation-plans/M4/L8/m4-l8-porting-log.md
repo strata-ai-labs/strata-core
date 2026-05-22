@@ -427,6 +427,173 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8F - Recovery Orchestration
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/health.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/service/snapshot.rs`
+- `crates/storage-next/src/service/wal.rs`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/service/quarantine.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/commit/replay.rs`
+- `crates/storage-next/src/format/snapshot.rs`
+- `crates/storage-next/src/format/storage_row.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8f-recovery-orchestration-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8f-recovery-orchestration-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/recovery.rs`
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/health.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/recovery.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/format/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/recovery.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/lifecycle_recovery.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- L8F starts from the L8E durable shell and requires recovery-step admission.
+- Manifest snapshot id/watermark facts are validated before WAL replay-start
+  selection.
+- Manifest-listed snapshots load through `SnapshotService` with database id,
+  codec id, snapshot id, and watermark validation.
+- Row-native checkpoint sections use storage row bytes and install through the
+  L6 snapshot-install API.
+- WAL records are read through `WalService::read_after_commit_version` using
+  the trusted recovered checkpoint watermark. A manifest flush watermark that
+  is not covered by recovered checkpoint/table state fails closed.
+- Latest WAL tail truncation is repaired through `WalService::repair_latest_tail`.
+- Quarantine inventory loads through `QuarantineService::load_inventory`.
+- L8F returns a recovery package for L8G and does not invoke L7 replay,
+  allocator catch-up, visible-version publication, or product callbacks.
+
+### Intentional Changes
+
+- Added `LifecycleRecoveryRuntime` over `LifecycleDurableLocalShell`.
+- Added `LifecycleRecoveryRequest` and crate-private recovery outcome/fact
+  structs for checkpoint, WAL, quarantine, and table validation.
+- Added `SNAPSHOT_ROW_SECTION_KIND` and `encode_checkpoint_row_section` for
+  row-native checkpoint snapshots.
+- Re-exported storage-row encode/decode helpers from `format` for lifecycle
+  recovery's storage-owned checkpoint section codec.
+- Added `MissingSnapshotObject` and `WalTailRepairFailed` recovery fault kinds.
+- Added mutable shell/service accessors needed by recovery while keeping the
+  durable service bundle crate-private.
+- Added a source guard that blocks L8F from calling `CommitReplayRuntime`,
+  normal commit execution, visible publication, allocator catch-up, or product
+  reconstruction hooks.
+- Staged checkpoint branch-state replacement until WAL, table validation,
+  quarantine inventory, and health aggregation succeed.
+- Validate recovered table-object references before WAL tail repair so a missing
+  table cannot leave a durable WAL repair side effect.
+- Retain validated table identity and table-object facts in the L8F recovery
+  package for the L8G/L8J handoff.
+- Added a feature-gated lifecycle recovery testkit contract and integration
+  test so `tests/lifecycle_recovery.rs` exercises storage behavior, with
+  separate counters for canonical smoke paths and script-derived recovery
+  coverage.
+
+### Retired From V1 L8F
+
+- Product primitive reconstruction during recovery.
+- Direct branch internals mutation for checkpoint rows.
+- Treating manifest active WAL segment id as a commit-version watermark.
+- Trusting manifest snapshot watermark without loading the snapshot.
+- Trusting a manifest flush watermark without recovering the flushed table
+  state that proves it.
+- Reporting healthy recovery after explicit lossy fallback.
+
+### Deferred By Owner Slice
+
+- L7 WAL replay, allocator/timestamp catch-up, visible-version publication,
+  timeline validation, and unresolved durable gate reconciliation: L8G.
+- Full generated recovery script counters and fuzz targets: L8O/L8P closeout
+  unless pulled forward during L8G.
+- Table-backed checkpoint metadata production: L8J. L8F can validate table
+  object facts supplied in the recovery request, but current checkpoint tests
+  exercise row-native sections.
+- Flushed table-state recovery for manifest flush watermarks: L8I/L8J.
+- Multi-branch checkpoint installation into runtime branch maps: L8G/L9. L8F
+  currently fails closed on checkpoint rows for unopened branches.
+- Quarantine mutation, repair, purge, and inventory rewrite: L8M.
+- Public open outcome publication: L8G/L9.
+
+### Tests Added
+
+- `recovery_empty_database_returns_healthy_package_without_replay`
+- `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail`
+- `recovery_does_not_install_checkpoint_when_later_wal_read_fails`
+- `recovery_repairs_latest_partial_log_tail_and_preserves_valid_records`
+- `recovery_rejects_checkpoint_row_newer_than_snapshot_watermark`
+- `recovery_rejects_checkpoint_rows_for_unopened_branch`
+- `recovery_rejects_flush_watermark_without_recovered_table_state`
+- `recovery_rejects_missing_referenced_table_object`
+- `recovery_records_validated_table_identity_and_facts`
+- `recovery_validates_tables_before_wal_tail_repair`
+- `recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy`
+- `recovery_rejects_missing_snapshot_in_strict_mode`
+- `recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark`
+- `recovery_request_rejects_lossy_when_open_plan_is_strict`
+- `recovery_request_validates_limits_and_checkpoint_identity`
+- `checkpoint_row_section_round_trips_and_rejects_trailing_bytes`
+- `checkpoint_row_section_rejects_declared_rows_without_length_prefixes`
+- `lifecycle_recovery_contract_exercises_storage_recovery_paths`
+- `lifecycle_property_harness_runs_recovery_contract`
+- `lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Trust missing snapshot watermark | Use manifest snapshot watermark after missing snapshot in lossy mode | `recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark` |
+| Read WAL from zero | Ignore checkpoint watermark when selecting replay start | `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail` |
+| Include watermark-equal records | Use `>= replay_start` instead of `> replay_start` | `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail` |
+| Skip L6 snapshot install | Decode checkpoint rows but do not call snapshot install | `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail` |
+| Partially mutate shell | Install checkpoint rows before a later WAL failure | `recovery_does_not_install_checkpoint_when_later_wal_read_fails` |
+| Skip latest-tail repair | Return truncation without calling repair | `recovery_repairs_latest_partial_log_tail_and_preserves_valid_records` |
+| Repair before table validation | Repair a partial WAL tail before validating a referenced table object | `recovery_validates_tables_before_wal_tail_repair` |
+| Trust uncovered flush watermark | Use manifest flush watermark without recovered table state | `recovery_rejects_flush_watermark_without_recovered_table_state` |
+| Accept too-new checkpoint row | Install checkpoint row with commit version above snapshot watermark | `recovery_rejects_checkpoint_row_newer_than_snapshot_watermark` |
+| Accept unopened branch row | Install checkpoint row for a branch not owned by the shell | `recovery_rejects_checkpoint_rows_for_unopened_branch` |
+| Allocate from bogus row count | Reserve row-count capacity before checking payload length | `checkpoint_row_section_rejects_declared_rows_without_length_prefixes` |
+| Ignore missing referenced table | Treat missing table object validation as healthy | `recovery_rejects_missing_referenced_table_object` |
+| Treat quarantine mismatch as healthy | Ignore corrupt quarantine inventory under lossy policy | `recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy` |
+| Healthy lossy fallback | Return `Healthy` after missing snapshot downgrade | `recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark` |
+| Collapse source chain | Drop lower snapshot decode/source error | `recovery_rejects_missing_snapshot_in_strict_mode` |
+| Accept malformed row section | Ignore trailing checkpoint row bytes | `checkpoint_row_section_round_trips_and_rejects_trailing_bytes` |
+| Call L7 replay in L8F | Import or invoke `CommitReplayRuntime` | `lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks` |
+| Advance visible in L8F | Call visible publication from recovery | `lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks` |
+
+### Verification
+
+Commands run for L8F:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --all-features --locked --test object_layout_properties
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8C - Storage Mode Capability Validation
 
 Status: implemented

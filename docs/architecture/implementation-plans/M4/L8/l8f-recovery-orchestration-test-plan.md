@@ -19,7 +19,7 @@ Tests should fail if L8F:
 1. skips a manifest-listed checkpoint before selecting the WAL replay start;
 2. trusts a snapshot watermark without loading and validating the snapshot;
 3. uses the manifest active WAL segment id as a commit-version watermark;
-4. reads WAL from zero when a trusted checkpoint/flush watermark exists;
+4. reads WAL from zero when a trusted recovered checkpoint watermark exists;
 5. drops or rewrites WAL records that should be handed to L8G;
 6. reports `Healthy` after data loss or lossy policy downgrade;
 7. treats non-latest WAL corruption as repairable;
@@ -122,13 +122,15 @@ Required tests:
 Required tests:
 
 1. no trusted snapshot and no flush watermark uses `CommitVersion::ZERO`;
-2. flush watermark alone uses flush watermark;
+2. flush watermark alone fails closed until flushed table-state recovery lands;
 3. trusted snapshot watermark alone uses snapshot watermark;
 4. trusted snapshot watermark greater than flush watermark uses snapshot
    watermark;
-5. flush watermark greater than trusted snapshot watermark uses flush watermark;
+5. flush watermark greater than trusted snapshot watermark fails closed until
+   flushed table-state recovery lands;
 6. failed snapshot load does not contribute a replay-start watermark;
-7. lossy fallback after snapshot loss falls back to flush watermark if present;
+7. lossy fallback after snapshot loss does not trust a flush watermark by
+   itself;
 8. lossy fallback after snapshot loss falls back to zero when no other
    watermark exists;
 9. active WAL segment id is ignored by replay-start calculation;
@@ -175,8 +177,8 @@ Required tests:
 3. checkpoint rows install through `BranchSnapshotInstallRequest::from_rows`;
 4. empty checkpoint install is a no-op outcome;
 5. checkpoint rows for one branch install into that branch;
-6. checkpoint rows for multiple branches use the documented missing-branch
-   policy;
+6. checkpoint rows for unopened branches fail closed until the runtime owns a
+   multi-branch state map;
 7. duplicate internal keys fail through L6 snapshot install;
 8. unsorted checkpoint rows are normalized by `from_rows`;
 9. invalid row bytes fail with format/source preservation;
@@ -328,13 +330,13 @@ Required counters:
 3. checkpoint installed;
 4. replay start from zero;
 5. replay start from snapshot;
-6. replay start from flush;
+6. flush watermark rejected unless recovered checkpoint/table state covers it;
 7. WAL records packaged;
 8. WAL repair attempted;
 9. strict failure;
 10. lossy degradation;
 11. quarantine mismatch;
-12. table validation;
+12. table validation with validated identity/facts retained in recovery facts;
 13. source-chain failure;
 14. no L7 replay;
 15. no product callback.

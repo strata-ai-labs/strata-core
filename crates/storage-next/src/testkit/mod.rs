@@ -49,7 +49,10 @@ pub use integration_harness::{
     run_storage_stress_harness, CrashRecoveryHarnessOutcome, ServiceFaultWindowHarnessOutcome,
     StorageStressHarnessOutcome,
 };
-pub use lifecycle::{check_lifecycle_scaffold_contract, LifecycleScaffoldOutcome};
+pub use lifecycle::{
+    check_lifecycle_recovery_contract, check_lifecycle_scaffold_contract,
+    LifecycleRecoveryContractOutcome, LifecycleScaffoldOutcome,
+};
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,

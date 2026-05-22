@@ -29,6 +29,7 @@ pub(crate) use snapshot::{
     decode_snapshot_container, encode_snapshot_container, visit_snapshot_container_sections,
     SnapshotContainer, SnapshotHeader, SnapshotSection, SnapshotSectionRef,
 };
+pub(crate) use storage_row::{decode_storage_row, encode_storage_row};
 #[expect(
     unused_imports,
     reason = "immutable table artifact helpers are consumed by L5 table runtime added later"

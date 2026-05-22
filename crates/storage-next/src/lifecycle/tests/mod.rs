@@ -7,6 +7,7 @@ use strata_core_next::CommitVersion;
 mod cache;
 mod capability;
 mod durable;
+mod recovery;
 mod state;
 
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [
@@ -390,14 +391,16 @@ fn recovery_health_requires_degraded_faults() {
         RecoveryFaultKind::CorruptSnapshot,
         RecoveryFaultKind::CorruptWal,
         RecoveryFaultKind::MissingManifestObject,
+        RecoveryFaultKind::MissingSnapshotObject,
         RecoveryFaultKind::MissingTableObject,
         RecoveryFaultKind::InheritedLayerLoss,
         RecoveryFaultKind::NoManifestFallback,
         RecoveryFaultKind::IoFailure,
         RecoveryFaultKind::QuarantineInventoryMismatch,
         RecoveryFaultKind::TimelineMismatch,
+        RecoveryFaultKind::WalTailRepairFailed,
     ];
-    assert_eq!(fault_kinds.len(), 10);
+    assert_eq!(fault_kinds.len(), 12);
 
     let fault =
         RecoveryFault::new(RecoveryFaultKind::CorruptWal, "crc mismatch").expect("recovery fault");

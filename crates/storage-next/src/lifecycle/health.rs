@@ -33,12 +33,14 @@ pub(crate) enum RecoveryFaultKind {
     CorruptSnapshot,
     CorruptWal,
     MissingManifestObject,
+    MissingSnapshotObject,
     MissingTableObject,
     InheritedLayerLoss,
     NoManifestFallback,
     IoFailure,
     QuarantineInventoryMismatch,
     TimelineMismatch,
+    WalTailRepairFailed,
 }
 
 impl RecoveryHealth {

@@ -1,0 +1,710 @@
+//! Lifecycle recovery conformance helpers.
+
+use super::super::TestkitError;
+use super::{ensure, script_byte};
+use crate::backend::{
+    Backend, BackendAppend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata,
+    BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError, PublishMode,
+    PublishOutcome, PublishResult, DURABLE_LOCAL_MODE_REQUIREMENTS,
+};
+use crate::branch::BranchRuntimeConfig;
+use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
+use crate::format::{encode_manifest, DatabaseManifest, WalCommitPayload, WalRecord};
+use crate::layout::ObjectLayout;
+use crate::lifecycle::{
+    encode_checkpoint_row_section, LifecycleCodecId, LifecycleConfig,
+    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalShell, LifecycleError,
+    LifecycleLossyRecoveryPolicy, LifecycleRecoveryRequest, LifecycleRecoveryRuntime,
+    RecoveryDegradationClass, RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageMode,
+    StorageOpenPlan,
+};
+use crate::object::{ObjectName, ObjectPrefix};
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::service::{SnapshotPublishRequest, SnapshotService, WalServiceConfig};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+const DATABASE_ID: [u8; 16] = [0x82; 16];
+
+/// Coverage counters for lifecycle recovery contract checks.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "counter suffix keeps the testkit getter vocabulary explicit"
+)]
+pub struct LifecycleRecoveryContractOutcome {
+    empty_recovery_cases: usize,
+    checkpoint_recovery_cases: usize,
+    log_tail_cases: usize,
+    strict_failure_cases: usize,
+    lossy_degradation_cases: usize,
+    input_derived_empty_cases: usize,
+    input_derived_checkpoint_cases: usize,
+    input_derived_log_tail_cases: usize,
+    input_derived_strict_failure_cases: usize,
+    input_derived_lossy_degradation_cases: usize,
+}
+
+impl LifecycleRecoveryContractOutcome {
+    /// Number of empty recovery cases exercised.
+    pub const fn empty_recovery_cases(&self) -> usize {
+        self.empty_recovery_cases
+    }
+
+    /// Number of checkpoint recovery cases exercised.
+    pub const fn checkpoint_recovery_cases(&self) -> usize {
+        self.checkpoint_recovery_cases
+    }
+
+    /// Number of unreplayed log-tail package cases exercised.
+    pub const fn log_tail_cases(&self) -> usize {
+        self.log_tail_cases
+    }
+
+    /// Number of strict recovery failure cases exercised.
+    pub const fn strict_failure_cases(&self) -> usize {
+        self.strict_failure_cases
+    }
+
+    /// Number of explicitly lossy degraded recovery cases exercised.
+    pub const fn lossy_degradation_cases(&self) -> usize {
+        self.lossy_degradation_cases
+    }
+
+    /// Number of script-derived empty recovery cases exercised.
+    pub const fn input_derived_empty_cases(&self) -> usize {
+        self.input_derived_empty_cases
+    }
+
+    /// Number of script-derived checkpoint recovery cases exercised.
+    pub const fn input_derived_checkpoint_cases(&self) -> usize {
+        self.input_derived_checkpoint_cases
+    }
+
+    /// Number of script-derived log-tail package cases exercised.
+    pub const fn input_derived_log_tail_cases(&self) -> usize {
+        self.input_derived_log_tail_cases
+    }
+
+    /// Number of script-derived strict failure cases exercised.
+    pub const fn input_derived_strict_failure_cases(&self) -> usize {
+        self.input_derived_strict_failure_cases
+    }
+
+    /// Number of script-derived lossy degraded recovery cases exercised.
+    pub const fn input_derived_lossy_degradation_cases(&self) -> usize {
+        self.input_derived_lossy_degradation_cases
+    }
+}
+
+/// Exercises L8F recovery behavior through the crate-private runtime.
+pub fn check_lifecycle_recovery_contract(
+    script: &[u8],
+) -> Result<LifecycleRecoveryContractOutcome, TestkitError> {
+    let mut outcome = LifecycleRecoveryContractOutcome::default();
+    check_empty_recovery(script, &mut outcome)?;
+    check_checkpoint_and_tail(script, &mut outcome)?;
+    check_strict_missing_snapshot(script, &mut outcome)?;
+    check_lossy_missing_snapshot(script, &mut outcome)?;
+    check_input_derived_recovery(script, &mut outcome)?;
+    Ok(outcome)
+}
+
+fn check_input_derived_recovery(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    check_input_derived_empty_recovery(script, outcome)?;
+    check_input_derived_checkpoint_and_tail(script, outcome)?;
+    check_input_derived_strict_failure(script, outcome)?;
+    check_input_derived_lossy_degradation(script, outcome)?;
+    Ok(())
+}
+
+fn check_empty_recovery(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 0));
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        recovered.health().is_healthy(),
+        "empty recovery not healthy",
+    )?;
+    ensure(
+        recovered.wal().records().is_empty(),
+        "empty recovery returned log records",
+    )?;
+    ensure(
+        shell.visible_version() == CommitVersion::ZERO,
+        "L8F advanced visible version",
+    )?;
+    ensure(
+        shell.admit_commit().is_err(),
+        "L8F made shell commit-admissible",
+    )?;
+    outcome.empty_recovery_cases += 1;
+    Ok(())
+}
+
+fn check_checkpoint_and_tail(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 1));
+    let checkpoint_version = CommitVersion::new(3);
+    let tail_version = CommitVersion::new(4);
+    let checkpoint_row = put_row(branch, checkpoint_version, b"checkpoint", b"value");
+    publish_snapshot(
+        &backend,
+        2,
+        checkpoint_version,
+        std::slice::from_ref(&checkpoint_row),
+    )?;
+    write_database_root(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(1, Some(checkpoint_version.as_u64()), Some(2), None)
+            .map_err(testkit_error)?,
+    )?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let tail = wal_record(branch, tail_version, b"tail", b"value")?;
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&tail)
+        .map_err(testkit_error)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        recovered.checkpoint().trusted_watermark() == Some(checkpoint_version),
+        "checkpoint watermark not trusted after validation",
+    )?;
+    ensure(
+        recovered.wal().records() == std::slice::from_ref(&tail),
+        "recovered log tail did not preserve record",
+    )?;
+    ensure(
+        shell.branch_state().capture_read_view().is_ok(),
+        "checkpoint install left branch unreadable",
+    )?;
+    outcome.checkpoint_recovery_cases += 1;
+    outcome.log_tail_cases += 1;
+    Ok(())
+}
+
+fn check_strict_missing_snapshot(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 2));
+    write_database_root(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(1, Some(9), Some(3), None)
+            .map_err(testkit_error)?,
+    )?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("strict missing snapshot rejects");
+    ensure(
+        matches!(error, LifecycleError::LowerLayer { .. }),
+        "strict missing snapshot was not a lower-layer failure",
+    )?;
+    outcome.strict_failure_cases += 1;
+    Ok(())
+}
+
+fn check_lossy_missing_snapshot(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 3));
+    write_database_root(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(1, Some(9), Some(4), None)
+            .map_err(testkit_error)?,
+    )?;
+    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+    ensure(
+        matches!(
+            recovered.health(),
+            RecoveryHealth::Degraded {
+                class: RecoveryDegradationClass::PolicyDowngrade,
+                faults
+            } if faults.iter().any(
+                |fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject
+            )
+        ),
+        "lossy missing snapshot did not record policy downgrade",
+    )?;
+    ensure(
+        recovered.wal().replay_start() == CommitVersion::ZERO,
+        "lossy missing snapshot trusted missing checkpoint watermark",
+    )?;
+    outcome.lossy_degradation_cases += 1;
+    Ok(())
+}
+
+fn check_input_derived_empty_recovery(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 4));
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        recovered.health().is_healthy(),
+        "input-derived empty recovery not healthy",
+    )?;
+    ensure(
+        recovered.wal().replay_start() == CommitVersion::ZERO,
+        "input-derived empty recovery used nonzero replay start",
+    )?;
+    outcome.input_derived_empty_cases += 1;
+    Ok(())
+}
+
+fn check_input_derived_checkpoint_and_tail(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 5));
+    let checkpoint_version = CommitVersion::new(1 + u64::from(script_byte(script, 6) % 4));
+    let tail_count = usize::from(script_byte(script, 7) % 3) + 1;
+    let snapshot_id = 10 + u64::from(script_byte(script, 8) % 32);
+    let checkpoint_row = put_row(
+        branch,
+        checkpoint_version,
+        b"generated-checkpoint",
+        b"value",
+    );
+    publish_snapshot(
+        &backend,
+        snapshot_id,
+        checkpoint_version,
+        std::slice::from_ref(&checkpoint_row),
+    )?;
+    let flush_watermark = if script_byte(script, 9).is_multiple_of(2) {
+        Some(checkpoint_version)
+    } else {
+        None
+    };
+    write_database_root(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(
+                1,
+                Some(checkpoint_version.as_u64()),
+                Some(snapshot_id),
+                flush_watermark,
+            )
+            .map_err(testkit_error)?,
+    )?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let equal = wal_record(branch, checkpoint_version, b"generated-equal", b"ignored")?;
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&equal)
+        .map_err(testkit_error)?;
+    let mut expected_tail = Vec::new();
+    for offset in 1..=tail_count {
+        let version = CommitVersion::new(checkpoint_version.as_u64() + offset as u64);
+        let record = wal_record(branch, version, b"generated-tail", b"value")?;
+        shell
+            .services_mut()
+            .wal_mut()
+            .append(&record)
+            .map_err(testkit_error)?;
+        expected_tail.push(record);
+    }
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        recovered.checkpoint().trusted_watermark() == Some(checkpoint_version),
+        "input-derived checkpoint watermark not trusted",
+    )?;
+    ensure(
+        recovered.wal().records() == expected_tail.as_slice(),
+        "input-derived WAL tail filtering mismatch",
+    )?;
+    outcome.input_derived_checkpoint_cases += 1;
+    outcome.input_derived_log_tail_cases += 1;
+    Ok(())
+}
+
+fn check_input_derived_strict_failure(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 10));
+    let manifest = if script_byte(script, 11).is_multiple_of(2) {
+        DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(1, Some(7), Some(17), None)
+            .map_err(testkit_error)?
+    } else {
+        DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(1, None, None, Some(CommitVersion::new(7)))
+            .map_err(testkit_error)?
+    };
+    write_database_root(&backend, &manifest)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+
+    LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("input-derived strict failure rejects");
+    outcome.input_derived_strict_failure_cases += 1;
+    Ok(())
+}
+
+fn check_input_derived_lossy_degradation(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 12));
+    write_database_root(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .map_err(testkit_error)?
+            .with_recovery_facts(1, Some(8), Some(18), None)
+            .map_err(testkit_error)?,
+    )?;
+    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        matches!(
+            recovered.health(),
+            RecoveryHealth::Degraded {
+                class: RecoveryDegradationClass::PolicyDowngrade,
+                faults
+            } if faults.iter().any(
+                |fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject
+            )
+        ),
+        "input-derived lossy recovery did not degrade",
+    )?;
+    outcome.input_derived_lossy_degradation_cases += 1;
+    Ok(())
+}
+
+fn assemble_shell(
+    plan: StorageOpenPlan,
+    branch: BranchId,
+    backend: &RecoveryScriptBackend,
+) -> Result<LifecycleDurableLocalShell<'_>, TestkitError> {
+    LifecycleDurableLocalShell::assemble(
+        LifecycleDurableLocalOpenRequest::new(
+            plan,
+            DATABASE_ID,
+            branch,
+            CommitBranchGeneration::new(1).map_err(testkit_error)?,
+            BranchRuntimeConfig::default(),
+            CommitRuntimeConfig::default(),
+            WalServiceConfig::default(),
+        )
+        .map_err(testkit_error)?,
+        backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .map_err(testkit_error)
+}
+
+fn open_plan(strictness: RecoveryStrictness) -> StorageOpenPlan {
+    StorageOpenPlan::new(
+        StorageMode::DurableLocalStandard,
+        LifecycleCodecId::identity(),
+        strictness,
+        LifecycleConfig::default(),
+    )
+    .expect("open plan")
+}
+
+fn lossy_open_plan() -> StorageOpenPlan {
+    let config = LifecycleConfig::new(
+        1024,
+        16,
+        crate::lifecycle::LifecycleCloseTimeoutPolicy::ReturnTypedTimeout,
+        LifecycleLossyRecoveryPolicy::ExplicitlyAllowed,
+    )
+    .expect("lossy config");
+    StorageOpenPlan::new(
+        StorageMode::DurableLocalStandard,
+        LifecycleCodecId::identity(),
+        RecoveryStrictness::AllowExplicitLossyFallback,
+        config,
+    )
+    .expect("lossy open plan")
+}
+
+fn publish_snapshot(
+    backend: &RecoveryScriptBackend,
+    snapshot_id: u64,
+    watermark: CommitVersion,
+    rows: &[StorageRow],
+) -> Result<(), TestkitError> {
+    SnapshotService::new(backend)
+        .publish_create(SnapshotPublishRequest::new(
+            snapshot_id,
+            watermark,
+            Timestamp::from_micros(7_000),
+            DATABASE_ID,
+            "identity",
+            vec![encode_checkpoint_row_section(rows).map_err(testkit_error)?],
+        ))
+        .map_err(testkit_error)?;
+    Ok(())
+}
+
+fn write_database_root(
+    backend: &RecoveryScriptBackend,
+    root: &DatabaseManifest,
+) -> Result<(), TestkitError> {
+    backend.write_raw(
+        ObjectLayout::database_manifest().map_err(testkit_error)?,
+        encode_manifest(root).map_err(testkit_error)?,
+    );
+    Ok(())
+}
+
+fn wal_record(
+    branch: BranchId,
+    version: CommitVersion,
+    user_key: &'static [u8],
+    value: &'static [u8],
+) -> Result<WalRecord, TestkitError> {
+    let timestamp = Timestamp::from_micros(version.as_u64() * 100);
+    let row = StorageRow::put(
+        physical_key(branch, user_key)?,
+        version,
+        timestamp,
+        Timestamp::EPOCH,
+        value.to_vec(),
+    );
+    let payload = WalCommitPayload::new(vec![row]).map_err(testkit_error)?;
+    WalRecord::new(version, branch, timestamp, payload).map_err(testkit_error)
+}
+
+fn put_row(
+    branch: BranchId,
+    version: CommitVersion,
+    user_key: &'static [u8],
+    value: &'static [u8],
+) -> StorageRow {
+    StorageRow::put(
+        physical_key(branch, user_key).expect("physical key"),
+        version,
+        Timestamp::from_micros(version.as_u64() * 100),
+        Timestamp::EPOCH,
+        value.to_vec(),
+    )
+}
+
+fn physical_key(branch: BranchId, user_key: &'static [u8]) -> Result<PhysicalKey, TestkitError> {
+    PhysicalKey::new(
+        branch,
+        "lifecycle",
+        StorageSpaceId::engine(0x20).map_err(testkit_error)?,
+        user_key.to_vec(),
+    )
+    .map_err(testkit_error)
+}
+
+fn branch_id(byte: u8) -> BranchId {
+    BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+}
+
+fn testkit_error(error: impl std::error::Error) -> TestkitError {
+    TestkitError::new(error.to_string())
+}
+
+#[derive(Debug)]
+struct RecoveryScriptBackend {
+    capabilities: BackendCapabilities,
+    objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
+    lock_held: Arc<AtomicBool>,
+}
+
+impl RecoveryScriptBackend {
+    fn new() -> Self {
+        Self {
+            capabilities: BackendCapabilities::from_slice(DURABLE_LOCAL_MODE_REQUIREMENTS),
+            objects: Mutex::new(BTreeMap::new()),
+            lock_held: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {
+        self.objects.lock().expect("objects").insert(object, bytes);
+    }
+}
+
+impl Backend for RecoveryScriptBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities
+    }
+
+    fn read_object(&self, name: &ObjectName) -> BackendResult<Vec<u8>> {
+        self.objects
+            .lock()
+            .expect("objects")
+            .get(name)
+            .cloned()
+            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "object not found"))
+    }
+
+    fn read_range(&self, name: &ObjectName, range: BackendRange) -> BackendResult<Vec<u8>> {
+        let bytes = self.read_object(name)?;
+        let start = usize::try_from(range.offset()).unwrap_or(usize::MAX);
+        let end = usize::try_from(range.end_offset().unwrap_or(u64::MAX)).unwrap_or(usize::MAX);
+        Ok(bytes[start.min(bytes.len())..end.min(bytes.len())].to_vec())
+    }
+
+    fn write_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendMetadata> {
+        self.objects
+            .lock()
+            .expect("objects")
+            .insert(name.clone(), bytes.to_vec());
+        Ok(BackendMetadata::new(bytes.len() as u64, None))
+    }
+
+    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+        self.objects.lock().expect("objects").remove(name);
+        Ok(())
+    }
+
+    fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
+        let mut names: Vec<_> = self
+            .objects
+            .lock()
+            .expect("objects")
+            .keys()
+            .filter(|name| name.as_str().starts_with(prefix.as_str()))
+            .cloned()
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
+        self.objects
+            .lock()
+            .expect("objects")
+            .get(name)
+            .map(|bytes| BackendMetadata::new(bytes.len() as u64, None))
+            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "object not found"))
+    }
+
+    fn acquire_writer_lock(&self, name: &ObjectName) -> BackendResult<BackendWriterGuard> {
+        if self.lock_held.swap(true, Ordering::SeqCst) {
+            return Err(BackendError::new(
+                BackendErrorKind::Unavailable,
+                "writer lock unavailable",
+            ));
+        }
+        Ok(BackendWriterGuard::new(
+            name.clone(),
+            RecoveryScriptWriterLock {
+                locked: Arc::clone(&self.lock_held),
+            },
+        ))
+    }
+
+    fn append_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendAppend> {
+        let mut objects = self.objects.lock().expect("objects");
+        let object = objects.entry(name.clone()).or_default();
+        let start_offset = object.len() as u64;
+        object.extend_from_slice(bytes);
+        Ok(BackendAppend::new(
+            start_offset,
+            bytes.len() as u64,
+            BackendMetadata::new(object.len() as u64, None),
+        ))
+    }
+
+    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+        Ok(())
+    }
+
+    fn publish_object(
+        &self,
+        name: &ObjectName,
+        bytes: &[u8],
+        mode: PublishMode,
+    ) -> PublishResult<PublishOutcome> {
+        let mut objects = self.objects.lock().expect("objects");
+        if mode == PublishMode::Create && objects.contains_key(name) {
+            return Err(PublishError::precondition_failed(
+                name,
+                "object already exists",
+            ));
+        }
+        objects.insert(name.clone(), bytes.to_vec());
+        Ok(PublishOutcome::new(
+            name.clone(),
+            BackendMetadata::new(bytes.len() as u64, None),
+            PublishDurability::Durable,
+        ))
+    }
+}
+
+struct RecoveryScriptWriterLock {
+    locked: Arc<AtomicBool>,
+}
+
+impl Drop for RecoveryScriptWriterLock {
+    fn drop(&mut self) {
+        self.locked.store(false, Ordering::SeqCst);
+    }
+}

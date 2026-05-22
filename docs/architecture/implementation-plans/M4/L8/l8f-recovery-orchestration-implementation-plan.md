@@ -72,14 +72,14 @@ L8F implements:
 2. a recovery runtime that accepts `&mut LifecycleDurableLocalShell`;
 3. recovery request/fact shapes for strict and explicitly lossy recovery;
 4. admission through `LifecycleDurableLocalShell::admit_recovery_step`;
-5. manifest-derived durable watermark calculation;
+5. checkpoint-derived durable watermark calculation;
 6. manifest snapshot fact validation before any WAL skip decision;
 7. snapshot load through `SnapshotService`;
 8. row-native checkpoint section decoding into `StorageRow` groups;
 9. checkpoint install through `install_snapshot_rows_into_branches`;
 10. table object validation for recovered table facts, when such facts are
     present in storage-owned recovery metadata;
-11. WAL read after the selected durable watermark;
+11. WAL read after the selected recovered checkpoint watermark;
 12. latest-segment partial-tail handling through `WalService::repair_latest_tail`;
 13. strict failure for non-latest WAL corruption;
 14. optional lossy fallback classification when explicitly enabled by the open
@@ -183,26 +183,29 @@ No phase may call L7 replay. No phase may expose the runtime as `Open`.
 
 ## Watermark Rules
 
-L8F selects the WAL replay start from durable facts only.
+L8F selects the WAL replay start from recovered state only.
 
 Inputs:
 
 1. manifest snapshot watermark, if a snapshot id is present and the snapshot
    object loaded and validated;
-2. manifest flush watermark, if present;
-3. `CommitVersion::ZERO` otherwise.
+2. `CommitVersion::ZERO` otherwise.
 
 Rules:
 
-1. Use the greatest trusted watermark.
+1. Use the trusted checkpoint watermark when present.
 2. Do not use `active_wal_segment` as a commit-version watermark.
 3. Do not use an unloaded or failed snapshot watermark to skip WAL records.
 4. If a manifest-listed snapshot is missing in strict mode, fail before
    computing a replay start from that snapshot watermark.
 5. If lossy recovery is explicitly allowed and snapshot loss is downgraded, the
-   replay start must fall back to the greatest remaining trusted watermark.
+   replay start must fall back to zero unless another recovered state source
+   exists.
 6. WAL records with `commit_version <= replay_start` are not packaged for L8G.
 7. WAL records with `commit_version > replay_start` are preserved unchanged.
+8. A manifest flush watermark greater than the recovered checkpoint watermark
+   requires flushed table-state recovery, which is not implemented in L8F. L8F
+   must fail closed instead of using that watermark to skip WAL records.
 
 The replay-start calculation must be a dedicated helper with direct unit tests.
 
@@ -496,6 +499,8 @@ L8F is complete when:
 | Visible-version publication and final open outcome | L8G | Must happen after replay and timeline validation. |
 | Timeline semantic validation | L8G | Timeline rows are L7 commit-runtime facts. |
 | Unresolved durable gate reconciliation | L8G | Gate semantics live in L7 replay. |
+| Flushed table-state recovery from manifest flush watermark | L8I/L8J | L8F cannot safely use a flush watermark until it has recovered the table state that proves the watermark. |
+| Multi-branch checkpoint installation into a runtime branch map | L8G/L9 | The current durable shell owns one open branch state. L8F fails closed on checkpoint rows for unopened branches. |
 | Checkpoint creation and manifest checkpoint publication | L8J | L8F reads checkpoints; L8J writes them. |
 | Flush and table publication | L8I | L8F only validates recovered table references. |
 | Compaction/materialization scheduling | L8K | Maintenance owner slice. |

@@ -144,11 +144,27 @@ fn lifecycle_durable_runtime_stays_assembly_only() {
 }
 
 #[test]
+fn lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/recovery.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle recovery source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_recovery_runtime_dependency(line),
+            "src/lifecycle/recovery.rs:{} calls forbidden recovery dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
     assert_general_source_guard_fixtures();
     assert_capability_preflight_fixtures();
     assert_cache_runtime_fixtures();
     assert_durable_runtime_fixtures();
+    assert_recovery_runtime_fixtures();
     assert_public_surface_fixtures();
 }
 
@@ -283,6 +299,21 @@ fn assert_durable_runtime_fixtures() {
     ));
     assert!(contains_forbidden_durable_runtime_dependency(
         "quarantine.load_inventory(branch, db, codec)?;"
+    ));
+}
+
+fn assert_recovery_runtime_fixtures() {
+    assert!(contains_forbidden_recovery_runtime_dependency(
+        "CommitReplayRuntime::new();"
+    ));
+    assert!(contains_forbidden_recovery_runtime_dependency(
+        "execute_durable_commit(request)?;"
+    ));
+    assert!(contains_forbidden_recovery_runtime_dependency(
+        "visible.publish_from_facts(facts)?;"
+    ));
+    assert!(contains_forbidden_recovery_runtime_dependency(
+        "primitive_registry.reconstruct(row)?;"
     ));
 }
 
@@ -519,6 +550,24 @@ fn contains_forbidden_durable_runtime_dependency(line: &str) -> bool {
         "list_snapshots(",
         "open_reader(",
         "execute_cache_commit(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_recovery_runtime_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "commitreplayruntime",
+        "execute_durable_commit",
+        "execute_cache_commit",
+        "publish_from_facts(",
+        "catch_up_to_recovered_version(",
+        "catch_up_to_recovered_timestamp(",
+        "primitive_registry",
+        "reconstruct(",
+        "stratahub",
+        "follower",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
