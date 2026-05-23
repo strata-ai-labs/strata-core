@@ -146,6 +146,8 @@ pub(super) struct CheckpointTestBackend {
     fail_list: AtomicBool,
     fail_snapshot_publish: AtomicBool,
     fail_delete: AtomicBool,
+    fail_delete_call: AtomicUsize,
+    delete_calls: AtomicUsize,
     fail_manifest_replace_call: AtomicUsize,
     uncertain_manifest_replace_call: AtomicUsize,
     manifest_replace_calls: AtomicUsize,
@@ -168,6 +170,8 @@ impl CheckpointTestBackend {
             fail_list: AtomicBool::new(false),
             fail_snapshot_publish: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
+            fail_delete_call: AtomicUsize::new(0),
+            delete_calls: AtomicUsize::new(0),
             fail_manifest_replace_call: AtomicUsize::new(0),
             uncertain_manifest_replace_call: AtomicUsize::new(0),
             manifest_replace_calls: AtomicUsize::new(0),
@@ -185,6 +189,10 @@ impl CheckpointTestBackend {
 
     pub(super) fn fail_delete(&self) {
         self.fail_delete.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn fail_delete_on_call(&self, call: usize) {
+        self.fail_delete_call.store(call, Ordering::SeqCst);
     }
 
     pub(super) fn fail_manifest_replacement_on_call(&self, call: usize) {
@@ -227,12 +235,7 @@ impl CheckpointTestBackend {
     }
 
     pub(super) fn delete_calls(&self) -> usize {
-        self.events
-            .lock()
-            .expect("events")
-            .iter()
-            .filter(|event| matches!(event, CheckpointBackendEvent::ObjectDelete))
-            .count()
+        self.delete_calls.load(Ordering::SeqCst)
     }
 
     pub(super) fn snapshot_objects(&self) -> Vec<ObjectName> {
@@ -295,7 +298,18 @@ impl Backend for CheckpointTestBackend {
             .lock()
             .expect("events")
             .push(CheckpointBackendEvent::ObjectDelete);
-        if self.fail_delete.load(Ordering::SeqCst) {
+        let object_exists = self.objects.lock().expect("objects").contains_key(name);
+        let call = if object_exists {
+            self.delete_calls
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1)
+        } else {
+            0
+        };
+        if object_exists
+            && (self.fail_delete.load(Ordering::SeqCst)
+                || self.fail_delete_call.load(Ordering::SeqCst) == call)
+        {
             return Err(BackendError::new(
                 BackendErrorKind::Unavailable,
                 "injected delete failure",

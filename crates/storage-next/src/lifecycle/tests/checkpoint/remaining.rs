@@ -90,6 +90,38 @@ fn checkpoint_debug_output_does_not_include_payload_bytes() {
 }
 
 #[test]
+fn checkpoint_rejects_non_row_snapshot_section_during_recovery() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x38);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"unsupported-section", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(16))
+        .expect("request")
+        .with_extra_sections(vec![crate::format::SnapshotSection::new(
+            2,
+            b"unsupported".to_vec(),
+        )
+        .expect("extra section")]);
+
+    runtime.checkpoint(&request).expect("checkpoint");
+    drop(runtime);
+    let mut shell = assemble_shell(branch, &backend).expect("recovery shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect_err("unsupported section rejects");
+
+    assert_eq!(error.code(), "serialization.lifecycle.format");
+}
+
+#[test]
 fn checkpoint_rows_include_materialized_replacement_rows() {
     let source = branch_id(0x2d);
     let child = branch_id(0x2e);
@@ -318,6 +350,87 @@ fn checkpoint_with_truncation_recovery_round_trip_after_delete() {
 }
 
 #[test]
+fn checkpoint_recovery_replays_tail_after_checkpoint_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x39);
+    let mut runtime = open_runtime(branch, &backend);
+    let before = physical_key(branch, b"before-checkpoint");
+    let after = physical_key(branch, b"after-checkpoint");
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"before-checkpoint", b"before"),
+            generation_guard(),
+        )
+        .expect("first commit");
+    runtime
+        .checkpoint(
+            &LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(17))
+                .expect("request"),
+        )
+        .expect("checkpoint");
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"after-checkpoint", b"after"),
+            generation_guard(),
+        )
+        .expect("tail commit");
+    drop(runtime);
+
+    let reopened = open_runtime(branch, &backend);
+    let view = reopened.read_view().expect("read view");
+
+    assert_eq!(
+        view.latest(&before)
+            .expect("before read")
+            .expect("before row")
+            .row()
+            .value(),
+        b"before"
+    );
+    assert_eq!(
+        view.latest(&after)
+            .expect("after read")
+            .expect("after row")
+            .row()
+            .value(),
+        b"after"
+    );
+    assert_eq!(reopened.visible_version(), CommitVersion::new(2));
+}
+
+#[test]
+fn checkpoint_recovery_ignores_duplicate_record_at_checkpoint_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3a);
+    let mut runtime = open_runtime(branch, &backend);
+    let key = physical_key(branch, b"duplicate-boundary");
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"duplicate-boundary", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    runtime
+        .checkpoint(
+            &LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(18))
+                .expect("request"),
+        )
+        .expect("checkpoint");
+    drop(runtime);
+
+    let reopened = open_runtime(branch, &backend);
+    let history = reopened
+        .read_view()
+        .expect("read view")
+        .history(&key, crate::branch::BranchHistoryOptions::all())
+        .expect("history");
+
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].row().value(), b"value");
+    assert_eq!(reopened.visible_version(), CommitVersion::new(1));
+}
+
+#[test]
 fn queued_wal_truncation_task_failure_adds_health_debt() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x36);
@@ -345,6 +458,228 @@ fn queued_wal_truncation_task_failure_adds_health_debt() {
 }
 
 #[test]
+fn wal_truncation_keeps_segment_with_record_above_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3b);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_with_value_len(&mut runtime, branch, 12, 1);
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert_eq!(outcome.deleted_segments(), 0);
+    assert!(outcome.protected_segments() > 1);
+}
+
+#[test]
+fn wal_truncation_keeps_segment_newer_than_active_segment() {
+    let backend = CheckpointTestBackend::new();
+    let config = crate::service::WalServiceConfig::new(1024);
+    let _future_service = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("future segment");
+    let active_service = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        1,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("active segment");
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = truncate_wal(&active_service, request).expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert_eq!(outcome.deleted_segments(), 0);
+    assert_eq!(outcome.protected_segments(), 2);
+}
+
+#[test]
+fn wal_truncation_handles_empty_segment_through_service_report() {
+    let backend = CheckpointTestBackend::new();
+    let config = crate::service::WalServiceConfig::new(1024);
+    let _covered_service = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        1,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("covered segment");
+    let active_service = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("active segment");
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = truncate_wal(&active_service, request).expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert_eq!(outcome.deleted_segments(), 1);
+    assert_eq!(outcome.protected_segments(), 1);
+}
+
+#[test]
+fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
+    let backend = CheckpointTestBackend::new();
+    let config = crate::service::WalServiceConfig::new(1024);
+    let _first = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        1,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("first segment");
+    let _second = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("second segment");
+    let active = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        3,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("active segment");
+    backend.fail_delete_on_call(2);
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = truncate_wal(&active, request).expect("truncation");
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleWalTruncationStatus::CompletedWithHealthDebt
+    );
+    assert_eq!(outcome.deleted_segments(), 1);
+    assert_eq!(outcome.failed_segments(), 1);
+    assert_eq!(outcome.protected_segments(), 1);
+    assert!(outcome.recovery_health().is_some());
+}
+
+#[test]
+fn checkpoint_with_truncation_keeps_tail_records_after_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3c);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 12);
+    runtime
+        .checkpoint(
+            &LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(19))
+                .expect("request")
+                .with_wal_truncation_after_checkpoint(true),
+        )
+        .expect("checkpoint");
+    commit_many_range(&mut runtime, branch, 12, 16, 128);
+    let key = dynamic_physical_key(branch, b"rotated-commit-15".to_vec());
+    drop(runtime);
+
+    let reopened = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let visible = reopened
+        .read_view()
+        .expect("read view")
+        .latest(&key)
+        .expect("read latest")
+        .expect("tail row");
+
+    assert_eq!(visible.row().value(), vec![15_u8; 128].as_slice());
+    assert_eq!(reopened.visible_version(), CommitVersion::new(16));
+}
+
+#[test]
+fn checkpoint_with_truncation_records_checkpoint_and_delete_facts() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3d);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(20))
+        .expect("request")
+        .with_flush_watermark_after_checkpoint(true)
+        .with_wal_truncation_after_checkpoint(true);
+
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+    let truncation = outcome.wal_truncation().expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleCheckpointStatus::Completed);
+    assert_eq!(outcome.snapshot_id(), Some(1));
+    assert_eq!(
+        outcome
+            .flush_watermark()
+            .expect("flush outcome")
+            .persisted_watermark(),
+        Some(CommitVersion::new(24))
+    );
+    assert!(truncation.deleted_segments() > 0);
+    assert_eq!(truncation.failed_segments(), 0);
+    assert_eq!(
+        outcome.maintenance_outcome().status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+}
+
+#[test]
+fn cache_checkpoint_task_does_not_create_durable_objects() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3e);
+    let mut runtime = cache_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue");
+
+    let error = runtime
+        .run_next_flush_maintenance()
+        .expect_err("checkpoint task is not a cache flush");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(backend.event_count(), 0);
+}
+
+#[test]
+fn cache_wal_truncation_task_does_not_create_durable_objects() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3f);
+    let mut runtime = cache_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        .expect("enqueue");
+
+    let error = runtime
+        .run_next_flush_maintenance()
+        .expect_err("truncation task is not a cache flush");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(backend.event_count(), 0);
+}
+
+#[test]
 fn checkpoint_maintenance_task_deferred_when_no_visible_rows() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x37);
@@ -363,10 +698,48 @@ fn checkpoint_maintenance_task_deferred_when_no_visible_rows() {
     assert_eq!(runtime.maintenance_status().stats().deferred(), 1);
 }
 
+fn cache_runtime(
+    branch: BranchId,
+    backend: &CheckpointTestBackend,
+) -> LifecycleCacheRuntime<CommitManualTimestampSource> {
+    LifecycleCacheRuntime::open(
+        LifecycleCacheOpenRequest::new(
+            StorageOpenPlan::new(
+                StorageMode::Cache,
+                LifecycleCodecId::identity(),
+                RecoveryStrictness::Strict,
+                LifecycleConfig::default(),
+            )
+            .expect("open plan"),
+            branch,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("cache request"),
+        backend,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("cache runtime")
+}
+
 fn commit_many_to_rotate(
     runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
     branch: BranchId,
     count: u8,
+) {
+    commit_many_range(runtime, branch, 0, count, 128);
+    assert!(
+        runtime.services().wal().active_segment_id() > 1,
+        "test setup must rotate the log"
+    );
+}
+
+fn commit_many_with_value_len(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    branch: BranchId,
+    count: u8,
+    value_len: usize,
 ) {
     for index in 0..count {
         runtime
@@ -374,16 +747,33 @@ fn commit_many_to_rotate(
                 dynamic_durable_batch(
                     branch,
                     format!("rotated-commit-{index}").into_bytes(),
-                    vec![index; 128],
+                    vec![index; value_len],
                 ),
                 generation_guard(),
             )
             .expect("rotating commit");
     }
-    assert!(
-        runtime.services().wal().active_segment_id() > 1,
-        "test setup must rotate the log"
-    );
+}
+
+fn commit_many_range(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    branch: BranchId,
+    start: u8,
+    end: u8,
+    value_len: usize,
+) {
+    for index in start..end {
+        runtime
+            .execute_durable_commit(
+                dynamic_durable_batch(
+                    branch,
+                    format!("rotated-commit-{index}").into_bytes(),
+                    vec![index; value_len],
+                ),
+                generation_guard(),
+            )
+            .expect("range commit");
+    }
 }
 
 fn dynamic_durable_batch(branch: BranchId, user_key: Vec<u8>, value: Vec<u8>) -> CommitBatch {

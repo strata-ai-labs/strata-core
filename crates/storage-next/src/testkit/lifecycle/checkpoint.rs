@@ -28,6 +28,10 @@ pub struct LifecycleCheckpointContractOutcome {
     flush_noops: usize,
     retention_accepts: usize,
     retention_rejects: usize,
+    service_failures: usize,
+    partial_windows: usize,
+    delete_failures: usize,
+    checkpoint_truncation_round_trips: usize,
     cache_rejections: usize,
 }
 
@@ -39,6 +43,7 @@ pub fn check_lifecycle_checkpoint_contract(
     check_input_rows(script, &mut outcome)?;
     check_input_flush_proofs(script, &mut outcome)?;
     check_input_retention_proofs(script, &mut outcome)?;
+    check_input_fault_windows(script, &mut outcome)?;
     check_input_cache_rejection(script, &mut outcome)?;
     Ok(outcome)
 }
@@ -90,6 +95,22 @@ impl LifecycleCheckpointContractOutcome {
 
     pub const fn retention_reject_cases(&self) -> usize {
         self.retention_rejects
+    }
+
+    pub const fn service_failure_cases(&self) -> usize {
+        self.service_failures
+    }
+
+    pub const fn partial_window_cases(&self) -> usize {
+        self.partial_windows
+    }
+
+    pub const fn delete_failure_cases(&self) -> usize {
+        self.delete_failures
+    }
+
+    pub const fn checkpoint_truncation_round_trip_cases(&self) -> usize {
+        self.checkpoint_truncation_round_trips
     }
 
     pub const fn cache_rejection_cases(&self) -> usize {
@@ -274,6 +295,62 @@ fn check_input_retention_proofs(
     ));
     ensure(zero.is_err(), "zero retention proof was accepted")?;
     outcome.retention_rejects += 1;
+    Ok(())
+}
+
+fn check_input_fault_windows(
+    script: &[u8],
+    outcome: &mut LifecycleCheckpointContractOutcome,
+) -> Result<(), TestkitError> {
+    let snapshot_id = 1 + u64::from(script_byte(script, 8));
+    let branch = branch_id(script_byte(script, 9));
+    let request = LifecycleCheckpointRequest::new(
+        branch,
+        snapshot_id,
+        Timestamp::from_micros(1 + u64::from(script_byte(script, 10))),
+    )
+    .map_err(testkit_error)?;
+    ensure(
+        request.snapshot_id() == snapshot_id,
+        "service-failure script did not preserve snapshot id",
+    )?;
+    outcome.service_failures += 1;
+
+    let partial_candidate = CommitVersion::new(1 + u64::from(script_byte(script, 11) % 8));
+    let rejected_flush = LifecycleFlushWatermarkRequest::new(
+        partial_candidate,
+        LifecycleFlushWatermarkProof::TableObjectsOnly {
+            flushed_through: partial_candidate,
+        },
+    )
+    .map_err(testkit_error)?;
+    ensure(
+        matches!(
+            rejected_flush.proof(),
+            LifecycleFlushWatermarkProof::TableObjectsOnly { .. }
+        ),
+        "partial-window flush proof source changed",
+    )?;
+    outcome.partial_windows += 1;
+
+    let delete_failure_proof =
+        LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(partial_candidate))
+            .map_err(testkit_error)?;
+    ensure(
+        delete_failure_proof.proof().covered_through() == partial_candidate,
+        "delete-failure proof lost its covered version",
+    )?;
+    outcome.delete_failures += 1;
+
+    let round_trip_proof = LifecycleWalTruncationRequest::new(
+        WalRetentionProof::snapshot_watermark(partial_candidate),
+    )
+    .map_err(testkit_error)?;
+    ensure(
+        round_trip_proof.proof().source() == WalRetentionProofSource::SnapshotWatermark,
+        "checkpoint-truncation proof lost its source",
+    )?;
+    outcome.checkpoint_truncation_round_trips += 1;
     Ok(())
 }
 

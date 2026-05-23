@@ -148,6 +148,10 @@ fn lifecycle_property_harness_runs_checkpoint_contract() {
                 || outcome.flush_noop_cases() == 0
                 || outcome.retention_accept_cases() == 0
                 || outcome.retention_reject_cases() == 0
+                || outcome.service_failure_cases() == 0
+                || outcome.partial_window_cases() == 0
+                || outcome.delete_failure_cases() == 0
+                || outcome.checkpoint_truncation_round_trip_cases() == 0
                 || outcome.cache_rejection_cases() == 0
             {
                 return Err(TestCaseError::fail(
