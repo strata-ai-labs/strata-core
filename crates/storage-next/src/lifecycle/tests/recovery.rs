@@ -5,7 +5,13 @@ use crate::backend::{
     PublishOutcome, PublishResult, DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
 use crate::branch::BranchRuntimeConfig;
-use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
+use crate::commit::{
+    CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
+    CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
+    CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,
+    CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitStamp, CommitTimelineEntry,
+    CommitTimelineRows, CommitTimestampPolicy, CommitUnresolvedDurable, CommitValidationFacts,
+};
 use crate::format::{encode_manifest, DatabaseManifest, WalCommitPayload, WalRecord};
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
@@ -53,6 +59,508 @@ fn recovery_empty_database_returns_healthy_package_without_replay() {
     assert_eq!(shell.visible_version(), CommitVersion::ZERO);
     assert!(shell.branch_state().is_empty());
     assert!(shell.admit_ordinary_read().is_err());
+    assert!(shell.admit_commit().is_err());
+}
+
+#[test]
+fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x44);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    let mut runtime = shell
+        .complete_recovery(&outcome)
+        .expect("bootstrap recovery");
+
+    assert_eq!(runtime.state(), LifecycleState::Open);
+    assert_eq!(
+        runtime.open_plan().storage_mode(),
+        StorageMode::DurableLocalStandard
+    );
+    assert_eq!(
+        runtime.open_outcome().mode(),
+        StorageMode::DurableLocalStandard
+    );
+    assert_eq!(
+        runtime.open_outcome().disposition(),
+        StorageOpenDisposition::Created
+    );
+    assert_eq!(
+        runtime.open_outcome().recovered_visible_version(),
+        Some(CommitVersion::ZERO)
+    );
+    assert!(runtime.open_outcome().recovery_health().is_healthy());
+    assert!(!runtime.open_outcome().maintenance_ready());
+    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
+    assert_eq!(runtime.bootstrap_report().records_seen(), 0);
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert!(runtime.branch_state().is_empty());
+    assert_eq!(runtime.services().wal().active_segment_id(), 1);
+    assert_eq!(runtime.unresolved_durable().expect("gate"), None);
+    assert_eq!(runtime.bootstrap_report().gates_cleared(), 0);
+
+    let commit_outcome = runtime
+        .execute_durable_commit(
+            durable_standard_batch(branch, b"post-open", b"value"),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("post-open durable commit");
+    assert_eq!(commit_outcome.commit_version(), Some(CommitVersion::new(1)));
+    assert_eq!(runtime.visible_version(), CommitVersion::new(1));
+}
+
+#[test]
+fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x45);
+    let checkpoint_row = put_row(branch, 2, b"checkpoint-bootstrap", b"checkpoint-value");
+    publish_snapshot(
+        &backend,
+        8,
+        CommitVersion::new(3),
+        std::slice::from_ref(&checkpoint_row),
+    );
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(3), Some(8), None)
+            .expect("database root facts"),
+    );
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("checkpoint recovery outcome");
+    assert_eq!(shell.visible_version(), CommitVersion::ZERO);
+
+    let runtime = shell
+        .complete_recovery(&outcome)
+        .expect("checkpoint bootstrap");
+
+    assert_eq!(runtime.state(), LifecycleState::Open);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(3));
+    assert_eq!(
+        runtime.open_outcome().recovered_visible_version(),
+        Some(CommitVersion::new(3))
+    );
+    assert_eq!(runtime.bootstrap_report().records_seen(), 0);
+    assert!(runtime
+        .bootstrap_report()
+        .checkpoint_visible_publish()
+        .is_some());
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::new(3)
+    );
+    let read_view = runtime.read_view().expect("open read view");
+    let visible = read_view
+        .latest(checkpoint_row.physical_key())
+        .expect("latest")
+        .expect("checkpoint row visible after bootstrap");
+    assert_eq!(visible.row(), &checkpoint_row);
+}
+
+#[test]
+fn bootstrap_replays_wal_tail_through_commit_runtime() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x46);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 4, b"bootstrap-tail", b"tail-value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append WAL record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("WAL recovery outcome");
+
+    let runtime = shell.complete_recovery(&outcome).expect("WAL bootstrap");
+
+    assert_eq!(runtime.state(), LifecycleState::Open);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(4));
+    assert_eq!(runtime.bootstrap_report().records_seen(), 1);
+    assert_eq!(runtime.bootstrap_report().records_applied(), 1);
+    assert_eq!(runtime.bootstrap_report().records_already_applied(), 0);
+    assert_eq!(runtime.bootstrap_report().rows_checked(), 3);
+    assert_eq!(runtime.bootstrap_report().rows_applied(), 3);
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::new(4)
+    );
+    assert_eq!(
+        runtime.allocator().timestamp_guard().last_allocated(),
+        Some(Timestamp::from_micros(400))
+    );
+    let read_view = runtime.read_view().expect("open read view");
+    let visible = read_view
+        .latest(&physical_key(branch, b"bootstrap-tail"))
+        .expect("latest")
+        .expect("replayed row visible");
+    assert_eq!(visible.row().value(), b"tail-value");
+}
+
+#[test]
+fn bootstrap_rejects_timeline_only_wal_payload_before_open() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x47);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = timeline_only_wal_record(branch, 5);
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append timeline-only WAL record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("WAL recovery outcome");
+
+    let error = shell
+        .complete_recovery(&outcome)
+        .expect_err("timeline-only replay rejects");
+
+    assert_commit_runtime_source(
+        &error,
+        &CommitRuntimeError::InvalidCommitState {
+            reason: "replay payload is missing user mutation rows",
+        },
+    );
+}
+
+#[test]
+fn bootstrap_rejects_log_record_without_timeline_rows_before_open() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x48);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = user_only_wal_record(branch, 5, b"missing-timeline", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append user-only WAL record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("WAL recovery outcome");
+
+    let error = shell
+        .complete_recovery(&outcome)
+        .expect_err("missing timeline replay rejects");
+
+    assert_commit_runtime_source(
+        &error,
+        &CommitRuntimeError::InvalidTimelineFact {
+            reason: "replay payload is missing commit timeline rows",
+        },
+    );
+}
+
+#[test]
+fn bootstrap_rejects_recovered_log_record_for_unopened_branch() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x49);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = wal_record(branch_id(0x4a), 3, b"foreign-branch", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append foreign branch record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    assert_eq!(outcome.wal().records(), std::slice::from_ref(&record));
+    assert_eq!(
+        shell
+            .complete_recovery(&outcome)
+            .expect_err("foreign branch recovered record rejects"),
+        LifecycleError::RecoveryFailed {
+            reason: "recovered WAL package contains an unopened branch",
+        }
+    );
+}
+
+#[test]
+fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4b);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let newer = wal_record(branch, 5, b"newer", b"value");
+    let older = wal_record(branch, 4, b"older", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&newer)
+        .expect("append newer record");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&older)
+        .expect("append older record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    assert_eq!(outcome.wal().records(), &[newer, older]);
+    assert_eq!(
+        shell
+            .complete_recovery(&outcome)
+            .expect_err("non-increasing recovered record package rejects"),
+        LifecycleError::RecoveryFailed {
+            reason: "recovered WAL package must be strictly ordered after replay start",
+        }
+    );
+}
+
+#[test]
+fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4c);
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(9), Some(7), None)
+            .expect("database root facts"),
+    );
+    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let replayed = wal_record(branch, 5, b"degraded-tail", b"tail-value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&replayed)
+        .expect("append replayed record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("degraded recovery outcome");
+    assert!(matches!(
+        outcome.health(),
+        RecoveryHealth::Degraded {
+            class: RecoveryDegradationClass::PolicyDowngrade,
+            faults
+        } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject)
+    ));
+
+    let runtime = shell
+        .complete_recovery(&outcome)
+        .expect("degraded recovery opens");
+
+    assert_eq!(runtime.state(), LifecycleState::Open);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(5));
+    assert_eq!(runtime.bootstrap_report().records_seen(), 1);
+    assert_eq!(runtime.bootstrap_report().records_applied(), 1);
+    assert_eq!(
+        runtime.open_outcome().recovery_health(),
+        runtime.bootstrap_report().recovery_health(),
+    );
+    assert!(matches!(
+        runtime.open_outcome().recovery_health(),
+        RecoveryHealth::Degraded {
+            class: RecoveryDegradationClass::PolicyDowngrade,
+            faults
+        } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject)
+    ));
+}
+
+#[test]
+fn bootstrap_replay_is_idempotent_for_exactly_installed_rows() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4d);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 4, b"already-installed", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append WAL record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    shell
+        .branch_state_mut()
+        .append_committed_rows_atomically(record.commit_payload().rows().to_vec())
+        .expect("seed exact installed rows");
+
+    let runtime = shell
+        .complete_recovery(&outcome)
+        .expect("idempotent bootstrap");
+
+    assert_eq!(runtime.visible_version(), CommitVersion::new(4));
+    assert_eq!(runtime.bootstrap_report().records_seen(), 1);
+    assert_eq!(runtime.bootstrap_report().records_applied(), 0);
+    assert_eq!(runtime.bootstrap_report().records_already_applied(), 1);
+    assert_eq!(runtime.bootstrap_report().rows_checked(), 3);
+    assert_eq!(runtime.bootstrap_report().rows_applied(), 0);
+}
+
+#[test]
+fn bootstrap_replay_clears_matching_unresolved_durable_gate() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4e);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 6, b"gate-cleared", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append WAL record");
+    let stamp = CommitStamp::new(branch, CommitVersion::new(6), Timestamp::from_micros(600))
+        .expect("stamp");
+    let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp,
+        CommitDurabilityClass::Standard,
+        "seeded unresolved durable fact",
+    )
+    .expect("unresolved durable");
+    shell
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("seed unresolved gate");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    let runtime = shell.complete_recovery(&outcome).expect("gate bootstrap");
+
+    assert_eq!(runtime.bootstrap_report().records_seen(), 1);
+    assert_eq!(runtime.bootstrap_report().records_applied(), 1);
+    assert_eq!(runtime.bootstrap_report().gates_cleared(), 1);
+    assert_eq!(runtime.unresolved_durable().expect("gate state"), None);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(6));
+}
+
+#[test]
+fn bootstrap_replay_uses_always_durability_for_always_mode() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x50);
+    let mut shell = assemble_shell(
+        open_plan_for_mode(StorageMode::DurableLocalAlways, RecoveryStrictness::Strict),
+        branch,
+        &backend,
+    )
+    .expect("durable shell");
+    let record = wal_record(branch, 6, b"always-gate-cleared", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append WAL record");
+    let stamp = CommitStamp::new(branch, CommitVersion::new(6), Timestamp::from_micros(600))
+        .expect("stamp");
+    let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp,
+        CommitDurabilityClass::Always,
+        "seeded always unresolved durable fact",
+    )
+    .expect("unresolved durable");
+    shell
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("seed unresolved gate");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    let runtime = shell.complete_recovery(&outcome).expect("always bootstrap");
+
+    assert_eq!(
+        runtime.open_outcome().mode(),
+        StorageMode::DurableLocalAlways
+    );
+    assert_eq!(runtime.bootstrap_report().records_seen(), 1);
+    assert_eq!(runtime.bootstrap_report().records_applied(), 1);
+    assert_eq!(runtime.bootstrap_report().gates_cleared(), 1);
+    assert_eq!(runtime.unresolved_durable().expect("gate state"), None);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(6));
+}
+
+#[test]
+fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4f);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 6, b"blocked-by-gate", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append WAL record");
+    let mismatched_stamp =
+        CommitStamp::new(branch, CommitVersion::new(7), Timestamp::from_micros(700))
+            .expect("stamp");
+    let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        mismatched_stamp,
+        CommitDurabilityClass::Standard,
+        "different unresolved durable fact",
+    )
+    .expect("unresolved durable");
+    shell
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("seed unresolved gate");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    let error = shell
+        .try_bootstrap_commit_runtime_for_test(&outcome)
+        .expect_err("mismatched gate blocks replay");
+
+    assert_commit_runtime_source(
+        &error,
+        &CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: branch,
+            commit_version: CommitVersion::new(7),
+            reason: "different unresolved durable commit blocks replay",
+        },
+    );
+    assert_eq!(shell.state(), LifecycleState::Recovering);
+    assert_eq!(shell.visible_version(), CommitVersion::ZERO);
+    assert!(shell.branch_state().is_empty());
+    assert_eq!(
+        shell.unresolved_durable().expect("gate state"),
+        Some(unresolved)
+    );
     assert!(shell.admit_commit().is_err());
 }
 
@@ -707,8 +1215,12 @@ fn assemble_shell(
 }
 
 fn open_plan(recovery_policy: RecoveryStrictness) -> StorageOpenPlan {
+    open_plan_for_mode(StorageMode::DurableLocalStandard, recovery_policy)
+}
+
+fn open_plan_for_mode(mode: StorageMode, recovery_policy: RecoveryStrictness) -> StorageOpenPlan {
     StorageOpenPlan::new(
-        StorageMode::DurableLocalStandard,
+        mode,
         LifecycleCodecId::identity(),
         recovery_policy,
         LifecycleConfig::default(),
@@ -766,6 +1278,47 @@ fn wal_record(
 ) -> WalRecord {
     let commit_version = CommitVersion::new(version);
     let timestamp = Timestamp::from_micros(version * 100);
+    let stamp = CommitStamp::new(branch, commit_version, timestamp).expect("stamp");
+    let row = StorageRow::put(
+        physical_key(branch, user_key),
+        commit_version,
+        timestamp,
+        Timestamp::EPOCH,
+        value.to_vec(),
+    );
+    let timeline_rows =
+        CommitTimelineRows::from_entry(CommitTimelineEntry::from_stamp(stamp).expect("entry"))
+            .expect("timeline rows")
+            .into_rows();
+    let payload = WalCommitPayload::new(vec![
+        row,
+        timeline_rows[0].clone(),
+        timeline_rows[1].clone(),
+    ])
+    .expect("payload");
+    WalRecord::new(commit_version, branch, timestamp, payload).expect("record")
+}
+
+fn timeline_only_wal_record(branch: BranchId, version: u64) -> WalRecord {
+    let commit_version = CommitVersion::new(version);
+    let timestamp = Timestamp::from_micros(version * 100);
+    let stamp = CommitStamp::new(branch, commit_version, timestamp).expect("stamp");
+    let timeline_rows =
+        CommitTimelineRows::from_entry(CommitTimelineEntry::from_stamp(stamp).expect("entry"))
+            .expect("timeline rows")
+            .into_rows();
+    let payload = WalCommitPayload::new(timeline_rows.into()).expect("payload");
+    WalRecord::new(commit_version, branch, timestamp, payload).expect("record")
+}
+
+fn user_only_wal_record(
+    branch: BranchId,
+    version: u64,
+    user_key: &'static [u8],
+    value: &'static [u8],
+) -> WalRecord {
+    let commit_version = CommitVersion::new(version);
+    let timestamp = Timestamp::from_micros(version * 100);
     let row = StorageRow::put(
         physical_key(branch, user_key),
         commit_version,
@@ -809,6 +1362,46 @@ fn physical_key(branch: BranchId, user_key: &'static [u8]) -> PhysicalKey {
         user_key.to_vec(),
     )
     .expect("physical key")
+}
+
+fn durable_standard_batch(
+    branch: BranchId,
+    user_key: &'static [u8],
+    value: &'static [u8],
+) -> CommitBatch {
+    CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, user_key),
+            value.to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Standard,
+            CommitConflictValidationMode::Validate,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGenerated,
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+}
+
+fn assert_commit_runtime_source(error: &LifecycleError, expected: &CommitRuntimeError) {
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::CommitRuntime,
+            reason: "commit runtime failed",
+            ..
+        }
+    ));
+    let source = error.source().expect("commit source");
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("commit runtime source");
+    assert_eq!(commit_error, expected);
 }
 
 fn branch_id(byte: u8) -> BranchId {

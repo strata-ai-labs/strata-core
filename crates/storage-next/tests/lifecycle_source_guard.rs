@@ -129,7 +129,7 @@ fn lifecycle_cache_runtime_stays_cache_only() {
 }
 
 #[test]
-fn lifecycle_durable_runtime_stays_assembly_only() {
+fn lifecycle_durable_runtime_stays_bootstrap_only() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/durable.rs");
     let text = fs::read_to_string(&path).expect("read lifecycle durable source");
@@ -137,7 +137,7 @@ fn lifecycle_durable_runtime_stays_assembly_only() {
     for (line_number, line) in text.lines().enumerate() {
         assert!(
             !contains_forbidden_durable_runtime_dependency(line),
-            "src/lifecycle/durable.rs:{} calls forbidden durable assembly dependency: {line}",
+            "src/lifecycle/durable.rs:{} calls forbidden durable bootstrap dependency: {line}",
             line_number + 1
         );
     }
@@ -288,8 +288,11 @@ fn assert_durable_runtime_fixtures() {
     assert!(contains_forbidden_durable_runtime_dependency(
         "let name = \"locks/writer\";"
     ));
-    assert!(contains_forbidden_durable_runtime_dependency(
+    assert!(!contains_forbidden_durable_runtime_dependency(
         "CommitReplayRuntime::new();"
+    ));
+    assert!(!contains_forbidden_durable_runtime_dependency(
+        "let _: CommitReplayRequest;"
     ));
     assert!(contains_forbidden_durable_runtime_dependency(
         "WalRecord::new(version, branch, timestamp, payload);"
@@ -541,10 +544,10 @@ fn contains_forbidden_durable_runtime_dependency(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     [
         "\"locks/writer\"",
-        "commitreplay",
-        "walrecord",
-        ".checkpoint(",
+        "walrecord::new",
+        "checkpoint_service.checkpoint(",
         "load_inventory(",
+        "read_after_commit_version(",
         "repair_latest_tail(",
         "delete_covered_segments(",
         "list_snapshots(",

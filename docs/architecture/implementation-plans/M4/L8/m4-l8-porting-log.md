@@ -594,6 +594,131 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8G - Commit Bootstrap And Recovery Health
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/recovery.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/state.rs`
+- `crates/storage-next/src/commit/replay.rs`
+- `crates/storage-next/src/commit/durable.rs`
+- `crates/storage-next/src/commit/allocator.rs`
+- `crates/storage-next/src/commit/visibility.rs`
+- `crates/storage-next/src/commit/durable_gate.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8g-commit-bootstrap-recovery-health-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8g-commit-bootstrap-recovery-health-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/recovery.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8g-commit-bootstrap-recovery-health-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8g-commit-bootstrap-recovery-health-test-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/m4-l8-porting-log.md`
+
+### Preserved As Storage Vocabulary
+
+- L8G consumes only the L8F `LifecycleRecoveryOutcome`; it does not read
+  manifests, snapshots, WAL segments, table objects, or quarantine inventory.
+- WAL replay is delegated to L7 `CommitReplayRuntime`, preserving row-native
+  WAL facts, timeline validation, duplicate/idempotent replay behavior,
+  allocator catch-up, visible publication, and unresolved durable-gate
+  reconciliation.
+- Checkpoint-only recovery uses `VisibleVersionTracker` and
+  `CommitFactAllocator` catch-up helpers instead of direct field mutation.
+- Final durable open facts are reported through `StorageOpenOutcome` after the
+  lifecycle state machine accepts `RecoveryAccepted`.
+- The opened durable runtime remains crate-private and composes normal durable
+  commits through `CommitDurableRuntime`.
+
+### Intentional Changes
+
+- Added `LifecycleDurableLocalRuntime` as the opened durable-local runtime
+  wrapper returned after successful recovery bootstrap.
+- Added `LifecycleRecoveryBootstrapReport` for storage-shaped replay and
+  checkpoint catch-up counters.
+- Added `LifecycleDurableLocalShell::complete_recovery`, which consumes a
+  recovering shell plus L8F package and returns an open durable runtime.
+- Added WAL package validation for branch ownership and strict ordering after
+  L8F replay start.
+- Updated lifecycle source guards so L8G may call L7 replay while L8F remains
+  blocked from replay, allocator catch-up, visible publication, and product
+  hooks.
+
+### Retired From V1 L8G
+
+- Reimplementing replay/timeline checks in lifecycle code.
+- Opening durable runtime before recovered WAL rows are replayed.
+- Publishing checkpoint visibility by mutating visible-version fields directly.
+- Accepting timeline-only WAL payloads.
+- Treating durable recovery as public API; L9 still owns public wrapping.
+
+### Deferred By Owner Slice
+
+- Multi-branch durable runtime maps and mixed-branch WAL replay: L9 or later L8
+  extension.
+- Flushed table-state recovery beyond row-native checkpoint install: L8I/L8J.
+- Maintenance readiness beyond conservative `false`: L8H+.
+- Process-kill crash harnesses across every L8G phase: L8O.
+- Durable close drain and sync-on-close: L8N.
+
+### Tests Added
+
+- `bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility`
+- `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator`
+- `bootstrap_replays_wal_tail_through_commit_runtime`
+- `bootstrap_rejects_timeline_only_wal_payload_before_open`
+- `bootstrap_rejects_log_record_without_timeline_rows_before_open`
+- `bootstrap_rejects_recovered_log_record_for_unopened_branch`
+- `bootstrap_rejects_recovered_log_records_not_strictly_ordered`
+- `bootstrap_preserves_degraded_recovery_health_while_replaying_tail`
+- `bootstrap_replay_is_idempotent_for_exactly_installed_rows`
+- `bootstrap_replay_clears_matching_unresolved_durable_gate`
+- `bootstrap_replay_uses_always_durability_for_always_mode`
+- `bootstrap_replay_rejects_mismatched_unresolved_durable_gate`
+- `lifecycle_durable_runtime_stays_bootstrap_only`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Skip L7 replay | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Install recovered WAL rows directly into L6 | `bootstrap_replays_wal_tail_through_commit_runtime` |
+| Ignore checkpoint visible catch-up | `crates/storage-next/src/lifecycle/durable.rs:536-546` | Do not call visible catch-up for checkpoint-only package | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
+| Ignore checkpoint allocator catch-up | `crates/storage-next/src/lifecycle/durable.rs:547-548` | Do not catch allocator above checkpoint watermark | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
+| Replay with wrong durability | `crates/storage-next/src/lifecycle/durable.rs:774-784` | Map `DurableLocalAlways` recovery to `CommitDurabilityClass::Standard` | `bootstrap_replay_uses_always_durability_for_always_mode` |
+| Accept timeline-only WAL | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Remove L7 replay validation or bypass replay request validation | `bootstrap_rejects_timeline_only_wal_payload_before_open` |
+| Accept missing timeline rows | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Bypass L7 replay request validation for user rows without timeline facts | `bootstrap_rejects_log_record_without_timeline_rows_before_open` |
+| Replay foreign branch | `crates/storage-next/src/lifecycle/durable.rs:786-797` | Skip recovered WAL branch-ownership validation | `bootstrap_rejects_recovered_log_record_for_unopened_branch` |
+| Replay non-increasing package | `crates/storage-next/src/lifecycle/durable.rs:798-801` | Skip strict recovered WAL order validation after replay start | `bootstrap_rejects_recovered_log_records_not_strictly_ordered` |
+| Drop degraded health | `crates/storage-next/src/lifecycle/durable.rs:465-470` | Convert degraded L8F health to healthy during open outcome construction | `bootstrap_preserves_degraded_recovery_health_while_replaying_tail` |
+| Reapply exact replay | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Treat exact duplicate rows as newly applied during bootstrap replay | `bootstrap_replay_is_idempotent_for_exactly_installed_rows` |
+| Ignore matching durable gate | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Do not clear a matching unresolved durable gate after replay | `bootstrap_replay_clears_matching_unresolved_durable_gate` |
+| Clear mismatched durable gate | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Clear or ignore an unresolved gate for a different durable fact | `bootstrap_replay_rejects_mismatched_unresolved_durable_gate` |
+| Open before recovery accepted | `crates/storage-next/src/lifecycle/durable.rs:472-473` | Skip `RecoveryAccepted` transition | `bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility` |
+| Product/raw IO drift | `crates/storage-next/src/lifecycle/durable.rs` | Import product/raw IO or L8F-owned recovery reads in durable bootstrap | `lifecycle_durable_runtime_stays_bootstrap_only` |
+
+### Verification
+
+Commands run for L8G:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery -- --nocapture
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --all-features --locked --test object_layout_properties
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8C - Storage Mode Capability Validation
 
 Status: implemented
