@@ -50,9 +50,10 @@ pub use integration_harness::{
     StorageStressHarnessOutcome,
 };
 pub use lifecycle::{
-    check_lifecycle_bootstrap_contract, check_lifecycle_flush_contract,
-    check_lifecycle_maintenance_contract, check_lifecycle_recovery_contract,
-    check_lifecycle_scaffold_contract, LifecycleBootstrapContractOutcome,
+    check_lifecycle_bootstrap_contract, check_lifecycle_checkpoint_contract,
+    check_lifecycle_flush_contract, check_lifecycle_maintenance_contract,
+    check_lifecycle_recovery_contract, check_lifecycle_scaffold_contract,
+    LifecycleBootstrapContractOutcome, LifecycleCheckpointContractOutcome,
     LifecycleFlushContractOutcome, LifecycleMaintenanceContractOutcome,
     LifecycleRecoveryContractOutcome, LifecycleScaffoldOutcome,
 };

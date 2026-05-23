@@ -230,12 +230,28 @@ fn lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks() {
 }
 
 #[test]
+fn lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/checkpoint.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle checkpoint source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_checkpoint_dependency(line),
+            "src/lifecycle/checkpoint.rs:{} calls forbidden checkpoint dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
     assert_general_source_guard_fixtures();
     assert_capability_preflight_fixtures();
     assert_cache_runtime_fixtures();
     assert_durable_runtime_fixtures();
     assert_flush_runtime_fixtures();
+    assert_checkpoint_runtime_fixtures();
     assert_recovery_runtime_fixtures();
     assert_public_surface_fixtures();
 }
@@ -404,6 +420,27 @@ fn assert_flush_runtime_fixtures() {
     ));
     assert!(contains_forbidden_flush_dependency(
         "quarantine.load_inventory(branch, db, codec)?;"
+    ));
+}
+
+fn assert_checkpoint_runtime_fixtures() {
+    assert!(contains_forbidden_checkpoint_dependency(
+        "decode_wal_record(bytes)?;"
+    ));
+    assert!(contains_forbidden_checkpoint_dependency(
+        "ObjectLayout::wal_segment(1)?;"
+    ));
+    assert!(contains_forbidden_checkpoint_dependency(
+        "name.as_str().split('/')"
+    ));
+    assert!(contains_forbidden_checkpoint_dependency(
+        "backend.delete_object(name)?;"
+    ));
+    assert!(!contains_forbidden_checkpoint_dependency(
+        "WalRetentionProof::snapshot_watermark(version)"
+    ));
+    assert!(!contains_forbidden_checkpoint_dependency(
+        "wal.delete_covered_segments(request.proof())"
     ));
 }
 
@@ -751,6 +788,25 @@ fn contains_forbidden_flush_dependency(line: &str) -> bool {
         "quarantine.",
         "snapshotservice",
         "tablemanifestservice",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_checkpoint_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "decode_wal_record",
+        "decode_wal_record_envelope",
+        "decode_wal_segment",
+        "encode_wal_record",
+        "objectlayout::wal_segment",
+        "objectlayout::wal_metadata",
+        "backend.delete_object(",
+        "read_range(",
+        ".as_str().split",
+        "strip_prefix(",
+        "parse::<u64>",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

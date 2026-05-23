@@ -117,6 +117,50 @@ fn lifecycle_property_harness_runs_bootstrap_contract() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_property_harness_runs_checkpoint_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_checkpoint_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-checkpoint.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=32), |script| {
+            let outcome = check_lifecycle_checkpoint_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.accepted_request_cases() == 0
+                || outcome.deferred_request_cases() == 0
+                || outcome.active_row_cases() == 0
+                || outcome.frozen_row_cases() == 0
+                || outcome.owned_row_cases() == 0
+                || outcome.tombstone_row_cases() == 0
+                || outcome.timeline_row_cases() == 0
+                || outcome.flush_accept_cases() == 0
+                || outcome.flush_reject_cases() == 0
+                || outcome.flush_noop_cases() == 0
+                || outcome.retention_accept_cases() == 0
+                || outcome.retention_reject_cases() == 0
+                || outcome.cache_rejection_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "lifecycle checkpoint contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle checkpoint property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_property_harness_runs_maintenance_contract() {
     use proptest::collection::vec;
     use proptest::prelude::any;

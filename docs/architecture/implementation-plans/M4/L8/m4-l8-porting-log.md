@@ -1332,3 +1332,133 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 cargo fmt --package strata-storage-next --check
 git diff --check
 ```
+
+## L8J - Checkpoint, Flush Watermark, And WAL Truncation
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/checkpoint.rs`
+- `crates/storage-next/src/lifecycle/tests/checkpoint.rs`
+- `crates/storage-next/src/lifecycle/tests/checkpoint/shared.rs`
+- `crates/storage-next/src/testkit/lifecycle/checkpoint.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8j-checkpoint-watermark-wal-truncation-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8j-checkpoint-watermark-wal-truncation-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Checkpoint requests carry branch id, snapshot id, creation timestamp, optional
+  snapshot sections, and explicit follow-up toggles for flush watermark and WAL
+  truncation.
+- Checkpoint outcomes report checkpoint status, row count, section count,
+  snapshot object, active WAL segment, optional flush-watermark facts, optional
+  WAL-truncation facts, and recovery health debt.
+- Flush-watermark requests use explicit proof vocabulary:
+  checkpoint-covered, already-persisted, and table-objects-only.
+- WAL truncation accepts only `WalRetentionProof`, preserving source
+  vocabulary from snapshot watermark or flush watermark.
+- Maintenance tasks enqueue and run checkpoint and WAL-truncation work through
+  the common executor and retain task id, task kind, status, retryability,
+  effects, stats, and health debt.
+
+### Raw Health And Fact Vocabulary
+
+- `LifecycleCheckpointStatus` records completed, deferred, partial snapshot
+  publication, uncertain snapshot visibility, flush-watermark failure, and
+  WAL-truncation failure.
+- `LifecycleFlushWatermarkStatus` records persisted and already-persisted
+  outcomes.
+- `LifecycleWalTruncationStatus` records completed and
+  completed-with-health-debt outcomes.
+- `WalRetentionProofSource` remains the only truncation proof source vocabulary
+  that lifecycle can pass downward.
+- Checkpoint follow-up failures are represented as maintenance health debt,
+  not clean checkpoint success.
+
+### Intentional Changes
+
+- Lifecycle does not scan WAL records or parse segment object names. Coverage
+  and active-segment protection remain owned by L4 WAL service logic.
+- Checkpoint row capture uses L6 branch row ordering and L7 commit quiesce. The
+  checkpoint watermark is the visible version, not the allocator frontier.
+- Snapshot publication is delegated to the checkpoint service. Tests pin the
+  service order: active-WAL facts, snapshot create, then live snapshot facts.
+- Cache mode exposes no checkpoint/flush-watermark/WAL-truncation durable
+  claim surface; source guards keep cache lifecycle code away from durable
+  services.
+- Generated checkpoint coverage tracks input-derived counters separately from
+  direct unit tests.
+
+### Retired From V1 L8J
+
+- Old primitive checkpoint section DTOs.
+- Product command naming or public maintenance command behavior.
+- Direct filesystem/path/object-name parsing for WAL retention.
+- Table-object-only flush facts as a replay-shortening proof.
+- Logs-only fault handling for partial checkpoint or WAL delete failures.
+
+### Deferred By Owner Slice
+
+- Snapshot pruning after successful checkpoint: L8L.
+- Local filesystem checkpoint/recovery integration harness: L8O/L8P.
+- Multi-branch public lifecycle wrapper behavior: L9.
+
+### Tests Added
+
+- `checkpoint_task_rejects_wrong_maintenance_scope`
+- `checkpoint_rows_include_tombstones_and_timeline_rows`
+- `checkpoint_watermark_uses_visible_version_not_allocated_version`
+- `checkpoint_snapshot_publish_failure_releases_quiesce_and_keeps_recovery_facts`
+- `checkpoint_publishes_snapshot_between_database_record_updates`
+- `checkpoint_manifest_publish_failure_reports_partial_snapshot`
+- `checkpoint_manifest_uncertainty_reports_uncertain_status`
+- `checkpoint_existing_snapshot_id_collision_fails_closed`
+- `checkpoint_with_truncation_skips_delete_when_deferred`
+- `checkpoint_recovery_restores_rows_without_covered_log_records`
+- `checkpoint_recovery_restores_tombstone_and_timeline_rows`
+- `flush_watermark_rejects_bounds_and_preserves_branch_state`
+- `flush_watermark_persist_failure_preserves_source_chain`
+- `wal_truncation_from_checkpoint_and_flush_proofs_are_typed`
+- `duplicate_checkpoint_tasks_coalesce_by_checkpoint_scope`
+- `queued_checkpoint_task_failure_adds_health_debt`
+- `duplicate_wal_truncation_tasks_coalesce_by_retention_scope`
+- `lifecycle_property_harness_runs_checkpoint_contract`
+- `lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Quiesce omitted | `crates/storage-next/src/lifecycle/checkpoint.rs` | Remove commit quiesce before checkpoint row capture | `checkpoint_reads_visible_version_after_commit_quiesce` |
+| Allocator watermark used | `crates/storage-next/src/lifecycle/checkpoint.rs` | Use allocator frontier instead of visible version | `checkpoint_watermark_uses_visible_version_not_allocated_version` |
+| Hidden rows captured | `crates/storage-next/src/branch/state.rs` | Include rows above checkpoint watermark | `checkpoint_rows_include_owned_frozen_active_and_exclude_newer_rows` |
+| Tombstones dropped | `crates/storage-next/src/branch/state.rs` | Filter tombstone rows from checkpoint rows | `checkpoint_rows_include_tombstones_and_timeline_rows` |
+| Timeline rows dropped | `crates/storage-next/src/branch/state.rs` | Filter timeline rows from checkpoint rows | `checkpoint_rows_include_tombstones_and_timeline_rows` |
+| Snapshot/manifest order inverted | `crates/storage-next/src/service/checkpoint.rs` | Persist snapshot facts before snapshot create | `checkpoint_publishes_snapshot_between_database_record_updates` |
+| Partial snapshot marked success | `crates/storage-next/src/lifecycle/checkpoint.rs` | Collapse orphan snapshot status to completed | `checkpoint_manifest_publish_failure_reports_partial_snapshot` |
+| Table-only flush proof accepted | `crates/storage-next/src/lifecycle/checkpoint.rs` | Allow table-only proof in flush watermark persistence | `flush_watermark_proofs_are_conservative_and_monotonic` |
+| Branch absence advances watermark | `crates/storage-next/src/lifecycle/checkpoint.rs` | Treat no rows as flush proof | `checkpoint_defers_when_branch_has_no_rows_under_visible_watermark` |
+| Primitive truncation watermark | `crates/storage-next/src/lifecycle/checkpoint.rs` | Replace typed retention proof with raw commit version | `wal_truncation_from_checkpoint_and_flush_proofs_are_typed` |
+| Active segment deleted | `crates/storage-next/src/service/wal.rs` | Remove active-segment protection in covered delete | `checkpoint_recovery_restores_rows_without_covered_log_records` |
+| Delete failure ignored | `crates/storage-next/src/lifecycle/checkpoint.rs` | Return clean success after WAL delete error | `checkpoint_reports_wal_truncation_failure_without_losing_snapshot_facts` |
+| Cache mode creates durable facts | `crates/storage-next/src/lifecycle/cache.rs` | Import durable services into cache lifecycle | `lifecycle_cache_runtime_stays_cache_only` |
+| Old primitive DTO imported | `crates/storage-next/src/lifecycle/*.rs` | Reintroduce old checkpoint DTO vocabulary | `lifecycle_source_does_not_import_engine_product_or_raw_io` |
+| Architecture label added to code | `crates/storage-next/src/lifecycle/*.rs`, `crates/storage-next/src/testkit/lifecycle/*.rs`, `crates/storage-next/tests/lifecycle_*.rs` | Put milestone labels in implementation comments, strings, or test names | `lifecycle_implementation_avoids_architecture_labels` |
+
+### Verification
+
+Commands run for L8J:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::checkpoint
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::maintenance
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --all-features --locked --test object_layout_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
