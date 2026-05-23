@@ -258,13 +258,13 @@ fn check_lossy_missing_snapshot(
         matches!(
             recovered.health(),
             RecoveryHealth::Degraded {
-                class: RecoveryDegradationClass::PolicyDowngrade,
+                class: RecoveryDegradationClass::DataLoss,
                 faults
             } if faults.iter().any(
                 |fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject
             )
         ),
-        "lossy missing snapshot did not record policy downgrade",
+        "lossy missing snapshot did not record data loss",
     )?;
     ensure(
         recovered.wal().replay_start() == CommitVersion::ZERO,
@@ -427,7 +427,7 @@ fn check_input_derived_lossy_degradation(
         matches!(
             recovered.health(),
             RecoveryHealth::Degraded {
-                class: RecoveryDegradationClass::PolicyDowngrade,
+                class: RecoveryDegradationClass::DataLoss,
                 faults
             } if faults.iter().any(
                 |fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject

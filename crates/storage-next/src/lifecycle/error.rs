@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub(crate) enum LifecycleError {
     InvalidConfig {
@@ -20,6 +21,7 @@ pub(crate) enum LifecycleError {
     },
     CapabilityMismatch {
         storage_mode: StorageMode,
+        required: Vec<BackendCapability>,
         missing: Vec<BackendCapability>,
     },
     RecoveryFailed {
@@ -34,6 +36,12 @@ pub(crate) enum LifecycleError {
     CloseFailed {
         reason: &'static str,
     },
+    TimelineRecoveryMismatch {
+        reason: &'static str,
+    },
+    WalTailRepairRejected {
+        reason: &'static str,
+    },
     LowerLayer {
         layer: LifecycleLowerLayer,
         reason: &'static str,
@@ -41,6 +49,7 @@ pub(crate) enum LifecycleError {
     },
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LifecycleLowerLayer {
     Backend,
@@ -70,6 +79,49 @@ impl LifecycleError {
             layer,
             reason,
             source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidConfig { .. } => "lifecycle.config.invalid",
+            Self::InvalidLifecycleState { .. } => "lifecycle.state.invalid",
+            Self::InvalidOpenPlan { .. } => "lifecycle.open_plan.invalid",
+            Self::CapabilityMismatch { .. } => "lifecycle.capability.mismatch",
+            Self::RecoveryFailed { .. } => "lifecycle.recovery.failed",
+            Self::MaintenanceFailed { .. } => "lifecycle.maintenance.failed",
+            Self::RetentionBlocked { .. } => "lifecycle.retention.blocked",
+            Self::CloseFailed { .. } => "lifecycle.close.failed",
+            Self::TimelineRecoveryMismatch { .. } => "lifecycle.recovery.timeline_mismatch",
+            Self::WalTailRepairRejected { .. } => "lifecycle.recovery.wal_tail_rejected",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::Backend,
+                ..
+            } => "lifecycle.lower.backend",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::Layout,
+                ..
+            } => "lifecycle.lower.layout",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::Format,
+                ..
+            } => "lifecycle.lower.format",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::Service,
+                ..
+            } => "lifecycle.lower.service",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::TableRuntime,
+                ..
+            } => "lifecycle.lower.table_runtime",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::BranchRuntime,
+                ..
+            } => "lifecycle.lower.branch_runtime",
+            Self::LowerLayer {
+                layer: LifecycleLowerLayer::CommitRuntime,
+                ..
+            } => "lifecycle.lower.commit_runtime",
         }
     }
 }
@@ -104,13 +156,27 @@ impl PartialEq for LifecycleError {
             (
                 Self::CapabilityMismatch {
                     storage_mode: left_mode,
+                    required: left_required,
                     missing: left_missing,
                 },
                 Self::CapabilityMismatch {
                     storage_mode: right_mode,
+                    required: right_required,
                     missing: right_missing,
                 },
-            ) => left_mode == right_mode && left_missing == right_missing,
+            ) => {
+                left_mode == right_mode
+                    && left_required == right_required
+                    && left_missing == right_missing
+            }
+            (
+                Self::TimelineRecoveryMismatch { reason: left },
+                Self::TimelineRecoveryMismatch { reason: right },
+            )
+            | (
+                Self::WalTailRepairRejected { reason: left },
+                Self::WalTailRepairRejected { reason: right },
+            ) => left == right,
             (
                 Self::LowerLayer {
                     layer: left_layer,
@@ -144,12 +210,14 @@ impl fmt::Display for LifecycleError {
             }
             Self::CapabilityMismatch {
                 storage_mode,
+                required,
                 missing,
             } => {
                 write!(
                     formatter,
-                    "storage capability mismatch for {storage_mode}: missing {}",
-                    DisplayCapabilities(missing)
+                    "storage capability mismatch for {storage_mode}: required {}; missing {}",
+                    DisplayCapabilities(required),
+                    DisplayCapabilities(missing),
                 )
             }
             Self::RecoveryFailed { reason } => write!(formatter, "recovery failed: {reason}"),
@@ -158,6 +226,12 @@ impl fmt::Display for LifecycleError {
             }
             Self::RetentionBlocked { reason } => write!(formatter, "retention blocked: {reason}"),
             Self::CloseFailed { reason } => write!(formatter, "close failed: {reason}"),
+            Self::TimelineRecoveryMismatch { reason } => {
+                write!(formatter, "timeline recovery mismatch: {reason}")
+            }
+            Self::WalTailRepairRejected { reason } => {
+                write!(formatter, "WAL tail repair rejected: {reason}")
+            }
             Self::LowerLayer { layer, reason, .. } => {
                 write!(formatter, "lifecycle lower layer {layer} failed: {reason}")
             }

@@ -35,7 +35,8 @@ to L8F, later L8 maintenance slices, or layers above storage.
 6. `docs/architecture/implementation-plans/M4/L7/l7k-recovery-replay-allocator-catch-up-implementation-plan.md`
 7. `docs/architecture/implementation-plans/M4/L7/l7l-concurrency-quiesce-hardening-implementation-plan.md`
 8. `crates/storage-next/src/lifecycle/durable.rs`
-9. `crates/storage-next/src/lifecycle/recovery.rs`
+9. `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+10. `crates/storage-next/src/lifecycle/recovery.rs`
 10. `crates/storage-next/src/lifecycle/outcome.rs`
 11. `crates/storage-next/src/lifecycle/state.rs`
 12. `crates/storage-next/src/commit/replay.rs`
@@ -50,7 +51,8 @@ to L8F, later L8 maintenance slices, or layers above storage.
 
 | Current file | L8G evidence | L8G action |
 |---|---|---|
-| `lifecycle/durable.rs` | L8E creates a durable shell in `Recovering` with services, branch state, registry, guard set, allocator, visible tracker, durable gate, and commit config. | Add a recovery-completion path that consumes or transforms the shell after L8F. Add only narrow mutable accessors needed by L7 replay. |
+| `lifecycle/durable.rs` | L8E creates a durable shell in `Recovering` with services, branch state, registry, guard set, allocator, visible tracker, durable gate, and commit config. | Keep durable assembly separate from commit bootstrap. |
+| `lifecycle/durable/bootstrap.rs` | Consumes the L8F package and owns L7 replay, allocator catch-up, visible catch-up, and final open publication. | Add a recovery-completion path that transforms the shell after L8F without re-reading durable objects. |
 | `lifecycle/recovery.rs` | L8F returns checkpoint facts, validated table facts, WAL records, repair facts, quarantine facts, and health. | Treat this as the only recovery input. Do not re-read durable objects in L8G. |
 | `commit/replay.rs` | `CommitReplayRuntime` validates WAL row facts, applies absent rows idempotently, validates timeline rows, catches up allocators/timestamps, publishes visible facts, and clears matching gates. | Use this for every recovered WAL record. Do not reimplement replay rules in lifecycle code. |
 | `commit/visibility.rs` | `VisibleVersionTracker::catch_up_visible_after_replay` can publish a trusted visible version without fabricating a commit. | Use it for checkpoint-only recovery when no WAL record advances visibility past the checkpoint watermark. |
@@ -64,7 +66,7 @@ to L8F, later L8 maintenance slices, or layers above storage.
 L8G implements:
 
 1. a crate-private durable recovery completion runtime, likely in
-   `lifecycle/durable.rs` or a new `lifecycle/bootstrap.rs`;
+   `lifecycle/durable/bootstrap.rs`;
 2. a final opened durable-local runtime shape, or a state transition on the
    existing durable shell, with `StorageOpenOutcome`;
 3. replay of every `LifecycleRecoveredWal::records()` entry through
@@ -75,7 +77,8 @@ L8G implements:
    `DurableLocalAlways -> CommitDurabilityClass::Always`;
 6. checkpoint-only visible catch-up from
    `LifecycleRecoveredCheckpoint::trusted_watermark()`;
-7. allocator and timestamp catch-up through L7 replay reports;
+7. allocator and timestamp catch-up through L7 replay reports, plus
+   checkpoint-only timestamp catch-up from installed checkpoint row facts;
 8. final visible-version calculation as the max of trusted checkpoint watermark
    and replayed WAL commit versions;
 9. unresolved durable-gate reconciliation through L7 replay exact-match clear;
@@ -83,7 +86,10 @@ L8G implements:
 11. recovery-health finalization that preserves L8F degraded health and adds
     L8G failures only when replay/bootstrap fails;
 12. final `StorageOpenOutcome` with durable mode, disposition, recovered visible
-    version, recovery health, and maintenance readiness `false` for V1;
+    version, recovered max commit version, backend capabilities, database id,
+    codec id, checkpoint/WAL/table/quarantine recovery facts, L7 bootstrap
+    report, recovery health, raw stats, and maintenance readiness `false` for
+    V1;
 13. transition from `Recovering` to `Open` only after the outcome is valid;
 14. ordinary read admission after open using the recovered visible version;
 15. durable commit admission after open by composing `CommitDurableRuntime` with
@@ -169,7 +175,7 @@ L8G must run these phases in order:
 6. after replay, publish/checkpoint catch-up visibility to at least the trusted
    checkpoint watermark when the checkpoint is newer than all replayed records;
 7. confirm the visible tracker equals the recovered visible version;
-8. construct `StorageOpenOutcome`;
+8. construct `StorageOpenOutcome` with durable recovery and bootstrap facts;
 9. transition lifecycle state with `RecoveryAccepted`;
 10. return the opened durable runtime/report.
 
@@ -229,8 +235,8 @@ each replayed WAL record. L8G must add only the missing checkpoint-only case:
    final recovered visible version;
 2. after replay, generated timestamps must not move below any replayed WAL
    timestamp;
-3. if no WAL records replayed, timestamp guard remains unchanged unless future
-   checkpoint metadata stores a trusted timestamp watermark;
+3. if no WAL records replayed, timestamp guard catches up to the maximum
+   timestamp in installed checkpoint rows when the checkpoint contains rows;
 4. V1 has no transaction-id allocator and L8G must not add one;
 5. allocator catch-up failure is a recovery failure and must not transition to
    `Open`.

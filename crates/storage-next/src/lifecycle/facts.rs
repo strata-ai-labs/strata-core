@@ -6,6 +6,7 @@ use std::fmt;
 const MAX_LIFECYCLE_CODEC_ID_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum LifecycleState {
     New,
     Opening,
@@ -17,6 +18,7 @@ pub(crate) enum LifecycleState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum StorageMode {
     Cache,
     DurableLocalStandard,
@@ -42,6 +44,7 @@ impl fmt::Display for StorageMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum RecoveryStrictness {
     Strict,
     AllowExplicitLossyFallback,
@@ -61,6 +64,7 @@ pub(crate) struct StorageOpenPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum MaintenanceTaskKind {
     Flush,
     Checkpoint,
@@ -76,6 +80,7 @@ pub(crate) enum MaintenanceTaskKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum RetentionDecision {
     Retain,
     PruneCandidate,
@@ -85,6 +90,7 @@ pub(crate) enum RetentionDecision {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum QuarantineStage {
     Candidate,
     InventoryPublished,
@@ -93,6 +99,7 @@ pub(crate) enum QuarantineStage {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum ClosePhase {
     QuiesceCommits,
     StopMaintenance,

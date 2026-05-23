@@ -45,7 +45,7 @@ Use:
    package helpers when the helper is already recovery-owned.
 3. `crates/storage-next/src/lifecycle/tests/durable.rs` for post-open durable
    runtime smoke coverage if the open runtime surface lives in
-   `lifecycle/durable.rs`.
+   `lifecycle/durable/bootstrap.rs`.
 4. `crates/storage-next/src/testkit/lifecycle/bootstrap.rs` for generated
    bootstrap scripts, counters, and model checks.
 5. `crates/storage-next/tests/lifecycle_recovery.rs` for memory and localfs
@@ -447,7 +447,9 @@ L8G can close when:
 6. mismatch, partial, missing-timeline, and timeline-mismatch cases fail
    closed;
 7. matching and mismatched durable-gate reconciliation are pinned;
-8. recovery health and `StorageOpenOutcome` preserve raw storage facts;
+8. recovery health and `StorageOpenOutcome` preserve raw storage facts,
+   including backend capabilities, database id, codec id, checkpoint/WAL/table/
+   quarantine recovery facts, bootstrap facts, and raw stats;
 9. post-open read and one durable commit work through L6/L7 surfaces;
 10. source guards block product/raw IO drift;
 11. generated properties exercise input-derived bootstrap categories;

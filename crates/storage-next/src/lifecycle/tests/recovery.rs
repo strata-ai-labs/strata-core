@@ -164,6 +164,18 @@ fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() 
         runtime.allocator().version_allocator().last_allocated(),
         CommitVersion::new(3)
     );
+    assert_eq!(
+        runtime.allocator().timestamp_guard().last_allocated(),
+        Some(Timestamp::from_micros(200))
+    );
+    assert_eq!(runtime.open_outcome().database_id(), Some(&DATABASE_ID));
+    assert_eq!(runtime.open_outcome().codec_id(), Some("identity"));
+    assert!(runtime.open_outcome().checkpoint().is_some());
+    assert!(runtime.open_outcome().wal().is_some());
+    assert!(runtime.open_outcome().tables().is_some());
+    assert!(runtime.open_outcome().quarantine().is_some());
+    assert!(runtime.open_outcome().bootstrap().is_some());
+    assert_eq!(runtime.open_outcome().stats().open_attempts(), 1);
     let read_view = runtime.read_view().expect("open read view");
     let visible = read_view
         .latest(checkpoint_row.physical_key())
@@ -267,9 +279,9 @@ fn bootstrap_rejects_log_record_without_timeline_rows_before_open() {
         .complete_recovery(&outcome)
         .expect_err("missing timeline replay rejects");
 
-    assert_commit_runtime_source(
-        &error,
-        &CommitRuntimeError::InvalidTimelineFact {
+    assert_eq!(
+        error,
+        LifecycleError::TimelineRecoveryMismatch {
             reason: "replay payload is missing commit timeline rows",
         },
     );
@@ -334,7 +346,7 @@ fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
             .complete_recovery(&outcome)
             .expect_err("non-increasing recovered record package rejects"),
         LifecycleError::RecoveryFailed {
-            reason: "recovered WAL package must be strictly ordered after replay start",
+            reason: "recovered WAL package must be strictly ordered",
         }
     );
 }
@@ -365,7 +377,7 @@ fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
     assert!(matches!(
         outcome.health(),
         RecoveryHealth::Degraded {
-            class: RecoveryDegradationClass::PolicyDowngrade,
+            class: RecoveryDegradationClass::DataLoss,
             faults
         } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject)
     ));
@@ -385,7 +397,7 @@ fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
     assert!(matches!(
         runtime.open_outcome().recovery_health(),
         RecoveryHealth::Degraded {
-            class: RecoveryDegradationClass::PolicyDowngrade,
+            class: RecoveryDegradationClass::DataLoss,
             faults
         } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject)
     ));
@@ -554,7 +566,7 @@ fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
             reason: "different unresolved durable commit blocks replay",
         },
     );
-    assert_eq!(shell.state(), LifecycleState::Recovering);
+    assert_eq!(shell.state(), LifecycleState::Failed);
     assert_eq!(shell.visible_version(), CommitVersion::ZERO);
     assert!(shell.branch_state().is_empty());
     assert_eq!(
@@ -562,6 +574,7 @@ fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
         Some(unresolved)
     );
     assert!(shell.admit_commit().is_err());
+    assert!(shell.admit_recovery_step().is_err());
 }
 
 #[test]
@@ -667,11 +680,10 @@ fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
 }
 
 #[test]
-fn recovery_repairs_latest_partial_log_tail_and_preserves_valid_records() {
+fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x40);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
-        .expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
     let record = wal_record(branch, 2, b"valid", b"value");
     shell
         .services_mut()
@@ -692,7 +704,42 @@ fn recovery_repairs_latest_partial_log_tail_and_preserves_valid_records() {
     assert_eq!(outcome.wal().records(), std::slice::from_ref(&record));
     assert!(outcome.wal().truncation().is_some());
     assert!(outcome.wal().repair().is_some());
-    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert!(matches!(
+        outcome.health(),
+        RecoveryHealth::Degraded {
+            class: RecoveryDegradationClass::DataLoss,
+            faults
+        } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::WalTailRepairFailed)
+    ));
+}
+
+#[test]
+fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x41);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 2, b"valid", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append valid record");
+    backend.append_raw(
+        ObjectLayout::wal_segment(1).expect("active log object"),
+        b"partial",
+    );
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    assert_eq!(
+        LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect_err("strict partial tail rejects"),
+        LifecycleError::WalTailRepairRejected {
+            reason: "strict recovery cannot repair partial WAL tail",
+        }
+    );
 }
 
 #[test]
@@ -725,6 +772,65 @@ fn recovery_rejects_checkpoint_row_newer_than_snapshot_watermark() {
         })
     );
     assert!(shell.branch_state().is_empty());
+}
+
+#[test]
+fn database_manifest_rejects_zero_snapshot_id_before_recovery() {
+    assert!(
+        DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(3), Some(0), None)
+            .is_err(),
+        "zero snapshot ids must be rejected before lifecycle trusts manifest recovery facts"
+    );
+}
+
+#[test]
+fn recovery_rejects_snapshot_section_count_above_request_limit() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4a);
+    let first = put_row(branch, 2, b"first-section", b"value");
+    let second = put_row(branch, 3, b"second-section", b"value");
+    SnapshotService::new(&backend)
+        .publish_create(SnapshotPublishRequest::new(
+            10,
+            CommitVersion::new(3),
+            Timestamp::from_micros(7_000),
+            DATABASE_ID,
+            "identity",
+            vec![
+                encode_checkpoint_row_section(std::slice::from_ref(&first))
+                    .expect("first row section"),
+                encode_checkpoint_row_section(std::slice::from_ref(&second))
+                    .expect("second row section"),
+            ],
+        ))
+        .expect("publish multi-section snapshot");
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(3), Some(10), None)
+            .expect("database root facts"),
+    );
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request = LifecycleRecoveryRequest::new(
+        RecoveryStrictness::Strict,
+        shell.open_plan().lifecycle_config().max_recovery_faults(),
+        1,
+        "limited-section-checkpoint",
+    )
+    .expect("recovery request");
+
+    assert_eq!(
+        LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect_err("too many snapshot sections reject"),
+        LifecycleError::RecoveryFailed {
+            reason: "snapshot section count exceeds lifecycle recovery limit",
+        }
+    );
 }
 
 #[test]
@@ -907,6 +1013,45 @@ fn recovery_validates_tables_before_wal_tail_repair() {
 }
 
 #[test]
+fn recovery_validates_quarantine_before_wal_tail_repair() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x49);
+    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let record = wal_record(branch, 3, b"valid-before-quarantine", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append valid record");
+    let wal_object = ObjectLayout::wal_segment(1).expect("active log object");
+    backend.append_raw(wal_object.clone(), b"partial");
+    let before = backend.object_bytes(&wal_object).expect("wal bytes before");
+    backend.fail_read_object(
+        ObjectLayout::quarantine_manifest(&branch.to_string()).expect("quarantine object"),
+    );
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("quarantine failure rejects before WAL repair");
+
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::Service,
+            reason: "quarantine inventory recovery failed",
+            ..
+        }
+    ));
+    assert_eq!(
+        backend.object_bytes(&wal_object).expect("wal bytes after"),
+        before,
+        "WAL tail must not be repaired after quarantine recovery already failed",
+    );
+}
+
+#[test]
 fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x3e);
@@ -941,13 +1086,16 @@ fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() 
     assert!(matches!(
         outcome.health(),
         RecoveryHealth::Degraded {
-            class: RecoveryDegradationClass::PolicyDowngrade,
+            class: RecoveryDegradationClass::Telemetry,
             faults
         } if faults.iter().any(
             |fault| fault.kind() == RecoveryFaultKind::QuarantineInventoryMismatch
         )
     ));
-    assert!(outcome.quarantine().object().is_none());
+    assert_eq!(
+        outcome.quarantine().object(),
+        Some(&ObjectLayout::quarantine_manifest(&branch.to_string()).expect("quarantine object"))
+    );
     assert!(!outcome.quarantine().is_present());
     assert_eq!(outcome.quarantine().byte_count(), 0);
     assert_eq!(outcome.quarantine().entry_count(), 0);
@@ -1019,7 +1167,45 @@ fn recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark() 
     assert!(matches!(
         outcome.health(),
         RecoveryHealth::Degraded {
-            class: RecoveryDegradationClass::PolicyDowngrade,
+            class: RecoveryDegradationClass::DataLoss,
+            faults
+        } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject)
+    ));
+    assert_eq!(outcome.checkpoint().snapshot_id(), Some(7));
+    assert_eq!(outcome.checkpoint().trusted_watermark(), None);
+    assert_eq!(outcome.wal().replay_start(), CommitVersion::ZERO);
+    assert_eq!(outcome.wal().records(), &[replayed]);
+}
+
+#[test]
+fn lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x36);
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(9), Some(7), Some(CommitVersion::new(6)))
+            .expect("database root facts"),
+    );
+    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let replayed = wal_record(branch, 5, b"lossy-flush-tail", b"tail-value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&replayed)
+        .expect("append replayed record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("lossy recovery with missing checkpoint");
+
+    assert!(matches!(
+        outcome.health(),
+        RecoveryHealth::Degraded {
+            class: RecoveryDegradationClass::DataLoss,
             faults
         } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::MissingSnapshotObject)
     ));

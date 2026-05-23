@@ -34,6 +34,13 @@ fn cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims() {
     assert!(runtime.open_outcome().recovery_health().is_healthy());
     assert!(!runtime.open_outcome().maintenance_ready());
     assert_eq!(
+        runtime.open_outcome().backend_capabilities(),
+        Some(backend.capabilities())
+    );
+    assert_eq!(runtime.open_outcome().stats().open_attempts(), 1);
+    assert!(runtime.open_outcome().checkpoint().is_none());
+    assert!(runtime.open_outcome().bootstrap().is_none());
+    assert_eq!(
         runtime.capability_outcome().storage_mode(),
         StorageMode::Cache
     );
@@ -374,11 +381,20 @@ fn cache_close_is_idempotent_blocks_commits_and_reads_and_avoids_backend_calls()
     let close = runtime.close().expect("cache close");
     assert_eq!(close.phase(), ClosePhase::Closed);
     assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.close_fact(), Some(LifecycleCloseFact::Complete));
+    assert!(close.commits_quiesced());
+    assert!(close.maintenance_drained());
+    assert!(!close.durable_synced());
+    assert!(close.guards_released());
+    assert!(!close.prior_final());
+    assert_eq!(close.stats().close_attempts(), 1);
     assert_eq!(runtime.state(), LifecycleState::Closed);
 
     let second = runtime.close().expect("idempotent close");
     assert_eq!(second.phase(), ClosePhase::Closed);
-    assert_eq!(second.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
+    assert_eq!(second.close_fact(), Some(LifecycleCloseFact::AlreadyClosed));
+    assert!(second.prior_final());
     assert_eq!(runtime.state(), LifecycleState::Closed);
 
     assert!(matches!(

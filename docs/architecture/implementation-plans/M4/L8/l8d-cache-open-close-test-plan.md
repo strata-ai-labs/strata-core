@@ -209,11 +209,16 @@ Required cases:
 
 1. close from `Open` transitions to `Closing` then `Closed`;
 2. close outcome reports `ClosePhase::Closed`;
-3. close outcome reports `CloseOutcomeStatus::Complete`;
-4. second close is idempotent;
-5. close after a committed row does not attempt durable flush;
-6. close after no commits is still complete;
-7. close failure paths, if any, leave the runtime retryable.
+3. first close outcome reports `CloseOutcomeStatus::Complete`;
+4. first close outcome reports `LifecycleCloseFact::Complete`;
+5. first close effects report commits quiesced, maintenance drained, guards
+   released, and no durable sync;
+6. second close reports `CloseOutcomeStatus::Idempotent`;
+7. second close reports `LifecycleCloseFact::AlreadyClosed` and prior-final
+   close effect;
+8. close after a committed row does not attempt durable flush;
+9. close after no commits is still complete;
+10. close failure paths, if any, leave the runtime retryable.
 
 Assertions:
 

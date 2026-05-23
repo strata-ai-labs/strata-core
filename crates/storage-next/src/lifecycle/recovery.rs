@@ -19,7 +19,7 @@ use crate::service::{
     WalRepair, WalServiceError, WalTruncation,
 };
 use crate::table::{TableIdentity, TableReaderConfig};
-use strata_core_next::CommitVersion;
+use strata_core_next::{CommitVersion, Timestamp};
 
 pub(crate) const SNAPSHOT_ROW_SECTION_KIND: u8 = 1;
 
@@ -109,12 +109,15 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         let checkpoint = self.recover_checkpoint(request, &mut faults)?;
         validate_flush_watermark_is_checkpoint_covered(
             self.shell.assembly_facts().manifest_flush_watermark(),
-            checkpoint.checkpoint.trusted_watermark(),
+            &checkpoint.checkpoint,
+            request.strictness(),
+            &mut faults,
+            request.max_faults(),
         )?;
+        let quarantine = self.recover_quarantine(request, &mut faults)?;
         let tables = self.recover_tables(request)?;
         let replay_start = trusted_replay_start(checkpoint.trusted_watermark());
-        let wal = self.recover_wal(replay_start)?;
-        let quarantine = self.recover_quarantine(request, &mut faults)?;
+        let wal = self.recover_wal(request, replay_start, &mut faults)?;
         let health = recovery_health_from_faults(request, faults)?;
         if let Some(recovered_branch) = checkpoint.recovered_branch {
             *self.shell.branch_state_mut() = recovered_branch;
@@ -157,6 +160,11 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         if watermark == CommitVersion::ZERO {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "manifest snapshot watermark must be nonzero",
+            });
+        }
+        if snapshot_id == 0 {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "manifest snapshot id must be nonzero",
             });
         }
 
@@ -210,7 +218,9 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
 
     fn recover_wal(
         &mut self,
+        request: &LifecycleRecoveryRequest,
         replay_start: CommitVersion,
+        faults: &mut Vec<RecoveryFault>,
     ) -> LifecycleResult<LifecycleRecoveredWal> {
         let read = self
             .shell
@@ -220,13 +230,26 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             .map_err(wal_error)?;
         let truncation = read.truncation().cloned();
         let repair = match truncation.as_ref() {
-            Some(truncation) => Some(
-                self.shell
-                    .services_mut()
-                    .wal_mut()
-                    .repair_latest_tail(truncation)
-                    .map_err(wal_repair_error)?,
-            ),
+            Some(truncation) => {
+                if request.strictness() == RecoveryStrictness::Strict {
+                    return Err(LifecycleError::WalTailRepairRejected {
+                        reason: "strict recovery cannot repair partial WAL tail",
+                    });
+                }
+                push_fault(
+                    faults,
+                    request.max_faults(),
+                    RecoveryFaultKind::WalTailRepairFailed,
+                    "partial WAL tail repaired with data loss",
+                )?;
+                Some(
+                    self.shell
+                        .services_mut()
+                        .wal_mut()
+                        .repair_latest_tail(truncation)
+                        .map_err(wal_repair_error)?,
+                )
+            }
             None => None,
         };
 
@@ -282,13 +305,14 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 if request.strictness == RecoveryStrictness::AllowExplicitLossyFallback
                     && is_quarantine_inventory_mismatch(&source) =>
             {
+                let object = quarantine_error_object(&source);
                 push_fault(
                     faults,
                     request.max_faults,
                     RecoveryFaultKind::QuarantineInventoryMismatch,
                     "quarantine inventory mismatch",
                 )?;
-                Ok(LifecycleRecoveredQuarantine::unknown())
+                Ok(LifecycleRecoveredQuarantine::unknown(object))
             }
             Err(source) => Err(quarantine_error(source)),
         }
@@ -464,6 +488,16 @@ impl LifecycleRecoveredCheckpoint {
     pub(crate) const fn install_outcome(&self) -> Option<&BranchSnapshotInstallOutcome> {
         self.install_outcome.as_ref()
     }
+
+    pub(crate) fn timestamp_max(&self) -> Option<Timestamp> {
+        self.install_outcome().and_then(|outcome| {
+            outcome
+                .branch_outcomes()
+                .iter()
+                .filter_map(crate::branch::BranchSnapshotInstallBranchOutcome::timestamp_max)
+                .max()
+        })
+    }
 }
 
 impl LifecycleRecoveredWal {
@@ -485,9 +519,9 @@ impl LifecycleRecoveredWal {
 }
 
 impl LifecycleRecoveredQuarantine {
-    const fn unknown() -> Self {
+    const fn unknown(object: Option<ObjectName>) -> Self {
         Self {
-            object: None,
+            object,
             present: false,
             byte_count: 0,
             entry_count: 0,
@@ -705,10 +739,34 @@ fn trusted_replay_start(checkpoint_watermark: Option<CommitVersion>) -> CommitVe
 
 fn validate_flush_watermark_is_checkpoint_covered(
     flush_watermark: Option<CommitVersion>,
-    checkpoint_watermark: Option<CommitVersion>,
+    checkpoint: &LifecycleRecoveredCheckpoint,
+    strictness: RecoveryStrictness,
+    faults: &mut Vec<RecoveryFault>,
+    max_faults: usize,
 ) -> LifecycleResult<()> {
     if let Some(flush_watermark) = flush_watermark {
-        if checkpoint_watermark.is_none_or(|watermark| flush_watermark > watermark) {
+        if checkpoint
+            .trusted_watermark()
+            .is_some_and(|watermark| flush_watermark <= watermark)
+        {
+            return Ok(());
+        }
+        if checkpoint.snapshot_id().is_some()
+            && checkpoint.trusted_watermark().is_none()
+            && strictness == RecoveryStrictness::AllowExplicitLossyFallback
+        {
+            push_fault(
+                faults,
+                max_faults,
+                RecoveryFaultKind::MissingSnapshotObject,
+                "manifest flush watermark lost with missing snapshot",
+            )?;
+            return Ok(());
+        }
+        if checkpoint
+            .trusted_watermark()
+            .is_none_or(|watermark| flush_watermark > watermark)
+        {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "manifest flush watermark requires recovered flushed table state",
             });
@@ -778,7 +836,30 @@ fn recovery_health_from_faults(
             reason: "strict recovery cannot return degraded health",
         });
     }
-    RecoveryHealth::degraded(RecoveryDegradationClass::PolicyDowngrade, faults)
+    let class = degradation_class_for_faults(&faults);
+    RecoveryHealth::degraded(class, faults)
+}
+
+fn degradation_class_for_faults(faults: &[RecoveryFault]) -> RecoveryDegradationClass {
+    if faults.iter().any(|fault| {
+        matches!(
+            fault.kind(),
+            RecoveryFaultKind::MissingSnapshotObject
+                | RecoveryFaultKind::MissingTableObject
+                | RecoveryFaultKind::InheritedLayerLoss
+                | RecoveryFaultKind::NoManifestFallback
+                | RecoveryFaultKind::WalTailRepairFailed
+        )
+    }) {
+        RecoveryDegradationClass::DataLoss
+    } else if faults
+        .iter()
+        .any(|fault| matches!(fault.kind(), RecoveryFaultKind::QuarantineInventoryMismatch))
+    {
+        RecoveryDegradationClass::Telemetry
+    } else {
+        RecoveryDegradationClass::PolicyDowngrade
+    }
 }
 
 fn push_fault(
@@ -804,6 +885,16 @@ fn is_quarantine_inventory_mismatch(source: &QuarantineServiceError) -> bool {
             | QuarantineServiceError::BranchMismatch { .. }
             | QuarantineServiceError::CodecMismatch { .. }
     )
+}
+
+fn quarantine_error_object(source: &QuarantineServiceError) -> Option<ObjectName> {
+    match source {
+        QuarantineServiceError::Decode { object, .. }
+        | QuarantineServiceError::DatabaseMismatch { object, .. }
+        | QuarantineServiceError::BranchMismatch { object, .. }
+        | QuarantineServiceError::CodecMismatch { object, .. } => Some(object.clone()),
+        _ => None,
+    }
 }
 
 fn format_error(source: FormatError) -> LifecycleError {

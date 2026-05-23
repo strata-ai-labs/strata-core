@@ -288,6 +288,19 @@ fn storage_open_outcome_reports_durable_storage_facts() {
     );
     assert!(durable_always.recovery_health().is_healthy());
     assert!(durable_always.maintenance_ready());
+    assert_eq!(
+        durable_always.recovered_max_commit_version(),
+        Some(CommitVersion::new(42))
+    );
+    assert_eq!(durable_always.backend_capabilities(), None);
+    assert_eq!(durable_always.database_id(), None);
+    assert_eq!(durable_always.codec_id(), None);
+    assert_eq!(durable_always.checkpoint(), None);
+    assert_eq!(durable_always.wal(), None);
+    assert_eq!(durable_always.tables(), None);
+    assert_eq!(durable_always.quarantine(), None);
+    assert_eq!(durable_always.bootstrap(), None);
+    assert_eq!(durable_always.stats(), LifecycleStats::default());
 
     let durable_standard = StorageOpenOutcome::new(
         StorageMode::DurableLocalStandard,
@@ -323,6 +336,7 @@ fn storage_open_outcome_reports_cache_and_object_candidate_facts() {
     assert_eq!(cache_outcome.disposition(), StorageOpenDisposition::Created);
     assert!(!cache_outcome.opened_existing());
     assert_eq!(cache_outcome.recovered_visible_version(), None);
+    assert_eq!(cache_outcome.recovered_max_commit_version(), None);
     assert!(!cache_outcome.maintenance_ready());
 
     let object_candidate = StorageOpenOutcome::new(
@@ -469,9 +483,20 @@ fn maintenance_retention_quarantine_and_close_facts_are_constructible() {
     let maintenance = MaintenanceOutcome::new(
         MaintenanceTaskKind::Checkpoint,
         MaintenanceOutcomeStatus::Deferred,
-    );
+    )
+    .with_recovery_health(RecoveryHealth::Healthy)
+    .with_effects(2, 512, true)
+    .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
     assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::Checkpoint);
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        maintenance.recovery_health(),
+        Some(&RecoveryHealth::Healthy)
+    );
+    assert_eq!(maintenance.affected_objects(), 2);
+    assert_eq!(maintenance.bytes_reclaimed(), 512);
+    assert!(maintenance.retryable());
+    assert_eq!(maintenance.stats().maintenance_tasks(), 1);
     assert_eq!(
         MaintenanceOutcome::new(
             MaintenanceTaskKind::Repair,
@@ -520,9 +545,24 @@ fn maintenance_retention_quarantine_and_close_facts_are_constructible() {
     let close = CloseOutcome::new(ClosePhase::DrainMaintenance, CloseOutcomeStatus::Timeout);
     assert_eq!(close.phase(), ClosePhase::DrainMaintenance);
     assert_eq!(close.status(), CloseOutcomeStatus::Timeout);
+    assert_eq!(close.close_fact(), None);
+    assert!(!close.commits_quiesced());
+    assert!(!close.maintenance_drained());
+    assert!(!close.durable_synced());
+    assert!(!close.guards_released());
+    assert!(!close.prior_final());
+    assert_eq!(close.stats(), LifecycleStats::default());
     assert_eq!(
-        CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete).status(),
+        CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
+            .with_close_fact(LifecycleCloseFact::Complete)
+            .with_close_effects(CloseOutcomeEffects::durable_complete(false))
+            .with_stats(LifecycleStats::new(1, 0, 0, 0, 1))
+            .status(),
         CloseOutcomeStatus::Complete
+    );
+    assert_eq!(
+        CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Idempotent).status(),
+        CloseOutcomeStatus::Idempotent
     );
     assert_eq!(
         CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Failed).status(),
@@ -549,69 +589,79 @@ fn lifecycle_stats_default_to_zero_and_preserve_explicit_counts() {
 
 #[test]
 fn lifecycle_error_display_and_source_chain_are_typed() {
-    for (error, expected) in [
+    for (error, expected_code) in [
         (
             LifecycleError::InvalidConfig {
                 field: "max_recovery_faults",
                 reason: "must be nonzero",
             },
-            "invalid lifecycle config max_recovery_faults: must be nonzero",
+            "lifecycle.config.invalid",
         ),
         (
             LifecycleError::InvalidLifecycleState {
                 reason: "not ready",
             },
-            "invalid lifecycle state: not ready",
+            "lifecycle.state.invalid",
         ),
         (
             LifecycleError::InvalidOpenPlan {
                 reason: "mode rejected",
             },
-            "invalid storage open plan: mode rejected",
+            "lifecycle.open_plan.invalid",
         ),
         (
             LifecycleError::CapabilityMismatch {
                 storage_mode: StorageMode::DurableLocalStandard,
+                required: vec![BackendCapability::DurablePublish],
                 missing: vec![BackendCapability::DurablePublish],
             },
-            "storage capability mismatch for durable-local-standard: missing durable_publish",
+            "lifecycle.capability.mismatch",
         ),
         (
             LifecycleError::RecoveryFailed {
                 reason: "manifest missing",
             },
-            "recovery failed: manifest missing",
+            "lifecycle.recovery.failed",
         ),
         (
             LifecycleError::MaintenanceFailed {
                 reason: "task rejected",
             },
-            "maintenance failed: task rejected",
+            "lifecycle.maintenance.failed",
         ),
         (
             LifecycleError::RetentionBlocked {
                 reason: "proof unavailable",
             },
-            "retention blocked: proof unavailable",
+            "lifecycle.retention.blocked",
         ),
         (
             LifecycleError::CloseFailed {
                 reason: "durable sync failed",
             },
-            "close failed: durable sync failed",
+            "lifecycle.close.failed",
+        ),
+        (
+            LifecycleError::TimelineRecoveryMismatch {
+                reason: "timeline pair mismatch",
+            },
+            "lifecycle.recovery.timeline_mismatch",
+        ),
+        (
+            LifecycleError::WalTailRepairRejected {
+                reason: "strict recovery cannot repair partial WAL tail",
+            },
+            "lifecycle.recovery.wal_tail_rejected",
         ),
     ] {
-        assert_eq!(error.to_string(), expected);
+        assert_eq!(error.code(), expected_code);
         assert_bounded_storage_display(&error.to_string());
     }
 
     let source = DummySource("backend unavailable");
     let error =
         LifecycleError::lower_layer_with(LifecycleLowerLayer::Backend, "read failed", source);
-    assert_eq!(
-        error.to_string(),
-        "lifecycle lower layer backend failed: read failed"
-    );
+    assert_eq!(error.code(), "lifecycle.lower.backend");
     assert_eq!(
         error.source().expect("source").to_string(),
         "backend unavailable"

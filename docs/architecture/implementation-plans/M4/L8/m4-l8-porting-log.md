@@ -7,6 +7,20 @@ Parent plans:
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 
+Closeout status for the L8A-L8G cleanup pass:
+
+- Resolved in code: clippy exit gate, bootstrap failure -> `Failed`, L8G
+  bootstrap file boundary, checkpoint-boundary replay idempotence, lossy
+  health classification, strict WAL-tail rejection, quarantine/table validation
+  before WAL repair, cache open admission, idempotent close facts, capability
+  required/missing facts, structured open outcome facts, stable error codes,
+  checkpoint timestamp guard catch-up, timeline mismatch mapping, and positive
+  capability-order/source-guard tests.
+- Explicitly deferred: exhaustive crash/fault/fuzz closeout, localfs recovery
+  integration expansion, full maintenance/retention/quarantine/repair outcomes,
+  durable close drain/sync outcomes, and the remaining named L8F/L8G/L8D/L8E
+  matrix rows that require later L8H-L8P machinery.
+
 ## L8A - Lifecycle Scaffold
 
 Status: implemented
@@ -55,7 +69,23 @@ Status: implemented
   compaction, materialization, snapshot pruning, retention, quarantine, purge,
   repair, and health collection.
 - Retention, quarantine, and close fact shells.
-- Lower-layer source-chain preservation through `LifecycleError::source()`.
+- Lower-layer source-chain preservation through `LifecycleError::source()` and
+  stable `LifecycleError::code()` strings.
+
+### Raw Health And Fact Vocabulary
+
+- Lifecycle enums are marked `#[non_exhaustive]` so later L8/L9 slices can add
+  fields or variants without changing current call sites by accident.
+- `StorageOpenOutcome` now carries backend capabilities, database id, codec id,
+  recovered max commit version, checkpoint/WAL/table/quarantine recovery facts,
+  L7 bootstrap facts, and raw `LifecycleStats` in addition to the original mode,
+  disposition, recovered visible version, health, and maintenance-ready facts.
+- `MaintenanceOutcome` and `CloseOutcome` have reserved structured facts for
+  later maintenance/close slices: recovery health, affected-object counts,
+  reclaimed bytes, retryability, close fact, close effects, and raw stats.
+- `LifecycleError::CapabilityMismatch` carries both required and missing
+  backend capabilities; timeline replay mismatches and strict WAL-tail repair
+  rejections have dedicated lifecycle error codes.
 
 ### Intentional Changes
 
@@ -100,18 +130,17 @@ Status: implemented
 - Generated scaffold property harness in `tests/lifecycle_properties.rs`.
 - Hidden testkit route `check_lifecycle_scaffold_contract`.
 
-### Sensitivity Probes Planned
+### Sensitivity Probes Recorded
 
-- Product/engine import into production lifecycle source must trip
-  `lifecycle_source_guard`.
-- Raw filesystem or environment access in production lifecycle source must trip
-  `lifecycle_source_guard`.
-- Lower layers importing `crate::lifecycle` must trip
-  `lifecycle_source_guard`.
-- Bare public lifecycle items must trip `lifecycle_source_guard`.
-- Config zero limits must fail module-local tests and generated scaffold tests.
-- Lower-layer source-chain collapse must fail module-local tests and generated
-  scaffold tests.
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Product/engine import | Import engine, product, StrataHub, or follower modules in lifecycle source | `lifecycle_source_does_not_import_engine_product_or_raw_io` |
+| Raw filesystem/env access | Import `std::fs`, `Path`, `File`, mmap, `OpenOptions`, or `std::env` | `lifecycle_source_does_not_import_engine_product_or_raw_io` |
+| Lower layer imports lifecycle | Import `crate::lifecycle` from backend, format, service, table, branch, or commit source | `lower_layers_do_not_import_lifecycle_upward` |
+| Public lifecycle surface | Add unscoped `pub` item in lifecycle source | `lifecycle_stays_crate_private` |
+| Config zero limit | Accept zero config limits | `lifecycle_config_rejects_zero_limits` and generated lifecycle properties |
+| Error code collapse | Remove stable lifecycle error code mapping | `lifecycle_error_display_and_source_chain_are_typed` |
+| Source-chain collapse | Drop lower-layer source from `LifecycleError` | `lifecycle_error_display_and_source_chain_are_typed` |
 
 ### Verification
 
@@ -122,6 +151,247 @@ cargo test -p strata-storage-next --locked --lib lifecycle
 cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
 cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
 cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
+## L8B - Lifecycle State And Open Plan
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
+- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/state.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/state.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+
+### Preserved As Storage Vocabulary
+
+- Side-effect-free lifecycle state transitions for new, opening, recovering,
+  open, closing, closed, and failed.
+- Transition triggers for open requested, cache ready, durable recovery needed,
+  recovery accepted, close requested, close completed, close retried, and phase
+  failure.
+- Operation admission facts for open, ordinary read, commit, recovery step,
+  ordinary maintenance, close-required drain, health query, close, and close
+  retry.
+- Failure facts that preserve the failed storage phase and reason.
+- Close facts that distinguish requested, retry-pending, complete, and
+  already-closed idempotence.
+- Storage open disposition facts for created vs opened-existing outcomes.
+
+### Intentional Changes
+
+- `StorageOpenOutcome` now stores `StorageOpenDisposition` instead of a raw
+  boolean while keeping the derived `opened_existing()` getter.
+- Cache-mode open outcomes reject durable recovery degradation as well as
+  recovered durable visible versions.
+- State transition validation is centralized in `lifecycle/state.rs`; invalid
+  transitions return `LifecycleError::InvalidLifecycleState` without mutating
+  machine state.
+- Closed close retry is the only idempotent state transition in L8B.
+- Closed close and closed close retry are explicitly admitted as idempotent
+  operations; closing close retry remains retryable but not complete.
+- Direct lifecycle tests were split into `src/lifecycle/tests/mod.rs` and
+  `src/lifecycle/tests/state.rs` before the file grew past the local
+  maintainability threshold.
+
+### Retired From V1 L8B
+
+- Raw public open policy booleans in storage open outcome facts.
+- Any product API, engine handle, StrataHub, follower, or public maintenance
+  vocabulary in lifecycle state/admission code.
+- Any backend, service, WAL, manifest, snapshot, branch, commit, maintenance, or
+  close side effects in the L8B state layer.
+
+### Deferred By Owner Slice
+
+- Backend and service capability validation: L8C.
+- Cache-mode runtime open and close baseline: L8D.
+- Durable service assembly: L8E.
+- Recovery orchestration, WAL replay, and L7 replay/bootstrap: L8F-L8G.
+- Maintenance executor and task queue execution: L8H.
+- Close drain, durable sync, and guard release side effects: L8N.
+- Cross-slice fault, crash, fuzz, and closeout inventory: L8O-L8P.
+
+### Tests Added
+
+- `lifecycle_state_machine_initial_state_admits_only_open_and_health`
+- `lifecycle_state_machine_accepts_open_and_recovery_transitions`
+- `lifecycle_state_machine_accepts_close_and_retry_transitions`
+- `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state`
+- `lifecycle_operation_admission_matrix_is_state_specific`
+- `lifecycle_failure_facts_preserve_phase_and_reject_empty_reasons`
+- `lifecycle_close_retry_and_closed_idempotence_are_distinct`
+- Open-outcome validation coverage for cache durable recovery degradation.
+- Generated lifecycle scaffold counters for valid transitions, invalid
+  transitions, admission accepts, admission rejects, close retry,
+  closed-idempotence, failed-state stickiness, and input-derived state routes.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Transition skip | Allow `New + CacheOpenReady -> Open` | `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state` |
+| Recovery exposure | Allow ordinary read in `Recovering` | `lifecycle_operation_admission_matrix_is_state_specific` |
+| Commit outside open | Allow commit in `Opening` or `Closing` | `lifecycle_operation_admission_matrix_is_state_specific` |
+| Close false success | Treat `Closing + CloseRetried` as `Closed` | `lifecycle_close_retry_and_closed_idempotence_are_distinct` |
+| Failed-state loosened | Allow open or close retry in `Failed` | `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state` |
+| Empty failure reason | Accept `PhaseFailed { reason: "" }` | `lifecycle_failure_facts_preserve_phase_and_reject_empty_reasons` |
+| Cache degraded recovery | Accept degraded recovery health in cache mode | `storage_open_outcome_rejects_cache_durable_recovery_claims` |
+
+### Verification
+
+Commands to run for L8B:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
+## L8C - Storage Mode Capability Validation
+
+Status: implemented
+
+### Source Evidence Read
+
+- `crates/storage-next/src/backend/mod.rs`
+- `crates/storage-next/src/config/mode.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8c-storage-mode-capability-validation-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8c-storage-mode-capability-validation-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/capability.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/capability.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/capability.rs`
+- `crates/storage-next/src/testkit/lifecycle/outcome.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- Lifecycle storage modes map to the existing `StorageModeRequest` capability
+  checks instead of duplicating backend capability matrices.
+- Cache mode accepts browser-like object capabilities without requiring object
+  metadata or durable primitives.
+- Durable local standard and durable local always share durable backend
+  requirements while preserving `DurabilityPolicy::Standard` vs
+  `DurabilityPolicy::Always` for later open/runtime wiring.
+- Object-durable candidate remains candidate-tagged and accepts either
+  `ConditionalPublish` or `ConditionalCreate + ConditionalUpdate` fencing.
+- Capability mismatch is a typed lifecycle error carrying the requested storage
+  mode, complete required `BackendCapability` list, and exact missing
+  capability list.
+
+### Intentional Changes
+
+- Added `validate_storage_mode_capabilities(plan, capabilities)` for pure
+  capability-fact validation.
+- Added `validate_backend_capabilities_for_open(plan, backend)`, which calls
+  only `backend.capabilities()`.
+- Added `LifecycleCapabilityOutcome` and `ObjectDurableFenceMode` as
+  crate-private lifecycle facts.
+- Added display names for lifecycle `StorageMode` so capability errors remain
+  bounded and storage-shaped.
+- Split the generated lifecycle testkit into `lifecycle/mod.rs`,
+  `lifecycle/outcome.rs`, and `lifecycle/capability.rs`.
+
+### Retired From V1 L8C
+
+- Ad hoc lifecycle capability strings.
+- Capability validation that constructs services, opens manifests, opens WALs,
+  acquires writer locks, or mutates L6/L7 state.
+- Product open wording in capability mismatch errors.
+
+### Deferred By Owner Slice
+
+- Cache-mode runtime open and close: L8D.
+- Durable service assembly and writer-lock acquisition: L8E.
+- Recovery orchestration, WAL replay, and L7 bootstrap: L8F-L8G.
+- Maintenance execution, retention, quarantine, repair, and close side effects:
+  L8H-L8P.
+- Production object-durable mode claims beyond candidate capability validation:
+  post-V1 object durability design.
+
+### Tests Added
+
+- `capability_validation_maps_lifecycle_modes_to_storage_mode_requests`
+- `cache_capability_validation_accepts_browser_like_backend_without_metadata`
+- `durable_local_modes_reject_each_missing_durable_capability`
+- `object_candidate_accepts_either_publish_fence_or_create_update_pair`
+- `object_candidate_reports_base_and_partial_fence_missing_capabilities`
+- `cache_capability_validation_never_requires_durable_storage_capabilities`
+- `backend_capability_preflight_reads_only_capabilities`
+- `lifecycle_capability_validator_stays_preflight_only`
+- Generated lifecycle counters for accepted/rejected capability cases, per-mode
+  capability cases, missing-capability categories, object-candidate fence
+  variants, backend preflight across every mode, and input-derived capability
+  masks.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutation | Expected failing test |
+|---|---|---|
+| Cache over-requires metadata | Add `ObjectMetadata` to cache requirements | `cache_capability_validation_accepts_browser_like_backend_without_metadata` |
+| Durable under-requires append | Remove `AppendObject` from durable requirements | `durable_local_modes_reject_each_missing_durable_capability` |
+| Durable policy collapse | Map durable always to standard policy | `capability_validation_maps_lifecycle_modes_to_storage_mode_requests` |
+| Object fence missing | Accept object candidate without any fence | `object_candidate_reports_base_and_partial_fence_missing_capabilities` |
+| Fence preference drift | Prefer create/update when conditional publish is also present | `object_candidate_accepts_either_publish_fence_or_create_update_pair` |
+| Preflight side effect | Call read/list/write/publish/append/lock during validation | `backend_capability_preflight_reads_only_capabilities` |
+| Untyped mismatch | Report only a string reason for capability mismatch | `object_candidate_reports_base_and_partial_fence_missing_capabilities` |
+
+### Verification
+
+Commands run for L8C:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --all-features --locked --lib lifecycle
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
 cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 cargo fmt --package strata-storage-next --check
@@ -475,8 +745,12 @@ Status: implemented
 - WAL records are read through `WalService::read_after_commit_version` using
   the trusted recovered checkpoint watermark. A manifest flush watermark that
   is not covered by recovered checkpoint/table state fails closed.
-- Latest WAL tail truncation is repaired through `WalService::repair_latest_tail`.
-- Quarantine inventory loads through `QuarantineService::load_inventory`.
+- Latest WAL tail truncation is repaired through `WalService::repair_latest_tail`
+  only when the open plan explicitly allows lossy fallback; strict recovery
+  rejects partial WAL tails before repair.
+- Quarantine inventory loads through `QuarantineService::load_inventory` before
+  WAL-tail repair, so a quarantine read/decode failure cannot leave a repaired
+  WAL side effect.
 - L8F returns a recovery package for L8G and does not invoke L7 replay,
   allocator catch-up, visible-version publication, or product callbacks.
 
@@ -490,6 +764,8 @@ Status: implemented
 - Re-exported storage-row encode/decode helpers from `format` for lifecycle
   recovery's storage-owned checkpoint section codec.
 - Added `MissingSnapshotObject` and `WalTailRepairFailed` recovery fault kinds.
+- Missing snapshot and WAL-tail repair degradations classify as `DataLoss`;
+  quarantine inventory mismatches classify as `Telemetry`.
 - Added mutable shell/service accessors needed by recovery while keeping the
   durable service bundle crate-private.
 - Added a source guard that blocks L8F from calling `CommitReplayRuntime`,
@@ -536,18 +812,23 @@ Status: implemented
 - `recovery_empty_database_returns_healthy_package_without_replay`
 - `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail`
 - `recovery_does_not_install_checkpoint_when_later_wal_read_fails`
-- `recovery_repairs_latest_partial_log_tail_and_preserves_valid_records`
+- `recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy`
+- `recovery_rejects_latest_partial_log_tail_in_strict_mode`
+- `lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss`
 - `recovery_rejects_checkpoint_row_newer_than_snapshot_watermark`
 - `recovery_rejects_checkpoint_rows_for_unopened_branch`
 - `recovery_rejects_flush_watermark_without_recovered_table_state`
 - `recovery_rejects_missing_referenced_table_object`
 - `recovery_records_validated_table_identity_and_facts`
 - `recovery_validates_tables_before_wal_tail_repair`
+- `recovery_validates_quarantine_before_wal_tail_repair`
 - `recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy`
 - `recovery_rejects_missing_snapshot_in_strict_mode`
 - `recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark`
 - `recovery_request_rejects_lossy_when_open_plan_is_strict`
 - `recovery_request_validates_limits_and_checkpoint_identity`
+- `database_manifest_rejects_zero_snapshot_id_before_recovery`
+- `recovery_rejects_snapshot_section_count_above_request_limit`
 - `checkpoint_row_section_round_trips_and_rejects_trailing_bytes`
 - `checkpoint_row_section_rejects_declared_rows_without_length_prefixes`
 - `lifecycle_recovery_contract_exercises_storage_recovery_paths`
@@ -563,9 +844,12 @@ Status: implemented
 | Include watermark-equal records | Use `>= replay_start` instead of `> replay_start` | `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail` |
 | Skip L6 snapshot install | Decode checkpoint rows but do not call snapshot install | `recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail` |
 | Partially mutate shell | Install checkpoint rows before a later WAL failure | `recovery_does_not_install_checkpoint_when_later_wal_read_fails` |
-| Skip latest-tail repair | Return truncation without calling repair | `recovery_repairs_latest_partial_log_tail_and_preserves_valid_records` |
+| Skip latest-tail repair | Return truncation without calling repair | `recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy` |
+| Repair latest-tail in strict mode | Run WAL tail repair despite strict recovery | `recovery_rejects_latest_partial_log_tail_in_strict_mode` |
 | Repair before table validation | Repair a partial WAL tail before validating a referenced table object | `recovery_validates_tables_before_wal_tail_repair` |
+| Repair before quarantine validation | Repair a partial WAL tail before quarantine recovery succeeds | `recovery_validates_quarantine_before_wal_tail_repair` |
 | Trust uncovered flush watermark | Use manifest flush watermark without recovered table state | `recovery_rejects_flush_watermark_without_recovered_table_state` |
+| Accept too many snapshot sections | Ignore the recovery request section-count cap | `recovery_rejects_snapshot_section_count_above_request_limit` |
 | Accept too-new checkpoint row | Install checkpoint row with commit version above snapshot watermark | `recovery_rejects_checkpoint_row_newer_than_snapshot_watermark` |
 | Accept unopened branch row | Install checkpoint row for a branch not owned by the shell | `recovery_rejects_checkpoint_rows_for_unopened_branch` |
 | Allocate from bogus row count | Reserve row-count capacity before checking payload length | `checkpoint_row_section_rejects_declared_rows_without_length_prefixes` |
@@ -601,6 +885,7 @@ Status: implemented
 ### Source Evidence Read
 
 - `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
 - `crates/storage-next/src/lifecycle/recovery.rs`
 - `crates/storage-next/src/lifecycle/outcome.rs`
 - `crates/storage-next/src/lifecycle/state.rs`
@@ -615,6 +900,7 @@ Status: implemented
 ### Shipped Files
 
 - `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
 - `crates/storage-next/src/lifecycle/mod.rs`
 - `crates/storage-next/src/lifecycle/tests/recovery.rs`
 - `crates/storage-next/tests/lifecycle_source_guard.rs`
@@ -631,25 +917,34 @@ Status: implemented
   allocator catch-up, visible publication, and unresolved durable-gate
   reconciliation.
 - Checkpoint-only recovery uses `VisibleVersionTracker` and
-  `CommitFactAllocator` catch-up helpers instead of direct field mutation.
+  `CommitFactAllocator` version/timestamp catch-up helpers instead of direct
+  field mutation.
 - Final durable open facts are reported through `StorageOpenOutcome` after the
-  lifecycle state machine accepts `RecoveryAccepted`.
+  lifecycle state machine accepts `RecoveryAccepted`. The outcome now carries
+  backend capabilities, database id, codec id, checkpoint/WAL/table/quarantine
+  recovery facts, L7 bootstrap report, and raw stats for the L9 envelope.
 - The opened durable runtime remains crate-private and composes normal durable
   commits through `CommitDurableRuntime`.
 
 ### Intentional Changes
 
-- Added `LifecycleDurableLocalRuntime` as the opened durable-local runtime
-  wrapper returned after successful recovery bootstrap.
+- Added `LifecycleDurableLocalRuntime` in `lifecycle/durable/bootstrap.rs` as
+  the opened durable-local runtime wrapper returned after successful recovery
+  bootstrap.
 - Added `LifecycleRecoveryBootstrapReport` for storage-shaped replay and
   checkpoint catch-up counters.
 - Added `LifecycleDurableLocalShell::complete_recovery`, which consumes a
   recovering shell plus L8F package and returns an open durable runtime.
-- Added WAL package validation for branch ownership and strict ordering after
-  L8F replay start.
-- Updated lifecycle source guards so L8G may call L7 replay while L8F remains
-  blocked from replay, allocator catch-up, visible publication, and product
-  hooks.
+- Added WAL package validation for branch ownership and strict in-package
+  ordering while preserving L7's idempotent replay semantics for checkpoint
+  boundary records.
+- Added typed `TimelineRecoveryMismatch` mapping for L7 timeline replay errors
+  so L8 health/telemetry can distinguish timeline recovery failures from
+  generic commit-runtime lower-layer failures.
+- Updated lifecycle source guards so durable assembly stays in
+  `lifecycle/durable.rs`, L8G replay/catch-up stays in
+  `lifecycle/durable/bootstrap.rs`, and L8F remains blocked from replay,
+  allocator catch-up, visible publication, and product hooks.
 
 ### Retired From V1 L8G
 
@@ -683,25 +978,28 @@ Status: implemented
 - `bootstrap_replay_uses_always_durability_for_always_mode`
 - `bootstrap_replay_rejects_mismatched_unresolved_durable_gate`
 - `lifecycle_durable_runtime_stays_bootstrap_only`
+- `lifecycle_bootstrap_runtime_does_not_perform_durable_assembly`
 
 ### Sensitivity Probes Recorded
 
 | Probe | Mutated file/line | Mutation | Expected failing test |
 |---|---|---|---|
-| Skip L7 replay | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Install recovered WAL rows directly into L6 | `bootstrap_replays_wal_tail_through_commit_runtime` |
-| Ignore checkpoint visible catch-up | `crates/storage-next/src/lifecycle/durable.rs:536-546` | Do not call visible catch-up for checkpoint-only package | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
-| Ignore checkpoint allocator catch-up | `crates/storage-next/src/lifecycle/durable.rs:547-548` | Do not catch allocator above checkpoint watermark | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
-| Replay with wrong durability | `crates/storage-next/src/lifecycle/durable.rs:774-784` | Map `DurableLocalAlways` recovery to `CommitDurabilityClass::Standard` | `bootstrap_replay_uses_always_durability_for_always_mode` |
-| Accept timeline-only WAL | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Remove L7 replay validation or bypass replay request validation | `bootstrap_rejects_timeline_only_wal_payload_before_open` |
-| Accept missing timeline rows | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Bypass L7 replay request validation for user rows without timeline facts | `bootstrap_rejects_log_record_without_timeline_rows_before_open` |
-| Replay foreign branch | `crates/storage-next/src/lifecycle/durable.rs:786-797` | Skip recovered WAL branch-ownership validation | `bootstrap_rejects_recovered_log_record_for_unopened_branch` |
-| Replay non-increasing package | `crates/storage-next/src/lifecycle/durable.rs:798-801` | Skip strict recovered WAL order validation after replay start | `bootstrap_rejects_recovered_log_records_not_strictly_ordered` |
-| Drop degraded health | `crates/storage-next/src/lifecycle/durable.rs:465-470` | Convert degraded L8F health to healthy during open outcome construction | `bootstrap_preserves_degraded_recovery_health_while_replaying_tail` |
-| Reapply exact replay | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Treat exact duplicate rows as newly applied during bootstrap replay | `bootstrap_replay_is_idempotent_for_exactly_installed_rows` |
-| Ignore matching durable gate | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Do not clear a matching unresolved durable gate after replay | `bootstrap_replay_clears_matching_unresolved_durable_gate` |
-| Clear mismatched durable gate | `crates/storage-next/src/lifecycle/durable.rs:521-533` | Clear or ignore an unresolved gate for a different durable fact | `bootstrap_replay_rejects_mismatched_unresolved_durable_gate` |
-| Open before recovery accepted | `crates/storage-next/src/lifecycle/durable.rs:472-473` | Skip `RecoveryAccepted` transition | `bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility` |
-| Product/raw IO drift | `crates/storage-next/src/lifecycle/durable.rs` | Import product/raw IO or L8F-owned recovery reads in durable bootstrap | `lifecycle_durable_runtime_stays_bootstrap_only` |
+| Skip L7 replay | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Install recovered WAL rows directly into L6 | `bootstrap_replays_wal_tail_through_commit_runtime` |
+| Ignore checkpoint visible catch-up | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Do not call visible catch-up for checkpoint-only package | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
+| Ignore checkpoint allocator catch-up | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Do not catch allocator above checkpoint watermark | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
+| Ignore checkpoint timestamp catch-up | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Do not catch timestamp guard up to checkpoint row timestamp max | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
+| Drop durable open facts | `crates/storage-next/src/lifecycle/outcome.rs` | Omit checkpoint/WAL/table/quarantine/bootstrap facts from open outcome | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator` |
+| Replay with wrong durability | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Map `DurableLocalAlways` recovery to `CommitDurabilityClass::Standard` | `bootstrap_replay_uses_always_durability_for_always_mode` |
+| Accept timeline-only WAL | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Remove L7 replay validation or bypass replay request validation | `bootstrap_rejects_timeline_only_wal_payload_before_open` |
+| Accept missing timeline rows | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Bypass L7 replay request validation for user rows without timeline facts | `bootstrap_rejects_log_record_without_timeline_rows_before_open` |
+| Replay foreign branch | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Skip recovered WAL branch-ownership validation | `bootstrap_rejects_recovered_log_record_for_unopened_branch` |
+| Replay non-increasing package | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Skip strict recovered WAL in-package order validation | `bootstrap_rejects_recovered_log_records_not_strictly_ordered` |
+| Drop degraded health | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Convert degraded L8F health to healthy during open outcome construction | `bootstrap_preserves_degraded_recovery_health_while_replaying_tail` |
+| Reapply exact replay | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Treat exact duplicate rows as newly applied during bootstrap replay | `bootstrap_replay_is_idempotent_for_exactly_installed_rows` |
+| Ignore matching durable gate | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Do not clear a matching unresolved durable gate after replay | `bootstrap_replay_clears_matching_unresolved_durable_gate` |
+| Clear mismatched durable gate | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Clear or ignore an unresolved gate for a different durable fact | `bootstrap_replay_rejects_mismatched_unresolved_durable_gate` |
+| Open before recovery accepted | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Skip `RecoveryAccepted` transition | `bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility` |
+| Durable/bootstrap boundary drift | `crates/storage-next/src/lifecycle/durable.rs`, `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Move replay/catch-up into assembly or durable assembly into bootstrap | `lifecycle_durable_runtime_stays_bootstrap_only`, `lifecycle_bootstrap_runtime_does_not_perform_durable_assembly` |
 
 ### Verification
 
@@ -714,245 +1012,6 @@ cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo test -p strata-storage-next --locked --test lifecycle_recovery
 cargo test -p strata-storage-next --all-features --locked --test object_layout_properties
 cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
-cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
-cargo fmt --package strata-storage-next --check
-git diff --check
-```
-
-## L8C - Storage Mode Capability Validation
-
-Status: implemented
-
-### Source Evidence Read
-
-- `crates/storage-next/src/backend/mod.rs`
-- `crates/storage-next/src/config/mode.rs`
-- `crates/storage-next/src/lifecycle/mod.rs`
-- `crates/storage-next/src/lifecycle/facts.rs`
-- `crates/storage-next/src/lifecycle/error.rs`
-- `crates/storage-next/src/lifecycle/tests/mod.rs`
-- `crates/storage-next/src/testkit/lifecycle/mod.rs`
-- `crates/storage-next/tests/lifecycle_properties.rs`
-- `crates/storage-next/tests/lifecycle_source_guard.rs`
-- `docs/architecture/implementation-plans/M4/L8/l8c-storage-mode-capability-validation-implementation-plan.md`
-- `docs/architecture/implementation-plans/M4/L8/l8c-storage-mode-capability-validation-test-plan.md`
-
-### Shipped Files
-
-- `crates/storage-next/src/lifecycle/capability.rs`
-- `crates/storage-next/src/lifecycle/error.rs`
-- `crates/storage-next/src/lifecycle/facts.rs`
-- `crates/storage-next/src/lifecycle/mod.rs`
-- `crates/storage-next/src/lifecycle/tests/capability.rs`
-- `crates/storage-next/src/lifecycle/tests/mod.rs`
-- `crates/storage-next/src/testkit/lifecycle/mod.rs`
-- `crates/storage-next/src/testkit/lifecycle/capability.rs`
-- `crates/storage-next/src/testkit/lifecycle/outcome.rs`
-- `crates/storage-next/tests/lifecycle_properties.rs`
-- `crates/storage-next/tests/lifecycle_source_guard.rs`
-
-### Preserved As Storage Vocabulary
-
-- Lifecycle storage modes map to the existing `StorageModeRequest` capability
-  checks instead of duplicating backend capability matrices.
-- Cache mode accepts browser-like object capabilities without requiring object
-  metadata or durable primitives.
-- Durable local standard and durable local always share durable backend
-  requirements while preserving `DurabilityPolicy::Standard` vs
-  `DurabilityPolicy::Always` for later open/runtime wiring.
-- Object-durable candidate remains candidate-tagged and accepts either
-  `ConditionalPublish` or `ConditionalCreate + ConditionalUpdate` fencing.
-- Capability mismatch is a typed lifecycle error carrying the requested storage
-  mode and exact missing `BackendCapability` list.
-
-### Intentional Changes
-
-- Added `validate_storage_mode_capabilities(plan, capabilities)` for pure
-  capability-fact validation.
-- Added `validate_backend_capabilities_for_open(plan, backend)`, which calls
-  only `backend.capabilities()`.
-- Added `LifecycleCapabilityOutcome` and `ObjectDurableFenceMode` as
-  crate-private lifecycle facts.
-- Added display names for lifecycle `StorageMode` so capability errors remain
-  bounded and storage-shaped.
-- Split the generated lifecycle testkit into `lifecycle/mod.rs`,
-  `lifecycle/outcome.rs`, and `lifecycle/capability.rs`.
-
-### Retired From V1 L8C
-
-- Ad hoc lifecycle capability strings.
-- Capability validation that constructs services, opens manifests, opens WALs,
-  acquires writer locks, or mutates L6/L7 state.
-- Product open wording in capability mismatch errors.
-
-### Deferred By Owner Slice
-
-- Cache-mode runtime open and close: L8D.
-- Durable service assembly and writer-lock acquisition: L8E.
-- Recovery orchestration, WAL replay, and L7 bootstrap: L8F-L8G.
-- Maintenance execution, retention, quarantine, repair, and close side effects:
-  L8H-L8P.
-- Production object-durable mode claims beyond candidate capability validation:
-  post-V1 object durability design.
-
-### Tests Added
-
-- `capability_validation_maps_lifecycle_modes_to_storage_mode_requests`
-- `cache_capability_validation_accepts_browser_like_backend_without_metadata`
-- `durable_local_modes_reject_each_missing_durable_capability`
-- `object_candidate_accepts_either_publish_fence_or_create_update_pair`
-- `object_candidate_reports_base_and_partial_fence_missing_capabilities`
-- `backend_capability_preflight_reads_only_capabilities`
-- `lifecycle_capability_validator_stays_preflight_only`
-- Generated lifecycle counters for accepted/rejected capability cases, per-mode
-  capability cases, missing-capability categories, object-candidate fence
-  variants, backend preflight across every mode, and input-derived capability
-  masks.
-
-### Sensitivity Probes Recorded
-
-| Probe | Mutation | Expected failing test |
-|---|---|---|
-| Cache over-requires metadata | Add `ObjectMetadata` to cache requirements | `cache_capability_validation_accepts_browser_like_backend_without_metadata` |
-| Durable under-requires append | Remove `AppendObject` from durable requirements | `durable_local_modes_reject_each_missing_durable_capability` |
-| Durable policy collapse | Map durable always to standard policy | `capability_validation_maps_lifecycle_modes_to_storage_mode_requests` |
-| Object fence missing | Accept object candidate without any fence | `object_candidate_reports_base_and_partial_fence_missing_capabilities` |
-| Fence preference drift | Prefer create/update when conditional publish is also present | `object_candidate_accepts_either_publish_fence_or_create_update_pair` |
-| Preflight side effect | Call read/list/write/publish/append/lock during validation | `backend_capability_preflight_reads_only_capabilities` |
-| Untyped mismatch | Report only a string reason for capability mismatch | `object_candidate_reports_base_and_partial_fence_missing_capabilities` |
-
-### Verification
-
-Commands run for L8C:
-
-```bash
-cargo test -p strata-storage-next --locked --lib lifecycle
-cargo test -p strata-storage-next --all-features --locked --lib lifecycle
-cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
-cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
-cargo test -p strata-storage-next --all-features --locked --test lifecycle_properties
-cargo test -p strata-storage-next --locked --test lifecycle_source_guard
-cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
-cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
-cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
-cargo fmt --package strata-storage-next --check
-git diff --check
-```
-
-## L8B - Lifecycle State And Open Plan
-
-Status: implemented
-
-### Source Evidence Read
-
-- `crates/storage-next/src/lifecycle/mod.rs`
-- `crates/storage-next/src/lifecycle/facts.rs`
-- `crates/storage-next/src/lifecycle/outcome.rs`
-- `crates/storage-next/src/lifecycle/tests/mod.rs`
-- `crates/storage-next/src/testkit/lifecycle/mod.rs`
-- `crates/storage-next/tests/lifecycle_properties.rs`
-- `crates/storage-next/tests/lifecycle_source_guard.rs`
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
-- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
-- `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-implementation-plan.md`
-- `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-test-plan.md`
-
-### Shipped Files
-
-- `crates/storage-next/src/lifecycle/state.rs`
-- `crates/storage-next/src/lifecycle/outcome.rs`
-- `crates/storage-next/src/lifecycle/mod.rs`
-- `crates/storage-next/src/lifecycle/tests/mod.rs`
-- `crates/storage-next/src/lifecycle/tests/state.rs`
-- `crates/storage-next/src/testkit/lifecycle/mod.rs`
-- `crates/storage-next/tests/lifecycle_properties.rs`
-
-### Preserved As Storage Vocabulary
-
-- Side-effect-free lifecycle state transitions for new, opening, recovering,
-  open, closing, closed, and failed.
-- Transition triggers for open requested, cache ready, durable recovery needed,
-  recovery accepted, close requested, close completed, close retried, and phase
-  failure.
-- Operation admission facts for open, ordinary read, commit, recovery step,
-  ordinary maintenance, close-required drain, health query, close, and close
-  retry.
-- Failure facts that preserve the failed storage phase and reason.
-- Close facts that distinguish requested, retry-pending, complete, and
-  already-closed idempotence.
-- Storage open disposition facts for created vs opened-existing outcomes.
-
-### Intentional Changes
-
-- `StorageOpenOutcome` now stores `StorageOpenDisposition` instead of a raw
-  boolean while keeping the derived `opened_existing()` getter.
-- Cache-mode open outcomes reject durable recovery degradation as well as
-  recovered durable visible versions.
-- State transition validation is centralized in `lifecycle/state.rs`; invalid
-  transitions return `LifecycleError::InvalidLifecycleState` without mutating
-  machine state.
-- Closed close retry is the only idempotent state transition in L8B.
-- Closed close and closed close retry are explicitly admitted as idempotent
-  operations; closing close retry remains retryable but not complete.
-- Direct lifecycle tests were split into `src/lifecycle/tests/mod.rs` and
-  `src/lifecycle/tests/state.rs` before the file grew past the local
-  maintainability threshold.
-
-### Retired From V1 L8B
-
-- Raw public open policy booleans in storage open outcome facts.
-- Any product API, engine handle, StrataHub, follower, or public maintenance
-  vocabulary in lifecycle state/admission code.
-- Any backend, service, WAL, manifest, snapshot, branch, commit, maintenance, or
-  close side effects in the L8B state layer.
-
-### Deferred By Owner Slice
-
-- Backend and service capability validation: L8C.
-- Cache-mode runtime open and close baseline: L8D.
-- Durable service assembly: L8E.
-- Recovery orchestration, WAL replay, and L7 replay/bootstrap: L8F-L8G.
-- Maintenance executor and task queue execution: L8H.
-- Close drain, durable sync, and guard release side effects: L8N.
-- Cross-slice fault, crash, fuzz, and closeout inventory: L8O-L8P.
-
-### Tests Added
-
-- `lifecycle_state_machine_initial_state_admits_only_open_and_health`
-- `lifecycle_state_machine_accepts_open_and_recovery_transitions`
-- `lifecycle_state_machine_accepts_close_and_retry_transitions`
-- `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state`
-- `lifecycle_operation_admission_matrix_is_state_specific`
-- `lifecycle_failure_facts_preserve_phase_and_reject_empty_reasons`
-- `lifecycle_close_retry_and_closed_idempotence_are_distinct`
-- Open-outcome validation coverage for cache durable recovery degradation.
-- Generated lifecycle scaffold counters for valid transitions, invalid
-  transitions, admission accepts, admission rejects, close retry,
-  closed-idempotence, failed-state stickiness, and input-derived state routes.
-
-### Sensitivity Probes Recorded
-
-| Probe | Mutation | Expected failing test |
-|---|---|---|
-| Transition skip | Allow `New + CacheOpenReady -> Open` | `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state` |
-| Recovery exposure | Allow ordinary read in `Recovering` | `lifecycle_operation_admission_matrix_is_state_specific` |
-| Commit outside open | Allow commit in `Opening` or `Closing` | `lifecycle_operation_admission_matrix_is_state_specific` |
-| Close false success | Treat `Closing + CloseRetried` as `Closed` | `lifecycle_close_retry_and_closed_idempotence_are_distinct` |
-| Failed-state loosened | Allow open or close retry in `Failed` | `lifecycle_state_machine_rejects_undocumented_transitions_without_mutating_state` |
-| Empty failure reason | Accept `PhaseFailed { reason: "" }` | `lifecycle_failure_facts_preserve_phase_and_reject_empty_reasons` |
-| Cache degraded recovery | Accept degraded recovery health in cache mode | `storage_open_outcome_rejects_cache_durable_recovery_claims` |
-
-### Verification
-
-Commands to run for L8B:
-
-```bash
-cargo test -p strata-storage-next --locked --lib lifecycle
-cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
-cargo test -p strata-storage-next --no-default-features --features testkit --locked --test lifecycle_properties
-cargo test -p strata-storage-next --locked --test lifecycle_source_guard
-cargo check -p strata-storage-next --no-default-features --features testkit --target wasm32-unknown-unknown --all-targets --locked
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 cargo fmt --package strata-storage-next --check
 git diff --check

@@ -314,19 +314,28 @@ Strict recovery:
 2. missing required snapshot or table object fails;
 3. codec mismatch fails;
 4. non-latest WAL corruption fails;
-5. repair failure fails;
-6. data loss never reports healthy.
+5. latest-tail repair is not attempted and returns
+   `LifecycleError::WalTailRepairRejected`;
+6. repair failure fails;
+7. data loss never reports healthy.
 
 Explicit lossy recovery:
 
 1. only documented lossy cases may become `RecoveryHealth::Degraded`;
 2. degraded recovery requires at least one `RecoveryFault`;
-3. policy downgrade uses `RecoveryDegradationClass::PolicyDowngrade`;
-4. confirmed data loss uses `RecoveryDegradationClass::DataLoss`;
-5. missing optional telemetry uses `RecoveryDegradationClass::Telemetry`;
+3. confirmed snapshot/table/WAL-tail data loss uses
+   `RecoveryDegradationClass::DataLoss`;
+4. quarantine inventory mismatch uses
+   `RecoveryDegradationClass::Telemetry`;
+5. policy downgrade uses `RecoveryDegradationClass::PolicyDowngrade` only
+   for non-lossy policy relaxation cases;
 6. codec mismatch and identity mismatch still fail;
 7. data-loss degradation blocks later unsafe maintenance until a later owner
    slice makes a deliberate decision.
+
+Ordering rule: checkpoint decode, flush-watermark validation, quarantine load,
+table-object validation, and health-fault capacity checks must all run before
+any WAL tail repair that can mutate durable bytes.
 
 Add or refine `RecoveryFaultKind` only when an existing kind would collapse a
 contractually distinct case. Likely additions include snapshot missing versus
@@ -480,12 +489,14 @@ L8F is complete when:
 2. manifest-listed snapshot recovery loads and validates snapshot identity;
 3. checkpoint rows install through L6 snapshot install;
 4. WAL records after the trusted watermark are packaged for L8G unchanged;
-5. latest WAL partial tail repair is handled through L4;
-6. non-latest WAL corruption fails strict recovery;
-7. explicit lossy fallback never reports `Healthy` after data loss;
-8. quarantine inventory mismatch is classified;
-9. table object missing/corruption is classified when referenced;
-10. lower-layer source chains are preserved;
+5. latest WAL partial tail repair is handled through L4 only under explicit
+   lossy recovery;
+6. strict recovery rejects latest WAL partial tail repair;
+7. non-latest WAL corruption fails strict recovery;
+8. explicit lossy fallback never reports `Healthy` after data loss;
+9. quarantine inventory mismatch is classified;
+10. table object missing/corruption is classified when referenced;
+11. lower-layer source chains are preserved;
 11. L8F does not call L7 replay or product callbacks;
 12. lifecycle source guards pass;
 13. generated lifecycle recovery counters cover the required categories;

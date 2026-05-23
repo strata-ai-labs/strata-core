@@ -1,8 +1,12 @@
 //! Lifecycle outcome facts.
 
 use super::{
-    ClosePhase, LifecycleError, LifecycleResult, MaintenanceTaskKind, RecoveryHealth, StorageMode,
+    ClosePhase, LifecycleCloseFact, LifecycleError, LifecycleRecoveredCheckpoint,
+    LifecycleRecoveredQuarantine, LifecycleRecoveredTables, LifecycleRecoveredWal,
+    LifecycleRecoveryBootstrapReport, LifecycleRecoveryOutcome, LifecycleResult, LifecycleStats,
+    MaintenanceTaskKind, RecoveryHealth, StorageMode,
 };
+use crate::backend::BackendCapabilities;
 use strata_core_next::CommitVersion;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,20 +16,37 @@ pub(crate) struct StorageOpenOutcome {
     recovered_visible_version: Option<CommitVersion>,
     recovery_health: RecoveryHealth,
     maintenance_ready: bool,
+    backend_capabilities: Option<BackendCapabilities>,
+    database_id: Option<[u8; 16]>,
+    codec_id: Option<String>,
+    recovered_max_commit_version: Option<CommitVersion>,
+    checkpoint: Option<LifecycleRecoveredCheckpoint>,
+    wal: Option<LifecycleRecoveredWal>,
+    tables: Option<LifecycleRecoveredTables>,
+    quarantine: Option<LifecycleRecoveredQuarantine>,
+    bootstrap: Option<LifecycleRecoveryBootstrapReport>,
+    stats: LifecycleStats,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StorageOpenDisposition {
     Created,
     OpenedExisting,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MaintenanceOutcome {
     task_kind: MaintenanceTaskKind,
     status: MaintenanceOutcomeStatus,
+    recovery_health: Option<RecoveryHealth>,
+    affected_objects: usize,
+    bytes_reclaimed: u64,
+    retryable: bool,
+    stats: LifecycleStats,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MaintenanceOutcomeStatus {
     Completed,
@@ -37,11 +58,21 @@ pub(crate) enum MaintenanceOutcomeStatus {
 pub(crate) struct CloseOutcome {
     phase: ClosePhase,
     status: CloseOutcomeStatus,
+    close_fact: Option<LifecycleCloseFact>,
+    effects: CloseOutcomeEffects,
+    stats: LifecycleStats,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CloseOutcomeEffects {
+    bits: u8,
+}
+
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CloseOutcomeStatus {
     Complete,
+    Idempotent,
     Timeout,
     Failed,
 }
@@ -70,7 +101,59 @@ impl StorageOpenOutcome {
             recovered_visible_version,
             recovery_health,
             maintenance_ready,
+            backend_capabilities: None,
+            database_id: None,
+            codec_id: None,
+            recovered_max_commit_version: recovered_visible_version,
+            checkpoint: None,
+            wal: None,
+            tables: None,
+            quarantine: None,
+            bootstrap: None,
+            stats: LifecycleStats::default(),
         })
+    }
+
+    pub(crate) fn with_backend_capabilities(mut self, capabilities: BackendCapabilities) -> Self {
+        self.backend_capabilities = Some(capabilities);
+        self
+    }
+
+    pub(crate) fn with_database_identity(
+        mut self,
+        database_id: [u8; 16],
+        codec_id: impl Into<String>,
+    ) -> Self {
+        self.database_id = Some(database_id);
+        self.codec_id = Some(codec_id.into());
+        self
+    }
+
+    pub(crate) const fn with_recovered_max_commit_version(
+        mut self,
+        version: Option<CommitVersion>,
+    ) -> Self {
+        self.recovered_max_commit_version = version;
+        self
+    }
+
+    pub(crate) fn with_durable_recovery_facts(
+        mut self,
+        recovery: &LifecycleRecoveryOutcome,
+        bootstrap: &LifecycleRecoveryBootstrapReport,
+    ) -> Self {
+        self.checkpoint = Some(recovery.checkpoint().clone());
+        self.wal = Some(recovery.wal().clone());
+        self.tables = Some(recovery.tables().clone());
+        self.quarantine = Some(recovery.quarantine().clone());
+        self.bootstrap = Some(bootstrap.clone());
+        self.recovered_max_commit_version = Some(bootstrap.recovered_visible_version());
+        self
+    }
+
+    pub(crate) const fn with_stats(mut self, stats: LifecycleStats) -> Self {
+        self.stats = stats;
+        self
     }
 
     pub(crate) const fn mode(&self) -> StorageMode {
@@ -96,6 +179,46 @@ impl StorageOpenOutcome {
     pub(crate) const fn maintenance_ready(&self) -> bool {
         self.maintenance_ready
     }
+
+    pub(crate) const fn backend_capabilities(&self) -> Option<BackendCapabilities> {
+        self.backend_capabilities
+    }
+
+    pub(crate) const fn database_id(&self) -> Option<&[u8; 16]> {
+        self.database_id.as_ref()
+    }
+
+    pub(crate) fn codec_id(&self) -> Option<&str> {
+        self.codec_id.as_deref()
+    }
+
+    pub(crate) const fn recovered_max_commit_version(&self) -> Option<CommitVersion> {
+        self.recovered_max_commit_version
+    }
+
+    pub(crate) const fn checkpoint(&self) -> Option<&LifecycleRecoveredCheckpoint> {
+        self.checkpoint.as_ref()
+    }
+
+    pub(crate) const fn wal(&self) -> Option<&LifecycleRecoveredWal> {
+        self.wal.as_ref()
+    }
+
+    pub(crate) const fn tables(&self) -> Option<&LifecycleRecoveredTables> {
+        self.tables.as_ref()
+    }
+
+    pub(crate) const fn quarantine(&self) -> Option<&LifecycleRecoveredQuarantine> {
+        self.quarantine.as_ref()
+    }
+
+    pub(crate) const fn bootstrap(&self) -> Option<&LifecycleRecoveryBootstrapReport> {
+        self.bootstrap.as_ref()
+    }
+
+    pub(crate) const fn stats(&self) -> LifecycleStats {
+        self.stats
+    }
 }
 
 impl MaintenanceOutcome {
@@ -103,21 +226,92 @@ impl MaintenanceOutcome {
         task_kind: MaintenanceTaskKind,
         status: MaintenanceOutcomeStatus,
     ) -> Self {
-        Self { task_kind, status }
+        Self {
+            task_kind,
+            status,
+            recovery_health: None,
+            affected_objects: 0,
+            bytes_reclaimed: 0,
+            retryable: false,
+            stats: LifecycleStats::new(0, 0, 0, 0, 0),
+        }
     }
 
-    pub(crate) const fn task_kind(self) -> MaintenanceTaskKind {
+    pub(crate) fn with_recovery_health(mut self, health: RecoveryHealth) -> Self {
+        self.recovery_health = Some(health);
+        self
+    }
+
+    pub(crate) const fn with_effects(
+        mut self,
+        affected_objects: usize,
+        bytes_reclaimed: u64,
+        retryable: bool,
+    ) -> Self {
+        self.affected_objects = affected_objects;
+        self.bytes_reclaimed = bytes_reclaimed;
+        self.retryable = retryable;
+        self
+    }
+
+    pub(crate) const fn with_stats(mut self, stats: LifecycleStats) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    pub(crate) const fn task_kind(&self) -> MaintenanceTaskKind {
         self.task_kind
     }
 
-    pub(crate) const fn status(self) -> MaintenanceOutcomeStatus {
+    pub(crate) const fn status(&self) -> MaintenanceOutcomeStatus {
         self.status
+    }
+
+    pub(crate) const fn recovery_health(&self) -> Option<&RecoveryHealth> {
+        self.recovery_health.as_ref()
+    }
+
+    pub(crate) const fn affected_objects(&self) -> usize {
+        self.affected_objects
+    }
+
+    pub(crate) const fn bytes_reclaimed(&self) -> u64 {
+        self.bytes_reclaimed
+    }
+
+    pub(crate) const fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub(crate) const fn stats(&self) -> LifecycleStats {
+        self.stats
     }
 }
 
 impl CloseOutcome {
     pub(crate) const fn new(phase: ClosePhase, status: CloseOutcomeStatus) -> Self {
-        Self { phase, status }
+        Self {
+            phase,
+            status,
+            close_fact: None,
+            effects: CloseOutcomeEffects::empty(),
+            stats: LifecycleStats::new(0, 0, 0, 0, 0),
+        }
+    }
+
+    pub(crate) const fn with_close_fact(mut self, close_fact: LifecycleCloseFact) -> Self {
+        self.close_fact = Some(close_fact);
+        self
+    }
+
+    pub(crate) const fn with_close_effects(mut self, effects: CloseOutcomeEffects) -> Self {
+        self.effects = effects;
+        self
+    }
+
+    pub(crate) const fn with_stats(mut self, stats: LifecycleStats) -> Self {
+        self.stats = stats;
+        self
     }
 
     pub(crate) const fn phase(self) -> ClosePhase {
@@ -126,5 +320,86 @@ impl CloseOutcome {
 
     pub(crate) const fn status(self) -> CloseOutcomeStatus {
         self.status
+    }
+
+    pub(crate) const fn close_fact(self) -> Option<LifecycleCloseFact> {
+        self.close_fact
+    }
+
+    pub(crate) const fn commits_quiesced(self) -> bool {
+        self.effects.commits_quiesced()
+    }
+
+    pub(crate) const fn maintenance_drained(self) -> bool {
+        self.effects.maintenance_drained()
+    }
+
+    pub(crate) const fn durable_synced(self) -> bool {
+        self.effects.durable_synced()
+    }
+
+    pub(crate) const fn guards_released(self) -> bool {
+        self.effects.guards_released()
+    }
+
+    pub(crate) const fn prior_final(self) -> bool {
+        self.effects.prior_final()
+    }
+
+    pub(crate) const fn stats(self) -> LifecycleStats {
+        self.stats
+    }
+}
+
+impl CloseOutcomeEffects {
+    const COMMITS_QUIESCED: u8 = 1 << 0;
+    const MAINTENANCE_DRAINED: u8 = 1 << 1;
+    const DURABLE_SYNCED: u8 = 1 << 2;
+    const GUARDS_RELEASED: u8 = 1 << 3;
+    const PRIOR_FINAL: u8 = 1 << 4;
+
+    pub(crate) const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+
+    pub(crate) const fn volatile_complete(prior_final: bool) -> Self {
+        let prior = if prior_final { Self::PRIOR_FINAL } else { 0 };
+        Self {
+            bits: Self::COMMITS_QUIESCED
+                | Self::MAINTENANCE_DRAINED
+                | Self::GUARDS_RELEASED
+                | prior,
+        }
+    }
+
+    pub(crate) const fn durable_complete(prior_final: bool) -> Self {
+        let prior = if prior_final { Self::PRIOR_FINAL } else { 0 };
+        Self {
+            bits: Self::COMMITS_QUIESCED
+                | Self::MAINTENANCE_DRAINED
+                | Self::DURABLE_SYNCED
+                | Self::GUARDS_RELEASED
+                | prior,
+        }
+    }
+
+    pub(crate) const fn commits_quiesced(self) -> bool {
+        self.bits & Self::COMMITS_QUIESCED != 0
+    }
+
+    pub(crate) const fn maintenance_drained(self) -> bool {
+        self.bits & Self::MAINTENANCE_DRAINED != 0
+    }
+
+    pub(crate) const fn durable_synced(self) -> bool {
+        self.bits & Self::DURABLE_SYNCED != 0
+    }
+
+    pub(crate) const fn guards_released(self) -> bool {
+        self.bits & Self::GUARDS_RELEASED != 0
+    }
+
+    pub(crate) const fn prior_final(self) -> bool {
+        self.bits & Self::PRIOR_FINAL != 0
     }
 }

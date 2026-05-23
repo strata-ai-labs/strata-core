@@ -84,9 +84,12 @@ public transaction handles, or product value types.
 5. `StorageOpenPlan` has no IPC field.
 6. `StorageOpenPlan` has no primitive registry field.
 7. `StorageOpenPlan` has no StrataHub field.
-8. `StorageOpenOutcome` reports mode, opened/created fact, recovery health, and
-   recovered visible version as raw storage facts.
-9. `StorageOpenOutcome` does not report product open acceptance.
+8. `StorageOpenOutcome` reports mode, opened/created fact, recovery health,
+   recovered visible version, recovered max commit version, optional durable
+   recovery facts, optional backend/database/codec facts, and raw stats as
+   storage facts.
+9. Cache `StorageOpenOutcome` does not report durable recovery facts or product
+   open acceptance.
 10. `RecoveryHealth` distinguishes healthy, degraded, and failed shapes.
 11. Recovery degradation class distinguishes data loss, policy downgrade, and
     telemetry-only facts.

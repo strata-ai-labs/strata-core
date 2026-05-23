@@ -73,8 +73,8 @@ pub(crate) use health::{
     reason = "lifecycle scaffold exports define the local surface for later slices"
 )]
 pub(crate) use outcome::{
-    CloseOutcome, CloseOutcomeStatus, MaintenanceOutcome, MaintenanceOutcomeStatus,
-    StorageOpenDisposition, StorageOpenOutcome,
+    CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, StorageOpenDisposition, StorageOpenOutcome,
 };
 #[allow(
     unused_imports,

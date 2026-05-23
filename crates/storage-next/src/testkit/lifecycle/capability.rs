@@ -234,6 +234,7 @@ fn check_input_derived_capabilities(
         Err(LifecycleError::CapabilityMismatch {
             storage_mode,
             missing,
+            ..
         }) => {
             ensure(storage_mode == mode, "capability error lost storage mode")?;
             record_reject(outcome, mode, missing.len());
@@ -295,6 +296,7 @@ fn assert_missing(
         Err(LifecycleError::CapabilityMismatch {
             storage_mode,
             missing,
+            ..
         }) => {
             ensure(storage_mode == mode, "capability error lost storage mode")?;
             ensure(

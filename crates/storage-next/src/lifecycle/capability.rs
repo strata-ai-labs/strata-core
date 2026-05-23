@@ -30,10 +30,12 @@ pub(crate) fn validate_storage_mode_capabilities(
 ) -> LifecycleResult<LifecycleCapabilityOutcome> {
     plan.validate()?;
     let request = request_for_storage_mode(plan.storage_mode());
+    let required = required_capabilities(plan.storage_mode(), capabilities);
     let missing = request.missing_capabilities(capabilities);
     if !missing.is_empty() {
         return Err(LifecycleError::CapabilityMismatch {
             storage_mode: plan.storage_mode(),
+            required,
             missing,
         });
     }
@@ -42,7 +44,7 @@ pub(crate) fn validate_storage_mode_capabilities(
         storage_mode: plan.storage_mode(),
         request,
         capabilities,
-        required: required_capabilities(plan.storage_mode(), capabilities),
+        required,
         missing: Vec::new(),
         durability_policy: request.durability_policy(),
         object_candidate_fence: object_candidate_fence(plan.storage_mode(), capabilities),
@@ -110,15 +112,14 @@ fn required_capabilities(
         }
         StorageMode::ObjectDurableCandidate => {
             let mut required = OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS.to_vec();
-            match object_candidate_fence(storage_mode, capabilities) {
-                Some(ObjectDurableFenceMode::ConditionalPublish) => {
-                    required.push(BackendCapability::ConditionalPublish);
-                }
-                Some(ObjectDurableFenceMode::ConditionalCreateUpdate) => {
-                    required.push(BackendCapability::ConditionalCreate);
-                    required.push(BackendCapability::ConditionalUpdate);
-                }
-                None => {}
+            if capabilities.contains(BackendCapability::ConditionalPublish) {
+                required.push(BackendCapability::ConditionalPublish);
+            }
+            if capabilities.contains(BackendCapability::ConditionalCreate)
+                && capabilities.contains(BackendCapability::ConditionalUpdate)
+            {
+                required.push(BackendCapability::ConditionalCreate);
+                required.push(BackendCapability::ConditionalUpdate);
             }
             required
         }

@@ -278,14 +278,13 @@ Rules:
 
 ### Capability Mismatch Error
 
-Current `LifecycleError::CapabilityMismatch { reason: &'static str }` is enough
-for broad display, but L8C should add typed missing-capability facts if it can
-do so without overcomplicating the error surface.
+`LifecycleError::CapabilityMismatch` carries typed facts; tests must not parse
+display text for capability validation.
 
 Acceptable shapes:
 
-1. extend `LifecycleError::CapabilityMismatch` to include requested mode and
-   missing capabilities;
+1. extend `LifecycleError::CapabilityMismatch` to include requested mode,
+   required capabilities, and missing capabilities;
 2. add `LifecycleCapabilityMismatch` as an owned source/details type;
 3. return a `LifecycleCapabilityReport` from validation failures while keeping
    display text storage-shaped.

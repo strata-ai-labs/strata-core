@@ -1,10 +1,11 @@
 //! Cache-mode lifecycle runtime.
 
 use super::{
-    validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeStatus, ClosePhase,
-    LifecycleCapabilityOutcome, LifecycleError, LifecycleOperationKind, LifecycleResult,
-    LifecycleState, LifecycleStateMachine, LifecycleTransitionTrigger, RecoveryHealth, StorageMode,
-    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
+    validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus,
+    ClosePhase, LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleError,
+    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleTransitionTrigger, RecoveryHealth, StorageMode, StorageOpenDisposition,
+    StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRuntimeConfig};
@@ -87,6 +88,7 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> LifecycleResult<Self> {
         request.validate()?;
         let mut state = LifecycleStateMachine::new();
+        require_admitted(state, LifecycleOperationKind::Open)?;
         state.transition(LifecycleTransitionTrigger::OpenRequested)?;
 
         let capability_outcome = validate_backend_capabilities_for_open(request.plan(), backend)?;
@@ -103,7 +105,9 @@ impl<S> LifecycleCacheRuntime<S> {
             None,
             RecoveryHealth::Healthy,
             false,
-        )?;
+        )?
+        .with_backend_capabilities(capability_outcome.capabilities())
+        .with_stats(LifecycleStats::new(1, 0, 0, 0, 0));
 
         state.transition(LifecycleTransitionTrigger::CacheOpenReady)?;
 
@@ -164,7 +168,7 @@ impl<S> LifecycleCacheRuntime<S> {
             LifecycleState::Closed => {
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRetried)?;
-                Ok(cache_close_outcome())
+                Ok(cache_idempotent_close_outcome())
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
@@ -174,17 +178,10 @@ impl<S> LifecycleCacheRuntime<S> {
                     .transition(LifecycleTransitionTrigger::CloseCompleted)?;
                 Ok(cache_close_outcome())
             }
-            LifecycleState::Closing => {
-                require_admitted(self.state, LifecycleOperationKind::CloseRetry)?;
-                self.state
-                    .transition(LifecycleTransitionTrigger::CloseRetried)?;
-                self.state
-                    .transition(LifecycleTransitionTrigger::CloseCompleted)?;
-                Ok(cache_close_outcome())
-            }
             LifecycleState::New
             | LifecycleState::Opening
             | LifecycleState::Recovering
+            | LifecycleState::Closing
             | LifecycleState::Failed => Err(LifecycleError::InvalidLifecycleState {
                 reason: "cache runtime is not open for close",
             }),
@@ -234,6 +231,16 @@ fn require_admitted(
 
 const fn cache_close_outcome() -> CloseOutcome {
     CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
+        .with_close_fact(LifecycleCloseFact::Complete)
+        .with_close_effects(CloseOutcomeEffects::volatile_complete(false))
+        .with_stats(LifecycleStats::new(1, 0, 0, 0, 1))
+}
+
+const fn cache_idempotent_close_outcome() -> CloseOutcome {
+    CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Idempotent)
+        .with_close_fact(LifecycleCloseFact::AlreadyClosed)
+        .with_close_effects(CloseOutcomeEffects::volatile_complete(true))
+        .with_stats(LifecycleStats::new(1, 0, 0, 0, 1))
 }
 
 fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {

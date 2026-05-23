@@ -89,6 +89,40 @@ fn cache_capability_validation_accepts_browser_like_backend_without_metadata() {
 }
 
 #[test]
+fn cache_capability_validation_never_requires_durable_storage_capabilities() {
+    let backend_capabilities = BackendCapabilities::from_slice(&[
+        BackendCapability::ReadObject,
+        BackendCapability::ReadRange,
+        BackendCapability::WriteObject,
+        BackendCapability::DeleteObject,
+        BackendCapability::ListPrefix,
+        BackendCapability::AppendObject,
+        BackendCapability::DurablePublish,
+        BackendCapability::DurableSync,
+        BackendCapability::SingleWriterLock,
+        BackendCapability::ObjectMetadata,
+    ]);
+
+    let outcome =
+        validate_storage_mode_capabilities(&plan(StorageMode::Cache), backend_capabilities)
+            .expect("cache mode ignores durable-only capabilities");
+
+    assert_eq!(outcome.required_capabilities(), CACHE_MODE_REQUIREMENTS);
+    for durable_only in [
+        BackendCapability::AppendObject,
+        BackendCapability::DurablePublish,
+        BackendCapability::DurableSync,
+        BackendCapability::SingleWriterLock,
+        BackendCapability::ObjectMetadata,
+    ] {
+        assert!(
+            !outcome.required_capabilities().contains(&durable_only),
+            "cache mode must not require durable capability {durable_only:?}"
+        );
+    }
+}
+
+#[test]
 fn durable_local_modes_reject_each_missing_durable_capability() {
     for mode in [
         StorageMode::DurableLocalStandard,
@@ -151,6 +185,24 @@ fn object_candidate_accepts_either_publish_fence_or_create_update_pair() {
             .expect("all fences accepted")
             .object_candidate_fence(),
         Some(ObjectDurableFenceMode::ConditionalPublish)
+    );
+    assert_eq!(
+        validate_storage_mode_capabilities(&plan(StorageMode::ObjectDurableCandidate), all_fences)
+            .expect("all fences accepted")
+            .required_capabilities(),
+        &[
+            BackendCapability::ReadObject,
+            BackendCapability::ReadRange,
+            BackendCapability::WriteObject,
+            BackendCapability::DeleteObject,
+            BackendCapability::ListPrefix,
+            BackendCapability::ObjectMetadata,
+            BackendCapability::ConsistentList,
+            BackendCapability::MonotonicMetadata,
+            BackendCapability::ConditionalPublish,
+            BackendCapability::ConditionalCreate,
+            BackendCapability::ConditionalUpdate,
+        ]
     );
 }
 
@@ -292,9 +344,11 @@ fn assert_missing(
     match validate_storage_mode_capabilities(&plan(mode), capabilities) {
         Err(LifecycleError::CapabilityMismatch {
             storage_mode,
+            required,
             missing,
         }) => {
             assert_eq!(storage_mode, mode);
+            assert!(!required.is_empty());
             assert_eq!(missing, expected);
         }
         result => panic!("expected missing capabilities {expected:?}, got {result:?}"),

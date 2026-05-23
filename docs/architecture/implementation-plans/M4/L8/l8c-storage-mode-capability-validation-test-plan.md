@@ -13,7 +13,7 @@ facts before any lifecycle open/create side effects.
 The tests must fail if L8C:
 
 1. duplicates or drifts from the backend capability matrix;
-2. accepts cache mode only when durable capabilities are present;
+2. requires durable-only capabilities for cache mode;
 3. accepts durable local modes without append, durable publish, durable sync, or
    writer-lock support;
 4. loses the difference between durable standard and durable always policy;
@@ -21,7 +21,9 @@ The tests must fail if L8C:
    primitive;
 6. claims object-durable candidate is production durable local behavior;
 7. reports capability mismatch only as unstructured display text;
-8. calls backend read/write/list/publish/append/lock methods during capability
+8. omits either the complete required capability list or exact missing list from
+   a capability mismatch;
+9. calls backend read/write/list/publish/append/lock methods during capability
    validation;
 9. creates durable objects, temporary objects, service instances, or runtime
    state before capability validation succeeds;

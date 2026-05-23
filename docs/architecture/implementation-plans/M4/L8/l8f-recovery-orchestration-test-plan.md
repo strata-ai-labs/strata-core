@@ -261,11 +261,17 @@ Required tests:
 5. explicit lossy downgrade returns `RecoveryHealth::Degraded`;
 6. degraded recovery requires at least one fault;
 7. confirmed data loss uses `RecoveryDegradationClass::DataLoss`;
-8. policy downgrade uses `RecoveryDegradationClass::PolicyDowngrade`;
-9. missing optional telemetry uses `RecoveryDegradationClass::Telemetry`;
+8. quarantine inventory mismatch uses `RecoveryDegradationClass::Telemetry`;
+9. policy downgrade uses `RecoveryDegradationClass::PolicyDowngrade` only
+   for non-lossy policy relaxation cases;
 10. codec mismatch is failed, not degraded;
 11. data-loss recovery never reports `Healthy`;
-12. too many faults fails with a typed recovery error instead of truncating
+12. strict partial WAL tail returns `WalTailRepairRejected`;
+13. quarantine recovery failure occurs before WAL tail repair side effects;
+14. snapshot section count above request limit fails;
+15. zero snapshot ids are rejected before lifecycle trusts manifest recovery
+    facts;
+16. too many faults fails with a typed recovery error instead of truncating
     silently.
 
 ### 13. Lower-Layer Source Chains
@@ -376,10 +382,11 @@ Record the probe result in `m4-l8-porting-log.md` after implementation.
 | L8F-S4 | Include records equal to replay start. | WAL filtering tests fail. |
 | L8F-S5 | Drop WAL records after replay start. | WAL package preservation tests fail. |
 | L8F-S6 | Treat latest partial tail as healthy without repair. | WAL repair tests fail. |
-| L8F-S7 | Repair non-latest WAL corruption. | Non-latest corruption tests fail. |
-| L8F-S8 | Report corrupt snapshot as healthy. | Health aggregation tests fail. |
-| L8F-S9 | Report lossy data loss as healthy. | Lossy health tests fail. |
-| L8F-S10 | Ignore missing required table object. | Table validation tests fail. |
+| L8F-S7 | Repair latest partial tail in strict mode. | Strict tail-repair rejection tests fail. |
+| L8F-S8 | Repair non-latest WAL corruption. | Non-latest corruption tests fail. |
+| L8F-S9 | Report corrupt snapshot as healthy. | Health aggregation tests fail. |
+| L8F-S10 | Report lossy data loss as healthy. | Lossy health tests fail. |
+| L8F-S11 | Ignore missing required table object. | Table validation tests fail. |
 | L8F-S11 | Ignore quarantine identity mismatch. | Quarantine tests fail. |
 | L8F-S12 | Collapse lower-layer source into a static string. | Source-chain tests fail. |
 | L8F-S13 | Call `CommitReplayRuntime` from L8F. | Source guard and replay spy tests fail. |

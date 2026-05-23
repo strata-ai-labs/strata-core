@@ -175,11 +175,13 @@ behavior prematurely:
 LifecycleError::InvalidConfig { field }
 LifecycleError::InvalidLifecycleState { reason }
 LifecycleError::InvalidOpenPlan { reason }
-LifecycleError::CapabilityMismatch { reason }
+LifecycleError::CapabilityMismatch { storage_mode, required, missing }
 LifecycleError::RecoveryFailed { reason }
 LifecycleError::MaintenanceFailed { reason }
 LifecycleError::RetentionBlocked { reason }
 LifecycleError::CloseFailed { reason }
+LifecycleError::TimelineRecoveryMismatch { reason }
+LifecycleError::WalTailRepairRejected { reason }
 LifecycleError::LowerLayer { layer, source }
 ```
 
@@ -190,8 +192,9 @@ Rules:
    wording;
 3. displays do not include row value bytes, object payload bytes, or product DTO
    names;
-4. wrapped lower-layer source errors must be preserved through `Error::source()`;
-5. follower, IPC, and public command errors are not included in V1.
+4. every variant exposes a stable `code()` string for tests and telemetry;
+5. wrapped lower-layer source errors must be preserved through `Error::source()`;
+6. follower, IPC, and public command errors are not included in V1.
 
 ### `LifecycleState`
 
@@ -257,10 +260,20 @@ Suggested fields:
 ```text
 StorageOpenOutcome {
     mode: StorageMode,
-    opened_existing: bool,
+    disposition: StorageOpenDisposition,
     recovered_visible_version: Option<CommitVersion>,
     recovery_health: RecoveryHealth,
     maintenance_ready: bool,
+    backend_capabilities: Option<BackendCapabilities>,
+    database_id: Option<[u8; 16]>,
+    codec_id: Option<String>,
+    recovered_max_commit_version: Option<CommitVersion>,
+    checkpoint: Option<LifecycleRecoveredCheckpoint>,
+    wal: Option<LifecycleRecoveredWal>,
+    tables: Option<LifecycleRecoveredTables>,
+    quarantine: Option<LifecycleRecoveredQuarantine>,
+    bootstrap: Option<LifecycleRecoveryBootstrapReport>,
+    stats: LifecycleStats,
 }
 ```
 
@@ -269,7 +282,8 @@ Rules:
 1. outcome is raw storage fact reporting;
 2. outcome must not say whether product open should succeed for a user;
 3. durable facts remain optional until durable open/recovery slices populate
-   them.
+   them;
+4. cache outcomes must leave durable recovery fact fields empty.
 
 ### `RecoveryHealth`
 
@@ -319,12 +333,11 @@ Suggested fields:
 
 ```text
 LifecycleStats {
-    opens: u64,
-    recoveries: u64,
-    maintenance_tasks: u64,
-    checkpoints: u64,
-    reclaimed_objects: u64,
-    close_attempts: u64,
+    open_attempts: usize,
+    recovery_faults: usize,
+    maintenance_tasks: usize,
+    retention_blocks: usize,
+    close_attempts: usize,
 }
 ```
 

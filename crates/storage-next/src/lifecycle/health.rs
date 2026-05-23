@@ -3,6 +3,7 @@
 use super::{LifecycleError, LifecycleResult};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum RecoveryHealth {
     Healthy,
     Degraded {
@@ -15,6 +16,7 @@ pub(crate) enum RecoveryHealth {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum RecoveryDegradationClass {
     DataLoss,
     PolicyDowngrade,
@@ -28,6 +30,7 @@ pub(crate) struct RecoveryFault {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum RecoveryFaultKind {
     CorruptManifest,
     CorruptSnapshot,
@@ -62,6 +65,14 @@ impl RecoveryHealth {
 
     pub(crate) const fn is_healthy(&self) -> bool {
         matches!(self, Self::Healthy)
+    }
+
+    pub(crate) const fn fault_count(&self) -> usize {
+        match self {
+            Self::Healthy => 0,
+            Self::Degraded { faults, .. } => faults.len(),
+            Self::Failed { .. } => 1,
+        }
     }
 }
 

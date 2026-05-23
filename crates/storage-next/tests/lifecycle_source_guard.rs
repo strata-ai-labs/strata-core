@@ -144,6 +144,21 @@ fn lifecycle_durable_runtime_stays_bootstrap_only() {
 }
 
 #[test]
+fn lifecycle_bootstrap_runtime_does_not_perform_durable_assembly() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/durable/bootstrap.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle durable bootstrap source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_bootstrap_assembly_dependency(line),
+            "src/lifecycle/durable/bootstrap.rs:{} calls forbidden durable assembly dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/recovery.rs");
@@ -288,11 +303,17 @@ fn assert_durable_runtime_fixtures() {
     assert!(contains_forbidden_durable_runtime_dependency(
         "let name = \"locks/writer\";"
     ));
-    assert!(!contains_forbidden_durable_runtime_dependency(
+    assert!(contains_forbidden_durable_runtime_dependency(
         "CommitReplayRuntime::new();"
     ));
-    assert!(!contains_forbidden_durable_runtime_dependency(
+    assert!(contains_forbidden_durable_runtime_dependency(
         "let _: CommitReplayRequest;"
+    ));
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "allocator.catch_up_to_recovered_version(version);"
+    ));
+    assert!(contains_forbidden_durable_runtime_dependency(
+        "visible.catch_up_visible_after_replay(version);"
     ));
     assert!(contains_forbidden_durable_runtime_dependency(
         "WalRecord::new(version, branch, timestamp, payload);"
@@ -302,6 +323,15 @@ fn assert_durable_runtime_fixtures() {
     ));
     assert!(contains_forbidden_durable_runtime_dependency(
         "quarantine.load_inventory(branch, db, codec)?;"
+    ));
+    assert!(contains_forbidden_bootstrap_assembly_dependency(
+        "backend.acquire_writer_lock(&lock)?;"
+    ));
+    assert!(contains_forbidden_bootstrap_assembly_dependency(
+        "WalService::open(backend, segment, policy, config)?;"
+    ));
+    assert!(contains_forbidden_bootstrap_assembly_dependency(
+        "DatabaseManifestService::new(backend);"
     ));
 }
 
@@ -543,6 +573,10 @@ fn contains_forbidden_cache_runtime_dependency_text(text: &str) -> bool {
 fn contains_forbidden_durable_runtime_dependency(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     [
+        "commitreplayruntime",
+        "commitreplayrequest",
+        "catch_up_to_recovered_version(",
+        "catch_up_visible_after_replay(",
         "\"locks/writer\"",
         "walrecord::new",
         "checkpoint_service.checkpoint(",
@@ -553,6 +587,24 @@ fn contains_forbidden_durable_runtime_dependency(line: &str) -> bool {
         "list_snapshots(",
         "open_reader(",
         "execute_cache_commit(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_bootstrap_assembly_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "acquire_writer_lock(",
+        "objectlayout::writer_lock",
+        "databasemanifestservice::new",
+        "load_or_create_manifest(",
+        "walservice::open",
+        "tablemanifestservice::new",
+        "snapshotservice::new",
+        "tableobjectservice::new",
+        "checkpointservice::new",
+        "quarantineservice::new",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

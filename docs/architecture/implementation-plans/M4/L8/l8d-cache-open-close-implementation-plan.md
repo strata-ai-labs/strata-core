@@ -111,6 +111,8 @@ Rules:
    opened-existing meaning in V1.
 4. Reopening cache mode creates a fresh empty volatile runtime.
 5. Cache mode must not claim crash recovery or degraded recovery.
+6. Cache open records backend capability facts and raw open stats, but leaves
+   all durable recovery fact fields empty.
 
 ### L8D Composes L6 And L7
 
@@ -141,10 +143,15 @@ L8D close is intentionally minimal:
 
 1. reject new commits/ordinary reads once closing begins;
 2. transition `Open -> Closing -> Closed`;
-3. report `CloseOutcome` with `ClosePhase::Closed` and
+3. report the first `CloseOutcome` with `ClosePhase::Closed` and
    `CloseOutcomeStatus::Complete`;
-4. allow repeated close after `Closed` as idempotent;
-5. do not flush WAL, sync manifest, release writer locks, stop durable
+4. allow repeated close after `Closed` with
+   `CloseOutcomeStatus::Idempotent`;
+5. first close carries `LifecycleCloseFact::Complete`; repeated close carries
+   `LifecycleCloseFact::AlreadyClosed`;
+6. close effects mark commits quiesced, maintenance drained, and guards
+   released, but not durable sync;
+7. do not flush WAL, sync manifest, release writer locks, stop durable
    background workers, or run engine freeze hooks.
 
 Later L8 close slices may extend the durable close path. They must not make
