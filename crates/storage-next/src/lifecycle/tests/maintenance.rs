@@ -1,0 +1,862 @@
+use super::*;
+
+mod shared;
+
+use shared::*;
+
+#[test]
+fn maintenance_task_request_validates_kind_scope_pairs() {
+    assert!(MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Flush,
+        MaintenanceTaskPriority::Normal,
+        MaintenanceTaskScope::Branch(branch_id(1)),
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .is_ok());
+    assert_eq!(
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Flush,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::Global,
+            MaintenanceTaskPolicy::coalescing(),
+        ),
+        Err(LifecycleError::MaintenanceFailed {
+            reason: "maintenance task scope does not match task kind",
+        })
+    );
+}
+
+#[test]
+fn maintenance_task_requests_accept_every_supported_kind_and_scope() {
+    for (kind, scope) in valid_kind_scopes() {
+        let request = MaintenanceTaskRequest::new(
+            kind,
+            MaintenanceTaskPriority::Normal,
+            scope,
+            MaintenanceTaskPolicy::ordinary(),
+        )
+        .expect("valid task request");
+        assert_eq!(request.kind(), kind);
+        assert_eq!(request.scope(), scope);
+    }
+}
+
+#[test]
+fn maintenance_task_ids_and_sequences_are_monotonic() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+
+    let first = executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("first");
+    let second = executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::ordinary(),
+            ),
+        )
+        .expect("second");
+
+    assert_eq!(first.task_id().get(), 1);
+    assert_eq!(second.task_id().get(), 2);
+    assert_eq!(executor.pending_tasks()[0].sequence().get(), 1);
+    assert_eq!(executor.pending_tasks()[1].sequence().get(), 2);
+}
+
+#[test]
+fn maintenance_policy_and_coalesce_key_preserve_storage_scope() {
+    let branch = branch_id(3);
+    let request = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Compaction,
+        MaintenanceTaskPriority::High,
+        MaintenanceTaskScope::TableLevel {
+            branch_id: branch,
+            level: 2,
+        },
+        MaintenanceTaskPolicy::coalescing_drain_before_close(),
+    )
+    .expect("request");
+
+    assert_eq!(request.priority(), MaintenanceTaskPriority::High);
+    assert_eq!(
+        request.policy().close_policy(),
+        MaintenanceClosePolicy::DrainBeforeClose
+    );
+    assert!(request.policy().coalesces());
+    assert_eq!(
+        request.coalesce_key(),
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Compaction,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::TableLevel {
+                branch_id: branch,
+                level: 2,
+            },
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("matching request")
+        .coalesce_key()
+    );
+    assert_eq!(
+        MaintenanceTaskPolicy::cancel_before_close().close_policy(),
+        MaintenanceClosePolicy::CancelBeforeClose
+    );
+    assert!(!MaintenanceTaskPolicy::ordinary().coalesces());
+}
+
+#[test]
+fn maintenance_debug_output_uses_storage_vocabulary() {
+    let request = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Checkpoint,
+        MaintenanceTaskPriority::Critical,
+        MaintenanceTaskScope::Checkpoint,
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .expect("request");
+    let debug = format!("{request:?}");
+
+    assert!(debug.contains("Checkpoint"));
+    for forbidden in [
+        "Database::open",
+        "manual maintenance command",
+        "StrataHub",
+        "VersionedValue",
+        "EntityRef",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
+}
+
+#[test]
+fn maintenance_enqueue_requires_open_and_enforces_capacity() {
+    let mut executor = LifecycleMaintenanceExecutor::new(1).expect("executor");
+    let request = health_request(MaintenanceTaskPolicy::ordinary());
+
+    assert!(matches!(
+        executor.enqueue(LifecycleStateMachine::new(), request),
+        Err(LifecycleError::InvalidLifecycleState { .. })
+    ));
+    assert_eq!(executor.status().pending_tasks(), 0);
+
+    let open = open_state();
+    let first = executor.enqueue(open, request).expect("first enqueue");
+    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(first.pending_tasks(), 1);
+
+    let error = executor
+        .enqueue(open, request)
+        .expect_err("capacity rejects second pending task");
+    assert_eq!(
+        error,
+        LifecycleError::MaintenanceFailed {
+            reason: "maintenance queue is full",
+        }
+    );
+    assert_eq!(executor.stats().queue_full(), 1);
+}
+
+#[test]
+fn maintenance_admission_rejects_ordinary_work_outside_open() {
+    let request = health_request(MaintenanceTaskPolicy::ordinary());
+    for state in [
+        new_state(),
+        opening_state(),
+        recovering_state(),
+        closing_state(),
+        closed_state(),
+        failed_state(),
+    ] {
+        let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+        let error = executor
+            .enqueue(state, request)
+            .expect_err("ordinary maintenance rejected");
+
+        assert_eq!(error.code(), "failed_precondition.lifecycle.state");
+        assert_eq!(executor.status().pending_tasks(), 0);
+        assert_eq!(executor.stats(), LifecycleMaintenanceStats::default());
+    }
+}
+
+#[test]
+fn maintenance_close_drain_requires_closing_and_ordinary_run_requires_open() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut runner = RecordingRunner::completed();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("enqueue");
+
+    assert!(matches!(
+        executor
+            .drain_for_close(open, &mut runner)
+            .expect_err("drain rejected outside closing"),
+        LifecycleError::InvalidLifecycleState { .. }
+    ));
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert!(matches!(
+        executor
+            .run_next(closing, &mut runner)
+            .expect_err("ordinary run rejected while closing"),
+        LifecycleError::InvalidLifecycleState { .. }
+    ));
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
+fn lifecycle_health_query_is_admitted_in_every_state() {
+    for state in [
+        LifecycleState::New,
+        LifecycleState::Opening,
+        LifecycleState::Recovering,
+        LifecycleState::Open,
+        LifecycleState::Closing,
+        LifecycleState::Closed,
+        LifecycleState::Failed,
+    ] {
+        assert!(
+            LifecycleStateMachine::admit_state(state, LifecycleOperationKind::HealthQuery)
+                .is_allowed(),
+            "health query rejected in {state:?}",
+        );
+    }
+}
+
+#[test]
+fn maintenance_queue_depth_allows_exact_capacity() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("first");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::ordinary(),
+            ),
+        )
+        .expect("second reaches capacity");
+
+    assert_eq!(executor.status().pending_tasks(), 2);
+    assert_eq!(executor.stats().queue_full(), 0);
+}
+
+#[test]
+fn maintenance_executor_orders_by_priority_then_fifo() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    let low = repair_request(
+        MaintenanceTaskPriority::Low,
+        MaintenanceTaskPolicy::ordinary(),
+    );
+    let high = repair_request(
+        MaintenanceTaskPriority::High,
+        MaintenanceTaskPolicy::ordinary(),
+    );
+    let normal = repair_request(
+        MaintenanceTaskPriority::Normal,
+        MaintenanceTaskPolicy::ordinary(),
+    );
+
+    executor.enqueue(open, low).expect("low");
+    executor.enqueue(open, normal).expect("normal");
+    executor.enqueue(open, high).expect("high");
+
+    let mut runner = RecordingRunner::completed();
+    let first = executor
+        .run_next(open, &mut runner)
+        .expect("run")
+        .expect("task");
+    let second = executor
+        .run_next(open, &mut runner)
+        .expect("run")
+        .expect("task");
+    let third = executor
+        .run_next(open, &mut runner)
+        .expect("run")
+        .expect("task");
+
+    assert_eq!(first.task_id().expect("task id").get(), 3);
+    assert_eq!(second.task_id().expect("task id").get(), 2);
+    assert_eq!(third.task_id().expect("task id").get(), 1);
+    assert_eq!(executor.stats().completed(), 3);
+}
+
+#[test]
+fn maintenance_executor_preserves_fifo_for_equal_priority() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    for index in 0..3 {
+        executor
+            .enqueue(
+                open,
+                MaintenanceTaskRequest::new(
+                    MaintenanceTaskKind::Flush,
+                    MaintenanceTaskPriority::Normal,
+                    MaintenanceTaskScope::Branch(branch_id(index)),
+                    MaintenanceTaskPolicy::ordinary(),
+                )
+                .expect("flush"),
+            )
+            .expect("enqueue");
+    }
+
+    let mut runner = RecordingRunner::completed();
+    let ids = run_all_task_ids(open, &mut executor, &mut runner);
+
+    assert_eq!(ids, vec![1, 2, 3]);
+}
+
+#[test]
+fn maintenance_executor_order_survives_coalescing_and_canceling() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(6).expect("executor");
+    let coalescing_flush = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Flush,
+        MaintenanceTaskPriority::Normal,
+        MaintenanceTaskScope::Branch(branch_id(11)),
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .expect("flush");
+    executor.enqueue(open, coalescing_flush).expect("flush");
+    executor
+        .enqueue(open, coalescing_flush)
+        .expect("coalesced flush");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::cancel_before_close(),
+            ),
+        )
+        .expect("cancelable");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("health");
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel pending");
+    assert_eq!(cancel.canceled_tasks(), 1);
+
+    let mut runner = RecordingRunner::completed();
+    let ids = run_all_task_ids(open, &mut executor, &mut runner);
+
+    assert_eq!(ids, vec![1, 3]);
+    assert_eq!(executor.stats().coalesced(), 1);
+}
+
+#[test]
+fn maintenance_executor_coalesces_pending_tasks_by_key() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(1).expect("executor");
+    let request = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Flush,
+        MaintenanceTaskPriority::Normal,
+        MaintenanceTaskScope::Branch(branch_id(9)),
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .expect("flush request");
+
+    let first = executor.enqueue(open, request).expect("first");
+    let second = executor.enqueue(open, request).expect("coalesced");
+
+    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert_eq!(second.task_id(), first.task_id());
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(executor.stats().coalesced(), 1);
+    assert_eq!(executor.stats().queue_full(), 0);
+}
+
+#[test]
+fn maintenance_executor_coalesces_each_coalescing_scope_independently() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    for request in [
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Checkpoint,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::Checkpoint,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("checkpoint"),
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::WalTruncation,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::Wal,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("wal"),
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Compaction,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::TableLevel {
+                branch_id: branch_id(12),
+                level: 1,
+            },
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("compaction"),
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Materialization,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::InheritedLayer {
+                branch_id: branch_id(13),
+            },
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("materialization"),
+    ] {
+        let first = executor.enqueue(open, request).expect("first");
+        let duplicate = executor.enqueue(open, request).expect("duplicate");
+        assert_eq!(duplicate.status(), MaintenanceEnqueueStatus::Coalesced);
+        assert_eq!(duplicate.task_id(), first.task_id());
+    }
+
+    assert_eq!(executor.status().pending_tasks(), 4);
+    assert_eq!(executor.stats().coalesced(), 4);
+}
+
+#[test]
+fn maintenance_executor_does_not_coalesce_non_coalescing_requests() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    for request in [
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Purge,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::Quarantine,
+            MaintenanceTaskPolicy::ordinary(),
+        )
+        .expect("purge"),
+        repair_request(
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskPolicy::ordinary(),
+        ),
+    ] {
+        let first = executor.enqueue(open, request).expect("first");
+        let second = executor.enqueue(open, request).expect("second");
+        assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
+        assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
+        assert_ne!(first.task_id(), second.task_id());
+    }
+
+    assert_eq!(executor.status().pending_tasks(), 4);
+    assert_eq!(executor.stats().coalesced(), 0);
+}
+
+#[test]
+fn maintenance_executor_does_not_coalesce_active_task() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    let request = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Flush,
+        MaintenanceTaskPriority::Normal,
+        MaintenanceTaskScope::Branch(branch_id(10)),
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .expect("flush request");
+    executor.enqueue(open, request).expect("first");
+
+    let mut fault = FailAt::new(MaintenanceFaultPoint::AtTaskStart);
+    let mut runner = RecordingRunner::completed();
+    assert!(executor
+        .run_next_with_fault(open, &mut runner, &mut fault)
+        .is_err());
+
+    let second = executor.enqueue(open, request).expect("new pending task");
+    assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(second.task_id().get(), 2);
+}
+
+#[test]
+fn maintenance_executor_clears_active_after_runner_error() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let mut runner = ErrorRunner;
+    let error = executor
+        .run_next(open, &mut runner)
+        .expect_err("runner error");
+
+    assert_eq!(error.code(), "io.lifecycle.backend");
+    assert!(error.source().is_some());
+    assert_eq!(executor.status().active_task(), None);
+    assert_eq!(executor.stats().failed(), 1);
+}
+
+#[test]
+fn maintenance_executor_run_empty_queue_returns_no_work_without_stats() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    let mut runner = RecordingRunner::completed();
+
+    assert_eq!(
+        executor.run_next(open, &mut runner).expect("empty run"),
+        None
+    );
+    assert_eq!(executor.stats(), LifecycleMaintenanceStats::default());
+}
+
+#[test]
+fn maintenance_executor_records_deferred_and_preserves_effects() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let mut runner = EffectsRunner {
+        status: MaintenanceOutcomeStatus::Deferred,
+        affected_objects: 3,
+        bytes_reclaimed: 99,
+        retryable: true,
+    };
+    let outcome = executor
+        .run_next(open, &mut runner)
+        .expect("run")
+        .expect("task");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(outcome.affected_objects(), 3);
+    assert_eq!(outcome.bytes_reclaimed(), 99);
+    assert!(outcome.retryable());
+    assert_eq!(executor.stats().started(), 1);
+    assert_eq!(executor.stats().deferred(), 1);
+    assert_eq!(executor.status().active_task(), None);
+}
+
+#[test]
+fn maintenance_executor_converts_after_run_fault_to_failed_outcome() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let mut runner = RecordingRunner::completed();
+    let mut fault = FailAt::new(MaintenanceFaultPoint::AfterTaskRun);
+    let outcome = executor
+        .run_next_with_fault(open, &mut runner, &mut fault)
+        .expect("after-run fault is reported as failed outcome")
+        .expect("task outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(executor.status().active_task(), None);
+    assert_eq!(executor.stats().failed(), 1);
+}
+
+#[test]
+fn maintenance_executor_attaches_health_debt_to_failed_outcome() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let mut runner = RecordingRunner::failed();
+    let outcome = executor
+        .run_next(open, &mut runner)
+        .expect("failed outcome")
+        .expect("task outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(executor.stats().failed(), 1);
+}
+
+#[test]
+fn maintenance_executor_counts_canceled_outcomes_as_canceled() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let mut runner = RecordingRunner::canceled();
+    let outcome = executor
+        .run_next(open, &mut runner)
+        .expect("canceled outcome")
+        .expect("task outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Canceled);
+    assert_eq!(executor.stats().canceled(), 1);
+    assert_eq!(executor.stats().deferred(), 0);
+}
+
+#[test]
+fn maintenance_executor_cancel_and_drain_respect_close_policy() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("drain");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::cancel_before_close(),
+            ),
+        )
+        .expect("cancel");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Low,
+                MaintenanceTaskPolicy::ordinary(),
+            ),
+        )
+        .expect("ordinary");
+
+    let mut runner = RecordingRunner::completed();
+    let drain = executor
+        .drain_for_close(closing, &mut runner)
+        .expect("drain for close");
+    assert_eq!(drain.drained_tasks(), 1);
+    assert_eq!(drain.outcomes().len(), 1);
+    assert_eq!(executor.status().pending_tasks(), 2);
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel for close");
+    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(executor.stats().drained(), 1);
+    assert_eq!(executor.stats().canceled(), 1);
+}
+
+#[test]
+fn maintenance_executor_empty_drain_and_cancel_are_idempotent() {
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    let mut runner = RecordingRunner::completed();
+
+    let drain = executor
+        .drain_for_close(closing, &mut runner)
+        .expect("empty drain");
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("empty cancel");
+
+    assert_eq!(drain.drained_tasks(), 0);
+    assert_eq!(cancel.canceled_tasks(), 0);
+    assert_eq!(executor.stats(), LifecycleMaintenanceStats::default());
+}
+
+#[test]
+fn maintenance_executor_cancel_removes_only_pending_cancelable_tasks() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::cancel_before_close()),
+        )
+        .expect("cancelable");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("drain");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Low,
+                MaintenanceTaskPolicy::ordinary(),
+            ),
+        )
+        .expect("ordinary");
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel close");
+
+    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(
+        executor
+            .pending_tasks()
+            .iter()
+            .map(|task| task.policy().close_policy())
+            .collect::<Vec<_>>(),
+        vec![
+            MaintenanceClosePolicy::DrainBeforeClose,
+            MaintenanceClosePolicy::Ordinary,
+        ]
+    );
+}
+
+#[test]
+fn maintenance_executor_records_drain_fault_without_removing_pending_task() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("drain");
+
+    let mut runner = RecordingRunner::completed();
+    let mut fault = FailAt::new(MaintenanceFaultPoint::DuringDrain);
+    let error = executor
+        .drain_for_close_with_fault(closing, &mut runner, &mut fault)
+        .expect_err("drain fault");
+
+    assert_eq!(
+        error,
+        LifecycleError::MaintenanceFailed {
+            reason: "injected maintenance fault",
+        }
+    );
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(executor.status().active_task(), None);
+    assert_eq!(executor.stats().failed(), 1);
+    assert_eq!(executor.stats().drained(), 0);
+}
+
+#[test]
+fn maintenance_fault_before_enqueue_leaves_queue_unchanged() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    let mut fault = FailAt::new(MaintenanceFaultPoint::BeforeEnqueue);
+
+    let error = executor
+        .enqueue_with_fault(
+            open,
+            health_request(MaintenanceTaskPolicy::ordinary()),
+            &mut fault,
+        )
+        .expect_err("before enqueue fault");
+
+    assert_eq!(
+        error,
+        LifecycleError::MaintenanceFailed {
+            reason: "injected maintenance fault",
+        }
+    );
+    assert_eq!(executor.status().pending_tasks(), 0);
+    assert_eq!(executor.stats(), LifecycleMaintenanceStats::default());
+}
+
+#[test]
+fn maintenance_fault_after_enqueue_keeps_pending_task_observable() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    let mut fault = FailAt::new(MaintenanceFaultPoint::AfterEnqueue);
+
+    let error = executor
+        .enqueue_with_fault(
+            open,
+            health_request(MaintenanceTaskPolicy::ordinary()),
+            &mut fault,
+        )
+        .expect_err("after enqueue fault");
+
+    assert_eq!(
+        error,
+        LifecycleError::MaintenanceFailed {
+            reason: "injected maintenance fault",
+        }
+    );
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(executor.stats().enqueued(), 1);
+}
+
+#[test]
+fn maintenance_fault_hooks_fire_in_deterministic_order() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    let mut hook = RecordingFaultHook::default();
+    executor
+        .enqueue_with_fault(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+            &mut hook,
+        )
+        .expect("enqueue");
+    let mut runner = RecordingRunner::completed();
+    executor
+        .drain_for_close_with_fault(closing, &mut runner, &mut hook)
+        .expect("drain");
+
+    assert_eq!(
+        hook.points,
+        vec![
+            MaintenanceFaultPoint::BeforeEnqueue,
+            MaintenanceFaultPoint::AfterEnqueue,
+            MaintenanceFaultPoint::DuringDrain,
+            MaintenanceFaultPoint::AtTaskStart,
+            MaintenanceFaultPoint::AfterTaskRun,
+        ]
+    );
+    assert_eq!(hook.task_ids, vec![1, 1, 1, 1]);
+}
+
+#[test]
+fn maintenance_ready_policy_tracks_recovery_health_class() {
+    assert!(maintenance_ready_for_recovery_health(
+        &RecoveryHealth::Healthy
+    ));
+    let telemetry = RecoveryHealth::degraded(
+        RecoveryDegradationClass::Telemetry,
+        vec![RecoveryFault::new(RecoveryFaultKind::IoFailure, "telemetry").expect("fault")],
+    )
+    .expect("telemetry degraded health");
+    assert!(maintenance_ready_for_recovery_health(&telemetry));
+
+    let data_loss = RecoveryHealth::degraded(
+        RecoveryDegradationClass::DataLoss,
+        vec![
+            RecoveryFault::new(RecoveryFaultKind::MissingTableObject, "missing table")
+                .expect("fault"),
+        ],
+    )
+    .expect("data loss health");
+    assert!(!maintenance_ready_for_recovery_health(&data_loss));
+    let policy_downgrade = RecoveryHealth::degraded(
+        RecoveryDegradationClass::PolicyDowngrade,
+        vec![RecoveryFault::new(RecoveryFaultKind::IoFailure, "policy").expect("fault")],
+    )
+    .expect("policy degraded health");
+    assert!(!maintenance_ready_for_recovery_health(&policy_downgrade));
+    let failed = RecoveryHealth::failed(
+        RecoveryFault::new(RecoveryFaultKind::IoFailure, "failed").expect("fault"),
+    );
+    assert!(!maintenance_ready_for_recovery_health(&failed));
+    assert_eq!(
+        MaintenanceOutcome::new(
+            MaintenanceTaskKind::Repair,
+            MaintenanceOutcomeStatus::Canceled,
+        )
+        .status(),
+        MaintenanceOutcomeStatus::Canceled,
+    );
+}

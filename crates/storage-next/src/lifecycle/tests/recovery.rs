@@ -96,7 +96,7 @@ fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
         Some(CommitVersion::ZERO)
     );
     assert!(runtime.open_outcome().recovery_health().is_healthy());
-    assert!(!runtime.open_outcome().maintenance_ready());
+    assert!(runtime.open_outcome().maintenance_ready());
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
     assert_eq!(runtime.bootstrap_report().records_seen(), 0);
     assert_eq!(
@@ -116,6 +116,43 @@ fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
         .expect("post-open durable commit");
     assert_eq!(commit_outcome.commit_version(), Some(CommitVersion::new(1)));
     assert_eq!(runtime.visible_version(), CommitVersion::new(1));
+}
+
+#[test]
+fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x5f);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let mut runtime = shell
+        .complete_recovery(&outcome)
+        .expect("bootstrap recovery");
+
+    let enqueue = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("enqueue health collection");
+    assert_eq!(enqueue.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let mut runner = MaintenanceTestRunner;
+    let maintenance = runtime
+        .run_next_maintenance(&mut runner)
+        .expect("run maintenance")
+        .expect("maintenance outcome");
+
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        maintenance.task_kind(),
+        MaintenanceTaskKind::HealthCollection
+    );
+    assert!(maintenance.task_id().is_some());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(runtime.maintenance_status().stats().completed(), 1);
 }
 
 #[test]
@@ -1768,5 +1805,16 @@ struct HeldWriterLock {
 impl Drop for HeldWriterLock {
     fn drop(&mut self) {
         self.locked.store(false, Ordering::SeqCst);
+    }
+}
+
+struct MaintenanceTestRunner;
+
+impl MaintenanceTaskRunner for MaintenanceTestRunner {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        Ok(MaintenanceOutcome::new(
+            task.kind(),
+            MaintenanceOutcomeStatus::Completed,
+        ))
     }
 }

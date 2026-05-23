@@ -1027,3 +1027,177 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 cargo fmt --package strata-storage-next --check
 git diff --check
 ```
+
+## L8H - Maintenance Task Executor
+
+Status: implemented
+
+### Source Evidence Read
+
+- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
+- `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8h-maintenance-task-executor-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8h-maintenance-task-executor-test-plan.md`
+- `crates/storage-next/src/lifecycle/config.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/state.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/health.rs`
+- `crates/storage-next/src/testkit/lifecycle/`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/tests/maintenance.rs`
+- `crates/storage-next/src/lifecycle/tests/maintenance/shared.rs`
+- `crates/storage-next/src/testkit/lifecycle/maintenance.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8h-maintenance-task-executor-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8h-maintenance-task-executor-test-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/m4-l8-porting-log.md`
+
+### Preserved As Storage Vocabulary
+
+- Maintenance task kinds remain the storage-owned vocabulary introduced by the
+  lifecycle scaffold: flush, checkpoint, WAL truncation, compaction,
+  materialization, snapshot pruning, retention, quarantine, purge, repair, and
+  health collection.
+- The executor is deterministic and single-threaded. Ordering is explicit:
+  priority first, then enqueue sequence for equal priority.
+- Queue capacity is driven by `LifecycleConfig::max_maintenance_queue_depth`.
+- Coalescing is explicit through task kind plus storage scope. Duplicate
+  requests return a coalesced enqueue outcome instead of pretending a second
+  task was queued.
+- Close integration is prepared through drain-required and cancel-before-close
+  policies, but full durable close sequencing remains owned by L8N.
+- Maintenance outcome facts carry task id, status, health debt, affected object
+  count, reclaimed bytes, retryability, and stats.
+- Runtime maintenance hooks remain crate-private. There is still no public user
+  maintenance command surface.
+
+### Raw Health And Fact Vocabulary
+
+- `MaintenanceTaskId` and `MaintenanceTaskSequence` are deterministic counters.
+- `MaintenanceTaskPriority` records critical/high/normal/low ordering.
+- `MaintenanceTaskScope` records global, branch, WAL, checkpoint, quarantine,
+  retention, table-level, and inherited-layer scopes without product DTOs.
+- `LifecycleMaintenanceStats` records enqueued, coalesced, started, completed,
+  deferred, failed, canceled, drained, and queue-full counters.
+- `MaintenanceFaultPoint` records before-enqueue, after-enqueue, at-task-start,
+  after-task-run, and during-drain boundaries for deterministic fault tests.
+- Maintenance readiness now means an executor is attached and recovery health is
+  safe enough for ordinary maintenance. Healthy and telemetry-degraded recovery
+  can be ready; data-loss, policy-downgrade, and failed recovery are not ready.
+
+### Intentional Changes
+
+- Cache-mode open now reports maintenance readiness once the executor is
+  attached. Durable-only task handlers still defer until later slices; cache
+  mode does not import durable services.
+- Durable-local open reports maintenance readiness after successful bootstrap
+  only when recovery health allows ordinary maintenance.
+- Cache close cancels pending cancel-before-close maintenance tasks and reports
+  the count through close stats. Durable close drain/sync remains deferred.
+- A source guard now rejects architecture-layer labels in lifecycle
+  implementation, lifecycle testkit, lifecycle unit tests, and lifecycle
+  integration tests, keeping milestone vocabulary in plans instead of code.
+
+### Retired From V1 L8H
+
+- Engine background scheduler imports.
+- Product or public manual maintenance command wording.
+- Wall-clock sleeps or thread races in executor tests.
+- Concrete flush, checkpoint, compaction, retention, quarantine, purge, repair,
+  or durable-close implementations inside the executor slice.
+
+### Deferred By Owner Slice
+
+- Flush frozen state and table publication: L8I.
+- Checkpoint, flush watermark, and WAL truncation: L8J.
+- Compaction and materialization scheduling hooks: L8K.
+- Retention proof and snapshot pruning: L8L.
+- Quarantine, reclaim, purge, and repair facts: L8M.
+- Durable close drain/sync/guard release: L8N.
+- Crash/fuzz/fault closeout expansion: L8O-L8P.
+
+### Tests Added
+
+- `maintenance_task_request_validates_kind_scope_pairs`
+- `maintenance_task_requests_accept_every_supported_kind_and_scope`
+- `maintenance_task_ids_and_sequences_are_monotonic`
+- `maintenance_policy_and_coalesce_key_preserve_storage_scope`
+- `maintenance_debug_output_uses_storage_vocabulary`
+- `maintenance_enqueue_requires_open_and_enforces_capacity`
+- `maintenance_admission_rejects_ordinary_work_outside_open`
+- `maintenance_close_drain_requires_closing_and_ordinary_run_requires_open`
+- `lifecycle_health_query_is_admitted_in_every_state`
+- `maintenance_queue_depth_allows_exact_capacity`
+- `maintenance_executor_orders_by_priority_then_fifo`
+- `maintenance_executor_preserves_fifo_for_equal_priority`
+- `maintenance_executor_order_survives_coalescing_and_canceling`
+- `maintenance_executor_coalesces_pending_tasks_by_key`
+- `maintenance_executor_coalesces_each_coalescing_scope_independently`
+- `maintenance_executor_does_not_coalesce_non_coalescing_requests`
+- `maintenance_executor_does_not_coalesce_active_task`
+- `maintenance_executor_clears_active_after_runner_error`
+- `maintenance_executor_run_empty_queue_returns_no_work_without_stats`
+- `maintenance_executor_records_deferred_and_preserves_effects`
+- `maintenance_executor_converts_after_run_fault_to_failed_outcome`
+- `maintenance_executor_attaches_health_debt_to_failed_outcome`
+- `maintenance_executor_counts_canceled_outcomes_as_canceled`
+- `maintenance_executor_cancel_and_drain_respect_close_policy`
+- `maintenance_executor_empty_drain_and_cancel_are_idempotent`
+- `maintenance_executor_cancel_removes_only_pending_cancelable_tasks`
+- `maintenance_executor_records_drain_fault_without_removing_pending_task`
+- `maintenance_fault_before_enqueue_leaves_queue_unchanged`
+- `maintenance_fault_after_enqueue_keeps_pending_task_observable`
+- `maintenance_fault_hooks_fire_in_deterministic_order`
+- `maintenance_ready_policy_tracks_recovery_health_class`
+- `cache_runtime_can_enqueue_and_run_health_collection_maintenance`
+- `cache_close_rejects_pending_drain_required_maintenance_before_transitioning`
+- `bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance`
+- `lifecycle_maintenance_contract_covers_executor_categories`
+- `lifecycle_property_harness_runs_maintenance_contract`
+- `lifecycle_maintenance_tests_avoid_sleeps_and_thread_spawns`
+- `lifecycle_implementation_avoids_architecture_labels`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Allow ordinary maintenance outside open | `crates/storage-next/src/lifecycle/maintenance.rs` | Skip lifecycle admission in enqueue/run | `maintenance_enqueue_requires_open_and_enforces_capacity` |
+| Ignore queue capacity | `crates/storage-next/src/lifecycle/maintenance.rs` | Remove queue-depth check | `maintenance_enqueue_requires_open_and_enforces_capacity` |
+| Reverse priority ordering | `crates/storage-next/src/lifecycle/maintenance.rs` | Select lowest priority first | `maintenance_executor_orders_by_priority_then_fifo` |
+| Break FIFO tiebreak | `crates/storage-next/src/lifecycle/maintenance.rs` | Sort equal-priority tasks by newest sequence | `maintenance_executor_orders_by_priority_then_fifo` |
+| Drop coalescing fact | `crates/storage-next/src/lifecycle/maintenance.rs` | Return enqueued for duplicate pending task | `maintenance_executor_coalesces_pending_tasks_by_key` |
+| Coalesce active task away | `crates/storage-next/src/lifecycle/maintenance.rs` | Match active task in duplicate lookup | `maintenance_executor_does_not_coalesce_active_task` |
+| Leave active after error | `crates/storage-next/src/lifecycle/maintenance.rs` | Do not clear active on runner error | `maintenance_executor_clears_active_after_runner_error` |
+| Run cancelable task during close drain | `crates/storage-next/src/lifecycle/maintenance.rs` | Drain every pending task regardless of close policy | `maintenance_executor_cancel_and_drain_respect_close_policy` |
+| Report ready after data loss | `crates/storage-next/src/lifecycle/maintenance.rs` | Treat every degraded health as ready | `maintenance_ready_policy_tracks_recovery_health_class` |
+| Add architecture labels to code | `crates/storage-next/src/lifecycle/*.rs`, `crates/storage-next/src/testkit/lifecycle/*.rs`, `crates/storage-next/tests/lifecycle_*.rs` | Put milestone labels in implementation comments, strings, or test names | `lifecycle_implementation_avoids_architecture_labels` |
+
+### Verification
+
+Commands run for L8H:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle
+cargo test -p strata-storage-next --all-features --locked --lib lifecycle
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```

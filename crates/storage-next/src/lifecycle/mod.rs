@@ -15,6 +15,7 @@ mod durable;
 mod error;
 mod facts;
 mod health;
+mod maintenance;
 mod outcome;
 mod recovery;
 mod result;
@@ -70,6 +71,19 @@ pub(crate) use health::{
 };
 #[allow(
     unused_imports,
+    reason = "maintenance executor exports define the local surface for later slices"
+)]
+pub(crate) use maintenance::{
+    maintenance_ready_for_recovery_health, telemetry_health_debt, LifecycleMaintenanceExecutor,
+    LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceClosePolicy,
+    MaintenanceCoalesceKey, MaintenanceDrainOutcome, MaintenanceEnqueueOutcome,
+    MaintenanceEnqueueStatus, MaintenanceExecutorStatus, MaintenanceFaultHook,
+    MaintenanceFaultPoint, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
+    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    NoopMaintenanceFaultHook,
+};
+#[allow(
+    unused_imports,
     reason = "lifecycle scaffold exports define the local surface for later slices"
 )]
 pub(crate) use outcome::{
@@ -78,7 +92,7 @@ pub(crate) use outcome::{
 };
 #[allow(
     unused_imports,
-    reason = "lifecycle recovery exports define the local surface for L8G bootstrap"
+    reason = "lifecycle recovery exports define the local surface for bootstrap"
 )]
 pub(crate) use recovery::{
     encode_checkpoint_row_section, LifecycleRecoveredCheckpoint, LifecycleRecoveredQuarantine,

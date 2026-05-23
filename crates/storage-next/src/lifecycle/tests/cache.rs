@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[test]
-fn cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims() {
+fn cache_open_builds_volatile_branch_commit_baseline_without_recovery_claims() {
     let branch = branch_id(0x44);
     let backend = MemoryBackend::new();
     let runtime = open_runtime(branch, &backend);
@@ -32,7 +32,7 @@ fn cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims() {
     );
     assert_eq!(runtime.open_outcome().recovered_visible_version(), None);
     assert!(runtime.open_outcome().recovery_health().is_healthy());
-    assert!(!runtime.open_outcome().maintenance_ready());
+    assert!(runtime.open_outcome().maintenance_ready());
     assert_eq!(
         runtime.open_outcome().backend_capabilities(),
         Some(backend.capabilities())
@@ -52,6 +52,31 @@ fn cache_open_builds_volatile_l6_l7_baseline_without_recovery_claims() {
         None,
         "cache open starts with no unresolved durable gate fact"
     );
+}
+
+#[test]
+fn cache_runtime_can_enqueue_and_run_health_collection_maintenance() {
+    let branch = branch_id(0x4e);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    let enqueue = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("enqueue health collection");
+    assert_eq!(enqueue.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let mut runner = MaintenanceTestRunner;
+    let outcome = runtime
+        .run_next_maintenance(&mut runner)
+        .expect("run maintenance")
+        .expect("task outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::HealthCollection);
+    assert!(outcome.task_id().is_some());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(runtime.maintenance_status().stats().completed(), 1);
 }
 
 #[test]
@@ -143,7 +168,7 @@ fn cache_open_runs_capability_preflight_without_backend_side_effects() {
 }
 
 #[test]
-fn cache_runtime_executes_cache_commit_and_reads_through_l6() {
+fn cache_runtime_executes_cache_commit_and_reads_through_branch_state() {
     let branch = branch_id(0x48);
     let backend = MemoryBackend::new();
     let mut runtime = open_runtime(branch, &backend);
@@ -427,6 +452,47 @@ fn cache_close_is_idempotent_blocks_commits_and_reads_and_avoids_backend_calls()
 }
 
 #[test]
+fn cache_close_rejects_pending_drain_required_maintenance_before_transitioning() {
+    let branch = branch_id(0x50);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(
+            MaintenanceTaskRequest::new(
+                MaintenanceTaskKind::HealthCollection,
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskScope::Global,
+                MaintenanceTaskPolicy::drain_before_close(),
+            )
+            .expect("drain-required health task"),
+        )
+        .expect("enqueue drain-required task");
+
+    let error = runtime
+        .close()
+        .expect_err("drain-required task blocks close");
+
+    assert_eq!(
+        error,
+        LifecycleError::MaintenanceFailed {
+            reason: "cache close cannot complete while drain-required maintenance is pending",
+        }
+    );
+    assert_eq!(runtime.state(), LifecycleState::Open);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let mut runner = MaintenanceTestRunner;
+    runtime
+        .run_next_maintenance(&mut runner)
+        .expect("run drain-required task while open")
+        .expect("task outcome");
+    assert_eq!(
+        runtime.close().expect("close after maintenance").status(),
+        CloseOutcomeStatus::Complete
+    );
+}
+
+#[test]
 fn cache_close_without_commits_completes_and_preserves_diagnostic_facts() {
     let branch = branch_id(0x4d);
     let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
@@ -637,6 +703,17 @@ fn runtime_generated_put_batch(branch: BranchId, key: PhysicalKey, value: Vec<u8
             CommitOrigin::StorageRuntime,
         ),
     )
+}
+
+struct MaintenanceTestRunner;
+
+impl MaintenanceTaskRunner for MaintenanceTestRunner {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        Ok(MaintenanceOutcome::new(
+            task.kind(),
+            MaintenanceOutcomeStatus::Completed,
+        ))
+    }
 }
 
 fn assert_commit_runtime_error(error: &LifecycleError) {

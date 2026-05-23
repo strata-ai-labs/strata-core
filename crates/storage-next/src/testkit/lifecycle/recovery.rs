@@ -99,7 +99,7 @@ impl LifecycleRecoveryContractOutcome {
     }
 }
 
-/// Exercises L8F recovery behavior through the crate-private runtime.
+/// Exercises recovery behavior through the crate-private runtime.
 pub fn check_lifecycle_recovery_contract(
     script: &[u8],
 ) -> Result<LifecycleRecoveryContractOutcome, TestkitError> {
@@ -146,11 +146,11 @@ fn check_empty_recovery(
     )?;
     ensure(
         shell.visible_version() == CommitVersion::ZERO,
-        "L8F advanced visible version",
+        "recovery advanced visible version",
     )?;
     ensure(
         shell.admit_commit().is_err(),
-        "L8F made shell commit-admissible",
+        "recovery made shell commit-admissible",
     )?;
     outcome.empty_recovery_cases += 1;
     Ok(())

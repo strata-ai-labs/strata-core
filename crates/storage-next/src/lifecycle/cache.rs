@@ -3,9 +3,11 @@
 use super::{
     validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus,
     ClosePhase, LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleError,
-    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleTransitionTrigger, RecoveryHealth, StorageMode, StorageOpenDisposition,
-    StorageOpenOutcome, StorageOpenPlan,
+    LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleResult, LifecycleState,
+    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceTaskRequest,
+    MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
+    StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRuntimeConfig};
@@ -38,6 +40,7 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     visible: VisibleVersionTracker,
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
+    maintenance: LifecycleMaintenanceExecutor,
 }
 
 impl LifecycleCacheOpenRequest {
@@ -104,10 +107,14 @@ impl<S> LifecycleCacheRuntime<S> {
             StorageOpenDisposition::Created,
             None,
             RecoveryHealth::Healthy,
-            false,
+            true,
         )?
         .with_backend_capabilities(capability_outcome.capabilities())
         .with_stats(LifecycleStats::new(1, 0, 0, 0, 0));
+        let max_maintenance_queue_depth = request
+            .plan
+            .lifecycle_config()
+            .max_maintenance_queue_depth();
 
         state.transition(LifecycleTransitionTrigger::CacheOpenReady)?;
 
@@ -127,6 +134,7 @@ impl<S> LifecycleCacheRuntime<S> {
             visible: VisibleVersionTracker::default(),
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
+            maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
         })
     }
 
@@ -163,6 +171,36 @@ impl<S> LifecycleCacheRuntime<S> {
         self.branch.capture_read_view().map_err(branch_error)
     }
 
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
+        self.maintenance.status()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) fn enqueue_maintenance(
+        &mut self,
+        request: MaintenanceTaskRequest,
+    ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
+        self.maintenance.enqueue(self.state, request)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) fn run_next_maintenance(
+        &mut self,
+        runner: &mut impl MaintenanceTaskRunner,
+    ) -> LifecycleResult<Option<super::MaintenanceOutcome>> {
+        self.maintenance.run_next(self.state, runner)
+    }
+
     pub(crate) fn close(&mut self) -> LifecycleResult<CloseOutcome> {
         match self.state.state() {
             LifecycleState::Closed => {
@@ -172,11 +210,17 @@ impl<S> LifecycleCacheRuntime<S> {
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
+                if self.maintenance.has_close_required_drain() {
+                    return Err(LifecycleError::MaintenanceFailed {
+                        reason: "cache close cannot complete while drain-required maintenance is pending",
+                    });
+                }
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRequested)?;
+                let cancel = self.maintenance.cancel_pending_for_close(self.state)?;
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseCompleted)?;
-                Ok(cache_close_outcome())
+                Ok(cache_close_outcome(cancel))
             }
             LifecycleState::New
             | LifecycleState::Opening
@@ -186,6 +230,18 @@ impl<S> LifecycleCacheRuntime<S> {
                 reason: "cache runtime is not open for close",
             }),
         }
+    }
+}
+
+impl<S> LifecycleCacheRuntime<S> {
+    #[allow(
+        dead_code,
+        reason = "close integration consumes this drain/cancel hook"
+    )]
+    pub(crate) fn cancel_pending_maintenance_for_close(
+        &mut self,
+    ) -> LifecycleResult<MaintenanceCancelOutcome> {
+        self.maintenance.cancel_pending_for_close(self.state)
     }
 }
 
@@ -229,11 +285,11 @@ fn require_admitted(
     }
 }
 
-const fn cache_close_outcome() -> CloseOutcome {
+const fn cache_close_outcome(cancel: MaintenanceCancelOutcome) -> CloseOutcome {
     CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
         .with_close_fact(LifecycleCloseFact::Complete)
         .with_close_effects(CloseOutcomeEffects::volatile_complete(false))
-        .with_stats(LifecycleStats::new(1, 0, 0, 0, 1))
+        .with_stats(LifecycleStats::new(1, 0, cancel.stats().canceled(), 0, 1))
 }
 
 const fn cache_idempotent_close_outcome() -> CloseOutcome {

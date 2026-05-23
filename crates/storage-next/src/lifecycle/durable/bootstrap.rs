@@ -14,9 +14,11 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    LifecycleError, LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult,
-    LifecycleState, LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger,
-    RecoveryHealth, StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    maintenance_ready_for_recovery_health, LifecycleError, LifecycleMaintenanceExecutor,
+    LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
+    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth,
+    StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion};
@@ -35,6 +37,11 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     visible: VisibleVersionTracker,
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: crate::commit::CommitRuntimeConfig,
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    maintenance: LifecycleMaintenanceExecutor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,7 +68,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             self.assembly_facts().disposition(),
             Some(report.recovered_visible_version()),
             report.recovery_health().clone(),
-            false,
+            maintenance_ready_for_recovery_health(report.recovery_health()),
         ) {
             Ok(outcome) => outcome
                 .with_backend_capabilities(self.services.capability_outcome().capabilities())
@@ -90,6 +97,10 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             self.mark_recovery_bootstrap_failed();
             return Err(error);
         }
+        let max_maintenance_queue_depth = self
+            .open_plan
+            .lifecycle_config()
+            .max_maintenance_queue_depth();
         Ok(LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
@@ -103,6 +114,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             visible: self.visible,
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
+            maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
         })
     }
 
@@ -236,6 +248,36 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         self.branch.capture_read_view().map_err(branch_error)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
+        self.maintenance.status()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) fn enqueue_maintenance(
+        &mut self,
+        request: MaintenanceTaskRequest,
+    ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
+        self.maintenance.enqueue(self.state, request)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) fn run_next_maintenance(
+        &mut self,
+        runner: &mut impl MaintenanceTaskRunner,
+    ) -> LifecycleResult<Option<crate::lifecycle::MaintenanceOutcome>> {
+        self.maintenance.run_next(self.state, runner)
     }
 }
 

@@ -36,6 +36,47 @@ fn lifecycle_source_does_not_import_engine_product_or_raw_io() {
 }
 
 #[test]
+fn lifecycle_implementation_avoids_architecture_labels() {
+    let root = common::crate_root();
+    for file in lifecycle_source_files(&root)
+        .into_iter()
+        .chain(lifecycle_testkit_files(&root).into_iter())
+        .chain(lifecycle_unit_test_files(&root).into_iter())
+        .chain(lifecycle_integration_test_files(&root).into_iter())
+    {
+        let text = fs::read_to_string(&file).expect("read lifecycle implementation source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_architecture_label(line),
+                "{}:{} contains architecture label: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn lifecycle_maintenance_tests_avoid_sleeps_and_thread_spawns() {
+    let root = common::crate_root();
+    for file in [
+        root.join("src/lifecycle/tests/maintenance.rs"),
+        root.join("src/testkit/lifecycle/maintenance.rs"),
+        root.join("tests/lifecycle_maintenance.rs"),
+    ] {
+        let text = fs::read_to_string(&file).expect("read lifecycle maintenance test source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_sleep_or_thread_spawn(line),
+                "{}:{} uses nondeterministic maintenance test primitive: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_stays_crate_private() {
     let root = common::crate_root();
     let lib = fs::read_to_string(root.join("src/lib.rs")).expect("read lib.rs");
@@ -365,6 +406,41 @@ fn lifecycle_source_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn lifecycle_testkit_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src/testkit/lifecycle"), &mut files);
+    files.sort();
+    files
+}
+
+fn lifecycle_unit_test_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src/lifecycle/tests"), &mut files);
+    files.sort();
+    files
+}
+
+fn lifecycle_integration_test_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let tests_dir = root.join("tests");
+    for entry in fs::read_dir(tests_dir).expect("read integration tests dir") {
+        let path = entry.expect("read integration test entry").path();
+        if path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("lifecycle_"))
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
 fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read source dir") {
         let entry = entry.expect("read source entry");
@@ -402,6 +478,26 @@ fn contains_forbidden_import_or_io(line: &str) -> bool {
         || contains_ascii_word(line, "Path")
         || contains_ascii_word(line, "PathBuf")
         || contains_ascii_word(line, "File")
+}
+
+fn contains_architecture_label(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    bytes
+        .windows(2)
+        .any(|window| (window[0] == b'L' || window[0] == b'l') && window[1].is_ascii_digit())
+}
+
+fn contains_sleep_or_thread_spawn(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::thread",
+        "thread::spawn",
+        "thread::sleep",
+        "tokio::time::sleep",
+        "std::time::duration",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn contains_forbidden_import_or_io_text(text: &str) -> bool {

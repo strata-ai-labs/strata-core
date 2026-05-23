@@ -15,7 +15,7 @@ use crate::lifecycle::{
 use crate::row::StorageRow;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
-/// Coverage counters for L8G commit-bootstrap contract checks.
+/// Coverage counters for commit-bootstrap contract checks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[expect(
     clippy::struct_field_names,
@@ -45,7 +45,7 @@ impl LifecycleBootstrapContractOutcome {
         self.checkpoint_bootstrap_cases
     }
 
-    /// Number of recovered WAL tails replayed through L7.
+    /// Number of recovered WAL tails replayed through commit recovery.
     pub const fn wal_replay_bootstrap_cases(&self) -> usize {
         self.wal_replay_bootstrap_cases
     }
@@ -86,7 +86,7 @@ impl LifecycleBootstrapContractOutcome {
     }
 }
 
-/// Exercises L8G bootstrap behavior through the recovered durable runtime.
+/// Exercises bootstrap behavior through the recovered durable runtime.
 pub fn check_lifecycle_bootstrap_contract(
     script: &[u8],
 ) -> Result<LifecycleBootstrapContractOutcome, TestkitError> {
@@ -231,7 +231,7 @@ fn check_wal_replay_bootstrap(
     ensure(
         runtime.bootstrap_report().records_seen() == 1
             && runtime.bootstrap_report().records_applied() == 1,
-        "WAL bootstrap did not replay through L7",
+        "WAL bootstrap did not replay through commit recovery",
     )?;
     ensure(
         runtime.bootstrap_report().rows_applied() == record.commit_payload().rows().len(),

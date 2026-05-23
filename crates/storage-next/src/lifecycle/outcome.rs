@@ -7,6 +7,7 @@ use super::{
     MaintenanceTaskKind, RecoveryHealth, StorageMode,
 };
 use crate::backend::BackendCapabilities;
+use crate::lifecycle::maintenance::MaintenanceTaskId;
 use strata_core_next::CommitVersion;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +38,7 @@ pub(crate) enum StorageOpenDisposition {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MaintenanceOutcome {
+    task_id: Option<MaintenanceTaskId>,
     task_kind: MaintenanceTaskKind,
     status: MaintenanceOutcomeStatus,
     recovery_health: Option<RecoveryHealth>,
@@ -52,6 +54,7 @@ pub(crate) enum MaintenanceOutcomeStatus {
     Completed,
     Deferred,
     Failed,
+    Canceled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,6 +230,7 @@ impl MaintenanceOutcome {
         status: MaintenanceOutcomeStatus,
     ) -> Self {
         Self {
+            task_id: None,
             task_kind,
             status,
             recovery_health: None,
@@ -254,9 +258,18 @@ impl MaintenanceOutcome {
         self
     }
 
+    pub(crate) const fn with_task_id(mut self, task_id: MaintenanceTaskId) -> Self {
+        self.task_id = Some(task_id);
+        self
+    }
+
     pub(crate) const fn with_stats(mut self, stats: LifecycleStats) -> Self {
         self.stats = stats;
         self
+    }
+
+    pub(crate) const fn task_id(&self) -> Option<MaintenanceTaskId> {
+        self.task_id
     }
 
     pub(crate) const fn task_kind(&self) -> MaintenanceTaskKind {

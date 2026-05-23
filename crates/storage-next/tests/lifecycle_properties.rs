@@ -116,6 +116,46 @@ fn lifecycle_property_harness_runs_bootstrap_contract() {
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_runs_maintenance_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_maintenance_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-maintenance.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=32), |script| {
+            let outcome = check_lifecycle_maintenance_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.input_enqueue_cases() == 0
+                || outcome.input_coalesce_cases() == 0
+                || outcome.input_run_cases() == 0
+                || outcome.input_cancel_cases() == 0
+                || outcome.input_drain_cases() == 0
+                || outcome.input_fault_cases() == 0
+                || outcome.input_queue_full_cases() == 0
+                || outcome.input_admission_rejection_cases() == 0
+                || outcome.input_model_step_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "lifecycle maintenance contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle maintenance property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 fn all_categories_exercised(
     outcome: &strata_storage_next::testkit::LifecycleScaffoldOutcome,
 ) -> bool {

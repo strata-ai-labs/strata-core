@@ -29,7 +29,7 @@ fn lifecycle_recovery_harness_has_dedicated_bootstrap_module() {
 #[cfg(feature = "testkit")]
 #[test]
 fn lifecycle_recovery_contract_exercises_storage_recovery_paths() {
-    let outcome = strata_storage_next::testkit::check_lifecycle_recovery_contract(b"l8f-recovery")
+    let outcome = strata_storage_next::testkit::check_lifecycle_recovery_contract(b"recovery-seed")
         .expect("lifecycle recovery contract");
 
     assert!(outcome.empty_recovery_cases() > 0);
@@ -48,7 +48,7 @@ fn lifecycle_recovery_contract_exercises_storage_recovery_paths() {
 #[test]
 fn lifecycle_bootstrap_contract_exercises_commit_bootstrap_paths() {
     let outcome =
-        strata_storage_next::testkit::check_lifecycle_bootstrap_contract(b"l8g-bootstrap")
+        strata_storage_next::testkit::check_lifecycle_bootstrap_contract(b"bootstrap-seed")
             .expect("lifecycle bootstrap contract");
 
     assert!(outcome.empty_bootstrap_cases() > 0);
