@@ -200,8 +200,6 @@ fn object_candidate_accepts_either_publish_fence_or_create_update_pair() {
             BackendCapability::ConsistentList,
             BackendCapability::MonotonicMetadata,
             BackendCapability::ConditionalPublish,
-            BackendCapability::ConditionalCreate,
-            BackendCapability::ConditionalUpdate,
         ]
     );
 }

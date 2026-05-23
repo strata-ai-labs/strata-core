@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
-const DATABASE_ID: [u8; 16] = [0x82; 16];
+pub(super) const DATABASE_ID: [u8; 16] = [0x82; 16];
 
 /// Coverage counters for lifecycle recovery contract checks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -439,7 +439,7 @@ fn check_input_derived_lossy_degradation(
     Ok(())
 }
 
-fn assemble_shell(
+pub(super) fn assemble_shell(
     plan: StorageOpenPlan,
     branch: BranchId,
     backend: &RecoveryScriptBackend,
@@ -461,7 +461,7 @@ fn assemble_shell(
     .map_err(testkit_error)
 }
 
-fn open_plan(strictness: RecoveryStrictness) -> StorageOpenPlan {
+pub(super) fn open_plan(strictness: RecoveryStrictness) -> StorageOpenPlan {
     StorageOpenPlan::new(
         StorageMode::DurableLocalStandard,
         LifecycleCodecId::identity(),
@@ -471,7 +471,7 @@ fn open_plan(strictness: RecoveryStrictness) -> StorageOpenPlan {
     .expect("open plan")
 }
 
-fn lossy_open_plan() -> StorageOpenPlan {
+pub(super) fn lossy_open_plan() -> StorageOpenPlan {
     let config = LifecycleConfig::new(
         1024,
         16,
@@ -488,7 +488,7 @@ fn lossy_open_plan() -> StorageOpenPlan {
     .expect("lossy open plan")
 }
 
-fn publish_snapshot(
+pub(super) fn publish_snapshot(
     backend: &RecoveryScriptBackend,
     snapshot_id: u64,
     watermark: CommitVersion,
@@ -507,7 +507,7 @@ fn publish_snapshot(
     Ok(())
 }
 
-fn write_database_root(
+pub(super) fn write_database_root(
     backend: &RecoveryScriptBackend,
     root: &DatabaseManifest,
 ) -> Result<(), TestkitError> {
@@ -536,7 +536,7 @@ fn wal_record(
     WalRecord::new(version, branch, timestamp, payload).map_err(testkit_error)
 }
 
-fn put_row(
+pub(super) fn put_row(
     branch: BranchId,
     version: CommitVersion,
     user_key: &'static [u8],
@@ -551,7 +551,10 @@ fn put_row(
     )
 }
 
-fn physical_key(branch: BranchId, user_key: &'static [u8]) -> Result<PhysicalKey, TestkitError> {
+pub(super) fn physical_key(
+    branch: BranchId,
+    user_key: &'static [u8],
+) -> Result<PhysicalKey, TestkitError> {
     PhysicalKey::new(
         branch,
         "lifecycle",
@@ -561,23 +564,23 @@ fn physical_key(branch: BranchId, user_key: &'static [u8]) -> Result<PhysicalKey
     .map_err(testkit_error)
 }
 
-fn branch_id(byte: u8) -> BranchId {
+pub(super) fn branch_id(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; BranchId::BYTE_LEN])
 }
 
-fn testkit_error(error: impl std::error::Error) -> TestkitError {
+pub(super) fn testkit_error(error: impl std::error::Error) -> TestkitError {
     TestkitError::new(error.to_string())
 }
 
 #[derive(Debug)]
-struct RecoveryScriptBackend {
+pub(super) struct RecoveryScriptBackend {
     capabilities: BackendCapabilities,
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     lock_held: Arc<AtomicBool>,
 }
 
 impl RecoveryScriptBackend {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             capabilities: BackendCapabilities::from_slice(DURABLE_LOCAL_MODE_REQUIREMENTS),
             objects: Mutex::new(BTreeMap::new()),
@@ -585,7 +588,7 @@ impl RecoveryScriptBackend {
         }
     }
 
-    fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {
+    pub(super) fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {
         self.objects.lock().expect("objects").insert(object, bytes);
     }
 }

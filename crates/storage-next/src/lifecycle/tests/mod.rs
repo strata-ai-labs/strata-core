@@ -462,7 +462,7 @@ fn recovery_health_requires_degraded_faults() {
 }
 
 #[test]
-fn maintenance_retention_quarantine_and_close_facts_are_constructible() {
+fn maintenance_facts_are_constructible() {
     let tasks = [
         MaintenanceTaskKind::Flush,
         MaintenanceTaskKind::Checkpoint,
@@ -513,7 +513,10 @@ fn maintenance_retention_quarantine_and_close_facts_are_constructible() {
         .status(),
         MaintenanceOutcomeStatus::Completed
     );
+}
 
+#[test]
+fn retention_and_quarantine_facts_are_constructible() {
     assert_eq!(RetentionDecision::Retain, RetentionDecision::Retain);
     assert_eq!(
         RetentionDecision::PruneCandidate,
@@ -541,7 +544,10 @@ fn maintenance_retention_quarantine_and_close_facts_are_constructible() {
         QuarantineStage::PurgeEligible,
         QuarantineStage::PurgeEligible
     );
+}
 
+#[test]
+fn close_facts_are_constructible() {
     let close = CloseOutcome::new(ClosePhase::DrainMaintenance, CloseOutcomeStatus::Timeout);
     assert_eq!(close.phase(), ClosePhase::DrainMaintenance);
     assert_eq!(close.status(), CloseOutcomeStatus::Timeout);
@@ -595,19 +601,19 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
                 field: "max_recovery_faults",
                 reason: "must be nonzero",
             },
-            "lifecycle.config.invalid",
+            "invalid_argument.lifecycle.config",
         ),
         (
             LifecycleError::InvalidLifecycleState {
                 reason: "not ready",
             },
-            "lifecycle.state.invalid",
+            "failed_precondition.lifecycle.state",
         ),
         (
             LifecycleError::InvalidOpenPlan {
                 reason: "mode rejected",
             },
-            "lifecycle.open_plan.invalid",
+            "invalid_argument.lifecycle.open_plan",
         ),
         (
             LifecycleError::CapabilityMismatch {
@@ -615,43 +621,51 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
                 required: vec![BackendCapability::DurablePublish],
                 missing: vec![BackendCapability::DurablePublish],
             },
-            "lifecycle.capability.mismatch",
+            "failed_precondition.lifecycle.capability",
         ),
         (
             LifecycleError::RecoveryFailed {
                 reason: "manifest missing",
             },
-            "lifecycle.recovery.failed",
+            "corruption.lifecycle.recovery",
         ),
         (
             LifecycleError::MaintenanceFailed {
                 reason: "task rejected",
             },
-            "lifecycle.maintenance.failed",
+            "failed_precondition.lifecycle.maintenance",
         ),
         (
             LifecycleError::RetentionBlocked {
                 reason: "proof unavailable",
             },
-            "lifecycle.retention.blocked",
+            "failed_precondition.lifecycle.retention",
         ),
         (
             LifecycleError::CloseFailed {
                 reason: "durable sync failed",
             },
-            "lifecycle.close.failed",
+            "failed_precondition.lifecycle.close",
         ),
         (
             LifecycleError::TimelineRecoveryMismatch {
                 reason: "timeline pair mismatch",
             },
-            "lifecycle.recovery.timeline_mismatch",
+            "corruption.lifecycle.timeline",
         ),
         (
             LifecycleError::WalTailRepairRejected {
                 reason: "strict recovery cannot repair partial WAL tail",
             },
-            "lifecycle.recovery.wal_tail_rejected",
+            "failed_precondition.lifecycle.wal_tail_repair",
+        ),
+        (
+            LifecycleError::RecoveryVisibilityFailed {
+                recovered_visible_version: CommitVersion::new(9),
+                reason: "visible catch-up rejected",
+                source: None,
+            },
+            "failed_precondition.lifecycle.recovery_visibility",
         ),
     ] {
         assert_eq!(error.code(), expected_code);
@@ -661,7 +675,7 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
     let source = DummySource("backend unavailable");
     let error =
         LifecycleError::lower_layer_with(LifecycleLowerLayer::Backend, "read failed", source);
-    assert_eq!(error.code(), "lifecycle.lower.backend");
+    assert_eq!(error.code(), "io.lifecycle.backend");
     assert_eq!(
         error.source().expect("source").to_string(),
         "backend unavailable"

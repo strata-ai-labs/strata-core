@@ -18,6 +18,7 @@ use crate::lifecycle::{
     LifecycleState, LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger,
     RecoveryHealth, StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Debug)]
@@ -127,6 +128,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
     }
 
     fn mark_recovery_bootstrap_failed(&mut self) {
+        // The original bootstrap error is already being returned; this best-effort
+        // transition only preserves the state-machine terminal fact.
         let _ = self
             .state
             .transition(LifecycleTransitionTrigger::PhaseFailed {
@@ -179,7 +182,11 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                 Some(
                     self.visible
                         .catch_up_visible_after_replay(recovered_visible_version)
-                        .map_err(commit_error)?,
+                        .map_err(|error| LifecycleError::RecoveryVisibilityFailed {
+                            recovered_visible_version,
+                            reason: "recovered rows were installed but visibility catch-up failed",
+                            source: Some(Arc::new(error)),
+                        })?,
                 )
             } else {
                 None

@@ -1,11 +1,13 @@
 //! Lifecycle scaffold conformance helpers.
 
+mod bootstrap;
 mod cache;
 mod capability;
 mod durable;
 mod outcome;
 mod recovery;
 
+pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
 pub use outcome::LifecycleScaffoldOutcome;
 pub use recovery::{check_lifecycle_recovery_contract, LifecycleRecoveryContractOutcome};
 

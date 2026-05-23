@@ -13,8 +13,9 @@ Closeout status for the L8A-L8G cleanup pass:
   bootstrap file boundary, checkpoint-boundary replay idempotence, lossy
   health classification, strict WAL-tail rejection, quarantine/table validation
   before WAL repair, cache open admission, idempotent close facts, capability
-  required/missing facts, structured open outcome facts, stable error codes,
-  checkpoint timestamp guard catch-up, timeline mismatch mapping, and positive
+  required/missing facts, structured open outcome facts, class-prefixed stable
+  error codes, checkpoint timestamp guard catch-up, timeline mismatch mapping,
+  typed recovery-visibility failure reporting, and positive
   capability-order/source-guard tests.
 - Explicitly deferred: exhaustive crash/fault/fuzz closeout, localfs recovery
   integration expansion, full maintenance/retention/quarantine/repair outcomes,
@@ -70,7 +71,10 @@ Status: implemented
   repair, and health collection.
 - Retention, quarantine, and close fact shells.
 - Lower-layer source-chain preservation through `LifecycleError::source()` and
-  stable `LifecycleError::code()` strings.
+  stable V1 class-prefixed `LifecycleError::code()` strings such as
+  `invalid_argument.lifecycle.config`,
+  `failed_precondition.lifecycle.state`, and
+  `corruption.lifecycle.recovery`.
 
 ### Raw Health And Fact Vocabulary
 
@@ -902,7 +906,11 @@ Status: implemented
 - `crates/storage-next/src/lifecycle/durable.rs`
 - `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
 - `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/bootstrap.rs`
+- `crates/storage-next/src/testkit/lifecycle/recovery.rs`
 - `crates/storage-next/src/lifecycle/tests/recovery.rs`
+- `crates/storage-next/tests/lifecycle_recovery.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
 - `crates/storage-next/tests/lifecycle_source_guard.rs`
 - `docs/architecture/implementation-plans/M4/L8/l8g-commit-bootstrap-recovery-health-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L8/l8g-commit-bootstrap-recovery-health-test-plan.md`
@@ -977,6 +985,8 @@ Status: implemented
 - `bootstrap_replay_clears_matching_unresolved_durable_gate`
 - `bootstrap_replay_uses_always_durability_for_always_mode`
 - `bootstrap_replay_rejects_mismatched_unresolved_durable_gate`
+- `lifecycle_bootstrap_contract_exercises_commit_bootstrap_paths`
+- `lifecycle_property_harness_runs_bootstrap_contract`
 - `lifecycle_durable_runtime_stays_bootstrap_only`
 - `lifecycle_bootstrap_runtime_does_not_perform_durable_assembly`
 
@@ -1010,6 +1020,7 @@ cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery -- -
 cargo test -p strata-storage-next --locked --lib lifecycle
 cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo test -p strata-storage-next --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery
 cargo test -p strata-storage-next --all-features --locked --test object_layout_properties
 cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings

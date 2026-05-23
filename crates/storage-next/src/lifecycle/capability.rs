@@ -114,12 +114,13 @@ fn required_capabilities(
             let mut required = OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS.to_vec();
             if capabilities.contains(BackendCapability::ConditionalPublish) {
                 required.push(BackendCapability::ConditionalPublish);
-            }
-            if capabilities.contains(BackendCapability::ConditionalCreate)
+            } else if capabilities.contains(BackendCapability::ConditionalCreate)
                 && capabilities.contains(BackendCapability::ConditionalUpdate)
             {
                 required.push(BackendCapability::ConditionalCreate);
                 required.push(BackendCapability::ConditionalUpdate);
+            } else {
+                required.push(BackendCapability::ConditionalPublish);
             }
             required
         }

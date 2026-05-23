@@ -355,10 +355,14 @@ durable commit after recovery.
 ### L8G-F: Testkit, Source Guard, Porting Log
 
 1. Extend lifecycle testkit recovery/bootstrap counters.
-2. Add direct unit tests and integration tests from the L8G test plan.
-3. Extend source guards so L8G is allowed to call L7 replay but still blocked
+2. Add `check_lifecycle_bootstrap_contract` so the generated/integration
+   harness exercises `complete_recovery`, L7 replay, checkpoint catch-up,
+   degraded-health propagation, and malformed replay rejection rather than only
+   L8F recovery packaging.
+3. Add direct unit tests and integration tests from the L8G test plan.
+4. Extend source guards so L8G is allowed to call L7 replay but still blocked
    from product/raw IO/service-recovery drift.
-4. Record shipped files, deferred items, sensitivity probes, and verification in
+5. Record shipped files, deferred items, sensitivity probes, and verification in
    `m4-l8-porting-log.md`.
 
 ## Edge Cases

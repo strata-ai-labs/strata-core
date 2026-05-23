@@ -289,6 +289,10 @@ Required tests in `tests/lifecycle_recovery.rs`:
 8. visible publication fault after replay is classified;
 9. branch apply fault after replay is classified;
 10. normal durable commit after recovery persists across another reopen.
+11. `lifecycle_bootstrap_contract_exercises_commit_bootstrap_paths` runs the
+    testkit bootstrap contract against the in-memory backend and asserts
+    counters for empty bootstrap, checkpoint catch-up, WAL replay, degraded
+    health preservation, replay rejection, and input-derived variants.
 
 ### Local Filesystem Backend
 
@@ -334,8 +338,10 @@ Counters must distinguish:
 9. input-derived visible catch-up;
 10. input-derived degraded-health preservation.
 
-The property harness must not satisfy these counters only by prepending a fixed
-canonical script.
+The property harness must run `check_lifecycle_bootstrap_contract` separately
+from the L8F recovery contract. It must not satisfy bootstrap counters only by
+calling `check_lifecycle_recovery_contract` or by prepending a fixed canonical
+script without also recording input-derived bootstrap cases.
 
 ## Fault Injection
 
