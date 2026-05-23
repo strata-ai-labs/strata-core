@@ -7,6 +7,7 @@ use strata_core_next::CommitVersion;
 mod cache;
 mod capability;
 mod durable;
+mod flush;
 mod maintenance;
 mod recovery;
 mod state;

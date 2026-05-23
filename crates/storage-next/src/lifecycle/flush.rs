@@ -1,0 +1,573 @@
+//! Frozen-state flush orchestration.
+
+use super::{
+    LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskScope,
+};
+use crate::backend::{PublishError, PublishFailureKind};
+use crate::branch::{
+    BranchImmutableInstallOutcome, BranchLevel, BranchLocalState, BranchOwnedTable,
+    BranchTableDescriptor,
+};
+use crate::object::ObjectName;
+use crate::service::{
+    TableObjectFacts, TableObjectReadError, TableObjectReaderService, TableObjectService,
+    TableObjectServiceError,
+};
+use crate::table::{
+    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
+    TableReaderConfig, TableRuntimeFacts,
+};
+use sha2::{Digest, Sha256};
+use strata_core_next::BranchId;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FlushFrozenRequest {
+    branch_id: BranchId,
+    frozen_index: Option<usize>,
+    table_identity_seed: FlushTableIdentitySeed,
+    table_object_id: FlushTableObjectId,
+    target_level: BranchLevel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FlushTableIdentitySeed(String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FlushTableObjectId(String);
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FlushFrozenOutcome {
+    status: FlushFrozenStatus,
+    branch_id: BranchId,
+    frozen_index: Option<usize>,
+    rows_flushed: u64,
+    table_identity: Option<TableIdentity>,
+    table_facts: Option<TableRuntimeFacts>,
+    table_object: Option<ObjectName>,
+    object_facts: Option<TableObjectFacts>,
+    install_outcome: Option<BranchImmutableInstallOutcome>,
+    failure: Option<LifecycleError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub(crate) enum FlushFrozenStatus {
+    Completed,
+    DeferredNoFrozenState,
+    PublishedNotInstalled,
+}
+
+impl FlushFrozenRequest {
+    pub(crate) fn new(
+        branch_id: BranchId,
+        frozen_index: Option<usize>,
+        table_identity_seed: FlushTableIdentitySeed,
+        table_object_id: FlushTableObjectId,
+    ) -> LifecycleResult<Self> {
+        Self::new_for_level(
+            branch_id,
+            frozen_index,
+            table_identity_seed,
+            table_object_id,
+            BranchLevel::ZERO,
+        )
+    }
+
+    pub(crate) fn new_for_level(
+        branch_id: BranchId,
+        frozen_index: Option<usize>,
+        table_identity_seed: FlushTableIdentitySeed,
+        table_object_id: FlushTableObjectId,
+        target_level: BranchLevel,
+    ) -> LifecycleResult<Self> {
+        if target_level != BranchLevel::ZERO {
+            return Err(LifecycleError::MaintenanceFailed {
+                reason: "flush target level must be zero",
+            });
+        }
+        Ok(Self {
+            branch_id,
+            frozen_index,
+            table_identity_seed,
+            table_object_id,
+            target_level,
+        })
+    }
+
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn frozen_index(&self) -> Option<usize> {
+        self.frozen_index
+    }
+
+    pub(crate) fn table_identity_seed(&self) -> &FlushTableIdentitySeed {
+        &self.table_identity_seed
+    }
+
+    pub(crate) fn table_object_id(&self) -> &FlushTableObjectId {
+        &self.table_object_id
+    }
+
+    pub(crate) const fn target_level(&self) -> BranchLevel {
+        self.target_level
+    }
+}
+
+impl FlushTableIdentitySeed {
+    pub(crate) fn new(value: impl Into<String>) -> LifecycleResult<Self> {
+        let value = value.into();
+        validate_single_component("table identity seed", &value)?;
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FlushTableObjectId {
+    pub(crate) fn new(value: impl Into<String>) -> LifecycleResult<Self> {
+        let value = value.into();
+        validate_single_component("table object id", &value)?;
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FlushFrozenOutcome {
+    fn deferred(request: &FlushFrozenRequest) -> Self {
+        Self {
+            status: FlushFrozenStatus::DeferredNoFrozenState,
+            branch_id: request.branch_id(),
+            frozen_index: None,
+            rows_flushed: 0,
+            table_identity: None,
+            table_facts: None,
+            table_object: None,
+            object_facts: None,
+            install_outcome: None,
+            failure: None,
+        }
+    }
+
+    fn completed(
+        request: &FlushFrozenRequest,
+        frozen_index: usize,
+        table_facts: TableRuntimeFacts,
+        object_facts: Option<TableObjectFacts>,
+        install_outcome: BranchImmutableInstallOutcome,
+    ) -> Self {
+        let table_identity = table_facts.identity().clone();
+        let table_object = object_facts.as_ref().map(|facts| facts.object().clone());
+        Self {
+            status: FlushFrozenStatus::Completed,
+            branch_id: request.branch_id(),
+            frozen_index: Some(frozen_index),
+            rows_flushed: table_facts.row_count(),
+            table_identity: Some(table_identity),
+            table_facts: Some(table_facts),
+            table_object,
+            object_facts,
+            install_outcome: Some(install_outcome),
+            failure: None,
+        }
+    }
+
+    fn published_not_installed(
+        request: &FlushFrozenRequest,
+        frozen_index: usize,
+        table_facts: TableRuntimeFacts,
+        object_facts: TableObjectFacts,
+        failure: LifecycleError,
+    ) -> Self {
+        let table_identity = table_facts.identity().clone();
+        let table_object = object_facts.object().clone();
+        Self {
+            status: FlushFrozenStatus::PublishedNotInstalled,
+            branch_id: request.branch_id(),
+            frozen_index: Some(frozen_index),
+            rows_flushed: table_facts.row_count(),
+            table_identity: Some(table_identity),
+            table_facts: Some(table_facts),
+            table_object: Some(table_object),
+            object_facts: Some(object_facts),
+            install_outcome: None,
+            failure: Some(failure),
+        }
+    }
+
+    pub(crate) const fn status(&self) -> FlushFrozenStatus {
+        self.status
+    }
+
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn frozen_index(&self) -> Option<usize> {
+        self.frozen_index
+    }
+
+    pub(crate) const fn rows_flushed(&self) -> u64 {
+        self.rows_flushed
+    }
+
+    pub(crate) fn table_identity(&self) -> Option<&TableIdentity> {
+        self.table_identity.as_ref()
+    }
+
+    pub(crate) fn table_facts(&self) -> Option<&TableRuntimeFacts> {
+        self.table_facts.as_ref()
+    }
+
+    pub(crate) fn table_object(&self) -> Option<&ObjectName> {
+        self.table_object.as_ref()
+    }
+
+    pub(crate) fn object_facts(&self) -> Option<&TableObjectFacts> {
+        self.object_facts.as_ref()
+    }
+
+    pub(crate) const fn install_outcome(&self) -> Option<BranchImmutableInstallOutcome> {
+        self.install_outcome
+    }
+
+    pub(crate) fn failure(&self) -> Option<&LifecycleError> {
+        self.failure.as_ref()
+    }
+
+    pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
+        let status = match self.status {
+            FlushFrozenStatus::Completed => MaintenanceOutcomeStatus::Completed,
+            FlushFrozenStatus::DeferredNoFrozenState => MaintenanceOutcomeStatus::Deferred,
+            FlushFrozenStatus::PublishedNotInstalled => MaintenanceOutcomeStatus::Failed,
+        };
+        let affected_objects = usize::from(self.table_object.is_some());
+        let retryable = matches!(self.status, FlushFrozenStatus::PublishedNotInstalled);
+        MaintenanceOutcome::new(MaintenanceTaskKind::Flush, status)
+            .with_effects(affected_objects, 0, retryable)
+            .with_stats(LifecycleStats::new(0, 0, 1, 0, 0))
+    }
+}
+
+pub(crate) fn flush_cache_branch(
+    branch: &mut BranchLocalState,
+    request: &FlushFrozenRequest,
+) -> LifecycleResult<FlushFrozenOutcome> {
+    let Some(frozen_index) = select_frozen_index(branch, request)? else {
+        return Ok(FlushFrozenOutcome::deferred(request));
+    };
+    let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    let identity = artifact.facts().identity().clone();
+    let table_facts = artifact.facts().clone();
+    let reader = ImmutableTableReader::open_bytes(
+        identity.clone(),
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .map_err(table_error)?;
+    let table = branch_owned_table(branch.branch_id(), identity, reader)?;
+    let install_outcome = branch
+        .replace_frozen_with_level_zero_table(frozen_index, table)
+        .map_err(branch_error)?;
+    Ok(FlushFrozenOutcome::completed(
+        request,
+        frozen_index,
+        table_facts,
+        None,
+        install_outcome,
+    ))
+}
+
+pub(crate) fn flush_durable_branch(
+    branch: &mut BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'_>,
+    request: &FlushFrozenRequest,
+) -> LifecycleResult<FlushFrozenOutcome> {
+    let Some(frozen_index) = select_frozen_index(branch, request)? else {
+        return Ok(FlushFrozenOutcome::deferred(request));
+    };
+    let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    let identity = artifact.facts().identity().clone();
+    let table_facts = artifact.facts().clone();
+    let branch_component = request.branch_id().to_string();
+    let object_id = derived_object_id(request, frozen_index, &table_facts, artifact.bytes());
+    let object_facts = publish_or_load_existing(
+        table_service,
+        &branch_component,
+        request.target_level().raw().into(),
+        &object_id,
+        artifact.bytes(),
+        &table_facts,
+    )?;
+    let reader = match reader_service.open_reader(
+        identity.clone(),
+        &object_facts,
+        TableReaderConfig::default(),
+    ) {
+        Ok(reader) => reader,
+        Err(error) => {
+            return Ok(FlushFrozenOutcome::published_not_installed(
+                request,
+                frozen_index,
+                table_facts,
+                object_facts,
+                table_read_error(error),
+            ));
+        }
+    };
+    let table = match branch_owned_table(branch.branch_id(), identity, reader) {
+        Ok(table) => table,
+        Err(error) => {
+            return Ok(FlushFrozenOutcome::published_not_installed(
+                request,
+                frozen_index,
+                table_facts,
+                object_facts,
+                error,
+            ));
+        }
+    };
+    let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(FlushFrozenOutcome::published_not_installed(
+                request,
+                frozen_index,
+                table_facts,
+                object_facts,
+                branch_error(error),
+            ));
+        }
+    };
+    Ok(FlushFrozenOutcome::completed(
+        request,
+        frozen_index,
+        table_facts,
+        Some(object_facts),
+        install_outcome,
+    ))
+}
+
+pub(crate) fn flush_request_from_maintenance_task(
+    task: &MaintenanceTask,
+) -> LifecycleResult<FlushFrozenRequest> {
+    if task.kind() != MaintenanceTaskKind::Flush {
+        return Err(LifecycleError::MaintenanceFailed {
+            reason: "maintenance task kind is not flush",
+        });
+    }
+    let MaintenanceTaskScope::Branch(branch_id) = task.scope() else {
+        return Err(LifecycleError::MaintenanceFailed {
+            reason: "flush task must target a branch",
+        });
+    };
+    FlushFrozenRequest::new(
+        branch_id,
+        None,
+        FlushTableIdentitySeed::new(format!("flush-seed-{branch_id}"))?,
+        FlushTableObjectId::new(format!("flush-object-{branch_id}"))?,
+    )
+}
+
+fn select_frozen_index(
+    branch: &BranchLocalState,
+    request: &FlushFrozenRequest,
+) -> LifecycleResult<Option<usize>> {
+    if branch.branch_id() != request.branch_id() {
+        return Err(LifecycleError::MaintenanceFailed {
+            reason: "flush branch id must match branch state",
+        });
+    }
+    let frozen_count = branch.frozen_table_count();
+    match request.frozen_index() {
+        Some(index) if index < frozen_count => Ok(Some(index)),
+        Some(_) => Err(LifecycleError::MaintenanceFailed {
+            reason: "flush frozen index must exist",
+        }),
+        None if frozen_count == 0 => Ok(None),
+        None => Ok(Some(frozen_count - 1)),
+    }
+}
+
+fn build_frozen_artifact(
+    branch: &BranchLocalState,
+    request: &FlushFrozenRequest,
+    frozen_index: usize,
+) -> LifecycleResult<crate::table::BuiltTableArtifact> {
+    let frozen = branch
+        .frozen()
+        .get(frozen_index)
+        .ok_or(LifecycleError::MaintenanceFailed {
+            reason: "flush frozen index must exist",
+        })?;
+    let identity = derived_table_identity(request, frozen_index, frozen)?;
+    ImmutableTableBuilder::new(TableBuilderConfig::default())
+        .map_err(table_error)?
+        .build_from_frozen(identity, frozen)
+        .map_err(table_error)
+}
+
+fn derived_table_identity(
+    request: &FlushFrozenRequest,
+    frozen_index: usize,
+    frozen: &FrozenTable,
+) -> LifecycleResult<TableIdentity> {
+    let facts = frozen.facts();
+    TableIdentity::new(format!(
+        "{}-{}-frozen-{frozen_index}-{}-{}-{}",
+        request.table_identity_seed().as_str(),
+        request.branch_id(),
+        facts.row_count(),
+        facts
+            .max_commit()
+            .map_or(0, strata_core_next::CommitVersion::as_u64),
+        frozen_digest(frozen),
+    ))
+    .map_err(table_error)
+}
+
+fn derived_object_id(
+    request: &FlushFrozenRequest,
+    frozen_index: usize,
+    table_facts: &TableRuntimeFacts,
+    bytes: &[u8],
+) -> String {
+    format!(
+        "{}-frozen-{frozen_index}-{}-{}-{}",
+        request.table_object_id().as_str(),
+        table_facts.row_count(),
+        table_facts.commit_range().max().as_u64(),
+        digest_hex(bytes),
+    )
+}
+
+fn frozen_digest(frozen: &FrozenTable) -> String {
+    let mut hasher = Sha256::new();
+    for row in frozen.iter() {
+        hasher.update(row.key().as_slice());
+        hasher.update(row.row().value());
+        hasher.update(row.commit_version().as_u64().to_be_bytes());
+        hasher.update(row.row().commit_timestamp().as_micros().to_be_bytes());
+        hasher.update(row.row().expires_at().as_micros().to_be_bytes());
+        hasher.update([u8::from(row.row().is_tombstone())]);
+    }
+    digest_to_hex(hasher.finalize().as_slice())
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    digest_to_hex(Sha256::digest(bytes).as_slice())
+}
+
+fn digest_to_hex(digest: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter().copied() {
+        text.push(char::from(HEX[usize::from(byte >> 4)]));
+        text.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    text
+}
+
+fn publish_or_load_existing(
+    table_service: &TableObjectService<'_>,
+    branch_component: &str,
+    level: u32,
+    object_id: &str,
+    bytes: &[u8],
+    table_facts: &TableRuntimeFacts,
+) -> LifecycleResult<TableObjectFacts> {
+    match table_service.publish_create(branch_component, level, object_id, bytes) {
+        Ok(write) => Ok(write.facts().clone()),
+        Err(TableObjectServiceError::Publish { source, .. })
+            if source.kind() == PublishFailureKind::PreconditionFailed =>
+        {
+            TableObjectService::facts_for_table(branch_component, level, object_id, table_facts)
+                .map_err(table_service_error)
+        }
+        Err(error) => Err(table_service_error(error)),
+    }
+}
+
+fn branch_owned_table(
+    branch_id: BranchId,
+    identity: TableIdentity,
+    reader: ImmutableTableReader,
+) -> LifecycleResult<BranchOwnedTable> {
+    let descriptor =
+        BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
+            .map_err(branch_error)?;
+    BranchOwnedTable::new(branch_id, descriptor, reader).map_err(branch_error)
+}
+
+fn validate_single_component(field: &'static str, value: &str) -> LifecycleResult<()> {
+    if value.is_empty() {
+        return Err(LifecycleError::MaintenanceFailed {
+            reason: "flush component must not be empty",
+        });
+    }
+    if value.as_bytes().contains(&0) || value.contains('/') {
+        return Err(LifecycleError::MaintenanceFailed {
+            reason: "flush component must be a single object component",
+        });
+    }
+    ObjectName::new(value).map_err(|_| LifecycleError::MaintenanceFailed { reason: field })?;
+    Ok(())
+}
+
+fn table_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        LifecycleLowerLayer::TableRuntime,
+        "table runtime failed",
+        error,
+    )
+}
+
+fn table_service_error(error: TableObjectServiceError) -> LifecycleError {
+    let reason = match &error {
+        TableObjectServiceError::Layout { .. } => "table object layout failed",
+        TableObjectServiceError::Decode { .. } => "table object decode failed",
+        TableObjectServiceError::Publish { source, .. } => table_publish_reason(source),
+        TableObjectServiceError::InvalidPublishMetadata { .. } => {
+            "table object publish metadata invalid"
+        }
+    };
+    LifecycleError::lower_layer_with(LifecycleLowerLayer::Service, reason, error)
+}
+
+fn table_publish_reason(error: &PublishError) -> &'static str {
+    match error.kind() {
+        PublishFailureKind::Unsupported => "table object publish unsupported",
+        PublishFailureKind::PreconditionFailed => "table object already exists",
+        PublishFailureKind::FailedBeforeVisibility => {
+            "table object publish failed before visibility"
+        }
+        PublishFailureKind::VisibilityUnknown => "table object publish visibility unknown",
+        PublishFailureKind::VisibleDurabilityUnconfirmed => {
+            "table object publish durability unconfirmed"
+        }
+    }
+}
+
+fn table_read_error(error: TableObjectReadError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        LifecycleLowerLayer::Service,
+        "table object read failed",
+        error,
+    )
+}
+
+fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        LifecycleLowerLayer::BranchRuntime,
+        "branch runtime failed",
+        error,
+    )
+}

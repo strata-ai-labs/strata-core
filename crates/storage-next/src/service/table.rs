@@ -189,6 +189,20 @@ impl TableObjectFacts {
         })
     }
 
+    pub(crate) fn from_runtime_facts(
+        object: ObjectName,
+        facts: &crate::table::TableRuntimeFacts,
+    ) -> Self {
+        Self {
+            object,
+            byte_count: facts.byte_count(),
+            row_count: facts.row_count(),
+            data_block_count: facts.data_block_count(),
+            commit_min: facts.commit_range().min(),
+            commit_max: facts.commit_range().max(),
+        }
+    }
+
     pub(crate) const fn object(&self) -> &ObjectName {
         &self.object
     }
@@ -413,6 +427,16 @@ impl<'a> TableObjectService<'a> {
             }
         })?;
         Ok(TableObjectWrite::new(facts, outcome))
+    }
+
+    pub(crate) fn facts_for_table(
+        branch_id: &str,
+        level: u32,
+        table_id: &str,
+        facts: &crate::table::TableRuntimeFacts,
+    ) -> TableObjectServiceResult<TableObjectFacts> {
+        let object = table_object(branch_id, level, table_id)?;
+        Ok(TableObjectFacts::from_runtime_facts(object, facts))
     }
 }
 

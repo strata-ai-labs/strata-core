@@ -50,9 +50,10 @@ pub use integration_harness::{
     StorageStressHarnessOutcome,
 };
 pub use lifecycle::{
-    check_lifecycle_bootstrap_contract, check_lifecycle_maintenance_contract,
-    check_lifecycle_recovery_contract, check_lifecycle_scaffold_contract,
-    LifecycleBootstrapContractOutcome, LifecycleMaintenanceContractOutcome,
+    check_lifecycle_bootstrap_contract, check_lifecycle_flush_contract,
+    check_lifecycle_maintenance_contract, check_lifecycle_recovery_contract,
+    check_lifecycle_scaffold_contract, LifecycleBootstrapContractOutcome,
+    LifecycleFlushContractOutcome, LifecycleMaintenanceContractOutcome,
     LifecycleRecoveryContractOutcome, LifecycleScaffoldOutcome,
 };
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};

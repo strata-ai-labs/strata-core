@@ -21,8 +21,22 @@ fn lifecycle_maintenance_contract_covers_executor_categories() {
     assert!(outcome.input_model_step_cases() > 0);
 }
 
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_maintenance_contract_covers_flush_categories() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_flush_contract(b"flush-contract-seed")
+            .expect("flush contract");
+
+    assert!(outcome.cache_success_cases() > 0);
+    assert!(outcome.durable_success_cases() > 0);
+    assert!(outcome.deferred_cases() > 0);
+    assert!(outcome.publish_failure_cases() > 0);
+    assert!(outcome.reopen_failure_cases() > 0);
+    assert!(outcome.retry_cases() > 0);
+    assert!(outcome.read_parity_cases() > 0);
+}
+
 #[cfg(not(all(feature = "testkit", not(target_arch = "wasm32"))))]
 #[test]
-fn lifecycle_maintenance_contract_requires_testkit() {
-    assert!(true);
-}
+fn lifecycle_maintenance_contract_requires_testkit() {}

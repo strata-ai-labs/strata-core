@@ -4,6 +4,7 @@ use super::{
     branch_error, commit_error, require_admitted, LifecycleDurableLocalServices,
     LifecycleDurableLocalShell,
 };
+use crate::branch::BranchRotationOutcome;
 use crate::branch::{BranchLocalState, BranchReadView};
 use crate::commit::{
     CommitBatch, CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry,
@@ -13,13 +14,16 @@ use crate::commit::{
     VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::format::WalRecord;
+use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
 use crate::lifecycle::{
-    maintenance_ready_for_recovery_health, LifecycleError, LifecycleMaintenanceExecutor,
-    LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth,
-    StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    maintenance_ready_for_recovery_health, FlushFrozenOutcome, FlushFrozenRequest, LifecycleError,
+    LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleTransitionTrigger, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
+    MaintenanceOutcome, MaintenanceTask, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    RecoveryHealth, StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
+use crate::service::{TableObjectReaderService, TableObjectService};
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion};
 
@@ -252,6 +256,34 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     #[allow(
         dead_code,
+        reason = "durable maintenance tests and later dispatch use explicit active rotation"
+    )]
+    pub(crate) fn rotate_active_for_maintenance(
+        &mut self,
+    ) -> LifecycleResult<BranchRotationOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        Ok(self.branch.rotate_active())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete handler"
+    )]
+    pub(crate) fn flush_frozen(
+        &mut self,
+        request: &FlushFrozenRequest,
+    ) -> LifecycleResult<FlushFrozenOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        flush_durable_branch(
+            &mut self.branch,
+            self.services.table_object(),
+            self.services.table_reader(),
+            request,
+        )
+    }
+
+    #[allow(
+        dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
@@ -278,6 +310,38 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         runner: &mut impl MaintenanceTaskRunner,
     ) -> LifecycleResult<Option<crate::lifecycle::MaintenanceOutcome>> {
         self.maintenance.run_next(self.state, runner)
+    }
+
+    pub(crate) fn run_next_flush_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &mut self.branch;
+        let table_object = self.services.table_object();
+        let table_reader = self.services.table_reader();
+        let mut runner = DurableFlushMaintenanceRunner {
+            branch,
+            table_object,
+            table_reader,
+        };
+        maintenance.run_next(state, &mut runner)
+    }
+}
+
+struct DurableFlushMaintenanceRunner<'a, 'b> {
+    branch: &'a mut BranchLocalState,
+    table_object: &'a TableObjectService<'b>,
+    table_reader: &'a TableObjectReaderService<'b>,
+}
+
+impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = flush_request_from_maintenance_task(task)?;
+        Ok(
+            flush_durable_branch(self.branch, self.table_object, self.table_reader, &request)?
+                .maintenance_outcome(),
+        )
     }
 }
 

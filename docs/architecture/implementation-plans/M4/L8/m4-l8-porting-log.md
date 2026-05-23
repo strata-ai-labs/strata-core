@@ -161,6 +161,137 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8I - Flush Frozen State And Table Publication
+
+Status: implemented.
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/flush.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/flush.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/flush.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8i-flush-table-publication-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8i-flush-table-publication-test-plan.md`
+
+### What Landed
+
+- Added a concrete flush request/outcome surface for one frozen branch table at
+  a time.
+- Added deterministic frozen-table selection: explicit index when supplied,
+  otherwise the oldest frozen table.
+- Added cache-mode flush orchestration that builds an immutable table from
+  frozen rows and installs it back into branch state without durable object
+  services.
+- Added durable-local flush orchestration that publishes a table object,
+  reopens the published object through the table reader service, constructs a
+  branch-owned immutable table, and only then replaces frozen state.
+- Added retry handling for the already-created-object window by reopening the
+  matching deterministic table object instead of republishing it.
+- Uses full SHA-256 hex in deterministic table/object identities rather than a
+  short fingerprint, so retry identity is stable without accepting avoidable
+  alias risk.
+- Durable outcomes count affected objects only when a table object exists;
+  cache-mode flushes report zero durable object effects.
+- Added maintenance task request construction for branch-scoped flush tasks.
+- Added concrete cache and durable runtime dispatch for queued branch-scoped
+  flush tasks through the maintenance executor.
+- Added generated flush contract coverage under the lifecycle testkit for
+  cache success, durable success, no-op, publish failure, reopen failure, retry,
+  and read parity.
+- Added a branch-layer storage-vocabulary alias for frozen replacement so
+  lifecycle implementation code does not contain numbered layer labels.
+
+### Preserved As Storage Vocabulary
+
+- Request facts: branch id, optional frozen index, table identity seed, table
+  object id, and target branch level.
+- Outcome facts: status, branch id, replaced frozen index, row count, table
+  identity, table facts, table object, object facts, install outcome, and
+  failure source when a durable object was created but branch install did not
+  complete.
+- Maintenance mapping: completed, deferred, and retryable failed outcomes map
+  onto the generic maintenance outcome vocabulary.
+
+### Intentional Non-Goals
+
+- No database manifest flush watermark update.
+- No checkpoint publication.
+- No WAL retention or truncation.
+- No compaction, materialization scheduling, retention, quarantine, purge, or
+  repair.
+- No public maintenance command surface.
+
+### Tests Added
+
+- `flush_request_validates_components_and_target_level`
+- `flush_without_frozen_state_is_deferred`
+- `cache_flush_replaces_oldest_frozen_table_and_preserves_reads`
+- `cache_flush_replaces_named_table_and_keeps_other_frozen_order`
+- `cache_flush_preserves_tombstones_and_commit_timestamps`
+- `repeated_default_flush_after_success_is_deferred`
+- `cache_runtime_flushes_explicitly_rotated_state_only`
+- `queued_cache_flush_task_runs_through_executor`
+- `durable_flush_publishes_reopens_and_installs_table`
+- `queued_durable_flush_task_publishes_object_through_executor`
+- `durable_publish_failure_leaves_frozen_state_unchanged`
+- `durable_reopen_failure_reports_published_not_installed`
+- `durable_invalid_publish_metadata_preserves_service_source`
+- `durable_reopen_wrong_branch_table_reports_partial_publication`
+- `durable_install_failure_reports_orphaned_object_fact`
+- `existing_conflicting_object_fails_closed_without_removing_frozen_rows`
+- `durable_flush_retries_existing_matching_object`
+- `flush_named_frozen_index_must_exist`
+- `flush_identity_is_deterministic_and_changes_with_storage_facts`
+- `lifecycle_maintenance_contract_covers_flush_categories`
+- `lifecycle_property_harness_runs_flush_contract`
+- `lifecycle_flush_source_does_not_manage_watermarks_or_log_retention`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Select newest frozen table by default | `crates/storage-next/src/lifecycle/flush.rs` | Return index 0 instead of the highest frozen index | `cache_flush_replaces_oldest_frozen_table_and_preserves_reads` |
+| Remove frozen state before durable publication | `crates/storage-next/src/lifecycle/flush.rs` | Call branch replacement before table-object publish | `durable_publish_failure_leaves_frozen_state_unchanged` |
+| Skip object reopen after durable publish | `crates/storage-next/src/lifecycle/flush.rs` | Build branch-owned table directly from in-memory bytes after publish | `durable_flush_publishes_reopens_and_installs_table` |
+| Treat active rows as an implicit flush candidate | `crates/storage-next/src/lifecycle/cache.rs` | Rotate active rows inside flush | `cache_runtime_flushes_explicitly_rotated_state_only` |
+| Lose retry support for existing deterministic object | `crates/storage-next/src/lifecycle/flush.rs` | Return publish precondition failure directly | `durable_flush_retries_existing_matching_object` |
+| Collapse cache and durable object effects | `crates/storage-next/src/lifecycle/flush.rs` | Count table identity instead of table object in maintenance effects | `cache_flush_replaces_oldest_frozen_table_and_preserves_reads`, `durable_flush_publishes_reopens_and_installs_table` |
+| Shorten deterministic digest | `crates/storage-next/src/lifecycle/flush.rs` | Truncate SHA-256 to a short prefix | `flush_identity_is_deterministic_and_changes_with_storage_facts` |
+| Treat published-not-installed as success | `crates/storage-next/src/lifecycle/flush.rs` | Return completed after object publish but before reopen/install succeeds | `durable_reopen_failure_reports_published_not_installed`, `durable_install_failure_reports_orphaned_object_fact` |
+| Drop tombstones during table build | `crates/storage-next/src/lifecycle/flush.rs` | Filter tombstone rows from the built table | `cache_flush_preserves_tombstones_and_commit_timestamps` |
+| Accept conflicting existing object | `crates/storage-next/src/lifecycle/flush.rs` | Treat any pre-existing deterministic object as matching | `existing_conflicting_object_fails_closed_without_removing_frozen_rows` |
+| Call watermark or log-retention services from flush | `crates/storage-next/src/lifecycle/flush.rs` | Add manifest flush-watermark or log truncation calls | `lifecycle_flush_source_does_not_manage_watermarks_or_log_retention` |
+| Put architecture labels in lifecycle implementation | `crates/storage-next/src/lifecycle/flush.rs` | Call numbered lower-layer method names directly | `lifecycle_implementation_avoids_architecture_labels` |
+
+### Verification
+
+Commands run for L8I:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::flush
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --all-features --locked --lib lifecycle
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8B - Lifecycle State And Open Plan
 
 Status: implemented

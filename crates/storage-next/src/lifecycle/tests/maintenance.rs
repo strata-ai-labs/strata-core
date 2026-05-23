@@ -396,7 +396,7 @@ fn maintenance_executor_coalesces_each_coalescing_scope_independently() {
             MaintenanceTaskScope::Wal,
             MaintenanceTaskPolicy::coalescing(),
         )
-        .expect("wal"),
+        .expect("truncation"),
         MaintenanceTaskRequest::new(
             MaintenanceTaskKind::Compaction,
             MaintenanceTaskPriority::Normal,

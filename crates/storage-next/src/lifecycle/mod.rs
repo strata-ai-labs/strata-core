@@ -14,6 +14,7 @@ mod config;
 mod durable;
 mod error;
 mod facts;
+mod flush;
 mod health;
 mod maintenance;
 mod outcome;
@@ -61,6 +62,14 @@ pub(crate) use error::{LifecycleError, LifecycleLowerLayer};
 pub(crate) use facts::{
     ClosePhase, LifecycleCodecId, LifecycleState, LifecycleStats, MaintenanceTaskKind,
     QuarantineStage, RecoveryStrictness, RetentionDecision, StorageMode, StorageOpenPlan,
+};
+#[allow(
+    unused_imports,
+    reason = "flush maintenance exports define the local surface for later slices"
+)]
+pub(crate) use flush::{
+    flush_cache_branch, flush_durable_branch, FlushFrozenOutcome, FlushFrozenRequest,
+    FlushFrozenStatus, FlushTableIdentitySeed, FlushTableObjectId,
 };
 #[allow(
     unused_imports,

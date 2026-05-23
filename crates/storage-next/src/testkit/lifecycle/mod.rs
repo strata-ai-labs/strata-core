@@ -4,11 +4,13 @@ mod bootstrap;
 mod cache;
 mod capability;
 mod durable;
+mod flush;
 mod maintenance;
 mod outcome;
 mod recovery;
 
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
+pub use flush::{check_lifecycle_flush_contract, LifecycleFlushContractOutcome};
 pub use maintenance::{check_lifecycle_maintenance_contract, LifecycleMaintenanceContractOutcome};
 pub use outcome::LifecycleScaffoldOutcome;
 pub use recovery::{check_lifecycle_recovery_contract, LifecycleRecoveryContractOutcome};

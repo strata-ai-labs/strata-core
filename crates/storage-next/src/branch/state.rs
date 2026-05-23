@@ -1421,6 +1421,14 @@ impl BranchLocalState {
         frozen_index: usize,
         table: BranchOwnedTable,
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
+        self.replace_frozen_with_level_zero_table(frozen_index, table)
+    }
+
+    pub(crate) fn replace_frozen_with_level_zero_table(
+        &mut self,
+        frozen_index: usize,
+        table: BranchOwnedTable,
+    ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
         if frozen_index >= self.frozen.len() {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "frozen replacement index must exist",

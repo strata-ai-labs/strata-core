@@ -261,6 +261,16 @@ impl MaintenanceTaskRequest {
         .expect("health collection task request is valid")
     }
 
+    pub(crate) fn flush(branch_id: BranchId) -> Self {
+        Self::new(
+            MaintenanceTaskKind::Flush,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::Branch(branch_id),
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("flush task request is valid")
+    }
+
     pub(crate) const fn kind(self) -> MaintenanceTaskKind {
         self.kind
     }

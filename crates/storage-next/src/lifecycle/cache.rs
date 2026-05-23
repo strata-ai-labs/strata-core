@@ -1,16 +1,18 @@
 //! Cache-mode lifecycle runtime.
 
 use super::{
+    flush::{flush_cache_branch, flush_request_from_maintenance_task},
     validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus,
-    ClosePhase, LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleError,
-    LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceTaskRequest,
+    ClosePhase, FlushFrozenOutcome, FlushFrozenRequest, LifecycleCapabilityOutcome,
+    LifecycleCloseFact, LifecycleError, LifecycleMaintenanceExecutor, LifecycleOperationKind,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleTransitionTrigger, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceTask, MaintenanceTaskRequest,
     MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
     StorageOpenPlan,
 };
 use crate::backend::Backend;
-use crate::branch::{BranchLocalState, BranchReadView, BranchRuntimeConfig};
+use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
     CommitBranchRegistry, CommitCacheRuntime, CommitFactAllocator, CommitManualTimestampSource,
@@ -171,6 +173,21 @@ impl<S> LifecycleCacheRuntime<S> {
         self.branch.capture_read_view().map_err(branch_error)
     }
 
+    pub(crate) fn rotate_active_for_maintenance(
+        &mut self,
+    ) -> LifecycleResult<BranchRotationOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        Ok(self.branch.rotate_active())
+    }
+
+    pub(crate) fn flush_frozen(
+        &mut self,
+        request: &FlushFrozenRequest,
+    ) -> LifecycleResult<FlushFrozenOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        flush_cache_branch(&mut self.branch, request)
+    }
+
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
@@ -199,6 +216,16 @@ impl<S> LifecycleCacheRuntime<S> {
         runner: &mut impl MaintenanceTaskRunner,
     ) -> LifecycleResult<Option<super::MaintenanceOutcome>> {
         self.maintenance.run_next(self.state, runner)
+    }
+
+    pub(crate) fn run_next_flush_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &mut self.branch;
+        let mut runner = CacheFlushMaintenanceRunner { branch };
+        maintenance.run_next(state, &mut runner)
     }
 
     pub(crate) fn close(&mut self) -> LifecycleResult<CloseOutcome> {
@@ -230,6 +257,17 @@ impl<S> LifecycleCacheRuntime<S> {
                 reason: "cache runtime is not open for close",
             }),
         }
+    }
+}
+
+struct CacheFlushMaintenanceRunner<'a> {
+    branch: &'a mut BranchLocalState,
+}
+
+impl MaintenanceTaskRunner for CacheFlushMaintenanceRunner<'_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = flush_request_from_maintenance_task(task)?;
+        Ok(flush_cache_branch(self.branch, &request)?.maintenance_outcome())
     }
 }
 

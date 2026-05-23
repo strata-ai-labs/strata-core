@@ -170,6 +170,21 @@ fn lifecycle_cache_runtime_stays_cache_only() {
 }
 
 #[test]
+fn lifecycle_flush_source_does_not_manage_watermarks_or_log_retention() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/flush.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle flush source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_flush_dependency(line),
+            "src/lifecycle/flush.rs:{} calls forbidden flush dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_durable_runtime_stays_bootstrap_only() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/durable.rs");
@@ -220,6 +235,7 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_capability_preflight_fixtures();
     assert_cache_runtime_fixtures();
     assert_durable_runtime_fixtures();
+    assert_flush_runtime_fixtures();
     assert_recovery_runtime_fixtures();
     assert_public_surface_fixtures();
 }
@@ -373,6 +389,21 @@ fn assert_durable_runtime_fixtures() {
     ));
     assert!(contains_forbidden_bootstrap_assembly_dependency(
         "DatabaseManifestService::new(backend);"
+    ));
+}
+
+fn assert_flush_runtime_fixtures() {
+    assert!(contains_forbidden_flush_dependency(
+        "service.persist_flush_watermark(version)?;"
+    ));
+    assert!(contains_forbidden_flush_dependency(
+        "wal.delete_covered_segments(proof)?;"
+    ));
+    assert!(contains_forbidden_flush_dependency(
+        "checkpoint_service.checkpoint(request)?;"
+    ));
+    assert!(contains_forbidden_flush_dependency(
+        "quarantine.load_inventory(branch, db, codec)?;"
     ));
 }
 
@@ -701,6 +732,25 @@ fn contains_forbidden_bootstrap_assembly_dependency(line: &str) -> bool {
         "tableobjectservice::new",
         "checkpointservice::new",
         "quarantineservice::new",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_flush_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "persist_flush_watermark(",
+        "delete_covered_segments(",
+        "repair_latest_tail(",
+        "checkpointservice",
+        "checkpoint_service",
+        "databasemanifestservice",
+        "walservice",
+        "quarantineservice",
+        "quarantine.",
+        "snapshotservice",
+        "tablemanifestservice",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

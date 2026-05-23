@@ -156,6 +156,44 @@ fn lifecycle_property_harness_runs_maintenance_contract() {
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_runs_flush_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_flush_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 16,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-flush.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=32), |script| {
+            let outcome = check_lifecycle_flush_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.cache_success_cases() == 0
+                || outcome.durable_success_cases() == 0
+                || outcome.deferred_cases() == 0
+                || outcome.publish_failure_cases() == 0
+                || outcome.reopen_failure_cases() == 0
+                || outcome.retry_cases() == 0
+                || outcome.read_parity_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "lifecycle flush contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle flush property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 fn all_categories_exercised(
     outcome: &strata_storage_next::testkit::LifecycleScaffoldOutcome,
 ) -> bool {
