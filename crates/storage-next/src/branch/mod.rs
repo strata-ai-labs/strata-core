@@ -65,19 +65,17 @@ pub(crate) use read::{
     BranchRowBoundMatch, BranchRowCandidateFacts, BranchRowSource, BranchScanBounds,
     BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
+#[allow(
+    unused_imports,
+    reason = "branch scaffold exports define the local surface for later slices"
 )]
 pub(crate) use state::{
     install_snapshot_rows_into_branches, BranchAppendOutcome, BranchCompactionCandidate,
     BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionOutcome,
     BranchCompactionPlan, BranchCompactionRecovery, BranchCompactionRequest,
     BranchCompactionRetentionPolicy, BranchForkOutcome, BranchImmutableInstallOutcome,
-    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
+    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
     BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
     BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
     BranchSnapshotTargetStatePolicy,

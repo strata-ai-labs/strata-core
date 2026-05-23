@@ -209,11 +209,11 @@ fn check_input_cancel_and_drain(
         "maintenance drain did not run drain-required task",
     )?;
     ensure(
-        cancel.canceled_tasks() == 1,
-        "maintenance cancel did not remove cancelable task",
+        cancel.canceled_tasks() == 2,
+        "maintenance cancel did not remove close-canceled tasks",
     )?;
     ensure(
-        pending_task_ids(&executor) == vec![3],
+        pending_task_ids(&executor).is_empty(),
         "maintenance drain/cancel left unexpected pending order",
     )?;
     outcome.drained += 1;
@@ -288,7 +288,7 @@ fn check_input_queue_full_and_admission(
         )
         .expect_err("queue-full contract should reject second task");
     ensure(
-        queue_full.code() == "failed_precondition.lifecycle.maintenance",
+        queue_full.code() == "resource_exhausted.lifecycle.maintenance_queue",
         "queue-full contract returned wrong error code",
     )?;
     ensure(
@@ -433,7 +433,11 @@ fn model_enqueue_open(
     model.enqueue_open(request);
     if let Err(error) = actual {
         ensure(
-            error.code() == "failed_precondition.lifecycle.maintenance",
+            matches!(
+                error.code(),
+                "failed_precondition.lifecycle.maintenance"
+                    | "resource_exhausted.lifecycle.maintenance_queue"
+            ),
             error_message,
         )?;
     }
@@ -451,7 +455,7 @@ fn model_queue_full(
         .enqueue(open, request)
         .expect_err("model queue-full rejection");
     ensure(
-        error.code() == "failed_precondition.lifecycle.maintenance",
+        error.code() == "resource_exhausted.lifecycle.maintenance_queue",
         "model queue-full rejection returned wrong code",
     )?;
     model.enqueue_open(request);

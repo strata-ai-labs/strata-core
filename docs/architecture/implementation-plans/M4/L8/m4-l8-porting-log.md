@@ -161,6 +161,100 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8K: Compaction And Materialization Scheduling Hooks
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/compaction.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/compaction.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8k-compaction-materialization-scheduling-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8k-compaction-materialization-scheduling-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Compaction is requested with a branch id, branch compaction kind, output
+  identity seed, and table-rewrite durability mode.
+- Materialization is requested with a child branch id, inherited-layer index,
+  output identity prefix, and table-rewrite durability mode.
+- Outcomes report completed, completed-checkpoint-required, no-candidate,
+  no-layer, and already-materialized states.
+- Storage pressure facts report frozen backlog, level-zero table backlog,
+  inherited-layer backlog, maintenance queue backlog, and suggested storage
+  maintenance tasks.
+
+### Raw Health And Fact Vocabulary
+
+- V1 durable-local compaction/materialization reports checkpoint debt instead
+  of standalone table-object reachability.
+- Lower-layer branch runtime errors preserve source chains through
+  `LifecycleLowerLayer::BranchRuntime`.
+- Maintenance outcomes retain task kind, status, task id, affected-object
+  count, stats, retryability, and optional recovery health.
+
+### Intentional Changes
+
+- Lifecycle delegates all candidate selection, table replacement validation,
+  inherited-row rewriting, and read semantics to L6. It does not inspect rows
+  to choose merge inputs.
+- Cache and durable runtimes share the same L6 rewrite paths. Durable mode
+  upgrades successful rewrites to checkpoint-required outcomes.
+- The source guard now permits storage level names such as `CompactL0...` while
+  continuing to reject architecture slice labels like `L8K` in implementation
+  source and tests.
+
+### Deferred By Owner Slice
+
+- Standalone table-object publication for compaction/materialization waits for
+  table-manifest recovery, so published-not-installed fault windows are not
+  claimed here.
+- Generated lifecycle property scripts for table rewrites remain later
+  assurance-depth work.
+- Retention pruning, replaced-object quarantine/purge, background thread
+  scheduling, and memory-budget admission remain later slices.
+
+### Tests Added
+
+- `table_rewrite_requests_validate_opaque_identity_components`
+- `maintenance_tasks_map_to_table_rewrite_requests`
+- `cache_compaction_defers_without_a_candidate`
+- `cache_compaction_installs_replacement_and_preserves_reads`
+- `durable_compaction_reports_checkpoint_debt`
+- `materialization_defers_when_no_inherited_layer_exists`
+- `cache_materialization_removes_layer_and_preserves_child_precedence`
+- `durable_materialization_reports_checkpoint_debt`
+- `storage_pressure_suggests_the_next_table_rewrite_or_flush`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Empty output seed accepted | `crates/storage-next/src/lifecycle/compaction.rs` | Remove lower-layer request validation | `table_rewrite_requests_validate_opaque_identity_components` |
+| Wrong maintenance kind routed as compaction | `crates/storage-next/src/lifecycle/compaction.rs` | Skip task-kind check before request conversion | `maintenance_tasks_map_to_table_rewrite_requests` |
+| No-candidate treated as success | `crates/storage-next/src/lifecycle/compaction.rs` | Collapse no-candidate to completed outcome | `cache_compaction_defers_without_a_candidate` |
+| Durable rewrite overclaims recovery safety | `crates/storage-next/src/lifecycle/compaction.rs` | Return completed instead of checkpoint-required status | `durable_compaction_reports_checkpoint_debt` |
+| Materialization ignores child-local precedence | `crates/storage-next/src/branch/state.rs` | Install replacements ahead of child-owned rows | `cache_materialization_removes_layer_and_preserves_child_precedence` |
+| Missing inherited layer becomes hard failure | `crates/storage-next/src/lifecycle/compaction.rs` | Return branch error instead of deferred no-layer outcome | `materialization_defers_when_no_inherited_layer_exists` |
+| Frozen backlog deprioritized behind compaction | `crates/storage-next/src/lifecycle/compaction.rs` | Suggest compaction before flush when frozen tables exist | `storage_pressure_suggests_the_next_table_rewrite_or_flush` |
+| Architecture label allowed in lifecycle source | `crates/storage-next/tests/lifecycle_source_guard.rs` | Permit `L8K`-style labels in implementation text | `lifecycle_implementation_avoids_architecture_labels` |
+
+### Verification
+
+Commands run for L8K:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::compaction
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8I - Flush Frozen State And Table Publication
 
 Status: implemented.

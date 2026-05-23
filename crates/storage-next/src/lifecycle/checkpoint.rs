@@ -178,7 +178,8 @@ impl LifecycleCheckpointRequest {
 
     fn validate(&self) -> LifecycleResult<()> {
         if self.snapshot_id == 0 {
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::InvalidConfig {
+                field: "checkpoint_snapshot_id",
                 reason: "checkpoint snapshot id must be nonzero",
             });
         }
@@ -337,11 +338,42 @@ impl LifecycleCheckpointOutcome {
                 0,
                 self.retryable(),
             )
+            .with_state_changes(usize::from(matches!(
+                self.status,
+                LifecycleCheckpointStatus::Completed
+            )))
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
+        if let Some(object) = &self.snapshot_object {
+            outcome = outcome.with_affected_object_names(vec![object.as_str().to_owned()]);
+        }
+        if let Some(reason) = self.status_reason() {
+            outcome = outcome.with_reason(reason);
+        }
         if let Some(health) = self.recovery_health.clone() {
             outcome = outcome.with_recovery_health(health);
         }
         outcome
+    }
+
+    const fn status_reason(&self) -> Option<&'static str> {
+        match self.status {
+            LifecycleCheckpointStatus::Completed => None,
+            LifecycleCheckpointStatus::DeferredNoVisibleRows => {
+                Some("checkpoint has no visible rows to publish")
+            }
+            LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated => {
+                Some("checkpoint snapshot published before manifest update failed")
+            }
+            LifecycleCheckpointStatus::SnapshotVisibilityUncertain => {
+                Some("checkpoint final manifest visibility is uncertain")
+            }
+            LifecycleCheckpointStatus::FlushWatermarkFailed => {
+                Some("checkpoint flush watermark persistence failed")
+            }
+            LifecycleCheckpointStatus::WalTruncationFailed => {
+                Some("checkpoint WAL truncation failed")
+            }
+        }
     }
 
     const fn retryable(&self) -> bool {
@@ -375,7 +407,7 @@ impl LifecycleFlushWatermarkRequest {
 
     const fn validate_static(self) -> LifecycleResult<()> {
         if self.candidate.as_u64() == 0 {
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "flush watermark candidate must be nonzero",
             });
         }
@@ -420,7 +452,7 @@ impl LifecycleFlushWatermarkOutcome {
 impl LifecycleWalTruncationRequest {
     pub(crate) fn new(proof: WalRetentionProof) -> LifecycleResult<Self> {
         if proof.covered_through() == CommitVersion::ZERO {
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "WAL retention proof must be nonzero",
             });
         }
@@ -510,7 +542,7 @@ pub(crate) fn checkpoint_durable_branch(
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
     if branch.branch_id() != request.branch_id() {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "checkpoint branch id must match branch state",
         });
     }
@@ -527,9 +559,10 @@ pub(crate) fn checkpoint_durable_branch(
         drop(quiesce);
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
-    let row_count = u64::try_from(rows.len()).map_err(|_| LifecycleError::MaintenanceFailed {
-        reason: "checkpoint row count must fit in u64",
-    })?;
+    let row_count =
+        u64::try_from(rows.len()).map_err(|_| LifecycleError::CheckpointPublicationFailed {
+            reason: "checkpoint row count must fit in u64",
+        })?;
     validate_snapshot_id_advances(services.manifest(), request.snapshot_id())?;
     let mut sections = Vec::with_capacity(1 + request.extra_sections().len());
     sections.push(encode_checkpoint_row_section(&rows).map_err(format_error)?);
@@ -626,7 +659,7 @@ pub(crate) fn persist_flush_watermark(
 ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
     request.validate_static()?;
     if request.candidate() > visible_version {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
             reason: "flush watermark candidate exceeds visible version",
         });
     }
@@ -642,7 +675,7 @@ pub(crate) fn persist_flush_watermark(
     match request.proof() {
         LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark } => {
             if request.candidate() > snapshot_watermark {
-                return Err(LifecycleError::MaintenanceFailed {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
                     reason: "flush watermark candidate exceeds checkpoint proof",
                 });
             }
@@ -650,18 +683,18 @@ pub(crate) fn persist_flush_watermark(
                 .snapshot_watermark()
                 .is_none_or(|snapshot| request.candidate().as_u64() > snapshot)
             {
-                return Err(LifecycleError::MaintenanceFailed {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
                     reason: "flush watermark candidate exceeds durable checkpoint facts",
                 });
             }
         }
         LifecycleFlushWatermarkProof::AlreadyPersisted => {
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "flush watermark candidate is not already persisted",
             });
         }
         LifecycleFlushWatermarkProof::TableObjectsOnly { .. } => {
-            return Err(LifecycleError::RetentionBlocked {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "table object flush facts are not a recovery proof for flush watermark",
             });
         }
@@ -690,8 +723,20 @@ pub(crate) fn checkpoint_request_from_maintenance_task(
     manifest: &DatabaseManifestService<'_>,
     created_at: Timestamp,
 ) -> LifecycleResult<LifecycleCheckpointRequest> {
+    checkpoint_request_from_maintenance_task_with_snapshot_id(
+        task, branch_id, manifest, created_at, None,
+    )
+}
+
+pub(crate) fn checkpoint_request_from_maintenance_task_with_snapshot_id(
+    task: &MaintenanceTask,
+    branch_id: BranchId,
+    manifest: &DatabaseManifestService<'_>,
+    created_at: Timestamp,
+    allocated_snapshot_id: Option<u64>,
+) -> LifecycleResult<LifecycleCheckpointRequest> {
     if task.kind() != MaintenanceTaskKind::Checkpoint {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "maintenance task kind is not checkpoint",
         });
     }
@@ -699,17 +744,32 @@ pub(crate) fn checkpoint_request_from_maintenance_task(
         task.scope(),
         MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
     ) {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "checkpoint task must target checkpoint scope",
         });
     }
     let current = manifest.load_required().map_err(manifest_error)?;
-    let snapshot_id = current.snapshot_id().unwrap_or(0).checked_add(1).ok_or(
-        LifecycleError::MaintenanceFailed {
-            reason: "checkpoint snapshot id overflow",
-        },
-    )?;
-    LifecycleCheckpointRequest::new(branch_id, snapshot_id, created_at)
+    let options = task.checkpoint_options();
+    let snapshot_id = if let Some(snapshot_id) =
+        options.and_then(super::maintenance::MaintenanceCheckpointOptions::snapshot_id)
+    {
+        snapshot_id
+    } else if let Some(snapshot_id) = allocated_snapshot_id {
+        snapshot_id
+    } else {
+        current.snapshot_id().unwrap_or(0).checked_add(1).ok_or(
+            LifecycleError::CheckpointPublicationFailed {
+                reason: "checkpoint snapshot id overflow",
+            },
+        )?
+    };
+    let mut request = LifecycleCheckpointRequest::new(branch_id, snapshot_id, created_at)?;
+    if options.is_some_and(
+        super::maintenance::MaintenanceCheckpointOptions::truncate_wal_after_checkpoint,
+    ) {
+        request = request.with_wal_truncation_after_checkpoint(true);
+    }
+    Ok(request)
 }
 
 pub(crate) fn wal_truncation_request_from_maintenance_task(
@@ -717,12 +777,12 @@ pub(crate) fn wal_truncation_request_from_maintenance_task(
     manifest: &DatabaseManifestService<'_>,
 ) -> LifecycleResult<Option<LifecycleWalTruncationRequest>> {
     if task.kind() != MaintenanceTaskKind::WalTruncation {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "maintenance task kind is not WAL truncation",
         });
     }
     if task.scope() != MaintenanceTaskScope::Wal {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "WAL truncation task must target WAL scope",
         });
     }
@@ -749,7 +809,7 @@ fn validate_snapshot_id_advances(
         .snapshot_id()
         .is_some_and(|current| snapshot_id <= current)
     {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::CheckpointPublicationFailed {
             reason: "checkpoint snapshot id must advance",
         });
     }

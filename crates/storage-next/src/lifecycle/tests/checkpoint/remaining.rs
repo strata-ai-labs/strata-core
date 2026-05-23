@@ -9,7 +9,7 @@ fn flush_watermark_request_rejects_zero_candidate() {
                 snapshot_watermark: CommitVersion::new(1),
             },
         ),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::WalRetentionProofIncomplete {
             reason: "flush watermark candidate must be nonzero",
         })
     );
@@ -41,7 +41,10 @@ fn checkpoint_snapshot_id_must_advance_past_recovered_manifest_snapshot_id() {
     )
     .expect_err("stale snapshot id rejects");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.checkpoint_publication"
+    );
     assert_eq!(backend.snapshot_objects(), Vec::<ObjectName>::new());
 }
 
@@ -90,9 +93,10 @@ fn checkpoint_debug_output_does_not_include_payload_bytes() {
 }
 
 #[test]
-fn checkpoint_rejects_non_row_snapshot_section_during_recovery() {
+fn checkpoint_recovery_ignores_opaque_snapshot_sections() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x38);
+    let key = physical_key(branch, b"unsupported-section");
     let mut runtime = open_runtime(branch, &backend);
     runtime
         .execute_durable_commit(
@@ -114,11 +118,23 @@ fn checkpoint_rejects_non_row_snapshot_section_during_recovery() {
     let recovery_request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
-    let error = LifecycleRecoveryRuntime::new(&mut shell)
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&recovery_request)
-        .expect_err("unsupported section rejects");
+        .expect("recovery ignores opaque section");
+    let reopened = shell.complete_recovery(&outcome).expect("open runtime");
 
-    assert_eq!(error.code(), "serialization.lifecycle.format");
+    assert_eq!(outcome.checkpoint().section_count(), 2);
+    assert_eq!(
+        reopened
+            .read_view()
+            .expect("read view")
+            .latest(&key)
+            .expect("latest read")
+            .expect("row")
+            .row()
+            .value(),
+        b"value"
+    );
 }
 
 #[test]
@@ -151,6 +167,32 @@ fn checkpoint_rows_include_materialized_replacement_rows() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].physical_key().branch_id(), child);
     assert_eq!(rows[0].value(), b"value");
+}
+
+#[test]
+fn checkpoint_rows_require_inherited_layers_to_be_materialized() {
+    let source = branch_id(0x39);
+    let child = branch_id(0x3a);
+    let mut source_state = BranchLocalState::empty(source);
+    source_state
+        .append_committed_row(put_row(source, 1, b"inherited-row", b"value"))
+        .expect("append source row");
+    source_state.rotate_active();
+    flush_cache_branch(&mut source_state, &flush_request(source)).expect("flush source row");
+    let (child_state, fork) = source_state
+        .fork_into_empty_child(child)
+        .expect("fork child");
+
+    let error = child_state
+        .checkpoint_rows(fork.fork_version())
+        .expect_err("live inherited layer rejects");
+
+    assert_eq!(
+        error,
+        crate::branch::BranchRuntimeError::InvalidBranchState {
+            reason: "checkpoint requires inherited layers to be materialized first",
+        }
+    );
 }
 
 #[test]
@@ -646,37 +688,81 @@ fn checkpoint_with_truncation_records_checkpoint_and_delete_facts() {
 }
 
 #[test]
-fn cache_checkpoint_task_does_not_create_durable_objects() {
+fn cache_checkpoint_task_is_rejected_before_durable_objects() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x3e);
     let mut runtime = cache_runtime(branch, &backend);
-    runtime
-        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
-        .expect("enqueue");
-
     let error = runtime
-        .run_next_flush_maintenance()
-        .expect_err("checkpoint task is not a cache flush");
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect_err("checkpoint task rejected");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
     assert_eq!(backend.event_count(), 0);
 }
 
 #[test]
-fn cache_wal_truncation_task_does_not_create_durable_objects() {
+fn cache_wal_truncation_task_is_rejected_before_durable_objects() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x3f);
     let mut runtime = cache_runtime(branch, &backend);
-    runtime
+    let error = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        .expect_err("truncation task rejected");
+
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(backend.event_count(), 0);
+}
+
+#[test]
+fn queued_checkpoint_options_control_snapshot_and_log_truncation() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x40);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    let enqueue = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint_with_options(
+            MaintenanceCheckpointOptions::new(Some(9), true),
+        ))
         .expect("enqueue");
 
-    let error = runtime
-        .run_next_flush_maintenance()
-        .expect_err("truncation task is not a cache flush");
+    let maintenance = runtime
+        .run_next_checkpoint_maintenance()
+        .expect("run")
+        .expect("maintenance");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
-    assert_eq!(backend.event_count(), 0);
+    assert_eq!(maintenance.task_id(), Some(enqueue.task_id()));
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        DatabaseManifestService::new(&backend)
+            .load_required()
+            .expect("database record")
+            .snapshot_id(),
+        Some(9)
+    );
+    assert!(backend.delete_calls() > 0);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("second enqueue");
+    runtime
+        .run_next_checkpoint_maintenance()
+        .expect("run second")
+        .expect("second maintenance");
+    assert_eq!(
+        DatabaseManifestService::new(&backend)
+            .load_required()
+            .expect("manifest after second")
+            .snapshot_id(),
+        Some(10)
+    );
 }
 
 #[test]

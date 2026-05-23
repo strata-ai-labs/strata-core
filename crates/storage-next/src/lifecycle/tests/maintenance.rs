@@ -20,7 +20,7 @@ fn maintenance_task_request_validates_kind_scope_pairs() {
             MaintenanceTaskScope::Global,
             MaintenanceTaskPolicy::coalescing(),
         ),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::MaintenanceTaskFailed {
             reason: "maintenance task scope does not match task kind",
         })
     );
@@ -150,7 +150,7 @@ fn maintenance_enqueue_requires_open_and_enforces_capacity() {
         .expect_err("capacity rejects second pending task");
     assert_eq!(
         error,
-        LifecycleError::MaintenanceFailed {
+        LifecycleError::MaintenanceQueueFull {
             reason: "maintenance queue is full",
         }
     );
@@ -347,12 +347,12 @@ fn maintenance_executor_order_survives_coalescing_and_canceling() {
     let cancel = executor
         .cancel_pending_for_close(closing)
         .expect("cancel pending");
-    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(cancel.canceled_tasks(), 3);
 
     let mut runner = RecordingRunner::completed();
     let ids = run_all_task_ids(open, &mut executor, &mut runner);
 
-    assert_eq!(ids, vec![1, 3]);
+    assert!(ids.is_empty());
     assert_eq!(executor.stats().coalesced(), 1);
 }
 
@@ -412,6 +412,7 @@ fn maintenance_executor_coalesces_each_coalescing_scope_independently() {
             MaintenanceTaskPriority::Normal,
             MaintenanceTaskScope::InheritedLayer {
                 branch_id: branch_id(13),
+                layer_index: 0,
             },
             MaintenanceTaskPolicy::coalescing(),
         )
@@ -423,8 +424,36 @@ fn maintenance_executor_coalesces_each_coalescing_scope_independently() {
         assert_eq!(duplicate.task_id(), first.task_id());
     }
 
-    assert_eq!(executor.status().pending_tasks(), 4);
+    let second_layer = executor
+        .enqueue(
+            open,
+            MaintenanceTaskRequest::materialization_layer(branch_id(13), 1),
+        )
+        .expect("second layer");
+    assert_eq!(second_layer.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(executor.status().pending_tasks(), 5);
     assert_eq!(executor.stats().coalesced(), 4);
+}
+
+#[test]
+fn checkpoint_tasks_coalesce_across_global_and_checkpoint_scope() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(1).expect("executor");
+    let checkpoint_scoped = MaintenanceTaskRequest::checkpoint();
+    let global_scoped = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Checkpoint,
+        MaintenanceTaskPriority::High,
+        MaintenanceTaskScope::Global,
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .expect("global checkpoint");
+
+    let first = executor.enqueue(open, checkpoint_scoped).expect("first");
+    let second = executor.enqueue(open, global_scoped).expect("second");
+
+    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert_eq!(second.task_id(), first.task_id());
+    assert_eq!(executor.status().pending_tasks(), 1);
 }
 
 #[test]
@@ -639,10 +668,10 @@ fn maintenance_executor_cancel_and_drain_respect_close_policy() {
     let cancel = executor
         .cancel_pending_for_close(closing)
         .expect("cancel for close");
-    assert_eq!(cancel.canceled_tasks(), 1);
-    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(cancel.canceled_tasks(), 2);
+    assert_eq!(executor.status().pending_tasks(), 0);
     assert_eq!(executor.stats().drained(), 1);
-    assert_eq!(executor.stats().canceled(), 1);
+    assert_eq!(executor.stats().canceled(), 2);
 }
 
 #[test]
@@ -664,7 +693,7 @@ fn maintenance_executor_empty_drain_and_cancel_are_idempotent() {
 }
 
 #[test]
-fn maintenance_executor_cancel_removes_only_pending_cancelable_tasks() {
+fn maintenance_executor_cancel_keeps_only_drain_required_tasks() {
     let open = open_state();
     let closing = closing_state();
     let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
@@ -697,17 +726,14 @@ fn maintenance_executor_cancel_removes_only_pending_cancelable_tasks() {
         .cancel_pending_for_close(closing)
         .expect("cancel close");
 
-    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(cancel.canceled_tasks(), 2);
     assert_eq!(
         executor
             .pending_tasks()
             .iter()
             .map(|task| task.policy().close_policy())
             .collect::<Vec<_>>(),
-        vec![
-            MaintenanceClosePolicy::DrainBeforeClose,
-            MaintenanceClosePolicy::Ordinary,
-        ]
+        vec![MaintenanceClosePolicy::DrainBeforeClose]
     );
 }
 

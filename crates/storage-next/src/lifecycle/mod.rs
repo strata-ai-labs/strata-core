@@ -11,6 +11,7 @@
 mod cache;
 mod capability;
 mod checkpoint;
+mod compaction;
 mod config;
 mod durable;
 mod error;
@@ -46,6 +47,19 @@ pub(crate) use checkpoint::{
     LifecycleCheckpointRequest, LifecycleCheckpointStatus, LifecycleFlushWatermarkOutcome,
     LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest, LifecycleFlushWatermarkStatus,
     LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest, LifecycleWalTruncationStatus,
+};
+#[allow(
+    unused_imports,
+    reason = "table rewrite maintenance exports define the local surface for later slices"
+)]
+pub(crate) use compaction::{
+    collect_storage_pressure, compact_cache_branch, compact_durable_branch,
+    compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
+    materialize_cache_branch, materialize_durable_branch, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleCompactionStatus, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleMaterializationStatus, LifecycleStoragePressure,
+    LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
+    LifecycleTableRewriteDurability,
 };
 #[allow(
     unused_imports,
@@ -96,12 +110,12 @@ pub(crate) use health::{
 )]
 pub(crate) use maintenance::{
     maintenance_ready_for_recovery_health, telemetry_health_debt, LifecycleMaintenanceExecutor,
-    LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceClosePolicy,
-    MaintenanceCoalesceKey, MaintenanceDrainOutcome, MaintenanceEnqueueOutcome,
-    MaintenanceEnqueueStatus, MaintenanceExecutorStatus, MaintenanceFaultHook,
-    MaintenanceFaultPoint, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
-    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
-    NoopMaintenanceFaultHook,
+    LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
+    MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceDrainOutcome,
+    MaintenanceEnqueueOutcome, MaintenanceEnqueueStatus, MaintenanceExecutorStatus,
+    MaintenanceFaultHook, MaintenanceFaultPoint, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, NoopMaintenanceFaultHook,
 };
 #[allow(
     unused_imports,

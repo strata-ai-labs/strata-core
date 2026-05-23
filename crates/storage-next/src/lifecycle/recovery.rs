@@ -590,13 +590,7 @@ fn decode_checkpoint_rows(sections: &[SnapshotSection]) -> LifecycleResult<Vec<S
     let mut rows = Vec::new();
     for section in sections {
         if section.section_kind() != SNAPSHOT_ROW_SECTION_KIND {
-            return Err(LifecycleError::lower_layer_with(
-                LifecycleLowerLayer::Format,
-                "snapshot section decode failed",
-                FormatError::InvalidValue {
-                    field: "snapshot_section_kind",
-                },
-            ));
+            continue;
         }
         rows.extend(decode_checkpoint_row_payload(section.payload())?);
     }

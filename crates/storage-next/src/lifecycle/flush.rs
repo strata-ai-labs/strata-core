@@ -82,7 +82,7 @@ impl FlushFrozenRequest {
         target_level: BranchLevel,
     ) -> LifecycleResult<Self> {
         if target_level != BranchLevel::ZERO {
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "flush target level must be zero",
             });
         }
@@ -249,10 +249,25 @@ impl FlushFrozenOutcome {
             FlushFrozenStatus::PublishedNotInstalled => MaintenanceOutcomeStatus::Failed,
         };
         let affected_objects = usize::from(self.table_object.is_some());
-        let retryable = matches!(self.status, FlushFrozenStatus::PublishedNotInstalled);
-        MaintenanceOutcome::new(MaintenanceTaskKind::Flush, status)
+        let retryable = matches!(self.status, FlushFrozenStatus::PublishedNotInstalled)
+            && self
+                .failure
+                .as_ref()
+                .is_some_and(published_not_installed_retryable);
+        let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Flush, status)
             .with_effects(affected_objects, 0, retryable)
-            .with_stats(LifecycleStats::new(0, 0, 1, 0, 0))
+            .with_state_changes(usize::from(self.install_outcome.is_some()))
+            .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
+        if let Some(object) = &self.table_object {
+            outcome = outcome.with_affected_object_names(vec![object.as_str().to_owned()]);
+        }
+        if matches!(self.status, FlushFrozenStatus::DeferredNoFrozenState) {
+            outcome = outcome.with_reason("flush has no frozen state to publish");
+        }
+        if matches!(self.status, FlushFrozenStatus::PublishedNotInstalled) {
+            outcome = outcome.with_reason("flush published table object before install failed");
+        }
+        outcome
     }
 }
 
@@ -298,7 +313,7 @@ pub(crate) fn flush_durable_branch(
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
     let branch_component = request.branch_id().to_string();
-    let object_id = derived_object_id(request, frozen_index, &table_facts, artifact.bytes());
+    let object_id = derived_object_id(request, &table_facts, artifact.bytes());
     let object_facts = publish_or_load_existing(
         table_service,
         &branch_component,
@@ -360,12 +375,12 @@ pub(crate) fn flush_request_from_maintenance_task(
     task: &MaintenanceTask,
 ) -> LifecycleResult<FlushFrozenRequest> {
     if task.kind() != MaintenanceTaskKind::Flush {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "maintenance task kind is not flush",
         });
     }
     let MaintenanceTaskScope::Branch(branch_id) = task.scope() else {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "flush task must target a branch",
         });
     };
@@ -382,14 +397,14 @@ fn select_frozen_index(
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<Option<usize>> {
     if branch.branch_id() != request.branch_id() {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "flush branch id must match branch state",
         });
     }
     let frozen_count = branch.frozen_table_count();
     match request.frozen_index() {
         Some(index) if index < frozen_count => Ok(Some(index)),
-        Some(_) => Err(LifecycleError::MaintenanceFailed {
+        Some(_) => Err(LifecycleError::MaintenanceTaskFailed {
             reason: "flush frozen index must exist",
         }),
         None if frozen_count == 0 => Ok(None),
@@ -402,13 +417,14 @@ fn build_frozen_artifact(
     request: &FlushFrozenRequest,
     frozen_index: usize,
 ) -> LifecycleResult<crate::table::BuiltTableArtifact> {
-    let frozen = branch
-        .frozen()
-        .get(frozen_index)
-        .ok_or(LifecycleError::MaintenanceFailed {
-            reason: "flush frozen index must exist",
-        })?;
-    let identity = derived_table_identity(request, frozen_index, frozen)?;
+    let frozen =
+        branch
+            .frozen()
+            .get(frozen_index)
+            .ok_or(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush frozen index must exist",
+            })?;
+    let identity = derived_table_identity(request, frozen)?;
     ImmutableTableBuilder::new(TableBuilderConfig::default())
         .map_err(table_error)?
         .build_from_frozen(identity, frozen)
@@ -417,12 +433,11 @@ fn build_frozen_artifact(
 
 fn derived_table_identity(
     request: &FlushFrozenRequest,
-    frozen_index: usize,
     frozen: &FrozenTable,
 ) -> LifecycleResult<TableIdentity> {
     let facts = frozen.facts();
     TableIdentity::new(format!(
-        "{}-{}-frozen-{frozen_index}-{}-{}-{}",
+        "{}-{}-frozen-{}-{}-{}",
         request.table_identity_seed().as_str(),
         request.branch_id(),
         facts.row_count(),
@@ -436,12 +451,11 @@ fn derived_table_identity(
 
 fn derived_object_id(
     request: &FlushFrozenRequest,
-    frozen_index: usize,
     table_facts: &TableRuntimeFacts,
     bytes: &[u8],
 ) -> String {
     format!(
-        "{}-frozen-{frozen_index}-{}-{}-{}",
+        "{}-frozen-{}-{}-{}",
         request.table_object_id().as_str(),
         table_facts.row_count(),
         table_facts.commit_range().max().as_u64(),
@@ -509,16 +523,21 @@ fn branch_owned_table(
 
 fn validate_single_component(field: &'static str, value: &str) -> LifecycleResult<()> {
     if value.is_empty() {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::InvalidConfig {
+            field,
             reason: "flush component must not be empty",
         });
     }
     if value.as_bytes().contains(&0) || value.contains('/') {
-        return Err(LifecycleError::MaintenanceFailed {
+        return Err(LifecycleError::InvalidConfig {
+            field,
             reason: "flush component must be a single object component",
         });
     }
-    ObjectName::new(value).map_err(|_| LifecycleError::MaintenanceFailed { reason: field })?;
+    ObjectName::new(value).map_err(|_| LifecycleError::InvalidConfig {
+        field,
+        reason: "flush component must be a valid object name",
+    })?;
     Ok(())
 }
 
@@ -554,6 +573,16 @@ fn table_publish_reason(error: &PublishError) -> &'static str {
             "table object publish durability unconfirmed"
         }
     }
+}
+
+fn published_not_installed_retryable(error: &LifecycleError) -> bool {
+    matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::Service | LifecycleLowerLayer::Backend,
+            ..
+        }
+    )
 }
 
 fn table_read_error(error: TableObjectReadError) -> LifecycleError {

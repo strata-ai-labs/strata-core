@@ -31,7 +31,22 @@ pub(crate) enum LifecycleError {
     MaintenanceFailed {
         reason: &'static str,
     },
+    MaintenanceQueueFull {
+        reason: &'static str,
+    },
+    MaintenanceTaskFailed {
+        reason: &'static str,
+    },
+    FlushPublicationFailed {
+        reason: &'static str,
+    },
+    CheckpointPublicationFailed {
+        reason: &'static str,
+    },
     RetentionBlocked {
+        reason: &'static str,
+    },
+    WalRetentionProofIncomplete {
         reason: &'static str,
     },
     CloseFailed {
@@ -96,7 +111,18 @@ impl LifecycleError {
             Self::CapabilityMismatch { .. } => "failed_precondition.lifecycle.capability",
             Self::RecoveryFailed { .. } => "corruption.lifecycle.recovery",
             Self::MaintenanceFailed { .. } => "failed_precondition.lifecycle.maintenance",
+            Self::MaintenanceQueueFull { .. } => "resource_exhausted.lifecycle.maintenance_queue",
+            Self::MaintenanceTaskFailed { .. } => "failed_precondition.lifecycle.maintenance_task",
+            Self::FlushPublicationFailed { .. } => {
+                "failed_precondition.lifecycle.flush_publication"
+            }
+            Self::CheckpointPublicationFailed { .. } => {
+                "failed_precondition.lifecycle.checkpoint_publication"
+            }
             Self::RetentionBlocked { .. } => "failed_precondition.lifecycle.retention",
+            Self::WalRetentionProofIncomplete { .. } => {
+                "failed_precondition.lifecycle.wal_retention"
+            }
             Self::CloseFailed { .. } => "failed_precondition.lifecycle.close",
             Self::TimelineRecoveryMismatch { .. } => "corruption.lifecycle.timeline",
             Self::WalTailRepairRejected { .. } => "failed_precondition.lifecycle.wal_tail_repair",
@@ -158,7 +184,27 @@ impl PartialEq for LifecycleError {
                 Self::MaintenanceFailed { reason: left },
                 Self::MaintenanceFailed { reason: right },
             )
+            | (
+                Self::MaintenanceQueueFull { reason: left },
+                Self::MaintenanceQueueFull { reason: right },
+            )
+            | (
+                Self::MaintenanceTaskFailed { reason: left },
+                Self::MaintenanceTaskFailed { reason: right },
+            )
+            | (
+                Self::FlushPublicationFailed { reason: left },
+                Self::FlushPublicationFailed { reason: right },
+            )
+            | (
+                Self::CheckpointPublicationFailed { reason: left },
+                Self::CheckpointPublicationFailed { reason: right },
+            )
             | (Self::RetentionBlocked { reason: left }, Self::RetentionBlocked { reason: right })
+            | (
+                Self::WalRetentionProofIncomplete { reason: left },
+                Self::WalRetentionProofIncomplete { reason: right },
+            )
             | (Self::CloseFailed { reason: left }, Self::CloseFailed { reason: right }) => {
                 left == right
             }
@@ -245,7 +291,22 @@ impl fmt::Display for LifecycleError {
             Self::MaintenanceFailed { reason } => {
                 write!(formatter, "maintenance failed: {reason}")
             }
+            Self::MaintenanceQueueFull { reason } => {
+                write!(formatter, "maintenance queue is full: {reason}")
+            }
+            Self::MaintenanceTaskFailed { reason } => {
+                write!(formatter, "maintenance task failed: {reason}")
+            }
+            Self::FlushPublicationFailed { reason } => {
+                write!(formatter, "flush publication failed: {reason}")
+            }
+            Self::CheckpointPublicationFailed { reason } => {
+                write!(formatter, "checkpoint publication failed: {reason}")
+            }
             Self::RetentionBlocked { reason } => write!(formatter, "retention blocked: {reason}"),
+            Self::WalRetentionProofIncomplete { reason } => {
+                write!(formatter, "WAL retention proof incomplete: {reason}")
+            }
             Self::CloseFailed { reason } => write!(formatter, "close failed: {reason}"),
             Self::TimelineRecoveryMismatch { reason } => {
                 write!(formatter, "timeline recovery mismatch: {reason}")

@@ -27,6 +27,7 @@ use std::fmt;
 use strata_core_next::{BranchId, CommitVersion};
 
 mod bootstrap;
+mod maintenance;
 
 pub(crate) use bootstrap::{LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport};
 

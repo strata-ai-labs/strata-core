@@ -43,8 +43,11 @@ pub(crate) struct MaintenanceOutcome {
     status: MaintenanceOutcomeStatus,
     recovery_health: Option<RecoveryHealth>,
     affected_objects: usize,
+    affected_object_names: Vec<String>,
     bytes_reclaimed: u64,
     retryable: bool,
+    reason: Option<&'static str>,
+    state_changes: usize,
     stats: LifecycleStats,
 }
 
@@ -235,14 +238,22 @@ impl MaintenanceOutcome {
             status,
             recovery_health: None,
             affected_objects: 0,
+            affected_object_names: Vec::new(),
             bytes_reclaimed: 0,
             retryable: false,
+            reason: None,
+            state_changes: 0,
             stats: LifecycleStats::new(0, 0, 0, 0, 0),
         }
     }
 
     pub(crate) fn with_recovery_health(mut self, health: RecoveryHealth) -> Self {
         self.recovery_health = Some(health);
+        self
+    }
+
+    pub(crate) const fn with_status(mut self, status: MaintenanceOutcomeStatus) -> Self {
+        self.status = status;
         self
     }
 
@@ -255,6 +266,22 @@ impl MaintenanceOutcome {
         self.affected_objects = affected_objects;
         self.bytes_reclaimed = bytes_reclaimed;
         self.retryable = retryable;
+        self
+    }
+
+    pub(crate) fn with_affected_object_names(mut self, names: Vec<String>) -> Self {
+        self.affected_objects = names.len();
+        self.affected_object_names = names;
+        self
+    }
+
+    pub(crate) const fn with_reason(mut self, reason: &'static str) -> Self {
+        self.reason = Some(reason);
+        self
+    }
+
+    pub(crate) const fn with_state_changes(mut self, state_changes: usize) -> Self {
+        self.state_changes = state_changes;
         self
     }
 
@@ -288,12 +315,24 @@ impl MaintenanceOutcome {
         self.affected_objects
     }
 
+    pub(crate) fn affected_object_names(&self) -> &[String] {
+        &self.affected_object_names
+    }
+
     pub(crate) const fn bytes_reclaimed(&self) -> u64 {
         self.bytes_reclaimed
     }
 
     pub(crate) const fn retryable(&self) -> bool {
         self.retryable
+    }
+
+    pub(crate) const fn reason(&self) -> Option<&'static str> {
+        self.reason
+    }
+
+    pub(crate) const fn state_changes(&self) -> usize {
+        self.state_changes
     }
 
     pub(crate) const fn stats(&self) -> LifecycleStats {

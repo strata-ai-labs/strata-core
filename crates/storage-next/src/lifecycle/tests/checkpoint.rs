@@ -36,7 +36,8 @@ const DATABASE_ID: [u8; 16] = [0x7d; 16];
 fn checkpoint_request_rejects_zero_snapshot_id() {
     assert_eq!(
         LifecycleCheckpointRequest::new(branch_id(0x10), 0, Timestamp::from_micros(1)),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::InvalidConfig {
+            field: "checkpoint_snapshot_id",
             reason: "checkpoint snapshot id must be nonzero",
         })
     );
@@ -57,7 +58,10 @@ fn checkpoint_task_rejects_wrong_maintenance_scope() {
     )
     .expect_err("wrong task rejects");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
     assert_eq!(backend.event_count(), 0);
 }
 
@@ -404,7 +408,10 @@ fn checkpoint_existing_snapshot_id_collision_fails_closed() {
         .checkpoint(&request)
         .expect_err("second checkpoint rejects");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.checkpoint_publication"
+    );
 }
 
 #[test]
@@ -590,7 +597,7 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
             CommitVersion::new(7),
             table_only,
         ),
-        Err(LifecycleError::RetentionBlocked { .. })
+        Err(LifecycleError::WalRetentionProofIncomplete { .. })
     ));
 
     let persisted = persist_flush_watermark(
@@ -674,15 +681,15 @@ fn flush_watermark_rejects_bounds_and_preserves_branch_state() {
 
     assert_eq!(
         above_checkpoint.code(),
-        "failed_precondition.lifecycle.maintenance"
+        "failed_precondition.lifecycle.wal_retention"
     );
     assert_eq!(
         above_visible.code(),
-        "failed_precondition.lifecycle.maintenance"
+        "failed_precondition.lifecycle.wal_retention"
     );
     assert_eq!(
         already_not_persisted.code(),
-        "failed_precondition.lifecycle.maintenance"
+        "failed_precondition.lifecycle.wal_retention"
     );
     assert_eq!(shell.branch_state().facts(), before);
 }
@@ -897,7 +904,7 @@ fn wal_truncation_request_rejects_zero_proof() {
         LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
             CommitVersion::ZERO,
         )),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::WalRetentionProofIncomplete {
             reason: "WAL retention proof must be nonzero",
         })
     );

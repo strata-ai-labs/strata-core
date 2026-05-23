@@ -245,6 +245,21 @@ fn lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete() {
 }
 
 #[test]
+fn lifecycle_table_rewrite_source_uses_branch_runtime_boundaries() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/compaction.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle table rewrite source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_table_rewrite_dependency(line),
+            "src/lifecycle/compaction.rs:{} calls forbidden table rewrite dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
     assert_general_source_guard_fixtures();
     assert_capability_preflight_fixtures();
@@ -253,6 +268,7 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_flush_runtime_fixtures();
     assert_checkpoint_runtime_fixtures();
     assert_recovery_runtime_fixtures();
+    assert_table_rewrite_fixtures();
     assert_public_surface_fixtures();
 }
 
@@ -459,6 +475,27 @@ fn assert_recovery_runtime_fixtures() {
     ));
 }
 
+fn assert_table_rewrite_fixtures() {
+    assert!(contains_forbidden_table_rewrite_dependency(
+        "truncate_wal(service, request)?;"
+    ));
+    assert!(contains_forbidden_table_rewrite_dependency(
+        "persist_flush_watermark(version)?;"
+    ));
+    assert!(contains_forbidden_table_rewrite_dependency(
+        "delete_covered_segments(proof)?;"
+    ));
+    assert!(contains_forbidden_table_rewrite_dependency(
+        "TableObjectService::new(backend);"
+    ));
+    assert!(contains_forbidden_table_rewrite_dependency(
+        "TableCompactor::new(config, builder)?;"
+    ));
+    assert!(contains_forbidden_table_rewrite_dependency(
+        "quarantine.load_inventory(branch, db, codec)?;"
+    ));
+}
+
 fn assert_public_surface_fixtures() {
     assert!(is_public_surface_leak("pub struct LifecycleRuntime;"));
 
@@ -552,7 +589,7 @@ fn contains_architecture_label(line: &str) -> bool {
     let bytes = line.as_bytes();
     bytes
         .windows(2)
-        .any(|window| (window[0] == b'L' || window[0] == b'l') && window[1].is_ascii_digit())
+        .any(|window| (window[0] == b'L' || window[0] == b'l') && matches!(window[1], b'1'..=b'9'))
 }
 
 fn contains_sleep_or_thread_spawn(line: &str) -> bool {
@@ -825,6 +862,28 @@ fn contains_forbidden_recovery_runtime_dependency(line: &str) -> bool {
         "reconstruct(",
         "stratahub",
         "follower",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_table_rewrite_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "truncate_wal(",
+        "persist_flush_watermark(",
+        "delete_covered_segments(",
+        "checkpoint_durable_branch(",
+        "checkpoint_request",
+        "wal_truncation",
+        "quarantine",
+        "purge",
+        "repair_latest_tail",
+        "tableobjectservice",
+        "publish_create(",
+        "open_reader(",
+        "tablecompactor",
+        "keepalltablecompactionpolicy",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

@@ -7,6 +7,7 @@ use strata_core_next::CommitVersion;
 mod cache;
 mod capability;
 mod checkpoint;
+mod compaction;
 mod durable;
 mod flush;
 mod maintenance;
@@ -489,6 +490,9 @@ fn maintenance_facts_are_constructible() {
     )
     .with_recovery_health(RecoveryHealth::Healthy)
     .with_effects(2, 512, true)
+    .with_affected_object_names(vec!["snapshot/object".to_owned()])
+    .with_reason("checkpoint has no visible rows to publish")
+    .with_state_changes(1)
     .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
     assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::Checkpoint);
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
@@ -496,9 +500,15 @@ fn maintenance_facts_are_constructible() {
         maintenance.recovery_health(),
         Some(&RecoveryHealth::Healthy)
     );
-    assert_eq!(maintenance.affected_objects(), 2);
+    assert_eq!(maintenance.affected_objects(), 1);
+    assert_eq!(maintenance.affected_object_names(), ["snapshot/object"]);
     assert_eq!(maintenance.bytes_reclaimed(), 512);
     assert!(maintenance.retryable());
+    assert_eq!(
+        maintenance.reason(),
+        Some("checkpoint has no visible rows to publish")
+    );
+    assert_eq!(maintenance.state_changes(), 1);
     assert_eq!(maintenance.stats().maintenance_tasks(), 1);
     assert_eq!(
         MaintenanceOutcome::new(
@@ -597,7 +607,7 @@ fn lifecycle_stats_default_to_zero_and_preserve_explicit_counts() {
 }
 
 #[test]
-fn lifecycle_error_display_and_source_chain_are_typed() {
+fn lifecycle_error_core_codes_are_typed() {
     for (error, expected_code) in [
         (
             LifecycleError::InvalidConfig {
@@ -633,18 +643,6 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
             "corruption.lifecycle.recovery",
         ),
         (
-            LifecycleError::MaintenanceFailed {
-                reason: "task rejected",
-            },
-            "failed_precondition.lifecycle.maintenance",
-        ),
-        (
-            LifecycleError::RetentionBlocked {
-                reason: "proof unavailable",
-            },
-            "failed_precondition.lifecycle.retention",
-        ),
-        (
             LifecycleError::CloseFailed {
                 reason: "durable sync failed",
             },
@@ -671,10 +669,62 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
             "failed_precondition.lifecycle.recovery_visibility",
         ),
     ] {
-        assert_eq!(error.code(), expected_code);
-        assert_bounded_storage_display(&error.to_string());
+        assert_lifecycle_error_code(&error, expected_code);
     }
+}
 
+#[test]
+fn lifecycle_error_maintenance_codes_are_typed() {
+    for (error, expected_code) in [
+        (
+            LifecycleError::MaintenanceFailed {
+                reason: "task rejected",
+            },
+            "failed_precondition.lifecycle.maintenance",
+        ),
+        (
+            LifecycleError::MaintenanceQueueFull {
+                reason: "queue full",
+            },
+            "resource_exhausted.lifecycle.maintenance_queue",
+        ),
+        (
+            LifecycleError::MaintenanceTaskFailed {
+                reason: "task rejected",
+            },
+            "failed_precondition.lifecycle.maintenance_task",
+        ),
+        (
+            LifecycleError::FlushPublicationFailed {
+                reason: "table object published but not installed",
+            },
+            "failed_precondition.lifecycle.flush_publication",
+        ),
+        (
+            LifecycleError::CheckpointPublicationFailed {
+                reason: "snapshot id did not advance",
+            },
+            "failed_precondition.lifecycle.checkpoint_publication",
+        ),
+        (
+            LifecycleError::RetentionBlocked {
+                reason: "proof unavailable",
+            },
+            "failed_precondition.lifecycle.retention",
+        ),
+        (
+            LifecycleError::WalRetentionProofIncomplete {
+                reason: "proof unavailable",
+            },
+            "failed_precondition.lifecycle.wal_retention",
+        ),
+    ] {
+        assert_lifecycle_error_code(&error, expected_code);
+    }
+}
+
+#[test]
+fn lifecycle_error_source_chain_is_typed() {
     let source = DummySource("backend unavailable");
     let error =
         LifecycleError::lower_layer_with(LifecycleLowerLayer::Backend, "read failed", source);
@@ -691,6 +741,11 @@ fn lifecycle_error_display_and_source_chain_are_typed() {
     assert_bounded_storage_display(
         &LifecycleError::lower_layer(LifecycleLowerLayer::Service, "publish rejected").to_string(),
     );
+}
+
+fn assert_lifecycle_error_code(error: &LifecycleError, expected_code: &str) {
+    assert_eq!(error.code(), expected_code);
+    assert_bounded_storage_display(&error.to_string());
 }
 
 #[test]

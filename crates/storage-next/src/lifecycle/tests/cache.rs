@@ -474,7 +474,7 @@ fn cache_close_rejects_pending_drain_required_maintenance_before_transitioning()
 
     assert_eq!(
         error,
-        LifecycleError::MaintenanceFailed {
+        LifecycleError::MaintenanceTaskFailed {
             reason: "cache close cannot complete while drain-required maintenance is pending",
         }
     );

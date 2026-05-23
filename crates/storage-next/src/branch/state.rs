@@ -1253,6 +1253,11 @@ impl BranchLocalState {
         if watermark == CommitVersion::ZERO {
             return Ok(Vec::new());
         }
+        if !self.inherited_layers.is_empty() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "checkpoint requires inherited layers to be materialized first",
+            });
+        }
 
         let mut rows = Vec::new();
         for row in self.active.iter() {

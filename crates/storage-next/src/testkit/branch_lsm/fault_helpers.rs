@@ -3,7 +3,7 @@ fn check_materialization_fault_window(
     source: BranchId,
     child: BranchId,
 ) -> Result<(), TestkitError> {
-    let other_source = branch_id(script_byte(script, 231).wrapping_add(2));
+    let other_source = distinct_branch_id(script_byte(script, 231), &[source, child]);
     let materialized_layer = branch_inherited_layer(
         source,
         CommitVersion::new(5),
@@ -618,6 +618,16 @@ fn branch_id(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; BranchId::BYTE_LEN])
 }
 
+fn distinct_branch_id(seed: u8, excluded: &[BranchId]) -> BranchId {
+    for offset in 0..=u8::MAX {
+        let candidate = branch_id(seed.wrapping_add(offset));
+        if !excluded.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("more branch-id exclusions than byte-backed test ids");
+}
+
 fn table_identity(identity: &str) -> Result<TableIdentity, TestkitError> {
     TableIdentity::new(identity)
         .map_err(|err| TestkitError::new(format!("table identity failed: {err}")))
@@ -836,4 +846,3 @@ impl fmt::Display for LeafError {
 }
 
 impl Error for LeafError {}
-

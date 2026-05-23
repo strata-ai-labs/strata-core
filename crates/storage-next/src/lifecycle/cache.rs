@@ -1,15 +1,20 @@
 //! Cache-mode lifecycle runtime.
 
 use super::{
+    compaction::{
+        collect_storage_pressure, compact_cache_branch, compaction_request_from_maintenance_task,
+        materialization_request_from_maintenance_task, materialize_cache_branch,
+    },
     flush::{flush_cache_branch, flush_request_from_maintenance_task},
     validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus,
     ClosePhase, FlushFrozenOutcome, FlushFrozenRequest, LifecycleCapabilityOutcome,
-    LifecycleCloseFact, LifecycleError, LifecycleMaintenanceExecutor, LifecycleOperationKind,
-    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleTransitionTrigger, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceTask, MaintenanceTaskRequest,
-    MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
-    StorageOpenPlan,
+    LifecycleCloseFact, LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
+    LifecycleMaintenanceExecutor, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
+    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleStoragePressure, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceTask,
+    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth,
+    StorageMode, StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
@@ -192,6 +197,38 @@ impl<S> LifecycleCacheRuntime<S> {
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
+    pub(crate) fn compact_branch_tables(
+        &mut self,
+        request: &LifecycleCompactionRequest,
+    ) -> LifecycleResult<LifecycleCompactionOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        compact_cache_branch(&mut self.branch, request)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) fn materialize_inherited_layer(
+        &mut self,
+        request: &LifecycleMaterializationRequest,
+    ) -> LifecycleResult<LifecycleMaterializationOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        materialize_cache_branch(&mut self.branch, request)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
+    pub(crate) fn storage_pressure(&self) -> LifecycleStoragePressure {
+        collect_storage_pressure(&self.branch, self.maintenance.status())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by concrete maintenance modules"
+    )]
     pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
         self.maintenance.status()
     }
@@ -204,6 +241,11 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
         request: MaintenanceTaskRequest,
     ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
+        if !cache_supports_maintenance_kind(request.kind()) {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "volatile runtime does not support durable maintenance task",
+            });
+        }
         self.maintenance.enqueue(self.state, request)
     }
 
@@ -225,7 +267,41 @@ impl<S> LifecycleCacheRuntime<S> {
         let maintenance = &mut self.maintenance;
         let branch = &mut self.branch;
         let mut runner = CacheFlushMaintenanceRunner { branch };
-        maintenance.run_next(state, &mut runner)
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::Flush
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_compaction_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &mut self.branch;
+        let mut runner = CacheCompactionMaintenanceRunner { branch };
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::Compaction
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_materialization_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &mut self.branch;
+        let mut runner = CacheMaterializationMaintenanceRunner { branch };
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::Materialization
+        })
     }
 
     pub(crate) fn close(&mut self) -> LifecycleResult<CloseOutcome> {
@@ -238,7 +314,7 @@ impl<S> LifecycleCacheRuntime<S> {
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
                 if self.maintenance.has_close_required_drain() {
-                    return Err(LifecycleError::MaintenanceFailed {
+                    return Err(LifecycleError::MaintenanceTaskFailed {
                         reason: "cache close cannot complete while drain-required maintenance is pending",
                     });
                 }
@@ -268,6 +344,28 @@ impl MaintenanceTaskRunner for CacheFlushMaintenanceRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = flush_request_from_maintenance_task(task)?;
         Ok(flush_cache_branch(self.branch, &request)?.maintenance_outcome())
+    }
+}
+
+struct CacheCompactionMaintenanceRunner<'a> {
+    branch: &'a mut BranchLocalState,
+}
+
+impl MaintenanceTaskRunner for CacheCompactionMaintenanceRunner<'_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = compaction_request_from_maintenance_task(task)?;
+        Ok(compact_cache_branch(self.branch, &request)?.maintenance_outcome())
+    }
+}
+
+struct CacheMaterializationMaintenanceRunner<'a> {
+    branch: &'a mut BranchLocalState,
+}
+
+impl MaintenanceTaskRunner for CacheMaterializationMaintenanceRunner<'_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = materialization_request_from_maintenance_task(task)?;
+        Ok(materialize_cache_branch(self.branch, &request)?.maintenance_outcome())
     }
 }
 
@@ -335,6 +433,16 @@ const fn cache_idempotent_close_outcome() -> CloseOutcome {
         .with_close_fact(LifecycleCloseFact::AlreadyClosed)
         .with_close_effects(CloseOutcomeEffects::volatile_complete(true))
         .with_stats(LifecycleStats::new(1, 0, 0, 0, 1))
+}
+
+const fn cache_supports_maintenance_kind(kind: MaintenanceTaskKind) -> bool {
+    matches!(
+        kind,
+        MaintenanceTaskKind::Flush
+            | MaintenanceTaskKind::Compaction
+            | MaintenanceTaskKind::Materialization
+            | MaintenanceTaskKind::HealthCollection
+    )
 }
 
 fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {

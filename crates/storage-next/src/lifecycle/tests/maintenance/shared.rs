@@ -32,6 +32,7 @@ pub(super) fn valid_kind_scopes() -> [(MaintenanceTaskKind, MaintenanceTaskScope
             MaintenanceTaskKind::Materialization,
             MaintenanceTaskScope::InheritedLayer {
                 branch_id: branch_id(3),
+                layer_index: 0,
             },
         ),
         (

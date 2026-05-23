@@ -20,6 +20,7 @@ pub(crate) struct MaintenanceTaskId(u64);
 pub(crate) struct MaintenanceTaskSequence(u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum MaintenanceTaskPriority {
     Critical,
     High,
@@ -28,6 +29,7 @@ pub(crate) enum MaintenanceTaskPriority {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum MaintenanceTaskScope {
     Global,
     Branch(BranchId),
@@ -35,11 +37,18 @@ pub(crate) enum MaintenanceTaskScope {
     Checkpoint,
     Quarantine,
     Retention,
-    TableLevel { branch_id: BranchId, level: u8 },
-    InheritedLayer { branch_id: BranchId },
+    TableLevel {
+        branch_id: BranchId,
+        level: u8,
+    },
+    InheritedLayer {
+        branch_id: BranchId,
+        layer_index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum MaintenanceClosePolicy {
     Ordinary,
     DrainBeforeClose,
@@ -58,6 +67,13 @@ pub(crate) struct MaintenanceTaskRequest {
     priority: MaintenanceTaskPriority,
     scope: MaintenanceTaskScope,
     policy: MaintenanceTaskPolicy,
+    checkpoint_options: Option<MaintenanceCheckpointOptions>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MaintenanceCheckpointOptions {
+    snapshot_id: Option<u64>,
+    truncate_wal_after_checkpoint: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +90,7 @@ pub(crate) struct MaintenanceCoalesceKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum MaintenanceEnqueueStatus {
     Enqueued,
     Coalesced,
@@ -130,6 +147,7 @@ pub(crate) struct LifecycleMaintenanceExecutor {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub(crate) enum MaintenanceFaultPoint {
     BeforeEnqueue,
     AfterEnqueue,
@@ -156,7 +174,8 @@ pub(crate) struct NoopMaintenanceFaultHook;
 impl MaintenanceTaskId {
     pub(crate) const fn new(value: u64) -> LifecycleResult<Self> {
         if value == 0 {
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::InvalidConfig {
+                field: "maintenance_task_id",
                 reason: "maintenance task id must be nonzero",
             });
         }
@@ -246,6 +265,7 @@ impl MaintenanceTaskRequest {
             priority,
             scope,
             policy,
+            checkpoint_options: None,
         };
         request.validate()?;
         Ok(request)
@@ -281,6 +301,15 @@ impl MaintenanceTaskRequest {
         .expect("checkpoint task request is valid")
     }
 
+    pub(crate) fn checkpoint_with_options(options: MaintenanceCheckpointOptions) -> Self {
+        let mut request = Self::checkpoint();
+        request.checkpoint_options = Some(options);
+        request
+            .validate()
+            .expect("checkpoint task options are valid");
+        request
+    }
+
     pub(crate) fn wal_truncation() -> Self {
         Self::new(
             MaintenanceTaskKind::WalTruncation,
@@ -289,6 +318,33 @@ impl MaintenanceTaskRequest {
             MaintenanceTaskPolicy::coalescing(),
         )
         .expect("WAL truncation task request is valid")
+    }
+
+    pub(crate) fn compaction(branch_id: BranchId, level: u8) -> Self {
+        Self::new(
+            MaintenanceTaskKind::Compaction,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::TableLevel { branch_id, level },
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("compaction task request is valid")
+    }
+
+    pub(crate) fn materialization(branch_id: BranchId) -> Self {
+        Self::materialization_layer(branch_id, 0)
+    }
+
+    pub(crate) fn materialization_layer(branch_id: BranchId, layer_index: usize) -> Self {
+        Self::new(
+            MaintenanceTaskKind::Materialization,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::InheritedLayer {
+                branch_id,
+                layer_index,
+            },
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("materialization task request is valid")
     }
 
     pub(crate) const fn kind(self) -> MaintenanceTaskKind {
@@ -307,11 +363,15 @@ impl MaintenanceTaskRequest {
         self.policy
     }
 
+    pub(crate) const fn checkpoint_options(self) -> Option<MaintenanceCheckpointOptions> {
+        self.checkpoint_options
+    }
+
     pub(crate) const fn coalesce_key(self) -> Option<MaintenanceCoalesceKey> {
         if self.policy.coalesces() {
             Some(MaintenanceCoalesceKey {
                 kind: self.kind,
-                scope: self.scope,
+                scope: normalized_coalesce_scope(self.kind, self.scope),
             })
         } else {
             None
@@ -319,13 +379,34 @@ impl MaintenanceTaskRequest {
     }
 
     fn validate(self) -> LifecycleResult<()> {
-        if scope_matches_kind(self.kind, self.scope) {
-            Ok(())
-        } else {
-            Err(LifecycleError::MaintenanceFailed {
+        if !scope_matches_kind(self.kind, self.scope) {
+            return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "maintenance task scope does not match task kind",
-            })
+            });
         }
+        if self.checkpoint_options.is_some() && self.kind != MaintenanceTaskKind::Checkpoint {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "checkpoint options require a checkpoint task",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl MaintenanceCheckpointOptions {
+    pub(crate) const fn new(snapshot_id: Option<u64>, truncate_wal_after_checkpoint: bool) -> Self {
+        Self {
+            snapshot_id,
+            truncate_wal_after_checkpoint,
+        }
+    }
+
+    pub(crate) const fn snapshot_id(self) -> Option<u64> {
+        self.snapshot_id
+    }
+
+    pub(crate) const fn truncate_wal_after_checkpoint(self) -> bool {
+        self.truncate_wal_after_checkpoint
     }
 }
 
@@ -374,6 +455,10 @@ impl MaintenanceTask {
 
     pub(crate) const fn policy(self) -> MaintenanceTaskPolicy {
         self.request.policy()
+    }
+
+    pub(crate) const fn checkpoint_options(self) -> Option<MaintenanceCheckpointOptions> {
+        self.request.checkpoint_options()
     }
 
     const fn coalesce_key(self) -> Option<MaintenanceCoalesceKey> {
@@ -574,7 +659,7 @@ impl LifecycleMaintenanceExecutor {
         }
         if self.queue.len() >= self.max_queue_depth {
             self.stats.queue_full = self.stats.queue_full.saturating_add(1);
-            return Err(LifecycleError::MaintenanceFailed {
+            return Err(LifecycleError::MaintenanceQueueFull {
                 reason: "maintenance queue is full",
             });
         }
@@ -598,7 +683,16 @@ impl LifecycleMaintenanceExecutor {
         state: LifecycleStateMachine,
         runner: &mut impl MaintenanceTaskRunner,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        self.run_next_with_fault(state, runner, &mut NoopMaintenanceFaultHook)
+        self.run_next_matching_with_fault(state, runner, |_| true, &mut NoopMaintenanceFaultHook)
+    }
+
+    pub(crate) fn run_next_matching(
+        &mut self,
+        state: LifecycleStateMachine,
+        runner: &mut impl MaintenanceTaskRunner,
+        predicate: impl Fn(&MaintenanceTask) -> bool,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        self.run_next_matching_with_fault(state, runner, predicate, &mut NoopMaintenanceFaultHook)
     }
 
     pub(crate) fn run_next_with_fault(
@@ -607,8 +701,18 @@ impl LifecycleMaintenanceExecutor {
         runner: &mut impl MaintenanceTaskRunner,
         fault: &mut impl MaintenanceFaultHook,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        self.run_next_matching_with_fault(state, runner, |_| true, fault)
+    }
+
+    pub(crate) fn run_next_matching_with_fault(
+        &mut self,
+        state: LifecycleStateMachine,
+        runner: &mut impl MaintenanceTaskRunner,
+        predicate: impl Fn(&MaintenanceTask) -> bool,
+        fault: &mut impl MaintenanceFaultHook,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let Some(index) = self.next_task_index(|_| true) else {
+        let Some(index) = self.next_task_index(predicate) else {
             return Ok(None);
         };
         self.run_index(index, runner, fault, false).map(Some)
@@ -621,7 +725,7 @@ impl LifecycleMaintenanceExecutor {
         require_admitted(state, LifecycleOperationKind::CloseRequiredDrain)?;
         let before = self.queue.len();
         self.queue.retain(|task| {
-            task.policy().close_policy() != MaintenanceClosePolicy::CancelBeforeClose
+            task.policy().close_policy() == MaintenanceClosePolicy::DrainBeforeClose
         });
         let canceled = before - self.queue.len();
         self.stats.canceled = self.stats.canceled.saturating_add(canceled);
@@ -720,10 +824,10 @@ impl LifecycleMaintenanceExecutor {
             }
         };
         if let Err(_error) = fault.check(MaintenanceFaultPoint::AfterTaskRun, Some(&task)) {
-            let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                .with_task_id(task.id())
-                .with_recovery_health(telemetry_health_debt("maintenance task failed after run")?)
-                .with_effects(0, 0, true);
+            let outcome = outcome
+                .with_status(MaintenanceOutcomeStatus::Failed)
+                .with_reason("maintenance task failed after run")
+                .with_recovery_health(telemetry_health_debt("maintenance task failed after run")?);
             self.record_outcome(outcome.status(), draining);
             self.active = None;
             return Ok(outcome);
@@ -758,7 +862,10 @@ fn attach_executor_facts(
     outcome: MaintenanceOutcome,
     task_id: MaintenanceTaskId,
 ) -> LifecycleResult<MaintenanceOutcome> {
-    let outcome = outcome.with_task_id(task_id);
+    let mut outcome = outcome.with_task_id(task_id);
+    if outcome.status() == MaintenanceOutcomeStatus::Failed && outcome.reason().is_none() {
+        outcome = outcome.with_reason("maintenance task failed");
+    }
     if outcome.status() == MaintenanceOutcomeStatus::Failed && outcome.recovery_health().is_none() {
         Ok(outcome.with_recovery_health(telemetry_health_debt("maintenance task failed")?))
     } else {
@@ -831,6 +938,18 @@ fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) ->
                 MaintenanceTaskScope::Global
             )
     )
+}
+
+const fn normalized_coalesce_scope(
+    kind: MaintenanceTaskKind,
+    scope: MaintenanceTaskScope,
+) -> MaintenanceTaskScope {
+    match (kind, scope) {
+        (MaintenanceTaskKind::Checkpoint, MaintenanceTaskScope::Global) => {
+            MaintenanceTaskScope::Checkpoint
+        }
+        (_, scope) => scope,
+    }
 }
 
 fn require_admitted(

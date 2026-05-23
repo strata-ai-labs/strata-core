@@ -43,13 +43,15 @@ fn flush_request_validates_components_and_target_level() {
 
     assert_eq!(
         FlushTableIdentitySeed::new(""),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::InvalidConfig {
+            field: "table identity seed",
             reason: "flush component must not be empty",
         })
     );
     assert_eq!(
         FlushTableObjectId::new("bad/component"),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::InvalidConfig {
+            field: "table object id",
             reason: "flush component must be a single object component",
         })
     );
@@ -61,7 +63,7 @@ fn flush_request_validates_components_and_target_level() {
             object_id,
             crate::branch::BranchLevel::new(1),
         ),
-        Err(LifecycleError::MaintenanceFailed {
+        Err(LifecycleError::MaintenanceTaskFailed {
             reason: "flush target level must be zero",
         })
     );
@@ -75,7 +77,10 @@ fn flush_named_frozen_index_must_exist() {
     let error = flush_cache_branch(&mut state, &flush_request(branch, Some(1)))
         .expect_err("missing frozen index");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
     assert_eq!(state.frozen_table_count(), 1);
     assert_eq!(state.owned_table_count(), 0);
 }
@@ -514,6 +519,10 @@ fn durable_reopen_failure_reports_published_not_installed() {
     );
     assert!(outcome.maintenance_outcome().retryable());
     assert_eq!(outcome.maintenance_outcome().affected_objects(), 1);
+    assert_eq!(
+        outcome.maintenance_outcome().affected_object_names(),
+        &[outcome.table_object().expect("object").as_str().to_owned()]
+    );
     assert_eq!(state, before);
 }
 
@@ -640,6 +649,7 @@ fn existing_conflicting_object_fails_closed_without_removing_frozen_rows() {
 
     assert_eq!(outcome.status(), FlushFrozenStatus::PublishedNotInstalled);
     assert!(outcome.failure().is_some());
+    assert!(!outcome.maintenance_outcome().retryable());
     assert_eq!(retry, before_retry);
 }
 
@@ -724,6 +734,46 @@ fn flush_identity_is_deterministic_and_changes_with_storage_facts() {
             .len(),
         64
     );
+}
+
+#[test]
+fn flush_object_identity_is_stable_when_frozen_position_changes() {
+    let branch = branch_id(0x75);
+    let target = put_row(branch, b"stable-position", 18, 18_000, b"value");
+    let newer = put_row(branch, b"newer-frozen", 19, 19_000, b"newer");
+    let request = flush_request(branch, None);
+    let backend = FlushBackend::new();
+    let mut shifted = BranchLocalState::empty(branch);
+    shifted
+        .append_committed_row(target.clone())
+        .expect("append target");
+    shifted.rotate_active();
+    shifted
+        .append_committed_row(newer)
+        .expect("append newer frozen");
+    shifted.rotate_active();
+    assert_eq!(shifted.frozen_table_count(), 2);
+    let mut unshifted = frozen_branch(branch, target);
+
+    let first = flush_durable_branch(
+        &mut shifted,
+        &TableObjectService::new(&backend),
+        &TableObjectReaderService::new(&backend),
+        &request,
+    )
+    .expect("first flush");
+    let second = flush_durable_branch(
+        &mut unshifted,
+        &TableObjectService::new(&backend),
+        &TableObjectReaderService::new(&backend),
+        &request,
+    )
+    .expect("second flush");
+
+    assert_eq!(first.frozen_index(), Some(1));
+    assert_eq!(second.frozen_index(), Some(0));
+    assert_eq!(first.table_identity(), second.table_identity());
+    assert_eq!(first.table_object(), second.table_object());
 }
 
 fn flush_request(branch: BranchId, frozen_index: Option<usize>) -> FlushFrozenRequest {
