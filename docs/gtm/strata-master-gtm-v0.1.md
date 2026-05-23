@@ -6,6 +6,18 @@
 
 ---
 
+## Vision
+
+> **A world where every person uses the abundant intelligence at their disposal to uplift their lives.**
+
+A teacher in rural Africa builds a flashcard app that teaches math in the native language. An electrician in China builds a website for her regional business. A schoolchild in India builds an Android app to track her parents' finances. Each of them, using the abundant intelligence around them to make life materially better.
+
+That is the world Strata exists for. Software building is being democratized faster than any wave before it, and the data layer is one of the most important layers in every app. Strata makes it possible for that layer to keep up — so the teacher, the electrician, and the schoolchild can build what they imagine without an infrastructure tax standing in the way.
+
+The vision is not about Strata. It is about the world Strata makes more feasible.
+
+---
+
 ## 0. How to use this document
 
 This is the parent GTM document for Strata. Every external asset — homepage copy, launch posts, blog posts, social posts, demo scripts, pitch decks, sales conversations, technical content, ads, hiring pages, FAQs — pulls from here.
@@ -32,6 +44,26 @@ Strata is the founder's contribution to that work, focused specifically on the d
 
 The mission is not "build a better database." The mission is to make sure the next wave of builders — many of them non-traditional, AI-augmented, indie, small-team — has data infrastructure worthy of what they're trying to do.
 
+### Vision & Impact
+
+Strata isn't just another database — it's infrastructure for the democratization of software creation. By slashing the "infrastructure tax" and giving AI agents safe, powerful state management, it enables orders of magnitude more people to solve real problems.
+
+### End State
+
+Strata becomes as ubiquitous for the next generation of builders as SQLite was for the last. A high-margin, enduring company that powers millions of applications while staying true to the mission: more people building real things, without drag, so more real problems get solved.
+
+### Company Scope (the wedge is the database; the company is broader)
+
+> **Strata exists to help anyone turn abundant intelligence into useful software, without becoming an infrastructure expert first. The database is where we start. The work is broader.**
+
+This is the company-level framing. It sits between the vision (the world we want) and the product tagline (*"Database for the next 100 million builders"*).
+
+The database is the wedge because every real app needs state, memory, recovery, structure, search, and control. Solving the data layer is where Strata starts. But Strata is not a database company. Over time, the company can expand into other layers that today block ordinary people from turning intelligence into working software: deployment, authentication, synchronization, observability, app generation, local agents, workflows, collaboration. Each new product would be downstream of the same vision and purpose. **Strata expands wherever the friction lives — wherever a hard technical layer stands between human intent and working software.**
+
+The strategic implication: do not let positioning, pitches, hiring conversations, investor materials, or external copy box Strata as "a database company." The database is the first product. The company is the larger work — making software creation radically more accessible by collapsing the infrastructure burden between human intent and working applications.
+
+This is the Stripe pattern. *"Payments for developers"* was Stripe's first tagline; *"the economic infrastructure for the internet"* was always the company. That framing is what made every product after the first one possible without identity crisis. Strata follows the same structure: the database is the wedge, the broader company is the destination.
+
 ---
 
 ## 2. Core Thesis
@@ -48,11 +80,19 @@ Strata is built from the other direction: starting from what an AI agent (and th
 
 ## 3. Tagline & Wording
 
-### Primary tagline
+### Primary tagline (positioning — who it's for)
 
 > **Database for the next 100 million builders.**
 
 This is the committed external tagline. Use it as the headline on the homepage, the opening line of launch posts, the first slide of pitch decks, the social bio.
+
+### Secondary tagline (benefit — what it does)
+
+> **Slash the infrastructure tax.**
+
+This is the benefit-framed companion to the positioning tagline. Use it as a featured callout on the homepage, a section header in the pitch deck, a recurring campaign frame in blog posts and social posts, and the imperative phrase for swag and community surfaces (stickers, t-shirts, hackathon prizes). Pairs cleanly with the primary tagline — the primary says *who*, the secondary says *what for them*.
+
+The phrase *"infrastructure tax"* itself is a recurring vocabulary anchor — use it consistently across long-form writing to give the GTM stack a thematic spine.
 
 ### One-line supporting descriptions
 
