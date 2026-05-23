@@ -1,0 +1,417 @@
+use super::*;
+
+#[test]
+fn flush_watermark_request_rejects_zero_candidate() {
+    assert_eq!(
+        LifecycleFlushWatermarkRequest::new(
+            CommitVersion::ZERO,
+            LifecycleFlushWatermarkProof::CheckpointCovered {
+                snapshot_watermark: CommitVersion::new(1),
+            },
+        ),
+        Err(LifecycleError::MaintenanceFailed {
+            reason: "flush watermark candidate must be nonzero",
+        })
+    );
+}
+
+#[test]
+fn checkpoint_snapshot_id_must_advance_past_recovered_manifest_snapshot_id() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2a);
+    let shell = assemble_shell(branch, &backend).expect("shell");
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .append_committed_row(put_row(branch, 1, b"snapshot-advance", b"value"))
+        .expect("append row");
+    shell
+        .services()
+        .manifest()
+        .persist_snapshot_facts(7, CommitVersion::new(1))
+        .expect("snapshot facts");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 7, Timestamp::from_micros(10)).expect("request");
+
+    let error = checkpoint_durable_branch(
+        &state,
+        shell.services(),
+        shell.guard_set(),
+        || CommitVersion::new(1),
+        &request,
+    )
+    .expect_err("stale snapshot id rejects");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.maintenance");
+    assert_eq!(backend.snapshot_objects(), Vec::<ObjectName>::new());
+}
+
+#[test]
+fn checkpoint_outcome_converts_completed_snapshot_to_maintenance_success() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2b);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"maintenance-success", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(11)).expect("request");
+
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(outcome.status(), LifecycleCheckpointStatus::Completed);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::Checkpoint);
+    assert!(!maintenance.retryable());
+}
+
+#[test]
+fn checkpoint_debug_output_does_not_include_payload_bytes() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2c);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"debug-redaction", b"super-secret-payload"),
+            generation_guard(),
+        )
+        .expect("commit");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(12)).expect("request");
+
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+    let debug = format!("{outcome:?}");
+
+    assert!(!debug.contains("super-secret-payload"));
+    assert!(debug.contains("Completed"));
+}
+
+#[test]
+fn checkpoint_rows_include_materialized_replacement_rows() {
+    let source = branch_id(0x2d);
+    let child = branch_id(0x2e);
+    let mut source_state = BranchLocalState::empty(source);
+    source_state
+        .append_committed_row(put_row(source, 1, b"materialized-row", b"value"))
+        .expect("append source row");
+    source_state.rotate_active();
+    flush_cache_branch(&mut source_state, &flush_request(source)).expect("flush source row");
+    let (mut child_state, fork) = source_state
+        .fork_into_empty_child(child)
+        .expect("fork child");
+    let intent = child_state
+        .mark_inherited_layer_materializing(0)
+        .expect("materialization intent");
+    let request =
+        BranchMaterializationRequest::from_handle(intent.handle(), "checkpoint-replacement")
+            .expect("materialization request");
+
+    child_state
+        .materialize_inherited_layer(&request)
+        .expect("materialize layer");
+    let rows = child_state
+        .checkpoint_rows(fork.fork_version())
+        .expect("checkpoint rows");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].physical_key().branch_id(), child);
+    assert_eq!(rows[0].value(), b"value");
+}
+
+#[test]
+fn checkpoint_recovery_round_trip_after_frozen_flush() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2f);
+    let mut runtime = open_runtime(branch, &backend);
+    let first = physical_key(branch, b"flushed-before-checkpoint");
+    let second = physical_key(branch, b"active-before-checkpoint");
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"flushed-before-checkpoint", b"first"),
+            generation_guard(),
+        )
+        .expect("first commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .flush_frozen(&flush_request(branch))
+        .expect("flush frozen");
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"active-before-checkpoint", b"second"),
+            generation_guard(),
+        )
+        .expect("second commit");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(13)).expect("request");
+    runtime.checkpoint(&request).expect("checkpoint");
+    drop(runtime);
+
+    let reopened = open_runtime(branch, &backend);
+    let view = reopened.read_view().expect("read view");
+
+    assert_eq!(
+        view.latest(&first)
+            .expect("first read")
+            .expect("first row")
+            .row()
+            .value(),
+        b"first"
+    );
+    assert_eq!(
+        view.latest(&second)
+            .expect("second read")
+            .expect("second row")
+            .row()
+            .value(),
+        b"second"
+    );
+}
+
+#[test]
+fn checkpoint_with_truncation_does_not_truncate_after_partial_checkpoint() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x30);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"partial-no-delete", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    backend.fail_manifest_replacement_on_call(2);
+    let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(14))
+        .expect("request")
+        .with_wal_truncation_after_checkpoint(true);
+    let list_calls_before = backend.list_calls();
+
+    let outcome = runtime.checkpoint(&request).expect("partial checkpoint");
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated
+    );
+    assert!(outcome.wal_truncation().is_none());
+    assert_eq!(backend.list_calls(), list_calls_before);
+}
+
+#[test]
+fn wal_truncation_no_segments_is_completed_noop() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x31);
+    let mut runtime = open_runtime(branch, &backend);
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert_eq!(outcome.deleted_segments(), 0);
+    assert_eq!(outcome.failed_segments(), 0);
+    assert_eq!(outcome.protected_segments(), 1);
+}
+
+#[test]
+fn wal_truncation_service_error_has_stable_code_and_source() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x32);
+    let mut runtime = open_runtime(branch, &backend);
+    backend.fail_wal_listing();
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let error = runtime
+        .truncate_wal(request)
+        .expect_err("listing failure rejects");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.service");
+    assert!(error.source().is_some());
+}
+
+#[test]
+fn wal_truncation_deletes_covered_segments_and_keeps_active_segment() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x33);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    let active = runtime.services().wal().active_segment_id();
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(24),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation");
+
+    assert!(active > 1, "test setup must rotate segments");
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.deleted_segments() > 0);
+    assert!(outcome.protected_segments() >= 1);
+    assert_eq!(outcome.failed_segments(), 0);
+}
+
+#[test]
+fn wal_truncation_delete_failure_records_health_debt() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x34);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    backend.fail_delete();
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
+        CommitVersion::new(24),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation report");
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleWalTruncationStatus::CompletedWithHealthDebt
+    );
+    assert_eq!(outcome.deleted_segments(), 0);
+    assert!(outcome.failed_segments() > 0);
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(
+        outcome.maintenance_outcome().status(),
+        MaintenanceOutcomeStatus::Failed
+    );
+}
+
+#[test]
+fn checkpoint_with_truncation_recovery_round_trip_after_delete() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x35);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    let key = dynamic_physical_key(branch, b"rotated-commit-23".to_vec());
+    let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(15))
+        .expect("request")
+        .with_wal_truncation_after_checkpoint(true);
+
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+    drop(runtime);
+    let reopened = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let visible = reopened
+        .read_view()
+        .expect("read view")
+        .latest(&key)
+        .expect("read latest")
+        .expect("visible row");
+
+    assert_eq!(outcome.status(), LifecycleCheckpointStatus::Completed);
+    assert!(
+        outcome
+            .wal_truncation()
+            .expect("truncation outcome")
+            .deleted_segments()
+            > 0
+    );
+    assert_eq!(visible.row().value(), vec![23_u8; 128].as_slice());
+    assert_eq!(reopened.visible_version(), CommitVersion::new(24));
+}
+
+#[test]
+fn queued_wal_truncation_task_failure_adds_health_debt() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x36);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    runtime
+        .services()
+        .manifest()
+        .persist_snapshot_facts(1, CommitVersion::new(24))
+        .expect("snapshot facts");
+    backend.fail_delete();
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        .expect("enqueue");
+
+    let maintenance = runtime
+        .run_next_wal_truncation_maintenance()
+        .expect("run")
+        .expect("maintenance");
+
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(maintenance.recovery_health().is_some());
+    assert!(maintenance.retryable());
+    assert!(backend.delete_calls() > 0);
+}
+
+#[test]
+fn checkpoint_maintenance_task_deferred_when_no_visible_rows() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x37);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue");
+
+    let maintenance = runtime
+        .run_next_checkpoint_maintenance()
+        .expect("run")
+        .expect("maintenance");
+
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(backend.snapshot_objects(), Vec::<ObjectName>::new());
+    assert_eq!(runtime.maintenance_status().stats().deferred(), 1);
+}
+
+fn commit_many_to_rotate(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    branch: BranchId,
+    count: u8,
+) {
+    for index in 0..count {
+        runtime
+            .execute_durable_commit(
+                dynamic_durable_batch(
+                    branch,
+                    format!("rotated-commit-{index}").into_bytes(),
+                    vec![index; 128],
+                ),
+                generation_guard(),
+            )
+            .expect("rotating commit");
+    }
+    assert!(
+        runtime.services().wal().active_segment_id() > 1,
+        "test setup must rotate the log"
+    );
+}
+
+fn dynamic_durable_batch(branch: BranchId, user_key: Vec<u8>, value: Vec<u8>) -> CommitBatch {
+    CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::put(
+            dynamic_physical_key(branch, user_key),
+            value,
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Standard,
+            CommitConflictValidationMode::Validate,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGenerated,
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+}
+
+fn dynamic_physical_key(branch: BranchId, user_key: Vec<u8>) -> PhysicalKey {
+    PhysicalKey::new(
+        branch,
+        "checkpoint",
+        StorageSpaceId::engine(0x31).expect("space"),
+        user_key,
+    )
+    .expect("physical key")
+}

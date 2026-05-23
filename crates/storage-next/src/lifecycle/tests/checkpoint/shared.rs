@@ -13,9 +13,36 @@ pub(super) fn open_runtime(
     shell.complete_recovery(&outcome).expect("open runtime")
 }
 
+pub(super) fn open_runtime_with_wal_segment_size(
+    branch: BranchId,
+    backend: &CheckpointTestBackend,
+    segment_size: u64,
+) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    let mut shell =
+        assemble_shell_with_wal_segment_size(branch, backend, segment_size).expect("shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    shell.complete_recovery(&outcome).expect("open runtime")
+}
+
 pub(super) fn assemble_shell(
     branch: BranchId,
     backend: &CheckpointTestBackend,
+) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+    assemble_shell_with_wal_segment_size(
+        branch,
+        backend,
+        crate::service::WalServiceConfig::default().segment_size(),
+    )
+}
+
+pub(super) fn assemble_shell_with_wal_segment_size(
+    branch: BranchId,
+    backend: &CheckpointTestBackend,
+    segment_size: u64,
 ) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
     LifecycleDurableLocalShell::assemble(
         LifecycleDurableLocalOpenRequest::new(
@@ -31,7 +58,7 @@ pub(super) fn assemble_shell(
             CommitBranchGeneration::new(1).expect("generation"),
             BranchRuntimeConfig::default(),
             CommitRuntimeConfig::default(),
-            crate::service::WalServiceConfig::default(),
+            crate::service::WalServiceConfig::new(segment_size),
         )?,
         backend,
         CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
@@ -118,6 +145,7 @@ pub(super) struct CheckpointTestBackend {
     events: Mutex<Vec<CheckpointBackendEvent>>,
     fail_list: AtomicBool,
     fail_snapshot_publish: AtomicBool,
+    fail_delete: AtomicBool,
     fail_manifest_replace_call: AtomicUsize,
     uncertain_manifest_replace_call: AtomicUsize,
     manifest_replace_calls: AtomicUsize,
@@ -139,6 +167,7 @@ impl CheckpointTestBackend {
             events: Mutex::new(Vec::new()),
             fail_list: AtomicBool::new(false),
             fail_snapshot_publish: AtomicBool::new(false),
+            fail_delete: AtomicBool::new(false),
             fail_manifest_replace_call: AtomicUsize::new(0),
             uncertain_manifest_replace_call: AtomicUsize::new(0),
             manifest_replace_calls: AtomicUsize::new(0),
@@ -152,6 +181,10 @@ impl CheckpointTestBackend {
 
     pub(super) fn fail_snapshot_publish(&self) {
         self.fail_snapshot_publish.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn fail_delete(&self) {
+        self.fail_delete.store(true, Ordering::SeqCst);
     }
 
     pub(super) fn fail_manifest_replacement_on_call(&self, call: usize) {
@@ -190,6 +223,15 @@ impl CheckpointTestBackend {
             .expect("events")
             .iter()
             .filter(|event| matches!(event, CheckpointBackendEvent::ObjectList))
+            .count()
+    }
+
+    pub(super) fn delete_calls(&self) -> usize {
+        self.events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| matches!(event, CheckpointBackendEvent::ObjectDelete))
             .count()
     }
 
@@ -253,6 +295,12 @@ impl Backend for CheckpointTestBackend {
             .lock()
             .expect("events")
             .push(CheckpointBackendEvent::ObjectDelete);
+        if self.fail_delete.load(Ordering::SeqCst) {
+            return Err(BackendError::new(
+                BackendErrorKind::Unavailable,
+                "injected delete failure",
+            ));
+        }
         self.objects.lock().expect("objects").remove(name);
         Ok(())
     }

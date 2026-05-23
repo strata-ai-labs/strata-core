@@ -5,7 +5,7 @@ use crate::backend::{
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::{BranchLocalState, BranchRuntimeConfig};
+use crate::branch::{BranchLocalState, BranchMaterializationRequest, BranchRuntimeConfig};
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry,
@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
+mod remaining;
 mod shared;
 
 use shared::*;
