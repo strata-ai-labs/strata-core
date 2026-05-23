@@ -10,6 +10,7 @@
 
 mod cache;
 mod capability;
+mod checkpoint;
 mod config;
 mod durable;
 mod error;
@@ -34,6 +35,17 @@ pub(crate) use cache::{LifecycleCacheOpenRequest, LifecycleCacheRuntime};
 pub(crate) use capability::{
     validate_backend_capabilities_for_open, validate_storage_mode_capabilities,
     LifecycleCapabilityOutcome, ObjectDurableFenceMode,
+};
+#[allow(
+    unused_imports,
+    reason = "checkpoint maintenance exports define the local surface for later slices"
+)]
+pub(crate) use checkpoint::{
+    checkpoint_durable_branch, checkpoint_request_from_maintenance_task, persist_flush_watermark,
+    truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
+    LifecycleCheckpointRequest, LifecycleCheckpointStatus, LifecycleFlushWatermarkOutcome,
+    LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest, LifecycleFlushWatermarkStatus,
+    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest, LifecycleWalTruncationStatus,
 };
 #[allow(
     unused_imports,

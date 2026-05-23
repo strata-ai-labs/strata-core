@@ -271,6 +271,26 @@ impl MaintenanceTaskRequest {
         .expect("flush task request is valid")
     }
 
+    pub(crate) fn checkpoint() -> Self {
+        Self::new(
+            MaintenanceTaskKind::Checkpoint,
+            MaintenanceTaskPriority::High,
+            MaintenanceTaskScope::Checkpoint,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("checkpoint task request is valid")
+    }
+
+    pub(crate) fn wal_truncation() -> Self {
+        Self::new(
+            MaintenanceTaskKind::WalTruncation,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Wal,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("WAL truncation task request is valid")
+    }
+
     pub(crate) const fn kind(self) -> MaintenanceTaskKind {
         self.kind
     }
@@ -324,6 +344,16 @@ impl MaintenanceTask {
 
     pub(crate) const fn id(self) -> MaintenanceTaskId {
         self.id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(id: u64, request: MaintenanceTaskRequest) -> LifecycleResult<Self> {
+        let id = MaintenanceTaskId::new(id)?;
+        Ok(Self::new(
+            id,
+            MaintenanceTaskSequence::new(id.get()),
+            request,
+        ))
     }
 
     pub(crate) const fn sequence(self) -> MaintenanceTaskSequence {

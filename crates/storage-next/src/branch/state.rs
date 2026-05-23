@@ -1246,6 +1246,34 @@ impl BranchLocalState {
         .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
     }
 
+    pub(crate) fn checkpoint_rows(
+        &self,
+        watermark: CommitVersion,
+    ) -> BranchRuntimeResult<Vec<StorageRow>> {
+        if watermark == CommitVersion::ZERO {
+            return Ok(Vec::new());
+        }
+
+        let mut rows = Vec::new();
+        for row in self.active.iter() {
+            push_checkpoint_row(self.branch_id, watermark, row.row(), &mut rows)?;
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                push_checkpoint_row(self.branch_id, watermark, row.row(), &mut rows)?;
+            }
+        }
+        for table in self.owned_levels.iter().flatten() {
+            for row in table.rows() {
+                push_checkpoint_row(self.branch_id, watermark, row.row(), &mut rows)?;
+            }
+        }
+
+        rows.sort_by_key(TableInternalKeyBytes::from_row);
+        validate_checkpoint_rows(&rows)?;
+        Ok(rows)
+    }
+
     pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
         let mut table_refs = Vec::new();
         for tables in &self.owned_levels {
@@ -2753,6 +2781,33 @@ fn validate_branch_state_set(branches: &[BranchLocalState]) -> BranchRuntimeResu
                 reason: "branch state set must not contain duplicate branches",
             });
         }
+    }
+    Ok(())
+}
+
+fn push_checkpoint_row(
+    branch_id: BranchId,
+    watermark: CommitVersion,
+    row: &StorageRow,
+    rows: &mut Vec<StorageRow>,
+) -> BranchRuntimeResult<()> {
+    require_row_branch(branch_id, row)?;
+    if row.commit_version() <= watermark {
+        rows.push(row.clone());
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_rows(rows: &[StorageRow]) -> BranchRuntimeResult<()> {
+    let mut previous = None::<TableInternalKeyBytes>;
+    for row in rows {
+        let key = TableInternalKeyBytes::from_row(row);
+        if previous.as_ref().is_some_and(|previous| previous >= &key) {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "checkpoint rows must be strictly sorted by internal key",
+            });
+        }
+        previous = Some(key);
     }
     Ok(())
 }

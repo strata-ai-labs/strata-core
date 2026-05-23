@@ -12,13 +12,11 @@ mod wal;
 #[cfg(test)]
 mod cache_mode_absence_tests;
 
-#[expect(
-    unused_imports,
-    reason = "checkpoint sequencing is consumed by lifecycle work added later"
-)]
+#[cfg(test)]
+pub(crate) use checkpoint::CheckpointManifestOperation;
 pub(crate) use checkpoint::{
-    CheckpointManifestOperation, CheckpointRequest, CheckpointService, CheckpointServiceError,
-    CheckpointSnapshot, CheckpointWrite,
+    CheckpointRequest, CheckpointService, CheckpointServiceError, CheckpointSnapshot,
+    CheckpointWrite,
 };
 
 #[expect(

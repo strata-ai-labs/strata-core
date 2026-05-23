@@ -14,6 +14,12 @@ use crate::commit::{
     VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::format::WalRecord;
+use crate::lifecycle::checkpoint::{
+    checkpoint_durable_branch, checkpoint_request_from_maintenance_task, persist_flush_watermark,
+    truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
+    LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkRequest,
+    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
+};
 use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
 use crate::lifecycle::{
     maintenance_ready_for_recovery_health, FlushFrozenOutcome, FlushFrozenRequest, LifecycleError,
@@ -25,7 +31,7 @@ use crate::lifecycle::{
 };
 use crate::service::{TableObjectReaderService, TableObjectService};
 use std::sync::Arc;
-use strata_core_next::{BranchId, CommitVersion};
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Debug)]
 pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSource> {
@@ -284,6 +290,52 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     #[allow(
         dead_code,
+        reason = "durable maintenance dispatch uses this concrete checkpoint hook"
+    )]
+    pub(crate) fn checkpoint(
+        &mut self,
+        request: &LifecycleCheckpointRequest,
+    ) -> LifecycleResult<LifecycleCheckpointOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        checkpoint_durable_branch(
+            &self.branch,
+            &self.services,
+            &self.guard_set,
+            || self.visible.visible_version(),
+            request,
+        )
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete watermark hook"
+    )]
+    pub(crate) fn persist_flush_watermark(
+        &mut self,
+        request: LifecycleFlushWatermarkRequest,
+    ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        persist_flush_watermark(
+            self.services.manifest(),
+            self.visible.visible_version(),
+            request,
+        )
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete truncation hook"
+    )]
+    pub(crate) fn truncate_wal(
+        &mut self,
+        request: LifecycleWalTruncationRequest,
+    ) -> LifecycleResult<LifecycleWalTruncationOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        truncate_wal(self.services.wal(), request)
+    }
+
+    #[allow(
+        dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
@@ -327,6 +379,45 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         };
         maintenance.run_next(state, &mut runner)
     }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_checkpoint_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &self.branch;
+        let services = &self.services;
+        let guard_set = &self.guard_set;
+        let visible = &self.visible;
+        let created_at = checkpoint_created_at(self.allocator.timestamp_guard().last_allocated());
+        let mut runner = DurableCheckpointMaintenanceRunner {
+            branch,
+            services,
+            guard_set,
+            visible,
+            created_at,
+        };
+        maintenance.run_next(state, &mut runner)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_wal_truncation_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let manifest = self.services.manifest();
+        let wal = self.services.wal();
+        let mut runner = DurableWalTruncationMaintenanceRunner { manifest, wal };
+        maintenance.run_next(state, &mut runner)
+    }
 }
 
 struct DurableFlushMaintenanceRunner<'a, 'b> {
@@ -342,6 +433,58 @@ impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
             flush_durable_branch(self.branch, self.table_object, self.table_reader, &request)?
                 .maintenance_outcome(),
         )
+    }
+}
+
+struct DurableCheckpointMaintenanceRunner<'a, 'b> {
+    branch: &'a BranchLocalState,
+    services: &'a LifecycleDurableLocalServices<'b>,
+    guard_set: &'a CommitBranchGuardSet,
+    visible: &'a VisibleVersionTracker,
+    created_at: Timestamp,
+}
+
+impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = checkpoint_request_from_maintenance_task(
+            task,
+            self.branch.branch_id(),
+            self.services.manifest(),
+            self.created_at,
+        )?;
+        Ok(checkpoint_durable_branch(
+            self.branch,
+            self.services,
+            self.guard_set,
+            || self.visible.visible_version(),
+            &request,
+        )?
+        .maintenance_outcome())
+    }
+}
+
+const fn checkpoint_created_at(last_commit_timestamp: Option<Timestamp>) -> Timestamp {
+    match last_commit_timestamp {
+        Some(timestamp) => timestamp,
+        None => Timestamp::EPOCH,
+    }
+}
+
+struct DurableWalTruncationMaintenanceRunner<'a, 'b> {
+    manifest: &'a crate::service::DatabaseManifestService<'b>,
+    wal: &'a crate::service::WalService<'b>,
+}
+
+impl MaintenanceTaskRunner for DurableWalTruncationMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let Some(request) = wal_truncation_request_from_maintenance_task(task, self.manifest)?
+        else {
+            return Ok(MaintenanceOutcome::new(
+                crate::lifecycle::MaintenanceTaskKind::WalTruncation,
+                crate::lifecycle::MaintenanceOutcomeStatus::Deferred,
+            ));
+        };
+        Ok(truncate_wal(self.wal, request)?.maintenance_outcome())
     }
 }
 
