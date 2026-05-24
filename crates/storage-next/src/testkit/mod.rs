@@ -51,14 +51,18 @@ pub use integration_harness::{
 };
 pub use lifecycle::{
     check_lifecycle_bootstrap_contract, check_lifecycle_checkpoint_contract,
-    check_lifecycle_close_contract, check_lifecycle_flush_contract,
-    check_lifecycle_maintenance_contract, check_lifecycle_quarantine_contract,
-    check_lifecycle_recovery_contract, check_lifecycle_retention_contract,
-    check_lifecycle_scaffold_contract, check_lifecycle_table_rewrite_contract,
-    LifecycleBootstrapContractOutcome, LifecycleCheckpointContractOutcome,
-    LifecycleCloseContractOutcome, LifecycleFlushContractOutcome,
-    LifecycleMaintenanceContractOutcome, LifecycleQuarantineContractOutcome,
-    LifecycleRecoveryContractOutcome, LifecycleRetentionContractOutcome, LifecycleScaffoldOutcome,
+    check_lifecycle_close_contract, check_lifecycle_crash_contract, check_lifecycle_fault_contract,
+    check_lifecycle_flush_contract, check_lifecycle_generated_script_contract,
+    check_lifecycle_maintenance_contract, check_lifecycle_maintenance_fuzz_contract,
+    check_lifecycle_quarantine_contract, check_lifecycle_recovery_contract,
+    check_lifecycle_recovery_fuzz_contract, check_lifecycle_retention_contract,
+    check_lifecycle_retention_fuzz_contract, check_lifecycle_scaffold_contract,
+    check_lifecycle_table_rewrite_contract, LifecycleBootstrapContractOutcome,
+    LifecycleCheckpointContractOutcome, LifecycleCloseContractOutcome,
+    LifecycleCrashContractOutcome, LifecycleFaultContractOutcome, LifecycleFlushContractOutcome,
+    LifecycleGeneratedScriptOutcome, LifecycleMaintenanceContractOutcome,
+    LifecycleQuarantineContractOutcome, LifecycleRecoveryContractOutcome,
+    LifecycleRetentionContractOutcome, LifecycleScaffoldOutcome,
     LifecycleTableRewriteContractOutcome,
 };
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};

@@ -5,7 +5,9 @@ mod cache;
 mod capability;
 mod checkpoint;
 mod close;
+mod crash;
 mod durable;
+mod fault;
 mod flush;
 mod maintenance;
 mod outcome;
@@ -13,10 +15,13 @@ mod quarantine;
 mod recovery;
 mod retention;
 mod rewrite;
+mod script;
 
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
 pub use checkpoint::{check_lifecycle_checkpoint_contract, LifecycleCheckpointContractOutcome};
 pub use close::{check_lifecycle_close_contract, LifecycleCloseContractOutcome};
+pub use crash::{check_lifecycle_crash_contract, LifecycleCrashContractOutcome};
+pub use fault::{check_lifecycle_fault_contract, LifecycleFaultContractOutcome};
 pub use flush::{check_lifecycle_flush_contract, LifecycleFlushContractOutcome};
 pub use maintenance::{check_lifecycle_maintenance_contract, LifecycleMaintenanceContractOutcome};
 pub use outcome::LifecycleScaffoldOutcome;
@@ -24,6 +29,11 @@ pub use quarantine::{check_lifecycle_quarantine_contract, LifecycleQuarantineCon
 pub use recovery::{check_lifecycle_recovery_contract, LifecycleRecoveryContractOutcome};
 pub use retention::{check_lifecycle_retention_contract, LifecycleRetentionContractOutcome};
 pub use rewrite::{check_lifecycle_table_rewrite_contract, LifecycleTableRewriteContractOutcome};
+pub use script::{
+    check_lifecycle_generated_script_contract, check_lifecycle_maintenance_fuzz_contract,
+    check_lifecycle_recovery_fuzz_contract, check_lifecycle_retention_fuzz_contract,
+    LifecycleGeneratedScriptOutcome,
+};
 
 use super::TestkitError;
 use crate::lifecycle::{

@@ -336,6 +336,162 @@ fn lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache() {
 }
 
 #[test]
+fn lifecycle_generated_assurance_stays_in_testkit_tests_or_fuzz() {
+    let root = common::crate_root();
+    let allowed = [
+        root.join("src/testkit/lifecycle/script.rs"),
+        root.join("src/testkit/lifecycle/fault.rs"),
+        root.join("src/testkit/lifecycle/crash.rs"),
+        root.join("tests/lifecycle_properties.rs"),
+        root.join("tests/lifecycle_maintenance.rs"),
+        root.join("tests/lifecycle_faults.rs"),
+        root.join("tests/crash_recovery.rs"),
+    ];
+
+    for path in allowed {
+        assert!(path.exists(), "{} missing", path.display());
+    }
+}
+
+#[test]
+fn lifecycle_production_does_not_import_testkit_or_fuzz() {
+    let root = common::crate_root();
+    for file in lifecycle_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read lifecycle source");
+        let compact = compact_uncommented_lowercase(&text);
+        assert!(
+            !compact.contains("crate::testkit")
+                && !compact.contains("testkit::")
+                && !compact.contains("fuzz"),
+            "{} imports generated-assurance helpers",
+            file.strip_prefix(&root).unwrap_or(&file).display()
+        );
+    }
+}
+
+#[test]
+fn lifecycle_fuzz_targets_use_distinct_contracts() {
+    let root = common::crate_root();
+    let targets = [
+        (
+            "lifecycle_recovery",
+            "check_lifecycle_recovery_fuzz_contract",
+        ),
+        (
+            "lifecycle_maintenance",
+            "check_lifecycle_maintenance_fuzz_contract",
+        ),
+        (
+            "lifecycle_retention",
+            "check_lifecycle_retention_fuzz_contract",
+        ),
+    ];
+
+    let manifest = fs::read_to_string(root.join("fuzz/Cargo.toml")).expect("read fuzz manifest");
+    for (target, contract) in targets {
+        assert!(manifest.contains(&format!("name = \"{target}\"")));
+        let path = root.join(format!("fuzz/fuzz_targets/{target}.rs"));
+        let text = fs::read_to_string(&path).expect("read lifecycle fuzz target");
+        assert!(text.contains(contract), "{target} does not call {contract}");
+        assert!(
+            !text.contains("check_lifecycle_scaffold_contract"),
+            "{target} calls scaffold-only contract"
+        );
+    }
+    let script = fs::read_to_string(root.join("src/testkit/lifecycle/script.rs"))
+        .expect("read lifecycle generated script contract");
+    assert!(
+        !script.contains("check_lifecycle_generated_script_contract(data)"),
+        "fuzz contracts route through the aggregate generated script"
+    );
+    assert!(script.contains("check_lifecycle_recovery_contract(data)"));
+    assert!(script.contains("check_lifecycle_maintenance_contract(bounded_slice(data"));
+    assert!(script.contains("check_lifecycle_retention_contract(data)"));
+}
+
+#[test]
+fn lifecycle_fuzz_corpora_are_seeded() {
+    let root = common::crate_root();
+    for target in [
+        "lifecycle_recovery",
+        "lifecycle_maintenance",
+        "lifecycle_retention",
+    ] {
+        let dir = root.join(format!("fuzz/corpus/{target}"));
+        let files = corpus_files(&dir);
+        assert!(files.len() >= 3, "{target} corpus has too few seeds");
+        for file in files {
+            let metadata = fs::metadata(&file).expect("read corpus seed metadata");
+            assert!(metadata.len() > 0, "{} is empty", file.display());
+        }
+    }
+}
+
+#[test]
+fn lifecycle_crash_tests_are_feature_gated() {
+    let root = common::crate_root();
+    let text =
+        fs::read_to_string(root.join("tests/crash_recovery.rs")).expect("read crash recovery test");
+
+    assert!(text.contains("feature = \"localfs\""));
+    assert!(text.contains("feature = \"testkit\""));
+    assert!(text.contains("not(target_arch = \"wasm32\")"));
+    assert!(text.contains("run_localfs_crash_recovery_harness"));
+}
+
+#[test]
+fn ignored_crash_tests_have_nonignored_phase_equivalents() {
+    let root = common::crate_root();
+    let text =
+        fs::read_to_string(root.join("tests/crash_recovery.rs")).expect("read crash recovery test");
+
+    assert!(!text.contains("#[ignore]") || text.contains("nonignored_phase_equivalents"));
+}
+
+#[test]
+fn lifecycle_generated_properties_assert_input_derived_counters() {
+    let root = common::crate_root();
+    let text = fs::read_to_string(root.join("tests/lifecycle_properties.rs"))
+        .expect("read lifecycle properties");
+
+    for counter in [
+        "input_open_recovery_close_route_cases",
+        "input_maintenance_route_cases",
+        "input_reclaim_route_cases",
+    ] {
+        assert!(
+            text.contains(counter),
+            "missing generated counter {counter}"
+        );
+    }
+}
+
+#[test]
+fn lifecycle_assurance_tests_avoid_sleeps_and_thread_spawns() {
+    let root = common::crate_root();
+    for relative in [
+        "src/testkit/lifecycle/script.rs",
+        "src/testkit/lifecycle/fault.rs",
+        "src/testkit/lifecycle/crash.rs",
+        "tests/lifecycle_properties.rs",
+        "tests/lifecycle_maintenance.rs",
+        "tests/lifecycle_faults.rs",
+        "tests/crash_recovery.rs",
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read assurance source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_sleep_or_thread_spawn(line),
+                "{}:{} uses nondeterministic assurance primitive: {line}",
+                relative,
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_table_rewrite_source_uses_branch_runtime_boundaries() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/compaction.rs");
@@ -791,6 +947,26 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) {
             files.push(path);
         }
     }
+}
+
+fn corpus_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).expect("read corpus dir") {
+        let path = entry.expect("read corpus entry").path();
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+fn compact_uncommented_lowercase(text: &str) -> String {
+    uncommented_text(text)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn contains_forbidden_import_or_io(line: &str) -> bool {

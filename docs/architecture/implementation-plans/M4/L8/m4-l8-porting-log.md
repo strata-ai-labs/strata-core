@@ -290,6 +290,190 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8O - Generated, Fault, And Crash Assurance
+
+Status: implemented
+
+### Shipped Files
+
+- `crates/storage-next/src/testkit/lifecycle/script.rs`
+- `crates/storage-next/src/testkit/lifecycle/fault.rs`
+- `crates/storage-next/src/testkit/lifecycle/crash.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_recovery.rs`
+- `crates/storage-next/tests/lifecycle_faults.rs`
+- `crates/storage-next/tests/lifecycle_fuzz_inventory.rs`
+- `crates/storage-next/tests/crash_recovery.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `crates/storage-next/fuzz/Cargo.toml`
+- `crates/storage-next/fuzz/fuzz_targets/lifecycle_recovery.rs`
+- `crates/storage-next/fuzz/fuzz_targets/lifecycle_maintenance.rs`
+- `crates/storage-next/fuzz/fuzz_targets/lifecycle_retention.rs`
+- `crates/storage-next/fuzz/corpus/lifecycle_recovery/*`
+- `crates/storage-next/fuzz/corpus/lifecycle_maintenance/*`
+- `crates/storage-next/fuzz/corpus/lifecycle_retention/*`
+- `docs/architecture/implementation-plans/M4/L8/l8o-generated-fault-crash-assurance-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8o-generated-fault-crash-assurance-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Generated assurance remains storage-shaped: lifecycle state, storage mode,
+  recovery health, checkpoint/flush/WAL watermarks, table-object reachability,
+  quarantine/purge facts, maintenance queue facts, and close retryability.
+- Fault coverage reports lifecycle error codes, lower-layer source chains,
+  retryability, health debt, and affected storage families.
+- Crash assurance reports durable phase-family coverage without introducing
+  product crash handlers or public recovery wording.
+- Fuzz contracts route arbitrary bytes into lifecycle recovery, maintenance,
+  and retention contracts without panicking on corrupt inputs.
+
+### Intentional Changes
+
+- Added a composed generated lifecycle script contract that aggregates the
+  existing family contracts and asserts input-derived route counters separately
+  from canonical smoke routes.
+- Added lightweight generated model facts for visible/checkpoint/flush
+  watermarks, durable log records, snapshot/table/quarantine/reclaim counts,
+  validation rejections, degraded health, and close state.
+- Added fault-window and crash-window testkit contracts so integration tests can
+  assert phase-family coverage without duplicating all unit fixtures.
+- Registered lifecycle fuzz targets for recovery, maintenance, and retention,
+  each calling a distinct contract function.
+- Added named non-empty seed corpora for each lifecycle fuzz target.
+- Extended source guards to ensure assurance code remains in testkit/tests/fuzz,
+  production lifecycle code does not import testkit or fuzz helpers, crash tests
+  are feature-gated, and generated properties assert input-derived counters.
+
+### Retired From V1 L8O
+
+- Product crash supervisors, process managers, IPC/server shutdown, primitive
+  replay callbacks, and user-facing recovery reports.
+- Exhaustive process-kill matrix in normal CI. The localfs crash harness remains
+  bounded and feature-gated.
+- Shared lifecycle fuzz scaffold targets. Each lifecycle fuzz target now names
+  and calls its own contract.
+
+### Deferred By Owner Slice
+
+- Final closeout inventory, sensitivity-ledger consolidation, and command-matrix
+  enforcement: L8P.
+- Nightly/libfuzzer execution in CI remains optional; normal tests verify target
+  registration, distinct routing, and seed corpora.
+- Distributed object-store lease/crash fault simulation remains later durable
+  backend work.
+
+### Tests Added
+
+- `lifecycle_property_harness_runs_generated_script_contract`
+- `lifecycle_property_harness_requires_input_derived_recovery_routes`
+- `lifecycle_property_harness_requires_input_derived_maintenance_routes`
+- `lifecycle_property_harness_requires_input_derived_retention_routes`
+- `lifecycle_property_harness_requires_input_derived_quarantine_routes`
+- `lifecycle_property_harness_requires_input_derived_close_routes`
+- `lifecycle_property_harness_replays_minimized_failure_case`
+- `lifecycle_property_harness_records_regression_file`
+- `lifecycle_generated_script_exercises_input_derived_open_recovery_and_close`
+- `lifecycle_generated_script_exercises_input_derived_maintenance_routes`
+- `lifecycle_generated_script_exercises_input_derived_reclaim_routes`
+- `lifecycle_generated_script_rejects_validation_only_script_without_side_effect_claim`
+- `lifecycle_generated_script_model_matches_healthy_recovered_visibility`
+- `lifecycle_generated_script_deletion_set_is_subset_of_model_proof`
+- `lifecycle_generated_script_watermarks_are_monotonic`
+- `lifecycle_generated_script_close_is_idempotent_after_success`
+- `lifecycle_generated_script_cache_mode_never_claims_durable_recovery`
+- `lifecycle_generated_script_lossy_recovery_records_degraded_health`
+- `lifecycle_generated_integration_runs_default_mode_script`
+- `lifecycle_generated_integration_runs_durable_mode_script`
+- `lifecycle_generated_integration_runs_reclaim_close_script`
+- `lifecycle_fault_integration_covers_all_phase_families`
+- `lifecycle_crash_integration_reports_case_counts`
+- `generated_recovery_empty_checkpoint_tail_and_lossy_routes_are_input_driven`
+- `generated_recovery_corrupt_manifest_snapshot_wal_and_table_are_typed`
+- `generated_bootstrap_catches_allocator_timestamp_and_visible_facts`
+- `generated_bootstrap_rejects_timeline_mismatch`
+- `generated_bootstrap_reconciles_unresolved_durable_gate`
+- `generated_recovery_health_matches_fault_family_model`
+- `fault_capability_mismatch_happens_before_durable_side_effects`
+- `fault_writer_guard_acquired_then_manifest_create_fails_releases_or_reports_guard`
+- `fault_manifest_create_visible_but_publish_uncertain_records_health_debt`
+- `fault_snapshot_published_manifest_update_fails_records_orphan_snapshot`
+- `fault_manifest_updated_wal_truncation_fails_keeps_checkpoint_success`
+- `fault_partial_wal_tail_strict_fails_before_repair`
+- `fault_partial_wal_tail_lossy_repairs_and_degrades_health`
+- `fault_corrupt_wal_returns_typed_recovery_error`
+- `fault_replay_failure_transitions_bootstrap_to_failed`
+- `fault_replay_visible_publication_failure_records_durable_not_visible`
+- `fault_flush_table_published_branch_install_fails_reports_orphan_table`
+- `fault_table_rewrite_branch_swap_failure_preserves_reads`
+- `fault_incomplete_retention_proof_blocks_delete_before_backend_access`
+- `fault_quarantine_inventory_publish_failure_blocks_purge`
+- `fault_purge_delete_success_inventory_update_failure_preserves_debt`
+- `fault_close_quiesce_timeout_is_retryable`
+- `fault_close_wal_sync_failure_preserves_source_chain`
+- `fault_close_manifest_sync_failure_preserves_final_fact_debt`
+- `fault_writer_guard_release_failure_is_typed_when_backend_reports_it`
+- `crash_after_wal_append_before_visibility_replays_record`
+- `crash_after_wal_append_with_unresolved_gate_reconciles_on_reopen`
+- `crash_after_snapshot_publish_before_manifest_update_ignores_orphan_snapshot`
+- `crash_after_manifest_update_before_wal_truncation_recovers_checkpoint_and_tail`
+- `crash_after_table_publish_before_branch_install_reports_orphan_table`
+- `crash_after_quarantine_inventory_publish_before_object_move_reports_debt`
+- `crash_after_object_quarantine_before_purge_preserves_quarantine_entry`
+- `crash_after_close_wal_sync_before_guard_release_reopens_consistently`
+- `crash_harness_ignored_cases_have_nonignored_phase_equivalents`
+- `crash_harness_respects_case_limit_and_keep_root_environment`
+- `lifecycle_fuzz_targets_are_registered`
+- `lifecycle_fuzz_targets_call_distinct_contracts`
+- `lifecycle_fuzz_corpora_have_non_empty_seed_files`
+- `lifecycle_recovery_fuzz_seed_hits_valid_and_corrupt_routes`
+- `lifecycle_maintenance_fuzz_seed_hits_task_and_close_routes`
+- `lifecycle_retention_fuzz_seed_hits_delete_and_defer_routes`
+- `lifecycle_generated_assurance_stays_in_testkit_tests_or_fuzz`
+- `lifecycle_production_does_not_import_testkit_or_fuzz`
+- `lifecycle_fuzz_targets_use_distinct_contracts`
+- `lifecycle_fuzz_corpora_are_seeded`
+- `lifecycle_crash_tests_are_feature_gated`
+- `ignored_crash_tests_have_nonignored_phase_equivalents`
+- `lifecycle_generated_properties_assert_input_derived_counters`
+- `lifecycle_assurance_tests_avoid_sleeps_and_thread_spawns`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Generated prelude masks input | `crates/storage-next/src/testkit/lifecycle/script.rs` | Remove input-derived route checks | `lifecycle_property_harness_requires_input_derived_recovery_routes` / generated property harness |
+| Recovery health collapse | `crates/storage-next/src/testkit/lifecycle/fault.rs` | Do not require strict/lossy recovery fault routes | `fault_corrupt_wal_returns_typed_recovery_error` |
+| Unsafe retention | `crates/storage-next/src/testkit/lifecycle/script.rs` | Skip deletion subset check | `generated_retention_never_deletes_reachable_tables_or_live_snapshots` |
+| Stale purge proof | `crates/storage-next/src/testkit/lifecycle/fault.rs` | Do not require stale purge route | `fault_quarantine_inventory_publish_failure_blocks_purge` |
+| Checkpoint truncation too aggressive | `crates/storage-next/src/testkit/lifecycle/script.rs` | Drop watermark monotonic check | `generated_checkpoint_truncation_never_removes_uncovered_wal_records` |
+| Close starts ordinary work | `crates/storage-next/src/testkit/lifecycle/fault.rs` | Skip close quiesce/timeout route | `generated_close_blocks_new_commits_and_ordinary_maintenance` |
+| Fuzz target shares scaffold | `crates/storage-next/fuzz/fuzz_targets/lifecycle_recovery.rs` | Call scaffold contract instead of recovery fuzz contract | `lifecycle_fuzz_targets_call_distinct_contracts` |
+| Empty corpora | `crates/storage-next/fuzz/corpus/lifecycle_recovery/valid_seed` | Empty or remove seed file | `lifecycle_fuzz_corpora_have_non_empty_seed_files` |
+| Crash test not gated | `crates/storage-next/tests/crash_recovery.rs` | Remove localfs/testkit/wasm cfg from crash routes | `lifecycle_crash_tests_are_feature_gated` |
+| Production imports testkit | `crates/storage-next/src/lifecycle/*.rs` | Import testkit or fuzz helpers from production lifecycle source | `lifecycle_production_does_not_import_testkit_or_fuzz` |
+
+### Verification
+
+Commands run for L8O:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_fuzz_inventory
+cargo test -p strata-storage-next --features localfs,testkit --locked --test crash_recovery
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --bins
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8M - Quarantine, Reclaim, Purge, And Repair
 
 ### Shipped Files

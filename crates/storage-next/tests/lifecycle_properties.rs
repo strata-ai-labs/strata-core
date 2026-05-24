@@ -242,6 +242,243 @@ fn lifecycle_property_harness_runs_flush_contract() {
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_runs_generated_script_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_generated_script_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 16,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-generated.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=80), |script| {
+            let outcome = check_lifecycle_generated_script_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if !generated_script_categories_exercised(&outcome) {
+                return Err(TestCaseError::fail(
+                    "generated lifecycle script did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle script property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_requires_input_derived_recovery_routes() {
+    let outcome = generated_script_outcome(b"recovery-generated-input");
+    let model = outcome.model_facts();
+
+    assert!(outcome.input_open_recovery_close_route_cases() > 0);
+    assert!(outcome.recovered_visibility_match_cases() > 0);
+    assert!(outcome.lossy_degraded_health_check_cases() > 0);
+    assert!(model.visible_version() >= model.checkpoint_watermark());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_requires_input_derived_maintenance_routes() {
+    let outcome = generated_script_outcome(b"maintenance-generated-input");
+    let model = outcome.model_facts();
+
+    assert!(outcome.input_maintenance_route_cases() > 0);
+    assert!(outcome.watermark_monotonic_check_cases() > 0);
+    assert!(model.visible_version() >= model.flush_watermark());
+    assert!(model.pending_maintenance_tasks() <= 4);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_requires_input_derived_retention_routes() {
+    let outcome = generated_script_outcome(b"retention-generated-input");
+    let model = outcome.model_facts();
+
+    assert!(outcome.input_reclaim_route_cases() > 0);
+    assert!(outcome.deletion_subset_check_cases() > 0);
+    assert!(model.purged_objects() <= model.reclaim_proofed_objects());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_requires_input_derived_quarantine_routes() {
+    let outcome = generated_script_outcome(b"quarantine-generated-input");
+
+    assert!(outcome.input_reclaim_route_cases() > 0);
+    assert!(outcome.deletion_subset_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_requires_input_derived_close_routes() {
+    let outcome = generated_script_outcome(b"close-generated-input");
+
+    assert!(outcome.input_open_recovery_close_route_cases() > 0);
+    assert!(outcome.close_idempotence_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_replays_minimized_failure_case() {
+    let outcome = generated_script_outcome(&[]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.validation_only_rejection_cases() > 0);
+    assert!(generated_script_categories_exercised(&outcome));
+    assert!(model.validation_rejections() > 0 || outcome.validation_only_rejection_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_property_harness_records_regression_file() {
+    let outcome = generated_script_outcome(b"regression-file-route");
+
+    assert!(generated_script_categories_exercised(&outcome));
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_exercises_input_derived_open_recovery_and_close() {
+    let outcome = generated_script_outcome(rich_generated_script());
+
+    assert!(outcome.input_open_recovery_close_route_cases() > 0);
+    assert!(outcome.close_idempotence_check_cases() > 0);
+    assert!(outcome.model_facts().closed());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_exercises_input_derived_maintenance_routes() {
+    let outcome = generated_script_outcome(rich_generated_script());
+    let model = outcome.model_facts();
+
+    assert!(outcome.input_maintenance_route_cases() > 0);
+    assert!(outcome.watermark_monotonic_check_cases() > 0);
+    assert!(model.pending_maintenance_tasks() <= 4);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_exercises_input_derived_reclaim_routes() {
+    let outcome = generated_script_outcome(rich_generated_script());
+    let model = outcome.model_facts();
+
+    assert!(outcome.input_reclaim_route_cases() > 0);
+    assert!(outcome.deletion_subset_check_cases() > 0);
+    assert!(model.purged_objects() <= model.reclaim_proofed_objects());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_rejects_validation_only_script_without_side_effect_claim() {
+    let outcome = generated_script_outcome(&[0, 1]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.validation_only_rejection_cases() > 0);
+    assert!(model.validation_rejections() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_model_matches_healthy_recovered_visibility() {
+    let outcome = generated_script_outcome(&[0, 0, 1, 2]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.recovered_visibility_match_cases() > 0);
+    assert!(model.checkpoint_watermark() <= model.visible_version());
+    assert!(model.flush_watermark() <= model.visible_version());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_deletion_set_is_subset_of_model_proof() {
+    let outcome = generated_script_outcome(&[0, 3, 4, 5]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.deletion_subset_check_cases() > 0);
+    assert_eq!(model.purged_objects(), 1);
+    assert!(model.purged_objects() <= model.reclaim_proofed_objects());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_watermarks_are_monotonic() {
+    let outcome = generated_script_outcome(&[0, 0, 1, 0, 2]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.watermark_monotonic_check_cases() > 0);
+    assert!(model.checkpoint_watermark() <= model.visible_version());
+    assert!(model.flush_watermark() <= model.visible_version());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_close_is_idempotent_after_success() {
+    let outcome = generated_script_outcome(&[0, 8, 8]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.close_idempotence_check_cases() > 0);
+    assert!(model.closed());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_cache_mode_never_claims_durable_recovery() {
+    let outcome = generated_script_outcome(&[0, 0, 0, 8]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.cache_no_durable_claim_check_cases() > 0);
+    assert_eq!(model.wal_records(), 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_script_lossy_recovery_records_degraded_health() {
+    let outcome = generated_script_outcome(&[1, 3, 4]);
+    let model = outcome.model_facts();
+
+    assert!(outcome.lossy_degraded_health_check_cases() > 0);
+    assert!(model.degraded_health());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn generated_script_outcome(
+    script: &[u8],
+) -> strata_storage_next::testkit::LifecycleGeneratedScriptOutcome {
+    strata_storage_next::testkit::check_lifecycle_generated_script_contract(script)
+        .expect("generated lifecycle script contract")
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn rich_generated_script() -> &'static [u8] {
+    &[0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn generated_script_categories_exercised(
+    outcome: &strata_storage_next::testkit::LifecycleGeneratedScriptOutcome,
+) -> bool {
+    outcome.input_open_recovery_close_route_cases() > 0
+        && outcome.input_maintenance_route_cases() > 0
+        && outcome.input_reclaim_route_cases() > 0
+        && outcome.validation_only_rejection_cases() > 0
+        && outcome.recovered_visibility_match_cases() > 0
+        && outcome.deletion_subset_check_cases() > 0
+        && outcome.watermark_monotonic_check_cases() > 0
+        && outcome.close_idempotence_check_cases() > 0
+        && outcome.cache_no_durable_claim_check_cases() > 0
+        && outcome.lossy_degraded_health_check_cases() > 0
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 fn all_categories_exercised(
     outcome: &strata_storage_next::testkit::LifecycleScaffoldOutcome,
 ) -> bool {

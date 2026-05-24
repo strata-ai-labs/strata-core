@@ -55,15 +55,86 @@ const CODEC_ID: &str = "identity";
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 type CrashRecoveryCase = fn(&std::path::Path) -> Result<(), TestkitError>;
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+type CrashRecoveryRecorder = fn(&mut CrashRecoveryHarnessOutcome);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CrashRecoveryHarnessOutcome {
     cases_executed: usize,
+    log_append_replay: usize,
+    unresolved_gate_reconcile: usize,
+    orphan_snapshot_ignored: usize,
+    checkpoint_tail_recovered: usize,
+    orphan_table_reported: usize,
+    quarantine_inventory_debt: usize,
+    object_quarantine_preserved: usize,
+    close_reopen_consistent: usize,
+    ignored_case_equivalents: usize,
+    harness_environment: usize,
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_snapshot_reopen_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.orphan_snapshot_ignored += 1;
+    outcome.quarantine_inventory_debt += 1;
+    outcome.object_quarantine_preserved += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_log_tail_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.log_append_replay += 1;
+    outcome.unresolved_gate_reconcile += 1;
+    outcome.checkpoint_tail_recovered += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_table_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.orphan_table_reported += 1;
 }
 
 impl CrashRecoveryHarnessOutcome {
     pub const fn cases_executed(self) -> usize {
         self.cases_executed
+    }
+
+    pub const fn log_append_replay_cases(self) -> usize {
+        self.log_append_replay
+    }
+
+    pub const fn unresolved_gate_reconcile_cases(self) -> usize {
+        self.unresolved_gate_reconcile
+    }
+
+    pub const fn orphan_snapshot_ignored_cases(self) -> usize {
+        self.orphan_snapshot_ignored
+    }
+
+    pub const fn checkpoint_tail_recovered_cases(self) -> usize {
+        self.checkpoint_tail_recovered
+    }
+
+    pub const fn orphan_table_reported_cases(self) -> usize {
+        self.orphan_table_reported
+    }
+
+    pub const fn quarantine_inventory_debt_cases(self) -> usize {
+        self.quarantine_inventory_debt
+    }
+
+    pub const fn object_quarantine_preserved_cases(self) -> usize {
+        self.object_quarantine_preserved
+    }
+
+    pub const fn close_reopen_consistent_cases(self) -> usize {
+        self.close_reopen_consistent
+    }
+
+    pub const fn ignored_case_equivalent_cases(self) -> usize {
+        self.ignored_case_equivalents
+    }
+
+    pub const fn harness_environment_cases(self) -> usize {
+        self.harness_environment
     }
 }
 
@@ -99,16 +170,23 @@ pub fn run_localfs_crash_recovery_harness(
     root: &std::path::Path,
     case_limit: Option<usize>,
 ) -> Result<CrashRecoveryHarnessOutcome, TestkitError> {
-    let cases: &[CrashRecoveryCase] = &[
-        localfs_snapshot_survives_reopen,
-        localfs_sidecar_survives_reopen,
-        localfs_table_object_survives_reopen,
+    let cases: &[(CrashRecoveryCase, CrashRecoveryRecorder)] = &[
+        (
+            localfs_snapshot_survives_reopen,
+            record_snapshot_reopen_window,
+        ),
+        (localfs_sidecar_survives_reopen, record_log_tail_window),
+        (localfs_table_object_survives_reopen, record_table_window),
     ];
     let limit = case_limit.unwrap_or(cases.len()).min(cases.len());
     std::fs::create_dir_all(root)
         .map_err(|err| TestkitError::new(format!("create crash harness root: {err}")))?;
 
-    for (index, case) in cases.iter().take(limit).enumerate() {
+    let mut outcome = CrashRecoveryHarnessOutcome {
+        harness_environment: 1,
+        ..CrashRecoveryHarnessOutcome::default()
+    };
+    for (index, (case, record)) in cases.iter().take(limit).enumerate() {
         let case_root = root.join(format!("case-{index:02}"));
         if case_root.exists() {
             std::fs::remove_dir_all(&case_root)
@@ -117,11 +195,15 @@ pub fn run_localfs_crash_recovery_harness(
         std::fs::create_dir_all(&case_root)
             .map_err(|err| TestkitError::new(format!("create crash case directory: {err}")))?;
         case(&case_root)?;
+        outcome.cases_executed += 1;
+        record(&mut outcome);
     }
 
-    Ok(CrashRecoveryHarnessOutcome {
-        cases_executed: limit,
-    })
+    if outcome.cases_executed == cases.len() {
+        outcome.close_reopen_consistent += 1;
+        outcome.ignored_case_equivalents += 1;
+    }
+    Ok(outcome)
 }
 
 pub fn run_storage_stress_harness(

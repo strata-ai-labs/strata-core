@@ -124,6 +124,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "lifecycle_recovery"
+path = "fuzz_targets/lifecycle_recovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_maintenance"
+path = "fuzz_targets/lifecycle_maintenance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_retention"
+path = "fuzz_targets/lifecycle_retention.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_wal_commit_payload"
 path = "fuzz_targets/format_wal_commit_payload.rs"
 test = false

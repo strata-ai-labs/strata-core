@@ -62,3 +62,68 @@ fn lifecycle_bootstrap_contract_exercises_commit_bootstrap_paths() {
     assert!(outcome.input_derived_degraded_bootstrap_cases() > 0);
     assert!(outcome.input_derived_replay_rejection_cases() > 0);
 }
+
+#[cfg(feature = "testkit")]
+#[test]
+fn generated_recovery_empty_checkpoint_tail_and_lossy_routes_are_input_driven() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_generated_script_contract(
+        b"recovery-input-routes",
+    )
+    .expect("generated lifecycle contract");
+
+    assert!(outcome.input_open_recovery_close_route_cases() > 0);
+    assert!(outcome.lossy_degraded_health_check_cases() > 0);
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn generated_recovery_corrupt_manifest_snapshot_wal_and_table_are_typed() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"recovery-corrupt-routes")
+            .expect("fault contract");
+
+    assert!(outcome.corrupt_log_typed_cases() > 0);
+    assert!(outcome.partial_log_strict_cases() > 0);
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn generated_bootstrap_catches_allocator_timestamp_and_visible_facts() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_bootstrap_contract(b"bootstrap-facts")
+            .expect("bootstrap contract");
+
+    assert!(outcome.checkpoint_bootstrap_cases() > 0);
+    assert!(outcome.wal_replay_bootstrap_cases() > 0);
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn generated_bootstrap_rejects_timeline_mismatch() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_bootstrap_contract(b"timeline-mismatch")
+            .expect("bootstrap contract");
+
+    assert!(outcome.replay_rejection_cases() > 0);
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn generated_bootstrap_reconciles_unresolved_durable_gate() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_fault_contract(b"unresolved-gate")
+        .expect("fault contract");
+
+    assert!(outcome.replay_failed_state_cases() > 0);
+    assert!(outcome.replay_visible_debt_cases() > 0);
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn generated_recovery_health_matches_fault_family_model() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_generated_script_contract(b"health-model")
+            .expect("generated lifecycle contract");
+
+    assert!(outcome.recovered_visibility_match_cases() > 0);
+    assert!(outcome.lossy_degraded_health_check_cases() > 0);
+}

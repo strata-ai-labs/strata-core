@@ -347,6 +347,241 @@ fn lifecycle_retention_generated_bytes_influence_decision_counts() {
     );
 }
 
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_integration_runs_default_mode_script() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_generated_script_contract(b"default-script")
+            .expect("generated lifecycle contract");
+
+    assert!(outcome.input_open_recovery_close_route_cases() > 0);
+    assert!(outcome.cache_no_durable_claim_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_integration_runs_durable_mode_script() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_generated_script_contract(b"durable-script")
+            .expect("generated lifecycle contract");
+
+    assert!(outcome.recovered_visibility_match_cases() > 0);
+    assert!(outcome.watermark_monotonic_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_generated_integration_runs_reclaim_close_script() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_generated_script_contract(
+        b"reclaim-close-script",
+    )
+    .expect("generated lifecycle contract");
+
+    assert!(outcome.input_reclaim_route_cases() > 0);
+    assert!(outcome.close_idempotence_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_fault_integration_covers_all_phase_families() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-integration")
+            .expect("fault lifecycle contract");
+
+    assert!(outcome.capability_preflight_cases() > 0);
+    assert!(outcome.flush_orphan_table_cases() > 0);
+    assert!(outcome.close_log_sync_source_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_crash_integration_reports_case_counts() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-integration")
+            .expect("crash lifecycle contract");
+
+    assert!(outcome.log_append_replay_cases() > 0);
+    assert!(outcome.orphan_snapshot_ignored_cases() > 0);
+    assert!(outcome.close_reopen_consistent_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_maintenance_model_matches_enqueue_coalesce_run_cancel_drain() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_maintenance_contract(b"model");
+
+    let outcome = outcome.expect("maintenance contract");
+    assert!(outcome.input_model_step_cases() > 0);
+    assert!(outcome.input_drain_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_maintenance_queue_full_and_admission_rejections_are_typed() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_maintenance_contract(b"queue");
+
+    let outcome = outcome.expect("maintenance contract");
+    assert!(outcome.input_queue_full_cases() > 0);
+    assert!(outcome.input_admission_rejection_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_flush_preserves_read_parity_and_candidate_watermark() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_flush_contract(b"flush-parity")
+        .expect("flush contract");
+
+    assert!(outcome.read_parity_cases() > 0);
+    assert!(outcome.retry_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_flush_publication_failure_keeps_branch_state_safe() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_flush_contract(b"flush-failure")
+        .expect("flush contract");
+
+    assert!(outcome.publish_failure_cases() > 0);
+    assert!(outcome.reopen_failure_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_checkpoint_preserves_row_visibility_and_tail_replay() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_checkpoint_contract(b"checkpoint-tail")
+            .expect("checkpoint contract");
+
+    assert!(outcome.checkpoint_truncation_round_trip_cases() > 0);
+    assert!(outcome.timeline_row_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_checkpoint_truncation_never_removes_uncovered_wal_records() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_generated_script_contract(b"truncation")
+            .expect("generated lifecycle contract");
+
+    assert!(outcome.watermark_monotonic_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_table_rewrite_preserves_reads_after_compaction() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_table_rewrite_contract(b"compaction")
+            .expect("table rewrite contract");
+
+    assert!(outcome.cache_compaction_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_materialization_preserves_child_precedence() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_table_rewrite_contract(b"materialization")
+            .expect("table rewrite contract");
+
+    assert!(outcome.materialization_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_storage_pressure_suggestions_are_model_consistent() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_table_rewrite_contract(b"pressure")
+        .expect("table rewrite contract");
+
+    assert!(outcome.pressure_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_retention_proof_blocks_unsafe_recovery_health() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_retention_contract(b"blocked")
+        .expect("retention contract");
+
+    assert!(outcome.blocked_recovery_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_retention_never_deletes_reachable_tables_or_live_snapshots() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_generated_script_contract(b"safe-delete")
+            .expect("generated lifecycle contract");
+
+    assert!(outcome.deletion_subset_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_snapshot_pruning_retains_live_and_newest_snapshots() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_retention_contract(b"snapshots")
+        .expect("retention contract");
+
+    assert!(outcome.snapshot_protected_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_quarantine_happens_before_purge() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"quarantine-purge")
+            .expect("quarantine contract");
+
+    assert!(outcome.staged_object_cases() > 0);
+    assert!(outcome.purged_object_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_purge_requires_fresh_inventory_proof() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"stale-proof")
+        .expect("quarantine contract");
+
+    assert!(outcome.stale_purge_proof_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_repair_reports_inconclusive_without_mutating_state() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"repair")
+        .expect("quarantine contract");
+
+    assert!(outcome.unlisted_object_repair_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_close_blocks_new_commits_and_ordinary_maintenance() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_close_contract(b"close-block")
+        .expect("close contract");
+
+    assert!(outcome.ordinary_task_not_started_after_close_cases() > 0);
+    assert!(outcome.commit_quiesce_blocked_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_close_retry_and_double_close_match_model() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_close_contract(b"close-retry")
+        .expect("close contract");
+
+    assert!(outcome.idempotent_close_cases() > 0);
+    assert!(outcome.retryable_timeout_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_close_faults_preserve_health_debt() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_fault_contract(b"close-fault")
+        .expect("fault contract");
+
+    assert!(outcome.close_log_sync_source_cases() > 0);
+    assert!(outcome.close_manifest_sync_debt_cases() > 0);
+}
+
 #[cfg(not(all(feature = "testkit", not(target_arch = "wasm32"))))]
 #[test]
 fn lifecycle_maintenance_contract_requires_testkit() {}
