@@ -8,6 +8,7 @@ mod durable;
 mod flush;
 mod maintenance;
 mod outcome;
+mod quarantine;
 mod recovery;
 mod retention;
 mod rewrite;
@@ -17,6 +18,7 @@ pub use checkpoint::{check_lifecycle_checkpoint_contract, LifecycleCheckpointCon
 pub use flush::{check_lifecycle_flush_contract, LifecycleFlushContractOutcome};
 pub use maintenance::{check_lifecycle_maintenance_contract, LifecycleMaintenanceContractOutcome};
 pub use outcome::LifecycleScaffoldOutcome;
+pub use quarantine::{check_lifecycle_quarantine_contract, LifecycleQuarantineContractOutcome};
 pub use recovery::{check_lifecycle_recovery_contract, LifecycleRecoveryContractOutcome};
 pub use retention::{check_lifecycle_retention_contract, LifecycleRetentionContractOutcome};
 pub use rewrite::{check_lifecycle_table_rewrite_contract, LifecycleTableRewriteContractOutcome};

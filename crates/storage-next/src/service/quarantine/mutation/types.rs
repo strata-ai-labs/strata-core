@@ -289,6 +289,7 @@ pub(crate) struct QuarantinePurgeReport {
     pub(super) already_missing: Vec<QuarantineDeleteOutcome>,
     pub(super) failed: Vec<QuarantineDeleteOutcome>,
     pub(super) retained_entries: Vec<QuarantineEntry>,
+    pub(super) reclaimed_bytes: u64,
     pub(super) inventory_write: Option<QuarantineInventoryWrite>,
     pub(super) inventory_publish_failure: Option<QuarantinePublishFailure>,
 }
@@ -302,6 +303,7 @@ impl QuarantinePurgeReport {
             already_missing: Vec::new(),
             failed: Vec::new(),
             retained_entries: Vec::new(),
+            reclaimed_bytes: 0,
             inventory_write: None,
             inventory_publish_failure: None,
         }
@@ -329,6 +331,10 @@ impl QuarantinePurgeReport {
 
     pub(crate) fn retained_entries(&self) -> &[QuarantineEntry] {
         &self.retained_entries
+    }
+
+    pub(crate) const fn reclaimed_bytes(&self) -> u64 {
+        self.reclaimed_bytes
     }
 
     pub(crate) const fn inventory_write(&self) -> Option<&QuarantineInventoryWrite> {

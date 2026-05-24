@@ -332,6 +332,21 @@ fn lifecycle_retention_source_delegates_durable_mutation() {
 }
 
 #[test]
+fn lifecycle_quarantine_source_uses_quarantine_service_boundary() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/quarantine.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle quarantine source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_quarantine_dependency(line),
+            "src/lifecycle/quarantine.rs:{} calls forbidden quarantine dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_source_guard_catches_fixture_violations() {
     assert_general_source_guard_fixtures();
     assert_capability_preflight_fixtures();
@@ -344,6 +359,7 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_durable_maintenance_fixtures();
     assert_table_rewrite_fixtures();
     assert_retention_fixtures();
+    assert_quarantine_fixtures();
     assert_public_surface_fixtures();
 }
 
@@ -598,6 +614,30 @@ fn assert_retention_fixtures() {
     ));
     assert!(!contains_forbidden_retention_dependency(
         "snapshots.prune_snapshots(live, retain)?;"
+    ));
+}
+
+fn assert_quarantine_fixtures() {
+    assert!(contains_forbidden_quarantine_dependency(
+        "backend.delete_object(name)?;"
+    ));
+    assert!(contains_forbidden_quarantine_dependency(
+        "publish_object(name, bytes, mode)?;"
+    ));
+    assert!(contains_forbidden_quarantine_dependency(
+        "encode_quarantine_inventory(bytes)?;"
+    ));
+    assert!(contains_forbidden_quarantine_dependency(
+        "delete_covered_segments(proof)?;"
+    ));
+    assert!(contains_forbidden_quarantine_dependency(
+        "snapshots.prune_snapshots(live, retain)?;"
+    ));
+    assert!(!contains_forbidden_quarantine_dependency(
+        "service.quarantine_object(&request)?;"
+    ));
+    assert!(!contains_forbidden_quarantine_dependency(
+        "service.purge_quarantine(request)?;"
     ));
 }
 
@@ -1047,6 +1087,32 @@ fn contains_forbidden_retention_dependency(line: &str) -> bool {
         ".as_str().split",
         "strip_prefix(",
         "parse::<u64>",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_quarantine_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "backend.",
+        "delete_object(",
+        "publish_object(",
+        "conditional_create(",
+        "conditional_update(",
+        "encode_quarantine_inventory",
+        "decode_quarantine_inventory",
+        "walservice",
+        "snapshotservice",
+        "tableobjectservice",
+        "checkpointservice",
+        "databasemanifestservice",
+        "tablemanifestservice",
+        "delete_covered_segments(",
+        "persist_flush_watermark(",
+        "prune_snapshots(",
+        "compact_branch_tables(",
+        "materialize_inherited_layer(",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

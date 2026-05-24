@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt;
 use strata_core_next::BranchId;
 
-pub(super) fn valid_kind_scopes() -> [(MaintenanceTaskKind, MaintenanceTaskScope); 13] {
+pub(super) fn valid_kind_scopes() -> [(MaintenanceTaskKind, MaintenanceTaskScope); 15] {
     [
         (
             MaintenanceTaskKind::Flush,
@@ -47,7 +47,15 @@ pub(super) fn valid_kind_scopes() -> [(MaintenanceTaskKind, MaintenanceTaskScope
             MaintenanceTaskKind::Quarantine,
             MaintenanceTaskScope::Quarantine,
         ),
+        (
+            MaintenanceTaskKind::Purge,
+            MaintenanceTaskScope::Branch(branch_id(4)),
+        ),
         (MaintenanceTaskKind::Purge, MaintenanceTaskScope::Quarantine),
+        (
+            MaintenanceTaskKind::Repair,
+            MaintenanceTaskScope::Branch(branch_id(5)),
+        ),
         (
             MaintenanceTaskKind::Repair,
             MaintenanceTaskScope::Quarantine,

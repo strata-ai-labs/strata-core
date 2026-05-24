@@ -228,12 +228,20 @@ impl QuarantineService<'_> {
         for entry in inventory.inventory().entries() {
             let object = quarantine_object_name(request.branch_id, entry.object_id())?;
             match self.backend.delete_object(&object) {
-                Ok(()) => report
-                    .deleted
-                    .push(QuarantineDeleteOutcome::deleted(object)),
-                Err(source) if source.kind() == BackendErrorKind::NotFound => report
-                    .already_missing
-                    .push(QuarantineDeleteOutcome::missing(object)),
+                Ok(()) => {
+                    report.reclaimed_bytes =
+                        report.reclaimed_bytes.saturating_add(entry.byte_count());
+                    report
+                        .deleted
+                        .push(QuarantineDeleteOutcome::deleted(object));
+                }
+                Err(source) if source.kind() == BackendErrorKind::NotFound => {
+                    report.reclaimed_bytes =
+                        report.reclaimed_bytes.saturating_add(entry.byte_count());
+                    report
+                        .already_missing
+                        .push(QuarantineDeleteOutcome::missing(object));
+                }
                 Err(source) => {
                     report.retained_entries.push(entry.clone());
                     report

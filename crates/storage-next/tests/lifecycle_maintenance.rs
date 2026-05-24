@@ -217,6 +217,101 @@ fn lifecycle_snapshot_pruning_delete_failure_integration() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_quarantine_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"quarantine-flow")
+            .expect("quarantine contract");
+
+    assert!(outcome.complete_safe_proof_cases() > 0);
+    assert!(outcome.staged_object_cases() > 0);
+    assert!(outcome.already_quarantined_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_purge_integration() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"purge-flow")
+        .expect("quarantine contract");
+
+    assert!(outcome.purged_object_cases() > 0);
+    assert!(outcome.purge_delete_failure_cases() > 0);
+    assert!(outcome.stale_purge_proof_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_repair_reconciliation_integration() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"repair-flow")
+        .expect("quarantine contract");
+
+    assert!(outcome.corrupt_inventory_repair_cases() > 0);
+    assert!(outcome.unlisted_object_repair_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_reclaim_blocks_unsafe_recovery_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"blocked-reclaim")
+            .expect("quarantine contract");
+
+    assert!(outcome.blocked_recovery_cases() > 0);
+    assert!(outcome.referenced_candidate_cases() > 0);
+    assert!(outcome.incomplete_proof_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_cache_reclaim_unsupported_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"cache-reclaim")
+            .expect("quarantine contract");
+
+    assert!(outcome.cache_deferred_cases() >= 3);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_quarantine_then_purge_round_trip() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"round-trip")
+        .expect("quarantine contract");
+
+    assert!(outcome.staged_object_cases() > 0);
+    assert!(outcome.purged_object_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_quarantine_publish_failure_surfaces_health_debt() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"publish-faults")
+            .expect("quarantine contract");
+
+    assert!(outcome.inventory_publish_failure_cases() > 0);
+    assert!(outcome.quarantine_publish_failure_cases() > 0);
+    assert!(outcome.source_delete_failure_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_quarantine_generated_bytes_influence_routes() {
+    let staging = strata_storage_next::testkit::check_lifecycle_quarantine_contract(&[
+        0, 1, 2, 3, 4, 0, 1, 8, 1, 0, 0, 0, 0, 0,
+    ])
+    .expect("staging contract");
+    let purge = strata_storage_next::testkit::check_lifecycle_quarantine_contract(&[
+        0, 1, 2, 3, 4, 1, 1, 8, 1, 0, 0, 0, 0, 0,
+    ])
+    .expect("purge contract");
+
+    assert!(staging.input_derived_route_cases() > 0);
+    assert!(purge.input_derived_route_cases() > 0);
+    assert_ne!(staging.staged_object_cases(), purge.staged_object_cases());
+    assert_ne!(staging.purged_object_cases(), purge.purged_object_cases());
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_retention_generated_bytes_influence_decision_counts() {
     let low_retain = strata_storage_next::testkit::check_lifecycle_retention_contract(&[0, 0])
         .expect("low retain contract");

@@ -59,6 +59,28 @@ pub(crate) enum LifecycleError {
     RetentionBlocked {
         reason: &'static str,
     },
+    QuarantineProofBlocked {
+        reason: &'static str,
+    },
+    QuarantineInventoryMismatch {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    QuarantinePublicationFailed {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    QuarantinePublicationUncertain {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    PurgeProofBlocked {
+        reason: &'static str,
+    },
+    QuarantineRepairInconclusive {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
     WalRetentionProofIncomplete {
         reason: &'static str,
     },
@@ -138,6 +160,50 @@ impl LifecycleError {
         }
     }
 
+    pub(crate) fn quarantine_inventory_mismatch_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::QuarantineInventoryMismatch {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn quarantine_publication_failed_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::QuarantinePublicationFailed {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn quarantine_publication_uncertain_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::QuarantinePublicationUncertain {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn quarantine_repair_inconclusive_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::QuarantineRepairInconclusive {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "central lifecycle error code registry is intentionally exhaustive"
+    )]
     pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::InvalidConfig { .. } => "invalid_argument.lifecycle.config",
@@ -158,6 +224,18 @@ impl LifecycleError {
             }
             Self::CheckpointSnapshotOrphaned { .. } => "unknown.lifecycle.checkpoint_snapshot",
             Self::RetentionBlocked { .. } => "failed_precondition.lifecycle.retention",
+            Self::QuarantineProofBlocked { .. } => "failed_precondition.lifecycle.quarantine",
+            Self::QuarantineInventoryMismatch { .. } => "corruption.lifecycle.quarantine",
+            Self::QuarantinePublicationFailed { .. } => {
+                "failed_precondition.lifecycle.quarantine_publication"
+            }
+            Self::QuarantinePublicationUncertain { .. } => {
+                "unknown.lifecycle.quarantine_publication"
+            }
+            Self::PurgeProofBlocked { .. } => "failed_precondition.lifecycle.purge",
+            Self::QuarantineRepairInconclusive { .. } => {
+                "failed_precondition.lifecycle.quarantine_repair"
+            }
             Self::WalRetentionProofIncomplete { .. } => {
                 "failed_precondition.lifecycle.wal_retention"
             }
@@ -234,6 +312,30 @@ impl LifecycleError {
             | (
                 Self::WalRetentionProofIncomplete { reason: left },
                 Self::WalRetentionProofIncomplete { reason: right },
+            )
+            | (
+                Self::QuarantineProofBlocked { reason: left },
+                Self::QuarantineProofBlocked { reason: right },
+            )
+            | (
+                Self::QuarantineInventoryMismatch { reason: left, .. },
+                Self::QuarantineInventoryMismatch { reason: right, .. },
+            )
+            | (
+                Self::QuarantinePublicationFailed { reason: left, .. },
+                Self::QuarantinePublicationFailed { reason: right, .. },
+            )
+            | (
+                Self::QuarantinePublicationUncertain { reason: left, .. },
+                Self::QuarantinePublicationUncertain { reason: right, .. },
+            )
+            | (
+                Self::PurgeProofBlocked { reason: left },
+                Self::PurgeProofBlocked { reason: right },
+            )
+            | (
+                Self::QuarantineRepairInconclusive { reason: left, .. },
+                Self::QuarantineRepairInconclusive { reason: right, .. },
             )
             | (Self::CloseFailed { reason: left }, Self::CloseFailed { reason: right })
             | (
@@ -392,6 +494,24 @@ impl fmt::Display for LifecycleError {
                 write!(formatter, ": {reason}")
             }
             Self::RetentionBlocked { reason } => write!(formatter, "retention blocked: {reason}"),
+            Self::QuarantineProofBlocked { reason } => {
+                write!(formatter, "quarantine proof blocked: {reason}")
+            }
+            Self::QuarantineInventoryMismatch { reason, .. } => {
+                write!(formatter, "quarantine inventory mismatch: {reason}")
+            }
+            Self::QuarantinePublicationFailed { reason, .. } => {
+                write!(formatter, "quarantine publication failed: {reason}")
+            }
+            Self::QuarantinePublicationUncertain { reason, .. } => {
+                write!(formatter, "quarantine publication uncertain: {reason}")
+            }
+            Self::PurgeProofBlocked { reason } => {
+                write!(formatter, "purge proof blocked: {reason}")
+            }
+            Self::QuarantineRepairInconclusive { reason, .. } => {
+                write!(formatter, "quarantine repair inconclusive: {reason}")
+            }
             Self::WalRetentionProofIncomplete { reason } => {
                 write!(formatter, "WAL retention proof incomplete: {reason}")
             }
@@ -448,6 +568,22 @@ impl Error for LifecycleError {
                 ..
             }
             | Self::FlushPublicationOrphaned {
+                source: Some(source),
+                ..
+            }
+            | Self::QuarantineInventoryMismatch {
+                source: Some(source),
+                ..
+            }
+            | Self::QuarantinePublicationFailed {
+                source: Some(source),
+                ..
+            }
+            | Self::QuarantinePublicationUncertain {
+                source: Some(source),
+                ..
+            }
+            | Self::QuarantineRepairInconclusive {
                 source: Some(source),
                 ..
             }

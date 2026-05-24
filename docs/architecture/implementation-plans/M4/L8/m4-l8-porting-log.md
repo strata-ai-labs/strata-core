@@ -164,6 +164,138 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8M - Quarantine, Reclaim, Purge, And Repair
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/quarantine.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/tests/quarantine.rs`
+- `crates/storage-next/src/lifecycle/tests/maintenance/shared.rs`
+- `crates/storage-next/src/testkit/lifecycle/quarantine.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8m-quarantine-reclaim-repair-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8m-quarantine-reclaim-repair-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Quarantine proofs distinguish safe, referenced, incomplete, and
+  recovery-health-blocked states.
+- Quarantine operation outcomes record source object, quarantine object,
+  inventory object, byte count, entry count, recovery health, retryability, and
+  lower-layer source errors.
+- Purge proofs distinguish fresh, stale, incomplete, and
+  recovery-health-blocked states before any backend mutation can happen.
+- Purge outcomes report deleted, already-missing, failed, and retained
+  quarantine entries plus reclaimed byte counts from inventory facts.
+- Repair outcomes report branch or family reconciliation facts for listed,
+  missing, unlisted, malformed, and inventory-present states.
+
+### Raw Health And Fact Vocabulary
+
+- Quarantine publication uncertainty and publication failure have stable
+  lifecycle error codes.
+- Inventory mismatch and repair inconclusive states preserve lower-layer service
+  errors when available.
+- Quarantine and purge deferred outcomes carry telemetry health debt rather than
+  claiming durable reclaim success.
+- Maintenance outcomes preserve affected object names, state-change counts,
+  reclaimed bytes when known, source errors, and recovery-health debt.
+
+### Intentional Changes
+
+- Lifecycle quarantine delegates all durable copy, inventory publication,
+  source deletion, purge, and repair operations to `QuarantineService`.
+- Cache mode has no durable quarantine mutation surface.
+- Retention remains proof-only; it delegates quarantine object families rather
+  than mutating inventory or deleting objects directly.
+- Durable maintenance now has concrete quarantine purge and repair runners for
+  branch and family scopes.
+- Non-publication service failures are classified separately from quarantine
+  object publication failures so missing source objects and malformed requests
+  are not advertised as retryable publish windows.
+
+### Retired From V1 L8M
+
+- Direct backend deletion from lifecycle quarantine code.
+- Lifecycle-owned quarantine inventory encoding/decoding.
+- Product repair reports.
+- Runtime-only reachability proofs as sufficient evidence for destructive
+  reclaim.
+
+### Deferred By Owner Slice
+
+- Close-time final quarantine drain: L8N.
+- Crash/fuzz assurance expansion: L8O/L8P.
+- Public repair and purge commands: L9.
+- Automatic table-manifest-backed quarantine proof assembly: later durable
+  table-manifest work.
+
+### Tests Added
+
+- `quarantine_proof_complete_from_candidate_and_blocks_unsafe_health`
+- `quarantine_incomplete_proof_defers_without_backend_access`
+- `quarantine_stages_inventory_copy_and_source_delete_in_order`
+- `quarantine_source_delete_failure_reports_retryable_health_debt`
+- `quarantine_missing_source_is_service_failure_not_publish_failure`
+- `quarantine_proof_allows_unrelated_telemetry_debt`
+- `purge_request_rejects_missing_database_id_before_backend_access`
+- `purge_requires_fresh_proof_before_backend_access`
+- `purge_deletes_inventory_listed_quarantine_objects`
+- `repair_request_rejects_missing_database_id_before_backend_access`
+- `repair_reports_unlisted_quarantine_object_as_health_debt`
+- `durable_quarantine_runs_through_runtime_maintenance_surface`
+- `durable_purge_runs_through_runtime_maintenance_surface`
+- `durable_repair_runs_through_runtime_maintenance_surface`
+- `purge_and_repair_maintenance_requests_preserve_branch_scope`
+- `quarantine_errors_have_stable_codes`
+- `lifecycle_quarantine_integration`
+- `lifecycle_purge_integration`
+- `lifecycle_repair_reconciliation_integration`
+- `lifecycle_reclaim_blocks_unsafe_recovery_integration`
+- `lifecycle_cache_reclaim_unsupported_integration`
+- `lifecycle_quarantine_then_purge_round_trip`
+- `lifecycle_quarantine_publish_failure_surfaces_health_debt`
+- `lifecycle_quarantine_generated_bytes_influence_routes`
+- `lifecycle_quarantine_source_uses_quarantine_service_boundary`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Unsafe health quarantines | `crates/storage-next/src/lifecycle/quarantine.rs` | Treat blocked recovery health as complete proof | `quarantine_proof_complete_from_candidate_and_blocks_unsafe_health` |
+| Incomplete proof mutates backend | `crates/storage-next/src/lifecycle/quarantine.rs` | Call quarantine service for incomplete proof | `quarantine_incomplete_proof_defers_without_backend_access` |
+| Source delete before durable copy | `crates/storage-next/src/service/quarantine/mutation.rs` | Reorder source delete before inventory/copy | `quarantine_stages_inventory_copy_and_source_delete_in_order` |
+| Delete failure hidden | `crates/storage-next/src/lifecycle/quarantine.rs` | Collapse source delete error to completed outcome | `quarantine_source_delete_failure_reports_retryable_health_debt` |
+| Missing source misclassified | `crates/storage-next/src/lifecycle/quarantine.rs` | Report source metadata/read failures as publish failures | `quarantine_missing_source_is_service_failure_not_publish_failure` |
+| Stale purge proof deletes | `crates/storage-next/src/lifecycle/quarantine.rs` | Treat stale purge proof as fresh | `purge_requires_fresh_proof_before_backend_access` |
+| Purge deletes unlisted object | `crates/storage-next/src/service/quarantine/mutation.rs` | Delete by prefix instead of inventory entries | `purge_deletes_inventory_listed_quarantine_objects` |
+| Purge drops byte facts | `crates/storage-next/src/service/quarantine/mutation.rs` | Do not accumulate reclaimed bytes from deleted inventory entries | `purge_deletes_inventory_listed_quarantine_objects` |
+| Repair hides unlisted object | `crates/storage-next/src/lifecycle/quarantine.rs` | Ignore unlisted reconciliation facts | `repair_reports_unlisted_quarantine_object_as_health_debt` |
+| Runtime runner bypass | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Remove purge or repair runtime maintenance runner wiring | `durable_purge_runs_through_runtime_maintenance_surface` / `durable_repair_runs_through_runtime_maintenance_surface` |
+| Branch purge scope rejected | `crates/storage-next/src/lifecycle/maintenance.rs` | Remove branch scope support for purge tasks | `purge_and_repair_maintenance_requests_preserve_branch_scope` |
+| Error code collapses | `crates/storage-next/src/lifecycle/error.rs` | Route quarantine failures through generic maintenance code | `quarantine_errors_have_stable_codes` |
+| Lifecycle bypasses service boundary | `crates/storage-next/src/lifecycle/quarantine.rs` | Call backend delete or encode inventory directly | `lifecycle_quarantine_source_uses_quarantine_service_boundary` |
+
+### Verification
+
+Commands run for L8M:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::quarantine
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::retention
+cargo test -p strata-storage-next --locked --lib service::quarantine
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8K: Compaction And Materialization Scheduling Hooks
 
 ### Shipped Files

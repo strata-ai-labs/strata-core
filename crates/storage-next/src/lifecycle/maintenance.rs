@@ -356,6 +356,46 @@ impl MaintenanceTaskRequest {
         request
     }
 
+    pub(crate) fn quarantine() -> Self {
+        Self::new(
+            MaintenanceTaskKind::Quarantine,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Quarantine,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("quarantine task request is valid")
+    }
+
+    pub(crate) fn purge_quarantine(branch_id: BranchId) -> Self {
+        Self::new(
+            MaintenanceTaskKind::Purge,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Branch(branch_id),
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("purge task request is valid")
+    }
+
+    pub(crate) fn repair_quarantine(branch_id: BranchId) -> Self {
+        Self::new(
+            MaintenanceTaskKind::Repair,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Branch(branch_id),
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("repair task request is valid")
+    }
+
+    pub(crate) fn repair_quarantine_family() -> Self {
+        Self::new(
+            MaintenanceTaskKind::Repair,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Global,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("repair task request is valid")
+    }
+
     pub(crate) fn compaction(branch_id: BranchId, level: u8) -> Self {
         Self::new(
             MaintenanceTaskKind::Compaction,
@@ -1041,39 +1081,34 @@ pub(crate) fn telemetry_health_debt(reason: &'static str) -> LifecycleResult<Rec
 fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) -> bool {
     matches!(
         (kind, scope),
-        (MaintenanceTaskKind::Flush, MaintenanceTaskScope::Branch(_))
-            | (
-                MaintenanceTaskKind::Checkpoint,
-                MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
-            )
-            | (
-                MaintenanceTaskKind::WalTruncation,
-                MaintenanceTaskScope::Wal
-            )
-            | (
-                MaintenanceTaskKind::Compaction,
-                MaintenanceTaskScope::TableLevel { .. }
-            )
-            | (
-                MaintenanceTaskKind::Materialization,
-                MaintenanceTaskScope::InheritedLayer { .. }
-            )
-            | (
-                MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention,
-                MaintenanceTaskScope::Retention
-            )
-            | (
-                MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
-                MaintenanceTaskScope::Quarantine
-            )
-            | (
-                MaintenanceTaskKind::Repair,
-                MaintenanceTaskScope::Quarantine | MaintenanceTaskScope::Global
-            )
-            | (
-                MaintenanceTaskKind::HealthCollection,
-                MaintenanceTaskScope::Global
-            )
+        (
+            MaintenanceTaskKind::Flush | MaintenanceTaskKind::Purge | MaintenanceTaskKind::Repair,
+            MaintenanceTaskScope::Branch(_)
+        ) | (
+            MaintenanceTaskKind::Checkpoint,
+            MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
+        ) | (
+            MaintenanceTaskKind::WalTruncation,
+            MaintenanceTaskScope::Wal
+        ) | (
+            MaintenanceTaskKind::Compaction,
+            MaintenanceTaskScope::TableLevel { .. }
+        ) | (
+            MaintenanceTaskKind::Materialization,
+            MaintenanceTaskScope::InheritedLayer { .. }
+        ) | (
+            MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention,
+            MaintenanceTaskScope::Retention
+        ) | (
+            MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
+            MaintenanceTaskScope::Quarantine
+        ) | (
+            MaintenanceTaskKind::Repair,
+            MaintenanceTaskScope::Quarantine | MaintenanceTaskScope::Global
+        ) | (
+            MaintenanceTaskKind::HealthCollection,
+            MaintenanceTaskScope::Global
+        )
     )
 }
 

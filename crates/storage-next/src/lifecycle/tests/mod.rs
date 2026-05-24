@@ -11,6 +11,7 @@ mod compaction;
 mod durable;
 mod flush;
 mod maintenance;
+mod quarantine;
 mod recovery;
 mod retention;
 mod state;

@@ -24,14 +24,19 @@ use crate::lifecycle::retention::{
     LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
 };
 use crate::lifecycle::{
-    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
-    LifecycleError, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
-    LifecycleOperationKind, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
-    MaintenanceTaskRunner, RecoveryHealth,
+    purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
+    quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
+    repair_quarantine as repair_lifecycle_quarantine, repair_request_from_maintenance_task,
+    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleError, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePurgeOutcome,
+    LifecyclePurgeRequest, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
+    LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest, LifecycleResult, LifecycleStats,
+    LifecycleStoragePressure, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth,
 };
-use crate::service::{TableObjectReaderService, TableObjectService};
+use crate::service::{QuarantineService, TableObjectReaderService, TableObjectService};
 use strata_core_next::Timestamp;
 
 impl<S> LifecycleDurableLocalRuntime<'_, S> {
@@ -205,6 +210,48 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     #[allow(
         dead_code,
+        reason = "durable maintenance dispatch uses this concrete quarantine hook"
+    )]
+    pub(crate) fn quarantine_object(
+        &mut self,
+        request: &LifecycleQuarantineRequest,
+    ) -> LifecycleResult<LifecycleQuarantineOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        Ok(quarantine_lifecycle_object(
+            self.services.quarantine(),
+            request,
+        ))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete purge hook"
+    )]
+    pub(crate) fn purge_quarantine(
+        &mut self,
+        request: &LifecyclePurgeRequest,
+    ) -> LifecycleResult<LifecyclePurgeOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        Ok(purge_lifecycle_quarantine(
+            self.services.quarantine(),
+            request,
+        ))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete repair hook"
+    )]
+    pub(crate) fn repair_quarantine(
+        &mut self,
+        request: &LifecycleQuarantineRepairRequest,
+    ) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        repair_lifecycle_quarantine(self.services.quarantine(), request)
+    }
+
+    #[allow(
+        dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
@@ -352,6 +399,69 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 task.kind(),
                 MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention
             )
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_purge_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let quarantine = self.services.quarantine();
+        let database_id = *self.services.assembly_facts().database_id();
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let health = self.open_outcome.recovery_health().clone();
+        let default_branch_id = self.branch.branch_id();
+        let mut runner = DurablePurgeMaintenanceRunner {
+            quarantine,
+            database_id,
+            codec_id,
+            health,
+            default_branch_id,
+        };
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::Purge
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_quarantine_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let mut runner = DurableQuarantineMaintenanceRunner;
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::Quarantine
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_quarantine_repair_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let quarantine = self.services.quarantine();
+        let database_id = *self.services.assembly_facts().database_id();
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let mut runner = DurableQuarantineRepairMaintenanceRunner {
+            quarantine,
+            database_id,
+            codec_id,
+        };
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::Repair
         })
     }
 }
@@ -524,6 +634,54 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
             }
             _ => Ok(retention_outcome_for_delegated_families(proof)?.maintenance_outcome()),
         }
+    }
+}
+
+struct DurablePurgeMaintenanceRunner<'a, 'b> {
+    quarantine: &'a QuarantineService<'b>,
+    database_id: [u8; 16],
+    codec_id: LifecycleCodecId,
+    health: RecoveryHealth,
+    default_branch_id: strata_core_next::BranchId,
+}
+
+impl MaintenanceTaskRunner for DurablePurgeMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = purge_request_from_maintenance_task(
+            task,
+            self.database_id,
+            self.codec_id.clone(),
+            self.health.clone(),
+            self.default_branch_id,
+        )?;
+        Ok(purge_lifecycle_quarantine(self.quarantine, &request).maintenance_outcome())
+    }
+}
+
+struct DurableQuarantineMaintenanceRunner;
+
+impl MaintenanceTaskRunner for DurableQuarantineMaintenanceRunner {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        if task.kind() != MaintenanceTaskKind::Quarantine {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "quarantine runner requires quarantine task",
+            });
+        }
+        Ok(quarantine_task_without_request())
+    }
+}
+
+struct DurableQuarantineRepairMaintenanceRunner<'a, 'b> {
+    quarantine: &'a QuarantineService<'b>,
+    database_id: [u8; 16],
+    codec_id: LifecycleCodecId,
+}
+
+impl MaintenanceTaskRunner for DurableQuarantineRepairMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request =
+            repair_request_from_maintenance_task(task, self.database_id, self.codec_id.clone())?;
+        Ok(repair_lifecycle_quarantine(self.quarantine, &request)?.maintenance_outcome())
     }
 }
 

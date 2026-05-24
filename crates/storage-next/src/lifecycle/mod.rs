@@ -20,6 +20,7 @@ mod flush;
 mod health;
 mod maintenance;
 mod outcome;
+mod quarantine;
 mod recovery;
 mod result;
 mod retention;
@@ -126,6 +127,20 @@ pub(crate) use outcome::{
     CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus, MaintenanceOutcome,
     MaintenanceOutcomeReasonClass, MaintenanceOutcomeStatus, StorageOpenDisposition,
     StorageOpenOutcome,
+};
+#[allow(
+    unused_imports,
+    reason = "quarantine maintenance exports define the local surface for reclaim slices"
+)]
+pub(crate) use quarantine::{
+    purge_quarantine, purge_request_from_maintenance_task, quarantine_object,
+    quarantine_task_without_request, repair_quarantine, repair_request_from_maintenance_task,
+    unsupported_quarantine_maintenance, LifecyclePurgeOutcome, LifecyclePurgeProof,
+    LifecyclePurgeProofStatus, LifecyclePurgeRequest, LifecyclePurgeStatus,
+    LifecycleQuarantineOutcome, LifecycleQuarantineProof, LifecycleQuarantineProofStatus,
+    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairReport,
+    LifecycleQuarantineRepairRequest, LifecycleQuarantineRepairScope,
+    LifecycleQuarantineRepairStatus, LifecycleQuarantineRequest, LifecycleQuarantineStatus,
 };
 #[allow(
     unused_imports,
