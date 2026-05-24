@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 mod remaining;
-mod shared;
+pub(super) mod shared;
 
 use shared::*;
 

@@ -22,6 +22,7 @@ mod maintenance;
 mod outcome;
 mod recovery;
 mod result;
+mod retention;
 mod state;
 
 #[allow(
@@ -113,9 +114,9 @@ pub(crate) use maintenance::{
     LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
     MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceDrainOutcome,
     MaintenanceEnqueueOutcome, MaintenanceEnqueueStatus, MaintenanceExecutorStatus,
-    MaintenanceFaultHook, MaintenanceFaultPoint, MaintenanceTask, MaintenanceTaskId,
-    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, NoopMaintenanceFaultHook,
+    MaintenanceFaultHook, MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask,
+    MaintenanceTaskId, MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest,
+    MaintenanceTaskRunner, MaintenanceTaskScope, NoopMaintenanceFaultHook,
 };
 #[allow(
     unused_imports,
@@ -141,6 +142,20 @@ pub(crate) use recovery::{
     reason = "lifecycle scaffold exports define the local surface for later slices"
 )]
 pub(crate) use result::LifecycleResult;
+#[allow(
+    unused_imports,
+    reason = "retention maintenance exports define the local surface for later slices"
+)]
+pub(crate) use retention::{
+    build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
+    retention_outcome_for_delegated_families, retention_outcome_for_scope,
+    retention_request_from_maintenance_task, table_quarantine_candidate,
+    LifecycleRetentionDecisionReason, LifecycleRetentionDecisionRecord,
+    LifecycleRetentionObjectFamily, LifecycleRetentionOutcome, LifecycleRetentionProof,
+    LifecycleRetentionProofStatus, LifecycleRetentionRequest, LifecycleRetentionScope,
+    LifecycleRetentionStatus, LifecycleSnapshotPruningOutcome, LifecycleSnapshotPruningRequest,
+    LifecycleSnapshotPruningStatus,
+};
 #[allow(
     unused_imports,
     reason = "lifecycle state exports define the local surface for later slices"

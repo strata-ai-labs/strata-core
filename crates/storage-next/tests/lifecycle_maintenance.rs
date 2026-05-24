@@ -147,6 +147,88 @@ fn lifecycle_table_rewrite_materialization_integration() {
     assert!(outcome.pressure_cases() > 0);
 }
 
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_retention_proof_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_retention_contract(b"retention-proof");
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.complete_proof_cases() > 0);
+    assert!(outcome.incomplete_proof_cases() > 0);
+    assert!(outcome.blocked_recovery_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_snapshot_pruning_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_retention_contract(b"snapshot-pruning");
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.snapshot_pruned_cases() > 0);
+    assert!(outcome.snapshot_protected_cases() > 0);
+    assert!(outcome.snapshot_delete_failure_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_table_retention_delegation_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_retention_contract(b"table-delegation");
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.table_retained_cases() > 0);
+    assert!(outcome.table_quarantine_candidate_cases() > 0);
+    assert!(outcome.wal_delegated_cases() > 0);
+    assert!(outcome.cache_deferred_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_retention_blocks_unsafe_recovery_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_retention_contract(b"retention-blocked");
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.blocked_recovery_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_table_retention_delegates_to_quarantine_integration() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_retention_contract(b"table-quarantine");
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.table_quarantine_candidate_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_snapshot_pruning_delete_failure_integration() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_retention_contract(
+        b"snapshot-delete-failure",
+    );
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.snapshot_delete_failure_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_retention_generated_bytes_influence_decision_counts() {
+    let low_retain = strata_storage_next::testkit::check_lifecycle_retention_contract(&[0, 0])
+        .expect("low retain contract");
+    let high_retain = strata_storage_next::testkit::check_lifecycle_retention_contract(&[0, 2])
+        .expect("high retain contract");
+
+    assert_ne!(
+        low_retain.snapshot_pruned_cases(),
+        high_retain.snapshot_pruned_cases()
+    );
+}
+
 #[cfg(not(all(feature = "testkit", not(target_arch = "wasm32"))))]
 #[test]
 fn lifecycle_maintenance_contract_requires_testkit() {}

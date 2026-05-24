@@ -12,6 +12,7 @@ mod durable;
 mod flush;
 mod maintenance;
 mod recovery;
+mod retention;
 mod state;
 
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [

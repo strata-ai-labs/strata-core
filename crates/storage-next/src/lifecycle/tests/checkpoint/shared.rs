@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn open_runtime(
+pub(in crate::lifecycle::tests) fn open_runtime(
     branch: BranchId,
     backend: &CheckpointTestBackend,
 ) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
@@ -65,7 +65,7 @@ pub(super) fn assemble_shell_with_wal_segment_size(
     )
 }
 
-pub(super) fn durable_batch(
+pub(in crate::lifecycle::tests) fn durable_batch(
     branch: BranchId,
     user_key: &'static [u8],
     value: &'static [u8],
@@ -89,7 +89,7 @@ pub(super) fn durable_batch(
     )
 }
 
-pub(super) fn generation_guard() -> CommitBranchGenerationGuard {
+pub(in crate::lifecycle::tests) fn generation_guard() -> CommitBranchGenerationGuard {
     CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation"))
 }
 
@@ -128,7 +128,7 @@ pub(super) fn physical_key(branch: BranchId, user_key: &'static [u8]) -> Physica
     .expect("physical key")
 }
 
-pub(super) fn branch_id(byte: u8) -> BranchId {
+pub(in crate::lifecycle::tests) fn branch_id(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; 16])
 }
 
@@ -140,7 +140,7 @@ pub(super) fn maintenance_task_for_test(
 }
 
 #[derive(Debug)]
-pub(super) struct CheckpointTestBackend {
+pub(in crate::lifecycle::tests) struct CheckpointTestBackend {
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     events: Mutex<Vec<CheckpointBackendEvent>>,
     fail_list: AtomicBool,
@@ -163,7 +163,7 @@ pub(super) enum CheckpointBackendEvent {
 }
 
 impl CheckpointTestBackend {
-    pub(super) fn new() -> Self {
+    pub(in crate::lifecycle::tests) fn new() -> Self {
         Self {
             objects: Mutex::new(BTreeMap::new()),
             events: Mutex::new(Vec::new()),
@@ -234,11 +234,11 @@ impl CheckpointTestBackend {
             .count()
     }
 
-    pub(super) fn delete_calls(&self) -> usize {
+    pub(in crate::lifecycle::tests) fn delete_calls(&self) -> usize {
         self.delete_calls.load(Ordering::SeqCst)
     }
 
-    pub(super) fn snapshot_objects(&self) -> Vec<ObjectName> {
+    pub(in crate::lifecycle::tests) fn snapshot_objects(&self) -> Vec<ObjectName> {
         let objects = self.objects.lock().expect("objects");
         let mut snapshots = objects
             .keys()

@@ -16,12 +16,20 @@ use crate::lifecycle::compaction::{
     materialize_durable_branch,
 };
 use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
+use crate::lifecycle::retention::{
+    build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
+    retention_outcome_for_delegated_families, retention_outcome_for_scope,
+    retention_request_from_maintenance_task, LifecycleRetentionOutcome, LifecycleRetentionRequest,
+    LifecycleRetentionScope, LifecycleRetentionStatus, LifecycleSnapshotPruningOutcome,
+    LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
+};
 use crate::lifecycle::{
     FlushFrozenOutcome, FlushFrozenRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
     LifecycleError, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
-    LifecycleOperationKind, LifecycleResult, LifecycleStoragePressure, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    LifecycleOperationKind, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
+    MaintenanceTaskRunner, RecoveryHealth,
 };
 use crate::service::{TableObjectReaderService, TableObjectService};
 use strata_core_next::Timestamp;
@@ -131,6 +139,68 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<LifecycleWalTruncationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         truncate_wal(self.services.wal(), request)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete retention hook"
+    )]
+    pub(crate) fn prove_retention(
+        &mut self,
+        request: &LifecycleRetentionRequest,
+    ) -> LifecycleResult<LifecycleRetentionOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let health = self.open_outcome.recovery_health().clone();
+        if recovery_health_prevents_listing(request, &health) {
+            let proof = retention_proof_from_assembly(request, &self.services, &health);
+            return retention_outcome_for_scope(request, proof, &[]);
+        }
+        let manifest = self
+            .services
+            .manifest()
+            .load_current()
+            .map_err(manifest_error)?;
+        let snapshots = self
+            .services
+            .snapshot()
+            .list_snapshots()
+            .map_err(snapshot_error)?;
+        let snapshot_count = snapshots.len();
+        let proof = build_retention_proof(request, manifest.as_ref(), &health, snapshot_count);
+        retention_outcome_for_scope(request, proof, &snapshots)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete snapshot pruning hook"
+    )]
+    pub(crate) fn prune_snapshots(
+        &mut self,
+        request: &LifecycleRetentionRequest,
+    ) -> LifecycleResult<LifecycleSnapshotPruningOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let health = self.open_outcome.recovery_health().clone();
+        if recovery_health_prevents_listing(request, &health) {
+            let proof = retention_proof_from_assembly(request, &self.services, &health);
+            let pruning =
+                LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())?;
+            return prune_snapshots_with_proof(self.services.snapshot(), &pruning);
+        }
+        let manifest = self
+            .services
+            .manifest()
+            .load_current()
+            .map_err(manifest_error)?;
+        let snapshot_count = self
+            .services
+            .snapshot()
+            .list_snapshots()
+            .map_err(snapshot_error)?
+            .len();
+        let proof = build_retention_proof(request, manifest.as_ref(), &health, snapshot_count);
+        let pruning =
+            LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())?;
+        prune_snapshots_with_proof(self.services.snapshot(), &pruning)
     }
 
     #[allow(
@@ -264,6 +334,26 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             task.kind() == MaintenanceTaskKind::Materialization
         })
     }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_retention_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let services = &self.services;
+        let health = self.open_outcome.recovery_health().clone();
+        let mut runner = DurableRetentionMaintenanceRunner { services, health };
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            matches!(
+                task.kind(),
+                MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention
+            )
+        })
+    }
 }
 
 struct DurableFlushMaintenanceRunner<'a, 'b> {
@@ -371,6 +461,180 @@ impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_> {
         let request = materialization_request_from_maintenance_task(task)?;
         Ok(materialize_durable_branch(self.branch, &request)?.maintenance_outcome())
     }
+}
+
+struct DurableRetentionMaintenanceRunner<'a, 'b> {
+    services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
+    health: crate::lifecycle::RecoveryHealth,
+}
+
+impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = retention_request_from_maintenance_task(task)?;
+        if recovery_health_prevents_listing(&request, &self.health) {
+            let proof = retention_proof_from_assembly(&request, self.services, &self.health);
+            return match request.scope() {
+                LifecycleRetentionScope::SnapshotObjects => {
+                    let pruning = LifecycleSnapshotPruningRequest::new(
+                        proof,
+                        request.retain_newest_snapshots(),
+                    )?;
+                    Ok(
+                        prune_snapshots_with_proof(self.services.snapshot(), &pruning)?
+                            .maintenance_outcome(),
+                    )
+                }
+                _ => Ok(retention_outcome_for_scope(&request, proof, &[])?.maintenance_outcome()),
+            };
+        }
+        let manifest = self
+            .services
+            .manifest()
+            .load_current()
+            .map_err(manifest_error)?;
+        let snapshot_count = self
+            .services
+            .snapshot()
+            .list_snapshots()
+            .map_err(snapshot_error)?
+            .len();
+        let proof =
+            build_retention_proof(&request, manifest.as_ref(), &self.health, snapshot_count);
+        match request.scope() {
+            LifecycleRetentionScope::SnapshotObjects => {
+                let pruning =
+                    LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())?;
+                Ok(
+                    prune_snapshots_with_proof(self.services.snapshot(), &pruning)?
+                        .maintenance_outcome(),
+                )
+            }
+            LifecycleRetentionScope::Global => {
+                let pruning = LifecycleSnapshotPruningRequest::new(
+                    proof.clone(),
+                    request.retain_newest_snapshots(),
+                )?;
+                let snapshot_outcome =
+                    prune_snapshots_with_proof(self.services.snapshot(), &pruning)?;
+                let retention_outcome = retention_outcome_for_delegated_families(proof)?;
+                Ok(global_retention_maintenance_outcome(
+                    &snapshot_outcome,
+                    &retention_outcome,
+                ))
+            }
+            _ => Ok(retention_outcome_for_delegated_families(proof)?.maintenance_outcome()),
+        }
+    }
+}
+
+fn retention_proof_from_assembly(
+    request: &LifecycleRetentionRequest,
+    services: &crate::lifecycle::LifecycleDurableLocalServices<'_>,
+    health: &crate::lifecycle::RecoveryHealth,
+) -> crate::lifecycle::LifecycleRetentionProof {
+    build_retention_proof_from_facts(
+        request,
+        services.assembly_facts().manifest_snapshot_id(),
+        services.assembly_facts().manifest_snapshot_watermark(),
+        services.assembly_facts().manifest_flush_watermark(),
+        health,
+        0,
+    )
+}
+
+fn recovery_health_prevents_listing(
+    request: &LifecycleRetentionRequest,
+    health: &crate::lifecycle::RecoveryHealth,
+) -> bool {
+    match health {
+        crate::lifecycle::RecoveryHealth::Healthy => false,
+        crate::lifecycle::RecoveryHealth::Degraded { class, .. } => {
+            !matches!(class, crate::lifecycle::RecoveryDegradationClass::Telemetry)
+                || !request.allow_telemetry_degraded_recovery()
+        }
+        crate::lifecycle::RecoveryHealth::Failed { .. } => true,
+    }
+}
+
+fn global_retention_maintenance_outcome(
+    snapshot_outcome: &LifecycleSnapshotPruningOutcome,
+    retention_outcome: &LifecycleRetentionOutcome,
+) -> MaintenanceOutcome {
+    let status = if matches!(
+        snapshot_outcome.status(),
+        LifecycleSnapshotPruningStatus::DeferredIncompleteProof
+            | LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth
+    ) || matches!(
+        retention_outcome.status(),
+        LifecycleRetentionStatus::DeferredIncompleteProof
+            | LifecycleRetentionStatus::BlockedByRecoveryHealth
+    ) {
+        MaintenanceOutcomeStatus::Deferred
+    } else {
+        MaintenanceOutcomeStatus::Completed
+    };
+    let mut names = snapshot_outcome
+        .deleted()
+        .iter()
+        .map(|snapshot| snapshot.object().to_string())
+        .collect::<Vec<_>>();
+    names.extend(
+        snapshot_outcome
+            .protected()
+            .iter()
+            .map(|snapshot| snapshot.object().to_string()),
+    );
+    names.extend(
+        snapshot_outcome
+            .failed()
+            .iter()
+            .map(|failure| failure.snapshot().object().to_string()),
+    );
+    names.extend(
+        retention_outcome
+            .decisions()
+            .iter()
+            .filter_map(|decision| decision.object().map(ToString::to_string)),
+    );
+    let recovery_health = snapshot_outcome
+        .recovery_health()
+        .cloned()
+        .or_else(|| retention_outcome.recovery_health().cloned());
+    let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Retention, status)
+        .with_affected_object_names(names)
+        .with_state_changes(snapshot_outcome.deleted().len())
+        .with_stats(LifecycleStats::new(
+            0,
+            recovery_health
+                .as_ref()
+                .map_or(0, RecoveryHealth::fault_count),
+            1,
+            usize::from(status != MaintenanceOutcomeStatus::Completed),
+            0,
+        ));
+    if let Some(health) = recovery_health {
+        outcome = outcome.with_recovery_health(health);
+    }
+    if status == MaintenanceOutcomeStatus::Deferred {
+        outcome = outcome.with_reason("retention proof is incomplete");
+    }
+    outcome
+}
+
+fn manifest_error(error: crate::service::ManifestServiceError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Service,
+        "manifest service failed",
+        error,
+    )
+}
+
+fn snapshot_error(error: crate::service::SnapshotServiceError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Service,
+        "snapshot service failed",
+        error,
+    )
 }
 
 #[cfg(test)]

@@ -1567,3 +1567,132 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 cargo fmt --package strata-storage-next --check
 git diff --check
 ```
+
+## L8L - Retention Proof And Snapshot Pruning
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/retention.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/tests/retention.rs`
+- `crates/storage-next/src/testkit/lifecycle/retention.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8l-retention-proof-snapshot-pruning-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8l-retention-proof-snapshot-pruning-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Retention proof distinguishes complete, incomplete, and
+  recovery-health-blocked states.
+- Snapshot pruning keeps the manifest-live snapshot, keeps the newest retained
+  snapshot window, and clamps zero retain count to one.
+- Snapshot pruning requires manifest live-snapshot facts even when the current
+  snapshot listing is empty; an empty listing is not treated as a durable safety
+  proof.
+- Snapshot delete failures become health debt while preserving successfully
+  deleted and protected snapshot facts.
+- Table objects are classified as retained or quarantine candidates. Lifecycle
+  retention does not delete table objects directly. Automatic table-reachability
+  proof assembly remains deferred until durable table-manifest/quarantine work.
+- WAL and quarantine object families are delegated with explicit skipped
+  decisions rather than partially implemented in retention.
+
+### Raw Health And Fact Vocabulary
+
+- `LifecycleRetentionProofStatus` records complete, incomplete, and
+  blocked-by-recovery-health proof states.
+- `LifecycleRetentionDecisionRecord` records object family, decision, optional
+  object name, and storage-shaped reason.
+- `LifecycleSnapshotPruningOutcome` records deleted, protected, and failed
+  snapshot objects and converts failed deletes into telemetry health debt.
+- Maintenance outcomes preserve affected object names, state-change counts,
+  source chains for service errors, and retention-block stats.
+
+### Intentional Changes
+
+- Snapshot deletion is delegated exclusively to `SnapshotService::prune_snapshots`.
+- Retention code never parses WAL segments, truncates WAL objects, mutates
+  quarantine inventory, or deletes table objects.
+- Retention task coalescing includes the snapshot-retain policy so explicit
+  pruning windows are not lost.
+- Global retention maintenance runs snapshot pruning and still reports delegated
+  WAL/quarantine families rather than returning only delegated decisions.
+- Cache mode rejects durable retention and snapshot-pruning tasks before any
+  durable-object access.
+
+### Retired From V1 L8L
+
+- Product retention reports and branch-attribution DTOs.
+- Direct filesystem/path deletion.
+- Logs-only snapshot pruning diagnostics.
+- Table-object purge and quarantine mutation.
+- Row-version pruning policy.
+- WAL segment parsing or deletion from retention code.
+
+### Deferred By Owner Slice
+
+- Quarantine inventory publication, movement, purge, and repair: L8M.
+- Close-time retention drain: L8N.
+- Crash/fuzz assurance expansion: L8O/L8P.
+- Public retention commands and product reports: L9.
+- Automatic table-reachability proof assembly and table-manifest-backed direct
+  table-object deletion, if ever allowed: later durable table-manifest work.
+
+### Tests Added
+
+- `retention_request_accepts_zero_snapshot_retain_as_clamped_policy`
+- `retention_proof_incomplete_without_manifest_snapshot_when_snapshots_exist`
+- `retention_proof_incomplete_without_manifest_snapshot_even_when_listing_empty`
+- `retention_proof_incomplete_without_branch_reachability_for_tables`
+- `incomplete_snapshot_pruning_proof_defers_before_backend_access`
+- `retention_proof_blocks_data_loss_before_backend_access`
+- `retention_scope_snapshot_decisions_respect_live_and_newest_windows`
+- `global_retention_scope_includes_snapshot_and_delegated_decisions`
+- `snapshot_pruning_retains_live_snapshot_outside_newest_window`
+- `snapshot_pruning_clamps_zero_retain_count_to_one`
+- `snapshot_pruning_delete_failure_records_health_debt_and_continues`
+- `snapshot_pruning_list_failure_preserves_service_source_chain`
+- `table_object_retention_classifies_quarantine_candidate_without_backend_delete`
+- `retention_delegates_wal_and_quarantine_families`
+- `snapshot_pruning_tasks_coalesce_by_retain_policy`
+- `global_retention_task_prunes_snapshots_through_durable_maintenance`
+- `prove_retention_respects_snapshot_scope_without_deleting`
+- `cache_runtime_rejects_durable_retention_tasks_before_backend_access`
+- `lifecycle_retention_proof_integration`
+- `lifecycle_snapshot_pruning_integration`
+- `lifecycle_table_retention_delegation_integration`
+- `lifecycle_retention_source_delegates_durable_mutation`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Retain count zero deletes all | `crates/storage-next/src/lifecycle/retention.rs` | Pass zero directly as "retain none" | `snapshot_pruning_clamps_zero_retain_count_to_one` |
+| Live snapshot not protected | `crates/storage-next/src/lifecycle/retention.rs` | Drop live snapshot id before pruning | `snapshot_pruning_retains_live_snapshot_outside_newest_window` |
+| Empty listing trusted without manifest | `crates/storage-next/src/lifecycle/retention.rs` | Treat empty snapshot listing as complete proof without manifest facts | `retention_proof_incomplete_without_manifest_snapshot_even_when_listing_empty` |
+| Global retention skips snapshots | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Route global retention only to delegated WAL/quarantine decisions | `global_retention_task_prunes_snapshots_through_durable_maintenance` |
+| Scope ignored by proof hook | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Return delegated WAL/quarantine decisions for snapshot-only proof requests | `prove_retention_respects_snapshot_scope_without_deleting` |
+| Incomplete proof deletes | `crates/storage-next/src/lifecycle/retention.rs` | Call snapshot service when proof is incomplete | `incomplete_snapshot_pruning_proof_defers_before_backend_access` |
+| Data-loss recovery prunes | `crates/storage-next/src/lifecycle/retention.rs` | Treat data-loss health as safe | `retention_proof_blocks_data_loss_before_backend_access` |
+| Delete failure hidden | `crates/storage-next/src/lifecycle/retention.rs` | Collapse failed deletes into completed outcome | `snapshot_pruning_delete_failure_records_health_debt_and_continues` |
+| Service source chain dropped | `crates/storage-next/src/lifecycle/retention.rs` | Convert list failure into string-only error | `snapshot_pruning_list_failure_preserves_service_source_chain` |
+| Table object deleted directly | `crates/storage-next/src/lifecycle/retention.rs` | Call backend delete for table candidates | `lifecycle_retention_source_delegates_durable_mutation` |
+| WAL truncation in retention | `crates/storage-next/src/lifecycle/retention.rs` | Call WAL segment deletion from retention | `lifecycle_retention_source_delegates_durable_mutation` |
+| Quarantine mutation in retention | `crates/storage-next/src/lifecycle/retention.rs` | Call quarantine mutation/purge APIs | `lifecycle_retention_source_delegates_durable_mutation` |
+| Retain policy coalesced away | `crates/storage-next/src/lifecycle/maintenance.rs` | Ignore retain options in coalesce key | `snapshot_pruning_tasks_coalesce_by_retain_policy` |
+
+### Verification
+
+Commands run for L8L:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::retention
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```

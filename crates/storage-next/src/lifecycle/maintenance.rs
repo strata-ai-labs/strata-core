@@ -69,6 +69,7 @@ pub(crate) struct MaintenanceTaskRequest {
     scope: MaintenanceTaskScope,
     policy: MaintenanceTaskPolicy,
     checkpoint_options: Option<MaintenanceCheckpointOptions>,
+    retention_options: Option<MaintenanceRetentionOptions>,
     materialization_handle: Option<BranchMaterializationHandle>,
 }
 
@@ -76,6 +77,11 @@ pub(crate) struct MaintenanceTaskRequest {
 pub(crate) struct MaintenanceCheckpointOptions {
     snapshot_id: Option<u64>,
     truncate_wal_after_checkpoint: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MaintenanceRetentionOptions {
+    retain_newest_snapshots: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +96,7 @@ pub(crate) struct MaintenanceCoalesceKey {
     kind: MaintenanceTaskKind,
     scope: MaintenanceTaskScope,
     checkpoint_options: Option<MaintenanceCheckpointOptions>,
+    retention_options: Option<MaintenanceRetentionOptions>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -269,6 +276,7 @@ impl MaintenanceTaskRequest {
             scope,
             policy,
             checkpoint_options: None,
+            retention_options: None,
             materialization_handle: None,
         };
         request.validate()?;
@@ -322,6 +330,30 @@ impl MaintenanceTaskRequest {
             MaintenanceTaskPolicy::coalescing(),
         )
         .expect("WAL truncation task request is valid")
+    }
+
+    pub(crate) fn snapshot_pruning(retain_newest_snapshots: usize) -> Self {
+        let mut request = Self::new(
+            MaintenanceTaskKind::SnapshotPruning,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Retention,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("snapshot pruning task request is valid");
+        request.retention_options = Some(MaintenanceRetentionOptions::new(retain_newest_snapshots));
+        request
+    }
+
+    pub(crate) fn retention(retain_newest_snapshots: usize) -> Self {
+        let mut request = Self::new(
+            MaintenanceTaskKind::Retention,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Retention,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("retention task request is valid");
+        request.retention_options = Some(MaintenanceRetentionOptions::new(retain_newest_snapshots));
+        request
     }
 
     pub(crate) fn compaction(branch_id: BranchId, level: u8) -> Self {
@@ -380,6 +412,10 @@ impl MaintenanceTaskRequest {
         self.checkpoint_options
     }
 
+    pub(crate) const fn retention_options(self) -> Option<MaintenanceRetentionOptions> {
+        self.retention_options
+    }
+
     pub(crate) const fn materialization_handle(self) -> Option<BranchMaterializationHandle> {
         self.materialization_handle
     }
@@ -391,6 +427,12 @@ impl MaintenanceTaskRequest {
                 scope: normalized_coalesce_scope(self.kind, self.scope),
                 checkpoint_options: match self.kind {
                     MaintenanceTaskKind::Checkpoint => self.checkpoint_options,
+                    _ => None,
+                },
+                retention_options: match self.kind {
+                    MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention => {
+                        self.retention_options
+                    }
                     _ => None,
                 },
             })
@@ -408,6 +450,16 @@ impl MaintenanceTaskRequest {
         if self.checkpoint_options.is_some() && self.kind != MaintenanceTaskKind::Checkpoint {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "checkpoint options require a checkpoint task",
+            });
+        }
+        if self.retention_options.is_some()
+            && !matches!(
+                self.kind,
+                MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention
+            )
+        {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "retention options require a retention task",
             });
         }
         if let Some(handle) = self.materialization_handle {
@@ -447,6 +499,18 @@ impl MaintenanceCheckpointOptions {
 
     pub(crate) const fn truncate_wal_after_checkpoint(self) -> bool {
         self.truncate_wal_after_checkpoint
+    }
+}
+
+impl MaintenanceRetentionOptions {
+    pub(crate) const fn new(retain_newest_snapshots: usize) -> Self {
+        Self {
+            retain_newest_snapshots,
+        }
+    }
+
+    pub(crate) const fn retain_newest_snapshots(self) -> usize {
+        self.retain_newest_snapshots
     }
 }
 
@@ -499,6 +563,10 @@ impl MaintenanceTask {
 
     pub(crate) const fn checkpoint_options(self) -> Option<MaintenanceCheckpointOptions> {
         self.request.checkpoint_options()
+    }
+
+    pub(crate) const fn retention_options(self) -> Option<MaintenanceRetentionOptions> {
+        self.request.retention_options()
     }
 
     pub(crate) const fn materialization_handle(self) -> Option<BranchMaterializationHandle> {
