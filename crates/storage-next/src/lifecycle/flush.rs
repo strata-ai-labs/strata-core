@@ -52,9 +52,15 @@ pub(crate) struct FlushFrozenOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[allow(
+    dead_code,
+    reason = "flush status vocabulary includes unsupported-mode outcomes for executor adapters"
+)]
 pub(crate) enum FlushFrozenStatus {
     Completed,
     DeferredNoFrozenState,
+    DeferredUnsupportedMode,
+    Failed,
     PublishedNotInstalled,
 }
 
@@ -188,6 +194,11 @@ impl FlushFrozenOutcome {
     ) -> Self {
         let table_identity = table_facts.identity().clone();
         let table_object = object_facts.object().clone();
+        let failure = LifecycleError::flush_publication_orphaned_with(
+            Some(table_object.as_str().to_owned()),
+            "flush published table object before install failed",
+            failure,
+        );
         Self {
             status: FlushFrozenStatus::PublishedNotInstalled,
             branch_id: request.branch_id(),
@@ -197,6 +208,25 @@ impl FlushFrozenOutcome {
             table_facts: Some(table_facts),
             table_object: Some(table_object),
             object_facts: Some(object_facts),
+            install_outcome: None,
+            failure: Some(failure),
+        }
+    }
+
+    fn failed(
+        request: &FlushFrozenRequest,
+        frozen_index: Option<usize>,
+        failure: LifecycleError,
+    ) -> Self {
+        Self {
+            status: FlushFrozenStatus::Failed,
+            branch_id: request.branch_id(),
+            frozen_index,
+            rows_flushed: 0,
+            table_identity: None,
+            table_facts: None,
+            table_object: None,
+            object_facts: None,
             install_outcome: None,
             failure: Some(failure),
         }
@@ -245,8 +275,11 @@ impl FlushFrozenOutcome {
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
         let status = match self.status {
             FlushFrozenStatus::Completed => MaintenanceOutcomeStatus::Completed,
-            FlushFrozenStatus::DeferredNoFrozenState => MaintenanceOutcomeStatus::Deferred,
-            FlushFrozenStatus::PublishedNotInstalled => MaintenanceOutcomeStatus::Failed,
+            FlushFrozenStatus::DeferredNoFrozenState
+            | FlushFrozenStatus::DeferredUnsupportedMode => MaintenanceOutcomeStatus::Deferred,
+            FlushFrozenStatus::Failed | FlushFrozenStatus::PublishedNotInstalled => {
+                MaintenanceOutcomeStatus::Failed
+            }
         };
         let affected_objects = usize::from(self.table_object.is_some());
         let retryable = matches!(self.status, FlushFrozenStatus::PublishedNotInstalled)
@@ -254,8 +287,12 @@ impl FlushFrozenOutcome {
                 .failure
                 .as_ref()
                 .is_some_and(published_not_installed_retryable);
+        let bytes_reclaimed = match (self.status, &self.table_facts) {
+            (FlushFrozenStatus::Completed, Some(facts)) => facts.byte_count(),
+            _ => 0,
+        };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Flush, status)
-            .with_effects(affected_objects, 0, retryable)
+            .with_effects(affected_objects, bytes_reclaimed, retryable)
             .with_state_changes(usize::from(self.install_outcome.is_some()))
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
         if let Some(object) = &self.table_object {
@@ -266,6 +303,15 @@ impl FlushFrozenOutcome {
         }
         if matches!(self.status, FlushFrozenStatus::PublishedNotInstalled) {
             outcome = outcome.with_reason("flush published table object before install failed");
+        }
+        if matches!(self.status, FlushFrozenStatus::DeferredUnsupportedMode) {
+            outcome = outcome.with_reason("flush is unsupported for this storage mode");
+        }
+        if matches!(self.status, FlushFrozenStatus::Failed) {
+            outcome = outcome.with_reason("flush failed before table object publication");
+        }
+        if let Some(error) = &self.failure {
+            outcome = outcome.with_source_error(error.clone());
         }
         outcome
     }
@@ -288,9 +334,16 @@ pub(crate) fn flush_cache_branch(
     )
     .map_err(table_error)?;
     let table = branch_owned_table(branch.branch_id(), identity, reader)?;
-    let install_outcome = branch
-        .replace_frozen_with_level_zero_table(frozen_index, table)
-        .map_err(branch_error)?;
+    let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(FlushFrozenOutcome::failed(
+                request,
+                Some(frozen_index),
+                branch_error(error),
+            ));
+        }
+    };
     Ok(FlushFrozenOutcome::completed(
         request,
         frozen_index,
@@ -550,6 +603,18 @@ fn table_error(error: impl std::error::Error + Send + Sync + 'static) -> Lifecyc
 }
 
 fn table_service_error(error: TableObjectServiceError) -> LifecycleError {
+    if let TableObjectServiceError::Publish { source, .. } = &error {
+        if matches!(
+            source.kind(),
+            PublishFailureKind::VisibilityUnknown
+                | PublishFailureKind::VisibleDurabilityUnconfirmed
+        ) {
+            return LifecycleError::flush_publication_uncertain_with(
+                table_publish_reason(source),
+                error,
+            );
+        }
+    }
     let reason = match &error {
         TableObjectServiceError::Layout { .. } => "table object layout failed",
         TableObjectServiceError::Decode { .. } => "table object decode failed",
@@ -576,13 +641,24 @@ fn table_publish_reason(error: &PublishError) -> &'static str {
 }
 
 fn published_not_installed_retryable(error: &LifecycleError) -> bool {
-    matches!(
-        error,
+    match error {
+        LifecycleError::FlushPublicationUncertain { .. } => true,
+        LifecycleError::FlushPublicationOrphaned {
+            source: Some(source),
+            ..
+        } => source
+            .downcast_ref::<LifecycleError>()
+            .is_some_and(published_not_installed_retryable),
         LifecycleError::LowerLayer {
             layer: LifecycleLowerLayer::Service | LifecycleLowerLayer::Backend,
+            reason,
             ..
-        }
-    )
+        } => !matches!(
+            *reason,
+            "table object already exists" | "table object publish metadata invalid"
+        ),
+        _ => false,
+    }
 }
 
 fn table_read_error(error: TableObjectReadError) -> LifecycleError {

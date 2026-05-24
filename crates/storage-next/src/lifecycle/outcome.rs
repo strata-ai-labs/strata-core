@@ -47,7 +47,10 @@ pub(crate) struct MaintenanceOutcome {
     bytes_reclaimed: u64,
     retryable: bool,
     reason: Option<&'static str>,
+    reason_class: Option<MaintenanceOutcomeReasonClass>,
+    source_error: Option<LifecycleError>,
     state_changes: usize,
+    checkpoint_required: bool,
     stats: LifecycleStats,
 }
 
@@ -55,6 +58,14 @@ pub(crate) struct MaintenanceOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MaintenanceOutcomeStatus {
     Completed,
+    Deferred,
+    Failed,
+    Canceled,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MaintenanceOutcomeReasonClass {
     Deferred,
     Failed,
     Canceled,
@@ -242,7 +253,10 @@ impl MaintenanceOutcome {
             bytes_reclaimed: 0,
             retryable: false,
             reason: None,
+            reason_class: None,
+            source_error: None,
             state_changes: 0,
+            checkpoint_required: false,
             stats: LifecycleStats::new(0, 0, 0, 0, 0),
         }
     }
@@ -254,6 +268,9 @@ impl MaintenanceOutcome {
 
     pub(crate) const fn with_status(mut self, status: MaintenanceOutcomeStatus) -> Self {
         self.status = status;
+        if self.reason.is_some() {
+            self.reason_class = reason_class_for_status(status);
+        }
         self
     }
 
@@ -277,11 +294,22 @@ impl MaintenanceOutcome {
 
     pub(crate) const fn with_reason(mut self, reason: &'static str) -> Self {
         self.reason = Some(reason);
+        self.reason_class = reason_class_for_status(self.status);
+        self
+    }
+
+    pub(crate) fn with_source_error(mut self, error: LifecycleError) -> Self {
+        self.source_error = Some(error);
         self
     }
 
     pub(crate) const fn with_state_changes(mut self, state_changes: usize) -> Self {
         self.state_changes = state_changes;
+        self
+    }
+
+    pub(crate) const fn with_checkpoint_required(mut self, checkpoint_required: bool) -> Self {
+        self.checkpoint_required = checkpoint_required;
         self
     }
 
@@ -331,12 +359,35 @@ impl MaintenanceOutcome {
         self.reason
     }
 
+    pub(crate) const fn reason_class(&self) -> Option<MaintenanceOutcomeReasonClass> {
+        self.reason_class
+    }
+
+    pub(crate) const fn source_error(&self) -> Option<&LifecycleError> {
+        self.source_error.as_ref()
+    }
+
     pub(crate) const fn state_changes(&self) -> usize {
         self.state_changes
     }
 
+    pub(crate) const fn checkpoint_required(&self) -> bool {
+        self.checkpoint_required
+    }
+
     pub(crate) const fn stats(&self) -> LifecycleStats {
         self.stats
+    }
+}
+
+const fn reason_class_for_status(
+    status: MaintenanceOutcomeStatus,
+) -> Option<MaintenanceOutcomeReasonClass> {
+    match status {
+        MaintenanceOutcomeStatus::Completed => None,
+        MaintenanceOutcomeStatus::Deferred => Some(MaintenanceOutcomeReasonClass::Deferred),
+        MaintenanceOutcomeStatus::Failed => Some(MaintenanceOutcomeReasonClass::Failed),
+        MaintenanceOutcomeStatus::Canceled => Some(MaintenanceOutcomeReasonClass::Canceled),
     }
 }
 

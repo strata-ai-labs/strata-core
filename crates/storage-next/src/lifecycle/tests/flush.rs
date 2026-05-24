@@ -16,12 +16,15 @@ use crate::commit::{
 use crate::lifecycle::flush::{flush_cache_branch, flush_durable_branch};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
-use crate::service::{TableObjectReaderService, TableObjectService, WalServiceConfig};
+use crate::service::{
+    DatabaseManifestService, TableObjectReaderService, TableObjectService, WalServiceConfig,
+};
 use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
     TableIdentity, TableReaderConfig, TableRow,
 };
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -240,6 +243,48 @@ fn cache_flush_preserves_tombstones_and_commit_timestamps() {
 }
 
 #[test]
+fn cache_flush_install_failure_leaves_frozen_state_unchanged() {
+    let branch = branch_id(0x7b);
+    let row = put_row(branch, b"duplicate", 4, 4_000, b"value");
+    let request = flush_request(branch, None);
+    let identity = flush_cache_branch(&mut frozen_branch(branch, row.clone()), &request)
+        .expect("identity flush")
+        .table_identity()
+        .expect("identity")
+        .clone();
+    let mut state = BranchLocalState::empty(branch);
+    let duplicate = owned_table_for_row(
+        branch,
+        identity,
+        put_row(branch, b"existing", 3, 3_000, b"existing"),
+    );
+    state
+        .install_l0_table(duplicate)
+        .expect("install existing table");
+    state.append_committed_row(row).expect("append frozen row");
+    state.rotate_active();
+    let before = state.clone();
+
+    let outcome = flush_cache_branch(&mut state, &request).expect("flush");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Failed);
+    assert!(outcome.failure().is_some());
+    assert_eq!(
+        outcome.maintenance_outcome().status(),
+        MaintenanceOutcomeStatus::Failed
+    );
+    assert_eq!(
+        outcome
+            .maintenance_outcome()
+            .source_error()
+            .expect("source error")
+            .code(),
+        "failed_precondition.lifecycle.branch_runtime"
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
 fn repeated_default_flush_after_success_is_deferred() {
     let branch = branch_id(0x6c);
     let mut state = frozen_branch(branch, put_row(branch, b"repeat", 10, 10_000, b"value"));
@@ -353,6 +398,110 @@ fn queued_cache_flush_task_runs_through_executor() {
             .value(),
         b"queued-cache-value"
     );
+}
+
+#[test]
+fn duplicate_flush_task_coalesces_by_branch() {
+    let branch = branch_id(0x7b);
+    let backend = crate::backend::memory::MemoryBackend::new();
+    let mut runtime = LifecycleCacheRuntime::open(
+        cache_open_request(branch),
+        &backend,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(4_000)),
+    )
+    .expect("cache runtime");
+
+    let first = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("first flush task");
+    let second = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("second flush task");
+
+    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert_eq!(second.task_id(), first.task_id());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+}
+
+#[test]
+fn flush_task_canceled_before_start_does_not_build_or_publish() {
+    let branch = branch_id(0x7c);
+    let backend = crate::backend::memory::MemoryBackend::new();
+    let mut runtime = LifecycleCacheRuntime::open(
+        cache_open_request(branch),
+        &backend,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(4_000)),
+    )
+    .expect("cache runtime");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"cancel-flush"),
+                b"value".to_vec(),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+
+    let close = runtime.close().expect("close cancels ordinary work");
+
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 1);
+    assert_eq!(runtime.branch_state().owned_table_count(), 0);
+}
+
+#[test]
+fn flush_task_rejected_after_close_requested() {
+    let branch = branch_id(0x7d);
+    let backend = crate::backend::memory::MemoryBackend::new();
+    let mut runtime = LifecycleCacheRuntime::open(
+        cache_open_request(branch),
+        &backend,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(4_000)),
+    )
+    .expect("cache runtime");
+    runtime.close().expect("close runtime");
+
+    let error = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect_err("closed runtime rejects flush task");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.state");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn flush_task_failure_adds_health_debt() {
+    let branch = branch_id(0x7e);
+    let mut executor = LifecycleMaintenanceExecutor::new(1).expect("executor");
+    executor
+        .enqueue(open_state(), MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let mut runner = FailedFlushRunner;
+
+    let outcome = executor
+        .run_next(open_state(), &mut runner)
+        .expect("run failed flush")
+        .expect("flush outcome");
+
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(executor.stats().failed(), 1);
 }
 
 #[test]
@@ -474,6 +623,180 @@ fn queued_durable_flush_task_publishes_object_through_executor() {
 }
 
 #[test]
+fn durable_flush_does_not_persist_watermark_or_truncate_log() {
+    let branch = branch_id(0x78);
+    let backend = FlushBackend::new();
+    let mut shell = LifecycleDurableLocalShell::assemble(
+        durable_open_request(branch),
+        &backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("durable shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect("recovery outcome");
+    let mut runtime = shell.complete_recovery(&recovery).expect("open runtime");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"watermark"),
+                b"value".to_vec(),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+
+    let outcome = runtime
+        .flush_frozen(&flush_request(branch, None))
+        .expect("flush");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert_eq!(
+        outcome.table_facts().expect("facts").commit_range().max(),
+        CommitVersion::new(1)
+    );
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.flushed_through_commit_id(), None);
+    assert_eq!(manifest.snapshot_watermark(), None);
+}
+
+#[test]
+fn wal_retention_proof_is_not_constructed_by_flush() {
+    let branch = branch_id(0x81);
+    let backend = FlushBackend::new();
+    let mut shell = LifecycleDurableLocalShell::assemble(
+        durable_open_request(branch),
+        &backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("durable shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect("recovery outcome");
+    let mut runtime = shell.complete_recovery(&recovery).expect("open runtime");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, physical_key(branch, b"proof"), b"value".to_vec()),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+
+    let outcome = runtime
+        .flush_frozen(&flush_request(branch, None))
+        .expect("flush");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(!outcome.maintenance_outcome().checkpoint_required());
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.flushed_through_commit_id(), None);
+    assert_eq!(manifest.snapshot_watermark(), None);
+}
+
+#[test]
+fn successful_flush_reports_candidate_commit_max() {
+    let branch = branch_id(0x82);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .append_committed_row(put_row(branch, b"candidate-a", 2, 2_000, b"a"))
+        .expect("append first");
+    state
+        .append_committed_row(put_row(branch, b"candidate-b", 7, 7_000, b"b"))
+        .expect("append second");
+    state.rotate_active();
+
+    let outcome = flush_cache_branch(&mut state, &flush_request(branch, None)).expect("flush");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert_eq!(
+        outcome.table_facts().expect("facts").commit_range().max(),
+        CommitVersion::new(7)
+    );
+}
+
+#[test]
+fn failed_flush_for_wrong_branch_does_not_persist_watermark() {
+    let branch = branch_id(0x79);
+    let other = branch_id(0x7a);
+    let backend = FlushBackend::new();
+    let mut shell = LifecycleDurableLocalShell::assemble(
+        durable_open_request(branch),
+        &backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("durable shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect("recovery outcome");
+    let mut runtime = shell.complete_recovery(&recovery).expect("open runtime");
+
+    let error = runtime
+        .flush_frozen(&flush_request(other, None))
+        .expect_err("wrong branch rejects");
+
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.flushed_through_commit_id(), None);
+    assert_eq!(manifest.snapshot_watermark(), None);
+}
+
+#[test]
+fn branch_absence_does_not_advance_flush_watermark() {
+    let branch = branch_id(0x83);
+    let absent = branch_id(0x84);
+    let backend = FlushBackend::new();
+    let mut shell = LifecycleDurableLocalShell::assemble(
+        durable_open_request(branch),
+        &backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("durable shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect("recovery outcome");
+    let mut runtime = shell.complete_recovery(&recovery).expect("open runtime");
+    let operations_before = backend.operations();
+
+    let error = runtime
+        .flush_frozen(&flush_request(absent, None))
+        .expect_err("absent branch rejects");
+
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
+    assert_eq!(backend.operations(), operations_before);
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.flushed_through_commit_id(), None);
+    assert_eq!(manifest.snapshot_watermark(), None);
+}
+
+#[test]
 fn durable_publish_failure_leaves_frozen_state_unchanged() {
     let branch = branch_id(0x66);
     let backend = FlushBackend::with_publish_failure(PublishFailureKind::FailedBeforeVisibility);
@@ -523,7 +846,41 @@ fn durable_reopen_failure_reports_published_not_installed() {
         outcome.maintenance_outcome().affected_object_names(),
         &[outcome.table_object().expect("object").as_str().to_owned()]
     );
+    assert_eq!(
+        outcome
+            .maintenance_outcome()
+            .source_error()
+            .expect("source error")
+            .code(),
+        "unknown.lifecycle.flush_publication_orphan"
+    );
+    assert!(outcome
+        .maintenance_outcome()
+        .source_error()
+        .expect("source error")
+        .source()
+        .is_some());
     assert_eq!(state, before);
+}
+
+#[test]
+fn durable_publish_visibility_uncertainty_is_typed() {
+    let branch = branch_id(0x77);
+    let backend = FlushBackend::with_publish_failure(PublishFailureKind::VisibilityUnknown);
+    let mut state = frozen_branch(branch, put_row(branch, b"uncertain", 21, 21_000, b"value"));
+
+    let error = flush_durable_branch(
+        &mut state,
+        &TableObjectService::new(&backend),
+        &TableObjectReaderService::new(&backend),
+        &flush_request(branch, None),
+    )
+    .expect_err("publish uncertainty");
+
+    assert_eq!(error.code(), "unknown.lifecycle.flush_publication");
+    assert!(error.source().is_some());
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(state.owned_table_count(), 0);
 }
 
 #[test]
@@ -607,7 +964,9 @@ fn durable_install_failure_reports_orphaned_object_fact() {
     assert_eq!(outcome.status(), FlushFrozenStatus::PublishedNotInstalled);
     assert!(outcome.object_facts().is_some());
     assert!(outcome.table_object().is_some());
-    assert!(outcome.failure().is_some());
+    let failure = outcome.failure().expect("orphan failure");
+    assert_eq!(failure.code(), "unknown.lifecycle.flush_publication_orphan");
+    assert!(failure.source().is_some());
     assert_eq!(state, before);
 }
 
@@ -899,6 +1258,17 @@ fn physical_key(branch: BranchId, user_key: &[u8]) -> PhysicalKey {
         user_key.to_vec(),
     )
     .expect("physical key")
+}
+
+fn open_state() -> LifecycleStateMachine {
+    let mut state = LifecycleStateMachine::new();
+    state
+        .transition(LifecycleTransitionTrigger::OpenRequested)
+        .expect("open requested");
+    state
+        .transition(LifecycleTransitionTrigger::CacheOpenReady)
+        .expect("cache open ready");
+    state
 }
 
 fn branch_id(byte: u8) -> BranchId {
@@ -1200,5 +1570,17 @@ struct FlushWriterLock {
 impl Drop for FlushWriterLock {
     fn drop(&mut self) {
         self.locked.store(false, Ordering::SeqCst);
+    }
+}
+
+struct FailedFlushRunner;
+
+impl MaintenanceTaskRunner for FailedFlushRunner {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        assert_eq!(task.kind(), MaintenanceTaskKind::Flush);
+        Ok(MaintenanceOutcome::new(
+            MaintenanceTaskKind::Flush,
+            MaintenanceOutcomeStatus::Failed,
+        ))
     }
 }

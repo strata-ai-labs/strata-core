@@ -9,6 +9,7 @@ mod flush;
 mod maintenance;
 mod outcome;
 mod recovery;
+mod rewrite;
 
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
 pub use checkpoint::{check_lifecycle_checkpoint_contract, LifecycleCheckpointContractOutcome};
@@ -16,6 +17,7 @@ pub use flush::{check_lifecycle_flush_contract, LifecycleFlushContractOutcome};
 pub use maintenance::{check_lifecycle_maintenance_contract, LifecycleMaintenanceContractOutcome};
 pub use outcome::LifecycleScaffoldOutcome;
 pub use recovery::{check_lifecycle_recovery_contract, LifecycleRecoveryContractOutcome};
+pub use rewrite::{check_lifecycle_table_rewrite_contract, LifecycleTableRewriteContractOutcome};
 
 use super::TestkitError;
 use crate::lifecycle::{

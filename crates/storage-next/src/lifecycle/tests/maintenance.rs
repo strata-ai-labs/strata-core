@@ -66,6 +66,45 @@ fn maintenance_task_ids_and_sequences_are_monotonic() {
 }
 
 #[test]
+fn executor_does_not_depend_on_map_iteration_order() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    for request in [
+        health_request(MaintenanceTaskPolicy::ordinary()),
+        repair_request(
+            MaintenanceTaskPriority::Critical,
+            MaintenanceTaskPolicy::ordinary(),
+        ),
+        MaintenanceTaskRequest::flush(branch_id(9)),
+        repair_request(
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskPolicy::ordinary(),
+        ),
+    ] {
+        executor.enqueue(open, request).expect("enqueue");
+    }
+    let mut runner = RecordingRunner::completed();
+
+    let first = executor
+        .run_next(open, &mut runner)
+        .expect("run first")
+        .expect("first");
+    let second = executor
+        .run_next(open, &mut runner)
+        .expect("run second")
+        .expect("second");
+    let third = executor
+        .run_next(open, &mut runner)
+        .expect("run third")
+        .expect("third");
+
+    assert_eq!(first.task_kind(), MaintenanceTaskKind::Repair);
+    assert_eq!(second.task_kind(), MaintenanceTaskKind::HealthCollection);
+    assert_eq!(third.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
 fn maintenance_policy_and_coalesce_key_preserve_storage_scope() {
     let branch = branch_id(3);
     let request = MaintenanceTaskRequest::new(
@@ -454,6 +493,61 @@ fn checkpoint_tasks_coalesce_across_global_and_checkpoint_scope() {
     assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
     assert_eq!(second.task_id(), first.task_id());
     assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
+fn checkpoint_tasks_do_not_coalesce_across_different_options() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    let first = executor
+        .enqueue(open, MaintenanceTaskRequest::checkpoint())
+        .expect("plain checkpoint");
+    let explicit = MaintenanceTaskRequest::checkpoint_with_options(
+        MaintenanceCheckpointOptions::new(Some(42), true),
+    );
+    let second = executor
+        .enqueue(open, explicit)
+        .expect("explicit checkpoint");
+    let third = executor
+        .enqueue(open, explicit)
+        .expect("duplicate explicit");
+
+    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert_ne!(second.task_id(), first.task_id());
+    assert_eq!(third.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert_eq!(third.task_id(), second.task_id());
+    assert_eq!(executor.status().pending_tasks(), 2);
+    assert_eq!(executor.stats().coalesced(), 1);
+}
+
+#[test]
+fn cancel_pending_does_not_cancel_active_task() {
+    let closing = closing_state();
+    let active = MaintenanceTask::new_for_test(
+        7,
+        health_request(MaintenanceTaskPolicy::cancel_before_close()),
+    )
+    .expect("active task");
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor.set_active_for_test(active);
+    executor
+        .enqueue(
+            open_state(),
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::cancel_before_close(),
+            ),
+        )
+        .expect("pending task");
+
+    let canceled = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel pending");
+
+    assert_eq!(canceled.canceled_tasks(), 1);
+    assert_eq!(executor.status().active_task(), Some(active.id()));
+    assert_eq!(executor.status().pending_tasks(), 0);
 }
 
 #[test]

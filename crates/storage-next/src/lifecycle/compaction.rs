@@ -241,6 +241,7 @@ impl LifecycleCompactionOutcome {
                 self.status,
                 LifecycleCompactionStatus::DeferredNoCandidate
             )))
+            .with_checkpoint_required(self.checkpoint_required)
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
         if matches!(self.status, LifecycleCompactionStatus::DeferredNoCandidate) {
             outcome = outcome.with_reason("compaction has no candidate tables");
@@ -416,13 +417,25 @@ impl LifecycleMaterializationOutcome {
         let affected_objects = self
             .branch_outcome
             .as_ref()
-            .map_or(0, |outcome| outcome.tables_created());
+            .map_or(0, BranchMaterializationOutcome::tables_created);
+        let affected_object_names = self
+            .branch_outcome
+            .as_ref()
+            .map_or_else(Vec::new, |outcome| {
+                outcome
+                    .created_table_identities()
+                    .iter()
+                    .map(|identity| identity.as_str().to_owned())
+                    .collect()
+            });
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Materialization, status)
             .with_effects(affected_objects, 0, false)
+            .with_affected_object_names(affected_object_names)
             .with_state_changes(usize::from(!matches!(
                 self.status,
                 LifecycleMaterializationStatus::DeferredNoLayer
             )))
+            .with_checkpoint_required(self.checkpoint_required)
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
         if matches!(self.status, LifecycleMaterializationStatus::DeferredNoLayer) {
             outcome = outcome.with_reason("materialization has no inherited layer");
@@ -558,14 +571,45 @@ pub(crate) fn materialization_request_from_maintenance_task(
             reason: "maintenance task is not a materialization task",
         });
     }
-    LifecycleMaterializationRequest::new(
+    let prefix = format!(
+        "maintenance-materialization-{}",
+        branch_component(branch_id)
+    );
+    if let Some(handle) = task.materialization_handle() {
+        LifecycleMaterializationRequest::from_handle(handle, prefix)
+    } else {
+        LifecycleMaterializationRequest::new(branch_id, layer_index, prefix)
+    }
+}
+
+pub(crate) fn bind_materialization_task_for_enqueue(
+    branch: &mut BranchLocalState,
+    request: MaintenanceTaskRequest,
+) -> LifecycleResult<MaintenanceTaskRequest> {
+    if request.kind() != MaintenanceTaskKind::Materialization
+        || request.materialization_handle().is_some()
+    {
+        return Ok(request);
+    }
+    let MaintenanceTaskScope::InheritedLayer {
         branch_id,
         layer_index,
-        format!(
-            "maintenance-materialization-{}",
-            branch_component(branch_id)
-        ),
-    )
+    } = request.scope()
+    else {
+        return Ok(request);
+    };
+    if branch.branch_id() != branch_id {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "materialization task branch must match runtime branch",
+        });
+    }
+    if branch.inherited_layers().get(layer_index).is_none() {
+        return Ok(request);
+    }
+    let intent = branch
+        .mark_inherited_layer_materializing(layer_index)
+        .map_err(branch_error)?;
+    request.with_materialization_handle(intent.handle())
 }
 
 pub(crate) fn collect_storage_pressure(
@@ -689,15 +733,14 @@ fn materialize_branch(
         return Ok(LifecycleMaterializationOutcome::deferred(request));
     }
     let (intent, branch_request) = if let Some(handle) = request.handle() {
-        if branch
-            .inherited_layers()
-            .get(handle.layer_index())
-            .is_some()
-        {
+        if let Some(layer_index) = materialization_layer_index_for_handle(branch, handle) {
             let intent = branch
-                .mark_inherited_layer_materializing(handle.layer_index())
+                .mark_inherited_layer_materializing(layer_index)
                 .map_err(branch_error)?;
-            if intent.handle() != handle {
+            if intent.handle().child_branch_id() != handle.child_branch_id()
+                || intent.handle().source_branch_id() != handle.source_branch_id()
+                || intent.handle().fork_version() != handle.fork_version()
+            {
                 return Err(branch_error(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "materialization handle must match target layer",
                 }));
@@ -734,6 +777,16 @@ fn materialize_branch(
         intent,
         branch_outcome,
     ))
+}
+
+fn materialization_layer_index_for_handle(
+    branch: &BranchLocalState,
+    handle: BranchMaterializationHandle,
+) -> Option<usize> {
+    branch.inherited_layers().iter().position(|layer| {
+        layer.source_branch_id() == handle.source_branch_id()
+            && layer.fork_version() == handle.fork_version()
+    })
 }
 
 fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {

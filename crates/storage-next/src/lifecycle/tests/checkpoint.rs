@@ -354,12 +354,66 @@ fn checkpoint_manifest_publish_failure_reports_partial_snapshot() {
     );
     assert_eq!(outcome.snapshot_id(), Some(1));
     assert!(outcome.snapshot_object().is_some());
+    assert_eq!(
+        outcome.failure().expect("orphan fact").code(),
+        "unknown.lifecycle.checkpoint_snapshot"
+    );
+    assert_eq!(
+        outcome
+            .maintenance_outcome()
+            .source_error()
+            .expect("source error")
+            .code(),
+        "unknown.lifecycle.checkpoint_snapshot"
+    );
     assert!(outcome.recovery_health().is_some());
     let manifest = DatabaseManifestService::new(&backend)
         .load_required()
         .expect("current database record");
     assert_eq!(manifest.snapshot_id(), None);
     assert_eq!(manifest.snapshot_watermark(), None);
+}
+
+#[test]
+fn recovery_ignores_unreferenced_snapshot_after_manifest_failure() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3d);
+    let key = physical_key(branch, b"orphan-key");
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"orphan-key", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    backend.fail_manifest_replacement_on_call(2);
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(29)).expect("request");
+
+    let outcome = runtime.checkpoint(&request).expect("partial outcome");
+    let orphan = outcome.snapshot_object().expect("snapshot object").clone();
+    drop(runtime);
+    let reopened = open_runtime(branch, &backend);
+
+    assert!(backend.read_object(&orphan).is_ok());
+    assert_eq!(
+        DatabaseManifestService::new(&backend)
+            .load_required()
+            .expect("manifest")
+            .snapshot_id(),
+        None
+    );
+    assert_eq!(
+        reopened
+            .read_view()
+            .expect("view")
+            .latest(&key)
+            .expect("read")
+            .expect("visible")
+            .row()
+            .value(),
+        b"value"
+    );
 }
 
 #[test]
@@ -491,19 +545,16 @@ fn checkpoint_reports_wal_truncation_failure_without_losing_snapshot_facts() {
 
     let outcome = runtime.checkpoint(&request).expect("checkpoint outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleCheckpointStatus::WalTruncationFailed
-    );
+    assert_eq!(outcome.status(), LifecycleCheckpointStatus::Completed);
     assert_eq!(outcome.snapshot_id(), Some(1));
     assert!(outcome.snapshot_object().is_some());
     assert!(outcome.wal_truncation().is_none());
     assert!(outcome.recovery_health().is_some());
     assert_eq!(
         outcome.maintenance_outcome().status(),
-        MaintenanceOutcomeStatus::Failed
+        MaintenanceOutcomeStatus::Completed
     );
-    assert!(outcome.maintenance_outcome().retryable());
+    assert!(!outcome.maintenance_outcome().retryable());
 }
 
 #[test]
@@ -858,6 +909,46 @@ fn queued_checkpoint_task_failure_adds_health_debt() {
     assert!(maintenance.recovery_health().is_some());
     assert!(maintenance.retryable());
     assert_eq!(runtime.maintenance_status().stats().failed(), 1);
+}
+
+#[test]
+fn queued_checkpoint_retry_advances_after_orphaned_snapshot() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x29);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"queued-orphan", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    backend.fail_manifest_replacement_on_call(2);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue first");
+
+    let first = runtime
+        .run_next_checkpoint_maintenance()
+        .expect("run first")
+        .expect("first maintenance");
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Failed);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue second");
+    let second = runtime
+        .run_next_checkpoint_maintenance()
+        .expect("run second")
+        .expect("second maintenance");
+
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        DatabaseManifestService::new(&backend)
+            .load_required()
+            .expect("database record")
+            .snapshot_id(),
+        Some(2)
+    );
 }
 
 #[test]

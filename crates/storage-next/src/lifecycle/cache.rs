@@ -2,8 +2,9 @@
 
 use super::{
     compaction::{
-        collect_storage_pressure, compact_cache_branch, compaction_request_from_maintenance_task,
-        materialization_request_from_maintenance_task, materialize_cache_branch,
+        bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
+        compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
+        materialize_cache_branch,
     },
     flush::{flush_cache_branch, flush_request_from_maintenance_task},
     validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus,
@@ -246,7 +247,11 @@ impl<S> LifecycleCacheRuntime<S> {
                 reason: "volatile runtime does not support durable maintenance task",
             });
         }
-        self.maintenance.enqueue(self.state, request)
+        let branch = &mut self.branch;
+        self.maintenance
+            .enqueue_with_binding(self.state, request, |request| {
+                bind_materialization_task_for_enqueue(branch, request)
+            })
     }
 
     #[allow(

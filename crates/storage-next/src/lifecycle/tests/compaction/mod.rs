@@ -131,6 +131,7 @@ fn cache_compaction_installs_replacement_and_preserves_reads() {
         outcome.maintenance_outcome().status(),
         MaintenanceOutcomeStatus::Completed
     );
+    assert!(!outcome.maintenance_outcome().checkpoint_required());
     assert_eq!(outcome.maintenance_outcome().affected_objects(), 3);
 
     let view = state.capture_read_view().expect("view");
@@ -397,6 +398,7 @@ fn durable_compaction_reports_checkpoint_debt() {
         outcome.maintenance_outcome().status(),
         MaintenanceOutcomeStatus::Completed
     );
+    assert!(outcome.maintenance_outcome().checkpoint_required());
 }
 
 #[test]
@@ -863,6 +865,7 @@ fn durable_rewrite_outcomes_report_checkpoint_debt_without_reclaim() {
     assert_eq!(maintenance.bytes_reclaimed(), 0);
     assert!(!maintenance.retryable());
     assert!(compaction.checkpoint_required());
+    assert!(maintenance.checkpoint_required());
 }
 
 #[test]

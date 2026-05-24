@@ -11,8 +11,9 @@ use crate::lifecycle::checkpoint::{
     LifecycleFlushWatermarkRequest, LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
 };
 use crate::lifecycle::compaction::{
-    collect_storage_pressure, compact_durable_branch, compaction_request_from_maintenance_task,
-    materialization_request_from_maintenance_task, materialize_durable_branch,
+    bind_materialization_task_for_enqueue, collect_storage_pressure, compact_durable_branch,
+    compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
+    materialize_durable_branch,
 };
 use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
 use crate::lifecycle::{
@@ -148,7 +149,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
         request: MaintenanceTaskRequest,
     ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
-        self.maintenance.enqueue(self.state, request)
+        let branch = &mut self.branch;
+        self.maintenance
+            .enqueue_with_binding(self.state, request, |request| {
+                bind_materialization_task_for_enqueue(branch, request)
+            })
     }
 
     #[allow(
@@ -322,7 +327,7 @@ const fn checkpoint_created_at(
         Some(timestamp) => timestamp,
         None => match recovered_checkpoint_timestamp {
             Some(timestamp) => timestamp,
-            None => Timestamp::EPOCH,
+            None => Timestamp::from_micros(1),
         },
     }
 }
@@ -365,5 +370,31 @@ impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = materialization_request_from_maintenance_task(task)?;
         Ok(materialize_durable_branch(self.branch, &request)?.maintenance_outcome())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkpoint_created_at;
+    use strata_core_next::Timestamp;
+
+    #[test]
+    fn checkpoint_timestamp_fallback_is_non_epoch_without_commits_or_manifest_timestamp() {
+        assert_eq!(checkpoint_created_at(None, None), Timestamp::from_micros(1));
+    }
+
+    #[test]
+    fn checkpoint_timestamp_prefers_last_commit_then_recovered_checkpoint() {
+        assert_eq!(
+            checkpoint_created_at(
+                Some(Timestamp::from_micros(9)),
+                Some(Timestamp::from_micros(7))
+            ),
+            Timestamp::from_micros(9)
+        );
+        assert_eq!(
+            checkpoint_created_at(None, Some(Timestamp::from_micros(7))),
+            Timestamp::from_micros(7)
+        );
     }
 }

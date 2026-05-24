@@ -493,6 +493,7 @@ fn maintenance_facts_are_constructible() {
     .with_affected_object_names(vec!["snapshot/object".to_owned()])
     .with_reason("checkpoint has no visible rows to publish")
     .with_state_changes(1)
+    .with_checkpoint_required(true)
     .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
     assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::Checkpoint);
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
@@ -508,7 +509,13 @@ fn maintenance_facts_are_constructible() {
         maintenance.reason(),
         Some("checkpoint has no visible rows to publish")
     );
+    assert_eq!(
+        maintenance.reason_class(),
+        Some(MaintenanceOutcomeReasonClass::Deferred)
+    );
+    assert!(maintenance.source_error().is_none());
     assert_eq!(maintenance.state_changes(), 1);
+    assert!(maintenance.checkpoint_required());
     assert_eq!(maintenance.stats().maintenance_tasks(), 1);
     assert_eq!(
         MaintenanceOutcome::new(
@@ -699,6 +706,14 @@ fn lifecycle_error_maintenance_codes_are_typed() {
                 reason: "table object published but not installed",
             },
             "failed_precondition.lifecycle.flush_publication",
+        ),
+        (
+            LifecycleError::FlushPublicationOrphaned {
+                object: Some("tables/orphan".to_owned()),
+                reason: "table object published but not installed",
+                source: None,
+            },
+            "unknown.lifecycle.flush_publication_orphan",
         ),
         (
             LifecycleError::CheckpointPublicationFailed {

@@ -40,6 +40,7 @@ pub(crate) struct LifecycleCheckpointOutcome {
     flush_watermark: Option<LifecycleFlushWatermarkOutcome>,
     wal_truncation: Option<LifecycleWalTruncationOutcome>,
     recovery_health: Option<super::RecoveryHealth>,
+    failure: Option<LifecycleError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,7 +51,6 @@ pub(crate) enum LifecycleCheckpointStatus {
     SnapshotPublishedManifestNotUpdated,
     SnapshotVisibilityUncertain,
     FlushWatermarkFailed,
-    WalTruncationFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +205,7 @@ impl LifecycleCheckpointOutcome {
             flush_watermark: None,
             wal_truncation: None,
             recovery_health: None,
+            failure: None,
         }
     }
 
@@ -226,6 +227,7 @@ impl LifecycleCheckpointOutcome {
             flush_watermark: None,
             wal_truncation: None,
             recovery_health: None,
+            failure: None,
         }
     }
 
@@ -249,6 +251,10 @@ impl LifecycleCheckpointOutcome {
             flush_watermark: None,
             wal_truncation: None,
             recovery_health: Some(telemetry_health_debt(reason)?),
+            failure: Some(LifecycleError::CheckpointSnapshotOrphaned {
+                object: Some(snapshot.object().as_str().to_owned()),
+                reason,
+            }),
         })
     }
 
@@ -262,11 +268,15 @@ impl LifecycleCheckpointOutcome {
             outcome.status(),
             LifecycleWalTruncationStatus::CompletedWithHealthDebt
         ) {
-            self.status = LifecycleCheckpointStatus::WalTruncationFailed;
             self.recovery_health = outcome.recovery_health().cloned();
         }
         self.wal_truncation = Some(outcome);
         self
+    }
+
+    fn with_follow_up_health_debt(mut self, reason: &'static str) -> LifecycleResult<Self> {
+        self.recovery_health = Some(telemetry_health_debt(reason)?);
+        Ok(self)
     }
 
     fn with_follow_up_failure(
@@ -276,6 +286,7 @@ impl LifecycleCheckpointOutcome {
     ) -> LifecycleResult<Self> {
         self.status = status;
         self.recovery_health = Some(telemetry_health_debt(reason)?);
+        self.failure = Some(LifecycleError::CheckpointPublicationFailed { reason });
         Ok(self)
     }
 
@@ -323,14 +334,17 @@ impl LifecycleCheckpointOutcome {
         self.recovery_health.as_ref()
     }
 
+    pub(crate) const fn failure(&self) -> Option<&LifecycleError> {
+        self.failure.as_ref()
+    }
+
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
         let status = match self.status {
             LifecycleCheckpointStatus::Completed => MaintenanceOutcomeStatus::Completed,
             LifecycleCheckpointStatus::DeferredNoVisibleRows => MaintenanceOutcomeStatus::Deferred,
             LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated
             | LifecycleCheckpointStatus::SnapshotVisibilityUncertain
-            | LifecycleCheckpointStatus::FlushWatermarkFailed
-            | LifecycleCheckpointStatus::WalTruncationFailed => MaintenanceOutcomeStatus::Failed,
+            | LifecycleCheckpointStatus::FlushWatermarkFailed => MaintenanceOutcomeStatus::Failed,
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Checkpoint, status)
             .with_effects(
@@ -352,6 +366,9 @@ impl LifecycleCheckpointOutcome {
         if let Some(health) = self.recovery_health.clone() {
             outcome = outcome.with_recovery_health(health);
         }
+        if let Some(error) = &self.failure {
+            outcome = outcome.with_source_error(error.clone());
+        }
         outcome
     }
 
@@ -370,9 +387,6 @@ impl LifecycleCheckpointOutcome {
             LifecycleCheckpointStatus::FlushWatermarkFailed => {
                 Some("checkpoint flush watermark persistence failed")
             }
-            LifecycleCheckpointStatus::WalTruncationFailed => {
-                Some("checkpoint WAL truncation failed")
-            }
         }
     }
 
@@ -382,7 +396,6 @@ impl LifecycleCheckpointOutcome {
             LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated
                 | LifecycleCheckpointStatus::SnapshotVisibilityUncertain
                 | LifecycleCheckpointStatus::FlushWatermarkFailed
-                | LifecycleCheckpointStatus::WalTruncationFailed
         )
     }
 }
@@ -642,10 +655,7 @@ fn run_checkpoint_follow_ups(
                 visible_version,
             ))?,
         ) else {
-            return outcome.with_follow_up_failure(
-                LifecycleCheckpointStatus::WalTruncationFailed,
-                "checkpoint WAL truncation failed",
-            );
+            return outcome.with_follow_up_health_debt("checkpoint WAL truncation failed");
         };
         outcome = outcome.with_wal_truncation(truncation);
     }

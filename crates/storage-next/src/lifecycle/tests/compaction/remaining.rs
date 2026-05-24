@@ -2,7 +2,7 @@ use super::shared::*;
 use super::*;
 use crate::branch::{
     BranchCompactionKind, BranchLocalState, BranchMaterializationRecovery, BranchReadBound,
-    BranchRuntimeError, BranchScanBounds, BranchTableReferenceKind,
+    BranchRuntimeError, BranchScanBounds, BranchTableReferenceKind, InheritedLayerStatus,
 };
 use strata_core_next::Timestamp;
 
@@ -211,6 +211,10 @@ fn materialization_handle_binds_source_identity_and_reports_intent_facts() {
         branch_outcome.recovery(),
         BranchMaterializationRecovery::ReplacementVisibleLayerRemoved
     );
+    let maintenance = outcome.maintenance_outcome();
+    assert_eq!(maintenance.affected_objects(), 1);
+    assert_eq!(maintenance.affected_object_names().len(), 1);
+    assert!(maintenance.affected_object_names()[0].contains("handle-materialization"));
 }
 
 #[test]
@@ -245,6 +249,118 @@ fn materialization_handle_marks_active_layer_before_materializing() {
             BranchTableReferenceKind::MaterializingSource { .. }
         )));
     assert_eq!(child_state.inherited_layer_count(), 0);
+}
+
+#[test]
+fn queued_materialization_uses_bound_source_after_layer_reindex() {
+    let far = branch_id(0x8c);
+    let near = branch_id(0x8d);
+    let child = branch_id(0x8e);
+    let mut far_state = BranchLocalState::empty(far);
+    install_l0_table(
+        &mut far_state,
+        far,
+        "queued-far-source",
+        vec![put_row(far, b"far", 1, 1_000, b"far")],
+    );
+    let (mut near_state, _) = far_state.fork_into_empty_child(near).expect("fork near");
+    install_l0_table(
+        &mut near_state,
+        near,
+        "queued-near-source",
+        vec![put_row(near, b"near", 2, 2_000, b"near")],
+    );
+    let (mut child_state, _) = near_state.fork_into_empty_child(child).expect("fork child");
+    assert_eq!(child_state.inherited_layer_count(), 2);
+
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    let enqueued = executor
+        .enqueue_with_binding(
+            open_state(),
+            MaintenanceTaskRequest::materialization_layer(child, 1),
+            |request| bind_materialization_task_for_enqueue(&mut child_state, request),
+        )
+        .expect("enqueue materialization");
+
+    let near_outcome = materialize_cache_branch(
+        &mut child_state,
+        &LifecycleMaterializationRequest::new(child, 0, "queued-near").expect("near request"),
+    )
+    .expect("near materialization");
+    assert_eq!(
+        near_outcome
+            .branch_outcome()
+            .expect("near branch outcome")
+            .source_branch_id(),
+        near
+    );
+    assert_eq!(child_state.inherited_layer_count(), 1);
+
+    let mut runner = TestMaterializationRunner {
+        branch: &mut child_state,
+    };
+    let maintenance = executor
+        .run_next(open_state(), &mut runner)
+        .expect("run queued")
+        .expect("queued outcome");
+
+    assert_eq!(maintenance.task_id(), Some(enqueued.task_id()));
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(child_state.inherited_layer_count(), 0);
+    let view = child_state.capture_read_view().expect("view");
+    assert_eq!(
+        view.latest(&physical_key(child, b"far"))
+            .expect("far read")
+            .expect("far visible")
+            .row()
+            .value(),
+        b"far"
+    );
+    assert_eq!(
+        view.latest(&physical_key(child, b"near"))
+            .expect("near read")
+            .expect("near visible")
+            .row()
+            .value(),
+        b"near"
+    );
+}
+
+#[test]
+fn materialization_enqueue_capacity_failure_does_not_mark_layer_materializing() {
+    let parent = branch_id(0x8f);
+    let child = branch_id(0x90);
+    let mut parent_state = BranchLocalState::empty(parent);
+    install_l0_table(
+        &mut parent_state,
+        parent,
+        "capacity-parent",
+        vec![put_row(parent, b"key", 1, 1_000, b"value")],
+    );
+    let (mut child_state, _) = parent_state
+        .fork_into_empty_child(child)
+        .expect("fork child");
+    let mut executor = LifecycleMaintenanceExecutor::new(1).expect("executor");
+    executor
+        .enqueue(open_state(), MaintenanceTaskRequest::flush(child))
+        .expect("fill queue");
+
+    let error = executor
+        .enqueue_with_binding(
+            open_state(),
+            MaintenanceTaskRequest::materialization_layer(child, 0),
+            |request| bind_materialization_task_for_enqueue(&mut child_state, request),
+        )
+        .expect_err("queue is full");
+
+    assert_eq!(
+        error.code(),
+        "resource_exhausted.lifecycle.maintenance_queue"
+    );
+    assert_eq!(
+        child_state.inherited_layers()[0].status(),
+        InheritedLayerStatus::Active
+    );
 }
 
 #[test]
@@ -379,6 +495,47 @@ fn table_rewrite_outcomes_count_deferred_completed_and_affected_objects() {
 }
 
 #[test]
+fn queued_compaction_recomputes_after_prior_rewrite_without_resurrection() {
+    let branch = branch_id(0x84);
+    let mut state = BranchLocalState::empty(branch);
+    install_l0_table(
+        &mut state,
+        branch,
+        "stale-left",
+        vec![put_row(branch, b"left", 1, 1_000, b"left")],
+    );
+    install_l0_table(
+        &mut state,
+        branch,
+        "stale-right",
+        vec![put_row(branch, b"right", 2, 2_000, b"right")],
+    );
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    let queued = executor
+        .enqueue(open_state(), MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue");
+    let direct = compact_cache_branch(
+        &mut state,
+        &LifecycleCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "stale-direct")
+            .expect("direct request"),
+    )
+    .expect("direct compaction");
+    assert_eq!(direct.status(), LifecycleCompactionStatus::Completed);
+    assert_eq!(state.owned_table_count(), 1);
+
+    let mut runner = TestCompactionRunner { branch: &mut state };
+    let queued_outcome = executor
+        .run_next(open_state(), &mut runner)
+        .expect("run queued")
+        .expect("queued outcome");
+
+    assert_eq!(queued_outcome.task_id(), Some(queued.task_id()));
+    assert_eq!(queued_outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(state.owned_table_count(), 1);
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
 fn pressure_debug_output_uses_storage_vocabulary() {
     let branch = branch_id(0x80);
     let mut state = BranchLocalState::empty(branch);
@@ -493,5 +650,27 @@ fn materialization_branch_errors_preserve_source_chain_and_code() {
             ..
         } => {}
         other => panic!("unexpected error shape: {other:?}"),
+    }
+}
+
+struct TestMaterializationRunner<'a> {
+    branch: &'a mut BranchLocalState,
+}
+
+impl MaintenanceTaskRunner for TestMaterializationRunner<'_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = materialization_request_from_maintenance_task(task)?;
+        Ok(materialize_cache_branch(self.branch, &request)?.maintenance_outcome())
+    }
+}
+
+struct TestCompactionRunner<'a> {
+    branch: &'a mut BranchLocalState,
+}
+
+impl MaintenanceTaskRunner for TestCompactionRunner<'_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let request = compaction_request_from_maintenance_task(task)?;
+        Ok(compact_cache_branch(self.branch, &request)?.maintenance_outcome())
     }
 }

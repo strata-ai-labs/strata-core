@@ -413,7 +413,7 @@ impl BranchMaterializationRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchMaterializationOutcome {
     child_branch_id: BranchId,
     source_branch_id: BranchId,
@@ -421,6 +421,7 @@ pub(crate) struct BranchMaterializationOutcome {
     layer_index: usize,
     rows_materialized: u64,
     tables_created: usize,
+    created_table_identities: Vec<TableIdentity>,
     skipped_post_fork_rows: u64,
     skipped_exact_duplicate_rows: u64,
     inherited_layers_remaining: usize,
@@ -429,47 +430,51 @@ pub(crate) struct BranchMaterializationOutcome {
 }
 
 impl BranchMaterializationOutcome {
-    pub(crate) const fn child_branch_id(self) -> BranchId {
+    pub(crate) const fn child_branch_id(&self) -> BranchId {
         self.child_branch_id
     }
 
-    pub(crate) const fn source_branch_id(self) -> BranchId {
+    pub(crate) const fn source_branch_id(&self) -> BranchId {
         self.source_branch_id
     }
 
-    pub(crate) const fn fork_version(self) -> CommitVersion {
+    pub(crate) const fn fork_version(&self) -> CommitVersion {
         self.fork_version
     }
 
-    pub(crate) const fn layer_index(self) -> usize {
+    pub(crate) const fn layer_index(&self) -> usize {
         self.layer_index
     }
 
-    pub(crate) const fn rows_materialized(self) -> u64 {
+    pub(crate) const fn rows_materialized(&self) -> u64 {
         self.rows_materialized
     }
 
-    pub(crate) const fn tables_created(self) -> usize {
+    pub(crate) const fn tables_created(&self) -> usize {
         self.tables_created
     }
 
-    pub(crate) const fn skipped_post_fork_rows(self) -> u64 {
+    pub(crate) fn created_table_identities(&self) -> &[TableIdentity] {
+        &self.created_table_identities
+    }
+
+    pub(crate) const fn skipped_post_fork_rows(&self) -> u64 {
         self.skipped_post_fork_rows
     }
 
-    pub(crate) const fn skipped_exact_duplicate_rows(self) -> u64 {
+    pub(crate) const fn skipped_exact_duplicate_rows(&self) -> u64 {
         self.skipped_exact_duplicate_rows
     }
 
-    pub(crate) const fn inherited_layers_remaining(self) -> usize {
+    pub(crate) const fn inherited_layers_remaining(&self) -> usize {
         self.inherited_layers_remaining
     }
 
-    pub(crate) const fn replacement_owned_table_count(self) -> usize {
+    pub(crate) const fn replacement_owned_table_count(&self) -> usize {
         self.replacement_owned_table_count
     }
 
-    pub(crate) const fn recovery(self) -> BranchMaterializationRecovery {
+    pub(crate) const fn recovery(&self) -> BranchMaterializationRecovery {
         self.recovery
     }
 }
@@ -1629,26 +1634,13 @@ impl BranchLocalState {
             request.output_identity_prefix(),
             request.layer_index(),
         );
-        if materialized.rows.is_empty() {
-            if let Some(summary) = existing_summary {
-                let mut staged = self.clone();
-                staged.remove_inherited_layer_by_source(materialization_source)?;
-                *self = staged;
-                self.refresh_observed_row_facts();
-                return Ok(BranchMaterializationOutcome {
-                    child_branch_id: self.branch_id,
-                    source_branch_id,
-                    fork_version,
-                    layer_index: request.layer_index(),
-                    rows_materialized: summary.rows,
-                    tables_created: 0,
-                    skipped_post_fork_rows: materialized.skipped_post_fork_rows,
-                    skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
-                    inherited_layers_remaining: self.inherited_layers.len(),
-                    replacement_owned_table_count: summary.tables,
-                    recovery: BranchMaterializationRecovery::ReplacementAlreadyVisibleLayerRemoved,
-                });
-            }
+        if let Some(outcome) = self.try_finish_existing_materialization_retry(
+            request,
+            materialization_source,
+            &materialized,
+            existing_summary,
+        )? {
+            return Ok(outcome);
         }
         let replacement_tables = self.build_materialized_l0_tables(
             request.layer_index(),
@@ -1656,6 +1648,10 @@ impl BranchLocalState {
             existing_summary.map_or(0, |summary| summary.next_output_index),
             &materialized.rows,
         )?;
+        let created_table_identities = replacement_tables
+            .iter()
+            .map(|table| table.facts().identity().clone())
+            .collect();
         let new_rows_materialized = u64::try_from(materialized.rows.len()).map_err(|_| {
             BranchRuntimeError::InvalidBranchState {
                 reason: "materialized row count must fit in u64",
@@ -1682,12 +1678,46 @@ impl BranchLocalState {
             layer_index: request.layer_index(),
             rows_materialized,
             tables_created,
+            created_table_identities,
             skipped_post_fork_rows: materialized.skipped_post_fork_rows,
             skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
             inherited_layers_remaining: self.inherited_layers.len(),
             replacement_owned_table_count,
             recovery: BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
         })
+    }
+
+    fn try_finish_existing_materialization_retry(
+        &mut self,
+        request: &BranchMaterializationRequest,
+        source: BranchMaterializationSource,
+        materialized: &MaterializedRows,
+        existing_summary: Option<ExistingMaterializationReplacementSummary>,
+    ) -> BranchRuntimeResult<Option<BranchMaterializationOutcome>> {
+        if !materialized.rows.is_empty() {
+            return Ok(None);
+        }
+        let Some(summary) = existing_summary else {
+            return Ok(None);
+        };
+        let mut staged = self.clone();
+        staged.remove_inherited_layer_by_source(source)?;
+        *self = staged;
+        self.refresh_observed_row_facts();
+        Ok(Some(BranchMaterializationOutcome {
+            child_branch_id: self.branch_id,
+            source_branch_id: source.source_branch_id(),
+            fork_version: source.fork_version(),
+            layer_index: request.layer_index(),
+            rows_materialized: summary.rows,
+            tables_created: 0,
+            created_table_identities: Vec::new(),
+            skipped_post_fork_rows: materialized.skipped_post_fork_rows,
+            skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
+            inherited_layers_remaining: self.inherited_layers.len(),
+            replacement_owned_table_count: summary.tables,
+            recovery: BranchMaterializationRecovery::ReplacementAlreadyVisibleLayerRemoved,
+        }))
     }
 
     fn materialization_intent(
@@ -1713,6 +1743,7 @@ impl BranchLocalState {
             layer_index,
             rows_materialized: 0,
             tables_created: 0,
+            created_table_identities: Vec::new(),
             skipped_post_fork_rows: 0,
             skipped_exact_duplicate_rows: 0,
             inherited_layers_remaining: self.inherited_layers.len(),
@@ -1738,6 +1769,7 @@ impl BranchLocalState {
                     layer_index: request.layer_index(),
                     rows_materialized: summary.rows,
                     tables_created: 0,
+                    created_table_identities: Vec::new(),
                     skipped_post_fork_rows: 0,
                     skipped_exact_duplicate_rows: 0,
                     inherited_layers_remaining: self.inherited_layers.len(),

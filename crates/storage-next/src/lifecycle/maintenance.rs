@@ -11,6 +11,7 @@ use super::{
     MaintenanceOutcomeStatus, MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault,
     RecoveryFaultKind, RecoveryHealth,
 };
+use crate::branch::BranchMaterializationHandle;
 use strata_core_next::BranchId;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -68,6 +69,7 @@ pub(crate) struct MaintenanceTaskRequest {
     scope: MaintenanceTaskScope,
     policy: MaintenanceTaskPolicy,
     checkpoint_options: Option<MaintenanceCheckpointOptions>,
+    materialization_handle: Option<BranchMaterializationHandle>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +89,7 @@ pub(crate) struct MaintenanceTask {
 pub(crate) struct MaintenanceCoalesceKey {
     kind: MaintenanceTaskKind,
     scope: MaintenanceTaskScope,
+    checkpoint_options: Option<MaintenanceCheckpointOptions>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -266,6 +269,7 @@ impl MaintenanceTaskRequest {
             scope,
             policy,
             checkpoint_options: None,
+            materialization_handle: None,
         };
         request.validate()?;
         Ok(request)
@@ -347,6 +351,15 @@ impl MaintenanceTaskRequest {
         .expect("materialization task request is valid")
     }
 
+    pub(crate) fn with_materialization_handle(
+        mut self,
+        handle: BranchMaterializationHandle,
+    ) -> LifecycleResult<Self> {
+        self.materialization_handle = Some(handle);
+        self.validate()?;
+        Ok(self)
+    }
+
     pub(crate) const fn kind(self) -> MaintenanceTaskKind {
         self.kind
     }
@@ -367,11 +380,19 @@ impl MaintenanceTaskRequest {
         self.checkpoint_options
     }
 
+    pub(crate) const fn materialization_handle(self) -> Option<BranchMaterializationHandle> {
+        self.materialization_handle
+    }
+
     pub(crate) const fn coalesce_key(self) -> Option<MaintenanceCoalesceKey> {
         if self.policy.coalesces() {
             Some(MaintenanceCoalesceKey {
                 kind: self.kind,
                 scope: normalized_coalesce_scope(self.kind, self.scope),
+                checkpoint_options: match self.kind {
+                    MaintenanceTaskKind::Checkpoint => self.checkpoint_options,
+                    _ => None,
+                },
             })
         } else {
             None
@@ -388,6 +409,25 @@ impl MaintenanceTaskRequest {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "checkpoint options require a checkpoint task",
             });
+        }
+        if let Some(handle) = self.materialization_handle {
+            let MaintenanceTaskScope::InheritedLayer {
+                branch_id,
+                layer_index,
+            } = self.scope
+            else {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "materialization handle requires an inherited layer scope",
+                });
+            };
+            if self.kind != MaintenanceTaskKind::Materialization
+                || branch_id != handle.child_branch_id()
+                || layer_index != handle.layer_index()
+            {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "materialization handle must match task scope",
+                });
+            }
         }
         Ok(())
     }
@@ -459,6 +499,10 @@ impl MaintenanceTask {
 
     pub(crate) const fn checkpoint_options(self) -> Option<MaintenanceCheckpointOptions> {
         self.request.checkpoint_options()
+    }
+
+    pub(crate) const fn materialization_handle(self) -> Option<BranchMaterializationHandle> {
+        self.request.materialization_handle()
     }
 
     const fn coalesce_key(self) -> Option<MaintenanceCoalesceKey> {
@@ -631,7 +675,16 @@ impl LifecycleMaintenanceExecutor {
         state: LifecycleStateMachine,
         request: MaintenanceTaskRequest,
     ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
-        self.enqueue_with_fault(state, request, &mut NoopMaintenanceFaultHook)
+        self.enqueue_with_binding(state, request, Ok)
+    }
+
+    pub(crate) fn enqueue_with_binding(
+        &mut self,
+        state: LifecycleStateMachine,
+        request: MaintenanceTaskRequest,
+        bind: impl FnOnce(MaintenanceTaskRequest) -> LifecycleResult<MaintenanceTaskRequest>,
+    ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
+        self.enqueue_with_fault_and_binding(state, request, &mut NoopMaintenanceFaultHook, bind)
     }
 
     pub(crate) fn enqueue_with_fault(
@@ -639,6 +692,16 @@ impl LifecycleMaintenanceExecutor {
         state: LifecycleStateMachine,
         request: MaintenanceTaskRequest,
         fault: &mut impl MaintenanceFaultHook,
+    ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
+        self.enqueue_with_fault_and_binding(state, request, fault, Ok)
+    }
+
+    fn enqueue_with_fault_and_binding(
+        &mut self,
+        state: LifecycleStateMachine,
+        request: MaintenanceTaskRequest,
+        fault: &mut impl MaintenanceFaultHook,
+        bind: impl FnOnce(MaintenanceTaskRequest) -> LifecycleResult<MaintenanceTaskRequest>,
     ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
         require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
         fault.check(MaintenanceFaultPoint::BeforeEnqueue, None)?;
@@ -663,6 +726,7 @@ impl LifecycleMaintenanceExecutor {
                 reason: "maintenance queue is full",
             });
         }
+        let request = bind(request)?;
         let id = MaintenanceTaskId::new(self.next_id)?;
         let sequence = MaintenanceTaskSequence::new(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
@@ -779,6 +843,11 @@ impl LifecycleMaintenanceExecutor {
 
     pub(crate) fn pending_tasks(&self) -> &[MaintenanceTask] {
         &self.queue
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_active_for_test(&mut self, task: MaintenanceTask) {
+        self.active = Some(task);
     }
 
     pub(crate) fn has_close_required_drain(&self) -> bool {

@@ -53,13 +53,13 @@ pub(crate) use checkpoint::{
     reason = "table rewrite maintenance exports define the local surface for later slices"
 )]
 pub(crate) use compaction::{
-    collect_storage_pressure, compact_cache_branch, compact_durable_branch,
-    compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
-    materialize_cache_branch, materialize_durable_branch, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleCompactionStatus, LifecycleMaterializationOutcome,
-    LifecycleMaterializationRequest, LifecycleMaterializationStatus, LifecycleStoragePressure,
-    LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
-    LifecycleTableRewriteDurability,
+    bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
+    compact_durable_branch, compaction_request_from_maintenance_task,
+    materialization_request_from_maintenance_task, materialize_cache_branch,
+    materialize_durable_branch, LifecycleCompactionOutcome, LifecycleCompactionRequest,
+    LifecycleCompactionStatus, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
+    LifecycleMaterializationStatus, LifecycleStoragePressure, LifecycleStoragePressureReason,
+    LifecycleStoragePressureSeverity, LifecycleTableRewriteDurability,
 };
 #[allow(
     unused_imports,
@@ -123,7 +123,8 @@ pub(crate) use maintenance::{
 )]
 pub(crate) use outcome::{
     CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, StorageOpenDisposition, StorageOpenOutcome,
+    MaintenanceOutcomeReasonClass, MaintenanceOutcomeStatus, StorageOpenDisposition,
+    StorageOpenOutcome,
 };
 #[allow(
     unused_imports,

@@ -40,7 +40,20 @@ pub(crate) enum LifecycleError {
     FlushPublicationFailed {
         reason: &'static str,
     },
+    FlushPublicationUncertain {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    FlushPublicationOrphaned {
+        object: Option<String>,
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
     CheckpointPublicationFailed {
+        reason: &'static str,
+    },
+    CheckpointSnapshotOrphaned {
+        object: Option<String>,
         reason: &'static str,
     },
     RetentionBlocked {
@@ -103,6 +116,28 @@ impl LifecycleError {
         }
     }
 
+    pub(crate) fn flush_publication_uncertain_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::FlushPublicationUncertain {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn flush_publication_orphaned_with(
+        object: Option<String>,
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::FlushPublicationOrphaned {
+            object,
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
     pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::InvalidConfig { .. } => "invalid_argument.lifecycle.config",
@@ -116,9 +151,12 @@ impl LifecycleError {
             Self::FlushPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.flush_publication"
             }
+            Self::FlushPublicationUncertain { .. } => "unknown.lifecycle.flush_publication",
+            Self::FlushPublicationOrphaned { .. } => "unknown.lifecycle.flush_publication_orphan",
             Self::CheckpointPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.checkpoint_publication"
             }
+            Self::CheckpointSnapshotOrphaned { .. } => "unknown.lifecycle.checkpoint_snapshot",
             Self::RetentionBlocked { .. } => "failed_precondition.lifecycle.retention",
             Self::WalRetentionProofIncomplete { .. } => {
                 "failed_precondition.lifecycle.wal_retention"
@@ -159,21 +197,9 @@ impl LifecycleError {
             } => "failed_precondition.lifecycle.commit_runtime",
         }
     }
-}
 
-impl PartialEq for LifecycleError {
-    fn eq(&self, other: &Self) -> bool {
+    fn same_static_reason_variant(&self, other: &Self) -> Option<bool> {
         match (self, other) {
-            (
-                Self::InvalidConfig {
-                    field: left_field,
-                    reason: left_reason,
-                },
-                Self::InvalidConfig {
-                    field: right_field,
-                    reason: right_reason,
-                },
-            ) => left_field == right_field && left_reason == right_reason,
             (
                 Self::InvalidLifecycleState { reason: left },
                 Self::InvalidLifecycleState { reason: right },
@@ -197,6 +223,10 @@ impl PartialEq for LifecycleError {
                 Self::FlushPublicationFailed { reason: right },
             )
             | (
+                Self::FlushPublicationUncertain { reason: left, .. },
+                Self::FlushPublicationUncertain { reason: right, .. },
+            )
+            | (
                 Self::CheckpointPublicationFailed { reason: left },
                 Self::CheckpointPublicationFailed { reason: right },
             )
@@ -205,9 +235,58 @@ impl PartialEq for LifecycleError {
                 Self::WalRetentionProofIncomplete { reason: left },
                 Self::WalRetentionProofIncomplete { reason: right },
             )
-            | (Self::CloseFailed { reason: left }, Self::CloseFailed { reason: right }) => {
-                left == right
-            }
+            | (Self::CloseFailed { reason: left }, Self::CloseFailed { reason: right })
+            | (
+                Self::TimelineRecoveryMismatch { reason: left },
+                Self::TimelineRecoveryMismatch { reason: right },
+            )
+            | (
+                Self::WalTailRepairRejected { reason: left },
+                Self::WalTailRepairRejected { reason: right },
+            ) => Some(left == right),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for LifecycleError {
+    fn eq(&self, other: &Self) -> bool {
+        if let Some(equal) = self.same_static_reason_variant(other) {
+            return equal;
+        }
+        match (self, other) {
+            (
+                Self::InvalidConfig {
+                    field: left_field,
+                    reason: left_reason,
+                },
+                Self::InvalidConfig {
+                    field: right_field,
+                    reason: right_reason,
+                },
+            ) => left_field == right_field && left_reason == right_reason,
+            (
+                Self::FlushPublicationOrphaned {
+                    object: left_object,
+                    reason: left_reason,
+                    ..
+                },
+                Self::FlushPublicationOrphaned {
+                    object: right_object,
+                    reason: right_reason,
+                    ..
+                },
+            )
+            | (
+                Self::CheckpointSnapshotOrphaned {
+                    object: left_object,
+                    reason: left_reason,
+                },
+                Self::CheckpointSnapshotOrphaned {
+                    object: right_object,
+                    reason: right_reason,
+                },
+            ) => left_object == right_object && left_reason == right_reason,
             (
                 Self::CapabilityMismatch {
                     storage_mode: left_mode,
@@ -224,14 +303,6 @@ impl PartialEq for LifecycleError {
                     && left_required == right_required
                     && left_missing == right_missing
             }
-            (
-                Self::TimelineRecoveryMismatch { reason: left },
-                Self::TimelineRecoveryMismatch { reason: right },
-            )
-            | (
-                Self::WalTailRepairRejected { reason: left },
-                Self::WalTailRepairRejected { reason: right },
-            ) => left == right,
             (
                 Self::RecoveryVisibilityFailed {
                     recovered_visible_version: left_version,
@@ -300,8 +371,25 @@ impl fmt::Display for LifecycleError {
             Self::FlushPublicationFailed { reason } => {
                 write!(formatter, "flush publication failed: {reason}")
             }
+            Self::FlushPublicationUncertain { reason, .. } => {
+                write!(formatter, "flush publication uncertain: {reason}")
+            }
+            Self::FlushPublicationOrphaned { object, reason, .. } => {
+                formatter.write_str("flush publication orphaned")?;
+                if let Some(object) = object {
+                    write!(formatter, " at {object}")?;
+                }
+                write!(formatter, ": {reason}")
+            }
             Self::CheckpointPublicationFailed { reason } => {
                 write!(formatter, "checkpoint publication failed: {reason}")
+            }
+            Self::CheckpointSnapshotOrphaned { object, reason } => {
+                formatter.write_str("checkpoint snapshot orphaned")?;
+                if let Some(object) = object {
+                    write!(formatter, " at {object}")?;
+                }
+                write!(formatter, ": {reason}")
             }
             Self::RetentionBlocked { reason } => write!(formatter, "retention blocked: {reason}"),
             Self::WalRetentionProofIncomplete { reason } => {
@@ -352,6 +440,14 @@ impl Error for LifecycleError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::RecoveryVisibilityFailed {
+                source: Some(source),
+                ..
+            }
+            | Self::FlushPublicationUncertain {
+                source: Some(source),
+                ..
+            }
+            | Self::FlushPublicationOrphaned {
                 source: Some(source),
                 ..
             }

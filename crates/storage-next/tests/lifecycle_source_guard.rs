@@ -170,6 +170,23 @@ fn lifecycle_cache_runtime_stays_cache_only() {
 }
 
 #[test]
+fn cache_compaction_does_not_call_table_object_service() {
+    let root = common::crate_root();
+    for relative in ["src/lifecycle/cache.rs", "src/lifecycle/compaction.rs"] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read cache table rewrite source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_cache_table_object_service_dependency(line),
+                "{}:{} calls table object service from cache table rewrite path: {line}",
+                relative,
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_flush_source_does_not_manage_watermarks_or_log_retention() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/flush.rs");
@@ -245,6 +262,46 @@ fn lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete() {
 }
 
 #[test]
+fn lifecycle_maintenance_executor_stays_scheduler_only() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/maintenance.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle maintenance source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_maintenance_executor_dependency(line),
+            "src/lifecycle/maintenance.rs:{} calls forbidden scheduler dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
+fn lifecycle_durable_maintenance_stays_out_of_assembly_and_bootstrap() {
+    let root = common::crate_root();
+    let maintenance_path = root.join("src/lifecycle/durable/maintenance.rs");
+    let maintenance =
+        fs::read_to_string(&maintenance_path).expect("read durable maintenance source");
+    for (line_number, line) in maintenance.lines().enumerate() {
+        assert!(
+            !contains_forbidden_durable_maintenance_dependency(line),
+            "src/lifecycle/durable/maintenance.rs:{} calls forbidden durable maintenance dependency: {line}",
+            line_number + 1
+        );
+    }
+
+    let bootstrap_path = root.join("src/lifecycle/durable/bootstrap.rs");
+    let bootstrap = fs::read_to_string(&bootstrap_path).expect("read durable bootstrap source");
+    for (line_number, line) in bootstrap.lines().enumerate() {
+        assert!(
+            !contains_forbidden_bootstrap_maintenance_dependency(line),
+            "src/lifecycle/durable/bootstrap.rs:{} calls forbidden maintenance dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_table_rewrite_source_uses_branch_runtime_boundaries() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/compaction.rs");
@@ -268,6 +325,8 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_flush_runtime_fixtures();
     assert_checkpoint_runtime_fixtures();
     assert_recovery_runtime_fixtures();
+    assert_maintenance_executor_fixtures();
+    assert_durable_maintenance_fixtures();
     assert_table_rewrite_fixtures();
     assert_public_surface_fixtures();
 }
@@ -386,6 +445,12 @@ fn assert_cache_runtime_fixtures() {
     assert!(contains_forbidden_cache_runtime_dependency(
         "backend.publish_object(name, bytes, mode)?;"
     ));
+    assert!(contains_cache_table_object_service_dependency(
+        "TableObjectService::new(backend)"
+    ));
+    assert!(contains_cache_table_object_service_dependency(
+        "table_service.publish_create(object, bytes)?"
+    ));
 }
 
 fn assert_durable_runtime_fixtures() {
@@ -493,6 +558,33 @@ fn assert_table_rewrite_fixtures() {
     ));
     assert!(contains_forbidden_table_rewrite_dependency(
         "quarantine.load_inventory(branch, db, codec)?;"
+    ));
+}
+
+fn assert_maintenance_executor_fixtures() {
+    assert!(contains_forbidden_maintenance_executor_dependency(
+        "TableObjectService::new(backend);"
+    ));
+    assert!(contains_forbidden_maintenance_executor_dependency(
+        "checkpoint_durable_branch(branch, services, guards, visible, request)?;"
+    ));
+    assert!(contains_forbidden_maintenance_executor_dependency(
+        "LifecycleDurableLocalRuntime::open(request)?;"
+    ));
+}
+
+fn assert_durable_maintenance_fixtures() {
+    assert!(contains_forbidden_durable_maintenance_dependency(
+        "DatabaseManifestService::new(backend);"
+    ));
+    assert!(contains_forbidden_durable_maintenance_dependency(
+        "CommitReplayRuntime::new(config);"
+    ));
+    assert!(contains_forbidden_bootstrap_maintenance_dependency(
+        "self.run_next_flush_maintenance()?;"
+    ));
+    assert!(contains_forbidden_bootstrap_maintenance_dependency(
+        "self.compact_branch_tables(request)?;"
     ));
 }
 
@@ -771,6 +863,18 @@ fn contains_forbidden_cache_runtime_dependency_text(text: &str) -> bool {
         || contains_forbidden_cache_runtime_dependency(&compact)
 }
 
+fn contains_cache_table_object_service_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "tableobjectservice",
+        "tableobjectreaderservice",
+        "publish_create(",
+        "open_reader(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 fn contains_forbidden_durable_runtime_dependency(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     [
@@ -884,6 +988,64 @@ fn contains_forbidden_table_rewrite_dependency(line: &str) -> bool {
         "open_reader(",
         "tablecompactor",
         "keepalltablecompactionpolicy",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_maintenance_executor_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "tableobjectservice",
+        "tableobjectreaderservice",
+        "databasemanifestservice",
+        "checkpointservice",
+        "walservice",
+        "quarantineservice",
+        "lifecycledurablelocalruntime",
+        "flush_durable_branch(",
+        "checkpoint_durable_branch(",
+        "compact_durable_branch(",
+        "materialize_durable_branch(",
+        "publish_create(",
+        "delete_covered_segments(",
+        "persist_flush_watermark(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_durable_maintenance_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "databasemanifestservice::new",
+        "walservice::open",
+        "tablemanifestservice::new",
+        "snapshotservice::new",
+        "tableobjectservice::new",
+        "checkpointservice::new",
+        "quarantineservice::new",
+        "commitreplayruntime",
+        "complete_recovery(",
+        "recover(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_bootstrap_maintenance_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "flush_frozen(",
+        "run_next_flush_maintenance(",
+        "run_next_checkpoint_maintenance(",
+        "run_next_wal_truncation_maintenance(",
+        "run_next_compaction_maintenance(",
+        "run_next_materialization_maintenance(",
+        "compact_branch_tables(",
+        "materialize_inherited_layer(",
+        "persist_flush_watermark(",
+        "truncate_wal(",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

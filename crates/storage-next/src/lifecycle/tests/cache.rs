@@ -55,6 +55,20 @@ fn cache_open_builds_volatile_branch_commit_baseline_without_recovery_claims() {
 }
 
 #[test]
+fn cache_open_reports_maintenance_ready_after_executor_attached() {
+    let branch = branch_id(0x4f);
+    let backend = MemoryBackend::new();
+    let runtime = open_runtime(branch, &backend);
+
+    assert!(runtime.open_outcome().maintenance_ready());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(
+        runtime.maintenance_status().stats(),
+        LifecycleMaintenanceStats::default()
+    );
+}
+
+#[test]
 fn cache_runtime_can_enqueue_and_run_health_collection_maintenance() {
     let branch = branch_id(0x4e);
     let backend = MemoryBackend::new();

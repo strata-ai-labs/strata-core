@@ -21,6 +21,9 @@ Closeout status for the L8A-L8G cleanup pass:
   integration expansion, full maintenance/retention/quarantine/repair outcomes,
   durable close drain/sync outcomes, and the remaining named L8F/L8G/L8D/L8E
   matrix rows that require later L8H-L8P machinery.
+- Ordering note: sections below reflect the order closeout entries were appended
+  during implementation. The parent implementation plan remains the canonical
+  slice ordering guide.
 
 ## L8A - Lifecycle Scaffold
 
@@ -1428,6 +1431,14 @@ git diff --check
 ```
 
 ## L8J - Checkpoint, Flush Watermark, And WAL Truncation
+
+### Size Note
+
+- This slice exceeded the preferred review-size budget because checkpoint
+  publication, flush-watermark persistence, WAL truncation, recovery
+  round-trips, and service fault windows landed together. The implementation is
+  isolated in `checkpoint.rs` plus checkpoint-specific test modules; future
+  checkpoint retention/pruning work should split into smaller owner slices.
 
 ### Shipped Files
 
