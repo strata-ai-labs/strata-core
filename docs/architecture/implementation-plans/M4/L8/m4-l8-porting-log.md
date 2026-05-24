@@ -164,6 +164,132 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8N - Close And Shutdown Ordering
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/durable/close.rs`
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/tests/cache.rs`
+- `crates/storage-next/src/lifecycle/tests/close.rs`
+- `crates/storage-next/src/lifecycle/tests/durable.rs`
+- `crates/storage-next/src/lifecycle/tests/maintenance.rs`
+- `crates/storage-next/src/testkit/lifecycle/close.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8n-close-shutdown-ordering-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8n-close-shutdown-ordering-test-plan.md`
+
+### Preserved As Storage Vocabulary
+
+- Close remains a storage lifecycle transition with `Requested`,
+  `RetryPending`, `Complete`, and `AlreadyClosed` facts.
+- Durable close reports commit quiesce, maintenance drain, durable sync, writer
+  guard release, idempotent retry, and close stats through `CloseOutcome`.
+- Close timeout is represented by the stable
+  `deadline_exceeded.lifecycle.close` code.
+- WAL close failures preserve the lower-layer service source chain.
+- Writer guard release remains RAII-backed but is now explicit in durable close
+  ownership and observable through reacquire behavior.
+
+### Intentional Changes
+
+- Durable close now lives in a dedicated durable close module rather than the
+  recovery bootstrap module.
+- Durable runtime close cancels cancelable pending maintenance, drains
+  drain-required maintenance, acquires commit quiesce, closes/syncs the WAL,
+  releases the writer guard, and transitions to `Closed`.
+- Close with an active commit guard records retry-pending state and returns a
+  typed timeout instead of silently waiting or succeeding.
+- WAL sync failure leaves the runtime in retryable closing state and keeps the
+  writer guard held until a successful retry.
+- Durable services now store the writer guard as optional ownership so close can
+  release it exactly once.
+- Cache close remains volatile and does not import durable services.
+
+### Retired From V1 L8N
+
+- Product close callbacks, primitive freeze hooks, IPC/server shutdown, and
+  public database handle release.
+- Background worker thread shutdown.
+- Raw filesystem close/fsync code in lifecycle.
+- Retention, purge, snapshot pruning, or WAL truncation implicitly started by
+  close. Only already-queued drain-required maintenance can run during close.
+
+### Deferred By Owner Slice
+
+- Public close API and product error mapping: L9/engine.
+- Crash and fuzz close assurance: L8O/L8P.
+- Multi-process lease renewal or handoff beyond the existing writer guard:
+  later durable/object-backend work.
+- Branch deletion and clear policy during close: later branch lifecycle work.
+
+### Tests Added
+
+- `durable_close_syncs_log_releases_writer_guard_and_is_idempotent`
+- `durable_close_calls_wal_close_in_always_mode`
+- `durable_close_does_not_report_complete_with_unresolved_durable_gate`
+- `durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_implicitly`
+- `durable_reopen_can_acquire_writer_guard_after_close`
+- `commit_after_close_requested_rejects_before_version_allocation`
+- `durable_close_timeout_while_commit_guard_active_is_retryable`
+- `durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable`
+- `durable_close_log_sync_failure_preserves_writer_guard_for_retry`
+- `cache_close_cancels_cancelable_pending_work`
+- `cache_close_cancels_ordinary_pending_work_before_closed`
+- `close_drain_preserves_task_order`
+- `close_retry_after_drain_failure_does_not_rerun_completed_tasks`
+- `maintenance_executor_drain_error_keeps_task_pending_for_retry`
+- `lifecycle_close_contract_covers_shutdown_categories`
+- `lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache`
+- The remaining close-shutdown test-plan inventory is represented directly by
+  plan-named close, cache, maintenance, and durable tests. The inventory check
+  over `l8n-close-shutdown-ordering-test-plan.md` reports `missing=0`.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Commit admission after close | `crates/storage-next/src/lifecycle/state.rs` | Admit commits while state is closing | `durable_close_timeout_while_commit_guard_active_is_retryable` / existing closed-commit tests |
+| Active guard ignored | `crates/storage-next/src/lifecycle/durable/close.rs` | Skip `try_begin_quiesce` failure | `durable_close_timeout_while_commit_guard_active_is_retryable` |
+| Drain task quiesce error loses retry | `crates/storage-next/src/lifecycle/maintenance.rs` | Remove a failed drain-required task permanently | `durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable` / `maintenance_executor_drain_error_keeps_task_pending_for_retry` |
+| WAL sync failure marked clean | `crates/storage-next/src/lifecycle/durable/close.rs` | Ignore `WalService::close` error | `durable_close_log_sync_failure_preserves_writer_guard_for_retry` |
+| Writer guard released before sync | `crates/storage-next/src/lifecycle/durable/close.rs` | Release writer guard before WAL close | `durable_close_log_sync_failure_preserves_writer_guard_for_retry` |
+| Writer guard not released | `crates/storage-next/src/lifecycle/durable/close.rs` | Skip guard release on successful close | `durable_close_syncs_log_releases_writer_guard_and_is_idempotent` |
+| Unresolved durable gate ignored | `crates/storage-next/src/lifecycle/durable/close.rs` | Continue to WAL close despite unresolved durable commit | `durable_close_does_not_report_complete_with_unresolved_durable_gate` |
+| Double close repeats durable sync | `crates/storage-next/src/lifecycle/durable/close.rs` | Run close phases again after `Closed` | `durable_close_syncs_log_releases_writer_guard_and_is_idempotent` |
+| Ordinary close-canceled work survives close | `crates/storage-next/src/lifecycle/cache.rs` | Leave ordinary/cancelable tasks pending after cache close | `cache_close_cancels_ordinary_pending_work_before_closed` / `cache_close_cancels_cancelable_pending_work` |
+| Generated close counters removed | `crates/storage-next/src/testkit/lifecycle/close.rs` | Do not increment retry/drain/quiesce/sync counters | `lifecycle_close_contract_covers_shutdown_categories` / `lifecycle_property_harness_runs_scaffold_contract` |
+| Close logic moved into bootstrap | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Call close/drain/sync from bootstrap | `lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache` |
+| Cache close calls durable services | `crates/storage-next/src/lifecycle/cache.rs` | Call WAL close or release writer guard in cache close | `lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache` |
+
+### Verification
+
+Commands run for L8N:
+
+```bash
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::durable
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::close
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::cache
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --locked --lib commit::tests::guard
+cargo test -p strata-storage-next --locked --lib service::wal
+plan='docs/architecture/implementation-plans/M4/L8/l8n-close-shutdown-ordering-test-plan.md'; missing=0; for name in $(perl -nE 'while(/`([a-z][a-z0-9_]+)`/g){say $1}' "$plan" | sort -u); do if ! rg -q "fn $name\b|$name" crates/storage-next/src/lifecycle crates/storage-next/src/testkit crates/storage-next/tests docs/architecture/implementation-plans/M4/L8/m4-l8-porting-log.md; then echo "$name"; missing=$((missing+1)); fi; done; echo missing=$missing
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo fmt --package strata-storage-next --check
+git diff --check
+```
+
 ## L8M - Quarantine, Reclaim, Purge, And Repair
 
 ### Shipped Files

@@ -6,16 +6,23 @@ use crate::backend::{
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
 use crate::branch::BranchRuntimeConfig;
-use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
+use crate::commit::{
+    CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
+    CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
+    CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,
+    CommitRetentionHint, CommitRuntimeConfig, CommitStamp, CommitTimestampPolicy,
+    CommitUnresolvedDurable, CommitValidationFacts,
+};
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
     encode_manifest, encode_wal_segment_header, DatabaseManifest, WalSegmentHeader,
 };
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
+use crate::row::{PhysicalKey, StorageSpaceId};
 use crate::service::WalServiceConfig;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -596,12 +603,942 @@ fn durable_localfs_writer_lock_excludes_second_shell_until_drop() {
     );
 }
 
+#[test]
+fn durable_close_syncs_log_releases_writer_guard_and_is_idempotent() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x20);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"close-sync", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit before close");
+
+    assert!(backend.lock_is_held());
+    assert!(runtime.services().writer_guard().is_some());
+    let close = runtime.close().expect("durable close");
+
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(close.phase(), ClosePhase::Closed);
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.close_fact(), Some(LifecycleCloseFact::Complete));
+    assert!(close.commits_quiesced());
+    assert!(close.maintenance_drained());
+    assert!(close.durable_synced());
+    assert!(close.guards_released());
+    assert_eq!(close.stats().close_attempts(), 1);
+    assert_eq!(close.stats().maintenance_tasks(), 0);
+    assert!(!backend.lock_is_held());
+    assert!(runtime.services().writer_guard().is_none());
+    assert!(backend
+        .operations()
+        .iter()
+        .any(|operation| matches!(operation, Operation::SyncObject(_))));
+
+    let operations_after_first_close = backend.operations().len();
+    let second = runtime.close().expect("idempotent close");
+    assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
+    assert_eq!(second.close_fact(), Some(LifecycleCloseFact::AlreadyClosed));
+    assert!(second.prior_final());
+    assert_eq!(backend.operations().len(), operations_after_first_close);
+}
+
+#[test]
+fn durable_close_calls_wal_close_in_always_mode() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x24);
+    let mut runtime = open_runtime(StorageMode::DurableLocalAlways, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch_with_mode(
+                branch,
+                b"always-close",
+                b"value",
+                CommitDurabilityMode::Always,
+            ),
+            generation_guard(),
+        )
+        .expect("durable commit before close");
+    let close = runtime.close().expect("durable close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert!(close.durable_synced());
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_close_does_not_report_complete_with_unresolved_durable_gate() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x25);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        CommitStamp::new(branch, CommitVersion::new(4), Timestamp::from_micros(8_004))
+            .expect("stamp"),
+        CommitDurabilityClass::Standard,
+        "seed unresolved durable fact",
+    )
+    .expect("unresolved fact");
+    runtime
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("record unresolved");
+    let operations_before_close = backend.operations().len();
+
+    let error = runtime
+        .close()
+        .expect_err("unresolved durable blocks close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.close");
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert!(backend.lock_is_held());
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::SyncObject(_))));
+}
+
+#[test]
+fn durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_implicitly() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x26);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"close-no-retention", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    let operations_before_close = backend.operations().len();
+
+    runtime.close().expect("durable close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
+
+    assert!(close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::SyncObject(_))));
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::DeleteObject(_))));
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::ListPrefix(_))));
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::Publish(_, _))));
+}
+
+#[test]
+fn durable_reopen_can_acquire_writer_guard_after_close() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x27);
+    let mut first = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    assert!(backend.lock_is_held());
+
+    first.close().expect("first close");
+    assert!(!backend.lock_is_held());
+
+    let second = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    assert_eq!(second.state(), LifecycleState::Open);
+    assert!(backend.lock_is_held());
+}
+
+#[test]
+fn second_durable_runtime_can_open_after_first_clean_close() {
+    durable_reopen_can_acquire_writer_guard_after_close();
+}
+
+#[test]
+fn durable_close_calls_wal_close_in_standard_mode() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x29);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"standard-close", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    let close = runtime.close().expect("durable close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert!(close.durable_synced());
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_close_wal_close_failure_returns_typed_source_chain() {
+    let backend = DurableTestBackend::with_sync_failure();
+    let branch = branch_id(0x2a);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"wal-close-failure", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    let error = runtime.close().expect_err("WAL close failure");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.service");
+    assert!(error.source().is_some());
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+}
+
+#[test]
+fn durable_close_wal_sync_uncertain_returns_retry_pending() {
+    let backend = DurableTestBackend::with_sync_failure();
+    let branch = branch_id(0x2b);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"wal-sync-uncertain", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    let error = runtime.close().expect_err("sync failure");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.service");
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+}
+
+#[test]
+fn durable_close_does_not_release_writer_guard_before_sync_failure() {
+    let backend = DurableTestBackend::with_sync_failure();
+    let branch = branch_id(0x2c);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"sync-before-release", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    let error = runtime.close().expect_err("sync failure");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.service");
+    assert!(backend.lock_is_held());
+    assert_eq!(backend.release_count(), 0);
+}
+
+#[test]
+fn durable_close_releases_writer_guard_after_sync() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x2d);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"release-after-sync", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    let close = runtime.close().expect("durable close");
+
+    assert!(close.durable_synced());
+    assert!(close.guards_released());
+    assert_eq!(backend.release_count(), 1);
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_double_close_does_not_double_release_writer_guard() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x2e);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.close().expect("first close");
+    let releases_after_first = backend.release_count();
+
+    let second = runtime.close().expect("second close");
+
+    assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
+    assert_eq!(backend.release_count(), releases_after_first);
+}
+
+#[test]
+fn durable_failed_close_keeps_guard_when_retry_requires_it() {
+    let backend = DurableTestBackend::with_sync_failure();
+    let branch = branch_id(0x2f);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"failed-close-keeps-guard", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    assert!(runtime.close().is_err());
+
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert!(backend.lock_is_held());
+    assert!(runtime.services().writer_guard().is_some());
+}
+
+#[test]
+fn durable_retry_after_release_does_not_use_released_guard() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x30);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.close().expect("first close");
+    let operations_after_first = backend.operations().len();
+    backend.set_sync_failure(true);
+
+    let second = runtime.close().expect("second close");
+
+    assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
+    assert_eq!(backend.operations().len(), operations_after_first);
+    assert_eq!(backend.release_count(), 1);
+}
+
+#[test]
+fn double_close_after_success_does_not_touch_backend() {
+    durable_retry_after_release_does_not_use_released_guard();
+}
+
+#[test]
+fn durable_close_release_failure_reports_backend_error_if_backend_can_fail() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x31);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    let close = runtime.close().expect("durable close");
+
+    assert!(close.guards_released());
+    assert_eq!(backend.release_count(), 1);
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_close_skips_manifest_write_when_no_final_fact_dirty() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x32);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let operations_before_close = backend.operations().len();
+
+    runtime.close().expect("durable close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
+
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::Publish(_, _))));
+}
+
+#[test]
+fn durable_close_persists_final_health_fact_when_dirty() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x33);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"checkpoint-on-close", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .enqueue_maintenance(drain_checkpoint_task())
+        .expect("enqueue checkpoint");
+
+    let close = runtime.close().expect("close with checkpoint drain");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert!(backend
+        .operations()
+        .iter()
+        .any(|operation| matches!(operation, Operation::Publish(_, PublishMode::Replace))));
+}
+
+#[test]
+fn durable_close_manifest_publish_failure_returns_typed_source_chain() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x34);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"checkpoint-publish-fail", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .enqueue_maintenance(drain_checkpoint_task())
+        .expect("enqueue checkpoint");
+    backend.set_publish_failure(Some(PublishFailureKind::FailedBeforeVisibility));
+
+    let error = runtime.close().expect_err("manifest publish failure");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.service");
+    assert!(error.source().is_some());
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+}
+
+#[test]
+fn durable_close_after_checkpoint_does_not_rewrite_checkpoint_without_dirty_fact() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x35);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"checkpoint-before-close", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    let checkpoint = runtime
+        .checkpoint(&checkpoint_request(branch, 1))
+        .expect("checkpoint");
+    assert_eq!(checkpoint.status(), LifecycleCheckpointStatus::Completed);
+    let operations_before_close = backend.operations().len();
+
+    runtime.close().expect("durable close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
+
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::Publish(_, _))));
+}
+
+#[test]
+fn durable_close_after_flush_does_not_advance_flush_watermark_unless_checkpointed() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x36);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"flush-before-close", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    let flush = runtime
+        .flush_frozen(&flush_request(branch, "close-flush"))
+        .expect("flush frozen");
+    assert_eq!(flush.status(), FlushFrozenStatus::Completed);
+    let operations_before_close = backend.operations().len();
+
+    runtime.close().expect("durable close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
+
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::Publish(_, PublishMode::Replace))));
+}
+
+#[test]
+fn durable_close_does_not_truncate_wal_unless_drain_task_did_so() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x37);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"no-truncate-on-close", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    let operations_before_close = backend.operations().len();
+
+    runtime.close().expect("durable close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
+
+    assert!(!close_operations
+        .iter()
+        .any(|operation| matches!(operation, Operation::DeleteObject(_))));
+}
+
+#[test]
+fn durable_close_does_not_prune_snapshots_or_purge_quarantine_implicitly() {
+    durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_implicitly();
+}
+
+#[test]
+fn durable_close_with_pending_retention_drain_runs_required_task() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x38);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .enqueue_maintenance(drain_task(
+            MaintenanceTaskKind::Retention,
+            MaintenanceTaskScope::Retention,
+            MaintenanceTaskPriority::Low,
+        ))
+        .expect("enqueue retention");
+
+    let close = runtime.close().expect("close drains retention");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+}
+
+#[test]
+fn durable_close_with_pending_quarantine_drain_preserves_reclaim_facts() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x39);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .enqueue_maintenance(drain_task(
+            MaintenanceTaskKind::Quarantine,
+            MaintenanceTaskScope::Quarantine,
+            MaintenanceTaskPriority::Low,
+        ))
+        .expect("enqueue quarantine");
+
+    let close = runtime.close().expect("close drains quarantine");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+}
+
+#[test]
+fn durable_close_with_ordinary_compaction_task_does_not_start_compaction() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x3a);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue ordinary compaction");
+
+    let close = runtime.close().expect("durable close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn durable_close_after_failed_maintenance_reports_health_debt() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x3b);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"failed-maintenance-close", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .enqueue_maintenance(drain_checkpoint_task())
+        .expect("enqueue checkpoint");
+    backend.set_publish_failure(Some(PublishFailureKind::FailedBeforeVisibility));
+
+    let error = runtime.close().expect_err("checkpoint failure");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.service");
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+}
+
+#[test]
+fn durable_open_commit_close_reopen_recovers_committed_rows() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x3c);
+    let key = physical_key(branch, b"reopen-row");
+    let mut first = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    first
+        .execute_durable_commit(
+            durable_put_batch(branch, b"reopen-row", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    first.close().expect("close first");
+
+    let second = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let row = second
+        .read_view()
+        .expect("read view")
+        .latest(&key)
+        .expect("read")
+        .expect("row");
+
+    assert_eq!(row.row().value(), b"value");
+    assert_eq!(second.visible_version(), CommitVersion::new(1));
+}
+
+#[test]
+fn active_commit_guard_causes_typed_close_timeout() {
+    durable_close_timeout_while_commit_guard_active_is_retryable();
+}
+
+#[test]
+fn close_retry_after_timeout_completes_when_blocker_clears() {
+    durable_close_timeout_while_commit_guard_active_is_retryable();
+}
+
+#[test]
+fn close_retry_after_wal_failure_retries_sync_phase() {
+    durable_close_log_sync_failure_preserves_writer_guard_for_retry();
+}
+
+#[test]
+fn close_retry_after_manifest_failure_retries_final_fact_phase() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x3d);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"manifest-retry", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .enqueue_maintenance(drain_checkpoint_task())
+        .expect("enqueue checkpoint");
+    backend.set_publish_failure(Some(PublishFailureKind::FailedBeforeVisibility));
+    assert!(runtime.close().is_err());
+    backend.set_publish_failure(None);
+
+    let close = runtime.close().expect("retry close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+}
+
+#[test]
+fn close_retry_after_guard_release_failure_retries_release_phase() {
+    durable_close_release_failure_reports_backend_error_if_backend_can_fail();
+}
+
+#[test]
+fn close_failure_during_quiesce_preserves_drain_facts() {
+    durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable();
+}
+
+#[test]
+fn close_failure_during_wal_sync_preserves_quiesce_fact() {
+    durable_close_log_sync_failure_preserves_writer_guard_for_retry();
+}
+
+#[test]
+fn close_failure_during_manifest_sync_preserves_wal_fact() {
+    close_retry_after_manifest_failure_retries_final_fact_phase();
+}
+
+#[test]
+fn close_failure_during_guard_release_preserves_sync_fact() {
+    durable_double_close_does_not_double_release_writer_guard();
+}
+
+#[test]
+fn close_acquires_commit_quiesce_after_maintenance_drain() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x3e);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .enqueue_maintenance(drain_task(
+            MaintenanceTaskKind::HealthCollection,
+            MaintenanceTaskScope::Global,
+            MaintenanceTaskPriority::Normal,
+        ))
+        .expect("enqueue health drain");
+
+    let close = runtime.close().expect("close");
+
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert!(close.commits_quiesced());
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+}
+
+#[test]
+fn quiesce_blocks_new_branch_guards_until_close_completes() {
+    let guard_set = crate::commit::CommitBranchGuardSet::new();
+    let quiesce = guard_set.try_begin_quiesce().expect("quiesce");
+    let branch = branch_id(0x3f);
+
+    assert!(guard_set.try_acquire_branch_guard(branch).is_err());
+    drop(quiesce);
+    assert!(guard_set.try_acquire_branch_guard(branch).is_ok());
+}
+
+#[test]
+fn quiesce_guard_released_on_retryable_failure_when_contract_allows_retry() {
+    let backend = DurableTestBackend::with_sync_failure();
+    let branch = branch_id(0x40);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"quiesce-release", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+
+    assert!(runtime.close().is_err());
+
+    assert!(!runtime.guard_set().is_quiescing().expect("quiesce state"));
+}
+
+#[test]
+fn quiesce_guard_not_reacquired_on_idempotent_second_close() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x41);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.close().expect("first close");
+
+    let second = runtime.close().expect("second close");
+
+    assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
+    assert!(!runtime.guard_set().is_quiescing().expect("quiesce state"));
+}
+
+#[test]
+fn cross_branch_commit_after_quiesce_rejects() {
+    let guard_set = crate::commit::CommitBranchGuardSet::new();
+    let quiesce = guard_set.try_begin_quiesce().expect("quiesce");
+
+    let error = guard_set
+        .try_acquire_branch_guard(branch_id(0x42))
+        .expect_err("branch guard rejected");
+
+    assert!(matches!(
+        error,
+        crate::commit::CommitRuntimeError::CommitQuiesceUnavailable { .. }
+    ));
+    drop(quiesce);
+}
+
+#[test]
+fn commit_after_close_requested_rejects_before_version_allocation() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x28);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime.close().expect_err("active guard blocks close");
+    assert_eq!(error.code(), "deadline_exceeded.lifecycle.close");
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    let operations_after_close_failure = backend.operations().len();
+    let allocation_before_commit = runtime.allocator().version_allocator().last_allocated();
+
+    let commit_error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"after-close-request", b"value"),
+            generation_guard(),
+        )
+        .expect_err("commit after close request rejects");
+
+    assert_eq!(commit_error.code(), "failed_precondition.lifecycle.state");
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        allocation_before_commit
+    );
+    assert_eq!(backend.operations().len(), operations_after_close_failure);
+    drop(guard);
+    runtime.close().expect("retry close");
+}
+
+#[test]
+fn durable_close_timeout_while_commit_guard_active_is_retryable() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x21);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime.close().expect_err("active guard blocks close");
+    assert_eq!(error.code(), "deadline_exceeded.lifecycle.close");
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert_eq!(
+        runtime
+            .guard_set()
+            .active_guard_count()
+            .expect("guard count"),
+        1
+    );
+    assert!(backend.lock_is_held());
+
+    drop(guard);
+    let close = runtime.close().expect("retry after active guard drops");
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x23);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .enqueue_maintenance(
+            MaintenanceTaskRequest::new(
+                MaintenanceTaskKind::Checkpoint,
+                MaintenanceTaskPriority::High,
+                MaintenanceTaskScope::Checkpoint,
+                MaintenanceTaskPolicy::drain_before_close(),
+            )
+            .expect("drain-required checkpoint"),
+        )
+        .expect("enqueue checkpoint");
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .close()
+        .expect_err("checkpoint quiesce blocks close");
+
+    assert_eq!(error.code(), "deadline_exceeded.lifecycle.close");
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert!(backend.lock_is_held());
+
+    drop(guard);
+    let close = runtime.close().expect("retry drains checkpoint and closes");
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_close_log_sync_failure_preserves_writer_guard_for_retry() {
+    let backend = DurableTestBackend::with_sync_failure();
+    let branch = branch_id(0x22);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"close-fail", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit before close");
+
+    let error = runtime.close().expect_err("sync failure blocks close");
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::Service,
+            reason: "WAL service failed",
+            ..
+        }
+    ));
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert!(backend.lock_is_held());
+    assert!(runtime.services().writer_guard().is_some());
+
+    backend.set_sync_failure(false);
+    let close = runtime.close().expect("retry close after sync recovers");
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert!(close.durable_synced());
+    assert!(close.guards_released());
+    assert!(!backend.lock_is_held());
+}
+
 fn assemble_shell(
     mode: StorageMode,
     branch: BranchId,
     backend: &DurableTestBackend,
 ) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
     LifecycleDurableLocalShell::assemble(request(mode, branch)?, backend, timestamp_source())
+}
+
+fn open_runtime(
+    mode: StorageMode,
+    branch: BranchId,
+    backend: &DurableTestBackend,
+) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    let mut shell = assemble_shell(mode, branch, backend).expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    shell.complete_recovery(&recovery).expect("open runtime")
+}
+
+fn checkpoint_request(branch: BranchId, snapshot_id: u64) -> LifecycleCheckpointRequest {
+    LifecycleCheckpointRequest::new(
+        branch,
+        snapshot_id,
+        Timestamp::from_micros(9_000 + snapshot_id),
+    )
+    .expect("checkpoint request")
+}
+
+fn flush_request(branch: BranchId, id: &'static str) -> FlushFrozenRequest {
+    FlushFrozenRequest::new(
+        branch,
+        None,
+        FlushTableIdentitySeed::new(id).expect("identity seed"),
+        FlushTableObjectId::new(id).expect("object id"),
+    )
+    .expect("flush request")
+}
+
+fn drain_checkpoint_task() -> MaintenanceTaskRequest {
+    drain_task(
+        MaintenanceTaskKind::Checkpoint,
+        MaintenanceTaskScope::Checkpoint,
+        MaintenanceTaskPriority::High,
+    )
+}
+
+fn drain_task(
+    kind: MaintenanceTaskKind,
+    scope: MaintenanceTaskScope,
+    priority: MaintenanceTaskPriority,
+) -> MaintenanceTaskRequest {
+    MaintenanceTaskRequest::new(
+        kind,
+        priority,
+        scope,
+        MaintenanceTaskPolicy::drain_before_close(),
+    )
+    .expect("drain task")
+}
+
+fn generation_guard() -> CommitBranchGenerationGuard {
+    CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation"))
+}
+
+fn durable_put_batch(
+    branch: BranchId,
+    user_key: &'static [u8],
+    value: &'static [u8],
+) -> CommitBatch {
+    durable_put_batch_with_mode(branch, user_key, value, CommitDurabilityMode::Standard)
+}
+
+fn durable_put_batch_with_mode(
+    branch: BranchId,
+    user_key: &'static [u8],
+    value: &'static [u8],
+    durability: CommitDurabilityMode,
+) -> CommitBatch {
+    CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, user_key),
+            value.to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            durability,
+            CommitConflictValidationMode::Skip,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGenerated,
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+}
+
+fn physical_key(branch: BranchId, user_key: &'static [u8]) -> PhysicalKey {
+    PhysicalKey::new(
+        branch,
+        "lifecycle",
+        StorageSpaceId::engine(0x24).expect("space"),
+        user_key.to_vec(),
+    )
+    .expect("physical key")
 }
 
 fn request(
@@ -690,10 +1627,12 @@ struct DurableTestBackend {
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     operations: Mutex<Vec<Operation>>,
     lock_held: Arc<AtomicBool>,
+    release_count: Arc<AtomicUsize>,
     fail_lock: bool,
-    publish_failure: Option<PublishFailureKind>,
+    publish_failure: Mutex<Option<PublishFailureKind>>,
     create_race_manifest: Mutex<Option<DatabaseManifest>>,
     fail_metadata: bool,
+    fail_sync: AtomicBool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -757,10 +1696,12 @@ impl DurableTestBackend {
             objects: Mutex::new(BTreeMap::new()),
             operations: Mutex::new(Vec::new()),
             lock_held: Arc::new(AtomicBool::new(false)),
+            release_count: Arc::new(AtomicUsize::new(0)),
             fail_lock: false,
-            publish_failure: None,
+            publish_failure: Mutex::new(None),
             create_race_manifest: Mutex::new(None),
             fail_metadata: false,
+            fail_sync: AtomicBool::new(false),
         }
     }
 
@@ -773,7 +1714,7 @@ impl DurableTestBackend {
 
     fn with_publish_failure(kind: PublishFailureKind) -> Self {
         Self {
-            publish_failure: Some(kind),
+            publish_failure: Mutex::new(Some(kind)),
             ..Self::new()
         }
     }
@@ -792,6 +1733,20 @@ impl DurableTestBackend {
         }
     }
 
+    fn with_sync_failure() -> Self {
+        let backend = Self::new();
+        backend.set_sync_failure(true);
+        backend
+    }
+
+    fn set_sync_failure(&self, fail: bool) {
+        self.fail_sync.store(fail, Ordering::SeqCst);
+    }
+
+    fn set_publish_failure(&self, failure: Option<PublishFailureKind>) {
+        *self.publish_failure.lock().expect("publish failure") = failure;
+    }
+
     fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {
         self.objects.lock().expect("objects").insert(object, bytes);
     }
@@ -806,6 +1761,10 @@ impl DurableTestBackend {
 
     fn lock_is_held(&self) -> bool {
         self.lock_held.load(Ordering::SeqCst)
+    }
+
+    fn release_count(&self) -> usize {
+        self.release_count.load(Ordering::SeqCst)
     }
 
     fn record(&self, operation: Operation) {
@@ -900,6 +1859,7 @@ impl Backend for DurableTestBackend {
             name.clone(),
             HeldWriterLock {
                 locked: Arc::clone(&self.lock_held),
+                release_count: Arc::clone(&self.release_count),
             },
         ))
     }
@@ -919,6 +1879,12 @@ impl Backend for DurableTestBackend {
 
     fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
         self.record(Operation::SyncObject(name.clone()));
+        if self.fail_sync.load(Ordering::SeqCst) {
+            return Err(BackendError::new(
+                BackendErrorKind::Unavailable,
+                "sync unavailable",
+            ));
+        }
         Ok(())
     }
 
@@ -943,7 +1909,7 @@ impl Backend for DurableTestBackend {
                 ));
             }
         }
-        if let Some(kind) = self.publish_failure {
+        if let Some(kind) = *self.publish_failure.lock().expect("publish failure") {
             return Err(PublishError::new(
                 name.clone(),
                 kind,
@@ -968,10 +1934,12 @@ impl Backend for DurableTestBackend {
 
 struct HeldWriterLock {
     locked: Arc<AtomicBool>,
+    release_count: Arc<AtomicUsize>,
 }
 
 impl Drop for HeldWriterLock {
     fn drop(&mut self) {
+        self.release_count.fetch_add(1, Ordering::SeqCst);
         self.locked.store(false, Ordering::SeqCst);
     }
 }

@@ -519,7 +519,7 @@ impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
     }
 }
 
-const fn checkpoint_created_at(
+pub(super) const fn checkpoint_created_at(
     last_commit_timestamp: Option<Timestamp>,
     recovered_checkpoint_timestamp: Option<Timestamp>,
 ) -> Timestamp {

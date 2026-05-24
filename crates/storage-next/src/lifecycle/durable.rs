@@ -27,6 +27,7 @@ use std::fmt;
 use strata_core_next::{BranchId, CommitVersion};
 
 mod bootstrap;
+mod close;
 mod maintenance;
 
 pub(crate) use bootstrap::{LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport};
@@ -68,7 +69,7 @@ pub(crate) struct LifecycleDurableLocalServices<'a> {
     checkpoint: CheckpointService<'a>,
     quarantine: QuarantineService<'a>,
     assembly_facts: LifecycleDurableAssemblyFacts,
-    writer_guard: BackendWriterGuard,
+    writer_guard: Option<BackendWriterGuard>,
 }
 
 pub(crate) struct LifecycleDurableLocalShell<'a, S = CommitManualTimestampSource> {
@@ -222,8 +223,12 @@ impl<'a> LifecycleDurableLocalServices<'a> {
         &self.assembly_facts
     }
 
-    pub(crate) const fn writer_guard(&self) -> &BackendWriterGuard {
-        &self.writer_guard
+    pub(crate) const fn writer_guard(&self) -> Option<&BackendWriterGuard> {
+        self.writer_guard.as_ref()
+    }
+
+    pub(crate) fn release_writer_guard(&mut self) -> bool {
+        self.writer_guard.take().is_some()
     }
 
     pub(crate) const fn wal(&self) -> &WalService<'a> {
@@ -331,7 +336,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             checkpoint: CheckpointService::new(backend),
             quarantine: QuarantineService::new(backend),
             assembly_facts,
-            writer_guard,
+            writer_guard: Some(writer_guard),
         };
 
         state.transition(LifecycleTransitionTrigger::DurableRecoveryRequired)?;

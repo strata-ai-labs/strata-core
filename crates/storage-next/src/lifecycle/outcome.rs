@@ -417,6 +417,67 @@ impl CloseOutcome {
         self
     }
 
+    pub(crate) fn validate(&self) -> LifecycleResult<()> {
+        match self.status {
+            CloseOutcomeStatus::Complete => {
+                if self.phase != ClosePhase::Closed {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "complete close outcome must report closed phase",
+                    });
+                }
+                if self.close_fact != Some(LifecycleCloseFact::Complete) {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "complete close outcome must report complete fact",
+                    });
+                }
+                if !self.commits_quiesced()
+                    || !self.maintenance_drained()
+                    || !self.guards_released()
+                {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "complete close outcome must report completed close effects",
+                    });
+                }
+            }
+            CloseOutcomeStatus::Idempotent => {
+                if self.phase != ClosePhase::Closed {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "idempotent close outcome must report closed phase",
+                    });
+                }
+                if self.close_fact != Some(LifecycleCloseFact::AlreadyClosed) || !self.prior_final()
+                {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "idempotent close outcome must report prior final fact",
+                    });
+                }
+            }
+            CloseOutcomeStatus::Timeout => {
+                if self.phase == ClosePhase::Closed
+                    || matches!(
+                        self.close_fact,
+                        Some(LifecycleCloseFact::Complete | LifecycleCloseFact::AlreadyClosed)
+                    )
+                {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "timeout close outcome must not report final close facts",
+                    });
+                }
+            }
+            CloseOutcomeStatus::Failed => {
+                if matches!(
+                    self.close_fact,
+                    Some(LifecycleCloseFact::Complete | LifecycleCloseFact::AlreadyClosed)
+                ) {
+                    return Err(LifecycleError::CloseFailed {
+                        reason: "failed close outcome must not report final close facts",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) const fn phase(self) -> ClosePhase {
         self.phase
     }

@@ -4,6 +4,7 @@ mod bootstrap;
 mod cache;
 mod capability;
 mod checkpoint;
+mod close;
 mod durable;
 mod flush;
 mod maintenance;
@@ -15,6 +16,7 @@ mod rewrite;
 
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
 pub use checkpoint::{check_lifecycle_checkpoint_contract, LifecycleCheckpointContractOutcome};
+pub use close::{check_lifecycle_close_contract, LifecycleCloseContractOutcome};
 pub use flush::{check_lifecycle_flush_contract, LifecycleFlushContractOutcome};
 pub use maintenance::{check_lifecycle_maintenance_contract, LifecycleMaintenanceContractOutcome};
 pub use outcome::LifecycleScaffoldOutcome;
@@ -52,6 +54,13 @@ pub fn check_lifecycle_scaffold_contract(
     capability::check_lifecycle_capability_contract(script, &mut outcome)?;
     cache::check_lifecycle_cache_contract(script, &mut outcome)?;
     durable::check_lifecycle_durable_contract(script, &mut outcome)?;
+    let close = close::check_lifecycle_close_contract(script)?;
+    ensure(
+        close.close_requested_cases() > 0
+            && close.cache_close_completed_cases() > 0
+            && close.durable_close_completed_cases() > 0,
+        "close contract did not exercise required close routes",
+    )?;
     check_open_outcomes(script, &mut outcome)?;
     check_recovery_health(&mut outcome)?;
     check_maintenance_tasks(&mut outcome)?;

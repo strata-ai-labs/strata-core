@@ -244,6 +244,16 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.branch
     }
 
+    #[cfg(test)]
+    pub(crate) const fn guard_set(&self) -> &CommitBranchGuardSet {
+        &self.guard_set
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn durable_gate(&self) -> &CommitUnresolvedDurableGate {
+        &self.durable_gate
+    }
+
     pub(crate) const fn visible_version(&self) -> CommitVersion {
         self.visible.visible_version()
     }

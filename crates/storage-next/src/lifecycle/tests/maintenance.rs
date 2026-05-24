@@ -769,6 +769,127 @@ fn maintenance_executor_cancel_and_drain_respect_close_policy() {
 }
 
 #[test]
+fn maintenance_executor_drain_error_keeps_task_pending_for_retry() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("drain");
+    let original_task_id = executor.pending_tasks()[0].id();
+    let mut runner = ErrorRunner;
+
+    let error = executor
+        .drain_for_close(closing, &mut runner)
+        .expect_err("drain failure");
+
+    assert_eq!(error.code(), "io.lifecycle.backend");
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(executor.pending_tasks()[0].id(), original_task_id);
+    assert_eq!(executor.stats().failed(), 1);
+    let mut retry_runner = RecordingRunner::completed();
+    let retry = executor
+        .drain_for_close(closing, &mut retry_runner)
+        .expect("retry drain");
+    assert_eq!(retry.drained_tasks(), 1);
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
+fn close_drain_preserves_task_order() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Low,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("low priority");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("normal priority");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::High,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("high priority");
+    let mut runner = RecordingRunner::completed();
+
+    let drain = executor
+        .drain_for_close(closing, &mut runner)
+        .expect("drain for close");
+    let ids = drain
+        .outcomes()
+        .iter()
+        .map(|outcome| outcome.task_id().expect("task id").get())
+        .collect::<Vec<_>>();
+
+    assert_eq!(ids, vec![3, 2, 1]);
+    assert_eq!(drain.drained_tasks(), 3);
+    assert_eq!(drain.stats().drained(), 3);
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
+fn close_retry_after_drain_failure_does_not_rerun_completed_tasks() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("first drain task");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("second drain task");
+    let first_id = executor.pending_tasks()[0].id();
+    let second_id = executor.pending_tasks()[1].id();
+    let mut runner = FailsAfterCompletions::new(1);
+
+    let error = executor
+        .drain_for_close(closing, &mut runner)
+        .expect_err("second task fails");
+
+    assert_eq!(error.code(), "io.lifecycle.backend");
+    assert_eq!(executor.stats().completed(), 1);
+    assert_eq!(executor.stats().failed(), 1);
+    assert_eq!(executor.status().pending_tasks(), 1);
+    assert_eq!(executor.pending_tasks()[0].id(), second_id);
+    assert_ne!(executor.pending_tasks()[0].id(), first_id);
+
+    let mut retry_runner = RecordingRunner::completed();
+    let retry = executor
+        .drain_for_close(closing, &mut retry_runner)
+        .expect("retry drain");
+    assert_eq!(retry.drained_tasks(), 1);
+    assert_eq!(retry.outcomes()[0].task_id(), Some(second_id));
+    assert_eq!(executor.status().pending_tasks(), 0);
+    assert_eq!(executor.stats().completed(), 2);
+}
+
+#[test]
 fn maintenance_executor_empty_drain_and_cancel_are_idempotent() {
     let closing = closing_state();
     let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
@@ -829,6 +950,240 @@ fn maintenance_executor_cancel_keeps_only_drain_required_tasks() {
             .collect::<Vec<_>>(),
         vec![MaintenanceClosePolicy::DrainBeforeClose]
     );
+}
+
+#[test]
+fn close_cancel_sweep_removes_cancel_before_close_tasks() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::cancel_before_close()),
+        )
+        .expect("enqueue");
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel close");
+
+    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
+fn close_cancel_sweep_removes_or_defers_ordinary_tasks_by_contract() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel close");
+
+    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
+fn close_drain_runs_drain_before_close_tasks() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("enqueue");
+    let mut runner = RecordingRunner::completed();
+
+    let drain = executor
+        .drain_for_close(closing, &mut runner)
+        .expect("drain");
+
+    assert_eq!(drain.drained_tasks(), 1);
+    assert_eq!(
+        drain.outcomes()[0].status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
+fn close_drain_failure_returns_typed_close_error() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("enqueue");
+    let mut runner = ErrorRunner;
+
+    let error = executor
+        .drain_for_close(closing, &mut runner)
+        .expect_err("drain error");
+
+    assert_eq!(error.code(), "io.lifecycle.backend");
+    assert!(error.source().is_some());
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
+fn close_does_not_cancel_active_task_by_queue_removal() {
+    let closing = closing_state();
+    let active = MaintenanceTask::new_for_test(
+        11,
+        health_request(MaintenanceTaskPolicy::cancel_before_close()),
+    )
+    .expect("active task");
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor.set_active_for_test(active);
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel close");
+
+    assert_eq!(cancel.canceled_tasks(), 0);
+    assert_eq!(executor.status().active_task(), Some(active.id()));
+}
+
+#[test]
+fn close_failure_before_cancel_leaves_tasks_pending() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+
+    let error = executor
+        .cancel_pending_for_close(open)
+        .expect_err("cancel outside closing");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.state");
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
+fn close_failure_after_cancel_before_drain_reports_canceled_count() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(3).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("ordinary");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("drain");
+
+    let cancel = executor
+        .cancel_pending_for_close(closing)
+        .expect("cancel close");
+    let mut runner = ErrorRunner;
+    let error = executor
+        .drain_for_close(closing, &mut runner)
+        .expect_err("drain fails");
+
+    assert_eq!(cancel.canceled_tasks(), 1);
+    assert_eq!(error.code(), "io.lifecycle.backend");
+    assert_eq!(executor.stats().canceled(), 1);
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
+fn close_failure_during_drain_preserves_completed_drain_facts() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(3).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("first");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("second");
+    let mut runner = FailsAfterCompletions::new(1);
+
+    let error = executor
+        .drain_for_close(closing, &mut runner)
+        .expect_err("second task fails");
+
+    assert_eq!(error.code(), "io.lifecycle.backend");
+    assert_eq!(executor.stats().completed(), 1);
+    assert_eq!(executor.stats().drained(), 1);
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
+fn close_retry_does_not_restart_completed_ordinary_work() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(3).expect("executor");
+    executor
+        .enqueue(
+            open,
+            health_request(MaintenanceTaskPolicy::drain_before_close()),
+        )
+        .expect("first");
+    executor
+        .enqueue(
+            open,
+            repair_request(
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskPolicy::drain_before_close(),
+            ),
+        )
+        .expect("second");
+    let mut runner = FailsAfterCompletions::new(1);
+    assert!(executor.drain_for_close(closing, &mut runner).is_err());
+    let completed_before_retry = executor.stats().completed();
+
+    let mut retry_runner = RecordingRunner::completed();
+    executor
+        .drain_for_close(closing, &mut retry_runner)
+        .expect("retry");
+
+    assert_eq!(completed_before_retry, 1);
+    assert_eq!(executor.stats().completed(), 2);
+}
+
+#[test]
+fn close_recovery_health_debt_is_not_lost_on_failure() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, health_request(MaintenanceTaskPolicy::ordinary()))
+        .expect("enqueue");
+    let mut runner = RecordingRunner::failed();
+
+    let outcome = executor
+        .run_next(open, &mut runner)
+        .expect("run")
+        .expect("outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(outcome.recovery_health().is_some());
 }
 
 #[test]
@@ -980,3 +1335,43 @@ fn maintenance_ready_policy_tracks_recovery_health_class() {
         MaintenanceOutcomeStatus::Canceled,
     );
 }
+
+struct FailsAfterCompletions {
+    remaining_successes: usize,
+}
+
+impl FailsAfterCompletions {
+    const fn new(remaining_successes: usize) -> Self {
+        Self {
+            remaining_successes,
+        }
+    }
+}
+
+impl MaintenanceTaskRunner for FailsAfterCompletions {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        if self.remaining_successes == 0 {
+            return Err(LifecycleError::lower_layer_with(
+                LifecycleLowerLayer::Backend,
+                "maintenance runner failed",
+                DrainFailureSource,
+            ));
+        }
+        self.remaining_successes -= 1;
+        Ok(MaintenanceOutcome::new(
+            task.kind(),
+            MaintenanceOutcomeStatus::Completed,
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct DrainFailureSource;
+
+impl std::fmt::Display for DrainFailureSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("drain failure source")
+    }
+}
+
+impl std::error::Error for DrainFailureSource {}

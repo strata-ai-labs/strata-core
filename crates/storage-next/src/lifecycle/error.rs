@@ -1,6 +1,6 @@
 //! Lifecycle error vocabulary.
 
-use super::StorageMode;
+use super::{ClosePhase, StorageMode};
 use crate::backend::BackendCapability;
 use std::error::Error;
 use std::fmt;
@@ -85,6 +85,10 @@ pub(crate) enum LifecycleError {
         reason: &'static str,
     },
     CloseFailed {
+        reason: &'static str,
+    },
+    CloseTimeout {
+        phase: ClosePhase,
         reason: &'static str,
     },
     TimelineRecoveryMismatch {
@@ -240,6 +244,7 @@ impl LifecycleError {
                 "failed_precondition.lifecycle.wal_retention"
             }
             Self::CloseFailed { .. } => "failed_precondition.lifecycle.close",
+            Self::CloseTimeout { .. } => "deadline_exceeded.lifecycle.close",
             Self::TimelineRecoveryMismatch { .. } => "corruption.lifecycle.timeline",
             Self::WalTailRepairRejected { .. } => "failed_precondition.lifecycle.wal_tail_repair",
             Self::RecoveryVisibilityFailed { .. } => {
@@ -418,6 +423,16 @@ impl PartialEq for LifecycleError {
                 },
             ) => left_version == right_version && left_reason == right_reason,
             (
+                Self::CloseTimeout {
+                    phase: left_phase,
+                    reason: left_reason,
+                },
+                Self::CloseTimeout {
+                    phase: right_phase,
+                    reason: right_reason,
+                },
+            ) => left_phase == right_phase && left_reason == right_reason,
+            (
                 Self::LowerLayer {
                     layer: left_layer,
                     reason: left_reason,
@@ -437,6 +452,10 @@ impl PartialEq for LifecycleError {
 impl Eq for LifecycleError {}
 
 impl fmt::Display for LifecycleError {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "central lifecycle error display keeps variant wording in one registry"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidConfig { field, reason } => {
@@ -516,6 +535,9 @@ impl fmt::Display for LifecycleError {
                 write!(formatter, "WAL retention proof incomplete: {reason}")
             }
             Self::CloseFailed { reason } => write!(formatter, "close failed: {reason}"),
+            Self::CloseTimeout { phase, reason } => {
+                write!(formatter, "close timed out during {phase:?}: {reason}")
+            }
             Self::TimelineRecoveryMismatch { reason } => {
                 write!(formatter, "timeline recovery mismatch: {reason}")
             }

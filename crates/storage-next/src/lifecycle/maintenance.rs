@@ -987,9 +987,13 @@ impl LifecycleMaintenanceExecutor {
         let task = self.queue.remove(index);
         self.active = Some(task);
         self.stats.started = self.stats.started.saturating_add(1);
+        let restore_on_error = draining;
         if let Err(error) = fault.check(MaintenanceFaultPoint::AtTaskStart, Some(&task)) {
             self.stats.failed = self.stats.failed.saturating_add(1);
             self.active = None;
+            if restore_on_error {
+                self.queue.insert(index, task);
+            }
             return Err(error);
         }
         let outcome = match runner.run_task(&task) {
@@ -997,6 +1001,9 @@ impl LifecycleMaintenanceExecutor {
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
                 self.active = None;
+                if restore_on_error {
+                    self.queue.insert(index, task);
+                }
                 return Err(error);
             }
         };

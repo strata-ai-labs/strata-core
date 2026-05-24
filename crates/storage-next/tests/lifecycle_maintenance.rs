@@ -229,6 +229,29 @@ fn lifecycle_quarantine_integration() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_close_contract_covers_shutdown_categories() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_close_contract(b"close-shutdown-categories")
+            .expect("close contract");
+
+    assert!(outcome.close_requested_cases() > 0);
+    assert!(outcome.cache_close_completed_cases() > 0);
+    assert!(outcome.durable_close_completed_cases() > 0);
+    assert!(outcome.idempotent_close_cases() > 0);
+    assert!(outcome.retryable_timeout_cases() > 0);
+    assert!(outcome.drain_required_completed_cases() > 0);
+    assert!(outcome.cancelable_task_canceled_cases() > 0);
+    assert!(outcome.ordinary_task_not_started_after_close_cases() > 0);
+    assert!(outcome.commit_quiesce_acquired_cases() > 0);
+    assert!(outcome.commit_quiesce_blocked_cases() > 0);
+    assert!(outcome.wal_sync_failure_cases() > 0);
+    assert!(outcome.manifest_sync_failure_cases() > 0);
+    assert!(outcome.guard_release_observed_cases() > 0);
+    assert!(outcome.source_chain_preserved_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_purge_integration() {
     let outcome = strata_storage_next::testkit::check_lifecycle_quarantine_contract(b"purge-flow")
         .expect("quarantine contract");

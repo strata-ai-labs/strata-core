@@ -51,11 +51,12 @@ pub use integration_harness::{
 };
 pub use lifecycle::{
     check_lifecycle_bootstrap_contract, check_lifecycle_checkpoint_contract,
-    check_lifecycle_flush_contract, check_lifecycle_maintenance_contract,
-    check_lifecycle_quarantine_contract, check_lifecycle_recovery_contract,
-    check_lifecycle_retention_contract, check_lifecycle_scaffold_contract,
-    check_lifecycle_table_rewrite_contract, LifecycleBootstrapContractOutcome,
-    LifecycleCheckpointContractOutcome, LifecycleFlushContractOutcome,
+    check_lifecycle_close_contract, check_lifecycle_flush_contract,
+    check_lifecycle_maintenance_contract, check_lifecycle_quarantine_contract,
+    check_lifecycle_recovery_contract, check_lifecycle_retention_contract,
+    check_lifecycle_scaffold_contract, check_lifecycle_table_rewrite_contract,
+    LifecycleBootstrapContractOutcome, LifecycleCheckpointContractOutcome,
+    LifecycleCloseContractOutcome, LifecycleFlushContractOutcome,
     LifecycleMaintenanceContractOutcome, LifecycleQuarantineContractOutcome,
     LifecycleRecoveryContractOutcome, LifecycleRetentionContractOutcome, LifecycleScaffoldOutcome,
     LifecycleTableRewriteContractOutcome,

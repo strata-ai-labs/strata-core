@@ -507,6 +507,229 @@ fn cache_close_rejects_pending_drain_required_maintenance_before_transitioning()
 }
 
 #[test]
+fn cache_close_cancels_cancelable_pending_work() {
+    let branch = branch_id(0x51);
+    let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(
+            MaintenanceTaskRequest::new(
+                MaintenanceTaskKind::HealthCollection,
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskScope::Global,
+                MaintenanceTaskPolicy::cancel_before_close(),
+            )
+            .expect("cancelable health task"),
+        )
+        .expect("enqueue cancelable task");
+
+    let close = runtime.close().expect("cache close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(backend.other_calls(), 0);
+}
+
+#[test]
+fn cache_close_cancels_ordinary_pending_work_before_closed() {
+    let branch = branch_id(0x52);
+    let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("enqueue ordinary task");
+
+    let close = runtime.close().expect("cache close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.close_fact(), Some(LifecycleCloseFact::Complete));
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(
+        runtime.run_next_maintenance(&mut MaintenanceTestRunner),
+        Err(LifecycleError::InvalidLifecycleState {
+            reason: "operation is not admitted in current lifecycle state",
+        })
+    );
+    assert_eq!(
+        backend.other_calls(),
+        0,
+        "cache close must not start durable backend work while canceling maintenance"
+    );
+}
+
+#[test]
+fn cache_close_rejects_or_drains_drain_required_work_by_policy() {
+    let branch = branch_id(0x53);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(
+            MaintenanceTaskRequest::new(
+                MaintenanceTaskKind::HealthCollection,
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskScope::Global,
+                MaintenanceTaskPolicy::drain_before_close(),
+            )
+            .expect("drain-required task"),
+        )
+        .expect("enqueue");
+
+    let error = runtime.close().expect_err("drain-required task blocks");
+
+    assert_eq!(
+        error.code(),
+        "failed_precondition.lifecycle.maintenance_task"
+    );
+    assert_eq!(runtime.state(), LifecycleState::Open);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+}
+
+#[test]
+fn cache_close_does_not_start_ordinary_maintenance() {
+    let branch = branch_id(0x54);
+    let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("enqueue");
+
+    let close = runtime.close().expect("cache close");
+
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(
+        runtime.run_next_maintenance(&mut MaintenanceTestRunner),
+        Err(LifecycleError::InvalidLifecycleState {
+            reason: "operation is not admitted in current lifecycle state",
+        })
+    );
+    assert_eq!(backend.other_calls(), 0);
+}
+
+#[test]
+fn cache_close_does_not_call_wal_manifest_snapshot_table_or_quarantine_services() {
+    let branch = branch_id(0x55);
+    let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
+    let mut runtime = open_runtime(branch, &backend);
+
+    runtime.close().expect("cache close");
+
+    assert_eq!(backend.capability_calls(), 1);
+    assert_eq!(backend.other_calls(), 0);
+}
+
+#[test]
+fn cache_close_reports_no_durable_sync() {
+    let branch = branch_id(0x56);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    let close = runtime.close().expect("cache close");
+
+    assert!(!close.durable_synced());
+    assert!(close.guards_released());
+}
+
+#[test]
+fn cache_close_releases_volatile_guards() {
+    let branch = branch_id(0x57);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    let close = runtime.close().expect("cache close");
+
+    assert!(close.commits_quiesced());
+    assert!(close.guards_released());
+}
+
+#[test]
+fn cache_double_close_returns_idempotent_prior_facts() {
+    let branch = branch_id(0x58);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    runtime.close().expect("first close");
+
+    let second = runtime.close().expect("second close");
+
+    assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
+    assert_eq!(second.close_fact(), Some(LifecycleCloseFact::AlreadyClosed));
+    assert!(second.prior_final());
+}
+
+#[test]
+fn cache_commit_after_close_rejects_before_allocation() {
+    let branch = branch_id(0x59);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    runtime.close().expect("cache close");
+    let visible_before = runtime.visible_version();
+    let rows_before = runtime.branch_state().active_row_count();
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"after-close"),
+                b"value".to_vec(),
+                Timestamp::from_micros(3_100),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect_err("commit after close");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.state");
+    assert_eq!(runtime.visible_version(), visible_before);
+    assert_eq!(runtime.branch_state().active_row_count(), rows_before);
+}
+
+#[test]
+fn cache_read_after_close_rejects_as_lifecycle_state() {
+    let branch = branch_id(0x5a);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    runtime.close().expect("cache close");
+
+    let error = runtime.read_view().expect_err("read after close");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.state");
+}
+
+#[test]
+fn cache_open_commit_close_reopen_is_empty_and_no_durable_calls() {
+    let branch = branch_id(0x5b);
+    let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
+    let key = physical_key(branch, b"volatile-reopen");
+    let mut first = open_runtime(branch, &backend);
+    first
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                key.clone(),
+                b"value".to_vec(),
+                Timestamp::from_micros(3_200),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("cache commit");
+    first.close().expect("close first");
+
+    let second = open_runtime(branch, &backend);
+
+    assert_eq!(second.visible_version(), CommitVersion::ZERO);
+    assert!(second.branch_state().is_empty());
+    assert!(second
+        .read_view()
+        .expect("read view")
+        .latest(&key)
+        .expect("latest")
+        .is_none());
+    assert_eq!(backend.other_calls(), 0);
+}
+
+#[test]
 fn cache_close_without_commits_completes_and_preserves_diagnostic_facts() {
     let branch = branch_id(0x4d);
     let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));

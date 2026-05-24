@@ -302,6 +302,40 @@ fn lifecycle_durable_maintenance_stays_out_of_assembly_and_bootstrap() {
 }
 
 #[test]
+fn lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache() {
+    let root = common::crate_root();
+    let close_path = root.join("src/lifecycle/durable/close.rs");
+    let close = fs::read_to_string(&close_path).expect("read durable close source");
+    for (line_number, line) in close.lines().enumerate() {
+        assert!(
+            !contains_forbidden_durable_close_dependency(line),
+            "src/lifecycle/durable/close.rs:{} calls forbidden durable close dependency: {line}",
+            line_number + 1
+        );
+    }
+
+    let bootstrap_path = root.join("src/lifecycle/durable/bootstrap.rs");
+    let bootstrap = fs::read_to_string(&bootstrap_path).expect("read durable bootstrap source");
+    for (line_number, line) in bootstrap.lines().enumerate() {
+        assert!(
+            !contains_forbidden_bootstrap_close_dependency(line),
+            "src/lifecycle/durable/bootstrap.rs:{} calls forbidden close dependency: {line}",
+            line_number + 1
+        );
+    }
+
+    let cache_path = root.join("src/lifecycle/cache.rs");
+    let cache = fs::read_to_string(&cache_path).expect("read cache source");
+    for (line_number, line) in cache.lines().enumerate() {
+        assert!(
+            !contains_forbidden_cache_close_dependency(line),
+            "src/lifecycle/cache.rs:{} calls forbidden cache close dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_table_rewrite_source_uses_branch_runtime_boundaries() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/compaction.rs");
@@ -357,6 +391,7 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_recovery_runtime_fixtures();
     assert_maintenance_executor_fixtures();
     assert_durable_maintenance_fixtures();
+    assert_durable_close_fixtures();
     assert_table_rewrite_fixtures();
     assert_retention_fixtures();
     assert_quarantine_fixtures();
@@ -665,6 +700,30 @@ fn assert_durable_maintenance_fixtures() {
     ));
     assert!(contains_forbidden_bootstrap_maintenance_dependency(
         "self.compact_branch_tables(request)?;"
+    ));
+}
+
+fn assert_durable_close_fixtures() {
+    assert!(contains_forbidden_durable_close_dependency(
+        "WalService::open(backend, segment, policy, config)?;"
+    ));
+    assert!(contains_forbidden_durable_close_dependency(
+        "CommitReplayRuntime::new(config);"
+    ));
+    assert!(contains_forbidden_durable_close_dependency(
+        "complete_recovery(recovery)?;"
+    ));
+    assert!(contains_forbidden_bootstrap_close_dependency(
+        "self.services.wal_mut().close()?;"
+    ));
+    assert!(contains_forbidden_bootstrap_close_dependency(
+        "self.services.release_writer_guard();"
+    ));
+    assert!(contains_forbidden_cache_close_dependency(
+        "self.services.wal_mut().close()?;"
+    ));
+    assert!(contains_forbidden_cache_close_dependency(
+        "self.services.release_writer_guard();"
     ));
 }
 
@@ -1158,6 +1217,24 @@ fn contains_forbidden_durable_maintenance_dependency(line: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+fn contains_forbidden_durable_close_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "databasemanifestservice::new",
+        "walservice::open",
+        "tablemanifestservice::new",
+        "snapshotservice::new",
+        "tableobjectservice::new",
+        "checkpointservice::new",
+        "quarantineservice::new",
+        "commitreplayruntime",
+        "complete_recovery(",
+        "recover(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 fn contains_forbidden_bootstrap_maintenance_dependency(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     [
@@ -1171,6 +1248,38 @@ fn contains_forbidden_bootstrap_maintenance_dependency(line: &str) -> bool {
         "materialize_inherited_layer(",
         "persist_flush_watermark(",
         "truncate_wal(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_bootstrap_close_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "closeoutcome",
+        "closeoutcomeeffects",
+        "closeoutcomestatus",
+        "closephase",
+        "drain_for_close(",
+        "cancel_pending_for_close(",
+        "try_begin_quiesce(",
+        "wal_mut().close(",
+        "release_writer_guard(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_cache_close_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "wal_mut().close(",
+        "release_writer_guard(",
+        "databasemanifestservice",
+        "walservice",
+        "snapshotservice",
+        "tablemanifestservice",
+        "quarantineservice",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
