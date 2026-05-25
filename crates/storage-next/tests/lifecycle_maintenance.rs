@@ -239,8 +239,32 @@ fn lifecycle_table_retention_delegation_integration() {
     let outcome = outcome.expect("retention contract");
     assert!(outcome.table_retained_cases() > 0);
     assert!(outcome.table_quarantine_candidate_cases() > 0);
+    assert!(outcome.live_owned_cases() > 0);
+    assert!(outcome.live_inherited_cases() > 0);
+    assert!(outcome.live_shared_cases() > 0);
+    assert!(outcome.already_quarantined_cases() > 0);
+    assert!(outcome.stale_token_rejected_cases() > 0);
+    assert!(outcome.no_table_mutation_observed_cases() > 0);
     assert!(outcome.wal_delegated_cases() > 0);
     assert!(outcome.cache_deferred_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn generated_table_object_reachability_covers_ordering_and_safety_categories() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_retention_contract(b"table-reachability");
+
+    let outcome = outcome.expect("retention contract");
+    assert!(outcome.live_owned_cases() > 0);
+    assert!(outcome.live_inherited_cases() > 0);
+    assert!(outcome.live_shared_cases() > 0);
+    assert!(outcome.table_quarantine_candidate_cases() > 0);
+    assert!(outcome.table_proof_incomplete_cases() > 0);
+    assert!(outcome.unsafe_table_health_blocked_cases() > 0);
+    assert!(outcome.already_quarantined_cases() > 0);
+    assert!(outcome.stale_token_rejected_cases() > 0);
+    assert!(outcome.no_table_mutation_observed_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -251,6 +275,8 @@ fn lifecycle_retention_blocks_unsafe_recovery_integration() {
 
     let outcome = outcome.expect("retention contract");
     assert!(outcome.blocked_recovery_cases() > 0);
+    assert!(outcome.unsafe_table_health_blocked_cases() > 0);
+    assert!(outcome.table_proof_incomplete_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]

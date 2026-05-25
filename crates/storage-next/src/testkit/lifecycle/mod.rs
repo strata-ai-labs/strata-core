@@ -581,6 +581,7 @@ fn check_reclaim_facts(outcome: &mut LifecycleScaffoldOutcome) -> Result<(), Tes
         RetentionDecision::PruneCandidate,
         RetentionDecision::QuarantineCandidate,
         RetentionDecision::PurgeCandidate,
+        RetentionDecision::RepairCandidate,
         RetentionDecision::SkipUntilProof,
     ];
     let stages = [

@@ -14,7 +14,7 @@ use crate::format::{
     DatabaseManifest, FormatError, TableManifest,
 };
 use crate::layout::{LayoutError, ObjectLayout};
-use crate::object::ObjectName;
+use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::fmt;
 use strata_core_next::CommitVersion;
@@ -55,6 +55,11 @@ pub(crate) enum ManifestServiceError {
     Read {
         role: ManifestRole,
         object: ObjectName,
+        source: BackendError,
+    },
+    List {
+        role: ManifestRole,
+        prefix: ObjectPrefix,
         source: BackendError,
     },
     Decode {
@@ -102,6 +107,14 @@ impl fmt::Display for ManifestServiceError {
                 object,
                 source,
             } => write!(formatter, "failed to read {role} object {object}: {source}"),
+            Self::List {
+                role,
+                prefix,
+                source,
+            } => write!(
+                formatter,
+                "failed to list {role} objects under {prefix}: {source}"
+            ),
             Self::Decode {
                 role,
                 object,
@@ -153,7 +166,7 @@ impl std::error::Error for ManifestServiceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Layout { source, .. } => Some(source),
-            Self::Read { source, .. } => Some(source),
+            Self::Read { source, .. } | Self::List { source, .. } => Some(source),
             Self::Decode { source, .. } | Self::Encode { source, .. } => Some(source),
             Self::Publish { source, .. } => Some(source),
             Self::Missing { .. }
@@ -415,6 +428,37 @@ impl<'a> TableManifestService<'a> {
             .transpose()
     }
 
+    pub(crate) fn load_all_current(&self) -> ManifestServiceResult<Vec<TableManifest>> {
+        let prefix =
+            ObjectLayout::table_prefix().map_err(|source| ManifestServiceError::Layout {
+                role: ManifestRole::Table,
+                source,
+            })?;
+        let mut objects =
+            self.backend
+                .list_prefix(&prefix)
+                .map_err(|source| ManifestServiceError::List {
+                    role: ManifestRole::Table,
+                    prefix: prefix.clone(),
+                    source,
+                })?;
+        objects.sort();
+        objects
+            .into_iter()
+            .filter(is_branch_table_manifest_object)
+            .map(|object| {
+                let branch_id = branch_id_from_table_manifest_object(&object)?;
+                read_optional(self.backend, ManifestRole::Table, &object)?
+                    .map(|bytes| decode_branch_table_manifest(branch_id, &object, &bytes))
+                    .transpose()?
+                    .ok_or(ManifestServiceError::Missing {
+                        role: ManifestRole::Table,
+                        object,
+                    })
+            })
+            .collect()
+    }
+
     #[allow(
         dead_code,
         reason = "table-manifest recovery tests exercise required-load failures"
@@ -542,6 +586,33 @@ fn table_manifest_object(branch_id: &str) -> ManifestServiceResult<ObjectName> {
     ObjectLayout::branch_table_manifest(branch_id).map_err(|source| ManifestServiceError::Layout {
         role: ManifestRole::Table,
         source,
+    })
+}
+
+fn is_branch_table_manifest_object(object: &ObjectName) -> bool {
+    let mut parts = object.as_str().split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("tables"), Some(_), Some("manifest"), None)
+    )
+}
+
+fn branch_id_from_table_manifest_object(
+    object: &ObjectName,
+) -> ManifestServiceResult<strata_core_next::BranchId> {
+    let Some(branch) = object.as_str().split('/').nth(1) else {
+        return Err(ManifestServiceError::InvalidRecoveryFact {
+            role: ManifestRole::Table,
+            object: object.clone(),
+            field: "branch_id",
+        });
+    };
+    strata_core_next::BranchId::parse_str(branch).map_err(|_| {
+        ManifestServiceError::InvalidRecoveryFact {
+            role: ManifestRole::Table,
+            object: object.clone(),
+            field: "branch_id",
+        }
     })
 }
 

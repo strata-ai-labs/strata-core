@@ -70,8 +70,8 @@ pub(crate) use snapshot::{
     reason = "table object service is consumed by branch table integration added later"
 )]
 pub(crate) use table::{
-    TableObjectByteSource, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
-    TableObjectService, TableObjectServiceError, TableObjectWrite,
+    TableObjectByteSource, TableObjectFacts, TableObjectInventoryObject, TableObjectReadError,
+    TableObjectReaderService, TableObjectService, TableObjectServiceError, TableObjectWrite,
 };
 
 #[expect(

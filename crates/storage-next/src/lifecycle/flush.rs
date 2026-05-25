@@ -617,6 +617,8 @@ fn table_service_error(error: TableObjectServiceError) -> LifecycleError {
     }
     let reason = match &error {
         TableObjectServiceError::Layout { .. } => "table object layout failed",
+        TableObjectServiceError::List { .. } => "table object list failed",
+        TableObjectServiceError::Metadata { .. } => "table object metadata failed",
         TableObjectServiceError::Decode { .. } => "table object decode failed",
         TableObjectServiceError::Publish { source, .. } => table_publish_reason(source),
         TableObjectServiceError::InvalidPublishMetadata { .. } => {

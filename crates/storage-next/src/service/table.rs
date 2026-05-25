@@ -14,7 +14,7 @@ use crate::backend::{
 };
 use crate::format::{decode_immutable_table, FormatError, ImmutableTable, TableManifestTableRef};
 use crate::layout::{LayoutError, ObjectLayout};
-use crate::object::ObjectName;
+use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::{validate_publish_outcome, ObjectPublisher};
 use crate::table::{
     ImmutableTableReader, TableByteSource, TableIdentity, TableReaderConfig, TableRuntimeError,
@@ -30,6 +30,14 @@ pub(crate) enum TableObjectServiceError {
     Layout {
         source: LayoutError,
     },
+    List {
+        prefix: ObjectPrefix,
+        source: BackendError,
+    },
+    Metadata {
+        object: ObjectName,
+        source: BackendError,
+    },
     Decode {
         object: ObjectName,
         source: FormatError,
@@ -42,6 +50,12 @@ pub(crate) enum TableObjectServiceError {
         object: ObjectName,
         field: &'static str,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableObjectInventoryObject {
+    object: ObjectName,
+    byte_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +100,18 @@ impl fmt::Display for TableObjectServiceError {
             Self::Layout { source } => {
                 write!(formatter, "failed to build table object name: {source}")
             }
+            Self::List { prefix, source } => {
+                write!(
+                    formatter,
+                    "failed to list immutable table objects under {prefix}: {source}"
+                )
+            }
+            Self::Metadata { object, source } => {
+                write!(
+                    formatter,
+                    "failed to read immutable table object metadata {object}: {source}"
+                )
+            }
             Self::Decode { object, source } => {
                 write!(
                     formatter,
@@ -110,10 +136,25 @@ impl std::error::Error for TableObjectServiceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Layout { source } => Some(source),
+            Self::List { source, .. } | Self::Metadata { source, .. } => Some(source),
             Self::Decode { source, .. } => Some(source),
             Self::Publish { source, .. } => Some(source),
             Self::InvalidPublishMetadata { .. } => None,
         }
+    }
+}
+
+impl TableObjectInventoryObject {
+    fn new(object: ObjectName, byte_count: u64) -> Self {
+        Self { object, byte_count }
+    }
+
+    pub(crate) const fn object(&self) -> &ObjectName {
+        &self.object
+    }
+
+    pub(crate) const fn byte_count(&self) -> u64 {
+        self.byte_count
     }
 }
 
@@ -448,6 +489,36 @@ impl<'a> TableObjectService<'a> {
     ) -> TableObjectServiceResult<TableObjectFacts> {
         let object = table_object(branch_id, level, table_id)?;
         Ok(TableObjectFacts::from_runtime_facts(object, facts))
+    }
+
+    pub(crate) fn list_inventory(
+        &self,
+    ) -> TableObjectServiceResult<Vec<TableObjectInventoryObject>> {
+        let prefix = ObjectLayout::table_prefix()
+            .map_err(|source| TableObjectServiceError::Layout { source })?;
+        let mut objects =
+            self.backend
+                .list_prefix(&prefix)
+                .map_err(|source| TableObjectServiceError::List {
+                    prefix: prefix.clone(),
+                    source,
+                })?;
+        objects.sort();
+        objects
+            .into_iter()
+            .map(|object| {
+                let metadata = self.backend.object_metadata(&object).map_err(|source| {
+                    TableObjectServiceError::Metadata {
+                        object: object.clone(),
+                        source,
+                    }
+                })?;
+                Ok(TableObjectInventoryObject::new(
+                    object,
+                    metadata.size_bytes(),
+                ))
+            })
+            .collect()
     }
 }
 

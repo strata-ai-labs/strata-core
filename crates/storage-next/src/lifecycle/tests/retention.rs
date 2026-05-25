@@ -753,7 +753,7 @@ fn table_object_retention_with_complete_proof_defers_without_silent_success() {
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
     assert_eq!(
         maintenance.reason(),
-        Some("table object retention requires branch reachability")
+        Some("retention scope not supported by generic path")
     );
 }
 
@@ -1080,6 +1080,63 @@ fn global_retention_task_prunes_snapshots_through_durable_maintenance() {
     assert_eq!(maintenance.state_changes(), 1);
     assert_eq!(backend.delete_calls(), 1);
     assert_eq!(backend.snapshot_objects().len(), 1);
+}
+
+#[test]
+fn branch_retention_task_classifies_table_objects_through_durable_maintenance() {
+    let backend = CheckpointTestBackend::new();
+    let branch = durable_branch_id(0x9d);
+    let mut runtime = open_runtime(branch, &backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"retention-table-key", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate for flush");
+    let flush = runtime
+        .flush_frozen(&retention_flush_request(branch))
+        .expect("flush frozen rows");
+    let table_object = flush
+        .table_object()
+        .expect("flushed table object")
+        .to_string();
+
+    let request = MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Retention,
+        MaintenanceTaskPriority::Low,
+        MaintenanceTaskScope::Branch(branch),
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .expect("branch table retention request");
+    let enqueue = runtime
+        .enqueue_maintenance(request)
+        .expect("enqueue branch retention");
+    let maintenance = runtime
+        .run_next_retention_maintenance()
+        .expect("run branch retention")
+        .expect("retention");
+
+    assert_eq!(maintenance.task_id(), Some(enqueue.task_id()));
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(maintenance
+        .affected_object_names()
+        .iter()
+        .any(|object| object == &table_object));
+    assert_eq!(backend.delete_calls(), 0);
+}
+
+fn retention_flush_request(branch: BranchId) -> FlushFrozenRequest {
+    FlushFrozenRequest::new(
+        branch,
+        None,
+        FlushTableIdentitySeed::new(format!("retention-flush-{branch}")).expect("seed"),
+        FlushTableObjectId::new(format!("retention-object-{branch}")).expect("object"),
+    )
+    .expect("flush request")
 }
 
 #[test]

@@ -577,6 +577,7 @@ fn manifest_error(error: ManifestServiceError) -> LifecycleError {
         ManifestServiceError::CodecMismatch { .. } => "database manifest codec mismatch",
         ManifestServiceError::Decode { .. } => "database manifest decode failed",
         ManifestServiceError::Read { .. } => "database manifest read failed",
+        ManifestServiceError::List { .. } => "database manifest list failed",
         ManifestServiceError::Layout { .. } => "database manifest layout failed",
         ManifestServiceError::Encode { .. } => "database manifest encode failed",
         ManifestServiceError::InvalidPublishMetadata { .. } => {

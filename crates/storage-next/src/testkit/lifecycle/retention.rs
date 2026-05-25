@@ -5,22 +5,30 @@ use crate::backend::{
     Backend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata, BackendRange,
     BackendResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
-use crate::format::DatabaseManifest;
+use crate::branch::BranchLevel;
+use crate::format::{
+    DatabaseManifest, TableManifest, TableManifestInheritedLayer,
+    TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,
+    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef,
+};
 use crate::layout::ObjectLayout;
 use crate::lifecycle::{
     build_retention_proof, prune_snapshots_with_proof, retention_outcome_for_delegated_families,
-    table_quarantine_candidate, LifecycleRetentionOutcome, LifecycleRetentionProofStatus,
-    LifecycleRetentionRequest, LifecycleRetentionStatus, LifecycleSnapshotPruningRequest,
-    LifecycleSnapshotPruningStatus, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind,
-    RecoveryHealth, RetentionDecision,
+    table_object_retention_outcome, table_quarantine_candidate, LifecycleRetentionDecisionReason,
+    LifecycleRetentionOutcome, LifecycleRetentionProofStatus, LifecycleRetentionRequest,
+    LifecycleRetentionStatus, LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
+    LifecycleTableObjectInventoryEntry, LifecycleTableObjectProofEpochs,
+    LifecycleTableObjectRetentionRequest, RecoveryDegradationClass, RecoveryFault,
+    RecoveryFaultKind, RecoveryHealth, RetentionDecision,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::SnapshotService;
+use crate::table::TableIdentity;
 use crate::testkit::TestkitError;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
-use strata_core_next::CommitVersion;
+use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LifecycleRetentionContractOutcome {
@@ -32,6 +40,14 @@ pub struct LifecycleRetentionContractOutcome {
     snapshot_delete_failures: usize,
     table_retained: usize,
     table_quarantine_candidates: usize,
+    live_owned: usize,
+    live_inherited: usize,
+    live_shared: usize,
+    proof_incomplete: usize,
+    unsafe_health_blocked: usize,
+    already_quarantined: usize,
+    stale_token_rejected: usize,
+    no_mutation_observed: usize,
     delegated_families: usize,
     cache_unsupported: usize,
 }
@@ -43,6 +59,7 @@ pub fn check_lifecycle_retention_contract(
     check_proof_states(script, &mut outcome)?;
     check_snapshot_pruning(script, &mut outcome)?;
     check_table_decisions(script, &mut outcome)?;
+    check_table_reachability(script, &mut outcome)?;
     check_delegated_families(&mut outcome)?;
     check_cache_unsupported(script, &mut outcome)?;
     Ok(outcome)
@@ -79,6 +96,38 @@ impl LifecycleRetentionContractOutcome {
 
     pub const fn table_quarantine_candidate_cases(&self) -> usize {
         self.table_quarantine_candidates
+    }
+
+    pub const fn live_owned_cases(&self) -> usize {
+        self.live_owned
+    }
+
+    pub const fn live_inherited_cases(&self) -> usize {
+        self.live_inherited
+    }
+
+    pub const fn live_shared_cases(&self) -> usize {
+        self.live_shared
+    }
+
+    pub const fn table_proof_incomplete_cases(&self) -> usize {
+        self.proof_incomplete
+    }
+
+    pub const fn unsafe_table_health_blocked_cases(&self) -> usize {
+        self.unsafe_health_blocked
+    }
+
+    pub const fn already_quarantined_cases(&self) -> usize {
+        self.already_quarantined
+    }
+
+    pub const fn stale_token_rejected_cases(&self) -> usize {
+        self.stale_token_rejected
+    }
+
+    pub const fn no_table_mutation_observed_cases(&self) -> usize {
+        self.no_mutation_observed
     }
 
     pub const fn delegated_family_cases(&self) -> usize {
@@ -221,6 +270,247 @@ fn check_table_decisions(
     Ok(())
 }
 
+fn check_table_reachability(
+    script: &[u8],
+    outcome: &mut LifecycleRetentionContractOutcome,
+) -> Result<(), TestkitError> {
+    let fixture = table_reachability_fixture(script)?;
+    let request = fixture.request();
+    let retention = table_object_retention_outcome(&request).map_err(retention_error)?;
+    ensure(
+        retention.status() == LifecycleRetentionStatus::Completed,
+        "table reachability proof did not complete",
+    )?;
+    record_table_reachability_counts(outcome, &retention);
+    assert_table_reachability_token_rejects_stale_context(&fixture, &retention, outcome)?;
+    assert_table_reachability_incomplete_proof_defers(&fixture, outcome)?;
+    assert_table_reachability_unsafe_health_blocks(&fixture, outcome)?;
+    Ok(())
+}
+
+fn record_table_reachability_counts(
+    outcome: &mut LifecycleRetentionContractOutcome,
+    retention: &crate::lifecycle::LifecycleTableObjectRetentionOutcome,
+) {
+    outcome.live_owned += retention
+        .decisions()
+        .iter()
+        .filter(|decision| decision.reason() == LifecycleRetentionDecisionReason::ReachableTable)
+        .count();
+    outcome.live_inherited += retention
+        .decisions()
+        .iter()
+        .filter(|decision| {
+            decision.reason() == LifecycleRetentionDecisionReason::ReachableInheritedTable
+        })
+        .count();
+    outcome.live_shared += retention
+        .decisions()
+        .iter()
+        .filter(|decision| {
+            decision.reason() == LifecycleRetentionDecisionReason::ReachableSharedTable
+        })
+        .count();
+    outcome.table_quarantine_candidates += retention
+        .decisions()
+        .iter()
+        .filter(|decision| decision.decision() == RetentionDecision::QuarantineCandidate)
+        .count();
+    outcome.already_quarantined += retention
+        .decisions()
+        .iter()
+        .filter(|decision| {
+            decision.reason() == LifecycleRetentionDecisionReason::TableAlreadyQuarantined
+        })
+        .count();
+    outcome.no_mutation_observed += retention
+        .decisions()
+        .iter()
+        .filter(|decision| {
+            !matches!(
+                decision.decision(),
+                RetentionDecision::PruneCandidate | RetentionDecision::PurgeCandidate
+            )
+        })
+        .count();
+}
+
+fn assert_table_reachability_token_rejects_stale_context(
+    fixture: &TableReachabilityFixture,
+    retention: &crate::lifecycle::LifecycleTableObjectRetentionOutcome,
+    outcome: &mut LifecycleRetentionContractOutcome,
+) -> Result<(), TestkitError> {
+    ensure(
+        retention
+            .quarantine_tokens()
+            .iter()
+            .any(|token| token.object() == &fixture.orphan),
+        "orphan table object did not receive a proof token",
+    )?;
+    let token = retention
+        .quarantine_tokens()
+        .first()
+        .expect("proof token")
+        .clone();
+    ensure(
+        token.validates_for(&fixture.orphan, retention.proof_context()),
+        "fresh table-object proof token was rejected",
+    )?;
+    let stale_request = LifecycleTableObjectRetentionRequest::new(
+        fixture.branch,
+        RecoveryHealth::Healthy,
+        LifecycleTableObjectProofEpochs::new(2, 1, 1, 1).map_err(retention_error)?,
+        Vec::new(),
+        vec![table_inventory(fixture.orphan.clone(), 100)?],
+        Vec::new(),
+    )
+    .map_err(retention_error)?;
+    let stale = table_object_retention_outcome(&stale_request).map_err(retention_error)?;
+    ensure(
+        !token.validates_for(&fixture.orphan, stale.proof_context()),
+        "stale table-object proof token was accepted",
+    )?;
+    outcome.stale_token_rejected += 1;
+    Ok(())
+}
+
+fn assert_table_reachability_incomplete_proof_defers(
+    fixture: &TableReachabilityFixture,
+    outcome: &mut LifecycleRetentionContractOutcome,
+) -> Result<(), TestkitError> {
+    let incomplete = LifecycleTableObjectRetentionRequest::new(
+        fixture.branch,
+        RecoveryHealth::Healthy,
+        table_epochs()?,
+        vec![],
+        vec![table_inventory(fixture.orphan.clone(), 100)?],
+        vec![],
+    )
+    .map_err(retention_error)?
+    .with_manifest_complete(false);
+    let incomplete = table_object_retention_outcome(&incomplete).map_err(retention_error)?;
+    ensure(
+        incomplete.status() == LifecycleRetentionStatus::DeferredIncompleteProof,
+        "incomplete table reachability proof did not defer",
+    )?;
+    outcome.proof_incomplete += 1;
+    Ok(())
+}
+
+fn assert_table_reachability_unsafe_health_blocks(
+    fixture: &TableReachabilityFixture,
+    outcome: &mut LifecycleRetentionContractOutcome,
+) -> Result<(), TestkitError> {
+    let health = RecoveryHealth::degraded(
+        RecoveryDegradationClass::DataLoss,
+        vec![
+            RecoveryFault::new(RecoveryFaultKind::MissingTableObject, "missing")
+                .map_err(retention_error)?,
+        ],
+    )
+    .map_err(retention_error)?;
+    let unsafe_request = LifecycleTableObjectRetentionRequest::new(
+        fixture.branch,
+        health,
+        table_epochs()?,
+        vec![table_manifest(fixture.branch, vec![], vec![])?],
+        vec![table_inventory(fixture.orphan.clone(), 100)?],
+        vec![],
+    )
+    .map_err(retention_error)?;
+    let unsafe_outcome =
+        table_object_retention_outcome(&unsafe_request).map_err(retention_error)?;
+    ensure(
+        unsafe_outcome.status() == LifecycleRetentionStatus::BlockedByRecoveryHealth,
+        "unsafe recovery did not block table-object candidates",
+    )?;
+    outcome.unsafe_health_blocked += 1;
+    Ok(())
+}
+
+struct TableReachabilityFixture {
+    branch: BranchId,
+    orphan: ObjectName,
+    request: LifecycleTableObjectRetentionRequest,
+}
+
+impl TableReachabilityFixture {
+    fn request(&self) -> LifecycleTableObjectRetentionRequest {
+        self.request.clone()
+    }
+}
+
+fn table_reachability_fixture(script: &[u8]) -> Result<TableReachabilityFixture, TestkitError> {
+    let branch = script_branch(script, 5);
+    let source = script_branch(script, 6);
+    let other = script_branch(script, 7);
+    let owned = table_object(branch, "owned0001")?;
+    let inherited = table_object(source, "source0001")?;
+    let shared = table_object(branch, "shared0001")?;
+    let orphan = table_object(branch, "orphan0001")?;
+    let quarantined = table_object(branch, "quar0001")?;
+    let manifests = table_reachability_manifests(branch, source, other)?;
+    let inventory = vec![
+        table_inventory(owned, 100)?,
+        table_inventory(inherited, 100)?,
+        table_inventory(shared, 100)?,
+        table_inventory(orphan.clone(), 100)?,
+        table_inventory(quarantined.clone(), 100)?,
+    ];
+    let request = LifecycleTableObjectRetentionRequest::new(
+        branch,
+        RecoveryHealth::Healthy,
+        table_epochs()?,
+        manifests,
+        inventory,
+        vec![quarantined],
+    )
+    .map_err(retention_error)?;
+    Ok(TableReachabilityFixture {
+        branch,
+        orphan,
+        request,
+    })
+}
+
+fn table_reachability_manifests(
+    branch: BranchId,
+    source: BranchId,
+    other: BranchId,
+) -> Result<Vec<TableManifest>, TestkitError> {
+    Ok(vec![
+        table_manifest(
+            branch,
+            vec![
+                table_ref(branch, 0, "owned0001", TableManifestTableProvenance::Flush)?,
+                table_ref(branch, 1, "shared0001", TableManifestTableProvenance::Flush)?,
+            ],
+            vec![table_inherited_layer(
+                source,
+                vec![table_ref(
+                    source,
+                    0,
+                    "source0001",
+                    TableManifestTableProvenance::Flush,
+                )?],
+            )?],
+        )?,
+        table_manifest(
+            other,
+            vec![],
+            vec![table_inherited_layer(
+                branch,
+                vec![table_ref(
+                    branch,
+                    0,
+                    "shared0001",
+                    TableManifestTableProvenance::Recovered,
+                )?],
+            )?],
+        )?,
+    ])
+}
+
 fn check_delegated_families(
     outcome: &mut LifecycleRetentionContractOutcome,
 ) -> Result<(), TestkitError> {
@@ -270,6 +560,79 @@ fn manifest(snapshot_id: u64, snapshot_watermark: u64) -> DatabaseManifest {
             Some(CommitVersion::new(snapshot_watermark)),
         )
         .expect("recovery facts")
+}
+
+fn table_manifest(
+    branch_id: BranchId,
+    tables: Vec<TableManifestTableRef>,
+    inherited_layers: Vec<TableManifestInheritedLayer>,
+) -> Result<TableManifest, TestkitError> {
+    let levels = if tables.is_empty() {
+        Vec::new()
+    } else {
+        vec![TableManifestLevel::new(BranchLevel::ZERO, tables).map_err(retention_error)?]
+    };
+    TableManifest::new(branch_id, None, 1, levels, inherited_layers, Vec::new())
+        .map_err(retention_error)
+}
+
+fn table_inherited_layer(
+    source_branch_id: BranchId,
+    tables: Vec<TableManifestTableRef>,
+) -> Result<TableManifestInheritedLayer, TestkitError> {
+    TableManifestInheritedLayer::new(
+        0,
+        source_branch_id,
+        None,
+        CommitVersion::new(7),
+        TableManifestInheritedLayerStatus::Active,
+        vec![TableManifestLevel::new(BranchLevel::ZERO, tables).map_err(retention_error)?],
+    )
+    .map_err(retention_error)
+}
+
+fn table_ref(
+    object_branch: BranchId,
+    order: u32,
+    object_id: &str,
+    provenance: TableManifestTableProvenance,
+) -> Result<TableManifestTableRef, TestkitError> {
+    let commit = CommitVersion::new(u64::from(order) + 1);
+    TableManifestTableRef::new(
+        TableIdentity::new(format!("table-{object_id}")).map_err(retention_error)?,
+        table_object(object_branch, object_id)?,
+        order,
+        TableManifestTableFacts::new(100, 1, 1, commit, commit, None, None)
+            .map_err(retention_error)?,
+        TableManifestTableBounds::new(
+            format!("k{order:04}").into_bytes(),
+            format!("k{order:04}z").into_bytes(),
+            format!("i{order:04}").into_bytes(),
+            format!("i{order:04}z").into_bytes(),
+        )
+        .map_err(retention_error)?,
+        provenance,
+    )
+    .map_err(retention_error)
+}
+
+fn table_inventory(
+    object: ObjectName,
+    byte_count: u64,
+) -> Result<LifecycleTableObjectInventoryEntry, TestkitError> {
+    LifecycleTableObjectInventoryEntry::new(object, byte_count).map_err(retention_error)
+}
+
+fn table_object(branch_id: BranchId, object_id: &str) -> Result<ObjectName, TestkitError> {
+    ObjectLayout::table_object(&branch_id.to_string(), 0, object_id).map_err(retention_error)
+}
+
+fn table_epochs() -> Result<LifecycleTableObjectProofEpochs, TestkitError> {
+    LifecycleTableObjectProofEpochs::new(1, 1, 1, 1).map_err(retention_error)
+}
+
+fn script_branch(script: &[u8], offset: usize) -> BranchId {
+    BranchId::from_bytes([script_byte(script, offset).max(1); 16])
 }
 
 fn retention_error(error: impl std::error::Error) -> TestkitError {

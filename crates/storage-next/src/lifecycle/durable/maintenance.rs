@@ -26,12 +26,16 @@ use crate::lifecycle::retention::{
 use crate::lifecycle::table_manifest::{
     publish_table_manifest_for_branch, table_manifest_debt_outcome,
 };
+use crate::lifecycle::table_reachability::{
+    table_object_retention_outcome, LifecycleTableObjectInventoryEntry,
+    LifecycleTableObjectProofEpochs, LifecycleTableObjectRetentionRequest,
+};
 use crate::lifecycle::{
     purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
     quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
     repair_quarantine as repair_lifecycle_quarantine, repair_request_from_maintenance_task,
     telemetry_health_debt, FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId,
-    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
+    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
     LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
     LifecyclePurgeOutcome, LifecyclePurgeRequest, LifecycleQuarantineOutcome,
     LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest,
@@ -175,6 +179,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<LifecycleRetentionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let health = self.current_recovery_health.clone();
+        if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
+            let table_request = table_object_retention_request(&self.services, branch_id, &health)?;
+            return Ok(table_object_retention_outcome(&table_request)?
+                .retention()
+                .clone());
+        }
         if recovery_health_prevents_listing(request, &health) {
             let proof = retention_proof_from_assembly(request, &self.services, &health);
             return retention_outcome_for_scope(request, proof, &[]);
@@ -427,7 +437,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
-        let mut runner = DurableRetentionMaintenanceRunner { services, health };
+        let branch_id = self.branch.branch_id();
+        let mut runner = DurableRetentionMaintenanceRunner {
+            services,
+            branch_id,
+            health,
+        };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
                 task.kind(),
@@ -679,12 +694,19 @@ impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_> {
 
 struct DurableRetentionMaintenanceRunner<'a, 'b> {
     services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
+    branch_id: strata_core_next::BranchId,
     health: crate::lifecycle::RecoveryHealth,
 }
 
 impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = retention_request_from_maintenance_task(task)?;
+        if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
+            let table_retention =
+                table_object_retention_request(self.services, branch_id, &self.health)
+                    .and_then(|request| table_object_retention_outcome(&request))?;
+            return Ok(table_retention.retention().maintenance_outcome());
+        }
         if recovery_health_prevents_listing(&request, &self.health) {
             let proof = retention_proof_from_assembly(&request, self.services, &self.health);
             return match request.scope() {
@@ -731,9 +753,13 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
                 let snapshot_outcome =
                     prune_snapshots_with_proof(self.services.snapshot(), &pruning)?;
                 let retention_outcome = retention_outcome_for_delegated_families(proof)?;
+                let table_retention =
+                    table_object_retention_request(self.services, self.branch_id, &self.health)
+                        .and_then(|request| table_object_retention_outcome(&request))?;
                 Ok(global_retention_maintenance_outcome(
                     &snapshot_outcome,
                     &retention_outcome,
+                    table_retention.retention(),
                 ))
             }
             // `retention_request_from_maintenance_task` only emits
@@ -880,6 +906,7 @@ const fn retention_scope_is_telemetry_only(scope: LifecycleRetentionScope) -> bo
 fn global_retention_maintenance_outcome(
     snapshot_outcome: &LifecycleSnapshotPruningOutcome,
     retention_outcome: &LifecycleRetentionOutcome,
+    table_retention_outcome: &LifecycleRetentionOutcome,
 ) -> MaintenanceOutcome {
     let status = if matches!(
         snapshot_outcome.status(),
@@ -887,6 +914,11 @@ fn global_retention_maintenance_outcome(
             | LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth
     ) || matches!(
         retention_outcome.status(),
+        LifecycleRetentionStatus::DeferredIncompleteProof
+            | LifecycleRetentionStatus::DeferredUnsupportedScope
+            | LifecycleRetentionStatus::BlockedByRecoveryHealth
+    ) || matches!(
+        table_retention_outcome.status(),
         LifecycleRetentionStatus::DeferredIncompleteProof
             | LifecycleRetentionStatus::DeferredUnsupportedScope
             | LifecycleRetentionStatus::BlockedByRecoveryHealth
@@ -918,10 +950,17 @@ fn global_retention_maintenance_outcome(
             .iter()
             .filter_map(|decision| decision.object().map(ToString::to_string)),
     );
+    names.extend(
+        table_retention_outcome
+            .decisions()
+            .iter()
+            .filter_map(|decision| decision.object().map(ToString::to_string)),
+    );
     let recovery_health = snapshot_outcome
         .recovery_health()
         .cloned()
-        .or_else(|| retention_outcome.recovery_health().cloned());
+        .or_else(|| retention_outcome.recovery_health().cloned())
+        .or_else(|| table_retention_outcome.recovery_health().cloned());
     let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Retention, status)
         .with_affected_object_names(names)
         .with_state_changes(snapshot_outcome.deleted().len())
@@ -943,6 +982,139 @@ fn global_retention_maintenance_outcome(
     outcome
 }
 
+fn table_object_retention_request(
+    services: &crate::lifecycle::LifecycleDurableLocalServices<'_>,
+    branch_id: strata_core_next::BranchId,
+    health: &RecoveryHealth,
+) -> LifecycleResult<LifecycleTableObjectRetentionRequest> {
+    let manifests = services
+        .table_manifest()
+        .load_all_current()
+        .map_err(manifest_error)?;
+    let inventory = services
+        .table_object()
+        .list_inventory()
+        .map_err(table_object_service_error)?
+        .into_iter()
+        .map(|entry| {
+            LifecycleTableObjectInventoryEntry::new(entry.object().clone(), entry.byte_count())
+        })
+        .collect::<LifecycleResult<Vec<_>>>()?;
+    // Inventory is global (`tables/` prefix); to avoid re-classifying another
+    // branch's already-quarantined object as a fresh candidate, load the
+    // quarantine inventory for every branch that owns a known table manifest,
+    // plus the branch under retention so a branch with no manifest yet but a
+    // populated quarantine is still consulted.
+    //
+    // BranchId is not `Ord`, so dedupe via a byte-keyed BTreeSet of the
+    // 16-byte representations rather than the type itself.
+    let mut seen_branches: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
+    let mut quarantine_branches: Vec<strata_core_next::BranchId> = Vec::new();
+    let record_branch = |branch: strata_core_next::BranchId,
+                         seen: &mut std::collections::BTreeSet<[u8; 16]>,
+                         ordered: &mut Vec<strata_core_next::BranchId>| {
+        if seen.insert(*branch.as_bytes()) {
+            ordered.push(branch);
+        }
+    };
+    record_branch(branch_id, &mut seen_branches, &mut quarantine_branches);
+    for manifest in &manifests {
+        record_branch(
+            manifest.branch_id(),
+            &mut seen_branches,
+            &mut quarantine_branches,
+        );
+    }
+    let database_id = *services.assembly_facts().database_id();
+    let codec_id = services.assembly_facts().codec_id();
+    let mut quarantined_objects: Vec<crate::object::ObjectName> = Vec::new();
+    let mut quarantine_inventory_bytes: u64 = 0;
+    for branch in quarantine_branches {
+        let load = services
+            .quarantine()
+            .load_inventory(branch, database_id, codec_id)
+            .map_err(durable_quarantine_service_error)?;
+        quarantine_inventory_bytes = quarantine_inventory_bytes.saturating_add(load.byte_count());
+        quarantined_objects.extend(
+            load.inventory()
+                .entries()
+                .iter()
+                .map(|entry| entry.source_object().clone()),
+        );
+    }
+    let epochs =
+        table_object_proof_epochs(&manifests, &inventory, quarantine_inventory_bytes, health)?;
+    LifecycleTableObjectRetentionRequest::new(
+        branch_id,
+        health.clone(),
+        epochs,
+        manifests,
+        inventory,
+        quarantined_objects,
+    )
+}
+
+fn table_object_proof_epochs(
+    manifests: &[crate::format::TableManifest],
+    inventory: &[LifecycleTableObjectInventoryEntry],
+    quarantine_inventory_bytes: u64,
+    health: &RecoveryHealth,
+) -> LifecycleResult<LifecycleTableObjectProofEpochs> {
+    let manifest_epoch = manifests
+        .iter()
+        .map(crate::format::TableManifest::manifest_sequence)
+        .max()
+        .unwrap_or(1);
+    // Backend listings do not expose a monotonic version, so the inventory
+    // and quarantine "epochs" are SHA-256 derived content fingerprints
+    // truncated to u64. Collisions are statistically negligible, so two
+    // distinct inventories never alias the same epoch. The fingerprint on
+    // the proof context is the authoritative freshness anchor; this field
+    // gives the quarantine maintenance dispatch a cheap pre-check that
+    // does not require hashing the full request.
+    let table_inventory_epoch = inventory_content_epoch(inventory);
+    let quarantine_inventory_epoch = quarantine_content_epoch(quarantine_inventory_bytes);
+    let recovery_health_epoch = u64::try_from(health.fault_count())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    LifecycleTableObjectProofEpochs::new(
+        manifest_epoch.max(1),
+        table_inventory_epoch.max(1),
+        quarantine_inventory_epoch.max(1),
+        recovery_health_epoch.max(1),
+    )
+}
+
+fn inventory_content_epoch(inventory: &[LifecycleTableObjectInventoryEntry]) -> u64 {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"inventory");
+    hasher.update((inventory.len() as u64).to_be_bytes());
+    let mut sorted: Vec<&LifecycleTableObjectInventoryEntry> = inventory.iter().collect();
+    sorted.sort_by(|left, right| left.object().cmp(right.object()));
+    for entry in sorted {
+        hasher.update((entry.object().as_str().len() as u64).to_be_bytes());
+        hasher.update(entry.object().as_str().as_bytes());
+        hasher.update(entry.byte_count().to_be_bytes());
+    }
+    truncate_hash_to_u64(hasher.finalize().as_slice())
+}
+
+fn quarantine_content_epoch(byte_count: u64) -> u64 {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"quarantine");
+    hasher.update(byte_count.to_be_bytes());
+    truncate_hash_to_u64(hasher.finalize().as_slice())
+}
+
+fn truncate_hash_to_u64(digest: &[u8]) -> u64 {
+    let mut buffer = [0_u8; 8];
+    let take = digest.len().min(8);
+    buffer[..take].copy_from_slice(&digest[..take]);
+    u64::from_be_bytes(buffer)
+}
+
 fn manifest_error(error: crate::service::ManifestServiceError) -> LifecycleError {
     LifecycleError::lower_layer_with(
         crate::lifecycle::LifecycleLowerLayer::Service,
@@ -955,6 +1127,14 @@ fn snapshot_error(error: crate::service::SnapshotServiceError) -> LifecycleError
     LifecycleError::lower_layer_with(
         crate::lifecycle::LifecycleLowerLayer::Service,
         "snapshot service failed",
+        error,
+    )
+}
+
+fn table_object_service_error(error: crate::service::TableObjectServiceError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        LifecycleLowerLayer::Service,
+        "table object service failed",
         error,
     )
 }

@@ -270,6 +270,12 @@ impl LifecycleQuarantineProof {
                 false,
                 Some("quarantine_candidate"),
             ),
+            RetentionDecision::RepairCandidate => Self::new(
+                LifecycleQuarantineProofStatus::Incomplete,
+                recovery_health,
+                false,
+                Some("repair_candidate"),
+            ),
         }
     }
 

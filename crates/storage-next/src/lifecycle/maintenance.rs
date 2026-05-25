@@ -1119,8 +1119,11 @@ fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) ->
             MaintenanceTaskKind::Materialization,
             MaintenanceTaskScope::InheritedLayer { .. }
         ) | (
-            MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention,
+            MaintenanceTaskKind::SnapshotPruning,
             MaintenanceTaskScope::Retention
+        ) | (
+            MaintenanceTaskKind::Retention,
+            MaintenanceTaskScope::Retention | MaintenanceTaskScope::Branch(_)
         ) | (
             MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
             MaintenanceTaskScope::Quarantine

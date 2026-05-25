@@ -86,6 +86,7 @@ pub(crate) enum RetentionDecision {
     PruneCandidate,
     QuarantineCandidate,
     PurgeCandidate,
+    RepairCandidate,
     SkipUntilProof,
 }
 

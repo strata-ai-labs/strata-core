@@ -638,6 +638,65 @@ fn lifecycle_retention_source_delegates_durable_mutation() {
 }
 
 #[test]
+fn lifecycle_table_reachability_source_is_classification_only() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_raw_io() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_backend_delete() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_quarantine_mutation() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_purge() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_engine_or_product_crates() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_stratahub() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_import_primitive_modules() {
+    assert_table_reachability_source_clean();
+}
+
+#[test]
+fn table_reachability_does_not_use_product_retention_report() {
+    assert_table_reachability_source_clean();
+}
+
+fn assert_table_reachability_source_clean() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/table_reachability.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle table reachability source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_table_reachability_dependency(line),
+            "src/lifecycle/table_reachability.rs:{} calls forbidden table reachability dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn lifecycle_quarantine_source_uses_quarantine_service_boundary() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/quarantine.rs");
@@ -666,6 +725,7 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_durable_close_fixtures();
     assert_table_rewrite_fixtures();
     assert_retention_fixtures();
+    assert_table_reachability_fixtures();
     assert_quarantine_fixtures();
     assert_public_surface_fixtures();
 }
@@ -945,6 +1005,51 @@ fn assert_retention_fixtures() {
     ));
     assert!(!contains_forbidden_retention_dependency(
         "snapshots.prune_snapshots(live, retain)?;"
+    ));
+}
+
+fn assert_table_reachability_fixtures() {
+    assert!(contains_forbidden_table_reachability_dependency(
+        "let bytes = std::fs::read(path)?;"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "let path = std::path::Path::new(\"db\");"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "let value = std::env::var(\"HOME\")?;"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "backend.delete_object(name)?;"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "purge_quarantine(branch)?;"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "quarantine_object(request)?;"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "retention_report::from_storage(decisions);"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "strata_engine::storage::retention();"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "stratahub::storage::retention();"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "primitive_registry.retention_policy();"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "let graph = ReachabilityGraph::new();"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "let vector = vec![object];"
+    ));
+    assert!(contains_forbidden_table_reachability_dependency(
+        "serde_json::to_vec(&decision)?;"
+    ));
+    assert!(!contains_forbidden_table_reachability_dependency(
+        "LifecycleRetentionDecisionRecord::table(object, decision, reason);"
     ));
 }
 
@@ -1514,6 +1619,27 @@ fn contains_forbidden_retention_dependency(line: &str) -> bool {
         "strata_intelligence",
         "primitive",
         "retention_report",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_table_reachability_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::fs",
+        "std::path::path",
+        "std::env",
+        "delete_object",
+        "purge_quarantine",
+        "quarantine_object",
+        "retention_report",
+        "strata_engine",
+        "stratahub",
+        "primitive",
+        "graph",
+        "vector",
+        "json",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

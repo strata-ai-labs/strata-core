@@ -17,6 +17,7 @@ mod recovery;
 mod retention;
 mod state;
 mod table_manifest_recovery;
+mod table_object_retention;
 
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [
     "Database::open",
@@ -553,6 +554,10 @@ fn retention_and_quarantine_facts_are_constructible() {
     assert_eq!(
         RetentionDecision::PurgeCandidate,
         RetentionDecision::PurgeCandidate
+    );
+    assert_eq!(
+        RetentionDecision::RepairCandidate,
+        RetentionDecision::RepairCandidate
     );
     assert_eq!(
         RetentionDecision::SkipUntilProof,

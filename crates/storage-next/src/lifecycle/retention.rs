@@ -77,7 +77,12 @@ pub(crate) enum LifecycleRetentionDecisionReason {
     NewestSnapshotWindow,
     SnapshotPruneCandidate,
     ReachableTable,
+    ReachableInheritedTable,
+    ReachableMaterializedTable,
+    ReachableSharedTable,
     TableRequiresQuarantine,
+    TableAlreadyQuarantined,
+    MalformedTableObject,
     ProofIncomplete,
     UnsafeRecoveryHealth,
     DelegatedToWalTruncation,
@@ -424,7 +429,7 @@ impl LifecycleRetentionOutcome {
                 outcome.with_reason("retention proof is incomplete")
             }
             LifecycleRetentionStatus::DeferredUnsupportedScope => {
-                outcome.with_reason("table object retention requires branch reachability")
+                outcome.with_reason("retention scope not supported by generic path")
             }
             LifecycleRetentionStatus::BlockedByRecoveryHealth => {
                 outcome.with_reason("recovery health blocks retention")
@@ -773,9 +778,20 @@ pub(crate) fn retention_request_from_maintenance_task(
         MaintenanceTaskKind::SnapshotPruning => Ok(LifecycleRetentionRequest::snapshot_pruning(
             options.retain_newest_snapshots(),
         )),
-        MaintenanceTaskKind::Retention => Ok(LifecycleRetentionRequest::global(
-            options.retain_newest_snapshots(),
-        )),
+        MaintenanceTaskKind::Retention => match task.scope() {
+            crate::lifecycle::MaintenanceTaskScope::Branch(branch_id) => {
+                Ok(LifecycleRetentionRequest::new(
+                    LifecycleRetentionScope::TableObjects { branch_id },
+                    options.retain_newest_snapshots(),
+                ))
+            }
+            crate::lifecycle::MaintenanceTaskScope::Retention => Ok(
+                LifecycleRetentionRequest::global(options.retain_newest_snapshots()),
+            ),
+            _ => Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "retention task scope is invalid",
+            }),
+        },
         _ => Err(LifecycleError::MaintenanceTaskFailed {
             reason: "retention request requires retention task",
         }),
@@ -930,7 +946,8 @@ const fn decision_rank(decision: RetentionDecision) -> u8 {
         RetentionDecision::PruneCandidate => 1,
         RetentionDecision::QuarantineCandidate => 2,
         RetentionDecision::PurgeCandidate => 3,
-        RetentionDecision::SkipUntilProof => 4,
+        RetentionDecision::RepairCandidate => 4,
+        RetentionDecision::SkipUntilProof => 5,
     }
 }
 

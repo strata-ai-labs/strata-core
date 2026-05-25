@@ -2602,3 +2602,144 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 cargo fmt --package strata-storage-next --check
 git diff --check
 ```
+
+## L8S Table-Object Reachability And Retention
+
+### Scope
+
+- Added a lifecycle table-object reachability proof surface that consumes
+  trusted table manifests, table-object inventory, quarantine inventory, and
+  recovery health.
+- The slice only classifies storage objects. It does not delete table objects,
+  move them to quarantine, rewrite quarantine inventory, update the database
+  manifest, checkpoint, or truncate WAL.
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/table_reachability.rs`
+- `crates/storage-next/src/lifecycle/tests/table_object_retention.rs`
+- `crates/storage-next/src/lifecycle/tests/table_object_retention/plan.rs`
+- `crates/storage-next/src/lifecycle/retention.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+
+### Preserved As Storage Vocabulary
+
+- Manifest-referenced table objects are retained.
+- Inherited-layer table objects are retained even when they are not owned by
+  the child branch.
+- Shared table objects remain retained while any trusted manifest still
+  references them.
+- Prefix-listed table objects are not live unless a trusted manifest references
+  them.
+- Orphan table objects become quarantine candidates only when manifest,
+  table-inventory, quarantine-inventory, and recovery-health facts are complete
+  and safe.
+- Already-quarantined table objects are delegated to quarantine/purge handling
+  instead of being re-queued.
+
+### Raw Health And Fact Vocabulary
+
+- `LifecycleTableObjectProofEpochs` records freshness for manifest,
+  table-inventory, quarantine-inventory, and recovery-health facts.
+- `LifecycleTableObjectProofToken` binds a quarantine candidate to the current
+  branch, proof epochs, and object-fact fingerprint.
+- `LifecycleTableObjectRetentionOutcome` wraps retention decisions and exposes
+  candidate tokens for the quarantine boundary.
+- `LifecycleRetentionDecisionReason` now distinguishes inherited,
+  materialized, shared, already-quarantined, and malformed table-object cases.
+
+### Intentional Changes
+
+- The old `LifecycleRetentionScope::TableObjects` generic retention path
+  remains an explicit unsupported/deferred scope; the new table-object path
+  requires the dedicated reachability request so callers cannot accidentally
+  infer reachability from an incomplete generic proof.
+- Table-manifest objects under the table namespace and non-table object families
+  are ignored by table-object retention.
+- Policy-downgrade, data-loss, and failed recovery health block table-object
+  quarantine candidates; unrelated telemetry degradation is allowed unless the
+  caller disables it.
+
+### Retired From V1 L8S
+
+- Product retention reports and branch-name attribution.
+- Runtime-only reference registries as durable truth.
+- Direct backend delete/quarantine/purge calls from reachability code.
+- Row-version pruning.
+
+### Tests Added
+
+- `manifest_referenced_table_object_is_retained`
+- `shared_table_object_is_retained_until_all_manifest_refs_drop`
+- `inherited_layer_table_object_is_retained`
+- `materialization_replacement_table_object_is_retained`
+- `orphaned_table_object_becomes_quarantine_candidate_with_fresh_token`
+- `stale_quarantine_token_rejects_changed_inventory_epoch`
+- `proof_token_rejects_manifest_epoch_change`
+- `proof_token_rejects_quarantine_inventory_epoch_change`
+- `proof_token_rejects_recovery_health_epoch_change`
+- `proof_token_rejects_object_fingerprint_change`
+- `already_quarantined_table_object_is_not_requeued`
+- `incomplete_manifest_proof_retains_all_inventory_until_retry`
+- `missing_manifest_referenced_inventory_keeps_proof_incomplete`
+- `no_table_objects_returns_completed_empty_graph`
+- `policy_downgrade_blocks_table_object_candidate`
+- `data_loss_recovery_health_blocks_table_object_retention`
+- `failed_health_blocks_table_object_candidate`
+- `telemetry_degraded_recovery_health_can_still_classify_candidates`
+- `telemetry_degraded_recovery_health_blocks_when_policy_disallows_it`
+- `malformed_table_prefix_object_is_quarantine_candidate`
+- `table_manifest_and_non_table_inventory_objects_are_ignored`
+- `shuffled_inventory_produces_deterministic_decision_order`
+- `duplicate_inventory_entry_is_rejected`
+- `zero_epoch_is_rejected`
+- `quarantine_candidate_can_build_quarantine_proof`
+- `runtime_only_ref_does_not_make_object_live`
+- `table_object_health_debt_is_empty_for_complete_healthy_outcome`
+- `table_object_retention/plan.rs` closeout matrix:
+  inventory ordering and malformed-object classification; manifest-owned,
+  inherited, materialized, and shared reachability; unsupported table-object
+  scope behavior; cache-mode rejection; unsafe-health barriers; proof-token
+  epoch/fingerprint binding; no-delete/no-quarantine/no-purge/no-checkpoint/no
+  WAL side-effect guarantees; and old-regression shapes for runtime-only refs,
+  corrupt/missing manifest health, and shared-object manifest drops.
+- `check_lifecycle_retention_contract` table-reachability counters:
+  live-owned, live-inherited, live-shared, orphan-candidate, incomplete proof,
+  unsafe-health block, already-quarantined, stale-token rejection, and no
+  mutation observed.
+- `lifecycle_table_reachability_source_is_classification_only`
+- Dedicated table-reachability source guards for raw IO, backend delete,
+  quarantine mutation, purge, product/engine crates, StrataHub vocabulary,
+  primitive modules, and product retention reports.
+- `generated_table_object_reachability_covers_ordering_and_safety_categories`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Prefix object treated as live | `crates/storage-next/src/lifecycle/table_reachability.rs` | Classify inventory objects as `Retain` without manifest refs | `runtime_only_ref_does_not_make_object_live` |
+| Direct delete from reachability | `crates/storage-next/src/lifecycle/table_reachability.rs` | Call backend delete for orphan candidates | `lifecycle_table_reachability_source_is_classification_only` |
+| Inherited refs ignored | `crates/storage-next/src/lifecycle/table_reachability.rs` | Skip inherited-layer manifest tables | `inherited_layer_table_object_is_retained` |
+| Shared refs ignored | `crates/storage-next/src/lifecycle/table_reachability.rs` | Replace duplicate live refs instead of marking shared | `shared_table_object_is_retained_until_all_manifest_refs_drop` |
+| Data-loss health allowed | `crates/storage-next/src/lifecycle/table_reachability.rs` | Treat data-loss health as safe | `data_loss_recovery_health_blocks_table_object_retention` |
+| Manifest epoch ignored | `crates/storage-next/src/lifecycle/table_reachability.rs` | Omit manifest epoch from proof token validation | `proof_token_rejects_manifest_epoch_change` |
+| Inventory epoch ignored | `crates/storage-next/src/lifecycle/table_reachability.rs` | Omit table-inventory epoch from proof token validation | `stale_quarantine_token_rejects_changed_inventory_epoch` |
+| Health epoch ignored | `crates/storage-next/src/lifecycle/table_reachability.rs` | Omit recovery-health epoch from proof token validation | `proof_token_rejects_recovery_health_epoch_change` |
+| Object facts ignored | `crates/storage-next/src/lifecycle/table_reachability.rs` | Omit inventory byte count from proof fingerprint | `proof_token_rejects_object_fingerprint_change` |
+| Decision order unstable | `crates/storage-next/src/lifecycle/table_reachability.rs` | Preserve caller inventory order | `shuffled_inventory_produces_deterministic_decision_order` |
+
+### Verification
+
+Commands run for L8S (all passed):
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo test -p strata-storage-next --locked --lib retention
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::retention
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::table_object_retention
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```

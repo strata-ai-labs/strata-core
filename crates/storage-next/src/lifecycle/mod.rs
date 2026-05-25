@@ -26,6 +26,7 @@ mod result;
 mod retention;
 mod state;
 mod table_manifest;
+mod table_reachability;
 
 #[allow(
     unused_imports,
@@ -190,6 +191,16 @@ pub(crate) use table_manifest::{
     recover_table_manifest_for_branch, stage_table_manifest_for_branch,
     table_manifest_debt_outcome, LifecycleDurableTableCatalog, LifecycleDurableTableCatalogEntry,
     LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
+};
+#[allow(
+    unused_imports,
+    reason = "table-object reachability exports define the local retention proof surface"
+)]
+pub(crate) use table_reachability::{
+    table_object_retention_health_debt, table_object_retention_outcome,
+    LifecycleTableObjectInventoryEntry, LifecycleTableObjectProofContext,
+    LifecycleTableObjectProofEpochs, LifecycleTableObjectProofToken,
+    LifecycleTableObjectRetentionOutcome, LifecycleTableObjectRetentionRequest,
 };
 
 #[cfg(test)]
