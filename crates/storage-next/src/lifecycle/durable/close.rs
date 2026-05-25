@@ -205,9 +205,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ///
     /// V1 deliberately does **not** persist `LifecycleDurableLocalRuntime`'s
     /// in-memory `current_recovery_health` into the database manifest. The
-    /// durable manifest format is frozen at M3 (see project CLAUDE.md) and
-    /// carries only the recovery facts required to reconstruct visibility
-    /// on next open: `database_id`, `codec_id`, `active_wal_segment`,
+    /// durable manifest format is frozen (gated by golden vectors under
+    /// `testdata/goldens/storage-format-v1/`) and carries only the
+    /// recovery facts required to reconstruct visibility on next open:
+    /// `database_id`, `codec_id`, `active_wal_segment`,
     /// `snapshot_watermark`, `snapshot_id`, `flushed_through_commit_id`.
     /// All session-observed degradation that this hook reacts to —
     /// quarantine inventory mismatches, partial publication windows,
