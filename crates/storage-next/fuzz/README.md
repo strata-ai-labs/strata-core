@@ -19,6 +19,7 @@ cargo +nightly fuzz run format_snapshot_envelope
 cargo +nightly fuzz run format_storage_row
 cargo +nightly fuzz run format_table_artifact
 cargo +nightly fuzz run format_table_block
+cargo +nightly fuzz run format_table_manifest
 cargo +nightly fuzz run table_runtime_reader
 cargo +nightly fuzz run table_runtime_cursor
 cargo +nightly fuzz run table_runtime_compaction

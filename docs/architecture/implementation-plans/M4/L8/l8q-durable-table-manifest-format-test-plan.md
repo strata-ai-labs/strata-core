@@ -119,7 +119,7 @@ If direct format tests approach 1,000 lines, split them under
 Required tests:
 
 1. `table_manifest_accepts_empty_branch_graph`
-2. `table_manifest_rejects_empty_branch_id`
+2. `table_manifest_accepts_zero_branch_id_as_opaque_atom`
 3. `table_manifest_rejects_zero_manifest_sequence_if_reserved`
 4. `table_manifest_rejects_invalid_branch_generation`
 5. `table_manifest_rejects_duplicate_level`
@@ -137,7 +137,9 @@ Assertions:
 
 1. validation happens before encode;
 2. errors are typed by field;
-3. no invalid manifest can be encoded through public constructors.
+3. no invalid manifest can be encoded through public constructors;
+4. branch ids are treated as opaque `BranchId` atoms; all-zero is not a
+   format-level empty sentinel.
 
 ### 2. Object Name Validation
 
@@ -181,7 +183,7 @@ Assertions:
 
 Required tests:
 
-1. `table_manifest_empty_branch_matches_golden_vector`
+1. `table_manifest_empty_matches_golden_vector`
 2. `table_manifest_owned_levels_matches_golden_vector`
 3. `table_manifest_inherited_layers_matches_golden_vector`
 4. `table_manifest_materialization_provenance_matches_golden_vector`
@@ -226,7 +228,7 @@ Required tests:
 4. `table_manifest_rejects_l1_plus_out_of_order_ranges`
 5. `table_manifest_allows_l0_overlapping_ranges`
 6. `table_manifest_allows_distinct_versions_of_same_logical_key_when_ranges_are_valid`
-7. `table_manifest_rejects_level_order_without_level_zero_gap_if_policy_requires`
+7. `table_manifest_allows_sparse_owned_levels_until_branch_policy`
 
 Assertions:
 
@@ -405,13 +407,17 @@ implementation.
 Mandatory commands before L8Q closeout:
 
 ```bash
-cargo fmt --package strata-storage-next --check
 cargo test -p strata-storage-next --locked --lib table_manifest
-cargo test -p strata-storage-next --locked --lib format
+cargo test -p strata-storage-next --locked --lib format::
+cargo test -p strata-storage-next --locked --test format_golden
+cargo test -p strata-storage-next --locked --test table_format_source_guard
 cargo test -p strata-storage-next --locked --test lifecycle_source_guard
-cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout
-cargo +nightly fuzz run format_table_manifest
+cargo test -p strata-storage-next --features testkit --locked --lib format_fuzz
+cargo test -p strata-storage-next --locked --test testkit_boundary
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bin format_table_manifest
+cargo +nightly fuzz run format_table_manifest -- -runs=1
+rustfmt --check crates/storage-next/src/format/mod.rs crates/storage-next/src/format/fuzzing.rs crates/storage-next/src/format/tests.rs crates/storage-next/src/format/table_manifest.rs crates/storage-next/src/format/table_manifest/tests.rs crates/storage-next/src/format/table_manifest/tests/*.rs crates/storage-next/src/testkit/format_fuzz.rs crates/storage-next/tests/format_golden.rs crates/storage-next/tests/table_format_source_guard.rs crates/storage-next/fuzz/fuzz_targets/format_table_manifest.rs
 git diff --check
 ```
 

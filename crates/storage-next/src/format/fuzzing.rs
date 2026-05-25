@@ -1,5 +1,6 @@
 use super::{
-    key, manifest, quarantine, segment_metadata, snapshot, storage_row, table, wal, watermark,
+    key, manifest, quarantine, segment_metadata, snapshot, storage_row, table, table_manifest, wal,
+    watermark,
 };
 
 pub(crate) fn decode_key(bytes: &[u8]) -> bool {
@@ -37,6 +38,16 @@ pub(crate) fn decode_table_artifact(bytes: &[u8]) -> bool {
 
 pub(crate) fn decode_table_block(bytes: &[u8]) -> bool {
     table::decode_table_block_frame(bytes).is_ok_and(|(_frame, consumed)| consumed == bytes.len())
+}
+
+pub(crate) fn decode_table_manifest(bytes: &[u8]) -> bool {
+    let Ok(manifest) = table_manifest::decode_table_manifest(bytes) else {
+        return false;
+    };
+    let Ok(encoded) = table_manifest::encode_table_manifest(&manifest) else {
+        return false;
+    };
+    table_manifest::decode_table_manifest(&encoded).is_ok_and(|decoded| decoded == manifest)
 }
 
 pub(crate) fn decode_wal_commit_payload(bytes: &[u8]) -> bool {

@@ -25,6 +25,11 @@ fn format_golden_harness_has_storage_format_directory() {
         "snapshot-watermark-present.hex",
         "storage-row-put.hex",
         "storage-row-tombstone.hex",
+        "table-manifest-empty.hex",
+        "table-manifest-owned-levels.hex",
+        "table-manifest-inherited-layers.hex",
+        "table-manifest-materialization-provenance.hex",
+        "table-manifest-extension-section.hex",
         "immutable-table-one-block.hex",
         "immutable-table-two-block.hex",
         "table-data-block-one-put-uncompressed-frame.hex",
@@ -86,6 +91,31 @@ fn format_fuzz_corpus_matches_golden_vectors() {
             "format_table_artifact",
             "two-block",
         ),
+        (
+            "table-manifest-empty.hex",
+            "format_table_manifest",
+            "valid-empty",
+        ),
+        (
+            "table-manifest-owned-levels.hex",
+            "format_table_manifest",
+            "valid-owned-levels",
+        ),
+        (
+            "table-manifest-inherited-layers.hex",
+            "format_table_manifest",
+            "valid-inherited-layer",
+        ),
+        (
+            "table-manifest-materialization-provenance.hex",
+            "format_table_manifest",
+            "valid-materialization-provenance",
+        ),
+        (
+            "table-manifest-extension-section.hex",
+            "format_table_manifest",
+            "valid-unknown-optional-extension",
+        ),
     ];
 
     let goldens = common::storage_format_goldens_dir();
@@ -96,6 +126,29 @@ fn format_fuzz_corpus_matches_golden_vectors() {
         let seed = fs::read(corpus.join(corpus_dir).join(corpus_name)).unwrap();
 
         assert_eq!(seed, golden, "fuzz corpus seed drifted from {golden_name}");
+    }
+}
+
+#[test]
+fn format_table_manifest_fuzz_corpus_has_required_semantic_seeds() {
+    let corpus = common::crate_root().join("fuzz/corpus/format_table_manifest");
+    let seeds = [
+        "valid-empty",
+        "valid-owned-levels",
+        "valid-inherited-layer",
+        "valid-materialization-provenance",
+        "valid-unknown-optional-extension",
+        "bad-checksum",
+        "future-version",
+        "truncated-table-entry",
+    ];
+
+    for seed in seeds {
+        let path = corpus.join(seed);
+        let bytes = fs::read(&path).unwrap_or_else(|err| {
+            panic!("missing or unreadable table-manifest corpus seed {seed}: {err}")
+        });
+        assert!(!bytes.is_empty(), "empty table-manifest corpus seed {seed}");
     }
 }
 

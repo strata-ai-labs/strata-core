@@ -61,6 +61,7 @@ fn table_format_source_does_not_import_engine_crates() {
     let root = common::crate_root();
     let mut files = vec![root.join("Cargo.toml")];
     files.extend(rust_files(&root.join("src/format/table")));
+    files.push(root.join("src/format/table_manifest.rs"));
 
     for file in files {
         let text = fs::read_to_string(&file).expect("read table format source");
@@ -82,6 +83,114 @@ fn table_format_source_does_not_import_engine_crates() {
     }
 }
 
+#[test]
+fn table_manifest_format_source_stays_below_service_and_lifecycle_layers() {
+    assert_table_manifest_source_excludes(&[
+        "std::fs",
+        "std::path",
+        "std::env",
+        "OpenOptions",
+        "File::",
+        "crate::service",
+        "crate::lifecycle",
+        "crate::layout",
+        "strata_engine",
+        "stratahub",
+        "graph",
+        "vector",
+        "json",
+        "merge",
+        "cherry",
+        "revert",
+    ]);
+}
+
+#[test]
+fn table_manifest_format_does_not_import_raw_io() {
+    assert_table_manifest_source_excludes(&[
+        "std::fs",
+        "std::path",
+        "std::env",
+        "OpenOptions",
+        "File::",
+    ]);
+}
+
+#[test]
+fn table_manifest_format_does_not_import_backend_services() {
+    assert_table_manifest_source_excludes(&["crate::backend", "crate::service", "crate::layout"]);
+}
+
+#[test]
+fn table_manifest_format_does_not_import_lifecycle_execution() {
+    assert_table_manifest_source_excludes(&["crate::lifecycle"]);
+}
+
+#[test]
+fn table_manifest_format_does_not_import_engine_or_product_crates() {
+    assert_table_manifest_source_excludes(&[
+        "strata_engine",
+        "strata-engine",
+        "crate::engine",
+        "primitive",
+        "product",
+    ]);
+}
+
+#[test]
+fn table_manifest_format_does_not_import_stratahub() {
+    assert_table_manifest_source_excludes(&["stratahub", "strata_hub"]);
+}
+
+#[test]
+fn table_manifest_format_does_not_import_primitive_modules() {
+    assert_table_manifest_source_excludes(&["primitive", "crate::primitive"]);
+}
+
+#[test]
+fn table_manifest_format_does_not_use_product_workflow_words() {
+    assert_table_manifest_source_excludes(&[
+        "graph", "vector", "json", "merge", "cherry", "revert",
+    ]);
+}
+
+#[test]
+fn lower_layers_do_not_import_lifecycle_table_manifest_policy() {
+    let root = common::crate_root();
+    let mut files = Vec::new();
+    files.extend(rust_files(&root.join("src/format")));
+    files.extend(rust_files(&root.join("src/table")));
+    files.extend(rust_files(&root.join("src/branch")));
+
+    for file in files {
+        let text = fs::read_to_string(&file).expect("read lower-layer source");
+        let compact = text.split_whitespace().collect::<String>();
+        for forbidden in [
+            "crate::lifecycle",
+            "LifecycleTableManifest",
+            "table_manifest_policy",
+        ] {
+            assert!(
+                !compact.contains(forbidden),
+                "{} imports lifecycle table-manifest policy via {forbidden:?}",
+                file.strip_prefix(&root).unwrap_or(&file).display()
+            );
+        }
+    }
+}
+
+#[test]
+fn table_manifest_fuzz_target_is_registered() {
+    let root = common::crate_root();
+    let manifest = fs::read_to_string(root.join("fuzz/Cargo.toml")).expect("read fuzz manifest");
+    let target = fs::read_to_string(root.join("fuzz/fuzz_targets/format_table_manifest.rs"))
+        .expect("read table manifest fuzz target");
+
+    assert!(manifest.contains("name = \"format_table_manifest\""));
+    assert!(manifest.contains("fuzz_targets/format_table_manifest.rs"));
+    assert!(target.contains("FormatDecoder::TableManifest"));
+}
+
 fn table_format_surface_files(root: &Path) -> Vec<PathBuf> {
     let mut files = vec![
         root.join("src/format/fuzzing.rs"),
@@ -90,10 +199,38 @@ fn table_format_surface_files(root: &Path) -> Vec<PathBuf> {
         root.join("tests/table_properties.rs"),
         root.join("fuzz/fuzz_targets/format_table_artifact.rs"),
         root.join("fuzz/fuzz_targets/format_table_block.rs"),
+        root.join("fuzz/fuzz_targets/format_table_manifest.rs"),
+        root.join("src/format/table_manifest.rs"),
     ];
     files.extend(rust_files(&root.join("src/format/table")));
     files.sort();
     files
+}
+
+fn assert_table_manifest_source_excludes(forbidden: &[&str]) {
+    let root = common::crate_root();
+    let file = root.join("src/format/table_manifest.rs");
+    let text = fs::read_to_string(&file).expect("read table manifest format source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        let compact = line.split_whitespace().collect::<String>();
+        for needle in forbidden {
+            let line_to_scan = if needle
+                .bytes()
+                .any(|byte| byte.is_ascii_uppercase() || matches!(byte, b'_' | b'-'))
+            {
+                compact.clone()
+            } else {
+                compact.to_ascii_lowercase()
+            };
+            assert!(
+                !line_to_scan.contains(needle),
+                "{}:{} imports forbidden table-manifest dependency {needle:?}: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
 }
 
 fn allowed_table_format_line(line: &str) -> bool {

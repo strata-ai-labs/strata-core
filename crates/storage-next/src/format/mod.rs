@@ -17,6 +17,7 @@ mod segment_metadata;
 mod snapshot;
 mod storage_row;
 mod table;
+mod table_manifest;
 mod wal;
 mod watermark;
 
@@ -38,6 +39,16 @@ pub(crate) use table::{
     decode_immutable_table, encode_immutable_table, encode_immutable_table_with_block_compressions,
     ImmutableTable, TableCompression, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES,
     MAX_TABLE_DATA_BLOCKS, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS, MAX_TABLE_ROW_BYTES,
+};
+#[expect(
+    unused_imports,
+    reason = "table manifest codec is consumed by durable reachability wiring added later"
+)]
+pub(crate) use table_manifest::{
+    decode_table_manifest, encode_table_manifest, TableManifest, TableManifestExtensionSection,
+    TableManifestInheritedLayer, TableManifestInheritedLayerStatus, TableManifestLevel,
+    TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
+    TableManifestTableRef,
 };
 #[expect(
     unused_imports,

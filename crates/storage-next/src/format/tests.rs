@@ -12,6 +12,12 @@ use super::{
         SnapshotContainer, SnapshotHeader, SnapshotSection,
     },
     storage_row::{decode_storage_row, encode_storage_row},
+    table_manifest::{
+        decode_table_manifest, encode_table_manifest, TableManifest, TableManifestExtensionSection,
+        TableManifestInheritedLayer, TableManifestInheritedLayerStatus, TableManifestLevel,
+        TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
+        TableManifestTableRef,
+    },
     wal::{
         decode_wal_commit_payload, decode_wal_record, decode_wal_record_envelope,
         decode_wal_segment_header, encode_wal_commit_payload, encode_wal_record,
@@ -38,6 +44,17 @@ const QUARANTINE_INVENTORY_EMPTY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/quarantine-inventory-empty.hex");
 const QUARANTINE_INVENTORY_MULTI_ENTRY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/quarantine-inventory-multi-entry.hex");
+const TABLE_MANIFEST_EMPTY: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/table-manifest-empty.hex");
+const TABLE_MANIFEST_OWNED_LEVELS: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/table-manifest-owned-levels.hex");
+const TABLE_MANIFEST_INHERITED_LAYERS: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/table-manifest-inherited-layers.hex");
+const TABLE_MANIFEST_MATERIALIZATION_PROVENANCE: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/table-manifest-materialization-provenance.hex"
+);
+const TABLE_MANIFEST_EXTENSION_SECTION: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/table-manifest-extension-section.hex");
 const SNAPSHOT_WATERMARK_EMPTY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/snapshot-watermark-empty.hex");
 const SNAPSHOT_WATERMARK_PRESENT: &str =
@@ -168,6 +185,74 @@ fn quarantine_inventory_multi_entry_matches_golden_vector() {
         golden
     );
     assert_eq!(decode_quarantine_inventory(&golden), Ok(inventory));
+}
+
+#[test]
+fn table_manifest_empty_matches_golden_vector() {
+    let manifest = TableManifest::new(
+        BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
+        None,
+        1,
+        vec![],
+        vec![],
+        vec![],
+    )
+    .expect("table manifest");
+    let golden = parse_hex(TABLE_MANIFEST_EMPTY);
+
+    assert_eq!(
+        encode_table_manifest(&manifest).expect("encode table manifest"),
+        golden
+    );
+    assert_eq!(decode_table_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn table_manifest_owned_levels_matches_golden_vector() {
+    let manifest = table_manifest_owned_levels();
+    let golden = parse_hex(TABLE_MANIFEST_OWNED_LEVELS);
+
+    assert_eq!(
+        encode_table_manifest(&manifest).expect("encode table manifest"),
+        golden
+    );
+    assert_eq!(decode_table_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn table_manifest_inherited_layers_matches_golden_vector() {
+    let manifest = table_manifest_inherited_layers();
+    let golden = parse_hex(TABLE_MANIFEST_INHERITED_LAYERS);
+
+    assert_eq!(
+        encode_table_manifest(&manifest).expect("encode table manifest"),
+        golden
+    );
+    assert_eq!(decode_table_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn table_manifest_materialization_provenance_matches_golden_vector() {
+    let manifest = table_manifest_materialization_provenance();
+    let golden = parse_hex(TABLE_MANIFEST_MATERIALIZATION_PROVENANCE);
+
+    assert_eq!(
+        encode_table_manifest(&manifest).expect("encode table manifest"),
+        golden
+    );
+    assert_eq!(decode_table_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn table_manifest_extension_section_matches_golden_vector() {
+    let manifest = table_manifest_extension_section();
+    let golden = parse_hex(TABLE_MANIFEST_EXTENSION_SECTION);
+
+    assert_eq!(
+        encode_table_manifest(&manifest).expect("encode table manifest"),
+        golden
+    );
+    assert_eq!(decode_table_manifest(&golden), Ok(manifest));
 }
 
 #[test]
@@ -391,6 +476,213 @@ fn snapshot_container_single_section_matches_golden_vector() {
         golden
     );
     assert_eq!(decode_snapshot_container(&golden), Ok(container));
+}
+
+fn table_manifest_owned_levels() -> TableManifest {
+    let branch = BranchId::from_bytes([0x11; BranchId::BYTE_LEN]);
+    TableManifest::new(
+        branch,
+        Some(2),
+        5,
+        vec![
+            TableManifestLevel::new(
+                crate::branch::BranchLevel::ZERO,
+                vec![
+                    table_manifest_ref(
+                        branch,
+                        0,
+                        "newer",
+                        0,
+                        b"k2",
+                        b"k3",
+                        TableManifestTableProvenance::Flush,
+                    ),
+                    table_manifest_ref(
+                        branch,
+                        0,
+                        "older",
+                        1,
+                        b"k0",
+                        b"k1",
+                        TableManifestTableProvenance::Flush,
+                    ),
+                ],
+            )
+            .expect("l0"),
+            TableManifestLevel::new(
+                crate::branch::BranchLevel::new(1),
+                vec![
+                    table_manifest_ref(
+                        branch,
+                        1,
+                        "l1a",
+                        0,
+                        b"a",
+                        b"b",
+                        TableManifestTableProvenance::Flush,
+                    ),
+                    table_manifest_ref(
+                        branch,
+                        1,
+                        "l1b",
+                        1,
+                        b"m",
+                        b"n",
+                        TableManifestTableProvenance::Flush,
+                    ),
+                ],
+            )
+            .expect("l1"),
+        ],
+        vec![],
+        vec![],
+    )
+    .expect("table manifest")
+}
+
+fn table_manifest_inherited_layers() -> TableManifest {
+    let branch = BranchId::from_bytes([0x11; BranchId::BYTE_LEN]);
+    let first_source = BranchId::from_bytes([0x22; BranchId::BYTE_LEN]);
+    let second_source = BranchId::from_bytes([0x33; BranchId::BYTE_LEN]);
+    let first = TableManifestInheritedLayer::new(
+        0,
+        first_source,
+        Some(1),
+        CommitVersion::new(10),
+        TableManifestInheritedLayerStatus::Active,
+        vec![
+            TableManifestLevel::new(
+                crate::branch::BranchLevel::ZERO,
+                vec![table_manifest_ref(
+                    first_source,
+                    0,
+                    "ancestor-l0",
+                    0,
+                    b"a",
+                    b"b",
+                    TableManifestTableProvenance::Flush,
+                )],
+            )
+            .expect("ancestor l0"),
+            TableManifestLevel::new(
+                crate::branch::BranchLevel::new(1),
+                vec![table_manifest_ref(
+                    first_source,
+                    1,
+                    "ancestor-l1",
+                    0,
+                    b"m",
+                    b"n",
+                    TableManifestTableProvenance::Flush,
+                )],
+            )
+            .expect("ancestor l1"),
+        ],
+    )
+    .expect("first inherited layer");
+    let second = TableManifestInheritedLayer::new(
+        1,
+        second_source,
+        Some(2),
+        CommitVersion::new(20),
+        TableManifestInheritedLayerStatus::Materializing,
+        vec![TableManifestLevel::new(
+            crate::branch::BranchLevel::ZERO,
+            vec![table_manifest_ref(
+                second_source,
+                0,
+                "layer-1",
+                0,
+                b"a",
+                b"b",
+                TableManifestTableProvenance::Flush,
+            )],
+        )
+        .expect("second l0")],
+    )
+    .expect("second inherited layer");
+    TableManifest::new(branch, Some(3), 7, vec![], vec![first, second], vec![])
+        .expect("table manifest")
+}
+
+fn table_manifest_materialization_provenance() -> TableManifest {
+    let branch = BranchId::from_bytes([0x11; BranchId::BYTE_LEN]);
+    let source = BranchId::from_bytes([0x44; BranchId::BYTE_LEN]);
+    let provenance =
+        TableManifestTableProvenance::materialization_replacement(source, CommitVersion::new(55))
+            .expect("provenance");
+    TableManifest::new(
+        branch,
+        None,
+        1,
+        vec![TableManifestLevel::new(
+            crate::branch::BranchLevel::ZERO,
+            vec![table_manifest_ref(
+                branch,
+                0,
+                "replacement",
+                0,
+                b"a",
+                b"b",
+                provenance,
+            )],
+        )
+        .expect("l0")],
+        vec![],
+        vec![],
+    )
+    .expect("table manifest")
+}
+
+fn table_manifest_extension_section() -> TableManifest {
+    TableManifest::new(
+        BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
+        None,
+        1,
+        vec![],
+        vec![],
+        vec![
+            TableManifestExtensionSection::optional("audit.fact", true, b"abc".to_vec())
+                .expect("extension"),
+        ],
+    )
+    .expect("table manifest")
+}
+
+fn table_manifest_ref(
+    branch: BranchId,
+    level: u8,
+    identity: &str,
+    order: u32,
+    physical_first: &[u8],
+    physical_last: &[u8],
+    provenance: TableManifestTableProvenance,
+) -> TableManifestTableRef {
+    let object = format!("tables/{branch}/l{level:04}/{identity}");
+    TableManifestTableRef::new(
+        crate::table::TableIdentity::new(identity).expect("identity"),
+        ObjectName::new(object).expect("object"),
+        order,
+        TableManifestTableFacts::new(
+            128,
+            4,
+            1,
+            CommitVersion::new(1),
+            CommitVersion::new(4),
+            Some(Timestamp::from_micros(10)),
+            Some(Timestamp::from_micros(40)),
+        )
+        .expect("facts"),
+        TableManifestTableBounds::new(
+            physical_first.to_vec(),
+            physical_last.to_vec(),
+            [physical_first, b":i0"].concat(),
+            [physical_last, b":i9"].concat(),
+        )
+        .expect("bounds"),
+        provenance,
+    )
+    .expect("table ref")
 }
 
 fn ordinary_key() -> PhysicalKey {

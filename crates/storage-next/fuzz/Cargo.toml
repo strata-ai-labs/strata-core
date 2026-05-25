@@ -54,6 +54,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_table_manifest"
+path = "fuzz_targets/format_table_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "table_runtime_reader"
 path = "fuzz_targets/table_runtime_reader.rs"
 test = false

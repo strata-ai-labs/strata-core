@@ -74,11 +74,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     .transition(LifecycleTransitionTrigger::CloseRequested)?;
                 self.finish_close()
             }
-            LifecycleState::New | LifecycleState::Opening | LifecycleState::Recovering => Err(
-                LifecycleError::InvalidLifecycleState {
+            LifecycleState::New | LifecycleState::Opening | LifecycleState::Recovering => {
+                Err(LifecycleError::InvalidLifecycleState {
                     reason: "durable runtime is not open for close",
-                },
-            ),
+                })
+            }
         }
     }
 
@@ -205,7 +205,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ///
     /// V1 deliberately does **not** persist `LifecycleDurableLocalRuntime`'s
     /// in-memory `current_recovery_health` into the database manifest. The
-    /// durable manifest format is frozen (gated by golden vectors under
+    /// durable manifest format is frozen (gated by golden fixtures under
     /// `testdata/goldens/storage-format-v1/`) and carries only the
     /// recovery facts required to reconstruct visibility on next open:
     /// `database_id`, `codec_id`, `active_wal_segment`,

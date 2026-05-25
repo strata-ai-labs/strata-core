@@ -65,6 +65,7 @@ Run cargo-fuzz targets locally with nightly:
 cd crates/storage-next
 cargo install cargo-fuzz --locked
 cargo +nightly fuzz run format_manifest
+cargo +nightly fuzz run format_table_manifest
 cargo +nightly fuzz run format_snapshot_envelope
 cargo +nightly fuzz run format_storage_row
 cargo +nightly fuzz run format_wal_record

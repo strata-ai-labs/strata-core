@@ -12,6 +12,9 @@
 /corpus/format_table_block/*
 !/corpus/format_table_block/one-put-uncompressed
 !/corpus/format_table_block/zstd
+!/corpus/format_table_manifest/
+/corpus/format_table_manifest/*
+!/corpus/format_table_manifest/valid-empty
 !/corpus/table_runtime_reader/
 /corpus/table_runtime_reader/*
 !/corpus/table_runtime_reader/invalid-table

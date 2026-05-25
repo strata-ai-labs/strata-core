@@ -164,6 +164,148 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8Q Durable Table Manifest Format
+
+### Shipped Files
+
+- `crates/storage-next/src/format/table_manifest.rs`
+- `crates/storage-next/src/format/table_manifest/tests.rs`
+- `crates/storage-next/src/format/table_manifest/tests/canonical.rs`
+- `crates/storage-next/src/format/table_manifest/tests/constructor_object.rs`
+- `crates/storage-next/src/format/table_manifest/tests/corruption.rs`
+- `crates/storage-next/src/format/table_manifest/tests/inheritance_provenance_extension.rs`
+- `crates/storage-next/src/format/mod.rs`
+- `crates/storage-next/src/format/fuzzing.rs`
+- `crates/storage-next/src/format/tests.rs`
+- `crates/storage-next/src/testkit/format_fuzz.rs`
+- `crates/storage-next/tests/format_golden.rs`
+- `crates/storage-next/tests/table_format_source_guard.rs`
+- `crates/storage-next/fuzz/Cargo.toml`
+- `crates/storage-next/fuzz/fuzz_targets/format_table_manifest.rs`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/valid-empty`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/valid-owned-levels`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/valid-inherited-layer`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/valid-materialization-provenance`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/valid-unknown-optional-extension`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/bad-checksum`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/future-version`
+- `crates/storage-next/fuzz/corpus/format_table_manifest/truncated-table-entry`
+- `crates/storage-next/testdata/goldens/storage-format-v1/table-manifest-empty.hex`
+- `crates/storage-next/testdata/goldens/storage-format-v1/table-manifest-owned-levels.hex`
+- `crates/storage-next/testdata/goldens/storage-format-v1/table-manifest-inherited-layers.hex`
+- `crates/storage-next/testdata/goldens/storage-format-v1/table-manifest-materialization-provenance.hex`
+- `crates/storage-next/testdata/goldens/storage-format-v1/table-manifest-extension-section.hex`
+
+### Preserved As Storage Vocabulary
+
+- Branch-scoped table manifest bytes with branch id, optional branch
+  generation, manifest sequence, owned levels, inherited layers, table
+  identities, local table object names, row/block/byte counts, commit ranges,
+  optional timestamp ranges, physical/internal bounds, provenance, and optional
+  extension sections.
+- Deterministic constructor canonicalization and fail-closed decoder validation
+  for checksums, format version, canonical ordering, duplicate table identities,
+  duplicate object names, bounded counts, non-overlapping lower-level physical
+  ranges, and unknown required extension flags.
+- Primitive-neutral extension vocabulary: optional sections can be preserved on
+  rewrite, but product/workflow extension kinds are rejected at the format
+  boundary.
+
+### Intentional Changes
+
+- Branch ids remain opaque `BranchId` atoms at the durable-format boundary.
+  All-zero branch ids are accepted here because the core type does not reserve
+  that value as an empty sentinel.
+- Sparse owned levels are accepted by the format. Branch-runtime policy can
+  reject or normalize sparse levels before publication, but the byte codec does
+  not add a branch topology rule.
+
+### Retired From This Slice
+
+- Table manifest publication or replacement through lifecycle services.
+- Recovery from table manifests into branch state.
+- Flush watermark advancement from table manifests.
+- Table-object retention, quarantine, or deletion.
+- Database-manifest pointers to branch table manifests.
+
+### Deferred By Owner Slice
+
+- L8R publishes table manifests and recovers branch state from them.
+- L8S consumes table manifests for durable table-object reachability proof.
+- L8T decides when table-manifest-covered flushes can shorten WAL replay.
+- L8U/L8V/L8X consume the format for rewrite durability, retention-aware
+  pruning, and cache/lazy-read budget work.
+
+### Tests Added
+
+- Constructor and object-name validation tests from the L8Q test plan,
+  including zero sequence, invalid generation, duplicate level/table/object,
+  invalid facts/bounds, path-like object names, wrong object family, branch
+  mismatch, and table-object level mismatch.
+- Canonical encoding tests from the L8Q test plan, including owned-table,
+  inherited-layer, materialization-provenance round trips, level
+  canonicalization, L0 precedence preservation, L1+ physical-range ordering,
+  inherited-layer order preservation, and semantically distinct L0 order bytes.
+- Golden-vector tests for empty, owned-level, inherited-layer,
+  materialization-provenance, and extension-section manifests.
+- Corruption/version/robustness tests for bad magic, pre-V1/future versions,
+  truncated header/table/layer, trailing bytes, checksum mismatch, count and
+  length overflow, invalid UTF-8, reserved flags, random bytes, noncanonical
+  bytes, and the structured mutation matrix.
+- Inherited-layer, provenance, and extension-section tests covering active,
+  materializing, materialized statuses; duplicate inherited sources; all
+  table-provenance variants; missing materialization fork; required sections;
+  optional section preservation; duplicate/invalid/product/primitive section
+  identifiers; and runtime-handle absence.
+- Source guard tests named for raw IO, backend service, lifecycle execution,
+  engine/product, StrataHub, primitive module, product-workflow, and
+  lower-layer lifecycle-policy boundaries.
+- Fuzz target registration plus corpus inventory for all eight required
+  semantic seeds.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Checksum validation removed | `crates/storage-next/src/format/table_manifest.rs` | Ignore stored CRC mismatch | `table_manifest_rejects_checksum_mismatch` |
+| Duplicate identity accepted | `crates/storage-next/src/format/table_manifest.rs` | Remove `table_identity` set check | `table_manifest_rejects_duplicate_identity_and_object` |
+| Duplicate object accepted | `crates/storage-next/src/format/table_manifest.rs` | Remove `table_object` set check | `table_manifest_rejects_duplicate_identity_and_object` |
+| Cross-branch object accepted | `crates/storage-next/src/format/table_manifest.rs` | Remove branch component validation | `table_manifest_rejects_cross_branch_table_objects` |
+| Malformed table-object layout accepted | `crates/storage-next/src/format/table_manifest.rs` | Accept non-`tables/<branch>/lNNNN/<table>` object names or mismatched level component | `table_manifest_rejects_wrong_table_object_shape_or_level` |
+| L1 overlap accepted | `crates/storage-next/src/format/table_manifest.rs` | Change `previous_last >= first` to `>` | `table_manifest_rejects_l1_overlap_and_bad_order` |
+| L0 precedence erased | `crates/storage-next/src/format/table_manifest.rs` | Sort L0 by table identity instead of explicit order | `different_l0_order_encodes_differently` |
+| Physical-range policy weakened | `crates/storage-next/src/format/table_manifest.rs` | Check L1+ internal ranges instead of physical ranges | `table_manifest_rejects_l1_plus_overlap` |
+| Future version accepted | `crates/storage-next/src/format/table_manifest.rs` | Treat any version as current | `table_manifest_rejects_corruption_and_future_version` |
+| Count bounds removed | `crates/storage-next/src/format/table_manifest.rs` | Remove max-count checks before allocation | `table_manifest_decode_large_counts_does_not_allocate_unbounded_memory` |
+| Inherited-layer status dropped | `crates/storage-next/src/format/table_manifest.rs` | Encode all inherited-layer statuses as Active | `table_manifest_preserves_materializing_status` |
+| Materialization provenance dropped | `crates/storage-next/src/format/table_manifest.rs` | Encode replacement provenance as generic compaction | `table_manifest_preserves_materialization_replacement_provenance` |
+| Required extension accepted | `crates/storage-next/src/format/table_manifest.rs` | Ignore required extension flag | `table_manifest_rejects_unknown_required_extension` |
+| Product extension accepted | `crates/storage-next/src/format/table_manifest.rs` | Remove reserved extension vocabulary check | `table_manifest_rejects_reserved_extension_vocabulary` |
+| Source boundary leak | `crates/storage-next/src/format/table_manifest.rs` | Import lifecycle/service/layout directly | `table_manifest_format_source_stays_below_service_and_lifecycle_layers` |
+
+### Verification
+
+Commands run for L8Q:
+
+```bash
+cargo test -p strata-storage-next --locked --lib table_manifest
+cargo test -p strata-storage-next --locked --lib format::
+cargo test -p strata-storage-next --features testkit --locked --lib format_fuzz
+cargo test -p strata-storage-next --locked --test format_golden
+cargo test -p strata-storage-next --locked --test table_format_source_guard
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --locked --test testkit_boundary
+cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bin format_table_manifest
+cargo clippy -p strata-storage-next --all-targets --locked -- -D warnings
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+rustfmt --check crates/storage-next/src/format/mod.rs crates/storage-next/src/format/fuzzing.rs crates/storage-next/src/format/tests.rs crates/storage-next/src/format/table_manifest.rs crates/storage-next/src/testkit/format_fuzz.rs crates/storage-next/tests/format_golden.rs crates/storage-next/tests/table_format_source_guard.rs crates/storage-next/fuzz/fuzz_targets/format_table_manifest.rs
+git diff --check
+```
+
+`cargo fmt --package strata-storage-next --check` was also run. It still reports
+pre-existing formatting drift in lifecycle/testkit files outside this slice; the
+L8Q touched Rust files pass `rustfmt --check` directly.
+
 ## L8N - Close And Shutdown Ordering
 
 ### Shipped Files
