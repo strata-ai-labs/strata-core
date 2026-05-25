@@ -39,7 +39,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             LifecycleState::Closed => {
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRetried)?;
-                Ok(durable_idempotent_close_outcome())
+                // Return the prior final facts from the first close so
+                // callers see the same canceled/drained/durable stats they
+                // already observed, with only status/close_fact remapped to
+                // idempotent shape.
+                Ok(self.last_close_outcome.as_ref().map_or_else(
+                    durable_idempotent_close_outcome,
+                    durable_idempotent_from_prior_close,
+                ))
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
@@ -53,12 +60,25 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     .transition(LifecycleTransitionTrigger::CloseRetried)?;
                 self.finish_close()
             }
-            LifecycleState::New
-            | LifecycleState::Opening
-            | LifecycleState::Recovering
-            | LifecycleState::Failed => Err(LifecycleError::InvalidLifecycleState {
-                reason: "durable runtime is not open for close",
-            }),
+            LifecycleState::Failed => {
+                // Failed admits Close only when the prior failure was raised
+                // during close-class work (i.e., `failure.failed_state ==
+                // Closing`). State-machine admission below enforces this;
+                // if the failure came from Open/Recovering, this returns
+                // Rejected with a typed reason and we map it to
+                // `InvalidLifecycleState`. The narrow rule keeps L8 from
+                // silently retrying open-time failures through the close
+                // ordering.
+                require_admitted(self.state, LifecycleOperationKind::Close)?;
+                self.state
+                    .transition(LifecycleTransitionTrigger::CloseRequested)?;
+                self.finish_close()
+            }
+            LifecycleState::New | LifecycleState::Opening | LifecycleState::Recovering => Err(
+                LifecycleError::InvalidLifecycleState {
+                    reason: "durable runtime is not open for close",
+                },
+            ),
         }
     }
 
@@ -142,7 +162,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             return Err(error);
         }
 
-        if let Err(error) = self.sync_final_close_facts() {
+        if let Err(error) = self.force_final_manifest_fsync_on_health_change() {
             drop(quiesce);
             self.mark_close_retry_pending()?;
             return Err(error);
@@ -159,10 +179,16 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         drop(quiesce);
         self.state
             .transition(LifecycleTransitionTrigger::CloseCompleted)?;
-        Ok(durable_close_outcome(
+        let outcome = durable_close_outcome(
             cancel.canceled_tasks(),
-            drain.drained_tasks(),
-        ))
+            usize::from(active.is_some()).saturating_add(drain.drained_tasks()),
+        );
+        // Snapshot the first-close outcome so subsequent idempotent close
+        // calls return the same stats. Without this cache, a retry after
+        // Closed would surface a fabricated baseline that diverges from
+        // what the caller observed on the first call.
+        self.last_close_outcome = Some(outcome);
+        Ok(outcome)
     }
 
     fn mark_close_retry_pending(&mut self) -> LifecycleResult<()> {
@@ -173,7 +199,30 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         Ok(())
     }
 
-    fn sync_final_close_facts(&self) -> LifecycleResult<()> {
+    /// Force a final manifest fsync if recovery health degraded during the
+    /// session.
+    ///
+    /// V1 deliberately does **not** persist `LifecycleDurableLocalRuntime`'s
+    /// in-memory `current_recovery_health` into the database manifest. The
+    /// durable manifest format is frozen at M3 (see project CLAUDE.md) and
+    /// carries only the recovery facts required to reconstruct visibility
+    /// on next open: `database_id`, `codec_id`, `active_wal_segment`,
+    /// `snapshot_watermark`, `snapshot_id`, `flushed_through_commit_id`.
+    /// All session-observed degradation that this hook reacts to —
+    /// quarantine inventory mismatches, partial publication windows,
+    /// orphan snapshots — already lives on disk in inventory/snapshot
+    /// state. Recovery on the next open re-walks that state and re-derives
+    /// the same `RecoveryHealth` from scratch, so the health is durable by
+    /// virtue of its source-of-truth facts, not by any new manifest field.
+    ///
+    /// What this hook _does_ do: when health changed, force one final
+    /// `PublishMode::Replace` of the existing manifest bytes. The bytes are
+    /// identical but the publish exercises the backend's full durable-write
+    /// path, guaranteeing any pending `fdatasync` on the manifest file is
+    /// flushed before close releases the writer guard. This is a tighten
+    /// of close-time durability for the manifest specifically, not a
+    /// health-persistence step.
+    fn force_final_manifest_fsync_on_health_change(&self) -> LifecycleResult<()> {
         if self.current_recovery_health == *self.open_outcome.recovery_health() {
             return Ok(());
         }
@@ -399,6 +448,18 @@ const fn durable_idempotent_close_outcome() -> CloseOutcome {
         .with_stats(LifecycleStats::new(0, 0, 0, 0, 1))
 }
 
+/// Convert a prior first-close `CloseOutcome` into the durable idempotent
+/// retry shape. Stats are preserved verbatim from the first close; only
+/// status flips to `Idempotent` and the close fact to `AlreadyClosed`.
+/// The `prior_final` bit is set on the durable-complete effects so
+/// `CloseOutcome::validate` accepts the Idempotent status.
+fn durable_idempotent_from_prior_close(prior: &CloseOutcome) -> CloseOutcome {
+    CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Idempotent)
+        .with_close_fact(LifecycleCloseFact::AlreadyClosed)
+        .with_close_effects(CloseOutcomeEffects::durable_complete(true))
+        .with_stats(prior.stats())
+}
+
 const fn close_timeout(phase: ClosePhase, reason: &'static str) -> LifecycleError {
     LifecycleError::CloseTimeout { phase, reason }
 }
@@ -456,6 +517,7 @@ fn global_retention_maintenance_outcome(
     ) || matches!(
         retention_outcome.status(),
         LifecycleRetentionStatus::DeferredIncompleteProof
+            | LifecycleRetentionStatus::DeferredUnsupportedScope
             | LifecycleRetentionStatus::BlockedByRecoveryHealth
     ) {
         MaintenanceOutcomeStatus::Deferred

@@ -35,12 +35,84 @@ pub fn check_lifecycle_close_contract(
     script: &[u8],
 ) -> Result<LifecycleCloseContractOutcome, TestkitError> {
     let mut outcome = LifecycleCloseContractOutcome::default();
-    check_close_state_flow(&mut outcome)?;
-    check_close_outcomes(&mut outcome)?;
-    check_close_maintenance(script, &mut outcome)?;
-    check_close_quiesce(script, &mut outcome)?;
-    check_close_errors(&mut outcome)?;
+    match CloseRoute::from_script(script) {
+        CloseRoute::All => {
+            check_close_state_flow(&mut outcome)?;
+            check_close_outcomes(script, &mut outcome)?;
+            check_close_maintenance(script, &mut outcome)?;
+            check_close_quiesce(script, &mut outcome)?;
+            check_close_wal_error(script, &mut outcome)?;
+            check_close_manifest_error(script, &mut outcome)?;
+        }
+        CloseRoute::StateFlow => check_close_state_flow(&mut outcome)?,
+        CloseRoute::Outcomes => check_close_outcomes(script, &mut outcome)?,
+        CloseRoute::Retry => {
+            check_close_state_flow(&mut outcome)?;
+            check_close_outcomes(script, &mut outcome)?;
+        }
+        CloseRoute::MaintenanceAndQuiesce => {
+            check_close_maintenance(script, &mut outcome)?;
+            check_close_quiesce(script, &mut outcome)?;
+        }
+        CloseRoute::QuiesceTimeout => {
+            check_close_outcomes(script, &mut outcome)?;
+            check_close_quiesce(script, &mut outcome)?;
+        }
+        CloseRoute::WalSyncFailure => check_close_wal_error(script, &mut outcome)?,
+        CloseRoute::ManifestSyncFailure => check_close_manifest_error(script, &mut outcome)?,
+    }
     Ok(outcome)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseRoute {
+    All,
+    StateFlow,
+    Outcomes,
+    Retry,
+    MaintenanceAndQuiesce,
+    QuiesceTimeout,
+    WalSyncFailure,
+    ManifestSyncFailure,
+}
+
+impl CloseRoute {
+    fn from_script(script: &[u8]) -> Self {
+        let lower = String::from_utf8_lossy(script).to_ascii_lowercase();
+        if lower.contains("shutdown-categories") || lower.contains("close-all") {
+            return Self::All;
+        }
+        if lower.contains("close-block") {
+            return Self::MaintenanceAndQuiesce;
+        }
+        if lower.contains("close-retry") || lower.contains("close-idempotent") {
+            return Self::Retry;
+        }
+        if lower.contains("close-quiesce") {
+            return Self::QuiesceTimeout;
+        }
+        if lower.contains("close-wal-sync") {
+            return Self::WalSyncFailure;
+        }
+        if lower.contains("close-manifest") {
+            return Self::ManifestSyncFailure;
+        }
+        if lower.contains("close-guard-release") || lower.contains("close-reopen") {
+            return Self::Outcomes;
+        }
+        if lower.contains("close-state") || lower.contains("close-request") {
+            return Self::StateFlow;
+        }
+        match script.first().copied().unwrap_or(0) % 7 {
+            0 => Self::StateFlow,
+            1 => Self::Outcomes,
+            2 => Self::Retry,
+            3 => Self::MaintenanceAndQuiesce,
+            4 => Self::QuiesceTimeout,
+            5 => Self::WalSyncFailure,
+            _ => Self::ManifestSyncFailure,
+        }
+    }
 }
 
 impl LifecycleCloseContractOutcome {
@@ -131,19 +203,29 @@ fn check_close_state_flow(outcome: &mut LifecycleCloseContractOutcome) -> Result
     Ok(())
 }
 
-fn check_close_outcomes(outcome: &mut LifecycleCloseContractOutcome) -> Result<(), TestkitError> {
+fn check_close_outcomes(
+    script: &[u8],
+    outcome: &mut LifecycleCloseContractOutcome,
+) -> Result<(), TestkitError> {
+    // Input-derived dirty bit: bytes whose parity flips switch the durable
+    // sync / volatile complete construction between the two valid effect
+    // shapes. Asserting both shapes through script-derived selection means
+    // a regression that collapses the constructors to a single shared form
+    // is observable by the input-derivation test.
+    let cache_dirty = script_byte(script, 2).is_multiple_of(2);
     let cache = CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
         .with_close_fact(LifecycleCloseFact::Complete)
-        .with_close_effects(CloseOutcomeEffects::volatile_complete(false));
+        .with_close_effects(CloseOutcomeEffects::volatile_complete(cache_dirty));
     ensure(
         !cache.durable_synced() && cache.guards_released(),
         "cache close outcome reported wrong effects",
     )?;
     outcome.cache_close_completed += 1;
 
+    let durable_dirty = script_byte(script, 3).is_multiple_of(2);
     let durable = CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
         .with_close_fact(LifecycleCloseFact::Complete)
-        .with_close_effects(CloseOutcomeEffects::durable_complete(false));
+        .with_close_effects(CloseOutcomeEffects::durable_complete(durable_dirty));
     ensure(
         durable.durable_synced() && durable.guards_released(),
         "durable close outcome did not report sync and guard release",
@@ -151,12 +233,18 @@ fn check_close_outcomes(outcome: &mut LifecycleCloseContractOutcome) -> Result<(
     outcome.durable_close_completed += 1;
     outcome.guard_release_observed += 1;
 
-    let timeout = CloseOutcome::new(ClosePhase::QuiesceCommits, CloseOutcomeStatus::Timeout)
+    let timeout_phase = match script_byte(script, 4) % 3 {
+        0 => ClosePhase::QuiesceCommits,
+        1 => ClosePhase::DrainMaintenance,
+        _ => ClosePhase::SyncDurableState,
+    };
+    let timeout = CloseOutcome::new(timeout_phase, CloseOutcomeStatus::Timeout)
         .with_close_fact(LifecycleCloseFact::RetryPending);
     ensure(
         timeout.status() == CloseOutcomeStatus::Timeout
-            && timeout.close_fact() == Some(LifecycleCloseFact::RetryPending),
-        "timeout close outcome did not preserve retry fact",
+            && timeout.close_fact() == Some(LifecycleCloseFact::RetryPending)
+            && timeout.phase() == timeout_phase,
+        "timeout close outcome did not preserve retry fact or phase",
     )?;
     outcome.retryable_timeout += 1;
     Ok(())
@@ -263,29 +351,79 @@ const fn close_task_kind(byte: u8) -> MaintenanceTaskKind {
     }
 }
 
-fn check_close_errors(outcome: &mut LifecycleCloseContractOutcome) -> Result<(), TestkitError> {
+fn check_close_wal_error(
+    script: &[u8],
+    outcome: &mut LifecycleCloseContractOutcome,
+) -> Result<(), TestkitError> {
+    let detail_suffix = script_byte(script, 5);
     let wal_error = LifecycleError::lower_layer_with(
         LifecycleLowerLayer::Service,
         "WAL service failed",
-        CloseContractSource,
+        ScriptedCloseSource::wal(detail_suffix),
     );
-    ensure(wal_error.source().is_some(), "WAL close source was lost")?;
+    let source = wal_error
+        .source()
+        .ok_or_else(|| TestkitError::new("WAL close source was lost"))?;
+    ensure(
+        format!("{source}").contains(&format!("wal-detail={detail_suffix:#04x}")),
+        "input-derived WAL close detail did not surface in the source chain",
+    )?;
     outcome.wal_sync_failure += 1;
     outcome.source_chain_preserved += 1;
+    Ok(())
+}
 
+fn check_close_manifest_error(
+    script: &[u8],
+    outcome: &mut LifecycleCloseContractOutcome,
+) -> Result<(), TestkitError> {
+    let detail_suffix = script_byte(script, 6);
     let manifest_error = LifecycleError::lower_layer_with(
         LifecycleLowerLayer::Service,
         "database manifest publish failed",
-        CloseContractSource,
+        ScriptedCloseSource::manifest(detail_suffix),
     );
+    let source = manifest_error
+        .source()
+        .ok_or_else(|| TestkitError::new("manifest close source was lost"))?;
     ensure(
-        manifest_error.source().is_some(),
-        "manifest close source was lost",
+        format!("{source}").contains(&format!("manifest-detail={detail_suffix:#04x}")),
+        "input-derived manifest close detail did not surface in the source chain",
     )?;
     outcome.manifest_sync_failure += 1;
     outcome.source_chain_preserved += 1;
     Ok(())
 }
+
+#[derive(Debug)]
+struct ScriptedCloseSource {
+    phase: &'static str,
+    detail: u8,
+}
+
+impl ScriptedCloseSource {
+    const fn wal(detail: u8) -> Self {
+        Self {
+            phase: "wal-detail",
+            detail,
+        }
+    }
+
+    const fn manifest(detail: u8) -> Self {
+        Self {
+            phase: "manifest-detail",
+            detail,
+        }
+    }
+}
+
+impl fmt::Display for ScriptedCloseSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}={:#04x}", self.phase, self.detail)
+    }
+}
+
+impl Error for ScriptedCloseSource {}
 
 fn open_state() -> Result<LifecycleStateMachine, TestkitError> {
     let mut state = LifecycleStateMachine::new();
@@ -317,13 +455,3 @@ impl MaintenanceTaskRunner for CloseContractRunner {
     }
 }
 
-#[derive(Debug)]
-struct CloseContractSource;
-
-impl fmt::Display for CloseContractSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("close contract source")
-    }
-}
-
-impl Error for CloseContractSource {}

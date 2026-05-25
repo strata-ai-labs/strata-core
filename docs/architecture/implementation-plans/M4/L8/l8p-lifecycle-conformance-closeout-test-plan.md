@@ -171,7 +171,28 @@ correctness.
 16. close quiesce timeout is retryable;
 17. close WAL sync failure preserves source chain;
 18. close manifest sync failure preserves final fact debt;
-19. writer guard release failure is typed when backend reports it.
+19. missing writer guard at release is typed.
+
+Deferred from V1 (recorded for transparency):
+
+- **Backend-reported writer-guard release failure.** The earlier wording
+  of scenario #19 required asserting a typed close error when the
+  *backend itself* fails the release of an existing guard (e.g., an
+  object-store lease renounce that returns Unavailable). V1's
+  writer-guard release is infallible by construction: `release_writer_guard`
+  on the durable runtime is a take-and-drop of an in-memory handle,
+  and `LocalFsBackend::acquire_writer_lock` returns a guard whose only
+  Drop work is releasing the OS advisory lock — neither path can
+  return a typed failure. Making release fallible would require
+  extending `BackendWriterGuard` (and every backend that constructs
+  one) with a fallible-release hook, which is appropriate post-V1 when
+  the object-backend work introduces lease-handoff semantics. Scenario
+  #19 is therefore narrowed to "missing writer guard at release is
+  typed" — the only failure mode the V1 API surface can express — and
+  the backend-reported variant is reserved for post-V1 object-backend
+  work. The closeout integration check (`tests/lifecycle_closeout.rs`
+  `lifecycle_closeout_integration_surfaces_cover_required_categories`)
+  references the narrowed scenario only.
 
 Assertions:
 

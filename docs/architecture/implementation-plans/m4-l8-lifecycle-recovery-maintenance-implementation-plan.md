@@ -17,7 +17,7 @@ but it must not turn those facts into product policy, public lifecycle commands,
 IPC behavior, primitive reconstruction, StrataHub behavior, or user-facing
 recovery wording.
 
-M4-L8 is intentionally delivered in three logical parts:
+M4-L8 is intentionally delivered in four logical parts:
 
 1. **L8-Core: Open + Recovery**
    Defines lifecycle vocabulary, open plans, capability validation, cache and
@@ -27,10 +27,17 @@ M4-L8 is intentionally delivered in three logical parts:
    compaction scheduling, materialization scheduling, and storage pressure facts.
 3. **L8-Reclaim + Close + Assurance**
    Adds retention, quarantine, repair, close ordering, generated/fault/crash
-   assurance, source guards, sensitivity probes, and closeout.
+   assurance, source guards, sensitivity probes, and baseline closeout.
+4. **L8-Durable Tables + Storage Hardening**
+   Adds durable table manifests, table-object reachability, table-manifest-backed
+   flush watermarks, durable rewrite publication, retention-aware row pruning,
+   memory budgets, lazy object-backed reads, branch lifecycle completion, and
+   commit-runtime hardening before L9 wraps the storage boundary.
+   This part still targets local durable storage semantics. Production
+   object-store/OpenDAL/S3 durability remains outside V1.
 
 The `L8A`, `L8B`, ... slice labels remain the detailed work units. The
-three-part structure is the delivery boundary used for planning, review, and
+four-part structure is the delivery boundary used for planning, review, and
 commit grouping.
 
 ## Inputs
@@ -519,10 +526,25 @@ Rules:
 | Slice | Title | Implementation scope | Test scope | Exit gate |
 |---|---|---|---|---|
 | `L8L` | Retention proof and snapshot pruning | Build retention proof model over manifests, snapshots, WAL watermarks, L6 reachability, recovery health, and backend facts; prune snapshots and skip unsafe deletes. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8l-retention-proof-snapshot-pruning-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8l-retention-proof-snapshot-pruning-test-plan.md`. | Incomplete proof keeps objects, newest snapshot retention, live manifest snapshot retained, unsafe recovery blocks reclaim, idempotency. | Retention never deletes without proof. |
-| `L8M` | Quarantine, reclaim, purge, and repair facts | Orchestrate quarantine inventory publication, object quarantine/move/mark, purge with fresh proof, repair/reconciliation facts, and debt reporting. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8m-quarantine-reclaim-repair-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8m-quarantine-reclaim-repair-test-plan.md`. | Quarantine before purge, publish failure windows, purge blocked by stale proof, inventory mismatch, repair facts, localfs/object-backend behavior split. | Unsafe deletion is impossible through L8 paths. |
+| `L8M` | Quarantine, reclaim, purge, and repair facts | Orchestrate quarantine inventory publication, object quarantine/move/mark, purge with fresh proof, repair/reconciliation facts, and debt reporting. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8m-quarantine-reclaim-repair-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8m-quarantine-reclaim-repair-test-plan.md`. | Quarantine before purge, publish failure windows, purge blocked by stale proof, inventory mismatch, repair facts, local durable-backend behavior split. | Unsafe deletion is impossible through L8 paths. |
 | `L8N` | Close and shutdown ordering | Stop commits, drain/cancel maintenance, quiesce L7, stop writer/sync loops, flush/sync durable services, persist final health, release backend guards, and make close retryable/idempotent. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8n-close-shutdown-ordering-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8n-close-shutdown-ordering-test-plan.md`. | Clean close, timeout, retry, double close, failure preserving health, guard release, no new tasks while closing. | Storage close is ordered and recoverable. |
 | `L8O` | Generated, fault, and crash assurance | Add lifecycle testkit model, generated scripts, fuzz targets, localfs crash/reopen harnesses, and fault windows across open/recovery/flush/checkpoint/reclaim/close. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8o-generated-fault-crash-assurance-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8o-generated-fault-crash-assurance-test-plan.md`. | Property/fuzz/crash coverage for lifecycle state, recovery, maintenance, retention, quarantine, close, and health. | Assurance covers operation ordering, not only unit examples. |
-| `L8P` | L8 conformance closeout | Consolidate source guards, command matrix, old-code behavior ledger, sensitivity probes, deferred map, health inventory, and closeout tests. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8p-l8-conformance-closeout-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8p-l8-conformance-closeout-test-plan.md`. | Closeout inventory, source guard, fuzz inventory, crash/fault inventory, sensitivity-probe ledger, full command set. | M4-L8 closes and L9 can expose storage lifecycle through a stable boundary. |
+| `L8P` | Baseline lifecycle conformance closeout | Consolidate source guards, command matrix, old-code behavior ledger, sensitivity probes, deferred map, health inventory, and closeout tests for L8A-L8P. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8p-l8-conformance-closeout-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8p-l8-conformance-closeout-test-plan.md`. | Closeout inventory, source guard, fuzz inventory, crash/fault inventory, sensitivity-probe ledger, full command set for the baseline lifecycle/reclaim/assurance work. | L8A-L8P close and L8Q-L8Z can start over a stable lifecycle baseline. |
+
+### Part 4: L8-Durable Tables + Storage Hardening
+
+| Slice | Title | Implementation scope | Test scope | Exit gate |
+|---|---|---|---|---|
+| `L8Q` | Durable table manifest format | Define the semantic durable table-manifest payload over table identities, local table-object names, branch ids/generations, levels, bounds, provenance, recovery facts, versioning, checksums, and canonical ordering. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8q-durable-table-manifest-format-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8q-durable-table-manifest-format-test-plan.md`. | Golden encoding tests, canonical ordering, corrupt/future-version rejection, checksum mismatch, primitive-neutral section handling. | Durable table reachability has stable bytes independent of checkpoint row payloads. |
+| `L8R` | Table manifest publication and recovery | Publish and replace table manifests after flush/rewrite work; recover L6 state from table manifests plus table objects; classify missing, corrupt, and ambiguous table-object state. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8r-table-manifest-publication-recovery-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8r-table-manifest-publication-recovery-test-plan.md`. | Publish windows, idempotent retry, recovery rebuild, missing/corrupt local table object health, manifest/object mismatch. | Durable open can trust table manifests rather than relying only on checkpoints and WAL. |
+| `L8S` | Table-object reachability and retention | Compute the live local table-object graph from manifests, checkpoints, WAL, quarantine inventory, and recovery health; classify retain, quarantine-candidate, and delete-candidate sets without unsafe direct deletion. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8s-table-object-reachability-retention-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8s-table-object-reachability-retention-test-plan.md`. | Live object retained, orphan becomes quarantine candidate, degraded health blocks deletion, deterministic graph ordering, no-op scopes rejected or deferred. | Table-object retention is proof-backed instead of a silent no-op. |
+| `L8T` | Table-manifest-backed flush watermarks | Allow flush watermarks and WAL truncation to rely on durable table-manifest coverage, not only checkpoint coverage. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8t-table-manifest-backed-flush-watermarks-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8t-table-manifest-backed-flush-watermarks-test-plan.md`. | Reject uncovered watermarks, accept table-manifest-covered watermarks, replay after truncation, stale manifest proof rejection. | Flushed durable tables can shorten WAL safely. |
+| `L8U` | Durable rewrite publication | Publish compaction and materialization outputs as durable local table objects and table-manifest updates, with typed publish/install fault windows and retry semantics. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8u-durable-rewrite-publication-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8u-durable-rewrite-publication-test-plan.md`. | Compaction output publication, materialization output publication, ambiguous visibility, manifest retry, checkpoint-debt reduction. | Rewrites can be durable without relying solely on later checkpoint debt. |
+| `L8V` | Retention-aware row pruning | Add proof-gated pruning of old MVCC versions, tombstones, and TTL-expired rows while preserving as-of, history, timestamp, and branch inheritance guarantees. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8v-retention-aware-row-pruning-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8v-retention-aware-row-pruning-test-plan.md`. | As-of safety, history-bound enforcement, TTL/tombstone proof, inherited-layer safety, generated model coverage. | Compaction can reclaim row history safely. |
+| `L8W` | Memory and cache budget enforcement | Add explicit storage memory profiles and budget accounting for block cache, readers, active/frozen state, maintenance queues, generated artifacts, and embedded-device profiles. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8w-memory-cache-budget-enforcement-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8w-memory-cache-budget-enforcement-test-plan.md`. | Budget admission, pressure facts, low-memory profile, cache eviction, no unbounded preallocation, Raspberry Pi Zero-style profile smoke. | Runtime memory use is bounded by explicit storage budgets. |
+| `L8X` | Lazy object-backed table reads | Avoid whole-table loading by using range/block reads, reader admission, and cache integration for durable local table objects. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8x-lazy-object-backed-table-reads-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8x-lazy-object-backed-table-reads-test-plan.md`. | Point/range laziness, cache hit/miss behavior, corruption handling, no-default/wasm compatibility, large-table smoke. | Huge durable tables do not require whole-object memory. |
+| `L8Y` | Branch lifecycle completeness | Complete storage-internal branch create/list/delete/clear/fork-at-history/generation/pinned-view behavior over L6/L7/L8 facts without adding product API policy. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8y-branch-lifecycle-completeness-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8y-branch-lifecycle-completeness-test-plan.md`. | Duplicate create, missing source, fork-at-history, delete/clear with pinned views, generation reuse, inter-branch isolation. | L9 can expose branch mechanics without lower-layer lifecycle gaps. |
+| `L8Z` | Commit hardening and pre-L9 readiness | Close remaining commit-runtime hardening around branch generation guards, transaction-id policy, conflict/concurrency edge cases, quiesce integration, minimal checkpoint/WAL-growth policy, and Q-Z closeout. Detailed plans: `docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md` and `docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md`. | Generation reuse, optional transaction-id decision, conflict/concurrency windows, quiesce behavior, bounded-WAL checkpoint trigger, Q-Z command matrix and source guards. | L9 can start over stable storage semantics; physical format freeze is L10-owned. |
 
 ## Implementation Budget
 
@@ -536,6 +558,9 @@ Expected scope:
 | `L8H` to `L8K` | 700-1,500 LOC each | Split executor, flush, checkpoint, and compaction hooks before task code mixes concerns. |
 | `L8L` to `L8N` | 700-1,500 LOC each | Split retention, quarantine, and close if delete-proof logic and shutdown logic mix. |
 | `L8O` to `L8P` | 500-1,500 LOC each | Split generated harnesses and closeout/source guards into separate modules before they cross the limit. |
+| `L8Q` to `L8T` | 700-1,500 LOC each | Split table-manifest codec, publication, reachability, and watermark work before manifest logic absorbs retention policy. |
+| `L8U` to `L8X` | 700-1,500 LOC each | Split rewrite publication, row pruning, memory budgets, and lazy reads before durable-object and cache logic mix. |
+| `L8Y` to `L8Z` | 700-1,500 LOC each | Split branch lifecycle completion from commit hardening if either starts changing public-facing behavior. |
 
 If a slice approaches the limit, create a narrower sub-slice before coding
 rather than accepting a large mixed patch.
@@ -671,7 +696,9 @@ Every L8 slice must record:
 
 ## Deferred Behavior Map
 
-Not L8 implementation gaps:
+The following remain outside V1 L8 even after L8Q-L8Z. They are not
+implementation gaps for this milestone. The detailed deferred-work ledger is
+`docs/architecture/implementation-plans/M4/L8/storage-deferred-work-ledger.md`.
 
 1. public database open policy;
 2. IPC and multi-process product behavior;
@@ -684,12 +711,14 @@ Not L8 implementation gaps:
 9. product branch merge/cherry-pick/revert/restore/publish workflows;
 10. StrataHub fleet reporting;
 11. distributed locks or consensus;
-12. production OpenDAL/S3 durability;
-13. changing physical storage formats;
-14. table merge algorithms;
-15. commit version allocation;
+12. production object-store/OpenDAL/S3 durability;
+13. physical storage format freeze, backwards compatibility, migration policy,
+    and golden vectors, which are L10-owned;
+14. new lower-layer table merge algorithms beyond proof-gated L8 scheduling and
+    pruning hooks;
+15. new distributed/global commit version allocation policy;
 16. public storage API mapping and response DTOs;
-17. automatic checkpoint policy beyond hooks unless a slice explicitly adds it;
+17. rich automatic checkpoint policy beyond the L8Z minimal WAL-growth trigger;
 18. threaded maintenance executor if deterministic single-threaded execution is
     sufficient for V1.
 
@@ -721,5 +750,22 @@ M4-L8 is complete when:
     leakage;
 15. generated/property/fuzz/fault/crash tests cover every lifecycle phase;
 16. the porting log records preserved, changed, retired, and deferred behavior;
-17. closeout commands pass under default, no-default, all-features, and wasm
+17. semantic durable table manifests exist and recover table reachability;
+18. table-object retention/quarantine uses durable reachability proof and never
+    reports successful no-op handling for unsupported scopes;
+19. table-manifest-backed flush watermarks can shorten WAL safely;
+20. durable compaction and materialization output publication has typed
+    fault-window outcomes;
+21. retention-aware row pruning preserves as-of, history, TTL, tombstone, and
+    branch-inheritance guarantees;
+22. explicit memory budgets bound cache, read, active/frozen, maintenance, and
+    generated-artifact memory;
+23. lazy object-backed reads avoid whole-object loading in durable mode;
+24. branch create/list/delete/clear/fork-at-history/generation behavior is
+    complete enough for L9 to wrap;
+25. commit-runtime hardening gaps are closed or explicitly deferred with stable
+    tests;
+26. minimal automatic checkpoint/WAL-growth policy prevents unbounded local WAL
+    growth or reports typed pressure/deferred facts;
+27. closeout commands pass under default, no-default, all-features, and wasm
     where applicable.

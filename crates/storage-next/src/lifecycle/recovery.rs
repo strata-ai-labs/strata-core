@@ -306,11 +306,16 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     && is_quarantine_inventory_mismatch(&source) =>
             {
                 let object = quarantine_error_object(&source);
-                push_fault(
+                // The mismatch is scoped to this branch — attach the branch
+                // id so downstream `safe_for_candidate` /
+                // `fresh_for_candidate` admission checks can refuse
+                // reclaim under Telemetry debt that names this branch.
+                push_fault_for_branch(
                     faults,
                     request.max_faults,
                     RecoveryFaultKind::QuarantineInventoryMismatch,
                     "quarantine inventory mismatch",
+                    branch_id,
                 )?;
                 Ok(LifecycleRecoveredQuarantine::unknown(object))
             }
@@ -868,6 +873,22 @@ fn push_fault(
         });
     }
     faults.push(RecoveryFault::new(kind, reason)?);
+    Ok(())
+}
+
+fn push_fault_for_branch(
+    faults: &mut Vec<RecoveryFault>,
+    max_faults: usize,
+    kind: RecoveryFaultKind,
+    reason: &'static str,
+    branch_id: strata_core_next::BranchId,
+) -> LifecycleResult<()> {
+    if faults.len() == max_faults {
+        return Err(LifecycleError::RecoveryFailed {
+            reason: "recovery fault limit exceeded",
+        });
+    }
+    faults.push(RecoveryFault::new(kind, reason)?.with_affected_branch(branch_id));
     Ok(())
 }
 

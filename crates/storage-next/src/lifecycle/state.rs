@@ -102,7 +102,7 @@ impl LifecycleStateMachine {
         trigger: LifecycleTransitionTrigger,
     ) -> LifecycleResult<LifecycleTransitionOutcome> {
         let from = self.state;
-        let update = transition_update(from, trigger)?;
+        let update = transition_update(from, trigger, self.failure)?;
         self.state = update.to;
         if let Some(failure) = update.failure {
             self.failure = Some(failure);
@@ -110,6 +110,8 @@ impl LifecycleStateMachine {
         if let Some(close_fact) = update.close_fact {
             self.close_fact = Some(close_fact);
         }
+        // Failed -> Closing leaves the failure fact in place as breadcrumb
+        // but the transition was the retry-class one; nothing else changes.
         Ok(LifecycleTransitionOutcome {
             from,
             to: update.to,
@@ -124,7 +126,17 @@ impl LifecycleStateMachine {
         self,
         operation: LifecycleOperationKind,
     ) -> LifecycleOperationAdmission {
-        Self::admit_state(self.state, operation)
+        // Failed admits Close only when the prior failure happened during
+        // close-class work, mirroring the matching transition rule.
+        match (self.state, operation) {
+            (LifecycleState::Failed, LifecycleOperationKind::Close) => match self.failure {
+                Some(fact) if matches!(fact.failed_state(), LifecycleState::Closing) => allow(),
+                _ => reject(
+                    "Failed admits Close only when the prior failure was raised during close",
+                ),
+            },
+            _ => Self::admit_state(self.state, operation),
+        }
     }
 
     pub(crate) const fn admit_state(
@@ -243,6 +255,7 @@ struct TransitionUpdate {
 fn transition_update(
     from: LifecycleState,
     trigger: LifecycleTransitionTrigger,
+    failure: Option<LifecycleFailureFact>,
 ) -> LifecycleResult<TransitionUpdate> {
     let update = match (from, trigger) {
         (LifecycleState::New, LifecycleTransitionTrigger::OpenRequested) => {
@@ -272,6 +285,24 @@ fn transition_update(
             effect: LifecycleTransitionEffect::Applied,
             failure: None,
             close_fact: Some(LifecycleCloseFact::Requested),
+        },
+        // Failed -> Closing is only allowed when the failure was raised
+        // during close-class work (`failed_state == Closing`). That confines
+        // the recovery path to close-owned failures — a partial close that
+        // hit, e.g. a transient WAL sync hiccup — and prevents Open/Recovering
+        // failures from being silently retried through the close ordering.
+        (LifecycleState::Failed, LifecycleTransitionTrigger::CloseRequested) => match failure {
+            Some(fact) if fact.failed_state() == LifecycleState::Closing => TransitionUpdate {
+                to: LifecycleState::Closing,
+                effect: LifecycleTransitionEffect::Applied,
+                failure: None,
+                close_fact: Some(LifecycleCloseFact::Requested),
+            },
+            _ => {
+                return Err(LifecycleError::InvalidLifecycleState {
+                    reason: "Failed -> Closing requires a prior close-class failure",
+                });
+            }
         },
         (LifecycleState::Closing, LifecycleTransitionTrigger::CloseCompleted) => TransitionUpdate {
             to: LifecycleState::Closed,

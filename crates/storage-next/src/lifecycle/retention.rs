@@ -8,7 +8,8 @@
 use super::{
     telemetry_health_debt, LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats,
     MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceRetentionOptions, MaintenanceTask,
-    MaintenanceTaskKind, RecoveryDegradationClass, RecoveryHealth, RetentionDecision,
+    MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind,
+    RecoveryHealth, RetentionDecision,
 };
 use crate::format::DatabaseManifest;
 use crate::object::ObjectName;
@@ -101,6 +102,7 @@ pub(crate) enum LifecycleRetentionStatus {
     Completed,
     CompletedWithHealthDebt,
     DeferredIncompleteProof,
+    DeferredUnsupportedScope,
     BlockedByRecoveryHealth,
 }
 
@@ -302,6 +304,19 @@ impl LifecycleRetentionDecisionRecord {
 }
 
 impl LifecycleRetentionOutcome {
+    pub(crate) const fn deferred_unsupported_scope(proof: LifecycleRetentionProof) -> Self {
+        Self {
+            status: LifecycleRetentionStatus::DeferredUnsupportedScope,
+            proof,
+            decisions: Vec::new(),
+            objects_pruned: 0,
+            objects_retained: 0,
+            objects_skipped: 0,
+            reclaimed_bytes: 0,
+            recovery_health: None,
+        }
+    }
+
     pub(crate) fn from_decisions(
         proof: LifecycleRetentionProof,
         mut decisions: Vec<LifecycleRetentionDecisionRecord>,
@@ -322,7 +337,8 @@ impl LifecycleRetentionOutcome {
             .count();
         let status = status_for_proof(&proof);
         let recovery_health = match status {
-            LifecycleRetentionStatus::Completed => None,
+            LifecycleRetentionStatus::Completed
+            | LifecycleRetentionStatus::DeferredUnsupportedScope => None,
             LifecycleRetentionStatus::CompletedWithHealthDebt
             | LifecycleRetentionStatus::DeferredIncompleteProof => {
                 Some(telemetry_health_debt("retention proof is incomplete")?)
@@ -382,6 +398,7 @@ impl LifecycleRetentionOutcome {
                 MaintenanceOutcomeStatus::Completed
             }
             LifecycleRetentionStatus::DeferredIncompleteProof
+            | LifecycleRetentionStatus::DeferredUnsupportedScope
             | LifecycleRetentionStatus::BlockedByRecoveryHealth => {
                 MaintenanceOutcomeStatus::Deferred
             }
@@ -405,6 +422,9 @@ impl LifecycleRetentionOutcome {
         match self.status {
             LifecycleRetentionStatus::DeferredIncompleteProof => {
                 outcome.with_reason("retention proof is incomplete")
+            }
+            LifecycleRetentionStatus::DeferredUnsupportedScope => {
+                outcome.with_reason("table object retention requires branch reachability")
             }
             LifecycleRetentionStatus::BlockedByRecoveryHealth => {
                 outcome.with_reason("recovery health blocks retention")
@@ -483,7 +503,23 @@ impl LifecycleSnapshotPruningOutcome {
         let recovery_health = if failed.is_empty() {
             None
         } else {
-            Some(telemetry_health_debt("snapshot pruning delete failure")?)
+            // Emit one fault per failed deletion so `fault_count` reflects
+            // the real number of stuck snapshots. The per-failure object
+            // identity and backend source error remain on the typed
+            // `failed: Vec<SnapshotDeleteFailure>` field for callers that
+            // need to surface object-level diagnostics; the health debt's
+            // count provides at-a-glance signal that retention has more
+            // than one stranded snapshot to address.
+            let faults: Vec<RecoveryFault> = (0..failed.len())
+                .map(|_| RecoveryFault::new(
+                    RecoveryFaultKind::IoFailure,
+                    "snapshot pruning delete failure",
+                ))
+                .collect::<LifecycleResult<_>>()?;
+            Some(RecoveryHealth::degraded(
+                RecoveryDegradationClass::Telemetry,
+                faults,
+            )?)
         };
         Ok(Self {
             status,
@@ -679,7 +715,16 @@ pub(crate) fn retention_outcome_for_scope(
                 LifecycleRetentionDecisionReason::DelegatedToQuarantine,
             )]));
         }
-        LifecycleRetentionScope::TableObjects { .. } => {}
+        LifecycleRetentionScope::TableObjects { .. } => {
+            // Table-object retention requires branch reachability facts
+            // that retention does not own; the scope is deliberately
+            // unsupported by retention regardless of proof completeness.
+            // Returning `DeferredUnsupportedScope` for both complete and
+            // incomplete proofs prevents callers from inferring two
+            // different "deferred" reasons for the same unsupported
+            // scope based on proof state.
+            return Ok(LifecycleRetentionOutcome::deferred_unsupported_scope(proof));
+        }
     }
     LifecycleRetentionOutcome::from_decisions(proof, decisions, 0)
 }

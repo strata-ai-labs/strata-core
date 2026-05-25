@@ -218,7 +218,10 @@ Required tests:
 3. `durable_close_wal_close_failure_returns_typed_source_chain`
 4. `durable_close_wal_sync_uncertain_returns_retry_pending`
 5. `durable_close_does_not_report_complete_with_unresolved_durable_gate`
-6. `durable_close_persists_final_health_fact_when_dirty`
+6. `durable_close_force_syncs_manifest_when_health_changed`
+   (formerly `durable_close_persists_final_health_fact_when_dirty`; renamed
+   to reflect that V1 does not persist health into the manifest payload —
+   the close-time publish forces a final fsync only)
 7. `durable_close_skips_manifest_write_when_no_final_fact_dirty`
 8. `durable_close_manifest_publish_failure_returns_typed_source_chain`
 9. `durable_close_does_not_truncate_wal_unless_drain_task_did_so`
@@ -236,7 +239,7 @@ Required tests:
 
 1. `durable_close_releases_writer_guard_after_sync`
 2. `durable_close_does_not_release_writer_guard_before_sync_failure`
-3. `durable_close_release_failure_reports_backend_error_if_backend_can_fail`
+3. `durable_close_reports_typed_error_when_writer_guard_is_missing_at_release`
 4. `durable_double_close_does_not_double_release_writer_guard`
 5. `durable_reopen_can_acquire_writer_guard_after_close`
 6. `durable_failed_close_keeps_guard_when_retry_requires_it`
@@ -256,7 +259,7 @@ Required tests:
 2. `close_retry_after_timeout_completes_when_blocker_clears`
 3. `close_retry_after_wal_failure_retries_sync_phase`
 4. `close_retry_after_manifest_failure_retries_final_fact_phase`
-5. `close_retry_after_guard_release_failure_retries_release_phase`
+5. `close_retry_after_missing_writer_guard_failure_retries_release_phase`
 6. `close_retry_does_not_restart_completed_ordinary_work`
 7. `double_close_after_success_returns_prior_final_outcome`
 8. `double_close_after_success_does_not_touch_backend`

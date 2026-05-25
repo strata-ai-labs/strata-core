@@ -695,9 +695,19 @@ impl<'a> WalService<'a> {
     }
 
     pub(crate) fn close(&mut self) -> WalServiceResult<()> {
-        if self.dirty_bytes > 0 {
-            self.force_durable()?;
-        }
+        // Always issue at least one SyncObject through the backend on close,
+        // regardless of `dirty_bytes`. Two reasons:
+        //   1. The byte-level state may already be durable because an
+        //      earlier `force_durable` succeeded, but a *partial-close
+        //      retry* (e.g. the first close cleared `dirty_bytes` then
+        //      failed downstream before completing the lifecycle close)
+        //      must still confirm a fresh sync on the retry attempt.
+        //      Otherwise the second close reports Complete with
+        //      `durable_synced=true` without any operation log evidence.
+        //   2. `sync_object` on an already-clean active segment is an
+        //      observable fsync no-op at the backend; the cost is one
+        //      syscall on close, paid once.
+        self.force_durable()?;
         Ok(())
     }
 

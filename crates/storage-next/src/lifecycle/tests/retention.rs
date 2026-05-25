@@ -675,7 +675,14 @@ fn replaced_unreachable_table_object_is_quarantine_candidate() {
 }
 
 #[test]
-fn table_object_with_incomplete_reachability_is_retained_with_debt() {
+fn table_object_with_incomplete_reachability_is_deferred_as_unsupported_scope() {
+    // Table-object retention is unsupported regardless of proof
+    // completeness — retention does not own branch reachability facts.
+    // The outcome must surface `DeferredUnsupportedScope` even when the
+    // proof itself happens to be incomplete; reporting
+    // `DeferredIncompleteProof` here would mislead callers into
+    // retrying once the proof completes, when in reality table
+    // retention is permanently a deferred scope for retention.
     let request = LifecycleRetentionRequest::new(
         LifecycleRetentionScope::TableObjects {
             branch_id: BranchId::from_bytes([0x44; 16]),
@@ -687,10 +694,34 @@ fn table_object_with_incomplete_reachability_is_retained_with_debt() {
 
     assert_eq!(
         outcome.status(),
-        LifecycleRetentionStatus::DeferredIncompleteProof
+        LifecycleRetentionStatus::DeferredUnsupportedScope
     );
     assert_eq!(outcome.objects_pruned(), 0);
-    assert_eq!(outcome.recovery_health().expect("health").fault_count(), 1);
+    assert_eq!(outcome.decisions(), &[]);
+}
+
+#[test]
+fn table_object_retention_with_complete_proof_defers_without_silent_success() {
+    let request = LifecycleRetentionRequest::new(
+        LifecycleRetentionScope::TableObjects {
+            branch_id: BranchId::from_bytes([0x45; 16]),
+        },
+        1,
+    );
+    let outcome = retention_outcome_for_scope(&request, complete_retention_proof(1, 7), &[])
+        .expect("outcome");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleRetentionStatus::DeferredUnsupportedScope
+    );
+    assert_eq!(outcome.decisions(), &[]);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        maintenance.reason(),
+        Some("table object retention requires branch reachability")
+    );
 }
 
 #[test]

@@ -434,7 +434,18 @@ fn cache_close_is_idempotent_blocks_commits_and_reads_and_avoids_backend_calls()
     assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
     assert_eq!(second.close_fact(), Some(LifecycleCloseFact::AlreadyClosed));
     assert!(second.prior_final());
+    // Idempotent close must surface the *same* stats the caller observed on
+    // the first call — close_attempts, canceled_tasks, etc. — rather than
+    // a fabricated baseline. Without this, retry-observability tools see
+    // different counts on the second call than the first.
+    assert_eq!(second.stats(), close.stats());
     assert_eq!(runtime.state(), LifecycleState::Closed);
+
+    // A third call must still see the same prior stats — repeated
+    // idempotent retries do not drift.
+    let third = runtime.close().expect("third idempotent close");
+    assert_eq!(third.stats(), close.stats());
+    assert_eq!(third.status(), CloseOutcomeStatus::Idempotent);
 
     assert!(matches!(
         runtime.read_view().expect_err("read after close rejected"),
@@ -466,7 +477,12 @@ fn cache_close_is_idempotent_blocks_commits_and_reads_and_avoids_backend_calls()
 }
 
 #[test]
-fn cache_close_rejects_pending_drain_required_maintenance_before_transitioning() {
+fn cache_close_drains_pending_drain_required_maintenance_before_transitioning() {
+    // Cache supports its own drain-required path now: queued drain-class
+    // tasks are dispatched through the cache close runner so the close
+    // path can complete without leaving the runtime stuck on a pending
+    // drain task. The task must run to completion before the state
+    // transitions to Closed.
     let branch = branch_id(0x50);
     let backend = MemoryBackend::new();
     let mut runtime = open_runtime(branch, &backend);
@@ -482,28 +498,16 @@ fn cache_close_rejects_pending_drain_required_maintenance_before_transitioning()
         )
         .expect("enqueue drain-required task");
 
-    let error = runtime
+    let close = runtime
         .close()
-        .expect_err("drain-required task blocks close");
+        .expect("cache close drains drain-required task");
 
-    assert_eq!(
-        error,
-        LifecycleError::MaintenanceTaskFailed {
-            reason: "cache close cannot complete while drain-required maintenance is pending",
-        }
-    );
-    assert_eq!(runtime.state(), LifecycleState::Open);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-
-    let mut runner = MaintenanceTestRunner;
-    runtime
-        .run_next_maintenance(&mut runner)
-        .expect("run drain-required task while open")
-        .expect("task outcome");
-    assert_eq!(
-        runtime.close().expect("close after maintenance").status(),
-        CloseOutcomeStatus::Complete
-    );
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.close_fact(), Some(LifecycleCloseFact::Complete));
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    // Executor records the drained task in its stats.
+    assert_eq!(runtime.maintenance_status().stats().drained(), 1);
 }
 
 #[test]
@@ -581,7 +585,10 @@ fn cache_close_retry_from_closing_finishes_without_durable_side_effects() {
 }
 
 #[test]
-fn cache_close_rejects_or_drains_drain_required_work_by_policy() {
+fn cache_close_drains_drain_required_work() {
+    // Cache no longer rejects on drain-required work — it dispatches the
+    // queued task through the cache close runner. The runtime closes
+    // cleanly with the drained task reflected in maintenance stats.
     let branch = branch_id(0x53);
     let backend = MemoryBackend::new();
     let mut runtime = open_runtime(branch, &backend);
@@ -597,14 +604,12 @@ fn cache_close_rejects_or_drains_drain_required_work_by_policy() {
         )
         .expect("enqueue");
 
-    let error = runtime.close().expect_err("drain-required task blocks");
+    let close = runtime.close().expect("close drains task");
 
-    assert_eq!(
-        error.code(),
-        "failed_precondition.lifecycle.maintenance_task"
-    );
-    assert_eq!(runtime.state(), LifecycleState::Open);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert!(runtime.maintenance_status().stats().drained() >= 1);
 }
 
 #[test]

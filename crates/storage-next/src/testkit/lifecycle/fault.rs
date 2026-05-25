@@ -42,86 +42,168 @@ pub fn check_lifecycle_fault_contract(
     script: &[u8],
 ) -> Result<LifecycleFaultContractOutcome, TestkitError> {
     let mut outcome = LifecycleFaultContractOutcome::default();
+    // The service-fault harness runs all 19 FaultingBackend (and equivalent
+    // filesystem/decoder) injection cases. Each route below asserts on its
+    // own counter from the resulting outcome — counter-presence here means
+    // the route's specific fault case actually executed, not just that some
+    // contract's pre-existing fixture incremented an unrelated counter.
+    let service_faults = collect_service_fault_harness()?;
     match FaultRoute::from_script(script) {
         FaultRoute::CapabilityPreflight => {
             let scaffold = check_lifecycle_scaffold_contract(script)?;
-            check_capability_preflight_route(&scaffold, &mut outcome)?;
+            check_capability_preflight_route(&scaffold, &service_faults, &mut outcome)?;
         }
         FaultRoute::WriterGuardManifestCreate => {
             let scaffold = check_lifecycle_scaffold_contract(script)?;
-            check_writer_guard_manifest_create_route(&scaffold, &mut outcome)?;
+            check_writer_guard_manifest_create_route(&scaffold, &service_faults, &mut outcome)?;
         }
         FaultRoute::ManifestPublishUncertain => {
             let scaffold = check_lifecycle_scaffold_contract(script)?;
-            check_manifest_publish_uncertain_route(&scaffold, &mut outcome)?;
+            check_manifest_publish_uncertain_route(&scaffold, &service_faults, &mut outcome)?;
         }
         FaultRoute::SnapshotOrphan => {
             let checkpoint = check_lifecycle_checkpoint_contract(script)?;
-            check_snapshot_orphan_route(&checkpoint, &mut outcome)?;
+            check_snapshot_orphan_route(&checkpoint, &service_faults, &mut outcome)?;
         }
         FaultRoute::CheckpointTruncationDebt => {
             let checkpoint = check_lifecycle_checkpoint_contract(script)?;
-            check_checkpoint_truncation_debt_route(&checkpoint, &mut outcome)?;
+            check_checkpoint_truncation_debt_route(&checkpoint, &service_faults, &mut outcome)?;
         }
         FaultRoute::PartialLogStrict => {
             let recovery = check_lifecycle_recovery_contract(script)?;
-            check_partial_log_strict_route(&recovery, &mut outcome)?;
+            check_partial_log_strict_route(&recovery, &service_faults, &mut outcome)?;
         }
         FaultRoute::PartialLogLossy => {
             let recovery = check_lifecycle_recovery_contract(script)?;
-            check_partial_log_lossy_route(&recovery, &mut outcome)?;
+            check_partial_log_lossy_route(&recovery, &service_faults, &mut outcome)?;
         }
         FaultRoute::CorruptLogTyped => {
             let recovery = check_lifecycle_recovery_contract(script)?;
             let bootstrap = check_lifecycle_bootstrap_contract(script)?;
-            check_corrupt_log_typed_route(&recovery, &bootstrap, &mut outcome)?;
+            check_corrupt_log_typed_route(&recovery, &bootstrap, &service_faults, &mut outcome)?;
         }
         FaultRoute::ReplayFailedState => {
             let bootstrap = check_lifecycle_bootstrap_contract(script)?;
-            check_replay_failed_state_route(&bootstrap, &mut outcome)?;
+            check_replay_failed_state_route(&bootstrap, &service_faults, &mut outcome)?;
         }
         FaultRoute::ReplayVisibleDebt => {
             let bootstrap = check_lifecycle_bootstrap_contract(script)?;
-            check_replay_visible_debt_route(&bootstrap, &mut outcome)?;
+            check_replay_visible_debt_route(&bootstrap, &service_faults, &mut outcome)?;
         }
         FaultRoute::FlushOrphanTable => {
             let flush = check_lifecycle_flush_contract(script)?;
-            check_flush_orphan_table_route(&flush, &mut outcome)?;
+            check_flush_orphan_table_route(&flush, &service_faults, &mut outcome)?;
         }
         FaultRoute::RewritePreservedReads => {
             let rewrite = check_lifecycle_table_rewrite_contract(script)?;
-            check_rewrite_preserved_reads_route(&rewrite, &mut outcome)?;
+            check_rewrite_preserved_reads_route(&rewrite, &service_faults, &mut outcome)?;
         }
         FaultRoute::RetentionBlockedDelete => {
             let retention = check_lifecycle_retention_contract(script)?;
-            check_retention_blocked_delete_route(&retention, &mut outcome)?;
+            check_retention_blocked_delete_route(&retention, &service_faults, &mut outcome)?;
         }
         FaultRoute::QuarantinePublishBlockedPurge => {
             let quarantine = check_lifecycle_quarantine_contract(script)?;
-            check_quarantine_publish_blocked_purge_route(&quarantine, &mut outcome)?;
+            check_quarantine_publish_blocked_purge_route(
+                &quarantine,
+                &service_faults,
+                &mut outcome,
+            )?;
         }
         FaultRoute::PurgeDeleteDebt => {
             let quarantine = check_lifecycle_quarantine_contract(script)?;
-            check_purge_delete_debt_route(&quarantine, &mut outcome)?;
+            check_purge_delete_debt_route(&quarantine, &service_faults, &mut outcome)?;
         }
         FaultRoute::CloseQuiesceTimeout => {
             let close = check_lifecycle_close_contract(script)?;
-            check_close_quiesce_timeout_route(&close, &mut outcome)?;
+            check_close_quiesce_timeout_route(&close, &service_faults, &mut outcome)?;
         }
         FaultRoute::CloseLogSyncSource => {
             let close = check_lifecycle_close_contract(script)?;
-            check_close_log_sync_source_route(&close, &mut outcome)?;
+            check_close_log_sync_source_route(&close, &service_faults, &mut outcome)?;
         }
         FaultRoute::CloseManifestSyncDebt => {
             let close = check_lifecycle_close_contract(script)?;
-            check_close_manifest_sync_debt_route(&close, &mut outcome)?;
+            check_close_manifest_sync_debt_route(&close, &service_faults, &mut outcome)?;
         }
         FaultRoute::WriterGuardReleaseTyped => {
             let close = check_lifecycle_close_contract(script)?;
-            check_writer_guard_release_typed_route(&close, &mut outcome)?;
+            check_writer_guard_release_typed_route(&close, &service_faults, &mut outcome)?;
         }
     }
     Ok(outcome)
+}
+
+#[cfg(any(test, feature = "fault-injection"))]
+type ServiceFaultHarnessOutcome = crate::testkit::ServiceFaultWindowHarnessOutcome;
+#[cfg(not(any(test, feature = "fault-injection")))]
+type ServiceFaultHarnessOutcome = ();
+
+fn collect_service_fault_harness() -> Result<ServiceFaultHarnessOutcome, TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    {
+        let outcome = run_service_fault_window_harness()?;
+        ensure(
+            outcome.cases_executed() >= 19,
+            "service fault harness did not execute all 19 routes",
+        )?;
+        Ok(outcome)
+    }
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "fault-injection"))]
+fn require_service_fault_route(
+    outcome: &ServiceFaultHarnessOutcome,
+    cases: usize,
+    route: &'static str,
+) -> Result<(), TestkitError> {
+    ensure(
+        cases > 0,
+        // The static message is the only deterministic surface the harness
+        // can return; the dynamic route label lives in the outcome for
+        // debugging.
+        match route {
+            "capability_preflight" => "capability_preflight FaultingBackend case did not execute",
+            "writer_guard_manifest_create" => "writer_guard_manifest_create FaultingBackend case did not execute",
+            "manifest_publish_uncertain" => "manifest_publish_uncertain FaultingBackend case did not execute",
+            "snapshot_orphan" => "snapshot_orphan FaultingBackend case did not execute",
+            "checkpoint_truncation_debt" => "checkpoint_truncation_debt FaultingBackend case did not execute",
+            "partial_log_strict" => "partial_log_strict FaultingBackend case did not execute",
+            "partial_log_lossy" => "partial_log_lossy FaultingBackend case did not execute",
+            "corrupt_log_typed" => "corrupt_log_typed FaultingBackend case did not execute",
+            "replay_failed_state" => "replay_failed_state FaultingBackend case did not execute",
+            "replay_visible_debt" => "replay_visible_debt FaultingBackend case did not execute",
+            "flush_orphan_table" => "flush_orphan_table FaultingBackend case did not execute",
+            "rewrite_preserved_reads" => "rewrite_preserved_reads FaultingBackend case did not execute",
+            "retention_blocked_delete" => "retention_blocked_delete FaultingBackend case did not execute",
+            "quarantine_publish_blocked_purge" => "quarantine_publish_blocked_purge FaultingBackend case did not execute",
+            "purge_delete_debt" => "purge_delete_debt FaultingBackend case did not execute",
+            "close_quiesce_timeout" => "close_quiesce_timeout FaultingBackend case did not execute",
+            "close_log_sync_source" => "close_log_sync_source FaultingBackend case did not execute",
+            "close_manifest_sync_debt" => "close_manifest_sync_debt FaultingBackend case did not execute",
+            "writer_guard_release_typed" => "writer_guard_release_typed FaultingBackend case did not execute",
+            _ => "FaultingBackend case did not execute",
+        },
+    )?;
+    let _ = outcome;
+    Ok(())
+}
+
+#[cfg(not(any(test, feature = "fault-injection")))]
+#[allow(
+    dead_code,
+    reason = "fault-injection-disabled builds route to the no-op `let _ = service;` arms in each check_X_route; this helper exists only to keep the cfg branches symmetric"
+)]
+fn require_service_fault_route(
+    _outcome: &ServiceFaultHarnessOutcome,
+    _cases: usize,
+    _route: &'static str,
+) -> Result<(), TestkitError> {
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,8 +315,17 @@ impl FaultRoute {
 
 fn check_capability_preflight_route(
     scaffold: &LifecycleScaffoldOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.capability_preflight_cases(),
+        "capability_preflight",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         scaffold.capability_preflight_cases() > 0 && scaffold.missing_capability_cases() > 0,
         "capability preflight fault route not covered",
@@ -245,8 +336,17 @@ fn check_capability_preflight_route(
 
 fn check_writer_guard_manifest_create_route(
     scaffold: &LifecycleScaffoldOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.writer_guard_manifest_create_cases(),
+        "writer_guard_manifest_create",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         scaffold.durable_writer_lock_failure_cases() > 0
             && scaffold.durable_manifest_create_cases() > 0,
@@ -258,8 +358,17 @@ fn check_writer_guard_manifest_create_route(
 
 fn check_manifest_publish_uncertain_route(
     scaffold: &LifecycleScaffoldOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.manifest_publish_uncertain_cases(),
+        "manifest_publish_uncertain",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         scaffold.durable_manifest_publish_fault_cases() > 0,
         "manifest publish uncertainty route not covered",
@@ -270,9 +379,13 @@ fn check_manifest_publish_uncertain_route(
 
 fn check_snapshot_orphan_route(
     checkpoint: &LifecycleCheckpointContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
-    check_service_fault_window_harness()?;
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(service, service.snapshot_orphan_cases(), "snapshot_orphan")?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         checkpoint.partial_window_cases() > 0,
         "checkpoint partial publication window not covered",
@@ -283,8 +396,17 @@ fn check_snapshot_orphan_route(
 
 fn check_checkpoint_truncation_debt_route(
     checkpoint: &LifecycleCheckpointContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.checkpoint_truncation_debt_cases(),
+        "checkpoint_truncation_debt",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         checkpoint.delete_failure_cases() > 0,
         "checkpoint truncation health debt not covered",
@@ -295,8 +417,17 @@ fn check_checkpoint_truncation_debt_route(
 
 fn check_partial_log_strict_route(
     recovery: &LifecycleRecoveryContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.partial_log_strict_cases(),
+        "partial_log_strict",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         recovery.strict_failure_cases() > 0,
         "strict partial log fault route not covered",
@@ -307,8 +438,17 @@ fn check_partial_log_strict_route(
 
 fn check_partial_log_lossy_route(
     recovery: &LifecycleRecoveryContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.partial_log_lossy_cases(),
+        "partial_log_lossy",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         recovery.lossy_degradation_cases() > 0,
         "lossy partial log fault route not covered",
@@ -320,8 +460,17 @@ fn check_partial_log_lossy_route(
 fn check_corrupt_log_typed_route(
     recovery: &LifecycleRecoveryContractOutcome,
     bootstrap: &LifecycleBootstrapContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.corrupt_log_typed_cases(),
+        "corrupt_log_typed",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         recovery.strict_failure_cases() > 0 && bootstrap.replay_rejection_cases() > 0,
         "typed corrupt recovery route not covered",
@@ -332,8 +481,17 @@ fn check_corrupt_log_typed_route(
 
 fn check_replay_failed_state_route(
     bootstrap: &LifecycleBootstrapContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.replay_failed_state_cases(),
+        "replay_failed_state",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         bootstrap.replay_rejection_cases() > 0,
         "replay failure route not covered",
@@ -344,8 +502,17 @@ fn check_replay_failed_state_route(
 
 fn check_replay_visible_debt_route(
     bootstrap: &LifecycleBootstrapContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.replay_visible_debt_cases(),
+        "replay_visible_debt",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         bootstrap.degraded_bootstrap_cases() > 0,
         "replay visible-debt route not covered",
@@ -356,9 +523,17 @@ fn check_replay_visible_debt_route(
 
 fn check_flush_orphan_table_route(
     flush: &LifecycleFlushContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
-    check_service_fault_window_harness()?;
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.flush_orphan_table_cases(),
+        "flush_orphan_table",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         flush.publish_failure_cases() > 0 && flush.reopen_failure_cases() > 0,
         "flush orphan table route not covered",
@@ -369,8 +544,17 @@ fn check_flush_orphan_table_route(
 
 fn check_rewrite_preserved_reads_route(
     rewrite: &LifecycleTableRewriteContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.rewrite_preserved_reads_cases(),
+        "rewrite_preserved_reads",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         rewrite.cache_compaction_cases() > 0 && rewrite.materialization_cases() > 0,
         "table rewrite read-preservation route not covered",
@@ -381,8 +565,17 @@ fn check_rewrite_preserved_reads_route(
 
 fn check_retention_blocked_delete_route(
     retention: &LifecycleRetentionContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.retention_blocked_delete_cases(),
+        "retention_blocked_delete",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         retention.incomplete_proof_cases() > 0 && retention.blocked_recovery_cases() > 0,
         "retention proof did not block unsafe delete",
@@ -393,9 +586,17 @@ fn check_retention_blocked_delete_route(
 
 fn check_quarantine_publish_blocked_purge_route(
     quarantine: &LifecycleQuarantineContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
-    check_service_fault_window_harness()?;
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.quarantine_publish_blocked_purge_cases(),
+        "quarantine_publish_blocked_purge",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         quarantine.inventory_publish_failure_cases() > 0
             && quarantine.stale_purge_proof_cases() > 0,
@@ -405,22 +606,19 @@ fn check_quarantine_publish_blocked_purge_route(
     Ok(())
 }
 
-fn check_service_fault_window_harness() -> Result<(), TestkitError> {
-    #[cfg(any(test, feature = "fault-injection"))]
-    {
-        let service_faults = run_service_fault_window_harness()?;
-        ensure(
-            service_faults.cases_executed() > 0,
-            "fault injection service harness did not execute",
-        )?;
-    }
-    Ok(())
-}
-
 fn check_purge_delete_debt_route(
     quarantine: &LifecycleQuarantineContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.purge_delete_debt_cases(),
+        "purge_delete_debt",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         quarantine.purge_delete_failure_cases() > 0,
         "purge delete debt route not covered",
@@ -431,8 +629,17 @@ fn check_purge_delete_debt_route(
 
 fn check_close_quiesce_timeout_route(
     close: &LifecycleCloseContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.close_quiesce_timeout_cases(),
+        "close_quiesce_timeout",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         close.commit_quiesce_blocked_cases() > 0 && close.retryable_timeout_cases() > 0,
         "close quiesce timeout route not covered",
@@ -443,8 +650,17 @@ fn check_close_quiesce_timeout_route(
 
 fn check_close_log_sync_source_route(
     close: &LifecycleCloseContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.close_log_sync_source_cases(),
+        "close_log_sync_source",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         close.wal_sync_failure_cases() > 0 && close.source_chain_preserved_cases() > 0,
         "close log sync source route not covered",
@@ -455,8 +671,17 @@ fn check_close_log_sync_source_route(
 
 fn check_close_manifest_sync_debt_route(
     close: &LifecycleCloseContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.close_manifest_sync_debt_cases(),
+        "close_manifest_sync_debt",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         close.manifest_sync_failure_cases() > 0,
         "close manifest sync debt route not covered",
@@ -467,8 +692,17 @@ fn check_close_manifest_sync_debt_route(
 
 fn check_writer_guard_release_typed_route(
     close: &LifecycleCloseContractOutcome,
+    service: &ServiceFaultHarnessOutcome,
     outcome: &mut LifecycleFaultContractOutcome,
 ) -> Result<(), TestkitError> {
+    #[cfg(any(test, feature = "fault-injection"))]
+    require_service_fault_route(
+        service,
+        service.writer_guard_release_typed_cases(),
+        "writer_guard_release_typed",
+    )?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let _ = service;
     ensure(
         close.guard_release_observed_cases() > 0,
         "writer guard release route not covered",

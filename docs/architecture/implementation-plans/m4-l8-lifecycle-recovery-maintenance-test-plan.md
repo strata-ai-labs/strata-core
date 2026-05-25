@@ -29,7 +29,7 @@ The suite must fail if L8:
    user-facing recovery wording;
 12. imports engine/product/StrataHub concepts into production lifecycle code.
 
-M4-L8 is tested in the same three parts used by the implementation plan:
+M4-L8 is tested in the same four parts used by the implementation plan:
 
 1. **L8-Core: Open + Recovery**
    Proves lifecycle state, open plans, capability validation, cache/durable
@@ -40,6 +40,10 @@ M4-L8 is tested in the same three parts used by the implementation plan:
 3. **L8-Reclaim + Close + Assurance**
    Proves retention, quarantine, purge, repair, close, generated/fault/crash
    coverage, source guards, and closeout.
+4. **L8-Durable Tables + Storage Hardening**
+   Proves durable table manifests, table-object reachability, table-manifest
+   backed watermarks, durable rewrite publication, row pruning, memory budgets,
+   lazy reads, branch lifecycle completion, and commit hardening.
 
 Each part should be independently closeable. Later parts may add stronger
 generated or crash coverage over earlier parts, but they must not weaken earlier
@@ -155,6 +159,28 @@ closeout tests prove:
 10. source guards enforce layer boundaries;
 11. sensitivity probes are recorded;
 12. the closeout command matrix passes.
+
+### Part 4: L8-Durable Tables + Storage Hardening
+
+L8-Durable Tables + Storage Hardening closes when direct, generated, fuzz, and
+closeout tests prove:
+
+1. durable table-manifest bytes are canonical, versioned, checksummed, and
+   primitive-neutral;
+2. table-manifest publication and recovery rebuild table reachability without
+   trusting orphan table objects;
+3. table-object retention uses manifest-backed proof and does not report
+   unsupported scopes as clean success;
+4. flush watermarks and WAL truncation can rely on table-manifest coverage only
+   when the proof is complete;
+5. durable compaction/materialization publication has typed fault windows;
+6. row pruning preserves as-of, history, TTL, tombstone, and inherited-layer
+   guarantees;
+7. memory/cache budgets bound storage-owned memory under low-memory profiles;
+8. lazy object-backed reads avoid whole-table loading;
+9. branch lifecycle create/list/delete/clear/fork-at-history/generation behavior
+   is complete enough for L9;
+10. commit hardening gaps are closed or explicitly deferred with stable tests.
 
 ## Reference Model
 

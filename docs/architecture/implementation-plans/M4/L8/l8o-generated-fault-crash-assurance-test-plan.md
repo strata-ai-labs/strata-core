@@ -153,7 +153,7 @@ Required tests:
 16. `fault_close_quiesce_timeout_is_retryable`
 17. `fault_close_wal_sync_failure_preserves_source_chain`
 18. `fault_close_manifest_sync_failure_preserves_final_fact_debt`
-19. `fault_writer_guard_release_failure_is_typed_when_backend_reports_it`
+19. `fault_writer_guard_missing_at_release_is_typed`
 
 Assertions:
 
@@ -383,4 +383,3 @@ cargo +nightly fuzz run lifecycle_retention -- -max_total_time=60
 If nightly fuzzing is unavailable, the normal fuzz inventory tests must still
 prove target registration, distinct contract routing, and non-empty seed
 corpora.
-

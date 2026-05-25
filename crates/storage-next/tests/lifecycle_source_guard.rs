@@ -390,11 +390,24 @@ fn lifecycle_fuzz_targets_use_distinct_contracts() {
     ];
 
     let manifest = fs::read_to_string(root.join("fuzz/Cargo.toml")).expect("read fuzz manifest");
+    let all_contracts = [
+        "check_lifecycle_recovery_fuzz_contract",
+        "check_lifecycle_maintenance_fuzz_contract",
+        "check_lifecycle_retention_fuzz_contract",
+    ];
     for (target, contract) in targets {
         assert!(manifest.contains(&format!("name = \"{target}\"")));
         let path = root.join(format!("fuzz/fuzz_targets/{target}.rs"));
         let text = fs::read_to_string(&path).expect("read lifecycle fuzz target");
         assert!(text.contains(contract), "{target} does not call {contract}");
+        for other in all_contracts {
+            if other != contract {
+                assert!(
+                    !text.contains(other),
+                    "{target} should not call unrelated lifecycle fuzz contract {other}"
+                );
+            }
+        }
         assert!(
             !text.contains("check_lifecycle_scaffold_contract"),
             "{target} calls scaffold-only contract"
@@ -443,11 +456,46 @@ fn lifecycle_crash_tests_are_feature_gated() {
 
 #[test]
 fn ignored_crash_tests_have_nonignored_phase_equivalents() {
+    const MARKER_PREFIX: &str = "// crash-harness phase-equivalent: ";
     let root = common::crate_root();
-    let text =
-        fs::read_to_string(root.join("tests/crash_recovery.rs")).expect("read crash recovery test");
+    let path = root.join("tests/crash_recovery.rs");
+    let text = fs::read_to_string(&path).expect("read crash recovery test");
+    let lines: Vec<&str> = text.lines().collect();
 
-    assert!(!text.contains("#[ignore]") || text.contains("nonignored_phase_equivalents"));
+    let mut violations: Vec<String> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("#[ignore]") {
+            continue;
+        }
+        let lower = index.saturating_sub(5);
+        let upper = (index + 6).min(lines.len());
+        let Some(pair_name) = lines[lower..upper]
+            .iter()
+            .find_map(|nearby| nearby.trim_start().strip_prefix(MARKER_PREFIX))
+            .map(|tail| tail.trim().to_owned())
+        else {
+            violations.push(format!(
+                "{}:{} #[ignore] missing '{}<fn>' marker within 5 lines",
+                path.display(),
+                index + 1,
+                MARKER_PREFIX,
+            ));
+            continue;
+        };
+        let needle = format!("fn {pair_name}(");
+        if !text.contains(&needle) {
+            violations.push(format!(
+                "{}:{} declares phase-equivalent `{pair_name}` but `{needle}` is not defined in the file",
+                path.display(),
+                index + 1,
+            ));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "ignored-crash-test pairing violations:\n  {}",
+        violations.join("\n  "),
+    );
 }
 
 #[test]

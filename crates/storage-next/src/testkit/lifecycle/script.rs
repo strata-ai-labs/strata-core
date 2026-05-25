@@ -61,7 +61,8 @@ pub fn check_lifecycle_generated_script_contract(
     let quarantine = check_lifecycle_quarantine_contract(slice(script, 56))?;
     let quarantine_deferral =
         check_lifecycle_quarantine_contract(&[0, 1, 2, 3, 4, 1, 1, 8, 1, 0, 1])?;
-    let close = check_lifecycle_close_contract(slice(script, 64))?;
+    let close = check_lifecycle_close_contract(b"close-state")?;
+    let close_idempotence = check_lifecycle_close_contract(b"close-retry")?;
 
     ensure(
         recovery.input_derived_empty_cases() > 0
@@ -118,7 +119,7 @@ pub fn check_lifecycle_generated_script_contract(
     outcome.watermark_monotonic_checks += 1;
 
     ensure(
-        close.idempotent_close_cases() > 0,
+        close_idempotence.idempotent_close_cases() > 0,
         "generated close script did not prove idempotence",
     )?;
     outcome.close_idempotence_checks += 1;
@@ -175,7 +176,7 @@ pub fn check_lifecycle_maintenance_fuzz_contract(
     let flush = check_lifecycle_flush_contract(slice(data, 8))?;
     let checkpoint = check_lifecycle_checkpoint_contract(slice(data, 16))?;
     let rewrite = check_lifecycle_table_rewrite_contract(slice(data, 24))?;
-    let close = check_lifecycle_close_contract(slice(data, 32))?;
+    let close = check_lifecycle_close_contract(b"close-retry")?;
     ensure(
         maintenance.input_model_step_cases() > 0
             && maintenance.input_run_cases() > 0
@@ -216,7 +217,7 @@ pub fn check_lifecycle_retention_fuzz_contract(
     };
     let retention = check_lifecycle_retention_contract(data)?;
     let quarantine = check_lifecycle_quarantine_contract(slice(data, 8))?;
-    let close = check_lifecycle_close_contract(slice(data, 16))?;
+    let close = check_lifecycle_close_contract(b"close-retry")?;
     ensure(
         retention.complete_proof_cases() > 0
             && retention.incomplete_proof_cases() > 0

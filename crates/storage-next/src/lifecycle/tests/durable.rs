@@ -642,6 +642,10 @@ fn durable_close_syncs_log_releases_writer_guard_and_is_idempotent() {
     assert_eq!(second.close_fact(), Some(LifecycleCloseFact::AlreadyClosed));
     assert!(second.prior_final());
     assert_eq!(backend.operations().len(), operations_after_first_close);
+    // Idempotent close must surface the same stats as the first close —
+    // a retry that fabricates `(0, 0, 0, 0, 1)` would drift from the
+    // observable record. The cached prior-close outcome guarantees this.
+    assert_eq!(second.stats(), close.stats());
 }
 
 #[test]
@@ -914,11 +918,6 @@ fn double_close_after_success_does_not_touch_backend() {
 }
 
 #[test]
-fn durable_close_release_failure_reports_backend_error_if_backend_can_fail() {
-    durable_close_reports_typed_error_when_writer_guard_is_missing_at_release();
-}
-
-#[test]
 fn durable_close_skips_manifest_write_when_no_final_fact_dirty() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x32);
@@ -934,22 +933,45 @@ fn durable_close_skips_manifest_write_when_no_final_fact_dirty() {
 }
 
 #[test]
-fn durable_close_persists_final_health_fact_when_dirty() {
+fn durable_close_force_syncs_manifest_when_health_changed() {
+    // V1 lifecycle health is *not* persisted in the manifest payload (see
+    // `force_final_manifest_fsync_on_health_change` doc). What we assert
+    // here is the durability tighten the hook is responsible for: when
+    // recovery health degraded during the session, close re-publishes the
+    // existing manifest at PublishMode::Replace to force one final
+    // backend fsync before the writer guard releases. The republished
+    // bytes are byte-identical to the bytes that were loaded — the value
+    // of the operation is the durable barrier, not a new payload.
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x33);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
     let health = close_health_debt();
     runtime.record_recovery_health_for_test(&health);
 
+    let manifest_before = backend
+        .last_manifest_bytes()
+        .expect("manifest present after open");
     let operations_before_close = backend.operations().len();
-    let close = runtime.close().expect("close with final fact sync");
+    let close = runtime.close().expect("close with manifest fsync");
     let close_operations = backend.operations()[operations_before_close..].to_vec();
+    let manifest_after = backend
+        .last_manifest_bytes()
+        .expect("manifest still present after close");
 
     assert_eq!(close.status(), CloseOutcomeStatus::Complete);
     assert_eq!(close.stats().maintenance_tasks(), 0);
-    assert!(close_operations
+    let publish_count = close_operations
         .iter()
-        .any(|operation| matches!(operation, Operation::Publish(_, PublishMode::Replace))));
+        .filter(|op| matches!(op, Operation::Publish(_, PublishMode::Replace)))
+        .count();
+    assert_eq!(
+        publish_count, 1,
+        "force-fsync should issue exactly one manifest republish"
+    );
+    assert_eq!(
+        manifest_before, manifest_after,
+        "V1 manifest payload must not change across a force-fsync — health is not a manifest field"
+    );
 }
 
 #[test]
@@ -1184,8 +1206,8 @@ fn close_retry_after_manifest_failure_retries_final_fact_phase() {
 }
 
 #[test]
-fn close_retry_after_guard_release_failure_retries_release_phase() {
-    durable_close_release_failure_reports_backend_error_if_backend_can_fail();
+fn close_retry_after_missing_writer_guard_failure_retries_release_phase() {
+    durable_close_reports_typed_error_when_writer_guard_is_missing_at_release();
 }
 
 #[test]
@@ -1210,22 +1232,51 @@ fn close_failure_during_guard_release_preserves_sync_fact() {
 
 #[test]
 fn close_acquires_commit_quiesce_after_maintenance_drain() {
+    // Enqueue a drain-required checkpoint task. The close path must
+    // execute drain (which produces a snapshot Publish operation against
+    // the backend) BEFORE issuing the WAL sync that close performs.
+    // We assert temporal ordering on the recorded backend operation log:
+    // every checkpoint-driven Publish must appear before the WAL SyncObject
+    // that close itself issues at the end of the sequence. If a refactor
+    // ever inverts these phases (quiesce/sync before drain), the
+    // assertion below catches it.
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x3e);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
     runtime
-        .enqueue_maintenance(drain_task(
-            MaintenanceTaskKind::HealthCollection,
-            MaintenanceTaskScope::Global,
-            MaintenanceTaskPriority::Normal,
-        ))
-        .expect("enqueue health drain");
+        .execute_durable_commit(
+            durable_put_batch(branch, b"ordering-precommit", b"value"),
+            generation_guard(),
+        )
+        .expect("commit before close");
+    runtime
+        .enqueue_maintenance(drain_checkpoint_task())
+        .expect("enqueue drain-required checkpoint");
 
+    let operations_before_close = backend.operations().len();
     let close = runtime.close().expect("close");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
 
     assert_eq!(close.stats().maintenance_tasks(), 1);
     assert!(close.commits_quiesced());
     assert_eq!(runtime.state(), LifecycleState::Closed);
+
+    // The drained checkpoint task issued at least one snapshot Publish
+    // before close itself ran the WAL sync. Pick the first Publish index
+    // (drain output) and the first SyncObject index (WAL close) — drain
+    // must strictly precede sync.
+    let first_publish = close_operations
+        .iter()
+        .position(|operation| matches!(operation, Operation::Publish(_, _)))
+        .expect("drained checkpoint produced no Publish");
+    let first_sync = close_operations
+        .iter()
+        .position(|operation| matches!(operation, Operation::SyncObject(_)))
+        .expect("close produced no SyncObject");
+    assert!(
+        first_publish < first_sync,
+        "drain checkpoint Publish at index {first_publish} must precede close SyncObject at index {first_sync}; close ordering inverted",
+    );
 }
 
 #[test]
@@ -1371,6 +1422,7 @@ fn durable_close_drains_stale_active_maintenance_before_closing() {
     assert_eq!(runtime.state(), LifecycleState::Closed);
     assert_eq!(runtime.maintenance_status().active_task(), None);
     assert_eq!(runtime.maintenance_status().stats().drained(), 1);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
     assert!(!backend.lock_is_held());
 }
 
@@ -1779,6 +1831,15 @@ impl DurableTestBackend {
 
     fn operations(&self) -> Vec<Operation> {
         self.operations.lock().expect("operations").clone()
+    }
+
+    fn last_manifest_bytes(&self) -> Option<Vec<u8>> {
+        let manifest_object = ObjectLayout::database_manifest().expect("database manifest layout");
+        self.objects
+            .lock()
+            .expect("objects")
+            .get(&manifest_object)
+            .cloned()
     }
 
     fn operation_kinds(&self) -> Vec<OperationKind> {

@@ -203,7 +203,40 @@ fn standard_close_syncs_dirty_state_and_clears_counters() {
 }
 
 #[test]
-fn standard_close_without_dirty_state_skips_sync() {
+fn standard_close_always_issues_one_sync_even_when_clean() {
+    // Close must issue a SyncObject on every call, regardless of dirty
+    // state. This guarantees a partial-close retry (first close cleared
+    // dirty bytes but failed downstream) still produces an observable
+    // sync on the retry attempt, so the close outcome's
+    // `durable_synced=true` is backed by a fresh syscall every time.
+    let backend = SyncFaultBackend::new([]);
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    service.close().expect("clean close issues sync");
+
+    assert_eq!(service.dirty_bytes(), 0);
+    assert_eq!(service.dirty_records(), 0);
+    assert_eq!(
+        backend.sync_calls().len(),
+        1,
+        "clean close must still issue exactly one SyncObject for retry observability"
+    );
+}
+
+#[test]
+fn standard_close_sync_failure_surfaces_typed_error() {
+    // Replaces the prior "skip sync" expectation. With the always-sync
+    // contract, an injected sync fault on close MUST surface as an
+    // `Err(WalServiceError::Backend { operation: Sync, .. })` so the
+    // lifecycle close path can route the close-time WAL sync failure
+    // back to retry pending.
     let backend = SyncFaultBackend::new([BackendErrorKind::Unavailable]);
     let mut service = WalService::open(
         &backend,
@@ -214,11 +247,16 @@ fn standard_close_without_dirty_state_skips_sync() {
     )
     .expect("open WAL");
 
-    service.close().expect("clean close should not sync");
-
-    assert_eq!(service.dirty_bytes(), 0);
-    assert_eq!(service.dirty_records(), 0);
-    assert!(backend.sync_calls().is_empty());
+    let error = service
+        .close()
+        .expect_err("close must propagate the sync fault");
+    assert!(matches!(
+        error,
+        WalServiceError::Backend {
+            operation: WalOperation::Sync,
+            ..
+        }
+    ));
 }
 
 #[test]

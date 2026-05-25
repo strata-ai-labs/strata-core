@@ -159,6 +159,65 @@ fn lifecycle_retention_proof_integration() {
     assert!(outcome.blocked_recovery_cases() > 0);
 }
 
+#[cfg(all(feature = "testkit", feature = "localfs", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_retention_durable_runner_drives_real_backend_end_to_end() {
+    // This test exercises `DurableRetentionMaintenanceRunner` end-to-end:
+    // a fresh `LifecycleDurableLocalRuntime` is opened on a LocalFs
+    // tempdir, three snapshots are seeded with the manifest pointing at
+    // the newest, a Global retention task is enqueued, and the runner is
+    // invoked through `run_next_retention_maintenance`. We assert on
+    // observable on-disk and outcome facts so a regression in the
+    // durable retention dispatch path surfaces here rather than only
+    // through the testkit contract layer.
+    let tempdir = tempfile::tempdir().expect("retention runner tempdir");
+    let outcome = strata_storage_next::testkit::run_localfs_lifecycle_retention_runner_harness(
+        tempdir.path(),
+    )
+    .expect("retention runner harness");
+
+    // Three snapshots were seeded; retention should observe all three
+    // before the run and prune the older ones afterwards (the manifest
+    // points at snapshot 3 and `retain_newest_snapshots=1`).
+    assert_eq!(outcome.snapshots_before(), 3);
+    // Retention must actually prune to exactly the live snapshot — a
+    // permissive `<=` would let a regression that defers everything
+    // pass silently. The harness seeds three snapshots and the manifest
+    // pins the newest; with retain=1, the runner must leave exactly
+    // that one snapshot behind.
+    assert_eq!(
+        outcome.snapshots_after(),
+        1,
+        "retention with retain=1 against manifest snapshot must leave exactly 1 snapshot \
+         (before={}, after={})",
+        outcome.snapshots_before(),
+        outcome.snapshots_after(),
+    );
+    // Happy-path retention completes. Defer/Fail/Cancel are all
+    // regressions for this fixture.
+    assert_eq!(
+        outcome.maintenance_status_code(),
+        0,
+        "retention runner did not Complete (status code {})",
+        outcome.maintenance_status_code(),
+    );
+    // The runner should produce an outcome on the first invocation; we
+    // tolerate up to a few re-invocations defensively but assert at
+    // least one happened.
+    assert!(outcome.runner_invocations() >= 1);
+    assert!(outcome.runner_invocations() <= 4);
+    // No faults expected on the happy path. A non-zero fault count
+    // points at a partial-success regression (e.g. a snapshot we tried
+    // to delete failed to delete) and should surface here loud, not
+    // get swallowed.
+    assert_eq!(
+        outcome.fault_count(),
+        0,
+        "retention happy path must report zero faults; got {}",
+        outcome.fault_count(),
+    );
+}
+
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
 fn lifecycle_snapshot_pruning_integration() {
@@ -248,6 +307,21 @@ fn lifecycle_close_contract_covers_shutdown_categories() {
     assert!(outcome.manifest_sync_failure_cases() > 0);
     assert!(outcome.guard_release_observed_cases() > 0);
     assert!(outcome.source_chain_preserved_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_close_contract_routes_are_input_derived() {
+    let wal = strata_storage_next::testkit::check_lifecycle_close_contract(b"close-wal-sync")
+        .expect("WAL close route");
+    let retry = strata_storage_next::testkit::check_lifecycle_close_contract(b"close-retry")
+        .expect("retry close route");
+
+    assert!(wal.wal_sync_failure_cases() > 0);
+    assert_eq!(wal.manifest_sync_failure_cases(), 0);
+    assert_eq!(wal.idempotent_close_cases(), 0);
+    assert!(retry.idempotent_close_cases() > 0);
+    assert_eq!(retry.wal_sync_failure_cases(), 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]

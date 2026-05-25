@@ -186,6 +186,48 @@ fn quarantine_proof_allows_unrelated_telemetry_debt() {
 }
 
 #[test]
+fn quarantine_proof_blocks_when_telemetry_debt_targets_candidate_branch() {
+    let candidate = strata_core_next::BranchId::from_bytes([0x66; 16]);
+    let other = strata_core_next::BranchId::from_bytes([0x77; 16]);
+
+    let health_targeting_other = RecoveryHealth::degraded(
+        RecoveryDegradationClass::Telemetry,
+        vec![RecoveryFault::new(
+            RecoveryFaultKind::QuarantineInventoryMismatch,
+            "branch-scoped telemetry debt",
+        )
+        .expect("fault")
+        .with_affected_branch(other)],
+    )
+    .expect("telemetry health");
+    let unrelated =
+        LifecycleQuarantineProof::safe_for_candidate(health_targeting_other, candidate);
+    assert_eq!(
+        unrelated.status(),
+        LifecycleQuarantineProofStatus::CompleteSafe,
+        "telemetry debt naming a different branch must not block this candidate"
+    );
+
+    let health_targeting_candidate = RecoveryHealth::degraded(
+        RecoveryDegradationClass::Telemetry,
+        vec![RecoveryFault::new(
+            RecoveryFaultKind::QuarantineInventoryMismatch,
+            "branch-scoped telemetry debt",
+        )
+        .expect("fault")
+        .with_affected_branch(candidate)],
+    )
+    .expect("telemetry health");
+    let related =
+        LifecycleQuarantineProof::safe_for_candidate(health_targeting_candidate, candidate);
+    assert_eq!(
+        related.status(),
+        LifecycleQuarantineProofStatus::BlockedByRecoveryHealth,
+        "telemetry debt naming the candidate's branch must block reclaim",
+    );
+}
+
+#[test]
 fn quarantine_referenced_proof_defers_without_backend_access() {
     let backend = QuarantineTestBackend::durable().with_object(source_object(), b"table-bytes");
     let request = quarantine_request(
@@ -315,6 +357,20 @@ fn quarantine_inventory_mismatch_blocks_followup_purge() {
         purge.status(),
         LifecyclePurgeStatus::BlockedByRecoveryHealth
     );
+
+    let runtime_backend = CheckpointTestBackend::new();
+    let mut runtime = open_durable_runtime(branch_id(), &runtime_backend);
+    runtime.record_recovery_health_for_test(health);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::purge_quarantine(branch_id()))
+        .expect("enqueue purge");
+    let runtime_purge = runtime
+        .run_next_purge_maintenance()
+        .expect("run purge")
+        .expect("purge outcome");
+
+    assert_eq!(runtime_purge.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(runtime_purge.reason(), Some("recovery health blocks purge"));
 }
 
 #[test]
@@ -370,7 +426,11 @@ fn quarantine_existing_matching_entry_is_idempotent_and_retries_source_delete() 
 }
 
 #[test]
-fn quarantine_missing_source_is_service_failure_not_publish_failure() {
+fn quarantine_missing_source_is_transient_service_failure_not_publish_failure() {
+    // Missing-source maps to `ServiceTransient` after the
+    // ServiceFailed split. The source may have been deleted by a
+    // concurrent operation; a retry could succeed if the source returns,
+    // so the maintenance outcome must report Failed-but-retryable.
     let source = source_object();
     let backend = QuarantineTestBackend::durable();
     let request = quarantine_request(
@@ -380,11 +440,21 @@ fn quarantine_missing_source_is_service_failure_not_publish_failure() {
 
     let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
 
-    assert_eq!(outcome.status(), LifecycleQuarantineStatus::ServiceFailed);
+    assert_eq!(
+        outcome.status(),
+        LifecycleQuarantineStatus::ServiceTransient,
+        "missing source must classify as transient backend failure",
+    );
     let maintenance = outcome.maintenance_outcome();
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
-    assert!(!maintenance.retryable());
-    assert_eq!(maintenance.reason(), Some("quarantine service failed"));
+    assert!(
+        maintenance.retryable(),
+        "transient service failures must be retryable",
+    );
+    assert_eq!(
+        maintenance.reason(),
+        Some("quarantine service transient failure"),
+    );
     assert!(maintenance.source_error().is_some());
 }
 

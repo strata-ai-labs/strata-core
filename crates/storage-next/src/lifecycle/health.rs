@@ -27,6 +27,13 @@ pub(crate) enum RecoveryDegradationClass {
 pub(crate) struct RecoveryFault {
     kind: RecoveryFaultKind,
     reason: &'static str,
+    // Optional branch the fault was raised against. `None` means the
+    // fault is unscoped (global/service-level) — callers asserting
+    // unrelatedness to a candidate must treat unscoped faults
+    // conservatively. Threaded from quarantine inventory mismatches,
+    // branch-scoped manifest issues, and other branch-specific faults
+    // when the caller knows the affected branch.
+    affected_branch: Option<strata_core_next::BranchId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,7 +90,24 @@ impl RecoveryFault {
                 reason: "recovery fault reason must not be empty",
             });
         }
-        Ok(Self { kind, reason })
+        Ok(Self {
+            kind,
+            reason,
+            affected_branch: None,
+        })
+    }
+
+    /// Attach the branch this fault was raised against. Used by callers
+    /// (e.g. quarantine inventory mismatches) that know the affected
+    /// branch so downstream admission checks can prove the fault is
+    /// unrelated to a candidate before allowing reclaim under Telemetry
+    /// debt.
+    pub(crate) fn with_affected_branch(
+        mut self,
+        branch: strata_core_next::BranchId,
+    ) -> Self {
+        self.affected_branch = Some(branch);
+        self
     }
 
     pub(crate) const fn kind(&self) -> RecoveryFaultKind {
@@ -92,5 +116,32 @@ impl RecoveryFault {
 
     pub(crate) const fn reason(&self) -> &'static str {
         self.reason
+    }
+
+    pub(crate) const fn affected_branch(&self) -> Option<strata_core_next::BranchId> {
+        self.affected_branch
+    }
+}
+
+impl RecoveryHealth {
+    /// Returns `true` when the health has at least one fault whose
+    /// affected branch matches `branch`. Used by quarantine/purge
+    /// admission to refuse reclaim under Telemetry debt that names the
+    /// candidate's branch — an "unrelatedness" check defined in plan
+    /// rule 2 of Quarantine Admission. Unscoped faults
+    /// (`affected_branch == None`) do not contribute to the match here;
+    /// callers that want a conservative reject for unscoped faults
+    /// inspect `has_unscoped_fault` separately.
+    pub(crate) fn has_fault_targeting_branch(
+        &self,
+        branch: strata_core_next::BranchId,
+    ) -> bool {
+        match self {
+            Self::Healthy => false,
+            Self::Degraded { faults, .. } => faults
+                .iter()
+                .any(|fault| fault.affected_branch() == Some(branch)),
+            Self::Failed { fault } => fault.affected_branch() == Some(branch),
+        }
     }
 }

@@ -252,13 +252,38 @@ fn diagnostic_health_query_allowed_after_close() {
 
 #[test]
 fn close_after_failed_nonretryable_state_rejects() {
+    // `machine_in_state_for_close(Failed)` produces Failed-from-Opening
+    // (see helper). That state must reject Close because the failure was
+    // not raised by close-class work and the close path does not own
+    // retry for it. The rejection reason names the rule precisely so
+    // callers can route Open-failure recovery elsewhere.
     let machine = machine_in_state_for_close(LifecycleState::Failed);
 
     assert_eq!(
         machine.admit(LifecycleOperationKind::Close),
         LifecycleOperationAdmission::Rejected {
-            reason: "operation is not admitted in current lifecycle state",
+            reason: "Failed admits Close only when the prior failure was raised during close",
         }
+    );
+}
+
+#[test]
+fn close_after_failed_from_closing_admits_retry() {
+    // The counterpart: when the prior failure WAS raised by close-class
+    // work, Failed admits Close so the runtime can clean up without
+    // leaking durable handles through Drop.
+    let mut machine = machine_in_state_for_close(LifecycleState::Closing);
+    machine
+        .transition(LifecycleTransitionTrigger::PhaseFailed {
+            reason: "close failed mid-sync",
+        })
+        .expect("close-class failure");
+    assert_eq!(machine.state(), LifecycleState::Failed);
+
+    let admission = machine.admit(LifecycleOperationKind::Close);
+    assert!(
+        admission.is_allowed(),
+        "Failed-from-Closing must admit Close: {admission:?}"
     );
 }
 

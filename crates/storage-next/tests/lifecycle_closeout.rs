@@ -85,7 +85,7 @@ fn lifecycle_closeout_fault_windows_cover_required_phases() {
             "fault_close_quiesce_timeout_is_retryable",
             "fault_close_wal_sync_failure_preserves_source_chain",
             "fault_close_manifest_sync_failure_preserves_final_fact_debt",
-            "fault_writer_guard_release_failure_is_typed_when_backend_reports_it",
+            "fault_writer_guard_missing_at_release_is_typed",
         ],
     );
     assert_contains_all(
@@ -173,10 +173,13 @@ fn lifecycle_closeout_crash_harness_runs_distinct_phase_cases() {
             .expect("crash harness");
 
     assert!(outcome.cases_executed() >= 8);
-    assert_eq!(
-        outcome.ignored_case_equivalent_cases(),
-        outcome.cases_executed()
-    );
+    // The ignored-pairing counter is derived from a real scan of
+    // tests/crash_recovery.rs (see `verify_ignored_crash_test_pairing`). It
+    // is the number of validated `#[ignore]` -> non-ignored phase pairs, or
+    // 1 if there are no ignored tests (the invariant is trivially upheld).
+    // Either way it must be at least 1; equality with `cases_executed` would
+    // re-encode the old tautology and silently mask scan regressions.
+    assert!(outcome.ignored_case_equivalent_cases() >= 1);
     assert!(outcome.log_append_replay_cases() > 0);
     assert!(outcome.unresolved_gate_reconcile_cases() > 0);
     assert!(outcome.orphan_snapshot_ignored_cases() > 0);
@@ -223,12 +226,25 @@ fn lifecycle_closeout_fuzz_targets_and_corpora_are_distinct() {
             ["valid_seed", "blocked_seed", "purge_seed"],
         ),
     ];
+    let contracts = [
+        "check_lifecycle_recovery_fuzz_contract",
+        "check_lifecycle_maintenance_fuzz_contract",
+        "check_lifecycle_retention_fuzz_contract",
+    ];
 
     for (target, contract, seeds) in targets {
         assert!(manifest.contains(&format!("name = \"{target}\"")));
         assert!(manifest.contains(&format!("fuzz_targets/{target}.rs")));
         let target_text = read(&root.join(format!("fuzz/fuzz_targets/{target}.rs")));
         assert!(target_text.contains(contract));
+        for other in contracts {
+            if other != contract {
+                assert!(
+                    !target_text.contains(other),
+                    "{target} should not reference unrelated lifecycle fuzz contract {other}"
+                );
+            }
+        }
         assert!(!target_text.contains("check_lifecycle_scaffold_contract"));
         assert!(!target_text.contains("check_lifecycle_generated_script_contract(data)"));
 
@@ -263,35 +279,52 @@ fn lifecycle_closeout_source_guards_cover_required_boundaries() {
     let root = common::crate_root();
     let guard = read(&root.join("tests/lifecycle_source_guard.rs"));
 
-    assert_contains_all(
-        &guard,
-        &[
-            "lifecycle_source_does_not_import_engine_product_or_raw_io",
-            "lifecycle_implementation_avoids_architecture_labels",
-            "lifecycle_stays_crate_private",
-            "lower_layers_do_not_import_lifecycle_upward",
-            "lifecycle_capability_validator_stays_preflight_only",
-            "lifecycle_production_does_not_import_testkit_or_fuzz",
-            "lifecycle_fuzz_targets_use_distinct_contracts",
-            "lifecycle_fuzz_corpora_are_seeded",
-            "lifecycle_crash_tests_are_feature_gated",
-            "ignored_crash_tests_have_nonignored_phase_equivalents",
-            "lifecycle_generated_properties_assert_input_derived_counters",
-            "lifecycle_assurance_tests_avoid_sleeps_and_thread_spawns",
-            "lifecycle_cache_runtime_stays_cache_only",
-            "lifecycle_durable_runtime_stays_bootstrap_only",
-            "lifecycle_bootstrap_runtime_does_not_perform_durable_assembly",
-            "lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks",
-            "lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete",
-            "lifecycle_maintenance_executor_stays_scheduler_only",
-            "lifecycle_durable_maintenance_stays_out_of_assembly_and_bootstrap",
-            "lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache",
-            "lifecycle_table_rewrite_source_uses_branch_runtime_boundaries",
-            "lifecycle_retention_source_delegates_durable_mutation",
-            "lifecycle_quarantine_source_uses_quarantine_service_boundary",
-            "cache_compaction_does_not_call_table_object_service",
-        ],
-    );
+    let required_guards = [
+        "lifecycle_source_does_not_import_engine_product_or_raw_io",
+        "lifecycle_implementation_avoids_architecture_labels",
+        "lifecycle_stays_crate_private",
+        "lower_layers_do_not_import_lifecycle_upward",
+        "lifecycle_capability_validator_stays_preflight_only",
+        "lifecycle_production_does_not_import_testkit_or_fuzz",
+        "lifecycle_fuzz_targets_use_distinct_contracts",
+        "lifecycle_fuzz_corpora_are_seeded",
+        "lifecycle_crash_tests_are_feature_gated",
+        "ignored_crash_tests_have_nonignored_phase_equivalents",
+        "lifecycle_generated_properties_assert_input_derived_counters",
+        "lifecycle_assurance_tests_avoid_sleeps_and_thread_spawns",
+        "lifecycle_cache_runtime_stays_cache_only",
+        "lifecycle_durable_runtime_stays_bootstrap_only",
+        "lifecycle_bootstrap_runtime_does_not_perform_durable_assembly",
+        "lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks",
+        "lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete",
+        "lifecycle_maintenance_executor_stays_scheduler_only",
+        "lifecycle_durable_maintenance_stays_out_of_assembly_and_bootstrap",
+        "lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache",
+        "lifecycle_table_rewrite_source_uses_branch_runtime_boundaries",
+        "lifecycle_retention_source_delegates_durable_mutation",
+        "lifecycle_quarantine_source_uses_quarantine_service_boundary",
+        "cache_compaction_does_not_call_table_object_service",
+    ];
+    assert_contains_all(&guard, &required_guards);
+    // Behavioral non-vacuousness check: for each required guard, extract
+    // its function body and assert it carries at least one non-trivial
+    // assertion. A guard reduced to `assert!(true)` or an empty body would
+    // pass the substring-presence check above but provide no real
+    // enforcement; the body scan below catches that failure mode.
+    for guard_name in required_guards {
+        let body = extract_fn_body(&guard, guard_name).unwrap_or_else(|| {
+            panic!("could not extract body of guard `{guard_name}` for non-vacuousness scan",)
+        });
+        let assertion_count = count_assertions(&body);
+        assert!(
+            assertion_count >= 1,
+            "guard `{guard_name}` has only {assertion_count} non-trivial assertion(s); body looks vacuous",
+        );
+        assert!(
+            !body_is_trivially_true(&body),
+            "guard `{guard_name}` body reduces to `assert!(true)` or similar tautology",
+        );
+    }
     assert_contains_all(
         &guard,
         &[
@@ -413,10 +446,141 @@ fn should_skip_dir(dir: &Path) -> bool {
         })
 }
 
+/// Extract the body of `fn <fn_name>(` from `source`, returning the
+/// substring between the opening `{` (after the parameter list) and the
+/// matching closing `}`. Returns `None` if the function definition is
+/// not found or the braces do not balance. Used by the closeout
+/// behavioral-check to scan guard bodies for non-vacuous assertions.
+fn extract_fn_body(source: &str, fn_name: &str) -> Option<String> {
+    let needle = format!("fn {fn_name}(");
+    let start = source.find(&needle)?;
+    let open = source[start..].find('{')? + start;
+    let mut depth = 0u32;
+    let bytes = source.as_bytes();
+    for (offset, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(source[open + 1..offset].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Count occurrences of non-trivial assertion-like patterns in a
+/// function body: `assert!`, `assert_eq!`, `assert_ne!`, `assert_matches!`,
+/// `.expect(`, `.unwrap()`, panic-by-message (`panic!`), or `Err(`.
+/// Catches whether a guard does *something* beyond a single
+/// tautological `assert!(true)`.
+fn count_assertions(body: &str) -> usize {
+    let patterns = [
+        "assert!",
+        "assert_eq!",
+        "assert_ne!",
+        "assert_matches!",
+        ".expect(",
+        ".unwrap()",
+        "panic!",
+        "Err(",
+    ];
+    patterns
+        .iter()
+        .map(|pattern| body.matches(pattern).count())
+        .sum()
+}
+
+/// Returns true if the body is a vacuous hollow-out: empty, or composed
+/// solely of repeated `assert!(true)` invocations (with arbitrary
+/// whitespace/semicolons between them). Catches both the single-
+/// `assert!(true)` and the `assert!(true); assert!(true);` patterns —
+/// any number of literally-true asserts collapses to the same tripwire.
+/// A real guard touches at least one external symbol or makes a
+/// comparative assertion.
+fn body_is_trivially_true(body: &str) -> bool {
+    let stripped: String = body
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ';')
+        .collect();
+    if stripped.is_empty() {
+        return true;
+    }
+    // Any positive number of `assert!(true)` runs concatenated together.
+    let mut remaining = stripped.as_str();
+    while let Some(rest) = remaining.strip_prefix("assert!(true)") {
+        remaining = rest;
+    }
+    remaining.is_empty()
+}
+
+#[allow(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "`name` is already lowercased into `lower`, so case-sensitive extension comparison against a literal-lowercase pattern is the intended behavior"
+)]
 fn is_mutation_probe_artifact(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.contains("mutation-probe")
+    // In-house probe naming convention.
+    if lower.contains("mutation-probe")
         || lower.contains("mutation_probe")
         || lower.ends_with(".mutant")
         || lower.ends_with(".mutation")
+    {
+        return true;
+    }
+    // cargo-mutants writes its working tree under `mutants.out/` and its
+    // result summary as `outcomes.json`; mutmut prefixes its outputs with
+    // `mutmut`. Patch/sed/`git` leave `*.orig`, `*.rej`, `*.bak` files
+    // when a mutation diff is applied or partially reverted.
+    if lower == "mutants.out" || lower.starts_with("mutants.out.") {
+        return true;
+    }
+    if lower == "outcomes.json" {
+        return true;
+    }
+    if lower.starts_with("mutmut") {
+        return true;
+    }
+    if lower.ends_with(".orig") || lower.ends_with(".rej") || lower.ends_with(".bak") {
+        return true;
+    }
+    false
+}
+
+#[test]
+fn lifecycle_closeout_mutation_probe_detector_matches_known_patterns() {
+    // Fixture self-test for `is_mutation_probe_artifact`. Any future
+    // editor that narrows the detector must update this list.
+    for positive in [
+        "snapshot.mutation-probe.rs",
+        "snapshot_mutation_probe",
+        "scratch.mutant",
+        "diff.mutation",
+        "mutants.out",
+        "mutants.out.dir",
+        "outcomes.json",
+        "mutmut_results",
+        "patch.orig",
+        "patch.rej",
+        "file.bak",
+    ] {
+        assert!(
+            is_mutation_probe_artifact(positive),
+            "expected {positive} to be flagged as a mutation-probe artifact",
+        );
+    }
+    for negative in [
+        "lifecycle_closeout.rs",
+        "snapshot_service.rs",
+        "outcomes_test.rs",
+        "mutex.rs",
+    ] {
+        assert!(
+            !is_mutation_probe_artifact(negative),
+            "expected {negative} NOT to be flagged",
+        );
+    }
 }

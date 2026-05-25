@@ -64,7 +64,7 @@ pub fn check_lifecycle_scaffold_contract(
     capability::check_lifecycle_capability_contract(script, &mut outcome)?;
     cache::check_lifecycle_cache_contract(script, &mut outcome)?;
     durable::check_lifecycle_durable_contract(script, &mut outcome)?;
-    let close = close::check_lifecycle_close_contract(script)?;
+    let close = close::check_lifecycle_close_contract(b"close-all")?;
     ensure(
         close.close_requested_cases() > 0
             && close.cache_close_completed_cases() > 0

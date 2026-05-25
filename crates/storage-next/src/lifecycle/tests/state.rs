@@ -341,6 +341,85 @@ fn lifecycle_close_retry_and_closed_idempotence_are_distinct() {
     );
 }
 
+#[test]
+fn lifecycle_failed_from_closing_admits_close_and_retransitions_to_closing() {
+    // A close that panics during, e.g., a transient sync hiccup leaves the
+    // machine in Failed with `failed_state == Closing`. Retry-class close
+    // must drive Failed -> Closing so the runtime can clean-shutdown
+    // without leaking the writer guard via Drop.
+    let mut machine = machine_in_state(LifecycleState::Closing);
+    machine
+        .transition(LifecycleTransitionTrigger::PhaseFailed {
+            reason: "close failed mid-sync",
+        })
+        .expect("close-class failure");
+    assert_eq!(machine.state(), LifecycleState::Failed);
+    let failure = machine.failure().expect("failure fact");
+    assert_eq!(failure.failed_state(), LifecycleState::Closing);
+
+    // Admission honors the failure context: Failed-from-Closing admits Close
+    // while Failed-from-Opening (covered below) rejects it.
+    assert_allowed(
+        machine.admit(LifecycleOperationKind::Close),
+        LifecycleAdmissionEffect::Ordinary,
+    );
+
+    let outcome = machine
+        .transition(LifecycleTransitionTrigger::CloseRequested)
+        .expect("Failed -> Closing retry");
+    assert_eq!(outcome.from(), LifecycleState::Failed);
+    assert_eq!(outcome.to(), LifecycleState::Closing);
+    assert_eq!(outcome.close_fact(), Some(LifecycleCloseFact::Requested));
+    assert_eq!(machine.state(), LifecycleState::Closing);
+
+    // The failure fact persists as breadcrumb; subsequent CloseCompleted
+    // closes cleanly.
+    let completed = machine
+        .transition(LifecycleTransitionTrigger::CloseCompleted)
+        .expect("retry close completes");
+    assert_eq!(completed.to(), LifecycleState::Closed);
+}
+
+#[test]
+fn lifecycle_failed_from_opening_rejects_close_requested_and_admit() {
+    // Failures raised during Opening/Recovering are NOT owned by the
+    // close path. Failed -> Closing must reject in that case so an
+    // Open-time failure is not silently retried as if it were a close
+    // failure.
+    let mut machine = machine_in_state(LifecycleState::Opening);
+    machine
+        .transition(LifecycleTransitionTrigger::PhaseFailed {
+            reason: "open failed before recovery",
+        })
+        .expect("open-class failure");
+    assert_eq!(machine.state(), LifecycleState::Failed);
+    let failure = machine.failure().expect("failure fact");
+    assert_eq!(failure.failed_state(), LifecycleState::Opening);
+
+    let admission = machine.admit(LifecycleOperationKind::Close);
+    assert!(!admission.is_allowed(), "admit allowed unexpectedly: {admission:?}");
+    assert_eq!(
+        admission.rejection_reason(),
+        Some("Failed admits Close only when the prior failure was raised during close"),
+    );
+
+    let snapshot = (machine.state(), machine.failure(), machine.close_fact());
+    let error = machine
+        .transition(LifecycleTransitionTrigger::CloseRequested)
+        .expect_err("Failed-from-Opening must reject CloseRequested");
+    assert_eq!(
+        error,
+        LifecycleError::InvalidLifecycleState {
+            reason: "Failed -> Closing requires a prior close-class failure",
+        }
+    );
+    // Rejected transitions must not mutate state.
+    assert_eq!(
+        (machine.state(), machine.failure(), machine.close_fact()),
+        snapshot
+    );
+}
+
 fn machine_in_state(state: LifecycleState) -> LifecycleStateMachine {
     let mut machine = LifecycleStateMachine::new();
     match state {

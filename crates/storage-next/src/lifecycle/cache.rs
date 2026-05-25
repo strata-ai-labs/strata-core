@@ -13,9 +13,10 @@ use super::{
     LifecycleMaintenanceExecutor, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
     LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressure, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceTask,
-    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth,
-    StorageMode, StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
+    MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition,
+    StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
@@ -49,6 +50,14 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
+    // The CloseOutcome from the first successful close is preserved here so
+    // subsequent idempotent close calls return the *prior final facts*
+    // (cancel count, stats, close fact) instead of fabricating fresh
+    // values. The lifecycle contract requires "Close after Closed is a
+    // no-op success with the prior final facts" — without caching the
+    // returned facts here, a second close would invent stats that diverge
+    // from what callers already observed on the first call.
+    last_close_outcome: Option<CloseOutcome>,
 }
 
 impl LifecycleCacheOpenRequest {
@@ -143,6 +152,7 @@ impl<S> LifecycleCacheRuntime<S> {
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            last_close_outcome: None,
         })
     }
 
@@ -321,7 +331,17 @@ impl<S> LifecycleCacheRuntime<S> {
             LifecycleState::Closed => {
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRetried)?;
-                Ok(cache_idempotent_close_outcome())
+                // Return the prior final facts from the first close so
+                // callers observing the second outcome see the same stats
+                // (canceled count, status, close fact) they saw on the
+                // first call, just with the close fact remapped to
+                // AlreadyClosed and the status to Idempotent. Falling
+                // back to a fabricated outcome would silently drift from
+                // the first-close stats.
+                Ok(self.last_close_outcome.as_ref().map_or_else(
+                    cache_idempotent_close_outcome,
+                    idempotent_from_prior_close,
+                ))
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
@@ -331,36 +351,115 @@ impl<S> LifecycleCacheRuntime<S> {
                         reason: "maintenance task is active",
                     });
                 }
-                if self.maintenance.has_close_required_drain() {
-                    return Err(LifecycleError::MaintenanceTaskFailed {
-                        reason: "cache close cannot complete while drain-required maintenance is pending",
-                    });
-                }
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRequested)?;
-                self.finish_cache_close()
+                // Cache supports its own drain-required path by dispatching
+                // queued drain tasks through the per-kind cache runners.
+                // The cache runtime is volatile-only, so drained tasks have
+                // no durable side effects; the work still runs so frozen
+                // mutable state is folded into branch read state before
+                // close completes.
+                let drained = self.drain_cache_required_tasks()?;
+                self.finish_cache_close(drained)
             }
             LifecycleState::Closing => {
                 require_admitted(self.state, LifecycleOperationKind::CloseRetry)?;
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRetried)?;
-                self.finish_cache_close()
+                // A retry from Closing must also drain any drain-required
+                // tasks that the first close didn't complete — otherwise
+                // they leak past the close transition.
+                let drained = self.drain_cache_required_tasks()?;
+                self.finish_cache_close(drained)
             }
-            LifecycleState::New
-            | LifecycleState::Opening
-            | LifecycleState::Recovering
-            | LifecycleState::Failed => Err(LifecycleError::InvalidLifecycleState {
-                reason: "cache runtime is not open for close",
-            }),
+            LifecycleState::Failed => {
+                // Symmetric with the durable runtime: Failed admits Close
+                // only when the prior failure was a close-class failure.
+                // The state machine's `admit` enforces this; rejection
+                // surfaces here as `InvalidLifecycleState`. The drain must
+                // still run on the retry so the queue is empty when the
+                // runtime reaches Closed.
+                require_admitted(self.state, LifecycleOperationKind::Close)?;
+                self.state
+                    .transition(LifecycleTransitionTrigger::CloseRequested)?;
+                let drained = self.drain_cache_required_tasks()?;
+                self.finish_cache_close(drained)
+            }
+            LifecycleState::New | LifecycleState::Opening | LifecycleState::Recovering => Err(
+                LifecycleError::InvalidLifecycleState {
+                    reason: "cache runtime is not open for close",
+                },
+            ),
         }
     }
 
-    fn finish_cache_close(&mut self) -> LifecycleResult<CloseOutcome> {
+    fn finish_cache_close(&mut self, drained: usize) -> LifecycleResult<CloseOutcome> {
         let cancel = self.maintenance.cancel_pending_for_close(self.state)?;
         self.state
             .transition(LifecycleTransitionTrigger::CloseCompleted)?;
-        Ok(cache_close_outcome(cancel))
+        let outcome = cache_close_outcome(cancel, drained);
+        // Snapshot the outcome so subsequent idempotent close calls return
+        // the same prior facts instead of fabricating fresh values.
+        self.last_close_outcome = Some(outcome);
+        Ok(outcome)
     }
+
+    fn drain_cache_required_tasks(&mut self) -> LifecycleResult<usize> {
+        // Cache only supports Flush / Compaction / Materialization /
+        // HealthCollection. Each kind has a per-kind runner that the
+        // close-time drain dispatches through. The drain executor's
+        // `drain_for_close` runs every queued drain-required task in
+        // order; if any task errors the drain aborts and surfaces the
+        // typed lifecycle error, which the caller routes to close-retry.
+        // The returned count feeds the close outcome's
+        // `maintenance_tasks` stat so callers see drained work, parity
+        // with the durable runtime.
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &mut self.branch;
+        let mut runner = CacheCloseRunner { branch };
+        let outcome = maintenance.drain_for_close(state, &mut runner)?;
+        Ok(outcome.drained_tasks())
+    }
+}
+
+struct CacheCloseRunner<'a> {
+    branch: &'a mut BranchLocalState,
+}
+
+impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        match task.kind() {
+            MaintenanceTaskKind::Flush => {
+                let request = flush_request_from_maintenance_task(task)?;
+                Ok(flush_cache_branch(self.branch, &request)?.maintenance_outcome())
+            }
+            MaintenanceTaskKind::Compaction => {
+                let request = compaction_request_from_maintenance_task(task)?;
+                Ok(compact_cache_branch(self.branch, &request)?.maintenance_outcome())
+            }
+            MaintenanceTaskKind::Materialization => {
+                let request = materialization_request_from_maintenance_task(task)?;
+                Ok(materialize_cache_branch(self.branch, &request)?.maintenance_outcome())
+            }
+            MaintenanceTaskKind::HealthCollection => Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::HealthCollection,
+                MaintenanceOutcomeStatus::Completed,
+            )),
+            other => Err(LifecycleError::MaintenanceTaskFailed {
+                reason: cache_unsupported_drain_reason(other),
+            }),
+        }
+    }
+}
+
+const fn cache_unsupported_drain_reason(_kind: MaintenanceTaskKind) -> &'static str {
+    // Volatile cache runtimes only host the four kinds enumerated by
+    // `cache_supports_maintenance_kind`. Reaching this arm means a
+    // checkpoint/wal/retention/quarantine task was enqueued through a
+    // path that bypassed the enqueue-time guard — surface a typed
+    // failure rather than running it.
+    "cache drain rejected a task kind that cache mode does not implement"
 }
 
 struct CacheFlushMaintenanceRunner<'a> {
@@ -448,11 +547,14 @@ fn require_admitted(
     }
 }
 
-const fn cache_close_outcome(cancel: MaintenanceCancelOutcome) -> CloseOutcome {
+fn cache_close_outcome(cancel: MaintenanceCancelOutcome, drained_tasks: usize) -> CloseOutcome {
+    let maintenance_tasks = cancel
+        .canceled_tasks()
+        .saturating_add(drained_tasks);
     CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
         .with_close_fact(LifecycleCloseFact::Complete)
         .with_close_effects(CloseOutcomeEffects::volatile_complete(false))
-        .with_stats(LifecycleStats::new(1, 0, cancel.stats().canceled(), 0, 1))
+        .with_stats(LifecycleStats::new(1, 0, maintenance_tasks, 0, 1))
 }
 
 const fn cache_idempotent_close_outcome() -> CloseOutcome {
@@ -460,6 +562,20 @@ const fn cache_idempotent_close_outcome() -> CloseOutcome {
         .with_close_fact(LifecycleCloseFact::AlreadyClosed)
         .with_close_effects(CloseOutcomeEffects::volatile_complete(true))
         .with_stats(LifecycleStats::new(1, 0, 0, 0, 1))
+}
+
+/// Convert a prior first-close `CloseOutcome` into the idempotent retry
+/// shape. The stats from the first close are preserved verbatim; the
+/// effects are remapped to the volatile-complete shape with the
+/// `prior_final` bit set so `CloseOutcome::validate` accepts the
+/// `Idempotent` status. Status flips to `Idempotent` and the close fact
+/// to `AlreadyClosed`. Callers observing the second outcome see the
+/// same canceled/drained counts they saw on the first call.
+fn idempotent_from_prior_close(prior: &CloseOutcome) -> CloseOutcome {
+    CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Idempotent)
+        .with_close_fact(LifecycleCloseFact::AlreadyClosed)
+        .with_close_effects(CloseOutcomeEffects::volatile_complete(true))
+        .with_stats(prior.stats())
 }
 
 const fn cache_supports_maintenance_kind(kind: MaintenanceTaskKind) -> bool {

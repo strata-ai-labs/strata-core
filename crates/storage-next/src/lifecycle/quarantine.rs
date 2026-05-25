@@ -81,7 +81,17 @@ pub(crate) enum LifecycleQuarantineStatus {
     QuarantinePublishFailed,
     QuarantinePublishUncertain,
     InventoryMismatch,
-    ServiceFailed,
+    /// Service-layer rejection that is terminal: the request itself
+    /// violates a policy/contract (`UnsafeGate`, `InvalidRequest`,
+    /// `UnsupportedCapability`, `Layout`, `Encode`,
+    /// `InvalidPublishMetadata`). Retrying without changing the request
+    /// will fail the same way; the scheduler must surface a typed
+    /// rejection rather than re-enqueueing.
+    ServiceRejected,
+    /// Service-layer failure that is potentially transient: a backend
+    /// IO/state issue (`Read`, `Metadata`, `BackendState`, `Missing`)
+    /// that may resolve on retry. The scheduler may re-enqueue.
+    ServiceTransient,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -195,6 +205,27 @@ impl LifecycleQuarantineProof {
 
     pub(crate) fn safe(recovery_health: RecoveryHealth) -> Self {
         let status = if recovery_health_blocks_reclaim(&recovery_health) {
+            LifecycleQuarantineProofStatus::BlockedByRecoveryHealth
+        } else {
+            LifecycleQuarantineProofStatus::CompleteSafe
+        };
+        Self::new(status, recovery_health, false, None)
+    }
+
+    /// Construct a `CompleteSafe` proof while enforcing the unrelatedness
+    /// rule for Telemetry debt: if recovery health is Telemetry-degraded
+    /// and any fault names `candidate_branch`, the proof is downgraded
+    /// to `BlockedByRecoveryHealth` instead of `CompleteSafe`. Callers
+    /// who know the candidate's branch should prefer this over
+    /// `safe(...)` so the next quarantine cycle does not silently admit
+    /// reclaim while a related telemetry fault is open.
+    pub(crate) fn safe_for_candidate(
+        recovery_health: RecoveryHealth,
+        candidate_branch: strata_core_next::BranchId,
+    ) -> Self {
+        let status = if recovery_health_blocks_reclaim(&recovery_health)
+            || recovery_health.has_fault_targeting_branch(candidate_branch)
+        {
             LifecycleQuarantineProofStatus::BlockedByRecoveryHealth
         } else {
             LifecycleQuarantineProofStatus::CompleteSafe
@@ -394,7 +425,7 @@ impl LifecycleQuarantineOutcome {
 
     fn from_report(report: &QuarantineObjectReport) -> Self {
         let status = status_from_report(report.status());
-        let recovery_health = health_for_quarantine_status(status);
+        let recovery_health = health_for_quarantine_status(status, report.branch_id());
         let source_error = quarantine_report_error(report, status);
         Self {
             status,
@@ -425,17 +456,23 @@ impl LifecycleQuarantineOutcome {
             QuarantineServiceError::Publish { .. } => {
                 LifecycleQuarantineStatus::QuarantinePublishFailed
             }
+            // Terminal logic / policy rejections — retrying the same
+            // request will not change the outcome.
             QuarantineServiceError::UnsafeGate { .. }
             | QuarantineServiceError::InvalidRequest { .. }
             | QuarantineServiceError::UnsupportedCapability { .. }
             | QuarantineServiceError::Layout { .. }
-            | QuarantineServiceError::Missing { .. }
-            | QuarantineServiceError::Read { .. }
             | QuarantineServiceError::Encode { .. }
-            | QuarantineServiceError::InvalidPublishMetadata { .. }
+            | QuarantineServiceError::InvalidPublishMetadata { .. } => {
+                LifecycleQuarantineStatus::ServiceRejected
+            }
+            // Potentially-transient backend / IO failures — the
+            // scheduler may safely retry.
+            QuarantineServiceError::Missing { .. }
+            | QuarantineServiceError::Read { .. }
             | QuarantineServiceError::Metadata { .. }
             | QuarantineServiceError::BackendState { .. } => {
-                LifecycleQuarantineStatus::ServiceFailed
+                LifecycleQuarantineStatus::ServiceTransient
             }
         };
         Self {
@@ -446,7 +483,7 @@ impl LifecycleQuarantineOutcome {
             inventory_object: None,
             byte_count: 0,
             entry_count: 0,
-            recovery_health: health_for_quarantine_status(status),
+            recovery_health: health_for_quarantine_status(status, branch_id),
             source_error: Some(quarantine_service_error(source)),
         }
     }
@@ -506,7 +543,8 @@ impl LifecycleQuarantineOutcome {
             | LifecycleQuarantineStatus::QuarantinePublishFailed
             | LifecycleQuarantineStatus::QuarantinePublishUncertain
             | LifecycleQuarantineStatus::InventoryMismatch
-            | LifecycleQuarantineStatus::ServiceFailed => MaintenanceOutcomeStatus::Failed,
+            | LifecycleQuarantineStatus::ServiceRejected
+            | LifecycleQuarantineStatus::ServiceTransient => MaintenanceOutcomeStatus::Failed,
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Quarantine, status)
             .with_affected_object_names(self.affected_object_names())
@@ -564,12 +602,21 @@ impl LifecycleQuarantineOutcome {
     }
 
     const fn retryable(&self) -> bool {
+        // Definite-failure statuses (`*Failed`) are safer to retry than
+        // uncertain ones: a definite failure means the prior attempt left
+        // no durable state, so a retry starts from a clean baseline. An
+        // *Uncertain* status means the publish may or may not have
+        // landed durably — retrying could re-publish over a partial
+        // success, so it is not retryable without a fresh proof. The
+        // split `ServiceTransient` status (potentially-transient backend
+        // IO/state errors) is also retryable; `ServiceRejected`
+        // (terminal policy violation) is not.
         matches!(
             self.status,
             LifecycleQuarantineStatus::QuarantinedSourceDeleteFailed
-                | LifecycleQuarantineStatus::InventoryPublishUncertain
                 | LifecycleQuarantineStatus::QuarantinePublishFailed
-                | LifecycleQuarantineStatus::QuarantinePublishUncertain
+                | LifecycleQuarantineStatus::InventoryPublishFailed
+                | LifecycleQuarantineStatus::ServiceTransient
         )
     }
 
@@ -604,7 +651,8 @@ impl LifecycleQuarantineOutcome {
                 Some("quarantine object publication failed")
             }
             LifecycleQuarantineStatus::InventoryMismatch => Some("quarantine inventory mismatch"),
-            LifecycleQuarantineStatus::ServiceFailed => Some("quarantine service failed"),
+            LifecycleQuarantineStatus::ServiceRejected => Some("quarantine service rejected request"),
+            LifecycleQuarantineStatus::ServiceTransient => Some("quarantine service transient failure"),
             LifecycleQuarantineStatus::QuarantinedSourceDeleted
             | LifecycleQuarantineStatus::AlreadyQuarantined
             | LifecycleQuarantineStatus::SourceDeleteRetried
@@ -618,7 +666,28 @@ impl LifecyclePurgeProof {
         recovery_health: RecoveryHealth,
         inventory_token: QuarantineInventoryToken,
     ) -> Self {
-        let status = if recovery_health_blocks_reclaim(&recovery_health) {
+        Self::fresh_inner(recovery_health, inventory_token, None)
+    }
+
+    /// Construct a `CompleteFresh` purge proof while enforcing the
+    /// unrelatedness rule for Telemetry debt that names the candidate's
+    /// branch (see `LifecycleQuarantineProof::safe_for_candidate`).
+    pub(crate) fn fresh_for_candidate(
+        recovery_health: RecoveryHealth,
+        inventory_token: QuarantineInventoryToken,
+        candidate_branch: strata_core_next::BranchId,
+    ) -> Self {
+        Self::fresh_inner(recovery_health, inventory_token, Some(candidate_branch))
+    }
+
+    fn fresh_inner(
+        recovery_health: RecoveryHealth,
+        inventory_token: QuarantineInventoryToken,
+        candidate_branch: Option<strata_core_next::BranchId>,
+    ) -> Self {
+        let related_branch_fault = candidate_branch
+            .is_some_and(|branch| recovery_health.has_fault_targeting_branch(branch));
+        let status = if recovery_health_blocks_reclaim(&recovery_health) || related_branch_fault {
             LifecyclePurgeProofStatus::BlockedByRecoveryHealth
         } else {
             LifecyclePurgeProofStatus::CompleteFresh
@@ -980,7 +1049,8 @@ impl LifecycleQuarantineRepairRequest {
 
 impl LifecycleQuarantineRepairOutcome {
     fn from_branch_report(report: &QuarantineReconciliationReport) -> LifecycleResult<Self> {
-        let recovery_health = health_for_reconciliation_class(report.recovery_class())?;
+        let recovery_health =
+            health_for_reconciliation_class(report.recovery_class(), Some(report.branch_id()))?;
         let status = repair_status_from_class(report.recovery_class());
         let source_error = repair_report_error(report);
         Ok(Self {
@@ -992,7 +1062,10 @@ impl LifecycleQuarantineRepairOutcome {
     }
 
     fn from_family_report(report: &QuarantineFamilyReconciliation) -> LifecycleResult<Self> {
-        let recovery_health = health_for_reconciliation_class(report.recovery_class())?;
+        // Family-level reconciliation aggregates multiple branches; no
+        // single branch owns the resulting health so the fault stays
+        // unscoped.
+        let recovery_health = health_for_reconciliation_class(report.recovery_class(), None)?;
         let status = repair_status_from_class(report.recovery_class());
         let reports = report
             .branch_reports()
@@ -1283,7 +1356,12 @@ pub(crate) fn purge_request_from_maintenance_task(
         branch_id,
         database_id,
         codec_id,
-        LifecyclePurgeProof::fresh(recovery_health, inventory_token),
+        // Pass the candidate's branch so the proof refuses reclaim under
+        // Telemetry debt that names this branch (the live current
+        // recovery health may carry branch-scoped faults attached by
+        // recovery or by prior quarantine attempts via
+        // `with_affected_branch`).
+        LifecyclePurgeProof::fresh_for_candidate(recovery_health, inventory_token, branch_id),
     )
 }
 
@@ -1433,7 +1511,10 @@ fn repair_report_error(report: &QuarantineReconciliationReport) -> Option<Lifecy
     })
 }
 
-fn health_for_quarantine_status(status: LifecycleQuarantineStatus) -> Option<RecoveryHealth> {
+fn health_for_quarantine_status(
+    status: LifecycleQuarantineStatus,
+    branch_id: BranchId,
+) -> Option<RecoveryHealth> {
     match status {
         LifecycleQuarantineStatus::InventoryMismatch => Some(
             RecoveryHealth::degraded(
@@ -1442,7 +1523,8 @@ fn health_for_quarantine_status(status: LifecycleQuarantineStatus) -> Option<Rec
                     RecoveryFaultKind::QuarantineInventoryMismatch,
                     "quarantine inventory mismatch",
                 )
-                .expect("health debt")],
+                .expect("health debt")
+                .with_affected_branch(branch_id)],
             )
             .expect("health debt"),
         ),
@@ -1451,8 +1533,18 @@ fn health_for_quarantine_status(status: LifecycleQuarantineStatus) -> Option<Rec
         | LifecycleQuarantineStatus::InventoryPublishUncertain
         | LifecycleQuarantineStatus::QuarantinePublishFailed
         | LifecycleQuarantineStatus::QuarantinePublishUncertain
-        | LifecycleQuarantineStatus::ServiceFailed => Some(
-            telemetry_health_debt("quarantine operation has health debt").expect("health debt"),
+        | LifecycleQuarantineStatus::ServiceRejected
+        | LifecycleQuarantineStatus::ServiceTransient => Some(
+            RecoveryHealth::degraded(
+                RecoveryDegradationClass::Telemetry,
+                vec![RecoveryFault::new(
+                    RecoveryFaultKind::IoFailure,
+                    "quarantine operation has health debt",
+                )
+                .expect("health debt")
+                .with_affected_branch(branch_id)],
+            )
+            .expect("health debt"),
         ),
         _ => None,
     }
@@ -1460,21 +1552,32 @@ fn health_for_quarantine_status(status: LifecycleQuarantineStatus) -> Option<Rec
 
 fn health_for_reconciliation_class(
     class: QuarantineRecoveryClass,
+    branch_id: Option<BranchId>,
 ) -> LifecycleResult<Option<RecoveryHealth>> {
     match class {
         QuarantineRecoveryClass::Healthy => Ok(None),
-        QuarantineRecoveryClass::PolicyDowngraded => Ok(Some(RecoveryHealth::degraded(
-            RecoveryDegradationClass::PolicyDowngrade,
-            vec![RecoveryFault::new(
+        QuarantineRecoveryClass::PolicyDowngraded => {
+            let mut fault = RecoveryFault::new(
                 RecoveryFaultKind::QuarantineInventoryMismatch,
                 "quarantine inventory mismatch",
-            )?],
-        )?)),
+            )?;
+            if let Some(branch_id) = branch_id {
+                fault = fault.with_affected_branch(branch_id);
+            }
+            Ok(Some(RecoveryHealth::degraded(
+                RecoveryDegradationClass::PolicyDowngrade,
+                vec![fault],
+            )?))
+        }
         QuarantineRecoveryClass::Unavailable => {
-            Ok(Some(RecoveryHealth::failed(RecoveryFault::new(
+            let mut fault = RecoveryFault::new(
                 RecoveryFaultKind::QuarantineInventoryMismatch,
                 "quarantine backend unavailable",
-            )?)))
+            )?;
+            if let Some(branch_id) = branch_id {
+                fault = fault.with_affected_branch(branch_id);
+            }
+            Ok(Some(RecoveryHealth::failed(fault)))
         }
     }
 }

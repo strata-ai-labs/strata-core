@@ -216,7 +216,7 @@ fn fault_close_manifest_sync_failure_preserves_final_fact_debt() {
     not(target_arch = "wasm32")
 ))]
 #[test]
-fn fault_writer_guard_release_failure_is_typed_when_backend_reports_it() {
+fn fault_writer_guard_missing_at_release_is_typed() {
     assert!(fault_outcome(b"fault-close-guard-release").writer_guard_release_typed_cases() > 0);
 }
 

@@ -677,7 +677,19 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
                     &retention_outcome,
                 ))
             }
-            _ => Ok(retention_outcome_for_delegated_families(proof)?.maintenance_outcome()),
+            // `retention_request_from_maintenance_task` only emits
+            // `SnapshotObjects` or `Global` scopes — every other scope is
+            // rejected at request construction with a typed
+            // `InvalidRequest`. The remaining match arms are therefore
+            // unreachable through the runner, and we keep them as such
+            // rather than silently routing to WAL/Quarantine delegations
+            // that would not match a `TableObjects`/`WalObjects`/
+            // `QuarantineObjects` request.
+            _ => unreachable!(
+                "retention runner reached an unsupported scope: {:?}; \
+                 retention_request_from_maintenance_task should reject this kind",
+                request.scope(),
+            ),
         }
     }
 }
@@ -817,6 +829,7 @@ fn global_retention_maintenance_outcome(
     ) || matches!(
         retention_outcome.status(),
         LifecycleRetentionStatus::DeferredIncompleteProof
+            | LifecycleRetentionStatus::DeferredUnsupportedScope
             | LifecycleRetentionStatus::BlockedByRecoveryHealth
     ) {
         MaintenanceOutcomeStatus::Deferred

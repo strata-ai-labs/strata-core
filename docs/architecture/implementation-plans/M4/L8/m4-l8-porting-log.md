@@ -229,6 +229,36 @@ git diff --check
 - Multi-process lease renewal or handoff beyond the existing writer guard:
   later durable/object-backend work.
 - Branch deletion and clear policy during close: later branch lifecycle work.
+- Backend-reported writer-guard release failure: deferred past V1.
+  `release_writer_guard` on the durable runtime is a take-and-drop of an
+  in-memory handle; `LocalFsBackend::acquire_writer_lock` returns a
+  guard whose Drop only releases the OS advisory lock. Neither path can
+  surface a typed failure today. The close-time contract therefore only
+  covers "missing writer guard at release" (`release_writer_guard`
+  returning `false`), not "backend rejected the release call." Post-V1
+  object-backend work that introduces lease-handoff semantics will need
+  to extend `BackendWriterGuard` with a fallible-release hook and wire
+  the matching typed close error through the close path; the closeout
+  inventory will gain a new scenario at that point.
+- Persistent close-time `RecoveryHealth` snapshot in the database manifest
+  payload: deferred past V1. The M3 format freeze locks the manifest to
+  `database_id`, `codec_id`, `active_wal_segment`, `snapshot_watermark`,
+  `snapshot_id`, `flushed_through_commit_id` — no health field is added.
+  Session-observed degradation already lives in its source-of-truth disk
+  state (quarantine inventory mismatches, orphan snapshots, partial
+  publication windows), so the next open's recovery re-walks that state
+  and rederives the same `RecoveryHealth` from scratch. The close-time
+  hook (`force_final_manifest_fsync_on_health_change` at
+  `crates/storage-next/src/lifecycle/durable/close.rs`) instead issues
+  one final `PublishMode::Replace` of the existing manifest bytes when
+  health changed — same payload, but the publish exercises the backend's
+  durable-write path one more time so any pending `fdatasync` on the
+  manifest file is flushed before the writer guard releases. Test
+  `durable_close_force_syncs_manifest_when_health_changed` asserts both
+  parts of this contract: exactly one Replace, and byte-identical
+  payload across the operation. Adding a true persistent health field
+  is a future format-version bump (post-V1) that needs coordinated
+  golden-vector and migration work.
 
 ### Tests Added
 
@@ -414,7 +444,7 @@ Status: implemented
 - `fault_close_quiesce_timeout_is_retryable`
 - `fault_close_wal_sync_failure_preserves_source_chain`
 - `fault_close_manifest_sync_failure_preserves_final_fact_debt`
-- `fault_writer_guard_release_failure_is_typed_when_backend_reports_it`
+- `fault_writer_guard_missing_at_release_is_typed`
 - `crash_after_wal_append_before_visibility_replays_record`
 - `crash_after_wal_append_with_unresolved_gate_reconciles_on_reopen`
 - `crash_after_snapshot_publish_before_manifest_update_ignores_orphan_snapshot`
@@ -701,7 +731,7 @@ cargo +nightly fuzz run lifecycle_retention -- -max_total_time=60
 - `quarantine_incomplete_proof_defers_without_backend_access`
 - `quarantine_stages_inventory_copy_and_source_delete_in_order`
 - `quarantine_source_delete_failure_reports_retryable_health_debt`
-- `quarantine_missing_source_is_service_failure_not_publish_failure`
+- `quarantine_missing_source_is_transient_service_failure_not_publish_failure`
 - `quarantine_proof_allows_unrelated_telemetry_debt`
 - `purge_request_rejects_missing_database_id_before_backend_access`
 - `purge_requires_fresh_proof_before_backend_access`
@@ -731,7 +761,7 @@ cargo +nightly fuzz run lifecycle_retention -- -max_total_time=60
 | Incomplete proof mutates backend | `crates/storage-next/src/lifecycle/quarantine.rs` | Call quarantine service for incomplete proof | `quarantine_incomplete_proof_defers_without_backend_access` |
 | Source delete before durable copy | `crates/storage-next/src/service/quarantine/mutation.rs` | Reorder source delete before inventory/copy | `quarantine_stages_inventory_copy_and_source_delete_in_order` |
 | Delete failure hidden | `crates/storage-next/src/lifecycle/quarantine.rs` | Collapse source delete error to completed outcome | `quarantine_source_delete_failure_reports_retryable_health_debt` |
-| Missing source misclassified | `crates/storage-next/src/lifecycle/quarantine.rs` | Report source metadata/read failures as publish failures | `quarantine_missing_source_is_service_failure_not_publish_failure` |
+| Missing source misclassified | `crates/storage-next/src/lifecycle/quarantine.rs` | Report source metadata/read failures as publish failures | `quarantine_missing_source_is_transient_service_failure_not_publish_failure` |
 | Stale purge proof deletes | `crates/storage-next/src/lifecycle/quarantine.rs` | Treat stale purge proof as fresh | `purge_requires_fresh_proof_before_backend_access` |
 | Purge deletes unlisted object | `crates/storage-next/src/service/quarantine/mutation.rs` | Delete by prefix instead of inventory entries | `purge_deletes_inventory_listed_quarantine_objects` |
 | Purge drops byte facts | `crates/storage-next/src/service/quarantine/mutation.rs` | Do not accumulate reclaimed bytes from deleted inventory entries | `purge_deletes_inventory_listed_quarantine_objects` |
