@@ -511,10 +511,12 @@ impl LifecycleSnapshotPruningOutcome {
             // count provides at-a-glance signal that retention has more
             // than one stranded snapshot to address.
             let faults: Vec<RecoveryFault> = (0..failed.len())
-                .map(|_| RecoveryFault::new(
-                    RecoveryFaultKind::IoFailure,
-                    "snapshot pruning delete failure",
-                ))
+                .map(|_| {
+                    RecoveryFault::new(
+                        RecoveryFaultKind::IoFailure,
+                        "snapshot pruning delete failure",
+                    )
+                })
                 .collect::<LifecycleResult<_>>()?;
             Some(RecoveryHealth::degraded(
                 RecoveryDegradationClass::Telemetry,

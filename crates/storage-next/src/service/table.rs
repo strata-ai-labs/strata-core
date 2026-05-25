@@ -12,7 +12,7 @@ use crate::backend::{
     Backend, BackendCapability, BackendError, BackendRange, PublishError, PublishFailureKind,
     PublishOutcome,
 };
-use crate::format::{decode_immutable_table, FormatError, ImmutableTable};
+use crate::format::{decode_immutable_table, FormatError, ImmutableTable, TableManifestTableRef};
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{validate_publish_outcome, ObjectPublisher};
@@ -200,6 +200,17 @@ impl TableObjectFacts {
             data_block_count: facts.data_block_count(),
             commit_min: facts.commit_range().min(),
             commit_max: facts.commit_range().max(),
+        }
+    }
+
+    pub(crate) fn from_table_manifest_ref(table: &TableManifestTableRef) -> Self {
+        Self {
+            object: table.object().clone(),
+            byte_count: table.facts().byte_count(),
+            row_count: table.facts().row_count(),
+            data_block_count: table.facts().data_block_count(),
+            commit_min: table.facts().commit_min(),
+            commit_max: table.facts().commit_max(),
         }
     }
 

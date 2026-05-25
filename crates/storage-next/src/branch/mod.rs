@@ -78,7 +78,8 @@ pub(crate) use state::{
     BranchMaterializationRecovery, BranchMaterializationRequest,
     BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
     BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
-    BranchSnapshotTargetStatePolicy,
+    BranchSnapshotTargetStatePolicy, BranchTableManifestRecoveryOutcome,
+    BranchTableManifestRecoveryRequest,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

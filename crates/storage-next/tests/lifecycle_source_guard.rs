@@ -247,6 +247,70 @@ fn lifecycle_recovery_runtime_does_not_call_commit_replay_or_product_hooks() {
 }
 
 #[test]
+fn table_manifest_recovery_does_not_list_table_prefix_for_reachability() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/table_manifest.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle table manifest source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_table_manifest_recovery_dependency(line),
+            "src/lifecycle/table_manifest.rs:{} calls forbidden table-manifest recovery dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
+fn table_manifest_publication_does_not_touch_wal_truncation() {
+    let root = common::crate_root();
+    for relative in [
+        "src/lifecycle/table_manifest.rs",
+        "src/lifecycle/durable/maintenance.rs",
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read table manifest publication source");
+        for (line_number, line) in text.lines().enumerate() {
+            if !line.to_ascii_lowercase().contains("table_manifest") {
+                continue;
+            }
+            assert!(
+                !contains_forbidden_table_manifest_publication_dependency(line),
+                "{}:{} calls forbidden table-manifest publication dependency: {line}",
+                relative,
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn cache_mode_does_not_import_table_manifest_service() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/cache.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle cache source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !line.to_ascii_lowercase().contains("tablemanifestservice"),
+            "src/lifecycle/cache.rs:{} imports durable table-manifest service: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
+fn manifest_service_does_not_import_lifecycle() {
+    let root = common::crate_root();
+    let path = root.join("src/service/manifest.rs");
+    let text = fs::read_to_string(&path).expect("read manifest service source");
+    assert!(
+        !imports_lifecycle_text(&text),
+        "service manifest layer imports lifecycle"
+    );
+}
+
+#[test]
 fn lifecycle_checkpoint_runtime_avoids_segment_parsing_and_direct_delete() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/checkpoint.rs");
@@ -1367,6 +1431,38 @@ fn contains_forbidden_recovery_runtime_dependency(line: &str) -> bool {
         "reconstruct(",
         "stratahub",
         "follower",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_table_manifest_recovery_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "list_prefix(",
+        "read_dir",
+        "std::fs",
+        "std::path",
+        "std::env",
+        "openoptions",
+        "mmap",
+        "strata_engine",
+        "strata_intelligence",
+        "stratahub",
+        "primitive",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_table_manifest_publication_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "truncate_wal(",
+        "delete_covered_segments(",
+        "persist_flush_watermark(",
+        "repair_latest_tail(",
+        "wal_truncation",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

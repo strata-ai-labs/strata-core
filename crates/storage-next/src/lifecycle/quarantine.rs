@@ -651,8 +651,12 @@ impl LifecycleQuarantineOutcome {
                 Some("quarantine object publication failed")
             }
             LifecycleQuarantineStatus::InventoryMismatch => Some("quarantine inventory mismatch"),
-            LifecycleQuarantineStatus::ServiceRejected => Some("quarantine service rejected request"),
-            LifecycleQuarantineStatus::ServiceTransient => Some("quarantine service transient failure"),
+            LifecycleQuarantineStatus::ServiceRejected => {
+                Some("quarantine service rejected request")
+            }
+            LifecycleQuarantineStatus::ServiceTransient => {
+                Some("quarantine service transient failure")
+            }
             LifecycleQuarantineStatus::QuarantinedSourceDeleted
             | LifecycleQuarantineStatus::AlreadyQuarantined
             | LifecycleQuarantineStatus::SourceDeleteRetried

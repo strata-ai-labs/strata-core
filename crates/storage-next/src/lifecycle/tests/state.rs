@@ -397,7 +397,10 @@ fn lifecycle_failed_from_opening_rejects_close_requested_and_admit() {
     assert_eq!(failure.failed_state(), LifecycleState::Opening);
 
     let admission = machine.admit(LifecycleOperationKind::Close);
-    assert!(!admission.is_allowed(), "admit allowed unexpectedly: {admission:?}");
+    assert!(
+        !admission.is_allowed(),
+        "admit allowed unexpectedly: {admission:?}"
+    );
     assert_eq!(
         admission.rejection_reason(),
         Some("Failed admits Close only when the prior failure was raised during close"),

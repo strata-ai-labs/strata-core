@@ -23,20 +23,26 @@ use crate::lifecycle::retention::{
     LifecycleRetentionScope, LifecycleRetentionStatus, LifecycleSnapshotPruningOutcome,
     LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
 };
+use crate::lifecycle::table_manifest::{
+    publish_table_manifest_for_branch, table_manifest_debt_outcome,
+};
 use crate::lifecycle::{
     purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
     quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
     repair_quarantine as repair_lifecycle_quarantine, repair_request_from_maintenance_task,
-    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleError, LifecycleMaterializationOutcome,
-    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePurgeOutcome,
-    LifecyclePurgeRequest, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
-    LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest, LifecycleResult, LifecycleStats,
-    LifecycleStoragePressure, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
-    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth,
+    telemetry_health_debt, FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId,
+    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
+    LifecyclePurgeOutcome, LifecyclePurgeRequest, LifecycleQuarantineOutcome,
+    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest,
+    LifecycleResult, LifecycleStats, LifecycleStoragePressure, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
+    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryDegradationClass,
+    RecoveryHealth,
 };
-use crate::service::{QuarantineService, TableObjectReaderService, TableObjectService};
+use crate::service::{
+    QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
+};
 use strata_core_next::Timestamp;
 
 impl<S> LifecycleDurableLocalRuntime<'_, S> {
@@ -60,12 +66,25 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        flush_durable_branch(
+        let outcome = flush_durable_branch(
             &mut self.branch,
             self.services.table_object(),
             self.services.table_reader(),
             request,
+        )?;
+        if publish_table_manifest_after_flush(
+            &self.branch,
+            self.services.table_manifest(),
+            &mut self.table_catalog,
+            &outcome,
         )
+        .is_some()
+        {
+            if let Ok(health) = telemetry_health_debt("table manifest publication needs recovery") {
+                self.record_recovery_health(Some(&health));
+            }
+        }
+        Ok(outcome)
     }
 
     #[allow(
@@ -294,19 +313,27 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_flush_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        let state = self.state;
-        let maintenance = &mut self.maintenance;
-        let branch = &mut self.branch;
-        let table_object = self.services.table_object();
-        let table_reader = self.services.table_reader();
-        let mut runner = DurableFlushMaintenanceRunner {
-            branch,
-            table_object,
-            table_reader,
+        let outcome = {
+            let state = self.state;
+            let maintenance = &mut self.maintenance;
+            let branch = &mut self.branch;
+            let table_object = self.services.table_object();
+            let table_reader = self.services.table_reader();
+            let table_manifest = self.services.table_manifest();
+            let table_catalog = &mut self.table_catalog;
+            let mut runner = DurableFlushMaintenanceRunner {
+                branch,
+                table_object,
+                table_reader,
+                table_manifest,
+                table_catalog,
+            };
+            maintenance.run_next_matching(state, &mut runner, |task| {
+                task.kind() == MaintenanceTaskKind::Flush
+            })
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
-            task.kind() == MaintenanceTaskKind::Flush
-        })
+        self.record_optional_maintenance_health(&outcome);
+        outcome
     }
 
     #[allow(
@@ -515,16 +542,48 @@ struct DurableFlushMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
     table_object: &'a TableObjectService<'b>,
     table_reader: &'a TableObjectReaderService<'b>,
+    table_manifest: &'a TableManifestService<'b>,
+    table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
 }
 
 impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = flush_request_from_maintenance_task(task)?;
-        Ok(
-            flush_durable_branch(self.branch, self.table_object, self.table_reader, &request)?
-                .maintenance_outcome(),
-        )
+        let outcome =
+            flush_durable_branch(self.branch, self.table_object, self.table_reader, &request)?;
+        let maintenance_outcome = outcome.maintenance_outcome();
+        if let Some(error) = publish_table_manifest_after_flush(
+            self.branch,
+            self.table_manifest,
+            self.table_catalog,
+            &outcome,
+        ) {
+            return Ok(table_manifest_debt_outcome(maintenance_outcome, error));
+        }
+        Ok(maintenance_outcome)
     }
+}
+
+fn publish_table_manifest_after_flush(
+    branch: &BranchLocalState,
+    service: &TableManifestService<'_>,
+    catalog: &mut crate::lifecycle::LifecycleDurableTableCatalog,
+    outcome: &FlushFrozenOutcome,
+) -> Option<LifecycleError> {
+    if !matches!(
+        outcome.status(),
+        crate::lifecycle::FlushFrozenStatus::Completed
+    ) {
+        return None;
+    }
+    let (Some(identity), Some(object_facts)) = (outcome.table_identity(), outcome.object_facts())
+    else {
+        return None;
+    };
+    if let Err(error) = catalog.record_table(identity.clone(), object_facts.clone()) {
+        return Some(error);
+    }
+    publish_table_manifest_for_branch(branch, service, catalog).map_or_else(Some, |_| None)
 }
 
 struct DurableCheckpointMaintenanceRunner<'a, 'b> {

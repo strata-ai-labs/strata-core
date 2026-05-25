@@ -42,6 +42,12 @@ fn lifecycle_recovery_contract_exercises_storage_recovery_paths() {
     assert!(outcome.input_derived_log_tail_cases() > 0);
     assert!(outcome.input_derived_strict_failure_cases() > 0);
     assert!(outcome.input_derived_lossy_degradation_cases() > 0);
+    assert!(outcome.table_manifest_published_cases() > 0);
+    assert!(outcome.table_manifest_recovered_cases() > 0);
+    assert!(outcome.table_manifest_corrupt_cases() > 0);
+    assert!(outcome.table_object_missing_cases() > 0);
+    assert!(outcome.table_object_mismatch_cases() > 0);
+    assert!(outcome.orphan_ignored_cases() > 0);
 }
 
 #[cfg(feature = "testkit")]

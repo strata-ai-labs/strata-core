@@ -317,9 +317,7 @@ pub fn run_localfs_lifecycle_retention_runner_harness(
 ) -> Result<LifecycleRetentionRunnerHarnessOutcome, TestkitError> {
     use crate::backend::local_fs::LocalFsBackend;
     use crate::branch::BranchRuntimeConfig;
-    use crate::commit::{
-        CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig,
-    };
+    use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
     use crate::lifecycle::{
         LifecycleCodecId, LifecycleConfig, LifecycleDurableLocalOpenRequest,
         LifecycleDurableLocalShell, LifecycleRecoveryRequest, LifecycleRecoveryRuntime,
@@ -841,7 +839,9 @@ fn localfs_log_append_survives_reopen(root: &std::path::Path) -> Result<(), Test
         .load(7)
         .map_err(|err| TestkitError::new(format!("load sidecar after reopen: {err}")))?;
     let WalSegmentMetadataSidecarLoad::Present(sidecar) = loaded else {
-        return Err(TestkitError::new("orphan wal record did not survive reopen"));
+        return Err(TestkitError::new(
+            "orphan wal record did not survive reopen",
+        ));
     };
     require(
         sidecar.metadata() == &metadata && sidecar.metadata().record_count() == 1,
@@ -851,7 +851,9 @@ fn localfs_log_append_survives_reopen(root: &std::path::Path) -> Result<(), Test
         DatabaseManifestService::new(&reopened)
             .load_current()
             .map_err(|err| {
-                TestkitError::new(format!("load manifest after wal-before-manifest crash: {err}"))
+                TestkitError::new(format!(
+                    "load manifest after wal-before-manifest crash: {err}"
+                ))
             })?
             .is_none(),
         "manifest unexpectedly present after wal-append-before-visibility crash window",
@@ -1318,7 +1320,9 @@ fn manifest_publish_uncertain_preserves_durable_state() -> Result<(), TestkitErr
     let backend = FaultingBackend::new(HarnessBackend::default(), script);
     DatabaseManifestService::new(&backend)
         .create_initial(DATABASE_ID, CODEC_ID)
-        .map_err(|err| TestkitError::new(format!("seed manifest before uncertain publish: {err}")))?;
+        .map_err(|err| {
+            TestkitError::new(format!("seed manifest before uncertain publish: {err}"))
+        })?;
     let snapshot_watermark = CommitVersion::new(7);
     let error = DatabaseManifestService::new(&backend)
         .persist_snapshot_facts(7, snapshot_watermark)
@@ -1383,11 +1387,9 @@ fn partial_log_truncation_strict_returns_typed_error() -> Result<(), TestkitErro
     // the format module. Reaching `Err(_)` here means the decoder did not
     // silently accept the truncated bytes (e.g. by returning a default
     // `SegmentMetadata`), which is the invariant the strict route protects.
-    let _error = decode_segment_metadata(truncated)
-        .err()
-        .ok_or_else(|| TestkitError::new(
-            "strict decode silently accepted truncated sidecar tail",
-        ))?;
+    let _error = decode_segment_metadata(truncated).err().ok_or_else(|| {
+        TestkitError::new("strict decode silently accepted truncated sidecar tail")
+    })?;
     Ok(())
 }
 
@@ -1492,7 +1494,9 @@ fn rewrite_publish_fault_preserves_prior_read() -> Result<(), TestkitError> {
         .publish_create(&branch, 5, "tablev0002", &bytes)
         .expect_err("rewrite publish must fail under fault");
     require(
-        format!("{rewrite_error}").to_ascii_lowercase().contains("publish"),
+        format!("{rewrite_error}")
+            .to_ascii_lowercase()
+            .contains("publish"),
         "rewrite fault was not classified as publish failure",
     )?;
     let original = ObjectLayout::table_object(&branch, 5, "tablev0001")
@@ -1574,11 +1578,9 @@ fn purge_delete_fault_preserves_quarantine_object() -> Result<(), TestkitError> 
         .entries()
         .first()
         .ok_or_else(|| TestkitError::new("inventory missing entry"))?;
-    let quarantine_object = ObjectLayout::quarantine_object(
-        &branch_id().to_string(),
-        entry.object_id(),
-    )
-    .map_err(|err| TestkitError::new(format!("quarantine object layout: {err}")))?;
+    let quarantine_object =
+        ObjectLayout::quarantine_object(&branch_id().to_string(), entry.object_id())
+            .map_err(|err| TestkitError::new(format!("quarantine object layout: {err}")))?;
     let delete_error = backend
         .delete_object(&quarantine_object)
         .expect_err("simulated purge delete must surface fault");
@@ -1627,10 +1629,18 @@ fn close_quiesce_blocked_by_held_writer_lock() -> Result<(), TestkitError> {
         .err()
         .ok_or_else(|| TestkitError::new("second acquire unexpectedly succeeded"))?;
     require(
-        format!("{contention:?}").to_ascii_lowercase().contains("lock")
-            || format!("{contention:?}").to_ascii_lowercase().contains("unavail")
-            || format!("{contention:?}").to_ascii_lowercase().contains("would")
-            || format!("{contention:?}").to_ascii_lowercase().contains("busy"),
+        format!("{contention:?}")
+            .to_ascii_lowercase()
+            .contains("lock")
+            || format!("{contention:?}")
+                .to_ascii_lowercase()
+                .contains("unavail")
+            || format!("{contention:?}")
+                .to_ascii_lowercase()
+                .contains("would")
+            || format!("{contention:?}")
+                .to_ascii_lowercase()
+                .contains("busy"),
         "contended writer lock did not surface a typed exclusion error",
     )?;
     drop(first_guard);

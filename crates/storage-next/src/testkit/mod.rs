@@ -45,10 +45,10 @@ pub use format_fuzz::{
 pub use integration_harness::run_localfs_crash_recovery_harness;
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use integration_harness::run_localfs_lifecycle_retention_runner_harness;
-#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-pub use integration_harness::LifecycleRetentionRunnerHarnessOutcome;
 #[cfg(any(test, feature = "fault-injection"))]
 pub use integration_harness::run_service_fault_window_harness;
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+pub use integration_harness::LifecycleRetentionRunnerHarnessOutcome;
 pub use integration_harness::{
     run_storage_stress_harness, CrashRecoveryHarnessOutcome, ServiceFaultWindowHarnessOutcome,
     StorageStressHarnessOutcome,

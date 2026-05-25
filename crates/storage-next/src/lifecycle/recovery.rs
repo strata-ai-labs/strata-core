@@ -1,9 +1,10 @@
 //! Durable-local recovery orchestration.
 
 use super::{
-    LifecycleDurableLocalShell, LifecycleError, LifecycleLowerLayer, LifecycleResult,
-    RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth, RecoveryStrictness,
-    StorageOpenPlan,
+    preflight_table_manifest_with_checkpoint, LifecycleDurableLocalShell, LifecycleError,
+    LifecycleLowerLayer, LifecycleResult, LifecycleTableManifestRecoveryOutcome,
+    LifecycleTableManifestRecoveryStage, RecoveryDegradationClass, RecoveryFault,
+    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageOpenPlan,
 };
 use crate::branch::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
@@ -15,10 +16,10 @@ use crate::format::{
 use crate::object::ObjectName;
 use crate::row::StorageRow;
 use crate::service::{
-    QuarantineServiceError, SnapshotServiceError, TableObjectFacts, TableObjectReadError,
-    WalRepair, WalServiceError, WalTruncation,
+    QuarantineServiceError, SnapshotServiceError, TableObjectFacts, WalRepair, WalServiceError,
+    WalTruncation,
 };
-use crate::table::{TableIdentity, TableReaderConfig};
+use crate::table::TableIdentity;
 use strata_core_next::{CommitVersion, Timestamp};
 
 pub(crate) const SNAPSHOT_ROW_SECTION_KIND: u8 = 1;
@@ -85,12 +86,18 @@ pub(crate) struct LifecycleRecoveredQuarantine {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleRecoveredTables {
     validated: Vec<LifecycleRecoveredTable>,
+    table_manifest: LifecycleTableManifestRecoveryOutcome,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleRecoveredTable {
     identity: TableIdentity,
     facts: TableObjectFacts,
+}
+
+struct TableRecoveryStage {
+    recovered_tables: LifecycleRecoveredTables,
+    table_manifest_stage: Option<LifecycleTableManifestRecoveryStage>,
 }
 
 impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
@@ -115,12 +122,21 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             request.max_faults(),
         )?;
         let quarantine = self.recover_quarantine(request, &mut faults)?;
-        let tables = self.recover_tables(request)?;
-        let replay_start = trusted_replay_start(checkpoint.trusted_watermark());
+        let tables = self.recover_tables(request, &mut faults)?;
+        let replay_start = trusted_replay_start(checkpoint.checkpoint.trusted_watermark());
         let wal = self.recover_wal(request, replay_start, &mut faults)?;
         let health = recovery_health_from_faults(request, faults)?;
         if let Some(recovered_branch) = checkpoint.recovered_branch {
+            if let Some(stage) = tables.table_manifest_stage.as_ref() {
+                // Recovery Protocol rule 9: when both checkpoint rows and a
+                // table manifest are present, preflight the combined state
+                // before installing either source. Exact byte duplicates at
+                // the same internal key are accepted; divergent bytes fail.
+                preflight_table_manifest_with_checkpoint(&recovered_branch, stage.staged_branch())?;
+            }
             *self.shell.branch_state_mut() = recovered_branch;
+        } else if let Some(stage) = tables.table_manifest_stage {
+            self.shell.apply_table_manifest_recovery(stage);
         }
 
         Ok(LifecycleRecoveryOutcome {
@@ -128,7 +144,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             checkpoint: checkpoint.checkpoint,
             wal,
             quarantine,
-            tables,
+            tables: tables.recovered_tables,
         })
     }
 
@@ -262,26 +278,51 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
     }
 
     fn recover_tables(
-        &self,
+        &mut self,
         request: &LifecycleRecoveryRequest,
-    ) -> LifecycleResult<LifecycleRecoveredTables> {
-        let mut validated = Vec::with_capacity(request.table_objects().len());
-        for table in request.table_objects() {
-            self.shell
-                .services()
-                .table_reader()
-                .open_reader(
-                    table.identity().clone(),
-                    table.facts(),
-                    TableReaderConfig::default(),
-                )
-                .map_err(table_read_error)?;
-            validated.push(LifecycleRecoveredTable {
-                identity: table.identity().clone(),
-                facts: table.facts().clone(),
+        faults: &mut Vec<RecoveryFault>,
+    ) -> LifecycleResult<TableRecoveryStage> {
+        if !request.table_objects().is_empty() {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "table object recovery references require a table manifest",
             });
         }
-        Ok(LifecycleRecoveredTables { validated })
+        let stage = match self.shell.stage_table_manifest_recovery() {
+            Ok(stage) => stage,
+            Err(error)
+                if request.strictness() == RecoveryStrictness::AllowExplicitLossyFallback
+                    && is_lossy_table_manifest_recovery_error(&error) =>
+            {
+                push_fault_for_branch(
+                    faults,
+                    request.max_faults(),
+                    table_manifest_recovery_fault_kind(&error),
+                    table_manifest_recovery_fault_reason(&error),
+                    self.shell.branch_state().branch_id(),
+                )?;
+                return Ok(TableRecoveryStage {
+                    recovered_tables: LifecycleRecoveredTables {
+                        validated: Vec::new(),
+                        table_manifest: LifecycleTableManifestRecoveryOutcome::absent(),
+                    },
+                    table_manifest_stage: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let outcome = stage.outcome().clone();
+        let table_manifest_stage = if outcome.manifest_sequence().is_some() {
+            Some(stage)
+        } else {
+            None
+        };
+        Ok(TableRecoveryStage {
+            recovered_tables: LifecycleRecoveredTables {
+                validated: Vec::new(),
+                table_manifest: outcome,
+            },
+            table_manifest_stage,
+        })
     }
 
     fn recover_quarantine(
@@ -397,6 +438,11 @@ impl LifecycleRecoveryRequest {
                 reason: "must be nonzero",
             });
         }
+        if !self.table_objects.is_empty() {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "table object recovery references require a table manifest",
+            });
+        }
         Ok(())
     }
 
@@ -420,14 +466,6 @@ impl LifecycleRecoveryTableObject {
     )]
     pub(crate) const fn new(identity: TableIdentity, facts: TableObjectFacts) -> Self {
         Self { identity, facts }
-    }
-
-    pub(crate) const fn identity(&self) -> &TableIdentity {
-        &self.identity
-    }
-
-    pub(crate) const fn facts(&self) -> &TableObjectFacts {
-        &self.facts
     }
 }
 
@@ -551,6 +589,10 @@ impl LifecycleRecoveredQuarantine {
 }
 
 impl LifecycleRecoveredTables {
+    #[allow(
+        dead_code,
+        reason = "table-manifest recovery tests inspect validated legacy counters"
+    )]
     pub(crate) fn validated(&self) -> &[LifecycleRecoveredTable] {
         &self.validated
     }
@@ -558,13 +600,29 @@ impl LifecycleRecoveredTables {
     pub(crate) const fn validated_count(&self) -> usize {
         self.validated.len()
     }
+
+    #[allow(
+        dead_code,
+        reason = "table-manifest recovery facts are consumed by lifecycle tests"
+    )]
+    pub(crate) const fn table_manifest(&self) -> &LifecycleTableManifestRecoveryOutcome {
+        &self.table_manifest
+    }
 }
 
 impl LifecycleRecoveredTable {
+    #[allow(
+        dead_code,
+        reason = "table-manifest recovery tests inspect validated legacy counters"
+    )]
     pub(crate) const fn identity(&self) -> &TableIdentity {
         &self.identity
     }
 
+    #[allow(
+        dead_code,
+        reason = "table-manifest recovery tests inspect validated legacy counters"
+    )]
     pub(crate) const fn facts(&self) -> &TableObjectFacts {
         &self.facts
     }
@@ -706,10 +764,6 @@ impl CheckpointRecovery {
             recovered_branch: None,
         }
     }
-
-    const fn trusted_watermark(&self) -> Option<CommitVersion> {
-        self.checkpoint.trusted_watermark()
-    }
 }
 
 fn install_checkpoint_rows(
@@ -843,7 +897,8 @@ fn degradation_class_for_faults(faults: &[RecoveryFault]) -> RecoveryDegradation
     if faults.iter().any(|fault| {
         matches!(
             fault.kind(),
-            RecoveryFaultKind::MissingSnapshotObject
+            RecoveryFaultKind::CorruptManifest
+                | RecoveryFaultKind::MissingSnapshotObject
                 | RecoveryFaultKind::MissingTableObject
                 | RecoveryFaultKind::InheritedLayerLoss
                 | RecoveryFaultKind::NoManifestFallback
@@ -858,6 +913,38 @@ fn degradation_class_for_faults(faults: &[RecoveryFault]) -> RecoveryDegradation
         RecoveryDegradationClass::Telemetry
     } else {
         RecoveryDegradationClass::PolicyDowngrade
+    }
+}
+
+fn is_lossy_table_manifest_recovery_error(error: &LifecycleError) -> bool {
+    matches!(
+        error,
+        LifecycleError::TableManifestRecoveryMismatch { .. }
+            | LifecycleError::TableManifestBranchInstallFailed { .. }
+    )
+}
+
+fn table_manifest_recovery_fault_kind(error: &LifecycleError) -> RecoveryFaultKind {
+    match error {
+        LifecycleError::TableManifestRecoveryMismatch { reason, .. }
+            if *reason == "table manifest listed table object is missing"
+                || *reason == "table manifest facts do not match table object"
+                || *reason == "table manifest listed table object failed validation" =>
+        {
+            RecoveryFaultKind::MissingTableObject
+        }
+        LifecycleError::TableManifestBranchInstallFailed { .. } => {
+            RecoveryFaultKind::InheritedLayerLoss
+        }
+        _ => RecoveryFaultKind::CorruptManifest,
+    }
+}
+
+fn table_manifest_recovery_fault_reason(error: &LifecycleError) -> &'static str {
+    match error {
+        LifecycleError::TableManifestRecoveryMismatch { reason, .. }
+        | LifecycleError::TableManifestBranchInstallFailed { reason, .. } => reason,
+        _ => "table manifest recovery failed",
     }
 }
 
@@ -946,14 +1033,6 @@ fn wal_repair_error(source: WalServiceError) -> LifecycleError {
     LifecycleError::lower_layer_with(
         LifecycleLowerLayer::Service,
         "WAL latest-tail repair failed",
-        source,
-    )
-}
-
-fn table_read_error(source: TableObjectReadError) -> LifecycleError {
-    LifecycleError::lower_layer_with(
-        LifecycleLowerLayer::TableRuntime,
-        "table object recovery validation failed",
         source,
     )
 }

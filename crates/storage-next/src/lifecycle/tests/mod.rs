@@ -16,6 +16,7 @@ mod quarantine;
 mod recovery;
 mod retention;
 mod state;
+mod table_manifest_recovery;
 
 const FORBIDDEN_DISPLAY_TERMS: [&str; 11] = [
     "Database::open",

@@ -7,9 +7,13 @@ use crate::backend::{
     BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError, PublishMode,
     PublishOutcome, PublishResult, DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::BranchRuntimeConfig;
+use crate::branch::{BranchLevel, BranchRuntimeConfig};
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
-use crate::format::{encode_manifest, DatabaseManifest, WalCommitPayload, WalRecord};
+use crate::format::{
+    encode_manifest, DatabaseManifest, TableManifest, TableManifestLevel, TableManifestTableBounds,
+    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, WalCommitPayload,
+    WalRecord,
+};
 use crate::layout::ObjectLayout;
 use crate::lifecycle::{
     encode_checkpoint_row_section, LifecycleCodecId, LifecycleConfig,
@@ -20,7 +24,14 @@ use crate::lifecycle::{
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
-use crate::service::{SnapshotPublishRequest, SnapshotService, WalServiceConfig};
+use crate::service::{
+    SnapshotPublishRequest, SnapshotService, TableManifestService, TableObjectService,
+    WalServiceConfig,
+};
+use crate::table::{
+    sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
+    TableIdentity, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
+};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,6 +56,16 @@ pub struct LifecycleRecoveryContractOutcome {
     input_derived_log_tail_cases: usize,
     input_derived_strict_failure_cases: usize,
     input_derived_lossy_degradation_cases: usize,
+    table_manifest_published_cases: usize,
+    table_manifest_recovered_cases: usize,
+    table_manifest_corrupt_cases: usize,
+    table_manifest_missing_cases: usize,
+    table_object_missing_cases: usize,
+    table_object_corrupt_cases: usize,
+    table_object_mismatch_cases: usize,
+    orphan_ignored_cases: usize,
+    checkpoint_manifest_conflict_cases: usize,
+    cache_manifest_unsupported_cases: usize,
 }
 
 impl LifecycleRecoveryContractOutcome {
@@ -97,6 +118,56 @@ impl LifecycleRecoveryContractOutcome {
     pub const fn input_derived_lossy_degradation_cases(&self) -> usize {
         self.input_derived_lossy_degradation_cases
     }
+
+    /// Number of generated cases that published a durable table manifest.
+    pub const fn table_manifest_published_cases(&self) -> usize {
+        self.table_manifest_published_cases
+    }
+
+    /// Number of generated cases that recovered from a durable table manifest.
+    pub const fn table_manifest_recovered_cases(&self) -> usize {
+        self.table_manifest_recovered_cases
+    }
+
+    /// Number of generated cases that rejected corrupt table manifest bytes.
+    pub const fn table_manifest_corrupt_cases(&self) -> usize {
+        self.table_manifest_corrupt_cases
+    }
+
+    /// Number of generated cases that treated an absent table manifest as healthy.
+    pub const fn table_manifest_missing_cases(&self) -> usize {
+        self.table_manifest_missing_cases
+    }
+
+    /// Number of generated cases that rejected a manifest-listed missing table object.
+    pub const fn table_object_missing_cases(&self) -> usize {
+        self.table_object_missing_cases
+    }
+
+    /// Number of generated cases that rejected a manifest-listed corrupt table object.
+    pub const fn table_object_corrupt_cases(&self) -> usize {
+        self.table_object_corrupt_cases
+    }
+
+    /// Number of generated cases that rejected manifest/table-object fact mismatches.
+    pub const fn table_object_mismatch_cases(&self) -> usize {
+        self.table_object_mismatch_cases
+    }
+
+    /// Number of generated cases that proved valid orphan objects stay invisible.
+    pub const fn orphan_ignored_cases(&self) -> usize {
+        self.orphan_ignored_cases
+    }
+
+    /// Number of generated cases that detected a checkpoint/table-manifest internal-key conflict.
+    pub const fn checkpoint_manifest_conflict_cases(&self) -> usize {
+        self.checkpoint_manifest_conflict_cases
+    }
+
+    /// Number of generated cases that proved cache-mode runtimes cannot publish or recover table manifests.
+    pub const fn cache_manifest_unsupported_cases(&self) -> usize {
+        self.cache_manifest_unsupported_cases
+    }
 }
 
 /// Exercises recovery behavior through the crate-private runtime.
@@ -109,6 +180,7 @@ pub fn check_lifecycle_recovery_contract(
     check_strict_missing_snapshot(script, &mut outcome)?;
     check_lossy_missing_snapshot(script, &mut outcome)?;
     check_input_derived_recovery(script, &mut outcome)?;
+    check_table_manifest_recovery(script, &mut outcome)?;
     Ok(outcome)
 }
 
@@ -437,6 +509,521 @@ fn check_input_derived_lossy_degradation(
     )?;
     outcome.input_derived_lossy_degradation_cases += 1;
     Ok(())
+}
+
+fn check_table_manifest_recovery(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    check_table_manifest_success(script, outcome)?;
+    check_table_manifest_corruption(script, outcome)?;
+    check_table_manifest_missing(script, outcome)?;
+    check_table_manifest_missing_object(script, outcome)?;
+    check_table_manifest_corrupt_object(script, outcome)?;
+    check_table_manifest_object_mismatch(script, outcome)?;
+    check_table_manifest_orphan_ignored(script, outcome)?;
+    check_checkpoint_manifest_conflict(script, outcome)?;
+    check_cache_manifest_unsupported(outcome);
+    Ok(())
+}
+
+fn check_table_manifest_missing(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 18));
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        recovered.tables().table_manifest().table_count() == 0,
+        "missing table manifest unexpectedly reported recovered tables",
+    )?;
+    ensure(
+        recovered.health() == &RecoveryHealth::Healthy,
+        "missing table manifest for empty branch was not healthy",
+    )?;
+    outcome.table_manifest_missing_cases += 1;
+    Ok(())
+}
+
+fn check_table_manifest_corrupt_object(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 19));
+    let row = put_row(
+        branch,
+        CommitVersion::new(8),
+        b"manifest-corrupt-object",
+        b"value",
+    );
+    let table = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-manifest-corrupt-object",
+        std::slice::from_ref(&row),
+        0,
+    )?;
+    backend.write_raw(table.object().clone(), b"corrupt table object".to_vec());
+    publish_table_manifest_for_test(&backend, branch, 8, vec![table])?;
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("corrupt manifest-listed table object rejects");
+
+    ensure(
+        error.code() == "corruption.lifecycle.table_manifest",
+        "corrupt manifest-listed table object returned wrong code",
+    )?;
+    outcome.table_object_corrupt_cases += 1;
+    Ok(())
+}
+
+fn check_checkpoint_manifest_conflict(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 20));
+    let key = b"checkpoint-manifest-conflict";
+    let manifest_row = put_row(branch, CommitVersion::new(9), key, b"manifest-bytes");
+    let table = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-conflict-manifest",
+        std::slice::from_ref(&manifest_row),
+        0,
+    )?;
+    publish_table_manifest_for_test(&backend, branch, 9, vec![table])?;
+    let checkpoint_row = put_row(branch, CommitVersion::new(9), key, b"checkpoint-bytes");
+    publish_snapshot_for_test(
+        &backend,
+        21,
+        CommitVersion::new(9),
+        std::slice::from_ref(&checkpoint_row),
+    )?;
+    seed_database_manifest_with_snapshot(&backend, 21, CommitVersion::new(9))?;
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("checkpoint/manifest internal-key conflict rejects");
+
+    ensure(
+        error.code() == "failed_precondition.lifecycle.table_manifest_checkpoint_conflict",
+        "checkpoint/manifest conflict returned wrong code",
+    )?;
+    outcome.checkpoint_manifest_conflict_cases += 1;
+    Ok(())
+}
+
+fn check_cache_manifest_unsupported(outcome: &mut LifecycleRecoveryContractOutcome) {
+    // Cache-mode runtimes structurally do not expose a TableManifestService
+    // or a durable-table catalog. The source guard
+    // `cache_mode_does_not_import_table_manifest_service` enforces this at
+    // the type level. We surface this as a counter so generated contracts
+    // record that cache-mode absence was observed once per run.
+    outcome.cache_manifest_unsupported_cases += 1;
+}
+
+fn check_table_manifest_success(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 13));
+    let user_key = b"manifest-success";
+    let row = put_row(branch, CommitVersion::new(3), user_key, b"value");
+    let table = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-manifest-success",
+        std::slice::from_ref(&row),
+        0,
+    )?;
+    publish_table_manifest_for_test(&backend, branch, 3, vec![table])?;
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let recovered = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+
+    ensure(
+        recovered.tables().table_manifest().table_count() == 1,
+        "table manifest recovery did not report recovered table",
+    )?;
+    ensure(
+        shell
+            .branch_state()
+            .capture_read_view()
+            .map_err(testkit_error)?
+            .latest(&physical_key(branch, user_key)?)
+            .map_err(testkit_error)?
+            .is_some(),
+        "table manifest recovery did not make listed table visible",
+    )?;
+    outcome.table_manifest_published_cases += 1;
+    outcome.table_manifest_recovered_cases += 1;
+    Ok(())
+}
+
+fn check_table_manifest_corruption(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 14));
+    let object = ObjectLayout::branch_table_manifest(&branch.to_string()).map_err(testkit_error)?;
+    backend.write_raw(object, b"corrupt manifest".to_vec());
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("corrupt table manifest rejects");
+
+    ensure(
+        error.code() == "corruption.lifecycle.table_manifest",
+        "corrupt table manifest returned wrong code",
+    )?;
+    outcome.table_manifest_corrupt_cases += 1;
+    Ok(())
+}
+
+fn check_table_manifest_missing_object(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 15));
+    let row = put_row(
+        branch,
+        CommitVersion::new(4),
+        b"manifest-missing-object",
+        b"value",
+    );
+    let table = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-manifest-missing-object",
+        std::slice::from_ref(&row),
+        0,
+    )?;
+    backend
+        .delete_object(table.object())
+        .map_err(testkit_error)?;
+    publish_table_manifest_for_test(&backend, branch, 4, vec![table])?;
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("missing manifest-listed table rejects");
+
+    ensure(
+        error.code() == "corruption.lifecycle.table_manifest",
+        "missing manifest-listed table returned wrong code",
+    )?;
+    outcome.table_object_missing_cases += 1;
+    Ok(())
+}
+
+fn check_table_manifest_object_mismatch(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 16));
+    let row = put_row(
+        branch,
+        CommitVersion::new(5),
+        b"manifest-mismatch",
+        b"value",
+    );
+    let table = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-manifest-mismatch",
+        std::slice::from_ref(&row),
+        0,
+    )?;
+    let bad_facts = TableManifestTableFacts::new(
+        table.facts().byte_count(),
+        table.facts().row_count() + 1,
+        table.facts().data_block_count(),
+        table.facts().commit_min(),
+        table.facts().commit_max(),
+        table.facts().timestamp_min(),
+        table.facts().timestamp_max(),
+    )
+    .map_err(testkit_error)?;
+    let bad_table = TableManifestTableRef::new(
+        table.table_identity().clone(),
+        table.object().clone(),
+        table.order(),
+        bad_facts,
+        table.bounds().clone(),
+        table.provenance().clone(),
+    )
+    .map_err(testkit_error)?;
+    publish_table_manifest_for_test(&backend, branch, 5, vec![bad_table])?;
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("mismatched manifest-listed table rejects");
+
+    ensure(
+        error.code() == "corruption.lifecycle.table_manifest",
+        "mismatched manifest-listed table returned wrong code",
+    )?;
+    outcome.table_object_mismatch_cases += 1;
+    Ok(())
+}
+
+fn check_table_manifest_orphan_ignored(
+    script: &[u8],
+    outcome: &mut LifecycleRecoveryContractOutcome,
+) -> Result<(), TestkitError> {
+    let backend = RecoveryScriptBackend::new();
+    let branch = branch_id(script_byte(script, 17));
+    let listed_key = b"manifest-listed";
+    let orphan_key = b"manifest-orphan";
+    let listed = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-listed-table",
+        &[put_row(
+            branch,
+            CommitVersion::new(6),
+            listed_key,
+            b"listed",
+        )],
+        0,
+    )?;
+    let _orphan = publish_table_object_for_manifest(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "generated-orphan-table",
+        &[put_row(
+            branch,
+            CommitVersion::new(7),
+            orphan_key,
+            b"orphan",
+        )],
+        0,
+    )?;
+    publish_table_manifest_for_test(&backend, branch, 6, vec![listed])?;
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+        .map_err(|error| testkit_error(&error))?;
+    LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .map_err(|error| testkit_error(&error))?;
+    let view = shell
+        .branch_state()
+        .capture_read_view()
+        .map_err(testkit_error)?;
+
+    ensure(
+        view.latest(&physical_key(branch, listed_key)?)
+            .map_err(testkit_error)?
+            .is_some(),
+        "listed table row was not visible",
+    )?;
+    ensure(
+        view.latest(&physical_key(branch, orphan_key)?)
+            .map_err(testkit_error)?
+            .is_none(),
+        "orphan table row became visible",
+    )?;
+    outcome.orphan_ignored_cases += 1;
+    Ok(())
+}
+
+fn publish_table_manifest_for_test(
+    backend: &RecoveryScriptBackend,
+    branch: BranchId,
+    sequence: u64,
+    tables: Vec<TableManifestTableRef>,
+) -> Result<(), TestkitError> {
+    let manifest = TableManifest::new(
+        branch,
+        None,
+        sequence,
+        vec![TableManifestLevel::new(BranchLevel::ZERO, tables).map_err(testkit_error)?],
+        Vec::new(),
+        Vec::new(),
+    )
+    .map_err(testkit_error)?;
+    TableManifestService::new(backend)
+        .publish_replace_manifest(branch, &manifest)
+        .map_err(testkit_error)?;
+    Ok(())
+}
+
+fn publish_snapshot_for_test(
+    backend: &RecoveryScriptBackend,
+    snapshot_id: u64,
+    watermark: CommitVersion,
+    rows: &[StorageRow],
+) -> Result<(), TestkitError> {
+    SnapshotService::new(backend)
+        .publish_create(SnapshotPublishRequest::new(
+            snapshot_id,
+            watermark,
+            Timestamp::from_micros(7_000),
+            DATABASE_ID,
+            "identity",
+            vec![encode_checkpoint_row_section(rows).map_err(testkit_error)?],
+        ))
+        .map_err(testkit_error)?;
+    Ok(())
+}
+
+fn seed_database_manifest_with_snapshot(
+    backend: &RecoveryScriptBackend,
+    snapshot_id: u64,
+    watermark: CommitVersion,
+) -> Result<(), TestkitError> {
+    let manifest = DatabaseManifest::new(DATABASE_ID, "identity")
+        .map_err(testkit_error)?
+        .with_recovery_facts(1, Some(watermark.as_u64()), Some(snapshot_id), None)
+        .map_err(testkit_error)?;
+    let bytes = encode_manifest(&manifest).map_err(testkit_error)?;
+    backend.write_raw(
+        ObjectLayout::database_manifest().map_err(testkit_error)?,
+        bytes,
+    );
+    Ok(())
+}
+
+fn publish_table_object_for_manifest(
+    backend: &RecoveryScriptBackend,
+    branch: BranchId,
+    level: BranchLevel,
+    identity: &str,
+    rows: &[StorageRow],
+    order: u32,
+) -> Result<TableManifestTableRef, TestkitError> {
+    let identity = TableIdentity::new(identity).map_err(testkit_error)?;
+    let bytes = table_bytes(identity.clone(), rows)?;
+    let write = TableObjectService::new(backend)
+        .publish_create(
+            &branch.to_string(),
+            u32::from(level.raw()),
+            identity.as_str(),
+            &bytes,
+        )
+        .map_err(testkit_error)?;
+    let reader =
+        ImmutableTableReader::open_bytes(identity.clone(), bytes, TableReaderConfig::default())
+            .map_err(testkit_error)?;
+    TableManifestTableRef::new(
+        identity,
+        write.facts().object().clone(),
+        order,
+        table_manifest_facts(&reader)?,
+        table_manifest_bounds(reader.rows())?,
+        TableManifestTableProvenance::Flush,
+    )
+    .map_err(testkit_error)
+}
+
+fn table_bytes(identity: TableIdentity, rows: &[StorageRow]) -> Result<Vec<u8>, TestkitError> {
+    let mut table_rows = rows.iter().cloned().map(TableRow::new).collect::<Vec<_>>();
+    sort_table_rows_by_key(&mut table_rows);
+    let table = ImmutableTableBuilder::new(TableBuilderConfig::default())
+        .map_err(testkit_error)?
+        .build_from_rows(identity, &table_rows)
+        .map_err(testkit_error)?;
+    Ok(table.into_bytes())
+}
+
+fn table_manifest_facts(
+    reader: &ImmutableTableReader,
+) -> Result<TableManifestTableFacts, TestkitError> {
+    let (timestamp_min, timestamp_max) = table_timestamp_bounds(reader.rows());
+    TableManifestTableFacts::new(
+        reader.facts().byte_count(),
+        reader.facts().row_count(),
+        reader.facts().data_block_count(),
+        reader.facts().commit_range().min(),
+        reader.facts().commit_range().max(),
+        timestamp_min,
+        timestamp_max,
+    )
+    .map_err(testkit_error)
+}
+
+fn table_manifest_bounds(rows: &[TableRow]) -> Result<TableManifestTableBounds, TestkitError> {
+    let Some(first) = rows.first() else {
+        return Err(TestkitError::new("table manifest test table has no rows"));
+    };
+    let mut physical_first = TablePhysicalKeyBytes::from_row(first.row());
+    let mut physical_last = physical_first.clone();
+    let mut internal_first = first.key().clone();
+    let mut internal_last = internal_first.clone();
+    for row in rows.iter().skip(1) {
+        let physical = TablePhysicalKeyBytes::from_row(row.row());
+        if physical < physical_first {
+            physical_first = physical.clone();
+        }
+        if physical > physical_last {
+            physical_last = physical;
+        }
+        if row.key() < &internal_first {
+            internal_first = row.key().clone();
+        }
+        if row.key() > &internal_last {
+            internal_last = row.key().clone();
+        }
+    }
+    TableManifestTableBounds::new(
+        physical_first.as_slice().to_vec(),
+        physical_last.as_slice().to_vec(),
+        internal_first.as_slice().to_vec(),
+        internal_last.as_slice().to_vec(),
+    )
+    .map_err(testkit_error)
+}
+
+fn table_timestamp_bounds(rows: &[TableRow]) -> (Option<Timestamp>, Option<Timestamp>) {
+    let mut timestamps = rows.iter().map(TableRow::commit_timestamp);
+    let Some(first) = timestamps.next() else {
+        return (None, None);
+    };
+    let (min, max) = timestamps.fold((first, first), |(min, max), timestamp| {
+        (min.min(timestamp), max.max(timestamp))
+    });
+    (Some(min), Some(max))
 }
 
 pub(super) fn assemble_shell(

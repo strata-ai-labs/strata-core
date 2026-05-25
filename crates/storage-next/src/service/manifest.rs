@@ -9,7 +9,10 @@
 )]
 
 use crate::backend::{Backend, BackendError, BackendErrorKind, PublishError, PublishOutcome};
-use crate::format::{decode_manifest, encode_manifest, DatabaseManifest, FormatError};
+use crate::format::{
+    decode_manifest, decode_table_manifest, encode_manifest, encode_table_manifest,
+    DatabaseManifest, FormatError, TableManifest,
+};
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{validate_publish_outcome, ObjectPublisher};
@@ -55,10 +58,12 @@ pub(crate) enum ManifestServiceError {
         source: BackendError,
     },
     Decode {
+        role: ManifestRole,
         object: ObjectName,
         source: FormatError,
     },
     Encode {
+        role: ManifestRole,
         object: ObjectName,
         source: FormatError,
     },
@@ -97,17 +102,19 @@ impl fmt::Display for ManifestServiceError {
                 object,
                 source,
             } => write!(formatter, "failed to read {role} object {object}: {source}"),
-            Self::Decode { object, source } => {
-                write!(
-                    formatter,
-                    "failed to decode database manifest {object}: {source}"
-                )
+            Self::Decode {
+                role,
+                object,
+                source,
+            } => {
+                write!(formatter, "failed to decode {role} {object}: {source}")
             }
-            Self::Encode { object, source } => {
-                write!(
-                    formatter,
-                    "failed to encode database manifest {object}: {source}"
-                )
+            Self::Encode {
+                role,
+                object,
+                source,
+            } => {
+                write!(formatter, "failed to encode {role} {object}: {source}")
             }
             Self::Publish { role, source } => {
                 write!(formatter, "failed to publish {role}: {source}")
@@ -161,6 +168,30 @@ impl std::error::Error for ManifestServiceError {
 pub(crate) struct DatabaseManifestWrite {
     manifest: DatabaseManifest,
     outcome: PublishOutcome,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableManifestWrite {
+    manifest: TableManifest,
+    outcome: PublishOutcome,
+}
+
+impl TableManifestWrite {
+    fn new(manifest: TableManifest, outcome: PublishOutcome) -> Self {
+        Self { manifest, outcome }
+    }
+
+    pub(crate) const fn manifest(&self) -> &TableManifest {
+        &self.manifest
+    }
+
+    #[allow(
+        dead_code,
+        reason = "table-manifest publish metadata is asserted by service tests"
+    )]
+    pub(crate) const fn outcome(&self) -> &PublishOutcome {
+        &self.outcome
+    }
 }
 
 impl DatabaseManifestWrite {
@@ -226,6 +257,7 @@ impl<'a> DatabaseManifestService<'a> {
         let object = database_manifest_object()?;
         let manifest = DatabaseManifest::new(database_id, codec_id).map_err(|source| {
             ManifestServiceError::Encode {
+                role: ManifestRole::Database,
                 object: object.clone(),
                 source,
             }
@@ -274,6 +306,7 @@ impl<'a> DatabaseManifestService<'a> {
                 flushed_through_commit_id,
             )
             .map_err(|source| ManifestServiceError::Encode {
+                role: ManifestRole::Database,
                 object: object.clone(),
                 source,
             })?;
@@ -315,6 +348,7 @@ impl<'a> DatabaseManifestService<'a> {
                 flushed_through_commit_id,
             )
             .map_err(|source| ManifestServiceError::Encode {
+                role: ManifestRole::Database,
                 object: object.clone(),
                 source,
             })?;
@@ -348,6 +382,7 @@ impl<'a> DatabaseManifestService<'a> {
                 Some(commit_id),
             )
             .map_err(|source| ManifestServiceError::Encode {
+                role: ManifestRole::Database,
                 object: object.clone(),
                 source,
             })?;
@@ -367,6 +402,34 @@ impl<'a> TableManifestService<'a> {
     pub(crate) fn load(&self, branch_id: &str) -> ManifestServiceResult<Option<Vec<u8>>> {
         let object = table_manifest_object(branch_id)?;
         read_optional(self.backend, ManifestRole::Table, &object)
+    }
+
+    pub(crate) fn load_current(
+        &self,
+        branch_id: strata_core_next::BranchId,
+    ) -> ManifestServiceResult<Option<TableManifest>> {
+        let branch_component = branch_id.to_string();
+        let object = table_manifest_object(&branch_component)?;
+        read_optional(self.backend, ManifestRole::Table, &object)?
+            .map(|bytes| decode_branch_table_manifest(branch_id, &object, &bytes))
+            .transpose()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "table-manifest recovery tests exercise required-load failures"
+    )]
+    pub(crate) fn load_required(
+        &self,
+        branch_id: strata_core_next::BranchId,
+    ) -> ManifestServiceResult<TableManifest> {
+        let branch_component = branch_id.to_string();
+        let object = table_manifest_object(&branch_component)?;
+        self.load_current(branch_id)?
+            .ok_or(ManifestServiceError::Missing {
+                role: ManifestRole::Table,
+                object,
+            })
     }
 
     pub(crate) fn publish_create(
@@ -409,6 +472,44 @@ impl<'a> TableManifestService<'a> {
             &outcome,
         )?;
         Ok(outcome)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "table-manifest service tests exercise create publication"
+    )]
+    pub(crate) fn publish_create_manifest(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        manifest: &TableManifest,
+    ) -> ManifestServiceResult<TableManifestWrite> {
+        let branch_component = branch_id.to_string();
+        let object = table_manifest_object(&branch_component)?;
+        validate_table_manifest_branch(branch_id, &object, manifest)?;
+        publish_branch_table_manifest(
+            self.backend,
+            branch_id,
+            &object,
+            manifest,
+            PublishIntent::Create,
+        )
+    }
+
+    pub(crate) fn publish_replace_manifest(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        manifest: &TableManifest,
+    ) -> ManifestServiceResult<TableManifestWrite> {
+        let branch_component = branch_id.to_string();
+        let object = table_manifest_object(&branch_component)?;
+        validate_table_manifest_branch(branch_id, &object, manifest)?;
+        publish_branch_table_manifest(
+            self.backend,
+            branch_id,
+            &object,
+            manifest,
+            PublishIntent::Replace,
+        )
     }
 }
 
@@ -468,6 +569,7 @@ fn decode_database_manifest(
     bytes: &[u8],
 ) -> ManifestServiceResult<DatabaseManifest> {
     decode_manifest(bytes).map_err(|source| ManifestServiceError::Decode {
+        role: ManifestRole::Database,
         object: object.clone(),
         source,
     })
@@ -480,6 +582,7 @@ fn publish_database_manifest(
     intent: PublishIntent,
 ) -> ManifestServiceResult<DatabaseManifestWrite> {
     let bytes = encode_manifest(manifest).map_err(|source| ManifestServiceError::Encode {
+        role: ManifestRole::Database,
         object: object.clone(),
         source,
     })?;
@@ -503,6 +606,62 @@ fn publish_database_manifest(
     )?;
 
     Ok(DatabaseManifestWrite::new(decoded, outcome))
+}
+
+fn decode_branch_table_manifest(
+    branch_id: strata_core_next::BranchId,
+    object: &ObjectName,
+    bytes: &[u8],
+) -> ManifestServiceResult<TableManifest> {
+    let manifest = decode_table_manifest(bytes).map_err(|source| ManifestServiceError::Decode {
+        role: ManifestRole::Table,
+        object: object.clone(),
+        source,
+    })?;
+    validate_table_manifest_branch(branch_id, object, &manifest)?;
+    Ok(manifest)
+}
+
+fn publish_branch_table_manifest(
+    backend: &dyn Backend,
+    branch_id: strata_core_next::BranchId,
+    object: &ObjectName,
+    manifest: &TableManifest,
+    intent: PublishIntent,
+) -> ManifestServiceResult<TableManifestWrite> {
+    let bytes = encode_table_manifest(manifest).map_err(|source| ManifestServiceError::Encode {
+        role: ManifestRole::Table,
+        object: object.clone(),
+        source,
+    })?;
+    let decoded = decode_branch_table_manifest(branch_id, object, &bytes)?;
+    let publisher = ObjectPublisher::new(backend);
+    let outcome = match intent {
+        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
+        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    }
+    .map_err(|source| ManifestServiceError::Publish {
+        role: ManifestRole::Table,
+        source,
+    })?;
+    validate_manifest_publish_outcome(ManifestRole::Table, object, bytes.len() as u64, &outcome)?;
+    Ok(TableManifestWrite::new(decoded, outcome))
+}
+
+fn validate_table_manifest_branch(
+    branch_id: strata_core_next::BranchId,
+    object: &ObjectName,
+    manifest: &TableManifest,
+) -> ManifestServiceResult<()> {
+    if manifest.branch_id() == branch_id {
+        Ok(())
+    } else {
+        Err(ManifestServiceError::InvalidRecoveryFact {
+            role: ManifestRole::Table,
+            object: object.clone(),
+            field: "branch_id",
+        })
+    }
 }
 
 fn validate_manifest_publish_outcome(
@@ -549,11 +708,16 @@ mod tests {
         BackendErrorKind, BackendMetadata, BackendRange, BackendResult, PublishDurability,
         PublishError, PublishFailureKind, PublishMode, PublishOutcome,
     };
+    use crate::branch::BranchLevel;
     use crate::format::{
-        encode_manifest, encode_wal_segment_header, DatabaseManifest, FormatError, WalSegmentHeader,
+        encode_manifest, encode_table_manifest, encode_wal_segment_header, DatabaseManifest,
+        FormatError, TableManifest, TableManifestLevel, TableManifestTableBounds,
+        TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef,
+        WalSegmentHeader,
     };
     use crate::layout::{LayoutError, ObjectLayout};
     use crate::object::{ObjectName, ObjectNameError, ObjectPrefix, MAX_OBJECT_NAME_BYTES};
+    use crate::table::TableIdentity;
     #[cfg(not(target_arch = "wasm32"))]
     use proptest::collection::vec;
     #[cfg(not(target_arch = "wasm32"))]
@@ -566,7 +730,7 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::sync::Mutex;
-    use strata_core_next::CommitVersion;
+    use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
     const ALL_PUBLISH_FAILURE_KINDS: [PublishFailureKind; 5] = [
         PublishFailureKind::Unsupported,
@@ -939,9 +1103,11 @@ mod tests {
     ) {
         match error {
             ManifestServiceError::Decode {
+                role,
                 object: actual,
                 source,
             } => {
+                assert_eq!(role, ManifestRole::Database);
                 assert_eq!(actual, *object);
                 assert_eq!(
                     source,
@@ -957,9 +1123,13 @@ mod tests {
     fn assert_database_decode_error(error: ManifestServiceError, object: &ObjectName) {
         match error {
             ManifestServiceError::Decode {
+                role,
                 object: actual,
                 source: _,
-            } => assert_eq!(actual, *object),
+            } => {
+                assert_eq!(role, ManifestRole::Database);
+                assert_eq!(actual, *object);
+            }
             other => panic!("expected database decode error, got {other:?}"),
         }
     }
@@ -971,9 +1141,11 @@ mod tests {
     ) {
         match error {
             ManifestServiceError::Encode {
+                role,
                 object: actual,
                 source,
             } => {
+                assert_eq!(role, ManifestRole::Database);
                 assert_eq!(actual, *object);
                 assert_eq!(source, *expected_source);
             }
@@ -1668,9 +1840,11 @@ mod tests {
 
             match error {
                 ManifestServiceError::Decode {
+                    role,
                     object: actual,
                     source,
                 } => {
+                    assert_eq!(role, ManifestRole::Database);
                     assert_eq!(actual, object);
                     match expected_source {
                         FormatError::ChecksumMismatch { format, .. } => {
@@ -1983,9 +2157,11 @@ mod tests {
 
         match error {
             ManifestServiceError::Decode {
+                role,
                 object: actual,
                 source,
             } => {
+                assert_eq!(role, ManifestRole::Database);
                 assert_eq!(actual, object);
                 assert!(matches!(source, FormatError::InsufficientBytes { .. }));
             }
@@ -2051,9 +2227,11 @@ mod tests {
 
         match error {
             ManifestServiceError::Decode {
+                role,
                 object: actual,
                 source,
             } => {
+                assert_eq!(role, ManifestRole::Database);
                 assert_eq!(actual, object);
                 assert!(matches!(source, FormatError::InsufficientBytes { .. }));
             }
@@ -2209,6 +2387,192 @@ mod tests {
         let service = TableManifestService::new(&backend);
 
         assert_eq!(service.load("branch").expect("load table manifest"), None);
+    }
+
+    #[test]
+    fn table_manifest_service_load_decodes_present_manifest() {
+        let backend = RecordingBackend::new();
+        let branch = branch_id(0x51);
+        let manifest = typed_table_manifest(branch, 7, "service-load-table");
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+        backend
+            .write_object(
+                &object,
+                &encode_table_manifest(&manifest).expect("manifest bytes"),
+            )
+            .expect("write manifest");
+        let service = TableManifestService::new(&backend);
+
+        let loaded = service
+            .load_current(branch)
+            .expect("load typed manifest")
+            .expect("present manifest");
+
+        assert_eq!(loaded, manifest);
+    }
+
+    #[test]
+    fn table_manifest_service_load_rejects_corrupt_manifest() {
+        let backend = RecordingBackend::new();
+        let branch = branch_id(0x52);
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+        backend
+            .write_object(&object, b"not a typed table manifest")
+            .expect("write corrupt manifest");
+        let service = TableManifestService::new(&backend);
+
+        let error = service
+            .load_current(branch)
+            .expect_err("corrupt typed manifest rejects");
+
+        match error {
+            ManifestServiceError::Decode {
+                role,
+                object: actual,
+                source: _,
+            } => {
+                assert_eq!(role, ManifestRole::Table);
+                assert_eq!(actual, object);
+            }
+            other => panic!("expected typed table decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn table_manifest_service_load_rejects_branch_object_payload_mismatch() {
+        let backend = RecordingBackend::new();
+        let object_branch = branch_id(0x53);
+        let payload_branch = branch_id(0x54);
+        let object =
+            ObjectLayout::branch_table_manifest(&object_branch.to_string()).expect("manifest");
+        backend
+            .write_object(
+                &object,
+                &encode_table_manifest(&typed_table_manifest(
+                    payload_branch,
+                    8,
+                    "service-mismatch-table",
+                ))
+                .expect("manifest bytes"),
+            )
+            .expect("write mismatched manifest");
+        let service = TableManifestService::new(&backend);
+
+        assert_eq!(
+            service
+                .load_current(object_branch)
+                .expect_err("branch mismatch rejects"),
+            ManifestServiceError::InvalidRecoveryFact {
+                role: ManifestRole::Table,
+                object,
+                field: "branch_id",
+            }
+        );
+    }
+
+    #[test]
+    fn table_manifest_service_publish_create_writes_canonical_bytes() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let branch = branch_id(0x55);
+        let manifest = typed_table_manifest(branch, 9, "service-create-table");
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+
+        let write = service
+            .publish_create_manifest(branch, &manifest)
+            .expect("create typed manifest");
+
+        assert_eq!(write.manifest(), &manifest);
+        assert_eq!(write.outcome().object(), &object);
+        assert_eq!(write.outcome().durability(), PublishDurability::Durable);
+        assert_eq!(
+            backend.read_object(&object).expect("stored manifest"),
+            encode_table_manifest(&manifest).expect("canonical manifest bytes")
+        );
+    }
+
+    #[test]
+    fn table_manifest_service_publish_replace_writes_canonical_bytes() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let branch = branch_id(0x56);
+        let old = typed_table_manifest(branch, 10, "service-old-table");
+        let new = typed_table_manifest(branch, 11, "service-new-table");
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+        service
+            .publish_create_manifest(branch, &old)
+            .expect("create old manifest");
+
+        let write = service
+            .publish_replace_manifest(branch, &new)
+            .expect("replace typed manifest");
+
+        assert_eq!(write.manifest(), &new);
+        assert_eq!(
+            backend.read_object(&object).expect("stored manifest"),
+            encode_table_manifest(&new).expect("canonical manifest bytes")
+        );
+    }
+
+    #[test]
+    fn table_manifest_service_publish_rejects_payload_branch_mismatch_before_publish() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let object_branch = branch_id(0x57);
+        let payload_branch = branch_id(0x58);
+        let manifest = typed_table_manifest(payload_branch, 12, "service-wrong-branch-table");
+        let object =
+            ObjectLayout::branch_table_manifest(&object_branch.to_string()).expect("manifest");
+
+        assert_eq!(
+            service
+                .publish_replace_manifest(object_branch, &manifest)
+                .expect_err("wrong branch publish rejects"),
+            ManifestServiceError::InvalidRecoveryFact {
+                role: ManifestRole::Table,
+                object: object.clone(),
+                field: "branch_id",
+            }
+        );
+        assert_eq!(
+            backend
+                .read_object(&object)
+                .expect_err("no manifest publish")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn table_manifest_service_does_not_accept_database_manifest_bytes() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let branch = branch_id(0x59);
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+        let database = DatabaseManifest::new([0x55; 16], "identity").expect("database manifest");
+        backend
+            .write_object(
+                &object,
+                &encode_manifest(&database).expect("database manifest bytes"),
+            )
+            .expect("write database bytes under table manifest object");
+
+        let error = service
+            .load_current(branch)
+            .expect_err("database manifest bytes rejected as table manifest");
+
+        match error {
+            ManifestServiceError::Decode {
+                role,
+                object: actual,
+                source: FormatError::InvalidMagic { format },
+            } => {
+                assert_eq!(role, ManifestRole::Table);
+                assert_eq!(actual, object);
+                assert_eq!(format, "table_manifest");
+            }
+            other => panic!("expected table-manifest decode error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2612,7 +2976,12 @@ mod tests {
             .load_current()
             .expect_err("database decode should fail");
         match database_decode {
-            ManifestServiceError::Decode { object, source } => {
+            ManifestServiceError::Decode {
+                role,
+                object,
+                source,
+            } => {
+                assert_eq!(role, ManifestRole::Database);
                 assert_eq!(object, database_object);
                 assert!(matches!(source, FormatError::InsufficientBytes { .. }));
             }
@@ -2685,5 +3054,53 @@ mod tests {
             }
             other => panic!("expected publish error, got {other:?}"),
         }
+    }
+
+    fn typed_table_manifest(branch: BranchId, sequence: u64, identity: &str) -> TableManifest {
+        TableManifest::new(
+            branch,
+            None,
+            sequence,
+            vec![TableManifestLevel::new(
+                BranchLevel::ZERO,
+                vec![typed_table_ref(branch, identity, 0)],
+            )
+            .expect("level")],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("table manifest")
+    }
+
+    fn typed_table_ref(branch: BranchId, identity: &str, order: u32) -> TableManifestTableRef {
+        let object = format!("tables/{branch}/l0000/{identity}");
+        TableManifestTableRef::new(
+            TableIdentity::new(identity).expect("table identity"),
+            ObjectName::new(object).expect("table object"),
+            order,
+            TableManifestTableFacts::new(
+                128,
+                4,
+                1,
+                CommitVersion::new(1),
+                CommitVersion::new(4),
+                Some(Timestamp::from_micros(10)),
+                Some(Timestamp::from_micros(40)),
+            )
+            .expect("table facts"),
+            TableManifestTableBounds::new(
+                b"physical-a".to_vec(),
+                b"physical-z".to_vec(),
+                b"internal-a".to_vec(),
+                b"internal-z".to_vec(),
+            )
+            .expect("table bounds"),
+            TableManifestTableProvenance::Flush,
+        )
+        .expect("table ref")
+    }
+
+    fn branch_id(byte: u8) -> BranchId {
+        BranchId::from_bytes([byte; BranchId::BYTE_LEN])
     }
 }

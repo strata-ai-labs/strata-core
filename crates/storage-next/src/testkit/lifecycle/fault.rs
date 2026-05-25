@@ -168,24 +168,40 @@ fn require_service_fault_route(
         // debugging.
         match route {
             "capability_preflight" => "capability_preflight FaultingBackend case did not execute",
-            "writer_guard_manifest_create" => "writer_guard_manifest_create FaultingBackend case did not execute",
-            "manifest_publish_uncertain" => "manifest_publish_uncertain FaultingBackend case did not execute",
+            "writer_guard_manifest_create" => {
+                "writer_guard_manifest_create FaultingBackend case did not execute"
+            }
+            "manifest_publish_uncertain" => {
+                "manifest_publish_uncertain FaultingBackend case did not execute"
+            }
             "snapshot_orphan" => "snapshot_orphan FaultingBackend case did not execute",
-            "checkpoint_truncation_debt" => "checkpoint_truncation_debt FaultingBackend case did not execute",
+            "checkpoint_truncation_debt" => {
+                "checkpoint_truncation_debt FaultingBackend case did not execute"
+            }
             "partial_log_strict" => "partial_log_strict FaultingBackend case did not execute",
             "partial_log_lossy" => "partial_log_lossy FaultingBackend case did not execute",
             "corrupt_log_typed" => "corrupt_log_typed FaultingBackend case did not execute",
             "replay_failed_state" => "replay_failed_state FaultingBackend case did not execute",
             "replay_visible_debt" => "replay_visible_debt FaultingBackend case did not execute",
             "flush_orphan_table" => "flush_orphan_table FaultingBackend case did not execute",
-            "rewrite_preserved_reads" => "rewrite_preserved_reads FaultingBackend case did not execute",
-            "retention_blocked_delete" => "retention_blocked_delete FaultingBackend case did not execute",
-            "quarantine_publish_blocked_purge" => "quarantine_publish_blocked_purge FaultingBackend case did not execute",
+            "rewrite_preserved_reads" => {
+                "rewrite_preserved_reads FaultingBackend case did not execute"
+            }
+            "retention_blocked_delete" => {
+                "retention_blocked_delete FaultingBackend case did not execute"
+            }
+            "quarantine_publish_blocked_purge" => {
+                "quarantine_publish_blocked_purge FaultingBackend case did not execute"
+            }
             "purge_delete_debt" => "purge_delete_debt FaultingBackend case did not execute",
             "close_quiesce_timeout" => "close_quiesce_timeout FaultingBackend case did not execute",
             "close_log_sync_source" => "close_log_sync_source FaultingBackend case did not execute",
-            "close_manifest_sync_debt" => "close_manifest_sync_debt FaultingBackend case did not execute",
-            "writer_guard_release_typed" => "writer_guard_release_typed FaultingBackend case did not execute",
+            "close_manifest_sync_debt" => {
+                "close_manifest_sync_debt FaultingBackend case did not execute"
+            }
+            "writer_guard_release_typed" => {
+                "writer_guard_release_typed FaultingBackend case did not execute"
+            }
             _ => "FaultingBackend case did not execute",
         },
     )?;

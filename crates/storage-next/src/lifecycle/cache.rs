@@ -15,8 +15,8 @@ use super::{
     LifecycleStoragePressure, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
     MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
-    MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition,
-    StorageOpenOutcome, StorageOpenPlan,
+    MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
+    StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
@@ -338,10 +338,10 @@ impl<S> LifecycleCacheRuntime<S> {
                 // AlreadyClosed and the status to Idempotent. Falling
                 // back to a fabricated outcome would silently drift from
                 // the first-close stats.
-                Ok(self.last_close_outcome.as_ref().map_or_else(
-                    cache_idempotent_close_outcome,
-                    idempotent_from_prior_close,
-                ))
+                Ok(self
+                    .last_close_outcome
+                    .as_ref()
+                    .map_or_else(cache_idempotent_close_outcome, idempotent_from_prior_close))
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
@@ -385,11 +385,11 @@ impl<S> LifecycleCacheRuntime<S> {
                 let drained = self.drain_cache_required_tasks()?;
                 self.finish_cache_close(drained)
             }
-            LifecycleState::New | LifecycleState::Opening | LifecycleState::Recovering => Err(
-                LifecycleError::InvalidLifecycleState {
+            LifecycleState::New | LifecycleState::Opening | LifecycleState::Recovering => {
+                Err(LifecycleError::InvalidLifecycleState {
                     reason: "cache runtime is not open for close",
-                },
-            ),
+                })
+            }
         }
     }
 
@@ -548,9 +548,7 @@ fn require_admitted(
 }
 
 fn cache_close_outcome(cancel: MaintenanceCancelOutcome, drained_tasks: usize) -> CloseOutcome {
-    let maintenance_tasks = cancel
-        .canceled_tasks()
-        .saturating_add(drained_tasks);
+    let maintenance_tasks = cancel.canceled_tasks().saturating_add(drained_tasks);
     CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Complete)
         .with_close_fact(LifecycleCloseFact::Complete)
         .with_close_effects(CloseOutcomeEffects::volatile_complete(false))

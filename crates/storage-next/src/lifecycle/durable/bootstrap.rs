@@ -14,10 +14,10 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    maintenance_ready_for_recovery_health, LifecycleError, LifecycleMaintenanceExecutor,
-    LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, RecoveryHealth, StorageMode,
-    StorageOpenOutcome, StorageOpenPlan,
+    maintenance_ready_for_recovery_health, LifecycleDurableTableCatalog, LifecycleError,
+    LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleTransitionTrigger, RecoveryHealth, StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -36,6 +36,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) visible: VisibleVersionTracker,
     pub(super) durable_gate: CommitUnresolvedDurableGate,
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
+    pub(super) table_catalog: LifecycleDurableTableCatalog,
     pub(super) recovered_checkpoint_timestamp_max: Option<Timestamp>,
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
@@ -131,6 +132,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             visible: self.visible,
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
+            table_catalog: self.table_catalog,
             recovered_checkpoint_timestamp_max: recovery.checkpoint().timestamp_max(),
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
@@ -256,6 +258,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) const fn branch_state(&self) -> &BranchLocalState {
         &self.branch
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable table catalog is asserted by recovery tests"
+    )]
+    pub(crate) const fn table_catalog(&self) -> &LifecycleDurableTableCatalog {
+        &self.table_catalog
     }
 
     #[cfg(test)]

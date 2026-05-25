@@ -1,10 +1,11 @@
 //! Durable-local lifecycle service assembly.
 
 use super::{
-    validate_backend_capabilities_for_open, LifecycleCapabilityOutcome, LifecycleError,
-    LifecycleLowerLayer, LifecycleOperationKind, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleTransitionTrigger, StorageMode, StorageOpenDisposition,
-    StorageOpenPlan,
+    stage_table_manifest_for_branch, validate_backend_capabilities_for_open,
+    LifecycleCapabilityOutcome, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
+    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine,
+    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageMode,
+    StorageOpenDisposition, StorageOpenPlan,
 };
 use crate::backend::{Backend, BackendError, BackendWriterGuard, PublishFailureKind};
 use crate::branch::{BranchLocalState, BranchRuntimeConfig};
@@ -83,6 +84,7 @@ pub(crate) struct LifecycleDurableLocalShell<'a, S = CommitManualTimestampSource
     visible: VisibleVersionTracker,
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
+    table_catalog: LifecycleDurableTableCatalog,
 }
 
 impl LifecycleDurableLocalOpenRequest {
@@ -357,6 +359,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             visible: VisibleVersionTracker::default(),
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
+            table_catalog: LifecycleDurableTableCatalog::new(),
         })
     }
 
@@ -386,6 +389,26 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
 
     pub(crate) fn branch_state_mut(&mut self) -> &mut BranchLocalState {
         &mut self.branch
+    }
+
+    pub(crate) fn stage_table_manifest_recovery(
+        &self,
+    ) -> LifecycleResult<LifecycleTableManifestRecoveryStage> {
+        stage_table_manifest_for_branch(
+            &self.branch,
+            self.services.table_manifest(),
+            self.services.table_reader(),
+            &self.table_catalog,
+        )
+    }
+
+    pub(crate) fn apply_table_manifest_recovery(
+        &mut self,
+        stage: LifecycleTableManifestRecoveryStage,
+    ) {
+        let (branch, catalog, _outcome) = stage.into_parts();
+        self.branch = branch;
+        self.table_catalog = catalog;
     }
 
     pub(crate) const fn registry(&self) -> &CommitBranchRegistry {

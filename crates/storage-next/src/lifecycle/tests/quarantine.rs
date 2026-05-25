@@ -200,8 +200,7 @@ fn quarantine_proof_blocks_when_telemetry_debt_targets_candidate_branch() {
         .with_affected_branch(other)],
     )
     .expect("telemetry health");
-    let unrelated =
-        LifecycleQuarantineProof::safe_for_candidate(health_targeting_other, candidate);
+    let unrelated = LifecycleQuarantineProof::safe_for_candidate(health_targeting_other, candidate);
     assert_eq!(
         unrelated.status(),
         LifecycleQuarantineProofStatus::CompleteSafe,

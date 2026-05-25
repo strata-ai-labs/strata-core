@@ -49,6 +49,25 @@ pub(crate) enum LifecycleError {
         reason: &'static str,
         source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
+    TableManifestPublicationFailed {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    TableManifestPublicationUncertain {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    TableManifestRecoveryMismatch {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    TableManifestBranchInstallFailed {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    TableManifestCheckpointConflict {
+        reason: &'static str,
+    },
     CheckpointPublicationFailed {
         reason: &'static str,
     },
@@ -164,6 +183,50 @@ impl LifecycleError {
         }
     }
 
+    pub(crate) fn table_manifest_publication_uncertain_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::TableManifestPublicationUncertain {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn table_manifest_publication_failed_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::TableManifestPublicationFailed {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn table_manifest_recovery_mismatch_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::TableManifestRecoveryMismatch {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn table_manifest_branch_install_failed_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::TableManifestBranchInstallFailed {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) const fn table_manifest_checkpoint_conflict(reason: &'static str) -> Self {
+        Self::TableManifestCheckpointConflict { reason }
+    }
+
     pub(crate) fn quarantine_inventory_mismatch_with(
         reason: &'static str,
         source: impl Error + Send + Sync + 'static,
@@ -223,6 +286,19 @@ impl LifecycleError {
             }
             Self::FlushPublicationUncertain { .. } => "unknown.lifecycle.flush_publication",
             Self::FlushPublicationOrphaned { .. } => "unknown.lifecycle.flush_publication_orphan",
+            Self::TableManifestPublicationFailed { .. } => {
+                "failed_precondition.lifecycle.table_manifest_publication"
+            }
+            Self::TableManifestPublicationUncertain { .. } => {
+                "unknown.lifecycle.table_manifest_publication"
+            }
+            Self::TableManifestRecoveryMismatch { .. } => "corruption.lifecycle.table_manifest",
+            Self::TableManifestBranchInstallFailed { .. } => {
+                "failed_precondition.lifecycle.table_manifest_branch_install"
+            }
+            Self::TableManifestCheckpointConflict { .. } => {
+                "failed_precondition.lifecycle.table_manifest_checkpoint_conflict"
+            }
             Self::CheckpointPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.checkpoint_publication"
             }
@@ -308,6 +384,26 @@ impl LifecycleError {
             | (
                 Self::FlushPublicationUncertain { reason: left, .. },
                 Self::FlushPublicationUncertain { reason: right, .. },
+            )
+            | (
+                Self::TableManifestPublicationFailed { reason: left, .. },
+                Self::TableManifestPublicationFailed { reason: right, .. },
+            )
+            | (
+                Self::TableManifestPublicationUncertain { reason: left, .. },
+                Self::TableManifestPublicationUncertain { reason: right, .. },
+            )
+            | (
+                Self::TableManifestRecoveryMismatch { reason: left, .. },
+                Self::TableManifestRecoveryMismatch { reason: right, .. },
+            )
+            | (
+                Self::TableManifestBranchInstallFailed { reason: left, .. },
+                Self::TableManifestBranchInstallFailed { reason: right, .. },
+            )
+            | (
+                Self::TableManifestCheckpointConflict { reason: left },
+                Self::TableManifestCheckpointConflict { reason: right },
             )
             | (
                 Self::CheckpointPublicationFailed { reason: left },
@@ -502,6 +598,24 @@ impl fmt::Display for LifecycleError {
                 }
                 write!(formatter, ": {reason}")
             }
+            Self::TableManifestPublicationFailed { reason, .. } => {
+                write!(formatter, "table manifest publication failed: {reason}")
+            }
+            Self::TableManifestPublicationUncertain { reason, .. } => {
+                write!(formatter, "table manifest publication uncertain: {reason}")
+            }
+            Self::TableManifestRecoveryMismatch { reason, .. } => {
+                write!(formatter, "table manifest recovery mismatch: {reason}")
+            }
+            Self::TableManifestBranchInstallFailed { reason, .. } => {
+                write!(formatter, "table manifest branch install failed: {reason}")
+            }
+            Self::TableManifestCheckpointConflict { reason } => {
+                write!(
+                    formatter,
+                    "table manifest conflicts with checkpoint: {reason}"
+                )
+            }
             Self::CheckpointPublicationFailed { reason } => {
                 write!(formatter, "checkpoint publication failed: {reason}")
             }
@@ -590,6 +704,22 @@ impl Error for LifecycleError {
                 ..
             }
             | Self::FlushPublicationOrphaned {
+                source: Some(source),
+                ..
+            }
+            | Self::TableManifestPublicationFailed {
+                source: Some(source),
+                ..
+            }
+            | Self::TableManifestPublicationUncertain {
+                source: Some(source),
+                ..
+            }
+            | Self::TableManifestRecoveryMismatch {
+                source: Some(source),
+                ..
+            }
+            | Self::TableManifestBranchInstallFailed {
                 source: Some(source),
                 ..
             }

@@ -25,6 +25,7 @@ mod recovery;
 mod result;
 mod retention;
 mod state;
+mod table_manifest;
 
 #[allow(
     unused_imports,
@@ -179,6 +180,16 @@ pub(crate) use state::{
     LifecycleAdmissionEffect, LifecycleCloseFact, LifecycleFailureFact,
     LifecycleOperationAdmission, LifecycleOperationKind, LifecycleStateMachine,
     LifecycleTransitionEffect, LifecycleTransitionOutcome, LifecycleTransitionTrigger,
+};
+#[allow(
+    unused_imports,
+    reason = "durable table-manifest lifecycle exports define the local surface for recovery and retention slices"
+)]
+pub(crate) use table_manifest::{
+    preflight_table_manifest_with_checkpoint, publish_table_manifest_for_branch,
+    recover_table_manifest_for_branch, stage_table_manifest_for_branch,
+    table_manifest_debt_outcome, LifecycleDurableTableCatalog, LifecycleDurableTableCatalogEntry,
+    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
 };
 
 #[cfg(test)]

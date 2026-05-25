@@ -306,6 +306,136 @@ git diff --check
 pre-existing formatting drift in lifecycle/testkit files outside this slice; the
 L8Q touched Rust files pass `rustfmt --check` directly.
 
+## L8R Table Manifest Publication And Recovery
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/table_manifest.rs`
+- `crates/storage-next/src/lifecycle/recovery.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/branch/mod.rs`
+- `crates/storage-next/src/service/manifest.rs`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/service/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/table_manifest_recovery.rs`
+- `crates/storage-next/src/lifecycle/tests/flush.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/recovery.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/lifecycle_recovery.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- Branch-scoped durable table manifests are the only trusted table-object
+  reachability source during recovery. Recovery does not list
+  `tables/<branch>/...` and infer live tables from object names.
+- Every manifest-listed table object is opened through the table-object reader
+  service and validated against manifest facts and bounds before branch-state
+  install.
+- Durable flush publishes the table object, validates/reopens it, installs it
+  into branch state, records catalog facts, and then publishes the branch table
+  manifest. Publication failure after install is reported as health debt and
+  does not claim WAL truncation safety.
+- Table-manifest recovery is conservative: it does not advance flush watermarks,
+  truncate WAL, or shorten replay. Those proofs remain owned by later
+  table-manifest-backed retention work.
+
+### Intentional Changes
+
+- Explicitly lossy recovery degrades, rather than hard-failing, for corrupt
+  table manifests and missing manifest-listed table objects. It does not install
+  the untrusted table graph.
+- Missing table manifest for an otherwise empty branch remains healthy.
+- Cache mode has no table-manifest publication or recovery surface.
+
+### Retired From This Slice
+
+- Directory or prefix scanning as a recovery truth source.
+- Filename-only table manifests from the old segmented engine.
+- Direct table-object deletion, quarantine mutation, or retention decisions.
+- Public/product branch workflow recovery.
+
+### Deferred By Owner Slice
+
+- Table-manifest-backed flush-watermark proof and replay shortening: L8T.
+- Safe table-object retention/quarantine decisions from all branch manifests:
+  L8S/L8M.
+- Durable compaction/materialization output publication: L8U.
+- Branch list/delete/clear/fork-at-history completion: L8Y.
+
+### Tests Added
+
+- Typed table-manifest service tests for absent, present, corrupt, branch
+  mismatch, canonical create/replace, invalid publish metadata, source-error
+  preservation, and database-manifest byte rejection.
+- Durable table catalog tests for exact duplicate acceptance, identity/object
+  conflict rejection, and sequence catch-up after recovered manifest records.
+- Durable flush integration tests proving table manifests are published after
+  table install, preserve existing reachable tables, report publication failure
+  as health debt, surface uncertainty, and are absent in cache mode.
+- Recovery tests for owned L0/L1+ install, inherited layers, materializing layer
+  status, orphan object invisibility, corrupt manifest strict failure, lossy
+  corrupt-manifest degradation, missing listed object strict failure, lossy
+  missing-object degradation, corrupt listed objects, fact/bounds mismatches,
+  WAL replay conservatism, and latest-read preservation after WAL tail replay.
+- Generated recovery counters for table-manifest publish/recover, corrupt
+  manifests, missing objects, object mismatches, and orphan invisibility.
+- Source guards preventing prefix-scanning reachability, WAL truncation from
+  table-manifest publication, cache-mode table-manifest imports, and upward
+  lifecycle imports into manifest services.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| R1 | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Publish table manifest before table-object validation/install | `durable_flush_publishes_table_manifest_after_table_install` |
+| R2 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Allow catalog to build manifest from missing durable table facts | `durable_table_catalog_accepts_exact_duplicate_and_rejects_conflicts` |
+| R3 | `crates/storage-next/src/lifecycle/table_manifest.rs` | On corrupt manifest, list table prefix and install objects as live tables | `strict_recovery_rejects_corrupt_table_manifest_without_loading_orphans` and `table_manifest_recovery_does_not_list_table_prefix_for_reachability` |
+| R4 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Treat missing listed table object as a generic table decode failure | `strict_recovery_rejects_missing_manifest_listed_table_object` |
+| R5 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Ignore row-count, byte-count, block-count, commit, or bounds mismatch | `recovery_rejects_table_object_fact_and_bounds_mismatches` |
+| R6 | `crates/storage-next/src/lifecycle/recovery.rs` | Advance replay start or flush watermark from table-manifest coverage | `table_manifest_recovery_does_not_change_wal_replay_start` |
+| R7 | `crates/storage-next/src/lifecycle/cache.rs` | Import table-manifest service into cache runtime | `cache_mode_does_not_import_table_manifest_service` |
+| R8 | `crates/storage-next/src/branch/state.rs` | Bypass branch recovery validation for recovered manifest tables | `recovery_installs_manifest_owned_front_and_sorted_tables` and `recovery_installs_inherited_layers_from_manifest` |
+| R9 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Drop lower-layer source chain on table reader error | `strict_recovery_rejects_corrupt_manifest_listed_table_object` |
+| R10 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Import raw IO or prefix listing into recovery path | `lifecycle_source_does_not_import_engine_product_or_raw_io` and `table_manifest_recovery_does_not_list_table_prefix_for_reachability` |
+| R11 | `crates/storage-next/src/lifecycle/recovery.rs` | Ignore table manifest when checkpoint is also recovered | `recovery_rejects_checkpoint_table_manifest_duplicate_internal_key_conflict` |
+| R12 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Accept a recovered manifest with a smaller sequence than catalog state | `durable_table_catalog_rejects_manifest_sequence_regress` |
+| R13 | `crates/storage-next/src/lifecycle/recovery.rs` | Match `is_lossy_table_manifest_recovery_error` on a `LowerLayer` reason string instead of a typed marker variant | `lossy_recovery_reports_missing_manifest_listed_table_object` |
+| R14 | `crates/storage-next/src/lifecycle/table_manifest.rs` | Drop the volatile-rewrite-output reason from `entry_for` and reuse the generic publication-failed reason | `build_manifest_reports_volatile_rewrite_output_with_clear_error` |
+
+### Audit-Round Findings And Fixes
+
+| Finding | Resolution |
+|---|---|
+| Recovery silently skipped the table manifest whenever a checkpoint was recovered, leaving Recovery Protocol rule 9 untested. | Recovery now always stages the manifest and runs `preflight_table_manifest_with_checkpoint` to compare internal-key bytes; the typed `TableManifestCheckpointConflict` rejects byte divergence while exact duplicates pass. |
+| `entry_for` returned a generic publication-failed reason that did not name the underlying cause when branch state contained a volatile rewrite output. | The reason string now states "branch table state contains volatile rewrite output without durable catalog entry"; a focused unit test asserts it. |
+| `is_lossy_table_manifest_recovery_error` and the related fault classifiers matched on the literal reason string from `branch_error`, so any rewording silently routed branch-runtime failures to the strict-only path. | Introduced `LifecycleError::TableManifestBranchInstallFailed`; lifecycle paths build it through `LifecycleError::table_manifest_branch_install_failed_with`, and the lossy classifier matches the variant, not a reason string. |
+| `LifecycleDurableTableCatalog::record_manifest` accepted any sequence on recovery, allowing a later flush to publish below an earlier on-disk manifest. | Recovery rejects manifests whose `manifest_sequence` is below `next_manifest_sequence` with a typed publication-failed error. |
+| Generated recovery counters did not cover `table_manifest_missing`, `table_object_corrupt`, `checkpoint_manifest_conflict`, or `cache_manifest_unsupported`. | Added the four counters to `LifecycleRecoveryContractOutcome` and exercised them through new `check_*` helpers in `testkit/lifecycle/recovery.rs`. |
+
+### Verification
+
+Commands run for L8R:
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo test -p strata-storage-next --locked --lib table_manifest
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::table_manifest_recovery
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::flush
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```
+
 ## L8N - Close And Shutdown Ordering
 
 ### Shipped Files

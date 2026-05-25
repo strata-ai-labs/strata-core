@@ -103,10 +103,7 @@ impl RecoveryFault {
     /// branch so downstream admission checks can prove the fault is
     /// unrelated to a candidate before allowing reclaim under Telemetry
     /// debt.
-    pub(crate) fn with_affected_branch(
-        mut self,
-        branch: BranchId,
-    ) -> Self {
+    pub(crate) fn with_affected_branch(mut self, branch: BranchId) -> Self {
         self.affected_branch = Some(branch);
         self
     }
@@ -136,10 +133,7 @@ impl RecoveryHealth {
     /// `crate::lifecycle::quarantine`) which treats any non-Telemetry
     /// `Degraded` and any `Failed` fault as blocking regardless of
     /// scope.
-    pub(crate) fn has_fault_targeting_branch(
-        &self,
-        branch: BranchId,
-    ) -> bool {
+    pub(crate) fn has_fault_targeting_branch(&self, branch: BranchId) -> bool {
         match self {
             Self::Healthy => false,
             Self::Degraded { faults, .. } => faults

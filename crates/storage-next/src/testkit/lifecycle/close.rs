@@ -454,4 +454,3 @@ impl MaintenanceTaskRunner for CloseContractRunner {
         ))
     }
 }
-

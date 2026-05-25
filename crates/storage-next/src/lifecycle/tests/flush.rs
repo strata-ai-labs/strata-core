@@ -17,7 +17,8 @@ use crate::lifecycle::flush::{flush_cache_branch, flush_durable_branch};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::service::{
-    DatabaseManifestService, TableObjectReaderService, TableObjectService, WalServiceConfig,
+    DatabaseManifestService, TableManifestService, TableObjectReaderService, TableObjectService,
+    WalServiceConfig,
 };
 use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
@@ -669,6 +670,178 @@ fn durable_flush_does_not_persist_watermark_or_truncate_log() {
 }
 
 #[test]
+fn durable_flush_publishes_table_manifest_after_table_install() {
+    let branch = branch_id(0x85);
+    let backend = FlushBackend::new();
+    let mut runtime = open_durable_runtime(&backend, branch);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, physical_key(branch, b"manifest"), b"value".to_vec()),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+
+    let outcome = runtime
+        .flush_frozen(&flush_request(branch, None))
+        .expect("flush");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_table_count(), 1);
+    let manifest = TableManifestService::new(&backend)
+        .load_required(branch)
+        .expect("table manifest");
+    assert_eq!(manifest.levels().len(), 1);
+    assert_eq!(
+        manifest.levels()[0].level(),
+        crate::branch::BranchLevel::ZERO
+    );
+    assert_eq!(manifest.levels()[0].tables().len(), 1);
+    let table = &manifest.levels()[0].tables()[0];
+    assert_eq!(
+        table.table_identity(),
+        outcome.table_identity().expect("flushed table identity")
+    );
+    assert_eq!(
+        table.object(),
+        outcome.table_object().expect("flushed table object")
+    );
+}
+
+#[test]
+fn durable_flush_manifest_preserves_existing_reachable_tables() {
+    let branch = branch_id(0x86);
+    let backend = FlushBackend::new();
+    let mut runtime = open_durable_runtime(&backend, branch);
+    for (key, value) in [
+        (b"manifest-first".as_slice(), b"first".as_slice()),
+        (b"manifest-second".as_slice(), b"second".as_slice()),
+    ] {
+        runtime
+            .execute_durable_commit(
+                durable_put_batch(branch, physical_key(branch, key), value.to_vec()),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit");
+        runtime
+            .rotate_active_for_maintenance()
+            .expect("rotate active");
+        runtime
+            .flush_frozen(&flush_request(branch, None))
+            .expect("flush");
+    }
+
+    let manifest = TableManifestService::new(&backend)
+        .load_required(branch)
+        .expect("table manifest");
+
+    assert_eq!(manifest.levels().len(), 1);
+    assert_eq!(manifest.levels()[0].tables().len(), 2);
+    assert_eq!(runtime.branch_state().owned_table_count(), 2);
+}
+
+#[test]
+fn durable_flush_manifest_publish_failure_keeps_rows_visible_and_records_debt() {
+    let branch = branch_id(0x87);
+    let backend = FlushBackend::with_table_manifest_publish_failure(
+        PublishFailureKind::FailedBeforeVisibility,
+    );
+    let mut runtime = open_durable_runtime(&backend, branch);
+    let key = physical_key(branch, b"manifest-fail");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, key.clone(), b"value".to_vec()),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+
+    let outcome = runtime
+        .flush_frozen(&flush_request(branch, None))
+        .expect("flush remains visible despite manifest debt");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert_eq!(
+        runtime
+            .read_view()
+            .expect("view")
+            .latest(&key)
+            .expect("read")
+            .expect("visible")
+            .row()
+            .value(),
+        b"value"
+    );
+    assert_eq!(runtime.current_recovery_health().fault_count(), 1);
+    assert!(TableManifestService::new(&backend)
+        .load_current(branch)
+        .expect("load table manifest")
+        .is_none());
+}
+
+#[test]
+fn durable_flush_manifest_publish_uncertain_reports_uncertainty() {
+    let branch = branch_id(0x88);
+    let backend =
+        FlushBackend::with_table_manifest_publish_failure(PublishFailureKind::VisibilityUnknown);
+    let mut runtime = open_durable_runtime(&backend, branch);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"manifest-uncertain"),
+                b"value".to_vec(),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let outcome = runtime
+        .run_next_flush_maintenance()
+        .expect("flush maintenance")
+        .expect("maintenance outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(outcome.source_error().is_some());
+    assert_eq!(
+        outcome.source_error().expect("source error").code(),
+        "unknown.lifecycle.table_manifest_publication"
+    );
+    assert!(outcome.recovery_health().is_some());
+}
+
+#[test]
+fn cache_flush_does_not_publish_table_manifest() {
+    let branch = branch_id(0x89);
+    let backend = FlushBackend::new();
+    let mut state = frozen_branch(
+        branch,
+        put_row(branch, b"cache-manifest", 30, 30_000, b"value"),
+    );
+
+    let outcome = flush_cache_branch(&mut state, &flush_request(branch, None)).expect("flush");
+
+    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(TableManifestService::new(&backend)
+        .load_current(branch)
+        .expect("load table manifest")
+        .is_none());
+    assert!(backend.operations().is_empty());
+}
+
+#[test]
 fn wal_retention_proof_is_not_constructed_by_flush() {
     let branch = branch_id(0x81);
     let backend = FlushBackend::new();
@@ -1179,6 +1352,24 @@ fn durable_open_request(branch: BranchId) -> LifecycleDurableLocalOpenRequest {
     .expect("durable request")
 }
 
+fn open_durable_runtime(
+    backend: &FlushBackend,
+    branch: BranchId,
+) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    let mut shell = LifecycleDurableLocalShell::assemble(
+        durable_open_request(branch),
+        backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("durable shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect("recovery outcome");
+    shell.complete_recovery(&recovery).expect("open runtime")
+}
+
 fn put_batch(branch: BranchId, key: PhysicalKey, value: Vec<u8>) -> CommitBatch {
     CommitBatch::mutating(
         branch,
@@ -1342,6 +1533,7 @@ struct FlushBackend {
     operations: Mutex<Vec<FlushOperation>>,
     lock_held: Arc<AtomicBool>,
     publish_failure: Option<PublishFailureKind>,
+    table_manifest_publish_failure: Option<PublishFailureKind>,
     range_failure: bool,
     invalid_publish_metadata: bool,
     replacement_bytes: Option<Vec<u8>>,
@@ -1378,6 +1570,7 @@ impl FlushBackend {
             operations: Mutex::new(Vec::new()),
             lock_held: Arc::new(AtomicBool::new(false)),
             publish_failure: None,
+            table_manifest_publish_failure: None,
             range_failure: false,
             invalid_publish_metadata: false,
             replacement_bytes: None,
@@ -1387,6 +1580,13 @@ impl FlushBackend {
     fn with_publish_failure(kind: PublishFailureKind) -> Self {
         Self {
             publish_failure: Some(kind),
+            ..Self::new()
+        }
+    }
+
+    fn with_table_manifest_publish_failure(kind: PublishFailureKind) -> Self {
+        Self {
+            table_manifest_publish_failure: Some(kind),
             ..Self::new()
         }
     }
@@ -1534,6 +1734,15 @@ impl Backend for FlushBackend {
         mode: PublishMode,
     ) -> PublishResult<PublishOutcome> {
         self.record(FlushOperation::Publish(name.clone(), mode));
+        if is_table_manifest_object(name) {
+            if let Some(kind) = self.table_manifest_publish_failure {
+                return Err(PublishError::new(
+                    name.clone(),
+                    kind,
+                    BackendError::new(BackendErrorKind::Unavailable, "table manifest failed"),
+                ));
+            }
+        }
         if let Some(kind) = self.publish_failure {
             return Err(PublishError::new(
                 name.clone(),
@@ -1561,6 +1770,10 @@ impl Backend for FlushBackend {
             PublishDurability::Durable,
         ))
     }
+}
+
+fn is_table_manifest_object(name: &ObjectName) -> bool {
+    name.as_str().starts_with("tables/") && name.as_str().ends_with("/manifest")
 }
 
 struct FlushWriterLock {

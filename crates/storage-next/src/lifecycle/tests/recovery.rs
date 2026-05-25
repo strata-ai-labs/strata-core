@@ -928,7 +928,7 @@ fn recovery_rejects_flush_watermark_without_recovered_table_state() {
 }
 
 #[test]
-fn recovery_records_validated_table_identity_and_facts() {
+fn recovery_rejects_ad_hoc_table_object_references() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x42);
     let table_identity = TableIdentity::new("recovery-table-valid").expect("table identity");
@@ -948,13 +948,13 @@ fn recovery_records_validated_table_identity_and_facts() {
             write.facts().clone(),
         )]);
 
-    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
-        .recover(&request)
-        .expect("table validation recovery");
-
-    assert_eq!(outcome.tables().validated_count(), 1);
-    assert_eq!(outcome.tables().validated()[0].identity(), &table_identity);
-    assert_eq!(outcome.tables().validated()[0].facts(), write.facts());
+    assert_eq!(
+        LifecycleRecoveryRuntime::new(&mut shell).recover(&request),
+        Err(LifecycleError::RecoveryFailed {
+            reason: "table object recovery references require a table manifest",
+        })
+    );
+    assert!(shell.branch_state().is_empty());
 }
 
 #[test]
@@ -985,15 +985,12 @@ fn recovery_rejects_missing_referenced_table_object() {
         .recover(&request)
         .expect_err("missing table rejects");
 
-    assert!(matches!(
+    assert_eq!(
         error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::TableRuntime,
-            reason: "table object recovery validation failed",
-            ..
+        LifecycleError::RecoveryFailed {
+            reason: "table object recovery references require a table manifest",
         }
-    ));
-    assert!(error.source().is_some());
+    );
     assert!(shell.branch_state().is_empty());
 }
 
@@ -1034,14 +1031,12 @@ fn recovery_validates_tables_before_wal_tail_repair() {
         .recover(&request)
         .expect_err("missing table rejects before WAL repair");
 
-    assert!(matches!(
+    assert_eq!(
         error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::TableRuntime,
-            reason: "table object recovery validation failed",
-            ..
+        LifecycleError::RecoveryFailed {
+            reason: "table object recovery references require a table manifest",
         }
-    ));
+    );
     assert_eq!(
         backend.object_bytes(&wal_object).expect("wal bytes after"),
         before,
