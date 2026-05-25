@@ -206,6 +206,7 @@ impl QuarantineService<'_> {
         validate_gate(request.gate)?;
         let inventory =
             self.load_inventory(request.branch_id, request.database_id, &request.codec_id)?;
+        validate_purge_inventory_token(&request, &inventory)?;
         let inventory_object = inventory.object().clone();
         let mut report = QuarantinePurgeReport::new(request.branch_id, inventory_object);
         if inventory.inventory().entries().is_empty() {
@@ -337,6 +338,26 @@ impl QuarantineService<'_> {
         report.source_delete = Some(source_delete);
         Ok(report)
     }
+}
+
+fn validate_purge_inventory_token(
+    request: &QuarantinePurgeRequest,
+    inventory: &super::QuarantineInventoryLoad,
+) -> QuarantineServiceResult<()> {
+    let Some(expected) = request.expected_inventory_token else {
+        return Err(QuarantineServiceError::InvalidRequest {
+            field: "inventory_token",
+        });
+    };
+    if inventory.token() == expected {
+        return Ok(());
+    }
+    Err(QuarantineServiceError::InventoryMismatch {
+        object_id: ObjectLayout::quarantine_inventory_object_id().to_owned(),
+        quarantine_object: inventory.object().clone(),
+        source_object: inventory.object().clone(),
+        reason: "inventory token differs from purge proof",
+    })
 }
 
 fn validate_gate(gate: QuarantineGate) -> QuarantineServiceResult<()> {

@@ -1,6 +1,24 @@
 use super::*;
 use crate::service::QuarantineDeleteOutcome;
 
+fn purge_request(
+    service: &QuarantineService<'_>,
+    branch_id: BranchId,
+    gate: QuarantineGate,
+) -> QuarantinePurgeRequest {
+    let token = if gate == QuarantineGate::Safe {
+        Some(
+            service
+                .load_inventory(branch_id, DATABASE_ID, CODEC_ID)
+                .expect("inventory token")
+                .token(),
+        )
+    } else {
+        None
+    };
+    QuarantinePurgeRequest::new(branch_id, DATABASE_ID, CODEC_ID, gate, token)
+}
+
 #[test]
 fn purge_deletes_listed_objects_only_and_rewrites_empty_inventory() {
     let branch_id = branch_id();
@@ -20,12 +38,7 @@ fn purge_deletes_listed_objects_only_and_rewrites_empty_inventory() {
     let service = QuarantineService::new(&backend);
 
     let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
         .expect("purge");
 
     assert_eq!(report.deleted().len(), 1);
@@ -49,6 +62,52 @@ fn purge_deletes_listed_objects_only_and_rewrites_empty_inventory() {
 }
 
 #[test]
+fn purge_rejects_stale_inventory_token_before_delete() {
+    let branch_id = branch_id();
+    let source_object = source_object();
+    let listed_object = quarantine_object(branch_id, "table0002");
+    let entry = QuarantineEntry::new("table0002", source_object, 5, Timestamp::from_micros(2))
+        .expect("entry");
+    let inventory = inventory(branch_id, vec![entry]);
+    let later_source = table_source_object("table0004");
+    let later_quarantine = quarantine_object(branch_id, "table0004");
+    let backend = MutationBackend::durable()
+        .with_object(inventory_object(branch_id), &encode_inventory(&inventory))
+        .with_object(listed_object.clone(), b"table")
+        .with_object(later_source.clone(), b"later");
+    let service = QuarantineService::new(&backend);
+    let stale_token = service
+        .load_inventory(branch_id, DATABASE_ID, CODEC_ID)
+        .expect("stale token")
+        .token();
+
+    let mutation = service
+        .quarantine_object(&request(branch_id, "table0004", later_source))
+        .expect("inventory mutation");
+    assert_eq!(
+        mutation.status(),
+        QuarantineObjectStatus::QuarantinedSourceDeleted
+    );
+
+    let purge = service
+        .purge_quarantine(QuarantinePurgeRequest::new(
+            branch_id,
+            DATABASE_ID,
+            CODEC_ID,
+            QuarantineGate::Safe,
+            Some(stale_token),
+        ))
+        .expect_err("stale proof rejected");
+
+    assert!(matches!(
+        purge,
+        QuarantineServiceError::InventoryMismatch { .. }
+    ));
+    assert!(backend.contains(&listed_object));
+    assert!(backend.contains(&later_quarantine));
+}
+
+#[test]
 fn purge_unsafe_gate_fails_before_delete_or_rewrite() {
     let branch_id = branch_id();
     let source_object = source_object();
@@ -67,12 +126,7 @@ fn purge_unsafe_gate_fails_before_delete_or_rewrite() {
         let service = QuarantineService::new(&backend);
 
         assert_eq!(
-            service.purge_quarantine(QuarantinePurgeRequest::new(
-                branch_id,
-                DATABASE_ID,
-                CODEC_ID,
-                gate,
-            )),
+            service.purge_quarantine(purge_request(&service, branch_id, gate)),
             Err(QuarantineServiceError::UnsafeGate { gate })
         );
         assert!(backend.contains(&listed_object));
@@ -94,12 +148,7 @@ fn purge_empty_inventory_reports_no_work_without_delete_capability() {
     let service = QuarantineService::new(&backend);
 
     let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
         .expect("empty purge");
 
     assert!(report.deleted().is_empty());
@@ -129,12 +178,7 @@ fn purge_non_empty_inventory_rejects_each_missing_mutation_capability_before_mut
         let service = QuarantineService::new(&backend);
 
         assert_eq!(
-            service.purge_quarantine(QuarantinePurgeRequest::new(
-                branch_id,
-                DATABASE_ID,
-                CODEC_ID,
-                QuarantineGate::Safe,
-            )),
+            service.purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe)),
             Err(QuarantineServiceError::UnsupportedCapability {
                 capability: missing,
             })
@@ -159,12 +203,7 @@ fn purge_delete_failure_keeps_failed_entry_in_rewritten_inventory() {
     let service = QuarantineService::new(&backend);
 
     let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
         .expect("purge report");
 
     assert!(report.deleted().is_empty());
@@ -220,12 +259,7 @@ fn purge_multiple_delete_failures_are_sorted_and_keep_only_failed_entries() {
     let service = QuarantineService::new(&backend);
 
     let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
         .expect("purge report");
 
     assert_eq!(
@@ -281,12 +315,7 @@ fn purge_missing_object_is_reported_and_removed_from_inventory() {
     let service = QuarantineService::new(&backend);
 
     let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
         .expect("purge report");
 
     assert!(report.deleted().is_empty());
@@ -339,12 +368,7 @@ fn purge_multiple_missing_objects_are_sorted_and_removed_from_inventory() {
     let service = QuarantineService::new(&backend);
 
     let report = service
-        .purge_quarantine(QuarantinePurgeRequest::new(
-            branch_id,
-            DATABASE_ID,
-            CODEC_ID,
-            QuarantineGate::Safe,
-        ))
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
         .expect("purge report");
 
     assert!(report.deleted().is_empty());
@@ -389,12 +413,7 @@ fn purge_inventory_rewrite_failure_preserves_delete_report() {
         let service = QuarantineService::new(&backend);
 
         let report = service
-            .purge_quarantine(QuarantinePurgeRequest::new(
-                branch_id,
-                DATABASE_ID,
-                CODEC_ID,
-                QuarantineGate::Safe,
-            ))
+            .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
             .expect("purge report");
 
         assert_eq!(report.deleted().len(), 1);

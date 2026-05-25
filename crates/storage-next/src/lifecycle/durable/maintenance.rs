@@ -34,7 +34,7 @@ use crate::lifecycle::{
     LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest, LifecycleResult, LifecycleStats,
     LifecycleStoragePressure, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
     MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{QuarantineService, TableObjectReaderService, TableObjectService};
 use strata_core_next::Timestamp;
@@ -155,7 +155,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleRetentionRequest,
     ) -> LifecycleResult<LifecycleRetentionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let health = self.open_outcome.recovery_health().clone();
+        let health = self.current_recovery_health.clone();
         if recovery_health_prevents_listing(request, &health) {
             let proof = retention_proof_from_assembly(request, &self.services, &health);
             return retention_outcome_for_scope(request, proof, &[]);
@@ -184,7 +184,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleRetentionRequest,
     ) -> LifecycleResult<LifecycleSnapshotPruningOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let health = self.open_outcome.recovery_health().clone();
+        let health = self.current_recovery_health.clone();
         if recovery_health_prevents_listing(request, &health) {
             let proof = retention_proof_from_assembly(request, &self.services, &health);
             let pruning =
@@ -217,10 +217,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleQuarantineRequest,
     ) -> LifecycleResult<LifecycleQuarantineOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        Ok(quarantine_lifecycle_object(
-            self.services.quarantine(),
-            request,
-        ))
+        let outcome = quarantine_lifecycle_object(self.services.quarantine(), request);
+        self.record_recovery_health(outcome.recovery_health());
+        Ok(outcome)
     }
 
     #[allow(
@@ -232,10 +231,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecyclePurgeRequest,
     ) -> LifecycleResult<LifecyclePurgeOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        Ok(purge_lifecycle_quarantine(
-            self.services.quarantine(),
-            request,
-        ))
+        let outcome = purge_lifecycle_quarantine(self.services.quarantine(), request);
+        self.record_recovery_health(outcome.recovery_health());
+        Ok(outcome)
     }
 
     #[allow(
@@ -247,7 +245,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleQuarantineRepairRequest,
     ) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        repair_lifecycle_quarantine(self.services.quarantine(), request)
+        let outcome = repair_lifecycle_quarantine(self.services.quarantine(), request)?;
+        self.record_recovery_health(outcome.recovery_health());
+        Ok(outcome)
     }
 
     #[allow(
@@ -286,7 +286,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
         runner: &mut impl MaintenanceTaskRunner,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        self.maintenance.run_next(self.state, runner)
+        let outcome = self.maintenance.run_next(self.state, runner);
+        self.record_optional_maintenance_health(&outcome);
+        outcome
     }
 
     pub(crate) fn run_next_flush_maintenance(
@@ -397,14 +399,16 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let services = &self.services;
-        let health = self.open_outcome.recovery_health().clone();
+        let health = self.current_recovery_health.clone();
         let mut runner = DurableRetentionMaintenanceRunner { services, health };
-        maintenance.run_next_matching(state, &mut runner, |task| {
+        let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
                 task.kind(),
                 MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention
             )
-        })
+        });
+        self.record_optional_maintenance_health(&outcome);
+        outcome
     }
 
     #[allow(
@@ -419,7 +423,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let quarantine = self.services.quarantine();
         let database_id = *self.services.assembly_facts().database_id();
         let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
-        let health = self.open_outcome.recovery_health().clone();
+        let health = self.current_recovery_health.clone();
         let default_branch_id = self.branch.branch_id();
         let mut runner = DurablePurgeMaintenanceRunner {
             quarantine,
@@ -428,9 +432,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             health,
             default_branch_id,
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
+        let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Purge
-        })
+        });
+        self.record_optional_maintenance_health(&outcome);
+        outcome
     }
 
     #[allow(
@@ -443,9 +449,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let mut runner = DurableQuarantineMaintenanceRunner;
-        maintenance.run_next_matching(state, &mut runner, |task| {
+        let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Quarantine
-        })
+        });
+        self.record_optional_maintenance_health(&outcome);
+        outcome
     }
 
     #[allow(
@@ -465,9 +473,41 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             database_id,
             codec_id,
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
+        let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Repair
-        })
+        });
+        self.record_optional_maintenance_health(&outcome);
+        outcome
+    }
+
+    fn record_optional_maintenance_health(
+        &mut self,
+        outcome: &LifecycleResult<Option<MaintenanceOutcome>>,
+    ) {
+        if let Ok(Some(outcome)) = outcome {
+            self.record_recovery_health(outcome.recovery_health());
+        }
+    }
+
+    pub(super) fn record_recovery_health(&mut self, health: Option<&RecoveryHealth>) {
+        let Some(health) = health else {
+            return;
+        };
+        if health_rank(health) > health_rank(&self.current_recovery_health) {
+            self.current_recovery_health = health.clone();
+        }
+    }
+}
+
+const fn health_rank(health: &RecoveryHealth) -> u8 {
+    match health {
+        RecoveryHealth::Healthy => 0,
+        RecoveryHealth::Degraded { class, .. } => match class {
+            RecoveryDegradationClass::Telemetry => 1,
+            RecoveryDegradationClass::PolicyDowngrade => 2,
+            RecoveryDegradationClass::DataLoss => 3,
+        },
+        RecoveryHealth::Failed { .. } => 4,
     }
 }
 
@@ -652,15 +692,49 @@ struct DurablePurgeMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurablePurgeMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        let branch_id = purge_branch_id_from_task(task, self.default_branch_id)?;
+        let inventory = self
+            .quarantine
+            .load_inventory(branch_id, self.database_id, self.codec_id.as_str())
+            .map_err(durable_quarantine_service_error)?;
         let request = purge_request_from_maintenance_task(
             task,
             self.database_id,
             self.codec_id.clone(),
             self.health.clone(),
             self.default_branch_id,
+            inventory.token(),
         )?;
         Ok(purge_lifecycle_quarantine(self.quarantine, &request).maintenance_outcome())
     }
+}
+
+pub(super) fn purge_branch_id_from_task(
+    task: &MaintenanceTask,
+    default_branch_id: strata_core_next::BranchId,
+) -> LifecycleResult<strata_core_next::BranchId> {
+    if task.kind() != MaintenanceTaskKind::Purge {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "purge request requires purge task",
+        });
+    }
+    match task.scope() {
+        crate::lifecycle::MaintenanceTaskScope::Branch(branch_id) => Ok(branch_id),
+        crate::lifecycle::MaintenanceTaskScope::Quarantine => Ok(default_branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "purge task scope is invalid",
+        }),
+    }
+}
+
+pub(super) fn durable_quarantine_service_error(
+    error: crate::service::QuarantineServiceError,
+) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Service,
+        "quarantine service failed",
+        error,
+    )
 }
 
 struct DurableQuarantineMaintenanceRunner;
@@ -711,12 +785,25 @@ fn recovery_health_prevents_listing(
 ) -> bool {
     match health {
         crate::lifecycle::RecoveryHealth::Healthy => false,
-        crate::lifecycle::RecoveryHealth::Degraded { class, .. } => {
-            !matches!(class, crate::lifecycle::RecoveryDegradationClass::Telemetry)
-                || !request.allow_telemetry_degraded_recovery()
-        }
+        crate::lifecycle::RecoveryHealth::Degraded { class, .. } => match class {
+            RecoveryDegradationClass::Telemetry => !request.allow_telemetry_degraded_recovery(),
+            RecoveryDegradationClass::PolicyDowngrade => {
+                !request.allow_telemetry_degraded_recovery()
+                    || !retention_scope_is_telemetry_only(request.scope())
+            }
+            RecoveryDegradationClass::DataLoss => true,
+        },
         crate::lifecycle::RecoveryHealth::Failed { .. } => true,
     }
+}
+
+const fn retention_scope_is_telemetry_only(scope: LifecycleRetentionScope) -> bool {
+    matches!(
+        scope,
+        LifecycleRetentionScope::WalObjects
+            | LifecycleRetentionScope::QuarantineObjects
+            | LifecycleRetentionScope::TableObjects { .. }
+    )
 }
 
 fn global_retention_maintenance_outcome(

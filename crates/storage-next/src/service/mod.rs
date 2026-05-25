@@ -38,11 +38,12 @@ pub(crate) use quarantine::{
     MalformedQuarantineObjectReason, QuarantineBackendOperation, QuarantineBackendUnavailable,
     QuarantineCorruptInventory, QuarantineDeleteOutcome, QuarantineFamilyReconciliation,
     QuarantineGate, QuarantineInventoryCorruption, QuarantineInventoryLoad,
-    QuarantineInventoryWrite, QuarantineListedObject, QuarantineMalformedObject,
-    QuarantineMissingObject, QuarantineObjectReport, QuarantineObjectRequest,
-    QuarantineObjectStatus, QuarantinePublishFailure, QuarantinePurgeReport,
-    QuarantinePurgeRequest, QuarantineReconciliationKind, QuarantineReconciliationReport,
-    QuarantineRecoveryClass, QuarantineService, QuarantineServiceError, QuarantineUnlistedObject,
+    QuarantineInventoryToken, QuarantineInventoryWrite, QuarantineListedObject,
+    QuarantineMalformedObject, QuarantineMissingObject, QuarantineObjectReport,
+    QuarantineObjectRequest, QuarantineObjectStatus, QuarantinePublishFailure,
+    QuarantinePurgeReport, QuarantinePurgeRequest, QuarantineReconciliationKind,
+    QuarantineReconciliationReport, QuarantineRecoveryClass, QuarantineService,
+    QuarantineServiceError, QuarantineUnlistedObject,
 };
 
 #[expect(

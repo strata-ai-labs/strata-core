@@ -805,6 +805,30 @@ fn assert_retention_fixtures() {
         "ObjectLayout::wal_segment(1)?;"
     ));
     assert!(contains_forbidden_retention_dependency(
+        "let bytes = std::fs::read(path)?;"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "let path = std::path::Path::new(\"db\");"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "let value = std::env::var(\"HOME\")?;"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "let file = std::fs::File::open(path)?;"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "let mmap = memmap2::Mmap::map(&file)?;"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "strata_engine::retention::scan();"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "strata_intelligence::retention::scan();"
+    ));
+    assert!(contains_forbidden_retention_dependency(
+        "primitive_registry.retention_report();"
+    ));
+    assert!(contains_forbidden_retention_dependency(
         "name.as_str().split('/')"
     ));
     assert!(!contains_forbidden_retention_dependency(
@@ -1267,6 +1291,16 @@ fn contains_forbidden_checkpoint_dependency(line: &str) -> bool {
         ".as_str().split",
         "strip_prefix(",
         "parse::<u64>",
+        "std::fs",
+        "std::path",
+        "std::env",
+        "std::fs::file",
+        "openoptions",
+        "mmap",
+        "strata_engine",
+        "strata_intelligence",
+        "primitive",
+        "retention_report",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -1326,6 +1360,16 @@ fn contains_forbidden_retention_dependency(line: &str) -> bool {
         ".as_str().split",
         "strip_prefix(",
         "parse::<u64>",
+        "std::fs",
+        "std::path",
+        "std::env",
+        "std::fs::file",
+        "openoptions",
+        "mmap",
+        "strata_engine",
+        "strata_intelligence",
+        "primitive",
+        "retention_report",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

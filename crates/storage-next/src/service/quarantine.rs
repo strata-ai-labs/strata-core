@@ -18,6 +18,7 @@ use crate::format::FormatError;
 use crate::layout::{LayoutError, ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{validate_publish_outcome, ObjectPublisher};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use strata_core_next::BranchId;
 
@@ -38,6 +39,20 @@ pub(crate) use reconcile::{
     QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineRecoveryClass,
     QuarantineUnlistedObject,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct QuarantineInventoryToken {
+    digest: [u8; 32],
+}
+
+impl QuarantineInventoryToken {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let digest = Sha256::digest(bytes);
+        let mut token = [0; 32];
+        token.copy_from_slice(&digest);
+        Self { digest: token }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum QuarantineServiceError {
@@ -232,6 +247,7 @@ pub(crate) struct QuarantineInventoryLoad {
     inventory: QuarantineInventory,
     byte_count: u64,
     present: bool,
+    token: QuarantineInventoryToken,
 }
 
 impl QuarantineInventoryLoad {
@@ -240,12 +256,14 @@ impl QuarantineInventoryLoad {
         inventory: QuarantineInventory,
         byte_count: u64,
         present: bool,
+        token: QuarantineInventoryToken,
     ) -> Self {
         Self {
             object,
             inventory,
             byte_count,
             present,
+            token,
         }
     }
 
@@ -271,6 +289,10 @@ impl QuarantineInventoryLoad {
 
     pub(crate) const fn is_present(&self) -> bool {
         self.present
+    }
+
+    pub(crate) const fn token(&self) -> QuarantineInventoryToken {
+        self.token
     }
 }
 
@@ -353,7 +375,10 @@ impl<'a> QuarantineService<'a> {
         // before treating a branch as clean.
         let inventory =
             empty_inventory(&object, branch_id, expected_database_id, expected_codec_id)?;
-        Ok(QuarantineInventoryLoad::new(object, inventory, 0, false))
+        let token = inventory_token(&object, &inventory)?;
+        Ok(QuarantineInventoryLoad::new(
+            object, inventory, 0, false, token,
+        ))
     }
 
     pub(crate) fn load_required_inventory(
@@ -386,8 +411,9 @@ impl<'a> QuarantineService<'a> {
             expected_codec_id,
             inventory,
         )?;
+        let token = QuarantineInventoryToken::from_bytes(&bytes);
         Ok(Some(QuarantineInventoryLoad::new(
-            object, inventory, byte_count, true,
+            object, inventory, byte_count, true, token,
         )))
     }
 
@@ -450,6 +476,19 @@ fn empty_inventory(
             source,
         }
     })
+}
+
+fn inventory_token(
+    object: &ObjectName,
+    inventory: &QuarantineInventory,
+) -> QuarantineServiceResult<QuarantineInventoryToken> {
+    let bytes = encode_quarantine_inventory(inventory).map_err(|source| {
+        QuarantineServiceError::Encode {
+            object: object.clone(),
+            source,
+        }
+    })?;
+    Ok(QuarantineInventoryToken::from_bytes(&bytes))
 }
 
 fn read_inventory_optional(

@@ -38,6 +38,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
     pub(super) recovered_checkpoint_timestamp_max: Option<Timestamp>,
     pub(super) next_checkpoint_snapshot_id: u64,
+    pub(super) current_recovery_health: RecoveryHealth,
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
@@ -125,6 +126,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             commit_config: self.commit_config,
             recovered_checkpoint_timestamp_max: recovery.checkpoint().timestamp_max(),
             next_checkpoint_snapshot_id,
+            current_recovery_health: recovery.health().clone(),
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
         })
     }
@@ -236,13 +238,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.bootstrap_report
     }
 
-    pub(crate) const fn services(&self) -> &LifecycleDurableLocalServices<'_> {
-        &self.services
+    pub(crate) const fn current_recovery_health(&self) -> &RecoveryHealth {
+        &self.current_recovery_health
     }
 
-    #[cfg(test)]
-    pub(crate) fn release_writer_guard_for_test(&mut self) -> bool {
-        self.services.release_writer_guard()
+    pub(crate) const fn services(&self) -> &LifecycleDurableLocalServices<'_> {
+        &self.services
     }
 
     pub(crate) const fn branch_state(&self) -> &BranchLocalState {

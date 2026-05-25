@@ -266,6 +266,20 @@ fn retention_proof_blocks_on_policy_downgrade_recovery_health() {
 }
 
 #[test]
+fn retention_proof_allows_policy_downgrade_for_telemetry_only_scope() {
+    let request = LifecycleRetentionRequest::new(LifecycleRetentionScope::WalObjects, 1);
+    let proof = build_retention_proof(
+        &request,
+        Some(&manifest(1, 7)),
+        &policy_downgrade_health(),
+        1,
+    );
+
+    assert_eq!(proof.status(), LifecycleRetentionProofStatus::Incomplete);
+    assert_eq!(proof.missing_fact(), Some("wal_retention_proof"));
+}
+
+#[test]
 fn retention_proof_allows_telemetry_degraded_recovery_when_unrelated() {
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(

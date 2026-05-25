@@ -302,7 +302,10 @@ fn quarantine_inventory_mismatch_blocks_followup_purge() {
         branch_id(),
         DATABASE_ID,
         LifecycleCodecId::identity(),
-        LifecyclePurgeProof::fresh(health.clone()),
+        fresh_purge_proof(
+            &QuarantineService::new(&QuarantineTestBackend::durable()),
+            health.clone(),
+        ),
     )
     .expect("purge request");
 
@@ -408,12 +411,14 @@ fn purge_requires_fresh_proof_before_backend_access() {
 
 #[test]
 fn purge_request_rejects_missing_database_id_before_backend_access() {
+    let backend = QuarantineTestBackend::durable();
+    let service = QuarantineService::new(&backend);
     assert_eq!(
         LifecyclePurgeRequest::new(
             branch_id(),
             [0; 16],
             LifecycleCodecId::identity(),
-            LifecyclePurgeProof::fresh(RecoveryHealth::Healthy),
+            fresh_purge_proof(&service, RecoveryHealth::Healthy),
         ),
         Err(LifecycleError::InvalidConfig {
             field: "database_id",
@@ -438,7 +443,7 @@ fn purge_blocked_recovery_health_defers_before_backend_access() {
         branch_id(),
         DATABASE_ID,
         LifecycleCodecId::identity(),
-        LifecyclePurgeProof::fresh(health),
+        fresh_purge_proof(&QuarantineService::new(&backend), health),
     )
     .expect("purge request");
 
@@ -469,7 +474,7 @@ fn purge_deletes_inventory_listed_quarantine_objects() {
         branch_id(),
         DATABASE_ID,
         LifecycleCodecId::identity(),
-        LifecyclePurgeProof::fresh(RecoveryHealth::Healthy),
+        fresh_purge_proof(&service, RecoveryHealth::Healthy),
     )
     .expect("purge request");
     let outcome = purge_quarantine(&service, &purge);
@@ -509,7 +514,7 @@ fn purge_delete_failure_retains_entry_and_preserves_source_error() {
         branch_id(),
         DATABASE_ID,
         LifecycleCodecId::identity(),
-        LifecyclePurgeProof::fresh(RecoveryHealth::Healthy),
+        fresh_purge_proof(&service, RecoveryHealth::Healthy),
     )
     .expect("purge request");
 
@@ -705,6 +710,36 @@ fn durable_purge_runs_through_runtime_maintenance_surface() {
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(outcome.bytes_reclaimed(), b"runtime-table".len() as u64);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn durable_purge_uses_current_recovery_health_not_open_snapshot() {
+    let branch = branch_id();
+    let backend = CheckpointTestBackend::new();
+    let mut runtime = open_durable_runtime(branch, &backend);
+    let health = RecoveryHealth::degraded(
+        RecoveryDegradationClass::PolicyDowngrade,
+        vec![RecoveryFault::new(
+            RecoveryFaultKind::QuarantineInventoryMismatch,
+            "runtime inventory mismatch",
+        )
+        .expect("fault")],
+    )
+    .expect("health");
+    runtime.record_recovery_health_for_test(&health);
+    assert_eq!(runtime.current_recovery_health(), &health);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::purge_quarantine(branch))
+        .expect("enqueue purge");
+    let outcome = runtime
+        .run_next_purge_maintenance()
+        .expect("run purge")
+        .expect("outcome");
+
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Purge);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(outcome.reason(), Some("recovery health blocks purge"));
 }
 
 #[test]
@@ -968,4 +1003,19 @@ fn quarantine_request(
         proof,
     )
     .expect("quarantine request")
+}
+
+fn fresh_purge_proof(
+    service: &QuarantineService<'_>,
+    recovery_health: RecoveryHealth,
+) -> LifecyclePurgeProof {
+    let token = service
+        .load_inventory(
+            branch_id(),
+            DATABASE_ID,
+            LifecycleCodecId::identity().as_str(),
+        )
+        .expect("inventory token")
+        .token();
+    LifecyclePurgeProof::fresh(recovery_health, token)
 }

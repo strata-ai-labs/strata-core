@@ -1,4 +1,4 @@
-use super::super::QuarantineInventoryWrite;
+use super::super::{QuarantineInventoryToken, QuarantineInventoryWrite};
 use crate::backend::{BackendError, PublishError, PublishOutcome};
 use crate::format::quarantine::QuarantineEntry;
 use crate::object::ObjectName;
@@ -263,6 +263,7 @@ pub(crate) struct QuarantinePurgeRequest {
     pub(super) database_id: [u8; 16],
     pub(super) codec_id: String,
     pub(super) gate: QuarantineGate,
+    pub(super) expected_inventory_token: Option<QuarantineInventoryToken>,
 }
 
 impl QuarantinePurgeRequest {
@@ -271,12 +272,14 @@ impl QuarantinePurgeRequest {
         database_id: [u8; 16],
         codec_id: impl Into<String>,
         gate: QuarantineGate,
+        expected_inventory_token: Option<QuarantineInventoryToken>,
     ) -> Self {
         Self {
             branch_id,
             database_id,
             codec_id: codec_id.into(),
             gate,
+            expected_inventory_token,
         }
     }
 }

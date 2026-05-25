@@ -329,7 +329,7 @@ fn check_purge(
             branch,
             DATABASE_ID,
             LifecycleCodecId::identity(),
-            LifecyclePurgeProof::fresh(RecoveryHealth::Healthy),
+            fresh_purge_proof(&service, branch, RecoveryHealth::Healthy)?,
         )
         .map_err(quarantine_error)?,
     );
@@ -362,7 +362,7 @@ fn check_purge(
             branch,
             DATABASE_ID,
             LifecycleCodecId::identity(),
-            LifecyclePurgeProof::fresh(RecoveryHealth::Healthy),
+            fresh_purge_proof(&failing_service, branch, RecoveryHealth::Healthy)?,
         )
         .map_err(quarantine_error)?,
     );
@@ -574,7 +574,7 @@ fn input_purge_route(
             branch,
             DATABASE_ID,
             LifecycleCodecId::identity(),
-            LifecyclePurgeProof::fresh(RecoveryHealth::Healthy),
+            fresh_purge_proof(&service, branch, RecoveryHealth::Healthy)?,
         )
         .map_err(quarantine_error)?,
     );
@@ -706,6 +706,18 @@ fn branch_id(seed: u8) -> BranchId {
 
 fn source_object(branch: BranchId, suffix: &str) -> ObjectName {
     ObjectLayout::table_object(&branch.to_string(), 0, suffix).expect("table object")
+}
+
+fn fresh_purge_proof(
+    service: &QuarantineService<'_>,
+    branch: BranchId,
+    recovery_health: RecoveryHealth,
+) -> Result<LifecyclePurgeProof, TestkitError> {
+    let token = service
+        .load_inventory(branch, DATABASE_ID, LifecycleCodecId::identity().as_str())
+        .map_err(quarantine_error)?
+        .token();
+    Ok(LifecyclePurgeProof::fresh(recovery_health, token))
 }
 
 fn quarantine_error(error: impl std::error::Error) -> TestkitError {

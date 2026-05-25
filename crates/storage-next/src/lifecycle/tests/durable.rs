@@ -938,22 +938,16 @@ fn durable_close_persists_final_health_fact_when_dirty() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x33);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    runtime
-        .execute_durable_commit(
-            durable_put_batch(branch, b"checkpoint-on-close", b"value"),
-            generation_guard(),
-        )
-        .expect("durable commit");
-    runtime
-        .enqueue_maintenance(drain_checkpoint_task())
-        .expect("enqueue checkpoint");
+    let health = close_health_debt();
+    runtime.record_recovery_health_for_test(&health);
 
-    let close = runtime.close().expect("close with checkpoint drain");
+    let operations_before_close = backend.operations().len();
+    let close = runtime.close().expect("close with final fact sync");
+    let close_operations = backend.operations()[operations_before_close..].to_vec();
 
     assert_eq!(close.status(), CloseOutcomeStatus::Complete);
-    assert_eq!(close.stats().maintenance_tasks(), 1);
-    assert!(backend
-        .operations()
+    assert_eq!(close.stats().maintenance_tasks(), 0);
+    assert!(close_operations
         .iter()
         .any(|operation| matches!(operation, Operation::Publish(_, PublishMode::Replace))));
 }
@@ -963,23 +957,16 @@ fn durable_close_manifest_publish_failure_returns_typed_source_chain() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x34);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    runtime
-        .execute_durable_commit(
-            durable_put_batch(branch, b"checkpoint-publish-fail", b"value"),
-            generation_guard(),
-        )
-        .expect("durable commit");
-    runtime
-        .enqueue_maintenance(drain_checkpoint_task())
-        .expect("enqueue checkpoint");
+    let health = close_health_debt();
+    runtime.record_recovery_health_for_test(&health);
     backend.set_publish_failure(Some(PublishFailureKind::FailedBeforeVisibility));
 
-    let error = runtime.close().expect_err("manifest publish failure");
+    let error = runtime.close().expect_err("final fact publish failure");
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.service");
     assert!(error.source().is_some());
     assert_eq!(runtime.state(), LifecycleState::Closing);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
 #[test]
@@ -1184,15 +1171,8 @@ fn close_retry_after_manifest_failure_retries_final_fact_phase() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x3d);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    runtime
-        .execute_durable_commit(
-            durable_put_batch(branch, b"manifest-retry", b"value"),
-            generation_guard(),
-        )
-        .expect("durable commit");
-    runtime
-        .enqueue_maintenance(drain_checkpoint_task())
-        .expect("enqueue checkpoint");
+    let health = close_health_debt();
+    runtime.record_recovery_health_for_test(&health);
     backend.set_publish_failure(Some(PublishFailureKind::FailedBeforeVisibility));
     assert!(runtime.close().is_err());
     backend.set_publish_failure(None);
@@ -1603,6 +1583,17 @@ fn manifest_with_active_segment(segment_id: u64) -> DatabaseManifest {
         .expect("database object")
         .with_recovery_facts(segment_id, None, None, None)
         .expect("recovery facts")
+}
+
+fn close_health_debt() -> RecoveryHealth {
+    RecoveryHealth::degraded(
+        RecoveryDegradationClass::Telemetry,
+        vec![
+            RecoveryFault::new(RecoveryFaultKind::WalTailRepairFailed, "close health debt")
+                .expect("fault"),
+        ],
+    )
+    .expect("health")
 }
 
 fn open_plan(mode: StorageMode) -> StorageOpenPlan {

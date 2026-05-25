@@ -16,9 +16,10 @@ use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{
     QuarantineDeleteOutcome, QuarantineFamilyReconciliation, QuarantineGate,
-    QuarantineObjectReport, QuarantineObjectRequest, QuarantineObjectStatus, QuarantinePurgeReport,
-    QuarantinePurgeRequest, QuarantineReconciliationKind, QuarantineReconciliationReport,
-    QuarantineRecoveryClass, QuarantineService, QuarantineServiceError,
+    QuarantineInventoryToken, QuarantineObjectReport, QuarantineObjectRequest,
+    QuarantineObjectStatus, QuarantinePurgeReport, QuarantinePurgeRequest,
+    QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineRecoveryClass,
+    QuarantineService, QuarantineServiceError,
 };
 use sha2::{Digest, Sha256};
 use strata_core_next::{BranchId, Timestamp};
@@ -87,6 +88,7 @@ pub(crate) enum LifecycleQuarantineStatus {
 pub(crate) struct LifecyclePurgeProof {
     status: LifecyclePurgeProofStatus,
     recovery_health: RecoveryHealth,
+    inventory_token: Option<QuarantineInventoryToken>,
     stale: bool,
     missing_fact: Option<&'static str>,
 }
@@ -612,7 +614,10 @@ impl LifecycleQuarantineOutcome {
 }
 
 impl LifecyclePurgeProof {
-    pub(crate) fn fresh(recovery_health: RecoveryHealth) -> Self {
+    pub(crate) fn fresh(
+        recovery_health: RecoveryHealth,
+        inventory_token: QuarantineInventoryToken,
+    ) -> Self {
         let status = if recovery_health_blocks_reclaim(&recovery_health) {
             LifecyclePurgeProofStatus::BlockedByRecoveryHealth
         } else {
@@ -621,6 +626,7 @@ impl LifecyclePurgeProof {
         Self {
             status,
             recovery_health,
+            inventory_token: Some(inventory_token),
             stale: false,
             missing_fact: None,
         }
@@ -630,6 +636,7 @@ impl LifecyclePurgeProof {
         Self {
             status: LifecyclePurgeProofStatus::Stale,
             recovery_health,
+            inventory_token: None,
             stale: true,
             missing_fact: Some("fresh_proof"),
         }
@@ -639,6 +646,7 @@ impl LifecyclePurgeProof {
         Self {
             status: LifecyclePurgeProofStatus::Incomplete,
             recovery_health,
+            inventory_token: None,
             stale: false,
             missing_fact: Some(missing_fact),
         }
@@ -650,6 +658,10 @@ impl LifecyclePurgeProof {
 
     pub(crate) const fn recovery_health(&self) -> &RecoveryHealth {
         &self.recovery_health
+    }
+
+    pub(crate) const fn inventory_token(&self) -> Option<QuarantineInventoryToken> {
+        self.inventory_token
     }
 
     pub(crate) const fn stale_flag(&self) -> bool {
@@ -693,6 +705,14 @@ impl LifecyclePurgeRequest {
             return Err(LifecycleError::InvalidConfig {
                 field: "database_id",
                 reason: "must not be zero",
+            });
+        }
+        if self.proof.status == LifecyclePurgeProofStatus::CompleteFresh
+            && self.proof.inventory_token.is_none()
+        {
+            return Err(LifecycleError::InvalidConfig {
+                field: "inventory_token",
+                reason: "fresh purge proof requires an inventory token",
             });
         }
         Ok(())
@@ -1193,6 +1213,7 @@ pub(crate) fn purge_quarantine(
         request.database_id,
         request.codec_id.as_str(),
         request.proof.gate(),
+        request.proof.inventory_token(),
     );
     match service.purge_quarantine(service_request) {
         Ok(report) => LifecyclePurgeOutcome::from_report(&report),
@@ -1242,6 +1263,7 @@ pub(crate) fn purge_request_from_maintenance_task(
     codec_id: LifecycleCodecId,
     recovery_health: RecoveryHealth,
     default_branch_id: BranchId,
+    inventory_token: QuarantineInventoryToken,
 ) -> LifecycleResult<LifecyclePurgeRequest> {
     if task.kind() != MaintenanceTaskKind::Purge {
         return Err(LifecycleError::MaintenanceTaskFailed {
@@ -1261,7 +1283,7 @@ pub(crate) fn purge_request_from_maintenance_task(
         branch_id,
         database_id,
         codec_id,
-        LifecyclePurgeProof::fresh(recovery_health),
+        LifecyclePurgeProof::fresh(recovery_health, inventory_token),
     )
 }
 

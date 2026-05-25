@@ -483,8 +483,17 @@ fn purge_branch(
             BackendErrorKind::Interrupted,
         )?;
     }
-    let request = QuarantinePurgeRequest::new(branch_id, DATABASE_ID, CODEC_ID, gate);
-    let result = QuarantineService::new(backend).purge_quarantine(request);
+    let service = QuarantineService::new(backend);
+    let token = if gate == QuarantineGate::Safe {
+        service
+            .load_inventory(branch_id, DATABASE_ID, CODEC_ID)
+            .ok()
+            .map(|inventory| inventory.token())
+    } else {
+        None
+    };
+    let request = QuarantinePurgeRequest::new(branch_id, DATABASE_ID, CODEC_ID, gate, token);
+    let result = service.purge_quarantine(request);
     update_model_after_purge(model, branch_id, object_id, gate, fail_delete, &result)?;
     backend.clear_faults()?;
     Ok(())

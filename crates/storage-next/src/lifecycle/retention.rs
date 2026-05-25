@@ -598,10 +598,7 @@ pub(crate) fn build_retention_proof_from_facts(
     recovery_health: &RecoveryHealth,
     _snapshot_objects: usize,
 ) -> LifecycleRetentionProof {
-    if recovery_health_blocks_retention(
-        recovery_health,
-        request.allow_telemetry_degraded_recovery(),
-    ) {
+    if recovery_health_blocks_retention(recovery_health, request) {
         return LifecycleRetentionProof::new(
             LifecycleRetentionProofStatus::BlockedByRecoveryHealth,
             recovery_health.clone(),
@@ -777,14 +774,31 @@ fn status_for_proof(proof: &LifecycleRetentionProof) -> LifecycleRetentionStatus
     }
 }
 
-fn recovery_health_blocks_retention(health: &RecoveryHealth, allow_telemetry: bool) -> bool {
+fn recovery_health_blocks_retention(
+    health: &RecoveryHealth,
+    request: &LifecycleRetentionRequest,
+) -> bool {
     match health {
         RecoveryHealth::Healthy => false,
-        RecoveryHealth::Degraded { class, .. } => {
-            !matches!(class, RecoveryDegradationClass::Telemetry) || !allow_telemetry
-        }
+        RecoveryHealth::Degraded { class, .. } => match class {
+            RecoveryDegradationClass::Telemetry => !request.allow_telemetry_degraded_recovery(),
+            RecoveryDegradationClass::PolicyDowngrade => {
+                !request.allow_telemetry_degraded_recovery()
+                    || !retention_scope_is_telemetry_only(request.scope())
+            }
+            RecoveryDegradationClass::DataLoss => true,
+        },
         RecoveryHealth::Failed { .. } => true,
     }
+}
+
+const fn retention_scope_is_telemetry_only(scope: LifecycleRetentionScope) -> bool {
+    matches!(
+        scope,
+        LifecycleRetentionScope::WalObjects
+            | LifecycleRetentionScope::QuarantineObjects
+            | LifecycleRetentionScope::TableObjects { .. }
+    )
 }
 
 fn snapshot_retention_decisions(

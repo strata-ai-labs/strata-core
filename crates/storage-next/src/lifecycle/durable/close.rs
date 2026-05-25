@@ -11,7 +11,9 @@ use crate::lifecycle::compaction::{
     compact_durable_branch, compaction_request_from_maintenance_task,
     materialization_request_from_maintenance_task, materialize_durable_branch,
 };
-use crate::lifecycle::durable::maintenance::checkpoint_created_at;
+use crate::lifecycle::durable::maintenance::{
+    checkpoint_created_at, durable_quarantine_service_error, purge_branch_id_from_task,
+};
 use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
 use crate::lifecycle::retention::{
     build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
@@ -73,14 +75,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             visible: &self.visible,
             created_at,
             next_snapshot_id: &mut self.next_checkpoint_snapshot_id,
-            health: self.open_outcome.recovery_health().clone(),
+            health: self.current_recovery_health.clone(),
         };
-        if let Err(error) = self
+        let active = match self
             .maintenance
             .drain_active_for_close(self.state, &mut runner)
         {
-            self.mark_close_retry_pending()?;
-            return Err(close_drain_error(error));
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.mark_close_retry_pending()?;
+                return Err(close_drain_error(error));
+            }
+        };
+        let mut observed_health = Vec::new();
+        if let Some(outcome) = &active {
+            if let Some(health) = outcome.recovery_health() {
+                observed_health.push(health.clone());
+            }
         }
         let drain = match self.maintenance.drain_for_close(self.state, &mut runner) {
             Ok(outcome) => outcome,
@@ -89,6 +100,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 return Err(close_drain_error(error));
             }
         };
+        for outcome in drain.outcomes() {
+            if let Some(health) = outcome.recovery_health() {
+                observed_health.push(health.clone());
+            }
+        }
+        drop(runner);
+        for health in &observed_health {
+            self.record_recovery_health(Some(health));
+        }
 
         let quiesce = match self.guard_set.try_begin_quiesce() {
             Ok(guard) => guard,
@@ -122,6 +142,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             return Err(error);
         }
 
+        if let Err(error) = self.sync_final_close_facts() {
+            drop(quiesce);
+            self.mark_close_retry_pending()?;
+            return Err(error);
+        }
+
         let guard_released = self.services.release_writer_guard();
         if !guard_released {
             drop(quiesce);
@@ -145,6 +171,32 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 .transition(LifecycleTransitionTrigger::CloseRetried)?;
         }
         Ok(())
+    }
+
+    fn sync_final_close_facts(&self) -> LifecycleResult<()> {
+        if self.current_recovery_health == *self.open_outcome.recovery_health() {
+            return Ok(());
+        }
+        let manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        self.services
+            .manifest()
+            .publish_current(&manifest)
+            .map_err(manifest_error)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_recovery_health_for_test(&mut self, health: &RecoveryHealth) {
+        self.record_recovery_health(Some(health));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_writer_guard_for_test(&mut self) -> bool {
+        self.services.release_writer_guard()
     }
 }
 
@@ -299,12 +351,19 @@ impl DurableCloseMaintenanceRunner<'_, '_> {
     fn run_purge(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let database_id = *self.services.assembly_facts().database_id();
         let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let branch_id = purge_branch_id_from_task(task, self.branch.branch_id())?;
+        let inventory = self
+            .services
+            .quarantine()
+            .load_inventory(branch_id, database_id, codec_id.as_str())
+            .map_err(durable_quarantine_service_error)?;
         let request = purge_request_from_maintenance_task(
             task,
             database_id,
             codec_id,
             self.health.clone(),
             self.branch.branch_id(),
+            inventory.token(),
         )?;
         Ok(purge_lifecycle_quarantine(self.services.quarantine(), &request).maintenance_outcome())
     }
@@ -365,12 +424,25 @@ fn recovery_health_prevents_listing(
 ) -> bool {
     match health {
         RecoveryHealth::Healthy => false,
-        RecoveryHealth::Degraded { class, .. } => {
-            !matches!(class, RecoveryDegradationClass::Telemetry)
-                || !request.allow_telemetry_degraded_recovery()
-        }
+        RecoveryHealth::Degraded { class, .. } => match class {
+            RecoveryDegradationClass::Telemetry => !request.allow_telemetry_degraded_recovery(),
+            RecoveryDegradationClass::PolicyDowngrade => {
+                !request.allow_telemetry_degraded_recovery()
+                    || !retention_scope_is_telemetry_only(request.scope())
+            }
+            RecoveryDegradationClass::DataLoss => true,
+        },
         RecoveryHealth::Failed { .. } => true,
     }
+}
+
+const fn retention_scope_is_telemetry_only(scope: LifecycleRetentionScope) -> bool {
+    matches!(
+        scope,
+        LifecycleRetentionScope::WalObjects
+            | LifecycleRetentionScope::QuarantineObjects
+            | LifecycleRetentionScope::TableObjects { .. }
+    )
 }
 
 fn global_retention_maintenance_outcome(

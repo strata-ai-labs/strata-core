@@ -266,12 +266,18 @@ fn cache_backend_rejects_quarantine_mutation_and_purge_but_reconcile_is_read_onl
     let before_purge = durable_snapshot(&backend);
     backend.clear_operations();
 
-    let purge_error = QuarantineService::new(&backend)
+    let quarantine_service = QuarantineService::new(&backend);
+    let inventory_token = quarantine_service
+        .load_inventory(branch_id, DATABASE_ID, CODEC_ID)
+        .expect("load inventory token")
+        .token();
+    let purge_error = quarantine_service
         .purge_quarantine(QuarantinePurgeRequest::new(
             branch_id,
             DATABASE_ID,
             CODEC_ID,
             QuarantineGate::Safe,
+            Some(inventory_token),
         ))
         .expect_err("cache backend cannot purge durably");
     assert_eq!(
