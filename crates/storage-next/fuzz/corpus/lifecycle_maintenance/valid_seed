@@ -1,1 +1,1 @@
-lifecycle-maintenance-valid-seed
+maint|enqueue=flush,checkpoint,compact|run=priority|watermark=monotonic|cache=no-durable

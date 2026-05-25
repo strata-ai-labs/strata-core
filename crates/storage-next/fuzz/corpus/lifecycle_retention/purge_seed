@@ -1,1 +1,1 @@
-lifecycle-retention-purge-seed
+retain|quarantine=inventory-token|purge=fresh-proof|stale-proof=reject|repair=inconclusive

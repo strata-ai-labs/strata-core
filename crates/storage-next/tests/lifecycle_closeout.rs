@@ -113,6 +113,26 @@ fn lifecycle_closeout_fault_windows_cover_required_phases() {
     );
 }
 
+#[cfg(all(
+    feature = "testkit",
+    feature = "fault-injection",
+    not(target_arch = "wasm32")
+))]
+#[test]
+fn lifecycle_closeout_fault_contract_is_input_routed() {
+    let capability =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-capability")
+            .expect("capability fault route");
+    let close =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-close-wal-sync")
+            .expect("close fault route");
+
+    assert!(capability.capability_preflight_cases() > 0);
+    assert_eq!(capability.close_log_sync_source_cases(), 0);
+    assert!(close.close_log_sync_source_cases() > 0);
+    assert_eq!(close.capability_preflight_cases(), 0);
+}
+
 #[test]
 fn lifecycle_closeout_crash_windows_cover_required_phases() {
     let root = common::crate_root();
@@ -142,6 +162,29 @@ fn lifecycle_closeout_crash_windows_cover_required_phases() {
             "run_localfs_crash_recovery_harness",
         ],
     );
+}
+
+#[cfg(all(feature = "testkit", feature = "localfs", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_closeout_crash_harness_runs_distinct_phase_cases() {
+    let tempdir = tempfile::tempdir().expect("temp crash harness root");
+    let outcome =
+        strata_storage_next::testkit::run_localfs_crash_recovery_harness(tempdir.path(), None)
+            .expect("crash harness");
+
+    assert!(outcome.cases_executed() >= 8);
+    assert_eq!(
+        outcome.ignored_case_equivalent_cases(),
+        outcome.cases_executed()
+    );
+    assert!(outcome.log_append_replay_cases() > 0);
+    assert!(outcome.unresolved_gate_reconcile_cases() > 0);
+    assert!(outcome.orphan_snapshot_ignored_cases() > 0);
+    assert!(outcome.checkpoint_tail_recovered_cases() > 0);
+    assert!(outcome.orphan_table_reported_cases() > 0);
+    assert!(outcome.quarantine_inventory_debt_cases() > 0);
+    assert!(outcome.object_quarantine_preserved_cases() > 0);
+    assert!(outcome.close_reopen_consistent_cases() > 0);
 }
 
 #[test]
@@ -187,6 +230,7 @@ fn lifecycle_closeout_fuzz_targets_and_corpora_are_distinct() {
             "lifecycle_fuzz_targets_are_registered",
             "lifecycle_fuzz_targets_call_distinct_contracts",
             "lifecycle_fuzz_corpora_have_non_empty_seed_files",
+            "lifecycle_fuzz_named_seeds_are_structured_route_scripts",
             "lifecycle_recovery_fuzz_seed_hits_valid_and_corrupt_routes",
             "lifecycle_maintenance_fuzz_seed_hits_task_and_close_routes",
             "lifecycle_retention_fuzz_seed_hits_delete_and_defer_routes",

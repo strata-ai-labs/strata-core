@@ -22,17 +22,24 @@ use crate::layout::ObjectLayout;
     test
 ))]
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
-#[cfg(any(feature = "fault-injection", test))]
+#[cfg(any(
+    all(feature = "localfs", not(target_arch = "wasm32")),
+    feature = "fault-injection",
+    test
+))]
 use crate::service::{
-    QuarantineGate, QuarantineObjectRequest, QuarantineObjectStatus, QuarantineService,
-    SnapshotServiceError, TableObjectServiceError,
+    DatabaseManifestService, SnapshotPublishRequest, SnapshotService, TableObjectService,
 };
 #[cfg(any(
     all(feature = "localfs", not(target_arch = "wasm32")),
     feature = "fault-injection",
     test
 ))]
-use crate::service::{SnapshotPublishRequest, SnapshotService, TableObjectService};
+use crate::service::{
+    QuarantineGate, QuarantineObjectRequest, QuarantineObjectStatus, QuarantineService,
+};
+#[cfg(any(feature = "fault-injection", test))]
+use crate::service::{SnapshotServiceError, TableObjectServiceError};
 #[cfg(any(
     all(feature = "localfs", not(target_arch = "wasm32")),
     feature = "fault-injection",
@@ -74,22 +81,43 @@ pub struct CrashRecoveryHarnessOutcome {
 }
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-fn record_snapshot_reopen_window(outcome: &mut CrashRecoveryHarnessOutcome) {
-    outcome.orphan_snapshot_ignored += 1;
-    outcome.quarantine_inventory_debt += 1;
-    outcome.object_quarantine_preserved += 1;
+fn record_log_append_replay_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.log_append_replay += 1;
 }
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-fn record_log_tail_window(outcome: &mut CrashRecoveryHarnessOutcome) {
-    outcome.log_append_replay += 1;
+fn record_unresolved_gate_window(outcome: &mut CrashRecoveryHarnessOutcome) {
     outcome.unresolved_gate_reconcile += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_snapshot_orphan_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.orphan_snapshot_ignored += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_checkpoint_tail_window(outcome: &mut CrashRecoveryHarnessOutcome) {
     outcome.checkpoint_tail_recovered += 1;
 }
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-fn record_table_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+fn record_table_orphan_window(outcome: &mut CrashRecoveryHarnessOutcome) {
     outcome.orphan_table_reported += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_quarantine_inventory_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.quarantine_inventory_debt += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_object_quarantine_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.object_quarantine_preserved += 1;
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_close_reopen_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.close_reopen_consistent += 1;
 }
 
 impl CrashRecoveryHarnessOutcome {
@@ -172,11 +200,37 @@ pub fn run_localfs_crash_recovery_harness(
 ) -> Result<CrashRecoveryHarnessOutcome, TestkitError> {
     let cases: &[(CrashRecoveryCase, CrashRecoveryRecorder)] = &[
         (
-            localfs_snapshot_survives_reopen,
-            record_snapshot_reopen_window,
+            localfs_log_append_survives_reopen,
+            record_log_append_replay_window,
         ),
-        (localfs_sidecar_survives_reopen, record_log_tail_window),
-        (localfs_table_object_survives_reopen, record_table_window),
+        (
+            localfs_unresolved_gate_marker_survives_reopen,
+            record_unresolved_gate_window,
+        ),
+        (
+            localfs_orphan_snapshot_is_not_manifest_referenced,
+            record_snapshot_orphan_window,
+        ),
+        (
+            localfs_checkpoint_and_tail_survive_reopen,
+            record_checkpoint_tail_window,
+        ),
+        (
+            localfs_orphan_table_is_visible_to_recovery_inventory,
+            record_table_orphan_window,
+        ),
+        (
+            localfs_quarantine_inventory_survives_reopen,
+            record_quarantine_inventory_window,
+        ),
+        (
+            localfs_quarantine_object_survives_reopen,
+            record_object_quarantine_window,
+        ),
+        (
+            localfs_close_manifest_survives_reopen,
+            record_close_reopen_window,
+        ),
     ];
     let limit = case_limit.unwrap_or(cases.len()).min(cases.len());
     std::fs::create_dir_all(root)
@@ -199,10 +253,7 @@ pub fn run_localfs_crash_recovery_harness(
         record(&mut outcome);
     }
 
-    if outcome.cases_executed == cases.len() {
-        outcome.close_reopen_consistent += 1;
-        outcome.ignored_case_equivalents += 1;
-    }
+    outcome.ignored_case_equivalents = outcome.cases_executed;
     Ok(outcome)
 }
 
@@ -274,12 +325,14 @@ fn random_bytes(rng: &mut SplitMix64, len: usize) -> Vec<u8> {
 }
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-fn localfs_snapshot_survives_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
+fn localfs_orphan_snapshot_is_not_manifest_referenced(
+    root: &std::path::Path,
+) -> Result<(), TestkitError> {
     use crate::backend::local_fs::LocalFsBackend;
 
     let backend = LocalFsBackend::new(root);
     SnapshotService::new(&backend)
-        .publish_create(snapshot_request(11, b"crash-snapshot")?)
+        .publish_create(snapshot_request(11, b"orphan-snapshot")?)
         .map_err(|err| TestkitError::new(format!("publish snapshot before reopen: {err}")))?;
 
     let reopened = LocalFsBackend::new(root);
@@ -287,13 +340,22 @@ fn localfs_snapshot_survives_reopen(root: &std::path::Path) -> Result<(), Testki
         .load_required_for_codec(11, DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load snapshot after reopen: {err}")))?;
     require(
-        loaded.sections()[0].payload() == b"crash-snapshot",
+        loaded.sections()[0].payload() == b"orphan-snapshot",
         "snapshot payload changed after reopen",
+    )?;
+    require(
+        DatabaseManifestService::new(&reopened)
+            .load_current()
+            .map_err(|err| {
+                TestkitError::new(format!("load manifest after snapshot orphan: {err}"))
+            })?
+            .is_none(),
+        "orphan snapshot unexpectedly became manifest-referenced",
     )
 }
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-fn localfs_sidecar_survives_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
+fn localfs_log_append_survives_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
     use crate::backend::local_fs::LocalFsBackend;
     use crate::format::SegmentMetadata;
     use crate::service::{WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService};
@@ -318,7 +380,75 @@ fn localfs_sidecar_survives_reopen(root: &std::path::Path) -> Result<(), Testkit
 }
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-fn localfs_table_object_survives_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
+fn localfs_unresolved_gate_marker_survives_reopen(
+    root: &std::path::Path,
+) -> Result<(), TestkitError> {
+    use crate::backend::local_fs::LocalFsBackend;
+    use crate::format::SegmentMetadata;
+    use crate::service::{WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService};
+
+    let mut metadata = SegmentMetadata::empty(8);
+    metadata.track_record(CommitVersion::new(8), Timestamp::from_micros(800));
+    let backend = LocalFsBackend::new(root);
+    WalSegmentMetadataSidecarService::new(&backend)
+        .publish_replace(&metadata)
+        .map_err(|err| {
+            TestkitError::new(format!("publish unresolved marker before reopen: {err}"))
+        })?;
+
+    let reopened = LocalFsBackend::new(root);
+    let loaded = WalSegmentMetadataSidecarService::new(&reopened)
+        .load(8)
+        .map_err(|err| TestkitError::new(format!("load unresolved marker after reopen: {err}")))?;
+    match loaded {
+        WalSegmentMetadataSidecarLoad::Present(sidecar) if sidecar.metadata() == &metadata => {
+            Ok(())
+        }
+        _ => Err(TestkitError::new(
+            "unresolved marker did not survive reopen",
+        )),
+    }
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn localfs_checkpoint_and_tail_survive_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
+    use crate::backend::local_fs::LocalFsBackend;
+    use crate::format::SegmentMetadata;
+    use crate::service::{WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService};
+
+    let backend = LocalFsBackend::new(root);
+    SnapshotService::new(&backend)
+        .publish_create(snapshot_request(12, b"checkpoint-snapshot")?)
+        .map_err(|err| TestkitError::new(format!("publish checkpoint snapshot: {err}")))?;
+    let mut metadata = SegmentMetadata::empty(12);
+    metadata.track_record(CommitVersion::new(13), Timestamp::from_micros(1_300));
+    WalSegmentMetadataSidecarService::new(&backend)
+        .publish_replace(&metadata)
+        .map_err(|err| TestkitError::new(format!("publish checkpoint tail: {err}")))?;
+
+    let reopened = LocalFsBackend::new(root);
+    let snapshot = SnapshotService::new(&reopened)
+        .load_required_for_codec(12, DATABASE_ID, CODEC_ID)
+        .map_err(|err| TestkitError::new(format!("load checkpoint snapshot: {err}")))?;
+    let sidecar = WalSegmentMetadataSidecarService::new(&reopened)
+        .load(12)
+        .map_err(|err| TestkitError::new(format!("load checkpoint tail: {err}")))?;
+    require(
+        snapshot.sections()[0].payload() == b"checkpoint-snapshot",
+        "checkpoint snapshot payload changed after reopen",
+    )?;
+    match sidecar {
+        WalSegmentMetadataSidecarLoad::Present(sidecar) if sidecar.metadata() == &metadata => {
+            Ok(())
+        }
+        _ => Err(TestkitError::new("checkpoint tail did not survive reopen")),
+    }
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn localfs_orphan_table_is_visible_to_recovery_inventory(
+    root: &std::path::Path,
+) -> Result<(), TestkitError> {
     use crate::backend::local_fs::LocalFsBackend;
     use crate::backend::Backend;
     use crate::format::decode_immutable_table;
@@ -339,6 +469,109 @@ fn localfs_table_object_survives_reopen(root: &std::path::Path) -> Result<(), Te
     let decoded = decode_immutable_table(&table_bytes)
         .map_err(|err| TestkitError::new(format!("decode table after reopen: {err}")))?;
     require(decoded.rows().len() == 2, "table rows changed after reopen")
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn localfs_quarantine_inventory_survives_reopen(
+    root: &std::path::Path,
+) -> Result<(), TestkitError> {
+    use crate::backend::local_fs::LocalFsBackend;
+    use crate::backend::Backend;
+
+    let source = ObjectLayout::table_object("main", 0, "table0002")
+        .map_err(|err| TestkitError::new(format!("quarantine source layout: {err}")))?;
+    let backend = LocalFsBackend::new(root);
+    backend
+        .write_object(&source, b"quarantine-source")
+        .map_err(|err| TestkitError::new(format!("seed quarantine source: {err}")))?;
+    let request = QuarantineObjectRequest::new(
+        branch_id(),
+        DATABASE_ID,
+        CODEC_ID,
+        "table0002",
+        source,
+        Timestamp::from_micros(2_000),
+        QuarantineGate::Safe,
+    );
+    QuarantineService::new(&backend)
+        .quarantine_object(&request)
+        .map_err(|err| TestkitError::new(format!("quarantine object before reopen: {err}")))?;
+
+    let reopened = LocalFsBackend::new(root);
+    let inventory = QuarantineService::new(&reopened)
+        .load_required_inventory(branch_id(), DATABASE_ID, CODEC_ID)
+        .map_err(|err| TestkitError::new(format!("load quarantine inventory: {err}")))?;
+    require(
+        inventory.inventory().entries().len() == 1,
+        "quarantine inventory did not survive reopen",
+    )
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn localfs_quarantine_object_survives_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
+    use crate::backend::local_fs::LocalFsBackend;
+    use crate::backend::Backend;
+
+    let source = ObjectLayout::table_object("main", 0, "table0003")
+        .map_err(|err| TestkitError::new(format!("quarantine source layout: {err}")))?;
+    let backend = LocalFsBackend::new(root);
+    backend
+        .write_object(&source, b"quarantine-object")
+        .map_err(|err| TestkitError::new(format!("seed quarantine source: {err}")))?;
+    let request = QuarantineObjectRequest::new(
+        branch_id(),
+        DATABASE_ID,
+        CODEC_ID,
+        "table0003",
+        source,
+        Timestamp::from_micros(3_000),
+        QuarantineGate::Safe,
+    );
+    let report = QuarantineService::new(&backend)
+        .quarantine_object(&request)
+        .map_err(|err| TestkitError::new(format!("quarantine object before reopen: {err}")))?;
+    require(
+        report.status() == QuarantineObjectStatus::QuarantinedSourceDeleted,
+        "quarantine object was not staged before reopen",
+    )?;
+
+    let reopened = LocalFsBackend::new(root);
+    let inventory = QuarantineService::new(&reopened)
+        .load_required_inventory(branch_id(), DATABASE_ID, CODEC_ID)
+        .map_err(|err| TestkitError::new(format!("load quarantine inventory: {err}")))?;
+    let object_id = inventory
+        .inventory()
+        .entries()
+        .first()
+        .ok_or_else(|| TestkitError::new("missing quarantine inventory entry"))?
+        .object_id()
+        .to_owned();
+    let quarantine_object =
+        ObjectLayout::quarantine_object(&branch_id().to_string(), &object_id)
+            .map_err(|err| TestkitError::new(format!("quarantine object layout: {err}")))?;
+    require(
+        reopened.read_object(&quarantine_object).as_deref() == Ok(b"quarantine-object"),
+        "quarantined object did not survive reopen",
+    )
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn localfs_close_manifest_survives_reopen(root: &std::path::Path) -> Result<(), TestkitError> {
+    use crate::backend::local_fs::LocalFsBackend;
+
+    let backend = LocalFsBackend::new(root);
+    DatabaseManifestService::new(&backend)
+        .create_initial(DATABASE_ID, CODEC_ID)
+        .map_err(|err| TestkitError::new(format!("create close manifest: {err}")))?;
+
+    let reopened = LocalFsBackend::new(root);
+    let manifest = DatabaseManifestService::new(&reopened)
+        .load_required()
+        .map_err(|err| TestkitError::new(format!("load close manifest: {err}")))?;
+    require(
+        *manifest.database_id() == DATABASE_ID && manifest.codec_id() == CODEC_ID,
+        "close manifest facts changed after reopen",
+    )
 }
 
 #[cfg(any(test, feature = "fault-injection"))]

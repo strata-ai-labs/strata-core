@@ -1,1 +1,1 @@
-lifecycle-maintenance-fault-seed
+maint|fault=publish-before-visible|flush=orphan-table|checkpoint=orphan-snapshot|debt=record

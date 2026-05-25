@@ -1,1 +1,1 @@
-lifecycle-recovery-corrupt-seed
+recov|strict-tail=partial|lossy-tail=repair|manifest=bad-codec|wal=timeline-mismatch

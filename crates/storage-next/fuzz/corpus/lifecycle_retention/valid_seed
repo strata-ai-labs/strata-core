@@ -1,1 +1,1 @@
-lifecycle-retention-valid-seed
+retain|manifest=snapshot-3|live=3|tables=reachable|delete-subset=prove

@@ -28,6 +28,22 @@ fn fault_capability_mismatch_happens_before_durable_side_effects() {
     not(target_arch = "wasm32")
 ))]
 #[test]
+fn fault_contract_routes_are_input_derived_not_aggregate_fixtures() {
+    let capability = fault_outcome(b"fault-capability");
+    assert!(capability.capability_preflight_cases() > 0);
+    assert_eq!(capability.close_log_sync_source_cases(), 0);
+
+    let close = fault_outcome(b"fault-close-wal-sync");
+    assert!(close.close_log_sync_source_cases() > 0);
+    assert_eq!(close.capability_preflight_cases(), 0);
+}
+
+#[cfg(all(
+    feature = "testkit",
+    feature = "fault-injection",
+    not(target_arch = "wasm32")
+))]
+#[test]
 fn fault_writer_guard_acquired_then_manifest_create_fails_releases_or_reports_guard() {
     assert!(fault_outcome(b"fault-writer-guard").writer_guard_manifest_create_cases() > 0);
 }

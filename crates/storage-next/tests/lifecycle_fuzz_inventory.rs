@@ -71,6 +71,34 @@ fn lifecycle_fuzz_corpora_have_non_empty_seed_files() {
     }
 }
 
+#[test]
+fn lifecycle_fuzz_named_seeds_are_structured_route_scripts() {
+    let root = common::crate_root();
+    for (target, seeds) in [
+        (
+            "lifecycle_recovery",
+            ["valid_seed", "corrupt_seed", "mixed_seed"],
+        ),
+        (
+            "lifecycle_maintenance",
+            ["valid_seed", "fault_seed", "close_seed"],
+        ),
+        (
+            "lifecycle_retention",
+            ["valid_seed", "blocked_seed", "purge_seed"],
+        ),
+    ] {
+        for seed in seeds {
+            let bytes = fs::read(root.join(format!("fuzz/corpus/{target}/{seed}")))
+                .expect("read lifecycle fuzz seed");
+            assert!(
+                bytes.contains(&b'|') && bytes.contains(&b'='),
+                "{target}/{seed} should encode a route script, not a plain label"
+            );
+        }
+    }
+}
+
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
 fn lifecycle_recovery_fuzz_seed_hits_valid_and_corrupt_routes() {

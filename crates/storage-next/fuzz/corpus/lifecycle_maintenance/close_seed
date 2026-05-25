@@ -1,1 +1,1 @@
-lifecycle-maintenance-close-seed
+maint|close=quiesce,wal-sync,manifest-sync,guard-release|retry=1|idempotent=1
