@@ -240,6 +240,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.services
     }
 
+    #[cfg(test)]
+    pub(crate) fn release_writer_guard_for_test(&mut self) -> bool {
+        self.services.release_writer_guard()
+    }
+
     pub(crate) const fn branch_state(&self) -> &BranchLocalState {
         &self.branch
     }

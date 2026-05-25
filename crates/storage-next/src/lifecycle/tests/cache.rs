@@ -561,6 +561,26 @@ fn cache_close_cancels_ordinary_pending_work_before_closed() {
 }
 
 #[test]
+fn cache_close_retry_from_closing_finishes_without_durable_side_effects() {
+    let branch = branch_id(0x55);
+    let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("enqueue ordinary task");
+    runtime
+        .force_close_requested_for_test()
+        .expect("force closing state");
+
+    let close = runtime.close().expect("retry close");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(backend.other_calls(), 0);
+}
+
+#[test]
 fn cache_close_rejects_or_drains_drain_required_work_by_policy() {
     let branch = branch_id(0x53);
     let backend = MemoryBackend::new();

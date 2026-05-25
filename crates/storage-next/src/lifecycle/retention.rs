@@ -320,7 +320,7 @@ impl LifecycleRetentionOutcome {
             .iter()
             .filter(|decision| decision.decision() == RetentionDecision::SkipUntilProof)
             .count();
-        let status = status_for_proof(&proof, objects_skipped);
+        let status = status_for_proof(&proof);
         let recovery_health = match status {
             LifecycleRetentionStatus::Completed => None,
             LifecycleRetentionStatus::CompletedWithHealthDebt
@@ -765,17 +765,9 @@ pub(crate) fn table_quarantine_candidate(object: ObjectName) -> LifecycleRetenti
     )
 }
 
-fn status_for_proof(
-    proof: &LifecycleRetentionProof,
-    objects_skipped: usize,
-) -> LifecycleRetentionStatus {
+fn status_for_proof(proof: &LifecycleRetentionProof) -> LifecycleRetentionStatus {
     match proof.status() {
-        LifecycleRetentionProofStatus::Complete if objects_skipped == 0 => {
-            LifecycleRetentionStatus::Completed
-        }
-        LifecycleRetentionProofStatus::Complete => {
-            LifecycleRetentionStatus::CompletedWithHealthDebt
-        }
+        LifecycleRetentionProofStatus::Complete => LifecycleRetentionStatus::Completed,
         LifecycleRetentionProofStatus::Incomplete => {
             LifecycleRetentionStatus::DeferredIncompleteProof
         }

@@ -122,8 +122,13 @@ fn check_cache_materialization(
     script: &[u8],
     outcome: &mut LifecycleTableRewriteContractOutcome,
 ) -> Result<(), TestkitError> {
-    let parent = branch_id(script_byte(script, 4).max(3));
-    let child = branch_id(script_byte(script, 5).max(4));
+    let parent_seed = script_byte(script, 4).max(3);
+    let mut child_seed = script_byte(script, 5).max(4);
+    if child_seed == parent_seed {
+        child_seed ^= 0x80;
+    }
+    let parent = branch_id(parent_seed);
+    let child = branch_id(child_seed);
     let mut parent_state = BranchLocalState::empty(parent);
     install_l0_table(
         &mut parent_state,

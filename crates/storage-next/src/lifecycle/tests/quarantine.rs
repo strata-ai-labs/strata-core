@@ -272,6 +272,49 @@ fn quarantine_inventory_publish_failure_does_not_copy_or_delete_source() {
 }
 
 #[test]
+fn quarantine_inventory_mismatch_blocks_followup_purge() {
+    let source = source_object();
+    let inventory =
+        ObjectLayout::quarantine_manifest(&branch_id().to_string()).expect("inventory object");
+    let backend = QuarantineTestBackend::durable()
+        .with_object(source.clone(), b"table-bytes")
+        .with_object(inventory, b"not-an-inventory");
+    let request = quarantine_request(
+        LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
+        source,
+    );
+
+    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleQuarantineStatus::InventoryMismatch
+    );
+    let health = outcome.recovery_health().expect("inventory health debt");
+    assert!(matches!(
+        health,
+        RecoveryHealth::Degraded {
+            class: RecoveryDegradationClass::PolicyDowngrade,
+            faults,
+        } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::QuarantineInventoryMismatch)
+    ));
+    let purge = LifecyclePurgeRequest::new(
+        branch_id(),
+        DATABASE_ID,
+        LifecycleCodecId::identity(),
+        LifecyclePurgeProof::fresh(health.clone()),
+    )
+    .expect("purge request");
+
+    let purge = purge_quarantine(&QuarantineService::new(&backend), &purge);
+
+    assert_eq!(
+        purge.status(),
+        LifecyclePurgeStatus::BlockedByRecoveryHealth
+    );
+}
+
+#[test]
 fn quarantine_source_delete_failure_reports_retryable_health_debt() {
     let source = source_object();
     let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");

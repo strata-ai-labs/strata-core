@@ -1413,12 +1413,22 @@ fn repair_report_error(report: &QuarantineReconciliationReport) -> Option<Lifecy
 
 fn health_for_quarantine_status(status: LifecycleQuarantineStatus) -> Option<RecoveryHealth> {
     match status {
+        LifecycleQuarantineStatus::InventoryMismatch => Some(
+            RecoveryHealth::degraded(
+                RecoveryDegradationClass::PolicyDowngrade,
+                vec![RecoveryFault::new(
+                    RecoveryFaultKind::QuarantineInventoryMismatch,
+                    "quarantine inventory mismatch",
+                )
+                .expect("health debt")],
+            )
+            .expect("health debt"),
+        ),
         LifecycleQuarantineStatus::QuarantinedSourceDeleteFailed
         | LifecycleQuarantineStatus::InventoryPublishFailed
         | LifecycleQuarantineStatus::InventoryPublishUncertain
         | LifecycleQuarantineStatus::QuarantinePublishFailed
         | LifecycleQuarantineStatus::QuarantinePublishUncertain
-        | LifecycleQuarantineStatus::InventoryMismatch
         | LifecycleQuarantineStatus::ServiceFailed => Some(
             telemetry_health_debt("quarantine operation has health debt").expect("health debt"),
         ),

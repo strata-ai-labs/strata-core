@@ -101,6 +101,18 @@ fn lifecycle_maintenance_fuzz_seed_hits_task_and_close_routes() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_maintenance_fuzz_regression_keeps_materialization_branches_distinct() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_maintenance_fuzz_contract(
+        b"lifecycle-maintenance-valid-eeed\n",
+    )
+    .expect("maintenance fuzz contract");
+
+    assert!(outcome.input_maintenance_route_cases() > 0);
+    assert!(outcome.close_idempotence_check_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_retention_fuzz_seed_hits_delete_and_defer_routes() {
     let outcome = strata_storage_next::testkit::check_lifecycle_retention_fuzz_contract(
         &seed_bytes("lifecycle_retention", "purge_seed"),

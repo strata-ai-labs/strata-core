@@ -32,13 +32,13 @@ pub struct LifecycleCloseContractOutcome {
 }
 
 pub fn check_lifecycle_close_contract(
-    _script: &[u8],
+    script: &[u8],
 ) -> Result<LifecycleCloseContractOutcome, TestkitError> {
     let mut outcome = LifecycleCloseContractOutcome::default();
     check_close_state_flow(&mut outcome)?;
     check_close_outcomes(&mut outcome)?;
-    check_close_maintenance(&mut outcome)?;
-    check_close_quiesce(&mut outcome)?;
+    check_close_maintenance(script, &mut outcome)?;
+    check_close_quiesce(script, &mut outcome)?;
     check_close_errors(&mut outcome)?;
     Ok(outcome)
 }
@@ -163,6 +163,7 @@ fn check_close_outcomes(outcome: &mut LifecycleCloseContractOutcome) -> Result<(
 }
 
 fn check_close_maintenance(
+    script: &[u8],
     outcome: &mut LifecycleCloseContractOutcome,
 ) -> Result<(), TestkitError> {
     let open = open_state()?;
@@ -173,7 +174,7 @@ fn check_close_maintenance(
         .enqueue(
             open,
             MaintenanceTaskRequest::new(
-                MaintenanceTaskKind::HealthCollection,
+                close_task_kind(script_byte(script, 0)),
                 MaintenanceTaskPriority::Normal,
                 MaintenanceTaskScope::Global,
                 MaintenanceTaskPolicy::drain_before_close(),
@@ -220,7 +221,10 @@ fn check_close_maintenance(
     Ok(())
 }
 
-fn check_close_quiesce(outcome: &mut LifecycleCloseContractOutcome) -> Result<(), TestkitError> {
+fn check_close_quiesce(
+    script: &[u8],
+    outcome: &mut LifecycleCloseContractOutcome,
+) -> Result<(), TestkitError> {
     let guard_set = CommitBranchGuardSet::new();
     let quiesce = guard_set
         .try_begin_quiesce()
@@ -234,7 +238,7 @@ fn check_close_quiesce(outcome: &mut LifecycleCloseContractOutcome) -> Result<()
     outcome.commit_quiesce_acquired += 1;
     drop(quiesce);
 
-    let branch = strata_core_next::BranchId::from_bytes([0x61; 16]);
+    let branch = strata_core_next::BranchId::from_bytes([script_byte(script, 1).max(1); 16]);
     let active = guard_set
         .try_acquire_branch_guard(branch)
         .map_err(|error| TestkitError::new(error.to_string()))?;
@@ -246,6 +250,17 @@ fn check_close_quiesce(outcome: &mut LifecycleCloseContractOutcome) -> Result<()
     outcome.commit_quiesce_blocked += 1;
     drop(active);
     Ok(())
+}
+
+fn script_byte(script: &[u8], index: usize) -> u8 {
+    script.get(index).copied().unwrap_or(0)
+}
+
+const fn close_task_kind(byte: u8) -> MaintenanceTaskKind {
+    match byte % 2 {
+        0 => MaintenanceTaskKind::HealthCollection,
+        _ => MaintenanceTaskKind::Repair,
+    }
 }
 
 fn check_close_errors(outcome: &mut LifecycleCloseContractOutcome) -> Result<(), TestkitError> {

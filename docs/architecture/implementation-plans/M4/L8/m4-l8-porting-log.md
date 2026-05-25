@@ -474,6 +474,157 @@ cargo fmt --package strata-storage-next --check
 git diff --check
 ```
 
+## L8P - Lifecycle Conformance Closeout
+
+Status: implemented
+
+### Shipped Files
+
+- `crates/storage-next/tests/lifecycle_closeout.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `docs/architecture/implementation-plans/M4/L8/l8p-lifecycle-conformance-closeout-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8p-lifecycle-conformance-closeout-test-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/m4-l8-porting-log.md`
+
+### Preserved As Storage Vocabulary
+
+- Closeout remains storage-internal and implementation-focused: lifecycle
+  state, storage mode, recovery health, maintenance outcomes, retention proof,
+  quarantine facts, close facts, fuzz contracts, crash/reopen counters, and
+  source-boundary facts.
+- L8 remains crate-private. L9 remains the future public lifecycle/open/close
+  API boundary.
+- Closeout checks source and test artifacts, not planning-document links.
+
+### Intentional Changes
+
+- Added `lifecycle_closeout.rs` to assert implementation inventory across
+  generated/property, fault, crash, fuzz, source-guard, and integration
+  surfaces.
+- Extended source-guard coverage so closeout and fuzz-inventory assurance files
+  are included in deterministic-test checks.
+- Recorded a final sensitivity ledger for lifecycle-specific closeout probes.
+- Recorded explicit deferrals for non-L8 behavior.
+
+### Retired From V1 L8P
+
+- Public lifecycle APIs and public maintenance commands.
+- Product recovery/open/close wording.
+- Engine primitive reconstruction callbacks.
+- Engine observer callbacks and product background worker policy.
+- Distributed object-store lease/fencing race simulation.
+- StrataHub behavior.
+- Query, index, search, graph, vector, embedding, or inference side effects.
+
+### Deferred By Owner Slice
+
+- Public lifecycle/open/close wrappers: L9.
+- Product recovery wording and product open policy: engine-next/L9.
+- Primitive reconstruction callbacks: engine-next.
+- Background worker thread scheduling: engine-next/post-V1.
+- Exhaustive process-kill matrix in default CI: post-V1 optional assurance.
+- Distributed object-store lease/fencing races: object backend work.
+- StrataHub sync/push/pull behavior: StrataHub integration layers.
+- Query/index/search side effects: later query/index layers.
+- Memory-budget tuning and Raspberry Pi Zero budget review: later architecture
+  review after M4 completion.
+
+### Tests Added
+
+- `lifecycle_closeout_generated_counters_cover_required_categories`
+- `lifecycle_closeout_fault_windows_cover_required_phases`
+- `lifecycle_closeout_crash_windows_cover_required_phases`
+- `lifecycle_closeout_fuzz_targets_and_corpora_are_distinct`
+- `lifecycle_closeout_source_guards_cover_required_boundaries`
+- `lifecycle_closeout_integration_surfaces_cover_required_categories`
+- `lifecycle_closeout_has_no_mutation_probe_artifacts`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/function | Mutation | Evidence | Verification | Status |
+|---|---|---|---|---|---|
+| S1 | `src/lifecycle/cache.rs` cache open/outcome path | Cache mode reports durable recovery facts | `storage_open_outcome_rejects_cache_durable_recovery_claims`, `lifecycle_generated_script_cache_mode_never_claims_durable_recovery` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties` | Covered-by-test |
+| S2 | `src/lifecycle/durable.rs` open assembly | Durable open creates objects before capability validation | `durable_capability_rejection_happens_before_writer_lock`, `fault_capability_mismatch_happens_before_durable_side_effects` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults` | Covered-by-test |
+| S3 | `src/lifecycle/durable/bootstrap.rs` bootstrap failure path | Bootstrap replay failure leaves state recovering | `bootstrap_replay_rejects_mismatched_unresolved_durable_gate`, `fault_replay_failure_transitions_bootstrap_to_failed` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults` | Covered-by-test |
+| S4 | `src/lifecycle/durable/bootstrap.rs` visible catch-up | Recovered visible version advances beyond trusted facts | `bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator`, `generated_bootstrap_catches_allocator_timestamp_and_visible_facts` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | Covered-by-test |
+| S5 | `src/lifecycle/recovery.rs` WAL tail repair | Strict recovery repairs partial tail instead of failing | `recovery_rejects_latest_partial_log_tail_in_strict_mode`, `fault_partial_wal_tail_strict_fails_before_repair` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults` | Covered-by-test |
+| S6 | `src/lifecycle/recovery.rs` lossy snapshot handling | Missing snapshot in lossy mode reports healthy | `lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss`, `generated_recovery_health_matches_fault_family_model` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | Covered-by-test |
+| S7 | `src/lifecycle/flush.rs` flush path | Flush persists watermark or truncates WAL directly | `durable_flush_does_not_persist_watermark_or_truncate_log`, `lifecycle_flush_source_does_not_manage_watermarks_or_log_retention` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard` | Covered-by-test |
+| S8 | `src/lifecycle/recovery.rs` checkpoint decoder | Recovery rejects opaque snapshot sections | `checkpoint_recovery_ignores_opaque_snapshot_sections` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests` | Covered-by-test |
+| S9 | `src/lifecycle/checkpoint.rs` WAL truncation | Truncates records above proven watermark | `generated_checkpoint_truncation_never_removes_uncovered_wal_records`, `crash_after_manifest_update_before_wal_truncation_recovers_checkpoint_and_tail` | `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance`; `cargo test -p strata-storage-next --features localfs,testkit --locked --test crash_recovery` | Covered-by-test |
+| S10 | `src/lifecycle/compaction.rs` materialization task binding | Queued materialization uses stale naked layer index | `queued_materialization_uses_bound_source_after_layer_reindex`, `lifecycle_closeout_integration_surfaces_cover_required_categories` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | Covered-by-test |
+| S11 | `src/lifecycle/retention.rs` table retention | Deletes reachable table object | `reachable_table_object_is_retained`, `generated_retention_never_deletes_reachable_tables_or_live_snapshots` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance` | Covered-by-test |
+| S12 | `src/lifecycle/retention.rs` snapshot pruning | Deletes live manifest snapshot | `snapshot_pruning_retains_live_manifest_snapshot`, `generated_snapshot_pruning_retains_live_and_newest_snapshots` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance` | Covered-by-test |
+| S13 | `src/lifecycle/quarantine.rs` purge proof | Treats stale purge proof as fresh | `purge_requires_fresh_proof_before_backend_access`, `generated_purge_requires_fresh_inventory_proof` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance` | Covered-by-test |
+| S14 | `src/lifecycle/quarantine.rs` repair | Repair mutates branch or invents missing object | `repair_mutation_is_rejected_before_backend_access`, `generated_repair_reports_inconclusive_without_mutating_state` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance` | Covered-by-test |
+| S15 | `src/lifecycle/durable/close.rs` close admission | Close starts ordinary maintenance after close requested | `close_requested_blocks_ordinary_maintenance`, `generated_close_blocks_new_commits_and_ordinary_maintenance` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance` | Covered-by-test |
+| S16 | `src/lifecycle/durable/close.rs` guard release | Releases writer guard before sync failure is resolved | `durable_close_log_sync_failure_preserves_writer_guard_for_retry`, `fault_close_wal_sync_failure_preserves_source_chain` | `cargo test -p strata-storage-next --locked --lib lifecycle::tests`; `cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults` | Covered-by-test |
+| S17 | `fuzz/fuzz_targets/lifecycle_*.rs` fuzz routing | All lifecycle fuzz targets call shared scaffold | `lifecycle_fuzz_targets_call_distinct_contracts`, `lifecycle_fuzz_targets_use_distinct_contracts` | `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_fuzz_inventory`; `cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard` | Covered-by-test |
+| S18 | `tests/crash_recovery.rs` crash cfg | Removes localfs/testkit/wasm gating | `lifecycle_crash_tests_are_feature_gated` | `cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard` | Covered-by-test |
+| S19 | `src/lifecycle/*.rs` production imports | Imports testkit or fuzz from production lifecycle source | `lifecycle_production_does_not_import_testkit_or_fuzz` | `cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard` | Covered-by-test |
+| S20 | `src/lifecycle/*.rs` product imports | Imports engine/product/StrataHub modules | `lifecycle_source_does_not_import_engine_product_or_raw_io` | `cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard` | Covered-by-test |
+
+### Verification
+
+Commands run for L8P:
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery
+cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_fuzz_inventory
+cargo test -p strata-storage-next --features localfs,testkit --locked --test crash_recovery
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard
+cargo test -p strata-storage-next --all-features --locked --test lifecycle_closeout --test lifecycle_source_guard --test lifecycle_fuzz_inventory
+cargo test -p strata-storage-next --no-default-features --locked lifecycle
+cargo check -p strata-storage-next --no-default-features --locked --tests
+cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked
+cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bins
+cargo hack check -p strata-storage-next --feature-powerset --depth 2
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```
+
+All commands in the closeout matrix were run and passed:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --locked --lib lifecycle::tests` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | PASS |
+| `cargo test -p strata-storage-next --features fault-injection,testkit --locked --test lifecycle_faults` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_fuzz_inventory` | PASS |
+| `cargo test -p strata-storage-next --features localfs,testkit --locked --test crash_recovery` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | PASS |
+| `cargo test -p strata-storage-next --all-features --locked --test lifecycle_source_guard` | PASS |
+| `cargo test -p strata-storage-next --all-features --locked --test lifecycle_closeout --test lifecycle_source_guard --test lifecycle_fuzz_inventory` | PASS |
+| `cargo test -p strata-storage-next --no-default-features --locked lifecycle` | PASS |
+| `cargo check -p strata-storage-next --no-default-features --locked --tests` | PASS |
+| `cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked` | PASS |
+| `cargo check --manifest-path crates/storage-next/fuzz/Cargo.toml --locked --bins` | PASS |
+| `cargo hack check -p strata-storage-next --feature-powerset --depth 2` | PASS |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |
+
+Optional nightly/libfuzzer smoke runs were executed after closeout. The
+maintenance target initially minimized a seed that let the generated
+materialization helper reuse the same branch id for parent and child; the
+testkit branch-id derivation now forces distinct ids and
+`lifecycle_maintenance_fuzz_regression_keeps_materialization_branches_distinct`
+pins the minimized input.
+
+```bash
+cargo +nightly fuzz run lifecycle_recovery -- -max_total_time=60
+cargo +nightly fuzz run lifecycle_maintenance -- -max_total_time=60
+cargo +nightly fuzz run lifecycle_retention -- -max_total_time=60
+```
+
 ## L8M - Quarantine, Reclaim, Purge, And Repair
 
 ### Shipped Files
@@ -2039,7 +2190,8 @@ git diff --check
   retention does not delete table objects directly. Automatic table-reachability
   proof assembly remains deferred until durable table-manifest/quarantine work.
 - WAL and quarantine object families are delegated with explicit skipped
-  decisions rather than partially implemented in retention.
+  decisions rather than partially implemented in retention. These intentional
+  delegations are not health debt.
 
 ### Raw Health And Fact Vocabulary
 
@@ -2061,6 +2213,8 @@ git diff --check
   pruning windows are not lost.
 - Global retention maintenance runs snapshot pruning and still reports delegated
   WAL/quarantine families rather than returning only delegated decisions.
+- Successful delegated WAL/quarantine decisions no longer inflate recovery
+  health; only incomplete proofs or real lower-layer failures add health debt.
 - Cache mode rejects durable retention and snapshot-pruning tasks before any
   durable-object access.
 

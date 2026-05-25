@@ -258,6 +258,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.maintenance.status()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_active_maintenance_for_test(&mut self, task: MaintenanceTask) {
+        self.maintenance.set_active_for_test(task);
+    }
+
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"

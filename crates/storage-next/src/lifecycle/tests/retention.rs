@@ -106,10 +106,8 @@ fn retention_outcome_reports_retained_pruned_skipped_and_delegated_counts() {
     assert_eq!(outcome.objects_retained(), 1);
     assert_eq!(outcome.objects_skipped(), 1);
     assert_eq!(outcome.reclaimed_bytes(), 64);
-    assert_eq!(
-        outcome.status(),
-        LifecycleRetentionStatus::CompletedWithHealthDebt
-    );
+    assert_eq!(outcome.status(), LifecycleRetentionStatus::Completed);
+    assert_eq!(outcome.recovery_health(), None);
 }
 
 #[test]
@@ -826,10 +824,8 @@ fn global_retention_scope_includes_snapshot_and_delegated_decisions() {
 
     let outcome = retention_outcome_for_scope(&request, proof, &snapshots).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleRetentionStatus::CompletedWithHealthDebt
-    );
+    assert_eq!(outcome.status(), LifecycleRetentionStatus::Completed);
+    assert_eq!(outcome.recovery_health(), None);
     assert_eq!(outcome.objects_pruned(), 2);
     assert_eq!(outcome.objects_skipped(), 2);
     assert!(outcome
@@ -859,10 +855,8 @@ fn retention_delegates_wal_and_quarantine_families() {
     );
     let outcome = retention_outcome_for_delegated_families(proof).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleRetentionStatus::CompletedWithHealthDebt
-    );
+    assert_eq!(outcome.status(), LifecycleRetentionStatus::Completed);
+    assert_eq!(outcome.recovery_health(), None);
     assert_eq!(outcome.objects_skipped(), 2);
     assert!(outcome
         .decisions()
@@ -956,15 +950,12 @@ fn purge_request_does_not_delete_inventory_objects() {
 }
 
 #[test]
-fn retention_health_debt_names_delegated_family() {
+fn retention_delegation_does_not_create_phantom_health_debt() {
     let outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleRetentionStatus::CompletedWithHealthDebt
-    );
-    assert!(outcome.recovery_health().is_some());
+    assert_eq!(outcome.status(), LifecycleRetentionStatus::Completed);
+    assert_eq!(outcome.recovery_health(), None);
     assert!(outcome
         .decisions()
         .iter()

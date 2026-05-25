@@ -234,6 +234,13 @@ impl<S> LifecycleCacheRuntime<S> {
         self.maintenance.status()
     }
 
+    #[cfg(test)]
+    pub(crate) fn force_close_requested_for_test(&mut self) -> LifecycleResult<()> {
+        self.state
+            .transition(LifecycleTransitionTrigger::CloseRequested)?;
+        Ok(())
+    }
+
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
@@ -318,6 +325,12 @@ impl<S> LifecycleCacheRuntime<S> {
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
+                if self.maintenance.status().active_task().is_some() {
+                    return Err(LifecycleError::CloseTimeout {
+                        phase: ClosePhase::DrainMaintenance,
+                        reason: "maintenance task is active",
+                    });
+                }
                 if self.maintenance.has_close_required_drain() {
                     return Err(LifecycleError::MaintenanceTaskFailed {
                         reason: "cache close cannot complete while drain-required maintenance is pending",
@@ -325,19 +338,28 @@ impl<S> LifecycleCacheRuntime<S> {
                 }
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRequested)?;
-                let cancel = self.maintenance.cancel_pending_for_close(self.state)?;
+                self.finish_cache_close()
+            }
+            LifecycleState::Closing => {
+                require_admitted(self.state, LifecycleOperationKind::CloseRetry)?;
                 self.state
-                    .transition(LifecycleTransitionTrigger::CloseCompleted)?;
-                Ok(cache_close_outcome(cancel))
+                    .transition(LifecycleTransitionTrigger::CloseRetried)?;
+                self.finish_cache_close()
             }
             LifecycleState::New
             | LifecycleState::Opening
             | LifecycleState::Recovering
-            | LifecycleState::Closing
             | LifecycleState::Failed => Err(LifecycleError::InvalidLifecycleState {
                 reason: "cache runtime is not open for close",
             }),
         }
+    }
+
+    fn finish_cache_close(&mut self) -> LifecycleResult<CloseOutcome> {
+        let cancel = self.maintenance.cancel_pending_for_close(self.state)?;
+        self.state
+            .transition(LifecycleTransitionTrigger::CloseCompleted)?;
+        Ok(cache_close_outcome(cancel))
     }
 }
 

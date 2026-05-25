@@ -912,6 +912,27 @@ impl LifecycleMaintenanceExecutor {
         self.drain_for_close_with_fault(state, runner, &mut NoopMaintenanceFaultHook)
     }
 
+    pub(crate) fn drain_active_for_close(
+        &mut self,
+        state: LifecycleStateMachine,
+        runner: &mut impl MaintenanceTaskRunner,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        require_admitted(state, LifecycleOperationKind::CloseRequiredDrain)?;
+        let Some(task) = self.active.take() else {
+            return Ok(None);
+        };
+        let outcome = match runner.run_task(&task) {
+            Ok(outcome) => attach_executor_facts(outcome, task.id())?,
+            Err(error) => {
+                self.stats.failed = self.stats.failed.saturating_add(1);
+                self.active = Some(task);
+                return Err(error);
+            }
+        };
+        self.record_outcome(outcome.status(), true);
+        Ok(Some(outcome))
+    }
+
     pub(crate) fn drain_for_close_with_fault(
         &mut self,
         state: LifecycleStateMachine,

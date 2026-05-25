@@ -345,6 +345,8 @@ fn lifecycle_generated_assurance_stays_in_testkit_tests_or_fuzz() {
         root.join("tests/lifecycle_properties.rs"),
         root.join("tests/lifecycle_maintenance.rs"),
         root.join("tests/lifecycle_faults.rs"),
+        root.join("tests/lifecycle_fuzz_inventory.rs"),
+        root.join("tests/lifecycle_closeout.rs"),
         root.join("tests/crash_recovery.rs"),
     ];
 
@@ -476,6 +478,8 @@ fn lifecycle_assurance_tests_avoid_sleeps_and_thread_spawns() {
         "tests/lifecycle_properties.rs",
         "tests/lifecycle_maintenance.rs",
         "tests/lifecycle_faults.rs",
+        "tests/lifecycle_fuzz_inventory.rs",
+        "tests/lifecycle_closeout.rs",
         "tests/crash_recovery.rs",
     ] {
         let path = root.join(relative);

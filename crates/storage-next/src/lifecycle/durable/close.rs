@@ -61,14 +61,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     }
 
     fn finish_close(&mut self) -> LifecycleResult<CloseOutcome> {
-        if self.maintenance.status().active_task().is_some() {
-            self.mark_close_retry_pending()?;
-            return Err(close_timeout(
-                ClosePhase::DrainMaintenance,
-                "maintenance task is active",
-            ));
-        }
-
         let cancel = self.maintenance.cancel_pending_for_close(self.state)?;
         let created_at = checkpoint_created_at(
             self.allocator.timestamp_guard().last_allocated(),
@@ -83,6 +75,13 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             next_snapshot_id: &mut self.next_checkpoint_snapshot_id,
             health: self.open_outcome.recovery_health().clone(),
         };
+        if let Err(error) = self
+            .maintenance
+            .drain_active_for_close(self.state, &mut runner)
+        {
+            self.mark_close_retry_pending()?;
+            return Err(close_drain_error(error));
+        }
         let drain = match self.maintenance.drain_for_close(self.state, &mut runner) {
             Ok(outcome) => outcome,
             Err(error) => {

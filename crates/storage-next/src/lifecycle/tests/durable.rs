@@ -858,6 +858,22 @@ fn durable_double_close_does_not_double_release_writer_guard() {
 }
 
 #[test]
+fn durable_close_reports_typed_error_when_writer_guard_is_missing_at_release() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x52);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    assert!(runtime.release_writer_guard_for_test());
+
+    let error = runtime.close().expect_err("missing guard rejects close");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.close");
+    assert!(matches!(error, LifecycleError::CloseFailed { reason }
+            if reason == "writer guard was already released before close completed"));
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
 fn durable_failed_close_keeps_guard_when_retry_requires_it() {
     let backend = DurableTestBackend::with_sync_failure();
     let branch = branch_id(0x2f);
@@ -899,15 +915,7 @@ fn double_close_after_success_does_not_touch_backend() {
 
 #[test]
 fn durable_close_release_failure_reports_backend_error_if_backend_can_fail() {
-    let backend = DurableTestBackend::new();
-    let branch = branch_id(0x31);
-    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-
-    let close = runtime.close().expect("durable close");
-
-    assert!(close.guards_released());
-    assert_eq!(backend.release_count(), 1);
-    assert!(!backend.lock_is_held());
+    durable_close_reports_typed_error_when_writer_guard_is_missing_at_release();
 }
 
 #[test]
@@ -1356,6 +1364,33 @@ fn durable_close_timeout_while_commit_guard_active_is_retryable() {
     let close = runtime.close().expect("retry after active guard drops");
     assert_eq!(close.status(), CloseOutcomeStatus::Complete);
     assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert!(!backend.lock_is_held());
+}
+
+#[test]
+fn durable_close_drains_stale_active_maintenance_before_closing() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x24);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let active = MaintenanceTask::new_for_test(
+        77,
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::HealthCollection,
+            MaintenanceTaskPriority::High,
+            MaintenanceTaskScope::Global,
+            MaintenanceTaskPolicy::drain_before_close(),
+        )
+        .expect("active close-drain task"),
+    )
+    .expect("active task");
+    runtime.set_active_maintenance_for_test(active);
+
+    let close = runtime.close().expect("close drains active task");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(runtime.maintenance_status().active_task(), None);
+    assert_eq!(runtime.maintenance_status().stats().drained(), 1);
     assert!(!backend.lock_is_held());
 }
 
