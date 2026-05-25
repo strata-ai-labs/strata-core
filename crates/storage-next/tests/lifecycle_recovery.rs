@@ -78,12 +78,15 @@ fn generated_recovery_empty_checkpoint_tail_and_lossy_routes_are_input_driven() 
 #[cfg(feature = "testkit")]
 #[test]
 fn generated_recovery_corrupt_manifest_snapshot_wal_and_table_are_typed() {
-    let outcome =
-        strata_storage_next::testkit::check_lifecycle_fault_contract(b"recovery-corrupt-routes")
-            .expect("fault contract");
+    let corrupt_log =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-corrupt-log")
+            .expect("corrupt-log fault contract");
+    let partial_log =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-partial-log-strict")
+            .expect("partial-log fault contract");
 
-    assert!(outcome.corrupt_log_typed_cases() > 0);
-    assert!(outcome.partial_log_strict_cases() > 0);
+    assert!(corrupt_log.corrupt_log_typed_cases() > 0);
+    assert!(partial_log.partial_log_strict_cases() > 0);
 }
 
 #[cfg(feature = "testkit")]
@@ -110,11 +113,15 @@ fn generated_bootstrap_rejects_timeline_mismatch() {
 #[cfg(feature = "testkit")]
 #[test]
 fn generated_bootstrap_reconciles_unresolved_durable_gate() {
-    let outcome = strata_storage_next::testkit::check_lifecycle_fault_contract(b"unresolved-gate")
-        .expect("fault contract");
+    let replay_failed =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-replay-failed")
+            .expect("replay-failed fault contract");
+    let replay_visible =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-replay-visible")
+            .expect("replay-visible fault contract");
 
-    assert!(outcome.replay_failed_state_cases() > 0);
-    assert!(outcome.replay_visible_debt_cases() > 0);
+    assert!(replay_failed.replay_failed_state_cases() > 0);
+    assert!(replay_visible.replay_visible_debt_cases() > 0);
 }
 
 #[cfg(feature = "testkit")]
