@@ -43,9 +43,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 // callers see the same canceled/drained/durable stats they
                 // already observed, with only status/close_fact remapped to
                 // idempotent shape.
-                Ok(self.last_close_outcome.as_ref().map_or_else(
+                Ok(self.close_retry_state.as_ref().map_or_else(
                     durable_idempotent_close_outcome,
-                    durable_idempotent_from_prior_close,
+                    DurableCloseRetryState::idempotent_outcome,
                 ))
             }
             LifecycleState::Open => {
@@ -66,7 +66,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 // Closing`). State-machine admission below enforces this;
                 // if the failure came from Open/Recovering, this returns
                 // Rejected with a typed reason and we map it to
-                // `InvalidLifecycleState`. The narrow rule keeps L8 from
+                // `InvalidLifecycleState`. The narrow rule prevents
                 // silently retrying open-time failures through the close
                 // ordering.
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
@@ -186,8 +186,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         // Snapshot the first-close outcome so subsequent idempotent close
         // calls return the same stats. Without this cache, a retry after
         // Closed would surface a fabricated baseline that diverges from
-        // what the caller observed on the first call.
-        self.last_close_outcome = Some(outcome);
+        // what the caller observed on the first call. The opaque wrapper
+        // keeps the close type out of the bootstrap source per layering.
+        self.close_retry_state = Some(DurableCloseRetryState::new(outcome));
         Ok(outcome)
     }
 
@@ -448,16 +449,34 @@ const fn durable_idempotent_close_outcome() -> CloseOutcome {
         .with_stats(LifecycleStats::new(0, 0, 0, 0, 1))
 }
 
-/// Convert a prior first-close `CloseOutcome` into the durable idempotent
-/// retry shape. Stats are preserved verbatim from the first close; only
-/// status flips to `Idempotent` and the close fact to `AlreadyClosed`.
-/// The `prior_final` bit is set on the durable-complete effects so
-/// `CloseOutcome::validate` accepts the Idempotent status.
-fn durable_idempotent_from_prior_close(prior: &CloseOutcome) -> CloseOutcome {
-    CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Idempotent)
-        .with_close_fact(LifecycleCloseFact::AlreadyClosed)
-        .with_close_effects(CloseOutcomeEffects::durable_complete(true))
-        .with_stats(prior.stats())
+/// Opaque close-retry snapshot stored on the durable runtime by
+/// `finish_close` so subsequent idempotent close calls return the
+/// caller's observed stats. The wrapper exists so the runtime struct in
+/// `lifecycle/durable/bootstrap.rs` does not directly reference any
+/// `Close*` types — the lifecycle source guard enforces that
+/// bootstrap and close stay decoupled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DurableCloseRetryState {
+    prior: CloseOutcome,
+}
+
+impl DurableCloseRetryState {
+    const fn new(prior: CloseOutcome) -> Self {
+        Self { prior }
+    }
+
+    /// Build the durable idempotent retry shape from the cached first
+    /// close. Stats are preserved verbatim from the first close; only
+    /// status flips to `Idempotent` and the close fact to
+    /// `AlreadyClosed`. The `prior_final` bit on the durable-complete
+    /// effects satisfies `CloseOutcome::validate` for the Idempotent
+    /// status.
+    fn idempotent_outcome(&self) -> CloseOutcome {
+        CloseOutcome::new(ClosePhase::Closed, CloseOutcomeStatus::Idempotent)
+            .with_close_fact(LifecycleCloseFact::AlreadyClosed)
+            .with_close_effects(CloseOutcomeEffects::durable_complete(true))
+            .with_stats(self.prior.stats())
+    }
 }
 
 const fn close_timeout(phase: ClosePhase, reason: &'static str) -> LifecycleError {

@@ -1,6 +1,7 @@
 //! Lifecycle health facts.
 
 use super::{LifecycleError, LifecycleResult};
+use strata_core_next::BranchId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -33,7 +34,7 @@ pub(crate) struct RecoveryFault {
     // conservatively. Threaded from quarantine inventory mismatches,
     // branch-scoped manifest issues, and other branch-specific faults
     // when the caller knows the affected branch.
-    affected_branch: Option<strata_core_next::BranchId>,
+    affected_branch: Option<BranchId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,7 +105,7 @@ impl RecoveryFault {
     /// debt.
     pub(crate) fn with_affected_branch(
         mut self,
-        branch: strata_core_next::BranchId,
+        branch: BranchId,
     ) -> Self {
         self.affected_branch = Some(branch);
         self
@@ -118,7 +119,7 @@ impl RecoveryFault {
         self.reason
     }
 
-    pub(crate) const fn affected_branch(&self) -> Option<strata_core_next::BranchId> {
+    pub(crate) const fn affected_branch(&self) -> Option<BranchId> {
         self.affected_branch
     }
 }
@@ -131,10 +132,13 @@ impl RecoveryHealth {
     /// rule 2 of Quarantine Admission. Unscoped faults
     /// (`affected_branch == None`) do not contribute to the match here;
     /// callers that want a conservative reject for unscoped faults
-    /// inspect `has_unscoped_fault` separately.
+    /// inspect `recovery_health_blocks_reclaim` (defined in
+    /// `crate::lifecycle::quarantine`) which treats any non-Telemetry
+    /// `Degraded` and any `Failed` fault as blocking regardless of
+    /// scope.
     pub(crate) fn has_fault_targeting_branch(
         &self,
-        branch: strata_core_next::BranchId,
+        branch: BranchId,
     ) -> bool {
         match self {
             Self::Healthy => false,

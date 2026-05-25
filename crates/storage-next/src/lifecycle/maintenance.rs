@@ -979,12 +979,6 @@ impl LifecycleMaintenanceExecutor {
         self.active = Some(task);
     }
 
-    pub(crate) fn has_close_required_drain(&self) -> bool {
-        self.queue
-            .iter()
-            .any(|task| task.policy().close_policy() == MaintenanceClosePolicy::DrainBeforeClose)
-    }
-
     pub(crate) const fn stats(&self) -> LifecycleMaintenanceStats {
         self.stats
     }

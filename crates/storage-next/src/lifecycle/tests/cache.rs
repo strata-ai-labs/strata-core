@@ -675,13 +675,24 @@ fn cache_double_close_returns_idempotent_prior_facts() {
     let branch = branch_id(0x58);
     let backend = MemoryBackend::new();
     let mut runtime = open_runtime(branch, &backend);
-    runtime.close().expect("first close");
+    let first = runtime.close().expect("first close");
 
     let second = runtime.close().expect("second close");
 
     assert_eq!(second.status(), CloseOutcomeStatus::Idempotent);
     assert_eq!(second.close_fact(), Some(LifecycleCloseFact::AlreadyClosed));
     assert!(second.prior_final());
+    // The idempotent retry must surface the same stats the caller
+    // observed on the first close. A regression that swaps
+    // `idempotent_from_prior_close` back to the fabricated baseline
+    // would silently drift here.
+    assert_eq!(second.stats(), first.stats());
+
+    // Third call must still report the same prior stats — repeated
+    // idempotent retries do not drift.
+    let third = runtime.close().expect("third close");
+    assert_eq!(third.stats(), first.stats());
+    assert_eq!(third.status(), CloseOutcomeStatus::Idempotent);
 }
 
 #[test]

@@ -12,7 +12,7 @@ use crate::lifecycle::retention::{
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::SnapshotService;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -600,6 +600,39 @@ fn snapshot_pruning_delete_failure_records_health_debt_and_continues() {
     assert_eq!(outcome.failed().len(), 1);
     assert!(outcome.recovery_health().is_some());
     assert_eq!(backend.remaining_snapshot_ids(), [1, 3]);
+}
+
+#[test]
+fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
+    // Five snapshots, all but the live one (5) need pruning. Inject
+    // delete failures on calls 1 and 2 (snapshots 1 and 2 — the two
+    // oldest pruning candidates). Snapshot 3 should still get deleted.
+    // The health debt must surface exactly TWO RecoveryFault entries —
+    // one per failed deletion — so `fault_count` reflects the real
+    // backlog rather than collapsing to a single aggregated fault.
+    let backend = RetentionBackend::with_snapshots([1, 2, 3, 5]);
+    backend.fail_delete_calls([1, 2]);
+    let request = LifecycleRetentionRequest::snapshot_pruning(1);
+    let proof = build_retention_proof(&request, Some(&manifest(5, 7)), &RecoveryHealth::Healthy, 4);
+    let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
+        .expect("pruning request");
+
+    let outcome =
+        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleSnapshotPruningStatus::CompletedWithHealthDebt
+    );
+    assert_eq!(snapshot_ids(outcome.deleted()), [3]);
+    assert_eq!(snapshot_ids(outcome.protected()), [5]);
+    assert_eq!(outcome.failed().len(), 2);
+    let health = outcome.recovery_health().expect("health debt");
+    assert_eq!(
+        health.fault_count(),
+        2,
+        "snapshot pruning must emit one RecoveryFault per failed deletion",
+    );
 }
 
 #[test]
@@ -1486,6 +1519,10 @@ struct RetentionBackend {
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     fail_list: AtomicBool,
     fail_delete_call: AtomicUsize,
+    // Set of delete-call ordinals (1-based) that must fail. Used by
+    // multi-failure tests that need to exercise more than one rejection
+    // in a single pruning sweep.
+    fail_delete_calls: Mutex<BTreeSet<usize>>,
     delete_calls: AtomicUsize,
     list_calls: AtomicUsize,
     omit_delete_capability: AtomicBool,
@@ -1521,6 +1558,11 @@ impl RetentionBackend {
 
     fn fail_delete_on_call(&self, call: usize) {
         self.fail_delete_call.store(call, Ordering::SeqCst);
+    }
+
+    fn fail_delete_calls(&self, calls: impl IntoIterator<Item = usize>) {
+        let mut slot = self.fail_delete_calls.lock().expect("fail delete calls");
+        slot.extend(calls);
     }
 
     fn list_calls(&self) -> usize {
@@ -1593,7 +1635,13 @@ impl Backend for RetentionBackend {
             .delete_calls
             .fetch_add(1, Ordering::SeqCst)
             .saturating_add(1);
-        if self.fail_delete_call.load(Ordering::SeqCst) == call {
+        if self.fail_delete_call.load(Ordering::SeqCst) == call
+            || self
+                .fail_delete_calls
+                .lock()
+                .expect("fail delete calls")
+                .contains(&call)
+        {
             return Err(BackendError::new(
                 BackendErrorKind::Unavailable,
                 "injected delete failure",

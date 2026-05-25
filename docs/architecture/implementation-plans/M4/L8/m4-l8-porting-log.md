@@ -279,8 +279,16 @@ git diff --check
 - `lifecycle_close_contract_covers_shutdown_categories`
 - `lifecycle_durable_close_stays_out_of_assembly_bootstrap_and_cache`
 - The remaining close-shutdown test-plan inventory is represented directly by
-  plan-named close, cache, maintenance, and durable tests. The inventory check
-  over `l8n-close-shutdown-ordering-test-plan.md` reports `missing=0`.
+  plan-named close, cache, maintenance, and durable tests. Note: two tests
+  were renamed during the round-3 assurance pass:
+  `durable_close_persists_final_health_fact_when_dirty` →
+  `durable_close_force_syncs_manifest_when_health_changed` (reflects the
+  V1 deferral that health is not persisted into the manifest payload —
+  see deferral note above), and
+  `cache_close_rejects_or_drains_drain_required_work_by_policy` →
+  `cache_close_drains_drain_required_work` (cache now actively drains
+  drain-required tasks rather than rejecting). The test plan was updated
+  in lock-step with the renames.
 
 ### Sensitivity Probes Recorded
 

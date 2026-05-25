@@ -44,10 +44,13 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(super) maintenance: LifecycleMaintenanceExecutor,
-    // Cached first-close outcome so subsequent idempotent close calls
-    // return the prior stats (canceled+drained task count, etc.) the
-    // caller observed on the first call instead of a fabricated baseline.
-    pub(super) last_close_outcome: Option<crate::lifecycle::CloseOutcome>,
+    // Opaque close-session retry state owned by `lifecycle/durable/close.rs`.
+    // Bootstrap stores the snapshot but does not interpret it; subsequent
+    // idempotent close calls inside `close.rs` deconstruct it through
+    // its own helpers. The wrapper exists so this file does not need
+    // to reference any concrete close types, preserving the
+    // bootstrap-vs-close layering enforced by the lifecycle source guard.
+    pub(super) close_retry_state: Option<super::close::DurableCloseRetryState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,7 +135,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
-            last_close_outcome: None,
+            close_retry_state: None,
         })
     }
 

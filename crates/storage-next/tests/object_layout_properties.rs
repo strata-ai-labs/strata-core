@@ -192,6 +192,20 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
             let entry = entry.expect("read source entry");
             let path = entry.path();
             if path.is_dir() {
+                // `src/<layer>/tests/*.rs` are test files by convention —
+                // the parent `mod.rs` gates them with `#[cfg(test)] mod
+                // tests;`, so they hold test code rather than production
+                // code. Likewise `src/testkit/*.rs` is gated by
+                // `#[cfg(any(test, feature = "testkit"))]` in `lib.rs`
+                // and exists only for test harnesses. The line-scanner
+                // can't see the parent-mod attribute (it walks one
+                // file at a time), so we skip these directories here
+                // to keep test fixtures from tripping the
+                // reserved-name guard.
+                let dir_name = path.file_name().and_then(|name| name.to_str());
+                if matches!(dir_name, Some("tests" | "testkit")) {
+                    continue;
+                }
                 pending.push(path);
             } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
                 files.push(path);
