@@ -384,25 +384,34 @@ fn lifecycle_generated_integration_runs_reclaim_close_script() {
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
 fn lifecycle_fault_integration_covers_all_phase_families() {
-    let outcome =
-        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-integration")
-            .expect("fault lifecycle contract");
+    let capability =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-capability")
+            .expect("capability fault lifecycle contract");
+    let flush = strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-flush-orphan")
+        .expect("flush fault lifecycle contract");
+    let close =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-close-wal-sync")
+            .expect("close fault lifecycle contract");
 
-    assert!(outcome.capability_preflight_cases() > 0);
-    assert!(outcome.flush_orphan_table_cases() > 0);
-    assert!(outcome.close_log_sync_source_cases() > 0);
+    assert!(capability.capability_preflight_cases() > 0);
+    assert!(flush.flush_orphan_table_cases() > 0);
+    assert!(close.close_log_sync_source_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
 fn lifecycle_crash_integration_reports_case_counts() {
-    let outcome =
-        strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-integration")
-            .expect("crash lifecycle contract");
+    let replay = strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-wal-append")
+        .expect("replay crash lifecycle contract");
+    let snapshot =
+        strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-orphan-snapshot")
+            .expect("snapshot crash lifecycle contract");
+    let close = strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-close-reopen")
+        .expect("close crash lifecycle contract");
 
-    assert!(outcome.log_append_replay_cases() > 0);
-    assert!(outcome.orphan_snapshot_ignored_cases() > 0);
-    assert!(outcome.close_reopen_consistent_cases() > 0);
+    assert!(replay.log_append_replay_cases() > 0);
+    assert!(snapshot.orphan_snapshot_ignored_cases() > 0);
+    assert!(close.close_reopen_consistent_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -575,11 +584,14 @@ fn generated_close_retry_and_double_close_match_model() {
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
 fn generated_close_faults_preserve_health_debt() {
-    let outcome = strata_storage_next::testkit::check_lifecycle_fault_contract(b"close-fault")
-        .expect("fault contract");
+    let wal = strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-close-wal-sync")
+        .expect("wal fault contract");
+    let manifest =
+        strata_storage_next::testkit::check_lifecycle_fault_contract(b"fault-close-manifest")
+            .expect("manifest fault contract");
 
-    assert!(outcome.close_log_sync_source_cases() > 0);
-    assert!(outcome.close_manifest_sync_debt_cases() > 0);
+    assert!(wal.close_log_sync_source_cases() > 0);
+    assert!(manifest.close_manifest_sync_debt_cases() > 0);
 }
 
 #[cfg(not(all(feature = "testkit", not(target_arch = "wasm32"))))]

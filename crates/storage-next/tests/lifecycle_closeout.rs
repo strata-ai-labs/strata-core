@@ -187,6 +187,20 @@ fn lifecycle_closeout_crash_harness_runs_distinct_phase_cases() {
     assert!(outcome.close_reopen_consistent_cases() > 0);
 }
 
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_closeout_crash_contract_is_input_routed() {
+    let replay = strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-wal-append")
+        .expect("replay crash route");
+    let close = strata_storage_next::testkit::check_lifecycle_crash_contract(b"crash-close-reopen")
+        .expect("close crash route");
+
+    assert!(replay.log_append_replay_cases() > 0);
+    assert_eq!(replay.close_reopen_consistent_cases(), 0);
+    assert!(close.close_reopen_consistent_cases() > 0);
+    assert_eq!(close.log_append_replay_cases(), 0);
+}
+
 #[test]
 fn lifecycle_closeout_fuzz_targets_and_corpora_are_distinct() {
     let root = common::crate_root();
