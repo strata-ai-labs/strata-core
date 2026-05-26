@@ -1,5 +1,6 @@
 mod publication_plan;
 mod remaining;
+mod row_pruning;
 mod shared;
 
 use self::shared::*;

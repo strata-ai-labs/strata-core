@@ -782,6 +782,184 @@ fn durable_rewrite_publication_does_not_import_primitive_modules() {
 }
 
 #[test]
+fn row_pruning_does_not_import_raw_io_or_object_cleanup() {
+    assert_row_pruning_source_excludes(contains_forbidden_row_pruning_dependency);
+}
+
+#[test]
+fn row_pruning_does_not_import_raw_io() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["std::fs", "std::path", "std::env", "openoptions", "mmap"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn row_pruning_does_not_import_backend_delete() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "backend.delete_object(",
+            ".delete_object(",
+            "delete_covered_segments(",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn row_pruning_does_not_delete_table_objects() {
+    row_pruning_does_not_import_backend_delete();
+}
+
+#[test]
+fn row_pruning_does_not_import_quarantine_or_purge() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["quarantine_object(", "purge_quarantine"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn row_pruning_does_not_quarantine_table_objects() {
+    assert_row_pruning_source_excludes(|line| {
+        line.to_ascii_lowercase().contains("quarantine_object(")
+    });
+}
+
+#[test]
+fn row_pruning_does_not_purge_objects() {
+    assert_row_pruning_source_excludes(|line| {
+        line.to_ascii_lowercase().contains("purge_quarantine")
+    });
+}
+
+#[test]
+fn row_pruning_does_not_import_snapshot_pruning() {
+    assert_row_pruning_source_excludes(|line| {
+        line.to_ascii_lowercase().contains("prune_snapshots(")
+    });
+}
+
+#[test]
+fn row_pruning_does_not_prune_snapshots() {
+    row_pruning_does_not_import_snapshot_pruning();
+}
+
+#[test]
+fn row_pruning_does_not_import_wal_truncation() {
+    assert_row_pruning_source_excludes(|line| line.to_ascii_lowercase().contains("truncate_wal("));
+}
+
+#[test]
+fn row_pruning_does_not_truncate_wal() {
+    row_pruning_does_not_import_wal_truncation();
+}
+
+#[test]
+fn row_pruning_does_not_persist_flush_watermark() {
+    assert_row_pruning_source_excludes(|line| {
+        line.to_ascii_lowercase()
+            .contains("persist_flush_watermark(")
+    });
+}
+
+#[test]
+fn row_pruning_does_not_publish_database_manifest_directly() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("databasemanifestservice") || lower.contains("publish_replace_manifest(")
+    });
+}
+
+#[test]
+fn row_pruning_does_not_import_product_policy() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["strata_engine", "strata_intelligence", "retention_report"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn row_pruning_does_not_import_stratahub() {
+    assert_row_pruning_source_excludes(|line| line.to_ascii_lowercase().contains("stratahub"));
+}
+
+#[test]
+fn row_pruning_does_not_import_primitive_modules() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["primitive", "graph", "vector", "json"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn row_pruning_does_not_use_wall_clock() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["timestamp::now", "systemtime"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn row_pruning_code_and_fixture_names_do_not_use_milestone_labels() {
+    let root = common::crate_root();
+    let paths = [
+        root.join("src/branch/pruning.rs"),
+        root.join("src/branch/tests/row_pruning.rs"),
+        root.join("src/branch/tests/row_pruning/required_plan.rs"),
+        root.join("src/branch/tests/row_pruning/tombstone_ttl.rs"),
+        root.join("src/lifecycle/compaction.rs"),
+    ];
+    let release_token = ['l', '8'].iter().collect::<String>();
+    let milestone_token = ['m', '4'].iter().collect::<String>();
+    for path in paths {
+        let text = fs::read_to_string(&path).expect("read row pruning source");
+        for (line_number, line) in text.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            assert!(
+                !lower.contains(&release_token) && !lower.contains(&milestone_token),
+                "{}:{} uses milestone vocabulary in row-pruning code: {line}",
+                path.strip_prefix(&root).unwrap_or(&path).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn row_pruning_does_not_use_wall_clock_or_product_policy() {
+    assert_row_pruning_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "timestamp::now",
+            "systemtime",
+            "strata_engine",
+            "strata_intelligence",
+            "stratahub",
+            "primitive",
+            "graph",
+            "vector",
+            "json",
+            "retention_report",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
 fn lifecycle_retention_source_delegates_durable_mutation() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/retention.rs");
@@ -1833,6 +2011,49 @@ fn assert_rewrite_publication_source_excludes(predicate: impl Fn(&str) -> bool) 
             line_number + 1
         );
     }
+}
+
+fn assert_row_pruning_source_excludes(predicate: impl Fn(&str) -> bool) {
+    let root = common::crate_root();
+    let paths = [
+        root.join("src/branch/pruning.rs"),
+        root.join("src/lifecycle/compaction.rs"),
+    ];
+    for path in paths {
+        let text = fs::read_to_string(&path).expect("read row pruning source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !predicate(line),
+                "{}:{} calls forbidden row pruning dependency: {line}",
+                path.strip_prefix(&root).unwrap_or(&path).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+fn contains_forbidden_row_pruning_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::fs",
+        "std::path",
+        "std::env",
+        "openoptions",
+        "mmap",
+        "backend.delete_object(",
+        ".delete_object(",
+        "delete_covered_segments(",
+        "quarantine_object(",
+        "purge_quarantine",
+        "prune_snapshots(",
+        "truncate_wal(",
+        "persist_flush_watermark(",
+        "tableobjectservice",
+        "walservice",
+        "snapshotservice",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn contains_forbidden_rewrite_publication_dependency(line: &str) -> bool {

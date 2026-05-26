@@ -170,6 +170,22 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 // reachability retention, but the rows are not promoted into
                 // the branch state — the checkpoint is a superset for this
                 // commit range.
+                //
+                // The manifest's retained-history extension must still be
+                // applied to the checkpoint-recovered branch so that prior
+                // row pruning narrows timestamp coverage on reopen.
+                let staged_coverage = stage.staged_branch().timestamp_coverage();
+                *self.shell.branch_state_mut() = recovered_branch;
+                self.shell
+                    .branch_state_mut()
+                    .set_timestamp_coverage(staged_coverage);
+                return Ok(LifecycleRecoveryOutcome {
+                    health,
+                    checkpoint: checkpoint.checkpoint,
+                    wal,
+                    quarantine,
+                    tables: tables.recovered_tables,
+                });
             }
             *self.shell.branch_state_mut() = recovered_branch;
         } else if let Some(stage) = tables.table_manifest_stage {

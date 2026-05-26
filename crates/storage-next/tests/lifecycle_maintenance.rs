@@ -597,6 +597,25 @@ fn generated_table_rewrite_preserves_reads_after_compaction() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn generated_row_pruning_covers_retained_history_boundaries() {
+    let outcome =
+        strata_storage_next::testkit::check_lifecycle_row_pruning_contract(b"row-pruning")
+            .expect("row pruning contract");
+
+    assert!(outcome.proof_rejected_cases() > 0);
+    assert!(outcome.old_version_dropped_cases() > 0);
+    assert!(outcome.tombstone_dropped_cases() > 0);
+    assert!(outcome.tombstone_kept_for_shadowing_cases() > 0);
+    assert!(outcome.expired_row_dropped_cases() > 0);
+    assert!(outcome.expired_row_kept_for_as_of_cases() > 0);
+    assert!(outcome.pinned_view_blocked_cases() > 0);
+    assert!(outcome.inherited_layer_blocked_cases() > 0);
+    assert!(outcome.retained_boundary_reported_cases() > 0);
+    assert!(outcome.recovery_boundary_enforced_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn generated_materialization_preserves_child_precedence() {
     let outcome =
         strata_storage_next::testkit::check_lifecycle_table_rewrite_contract(b"materialization")

@@ -3144,3 +3144,276 @@ cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 git diff --check
 ```
+
+## L8V Retention-Aware Row Pruning
+
+Status: branch-runtime implementation, lifecycle durable rewrite coverage,
+generated contract coverage, source guards, durable retained-history
+manifest extension, cross-branch shared-table proof gate, live
+recovery-health attestation, source-identity binding in the fingerprint,
+and typed `BranchCompactionInvalidity` error vocabulary all landed.
+Typed `getv`/history boundary errors below the retained version floor
+remain deferred to the public retained-history read closeout work.
+
+### Shipped Files
+
+- `crates/storage-next/src/branch/pruning.rs`
+- `crates/storage-next/src/branch/mod.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/branch/error.rs`
+- `crates/storage-next/src/branch/tests.rs`
+- `crates/storage-next/src/branch/tests/row_pruning.rs`
+- `crates/storage-next/src/branch/tests/row_pruning/required_plan.rs`
+- `crates/storage-next/src/branch/tests/row_pruning/tombstone_ttl.rs`
+- `crates/storage-next/src/branch/tests/inheritance_materialization/validation_fork.rs`
+- `crates/storage-next/src/format/mod.rs`
+- `crates/storage-next/src/lifecycle/compaction.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/recovery.rs`
+- `crates/storage-next/src/lifecycle/retained_history_extension.rs`
+- `crates/storage-next/src/lifecycle/table_manifest.rs`
+- `crates/storage-next/src/lifecycle/tests/compaction/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/compaction/row_pruning.rs`
+- `crates/storage-next/src/testkit/lifecycle/row_pruning.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- Row pruning is proof-gated. Existing keep-all compaction remains the default.
+- Branch compaction still rejects pruning policies when no proof is attached.
+- The proof is branch-scoped, fingerprint-bound to current branch state, and
+  rejected when state changes before output build.
+- Retained version floors keep rows at or above the floor and keep a
+  below-floor survivor for each key.
+- Tombstone elision is conservative: bottommost proof is required, inherited
+  layers must be absent/proven safe, and elision rejects when an older value
+  in the rewrite input could be resurrected.
+- TTL pruning uses an explicit cutoff timestamp. It does not consult wall
+  clock time or a global TTL index.
+
+### Raw Health And Fact Vocabulary
+
+- `BranchCompactionPruningProof` records the retained version floor,
+  optional timestamp floor, branch state fingerprint, recovery-health epoch,
+  table-manifest coverage floor, inherited-layer proof, tombstone proof, TTL
+  proof, and optional max versions per key.
+- `BranchCompactionPruningPolicy` adapts proof facts into L5
+  `TableCompactionPolicy` decisions and preserves the L5 drop-summary
+  vocabulary: older-version, tombstone-elided, and expired.
+
+### Intentional Changes
+
+- `BranchCompactionRequest` now accepts an optional pruning proof alongside
+  the existing retention-policy enum.
+- `LifecycleCompactionRequest` can carry the same proof into cache or durable
+  rewrite paths, but durable publication mechanics stay in the existing table
+  rewrite module.
+- Successful pruning with a retained timestamp floor narrows branch timestamp
+  coverage to `CompleteSince(floor)` instead of silently widening history.
+- Source guards now cover the row-pruning path and reject raw IO, object
+  deletion, WAL truncation, wall-clock TTL policy, product modules, and
+  milestone-label leakage.
+- Durable rewrite tests cover pruned table-manifest publication, checkpoint
+  recovery of retained rows, rejection of pruned user history, materialization
+  recovery, and WAL-tail replay after checkpointing pruned state.
+
+### Deferred From This Implementation Pass
+
+- Typed version-history boundary errors for `getv`/history below retained
+  version floor (still surface as `InsufficientTimestampHistory` for
+  timestamp-bound reads; version-bound reads return `None` and a future
+  slice will add the typed boundary).
+- A public lifecycle retention-proof builder that constructs the proof
+  from a live `RecoveryHealth` reference end-to-end. The branch-layer
+  proof carries an explicit `BranchRecoveryHealthAttestation::Healthy`
+  attestation and the lifecycle layer is responsible for setting it
+  only when actual `RecoveryHealth::Healthy` is observed; sealed-in
+  helper is left for the lifecycle slice that adds the public retention
+  API.
+
+### Implemented In Follow-Up Fix Pass
+
+- `BranchCompactionInvalidity` typed reason enum with stable
+  `failed_precondition.branch.row_pruning_*` codes; `InvalidCompaction`
+  no longer carries a free-form string. Existing call sites use
+  `BranchCompactionInvalidity::Generic("...")` for non-pruning
+  validation failures.
+- `BranchSharedTableSafety::{Unknown, NotShared}` proof field with a
+  `derive_shared_table_safety` helper that consults
+  `SharedTableRegistry`. Pruning rejects without an explicit
+  `NotShared` attestation.
+- `BranchRecoveryHealthAttestation::{Unknown, Healthy}` proof field;
+  pruning rejects without an explicit `Healthy` attestation.
+- `branch_pruning_fingerprint` now hashes
+  `BranchOwnedTable::materialization_source`, so a proof built before
+  materialization fails the post-materialization fingerprint check
+  ("source identity, not layer index").
+- `from_branch_state` derives `visible_version` from
+  `branch.max_commit_version()`, defaulting to the floor when the
+  branch is empty. `validate_for_branch` rejects callers that lied
+  low about `visible_version`.
+- `lifecycle::retained_history_extension` encodes/decodes a
+  `storage.retained_history` manifest extension section. The lifecycle
+  manifest writer emits the extension whenever the branch's
+  `BranchTimestampCoverage` is `CompleteSince`; the recovery path
+  decodes it and reapplies the narrowed coverage to the branch state on
+  reopen — including the checkpoint-priority path where the manifest
+  is not the row source.
+
+### Tests Added
+
+- `row_pruning_request_without_proof_rejects`
+- `row_pruning_proof_branch_mismatch_rejects`
+- `row_pruning_proof_degraded_recovery_rejects`
+- `row_pruning_proof_retained_floor_above_visible_rejects`
+- `row_pruning_proof_timestamp_floor_without_coverage_rejects`
+- `row_pruning_proof_active_view_below_floor_rejects`
+- `row_pruning_proof_pinned_view_below_floor_rejects`
+- `row_pruning_proof_inherited_layer_unknown_rejects`
+- `row_pruning_proof_zero_floor_keeps_all`
+- `row_pruning_proof_is_deterministic_for_shuffled_facts`
+- `version_pruning_keeps_retained_rows_and_floor_survivor`
+- `version_pruning_preserves_getv_within_floor`
+- `version_pruning_as_of_below_floor_returns_insufficient_history`
+- `version_pruning_non_monotone_timestamps_respects_timestamp_floor`
+- `max_versions_keeps_newest_n_versions`
+- `max_versions_zero_means_unbounded_when_floor_keeps_all`
+- `max_versions_counts_values_but_not_required_tombstones`
+- `row_pruning_proof_stale_epoch_rejects_without_mutation`
+- `tombstone_pruning_rejects_resurrection_risk`
+- `tombstone_pruning_rejects_without_elision_proof`
+- `bottommost_tombstone_below_floor_can_be_elided`
+- `non_bottommost_tombstone_below_floor_is_kept`
+- `tombstone_above_floor_is_kept`
+- `tombstone_needed_to_shadow_inherited_value_is_kept`
+- `expired_row_pruning_uses_supplied_cutoff`
+- `ttl_pruning_rejects_without_ttl_proof`
+- `expired_ttl_above_version_floor_is_kept`
+- `expired_ttl_needed_by_as_of_timestamp_rejects_cutoff`
+- `non_expired_ttl_row_is_kept`
+- `ttl_pruning_across_inherited_parent_child_keeps_required_parent_row`
+- Required-plan wrappers for version pruning, max-version pruning,
+  tombstone/TTL pruning, inherited-layer safety, materialization precedence,
+  and cache-mode volatile coverage.
+- Lifecycle durable rewrite tests:
+  `durable_pruned_compaction_publishes_pruned_manifest_facts`,
+  `manifest_records_retained_version_floor`,
+  `manifest_records_retained_timestamp_floor`,
+  `durable_pruned_compaction_recovery_restores_retained_reads`,
+  `durable_pruned_compaction_recovery_rejects_pruned_history`,
+  `durable_pruned_materialization_recovery_preserves_retained_reads`,
+  `manifest_missing_pruning_facts_rejects_recovery`,
+  `wal_tail_replay_after_pruned_manifest_preserves_newer_rows`,
+  `checkpoint_after_pruning_preserves_coverage_boundary`.
+- Generated/property coverage:
+  `generated_row_pruning_covers_retained_history_boundaries`,
+  `lifecycle_property_harness_runs_row_pruning_contract`.
+- Source guards:
+  `row_pruning_does_not_import_raw_io`,
+  `row_pruning_does_not_import_backend_delete`,
+  `row_pruning_does_not_import_quarantine_or_purge`,
+  `row_pruning_does_not_import_snapshot_pruning`,
+  `row_pruning_does_not_import_wal_truncation`,
+  `row_pruning_does_not_import_product_policy`,
+  `row_pruning_does_not_import_stratahub`,
+  `row_pruning_does_not_import_primitive_modules`,
+  `row_pruning_does_not_use_wall_clock`,
+  `row_pruning_does_not_delete_table_objects`,
+  `row_pruning_does_not_quarantine_table_objects`,
+  `row_pruning_does_not_purge_objects`,
+  `row_pruning_does_not_prune_snapshots`,
+  `row_pruning_does_not_truncate_wal`,
+  `row_pruning_does_not_persist_flush_watermark`,
+  `row_pruning_does_not_publish_database_manifest_directly`,
+  `row_pruning_code_and_fixture_names_do_not_use_milestone_labels`.
+
+### Follow-Up Fix Pass — New And Strengthened Tests
+
+- `row_pruning_proof_visible_version_below_branch_state_rejects` —
+  strict lied-low rejection.
+- `row_pruning_proof_recovery_health_unknown_rejects` — typed
+  recovery-health attestation gate.
+- `max_versions_zero_with_floor_above_data_keeps_only_below_floor_survivor`
+  — documents the actual `max_versions = Some(0)` behaviour when the
+  floor is above all data.
+- `shared_table_identity_reachability_blocks_pruning` — now a real
+  test that exercises both the proof-level attestation gate and the
+  registry-derived `derive_shared_table_safety` helper.
+- `pruning_after_materialization_uses_source_identity_not_layer_index`
+  — now a real test: snapshots the fingerprint pre/post materialization
+  and verifies a stale pre-materialization proof is rejected against
+  the post-materialization state.
+- `materialized_replacement_tombstone_safety_is_checked` — now a real
+  test that fork-materializes a child carrying a parent value plus a
+  child-local tombstone and verifies tombstone elision is rejected for
+  the resurrection risk.
+- `materialized_layer_replacement_preserves_pruned_history_boundary`
+  — now a real test exercising materialize → prune → assert
+  `InsufficientTimestampHistory` below the retained floor.
+- `materialization_with_pruning_preserves_child_local_precedence` —
+  now exercises a real materialize → install sentinel → compact L0
+  pruning flow on the child, asserting child-local precedence and
+  narrowed timestamp coverage.
+- `ttl_pruning_preserves_child_newer_override` — now actually runs
+  TTL pruning on the child and asserts the inherited-layer gate
+  rejects the request while the child's read-view continues to surface
+  the override.
+- `manifest_records_retained_version_floor` — decodes the
+  `storage.retained_history` extension and asserts the embedded
+  retained version + timestamp floors match the proof.
+- `manifest_missing_pruning_facts_rejects_recovery` — reopens after
+  pruning, asserts the extension is present, and asserts the
+  recovered branch's `BranchTimestampCoverage` matches the narrowed
+  floor (covering the checkpoint-priority recovery path).
+- Selected typed-code assertions via the new
+  `assert_invalid_compaction_code` helper:
+  `row_pruning_request_without_proof_rejects`,
+  `row_pruning_proof_branch_mismatch_rejects`,
+  `row_pruning_proof_degraded_recovery_rejects`,
+  `row_pruning_proof_retained_floor_above_visible_rejects`,
+  `row_pruning_proof_visible_version_below_branch_state_rejects`,
+  `row_pruning_proof_recovery_health_unknown_rejects`.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Accept pruning without proof | `crates/storage-next/src/branch/state.rs` | Skip missing-proof rejection for pruning policies | `row_pruning_request_without_proof_rejects` |
+| Ignore proof freshness | `crates/storage-next/src/branch/pruning.rs` | Accept mismatched branch-state fingerprint | `row_pruning_proof_stale_epoch_rejects_without_mutation` |
+| Drop all below-floor values | `crates/storage-next/src/branch/pruning.rs` | Remove below-floor survivor rule | `version_pruning_keeps_retained_rows_and_floor_survivor` |
+| Resurrect tombstoned value | `crates/storage-next/src/branch/pruning.rs` | Skip tombstone resurrection-risk scan | `tombstone_pruning_rejects_resurrection_risk` |
+| Let max-version pruning evict a required tombstone | `crates/storage-next/src/branch/pruning.rs` | Count required tombstones against the max-version value cap | `max_versions_counts_values_but_not_required_tombstones` |
+| Drop TTL row above retained floor | `crates/storage-next/src/branch/pruning.rs` | Ignore version/timestamp floor before TTL elision | `expired_ttl_above_version_floor_is_kept` |
+| Treat pruned `as_of` history as absent | `crates/storage-next/src/branch/state.rs` | Skip timestamp coverage narrowing after dropped rows | `version_pruning_as_of_below_floor_returns_insufficient_history` |
+| Ignore inherited-layer safety | `crates/storage-next/src/branch/pruning.rs` | Accept `NoReadableInheritedLayers` while inherited layers are attached | `ttl_pruning_across_inherited_parent_child_keeps_required_parent_row` |
+| Use ambient time for TTL | `crates/storage-next/src/branch/pruning.rs` | Replace supplied TTL cutoff with wall clock | `row_pruning_does_not_use_wall_clock_or_product_policy` |
+| Accept shared-table proof without attestation | `crates/storage-next/src/branch/pruning.rs` | Skip `validate_shared_table_safety` | `shared_table_identity_reachability_blocks_pruning` |
+| Accept proof without recovery-health attestation | `crates/storage-next/src/branch/pruning.rs` | Skip `validate_recovery_health` | `row_pruning_proof_recovery_health_unknown_rejects` |
+| Lie low about visible version | `crates/storage-next/src/branch/pruning.rs` | Remove the `visible_version < actual_visible` check | `row_pruning_proof_visible_version_below_branch_state_rejects` |
+| Forget materialization source in fingerprint | `crates/storage-next/src/branch/pruning.rs` | Stop hashing `materialization_source` on owned tables | `pruning_after_materialization_uses_source_identity_not_layer_index` |
+| Drop retained-history extension on rewrite | `crates/storage-next/src/lifecycle/table_manifest.rs` | Skip the `RetainedHistoryFacts::to_extension_section` push in `build_manifest` | `manifest_records_retained_version_floor` |
+| Forget retained-history coverage on reopen with checkpoint | `crates/storage-next/src/lifecycle/recovery.rs` | Skip the staged-coverage propagation when checkpoint-priority recovery wins | `manifest_missing_pruning_facts_rejects_recovery` |
+| Use string-comparison instead of typed code | `crates/storage-next/src/branch/error.rs` | Change `BranchCompactionInvalidity::ProofMissing.code()` return value | `row_pruning_request_without_proof_rejects` |
+
+### Verification
+
+Commands run for the implementation pass (all passed):
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo test -p strata-storage-next --locked --lib table::tests::compaction
+cargo test -p strata-storage-next --locked --lib branch::tests::owned_compaction
+cargo test -p strata-storage-next --locked --lib branch::tests::inheritance_materialization
+cargo test -p strata-storage-next --locked --lib branch::tests::row_pruning
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::compaction
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```

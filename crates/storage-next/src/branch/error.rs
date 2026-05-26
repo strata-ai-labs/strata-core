@@ -42,7 +42,7 @@ pub(crate) enum BranchRuntimeError {
         reason: &'static str,
     },
     InvalidCompaction {
-        reason: &'static str,
+        reason: BranchCompactionInvalidity,
     },
     InvalidSnapshotInstall {
         reason: &'static str,
@@ -67,6 +67,213 @@ pub(crate) enum BranchTimestampHistorySource {
     Combined,
 }
 
+/// Typed reasons a branch compaction request was rejected.
+///
+/// Codes follow the `failed_precondition.branch.<detail>` format documented
+/// in `v1-error-and-diagnostics-contract.md`. Tests should assert on the
+/// variant, not on the human-readable display message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub(crate) enum BranchCompactionInvalidity {
+    /// Catch-all for non-pruning compaction validation failures. The
+    /// embedded string is for human consumption only; tests should not
+    /// assert on it.
+    Generic(&'static str),
+    /// A retention policy other than `KeepAll` was requested but no
+    /// pruning proof was attached.
+    ProofMissing,
+    /// The branch state changed between proof construction and use
+    /// (fingerprint mismatch).
+    ProofStale,
+    /// The proof was built for a different branch than the one being
+    /// compacted.
+    ProofBranchMismatch,
+    /// The proof's `recovery_health_epoch` is zero or otherwise marks
+    /// recovery as unsafe.
+    ProofUnsafeRecoveryHealth,
+    /// The proof's `visible_version` is lower than the branch's actual
+    /// max commit version.
+    ProofVisibleVersionBelowState,
+    /// `retained_version_floor` exceeds `visible_version`.
+    RetainedFloorAboveVisible,
+    /// `retained_timestamp_floor` was supplied but the branch's
+    /// `BranchTimestampCoverage` does not cover that floor.
+    TimestampFloorWithoutCoverage,
+    /// A pinned read view sits below the retained version floor, so
+    /// pruning would invalidate it.
+    PinnedViewBelowFloor,
+    /// `BranchInheritancePruningProof` was `Unknown`.
+    InheritedLayerUnknown,
+    /// `BranchInheritancePruningProof::NoReadableInheritedLayers` was
+    /// asserted while the branch still has inherited layers attached.
+    InheritedLayerUnsafe,
+    /// `BranchSharedTableSafety` was `Unknown` — the caller has not
+    /// confirmed that no other branch references the candidate tables.
+    SharedTableSafetyUnknown,
+    /// Tombstone elision requested without a `BottommostOwnedAndInheritedSafe`
+    /// attestation.
+    TombstoneElisionMissing,
+    /// Tombstone elision requested but the compaction is not at the
+    /// bottommost level.
+    TombstoneElisionNotBottommost,
+    /// Tombstone elision would resurrect a value still present in the
+    /// rewrite inputs.
+    TombstoneResurrectionRisk,
+    /// `DropExpired` requested without a `BranchTtlElisionProof::ExpiredAtOrBefore`.
+    TtlElisionMissing,
+    /// `DropExpired` requested but the compaction is not bottommost.
+    TtlElisionNotBottommost,
+    /// The supplied TTL cutoff exceeds the `retained_timestamp_floor`.
+    TtlCutoffExceedsTimestampFloor,
+    /// `proof_epoch` is zero.
+    ProofEpochInvalid,
+    /// `branch_state_fingerprint` is zero (must be derived from real state).
+    ProofFingerprintInvalid,
+    /// `table_manifest_coverage_floor` exceeds `retained_version_floor`,
+    /// indicating cache mode claims durable coverage above the retained
+    /// boundary.
+    TableManifestCoverageBeyondFloor,
+    /// `retained_timestamp_floor` is required but was not supplied.
+    RetainedTimestampFloorMissing,
+    /// The candidate references a missing storage level — typically a
+    /// stale plan.
+    CandidateMissingLevel,
+    /// The candidate references a missing table — typically a stale plan.
+    CandidateMissingTable,
+}
+
+impl BranchCompactionInvalidity {
+    /// Stable code suitable for telemetry and test assertions.
+    #[allow(
+        dead_code,
+        reason = "tests in this crate assert on the code() string; downstream crates will consume it"
+    )]
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Generic(_) => "failed_precondition.branch.invalid_compaction",
+            Self::ProofMissing => "failed_precondition.branch.row_pruning_proof_missing",
+            Self::ProofStale => "failed_precondition.branch.row_pruning_proof_stale",
+            Self::ProofBranchMismatch => {
+                "failed_precondition.branch.row_pruning_proof_branch_mismatch"
+            }
+            Self::ProofUnsafeRecoveryHealth => {
+                "failed_precondition.branch.row_pruning_proof_unsafe_recovery_health"
+            }
+            Self::ProofVisibleVersionBelowState => {
+                "failed_precondition.branch.row_pruning_proof_visible_version_below_state"
+            }
+            Self::RetainedFloorAboveVisible => {
+                "failed_precondition.branch.row_pruning_retained_floor_above_visible"
+            }
+            Self::TimestampFloorWithoutCoverage => {
+                "failed_precondition.branch.row_pruning_timestamp_floor_without_coverage"
+            }
+            Self::PinnedViewBelowFloor => {
+                "failed_precondition.branch.row_pruning_pinned_view_below_floor"
+            }
+            Self::InheritedLayerUnknown => {
+                "failed_precondition.branch.row_pruning_inherited_layer_unknown"
+            }
+            Self::InheritedLayerUnsafe => {
+                "failed_precondition.branch.row_pruning_inherited_layer_unsafe"
+            }
+            Self::SharedTableSafetyUnknown => {
+                "failed_precondition.branch.row_pruning_shared_table_safety_unknown"
+            }
+            Self::TombstoneElisionMissing => {
+                "failed_precondition.branch.row_pruning_tombstone_elision_missing"
+            }
+            Self::TombstoneElisionNotBottommost => {
+                "failed_precondition.branch.row_pruning_tombstone_elision_not_bottommost"
+            }
+            Self::TombstoneResurrectionRisk => {
+                "failed_precondition.branch.row_pruning_tombstone_resurrection_risk"
+            }
+            Self::TtlElisionMissing => "failed_precondition.branch.row_pruning_ttl_elision_missing",
+            Self::TtlElisionNotBottommost => {
+                "failed_precondition.branch.row_pruning_ttl_elision_not_bottommost"
+            }
+            Self::TtlCutoffExceedsTimestampFloor => {
+                "failed_precondition.branch.row_pruning_ttl_cutoff_exceeds_timestamp_floor"
+            }
+            Self::ProofEpochInvalid => "failed_precondition.branch.row_pruning_proof_epoch_invalid",
+            Self::ProofFingerprintInvalid => {
+                "failed_precondition.branch.row_pruning_proof_fingerprint_invalid"
+            }
+            Self::TableManifestCoverageBeyondFloor => {
+                "failed_precondition.branch.row_pruning_table_manifest_coverage_beyond_floor"
+            }
+            Self::RetainedTimestampFloorMissing => {
+                "failed_precondition.branch.row_pruning_retained_timestamp_floor_missing"
+            }
+            Self::CandidateMissingLevel => {
+                "failed_precondition.branch.compaction_candidate_missing_level"
+            }
+            Self::CandidateMissingTable => {
+                "failed_precondition.branch.compaction_candidate_missing_table"
+            }
+        }
+    }
+
+    /// Human-readable detail for display.
+    const fn detail(self) -> &'static str {
+        match self {
+            Self::Generic(message) => message,
+            Self::ProofMissing => "branch compaction pruning requires an explicit retention proof",
+            Self::ProofStale => "row pruning proof is stale",
+            Self::ProofBranchMismatch => "row pruning proof branch must match branch state",
+            Self::ProofUnsafeRecoveryHealth => "row pruning recovery health epoch must be nonzero",
+            Self::ProofVisibleVersionBelowState => {
+                "row pruning proof visible version must not be below branch state"
+            }
+            Self::RetainedFloorAboveVisible => {
+                "row pruning retained version floor must not exceed visible version"
+            }
+            Self::TimestampFloorWithoutCoverage => {
+                "row pruning timestamp floor requires retained timestamp coverage"
+            }
+            Self::PinnedViewBelowFloor => "row pruning proof is blocked by pinned read history",
+            Self::InheritedLayerUnknown => "row pruning inherited-layer safety is unknown",
+            Self::InheritedLayerUnsafe => "row pruning proof cannot ignore inherited layers",
+            Self::SharedTableSafetyUnknown => {
+                "row pruning cross-branch shared-table safety is unknown"
+            }
+            Self::TombstoneElisionMissing => {
+                "row pruning tombstone elision requires bottommost proof"
+            }
+            Self::TombstoneElisionNotBottommost => {
+                "row pruning tombstone elision requires bottommost compaction"
+            }
+            Self::TombstoneResurrectionRisk => {
+                "row pruning tombstone elision would resurrect an older value"
+            }
+            Self::TtlElisionMissing => "row pruning expired rows require TTL proof",
+            Self::TtlElisionNotBottommost => {
+                "row pruning expired rows require bottommost compaction"
+            }
+            Self::TtlCutoffExceedsTimestampFloor => {
+                "row pruning TTL cutoff must not exceed retained timestamp floor"
+            }
+            Self::ProofEpochInvalid => "row pruning proof epoch must be nonzero",
+            Self::ProofFingerprintInvalid => "row pruning branch state fingerprint must be nonzero",
+            Self::TableManifestCoverageBeyondFloor => {
+                "row pruning table manifest coverage must include retained floor"
+            }
+            Self::RetainedTimestampFloorMissing => {
+                "row pruning requires a retained timestamp floor"
+            }
+            Self::CandidateMissingLevel => "row pruning candidate references missing level",
+            Self::CandidateMissingTable => "row pruning candidate references missing table",
+        }
+    }
+}
+
+impl fmt::Display for BranchCompactionInvalidity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.detail())
+    }
+}
+
 impl BranchRuntimeError {
     pub(crate) fn publish(reason: &'static str) -> Self {
         Self::Publish {
@@ -82,6 +289,36 @@ impl BranchRuntimeError {
         Self::Publish {
             reason,
             source: Some(Arc::new(source)),
+        }
+    }
+
+    /// Stable error code suitable for telemetry and test assertions.
+    ///
+    /// For `InvalidCompaction`, the code is sourced from the typed
+    /// `BranchCompactionInvalidity` reason; tests can therefore assert
+    /// on `error.code() == BranchCompactionInvalidity::ProofStale.code()`
+    /// without depending on the human-readable display text.
+    #[allow(
+        dead_code,
+        reason = "tests in this crate assert on the code() string; downstream crates will consume it"
+    )]
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidConfig { .. } => "failed_precondition.branch.config",
+            Self::InvalidBranchState { .. } => "failed_precondition.branch.state",
+            Self::BranchNotFound { .. } => "not_found.branch",
+            Self::BranchAlreadyExists { .. } => "already_exists.branch",
+            Self::InvalidBranchRow { .. } => "failed_precondition.branch.row",
+            Self::InvalidReadBound { .. } => "failed_precondition.branch.read_bound",
+            Self::InsufficientTimestampHistory { .. } => {
+                "failed_precondition.branch.insufficient_timestamp_history"
+            }
+            Self::InvalidInheritedLayer { .. } => "failed_precondition.branch.inherited_layer",
+            Self::InvalidReachability { .. } => "failed_precondition.branch.reachability",
+            Self::InvalidCompaction { reason } => reason.code(),
+            Self::InvalidSnapshotInstall { .. } => "failed_precondition.branch.snapshot_install",
+            Self::TableRuntime { .. } => "failed_precondition.branch.table_runtime",
+            Self::Publish { .. } => "failed_precondition.branch.publish",
         }
     }
 }
@@ -114,12 +351,12 @@ impl PartialEq for BranchRuntimeError {
                 Self::InvalidReachability { reason: right },
             )
             | (
-                Self::InvalidCompaction { reason: left },
-                Self::InvalidCompaction { reason: right },
-            )
-            | (
                 Self::InvalidSnapshotInstall { reason: left },
                 Self::InvalidSnapshotInstall { reason: right },
+            ) => left == right,
+            (
+                Self::InvalidCompaction { reason: left },
+                Self::InvalidCompaction { reason: right },
             ) => left == right,
             (
                 Self::InsufficientTimestampHistory {

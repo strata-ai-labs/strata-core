@@ -40,9 +40,9 @@ pub(crate) use table::{
     ImmutableTable, TableCompression, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES,
     MAX_TABLE_DATA_BLOCKS, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS, MAX_TABLE_ROW_BYTES,
 };
-#[expect(
+#[allow(
     unused_imports,
-    reason = "table manifest codec is consumed by durable reachability wiring added later"
+    reason = "table manifest codec is consumed by durable reachability wiring and retained-history extension"
 )]
 pub(crate) use table_manifest::{
     decode_table_manifest, encode_table_manifest, TableManifest, TableManifestExtensionSection,

@@ -23,7 +23,7 @@ fn branch_runtime_errors_are_typed_and_preserve_sources() {
             reason: "reachability",
         },
         BranchRuntimeError::InvalidCompaction {
-            reason: "compaction",
+            reason: BranchCompactionInvalidity::Generic("compaction"),
         },
         BranchRuntimeError::InvalidSnapshotInstall { reason: "snapshot" },
         table_error.clone(),

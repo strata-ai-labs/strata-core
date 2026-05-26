@@ -6,8 +6,9 @@ use super::{
     MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskScope, RecoveryHealth,
 };
 use crate::branch::{
-    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRecovery,
-    BranchCompactionRequest, BranchLevel, BranchLocalState, BranchMaterializationHandle,
+    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan,
+    BranchCompactionPruningProof, BranchCompactionRecovery, BranchCompactionRequest,
+    BranchCompactionRetentionPolicy, BranchLevel, BranchLocalState, BranchMaterializationHandle,
     BranchMaterializationIntent, BranchMaterializationOutcome, BranchMaterializationRecovery,
     BranchMaterializationRequest, BranchRuntimeError,
 };
@@ -34,6 +35,8 @@ pub(crate) struct LifecycleCompactionRequest {
     kind: BranchCompactionKind,
     output_identity_seed: String,
     durability: LifecycleTableRewriteDurability,
+    retention_policy: BranchCompactionRetentionPolicy,
+    pruning_proof: Option<BranchCompactionPruningProof>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,6 +139,8 @@ impl LifecycleCompactionRequest {
             kind,
             output_identity_seed: output_identity_seed.into(),
             durability: LifecycleTableRewriteDurability::VolatileOnly,
+            retention_policy: BranchCompactionRetentionPolicy::KeepAll,
+            pruning_proof: None,
         };
         request.branch_request()?;
         Ok(request)
@@ -165,9 +170,55 @@ impl LifecycleCompactionRequest {
         self.durability
     }
 
+    #[allow(
+        dead_code,
+        reason = "row-pruning lifecycle request accessors are consumed by generated coverage"
+    )]
+    pub(crate) const fn retention_policy(&self) -> BranchCompactionRetentionPolicy {
+        self.retention_policy
+    }
+
+    #[allow(
+        dead_code,
+        reason = "row-pruning lifecycle request accessors are consumed by generated coverage"
+    )]
+    pub(crate) const fn pruning_proof(&self) -> Option<BranchCompactionPruningProof> {
+        self.pruning_proof
+    }
+
+    #[allow(
+        dead_code,
+        reason = "proof-backed lifecycle compaction is exercised by row-pruning callers"
+    )]
+    pub(crate) fn with_retention_policy(
+        mut self,
+        retention_policy: BranchCompactionRetentionPolicy,
+    ) -> Self {
+        self.retention_policy = retention_policy;
+        self
+    }
+
+    #[allow(
+        dead_code,
+        reason = "proof-backed lifecycle compaction is exercised by row-pruning callers"
+    )]
+    pub(crate) fn with_pruning_proof(mut self, proof: BranchCompactionPruningProof) -> Self {
+        self.pruning_proof = Some(proof);
+        self
+    }
+
     pub(super) fn branch_request(&self) -> LifecycleResult<BranchCompactionRequest> {
-        BranchCompactionRequest::new(self.branch_id, self.kind, self.output_identity_seed.clone())
-            .map_err(branch_error)
+        let mut request = BranchCompactionRequest::new(
+            self.branch_id,
+            self.kind,
+            self.output_identity_seed.clone(),
+        )
+        .map_err(branch_error)?
+        .with_retention_policy(self.retention_policy);
+        if let Some(proof) = self.pruning_proof {
+            request = request.with_pruning_proof(proof);
+        }
+        Ok(request)
     }
 }
 

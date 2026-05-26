@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod facts;
 mod identity;
+mod pruning;
 mod read;
 mod state;
 
@@ -30,7 +31,10 @@ pub(crate) use config::BranchRuntimeConfig;
         reason = "branch scaffold exports define the local surface for later slices"
     )
 )]
-pub(crate) use error::{BranchRuntimeError, BranchRuntimeResult, BranchTimestampHistorySource};
+pub(crate) use error::{
+    BranchCompactionInvalidity, BranchRuntimeError, BranchRuntimeResult,
+    BranchTimestampHistorySource,
+};
 #[allow(
     unused_imports,
     reason = "branch scaffold exports define the local surface for later slices"
@@ -51,6 +55,15 @@ pub(crate) use facts::{
 pub(crate) use identity::{
     require_physical_key_branch, require_row_branch, rewrite_physical_key_branch,
     rewrite_row_branch, row_matches_branch, BranchRowIdentity,
+};
+#[allow(
+    unused_imports,
+    reason = "branch row-pruning proof exports define the local surface for lifecycle maintenance"
+)]
+pub(crate) use pruning::{
+    branch_pruning_fingerprint, BranchCompactionPruningPolicy, BranchCompactionPruningProof,
+    BranchInheritancePruningProof, BranchRecoveryHealthAttestation, BranchSharedTableSafety,
+    BranchTombstoneElisionProof, BranchTtlElisionProof,
 };
 #[cfg_attr(
     not(test),

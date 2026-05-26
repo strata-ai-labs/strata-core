@@ -143,13 +143,24 @@ impl LifecycleDurableTableCatalog {
     ) -> LifecycleResult<TableManifest> {
         let levels = manifest_levels_from_owned(branch.owned_levels(), self)?;
         let inherited_layers = manifest_inherited_layers(branch.inherited_layers(), self)?;
+        let mut extensions = Vec::new();
+        if let Some(facts) =
+            super::retained_history_extension::RetainedHistoryFacts::from_timestamp_coverage(
+                branch.timestamp_coverage(),
+                branch
+                    .max_commit_version()
+                    .unwrap_or(strata_core_next::CommitVersion::ZERO),
+            )
+        {
+            extensions.push(facts.to_extension_section().map_err(format_error)?);
+        }
         TableManifest::new(
             branch.branch_id(),
             None,
             self.next_manifest_sequence,
             levels,
             inherited_layers,
-            Vec::new(),
+            extensions,
         )
         .map_err(format_error)
     }
@@ -423,8 +434,21 @@ fn recovery_request_from_manifest(
         .iter()
         .map(|layer| recover_manifest_inherited_layer(layer, reader_service, catalog))
         .collect::<LifecycleResult<Vec<_>>>()?;
-    BranchTableManifestRecoveryRequest::new(manifest.branch_id(), owned_levels, inherited_layers)
-        .map_err(branch_error)
+    let request = BranchTableManifestRecoveryRequest::new(
+        manifest.branch_id(),
+        owned_levels,
+        inherited_layers,
+    )
+    .map_err(branch_error)?;
+    let retained =
+        super::retained_history_extension::RetainedHistoryFacts::from_extension_sections(
+            manifest.extension_sections(),
+        )
+        .map_err(format_error)?;
+    Ok(match retained {
+        Some(facts) => request.with_timestamp_coverage(facts.to_timestamp_coverage()),
+        None => request,
+    })
 }
 
 fn recover_manifest_inherited_layer(

@@ -4,11 +4,11 @@ use super::{
     read::{
         inherited_table_count, require_table_physical_first_key, table_physical_ranges_overlap,
     },
-    require_row_branch, rewrite_row_branch, BranchInheritedLayer, BranchLevel,
-    BranchMaterializationSource, BranchOwnedTable, BranchReachabilitySnapshot, BranchReadView,
-    BranchRuntimeConfig, BranchRuntimeError, BranchRuntimeResult, BranchStateFacts,
-    BranchTableDescriptor, BranchTableRef, BranchTimestampCoverage, InheritedLayerDescriptor,
-    InheritedLayerStatus,
+    require_row_branch, rewrite_row_branch, BranchCompactionPruningPolicy,
+    BranchCompactionPruningProof, BranchInheritedLayer, BranchLevel, BranchMaterializationSource,
+    BranchOwnedTable, BranchReachabilitySnapshot, BranchReadView, BranchRuntimeConfig,
+    BranchRuntimeError, BranchRuntimeResult, BranchStateFacts, BranchTableDescriptor,
+    BranchTableRef, BranchTimestampCoverage, InheritedLayerDescriptor, InheritedLayerStatus,
 };
 use crate::row::StorageRow;
 use crate::table::{
@@ -527,6 +527,7 @@ pub(crate) struct BranchCompactionRequest {
     branch_id: BranchId,
     kind: BranchCompactionKind,
     retention_policy: BranchCompactionRetentionPolicy,
+    pruning_proof: Option<BranchCompactionPruningProof>,
     output_identity_seed: TableIdentity,
     table_compaction_config: TableCompactionConfig,
     table_builder_config: TableBuilderConfig,
@@ -544,6 +545,7 @@ impl BranchCompactionRequest {
             branch_id,
             kind,
             retention_policy: BranchCompactionRetentionPolicy::KeepAll,
+            pruning_proof: None,
             output_identity_seed,
             table_compaction_config: TableCompactionConfig::default(),
             table_builder_config: TableBuilderConfig::default(),
@@ -566,6 +568,10 @@ impl BranchCompactionRequest {
         &self.output_identity_seed
     }
 
+    pub(crate) const fn pruning_proof(&self) -> Option<BranchCompactionPruningProof> {
+        self.pruning_proof
+    }
+
     pub(crate) const fn table_compaction_config(&self) -> TableCompactionConfig {
         self.table_compaction_config
     }
@@ -579,6 +585,11 @@ impl BranchCompactionRequest {
         retention_policy: BranchCompactionRetentionPolicy,
     ) -> Self {
         self.retention_policy = retention_policy;
+        self
+    }
+
+    pub(crate) fn with_pruning_proof(mut self, proof: BranchCompactionPruningProof) -> Self {
+        self.pruning_proof = Some(proof);
         self
     }
 
@@ -1135,6 +1146,7 @@ pub(crate) struct BranchTableManifestRecoveryRequest {
     branch_id: BranchId,
     owned_levels: Vec<Vec<BranchOwnedTable>>,
     inherited_layers: Vec<BranchInheritedLayer>,
+    timestamp_coverage: BranchTimestampCoverage,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1157,9 +1169,18 @@ impl BranchTableManifestRecoveryRequest {
             branch_id,
             owned_levels,
             inherited_layers,
+            timestamp_coverage: BranchTimestampCoverage::unknown(),
         };
         request.validate()?;
         Ok(request)
+    }
+
+    pub(crate) fn with_timestamp_coverage(
+        mut self,
+        timestamp_coverage: BranchTimestampCoverage,
+    ) -> Self {
+        self.timestamp_coverage = timestamp_coverage;
+        self
     }
 
     pub(crate) const fn branch_id(&self) -> BranchId {
@@ -1690,6 +1711,7 @@ impl BranchLocalState {
             .owned_levels
             .resize_with(self.config.max_level_count(), Vec::new);
         staged.inherited_layers = request.inherited_layers;
+        staged.timestamp_coverage = request.timestamp_coverage;
         validate_compaction_levels(&staged.owned_levels)?;
         validate_manifest_recovery_inherited_layers(staged.branch_id, &staged.inherited_layers)?;
         validate_manifest_recovery_table_identities(
@@ -2221,7 +2243,9 @@ impl BranchLocalState {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction plan must match request branch and kind",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction plan must match request branch and kind",
+                ),
             });
         }
         let Some(candidate) = plan.candidate() else {
@@ -2234,10 +2258,30 @@ impl BranchLocalState {
             request.table_builder_config(),
         )
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        let mut policy = KeepAllTableCompactionPolicy;
-        let output = compactor
-            .compact(request.output_identity_seed(), &sources, &mut policy)
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let output = match request.retention_policy() {
+            BranchCompactionRetentionPolicy::KeepAll => {
+                let mut policy = KeepAllTableCompactionPolicy;
+                compactor
+                    .compact(request.output_identity_seed(), &sources, &mut policy)
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+            }
+            BranchCompactionRetentionPolicy::DropOlderVersions
+            | BranchCompactionRetentionPolicy::DropTombstones
+            | BranchCompactionRetentionPolicy::DropExpired => {
+                let proof =
+                    request
+                        .pruning_proof()
+                        .ok_or(BranchRuntimeError::InvalidCompaction {
+                            reason: super::BranchCompactionInvalidity::ProofMissing,
+                        })?;
+                proof.validate_for_branch(self, candidate, request.retention_policy())?;
+                let mut policy =
+                    BranchCompactionPruningPolicy::new(request.retention_policy(), proof);
+                compactor
+                    .compact(request.output_identity_seed(), &sources, &mut policy)
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+            }
+        };
         let (artifacts, report) = output.into_parts();
         Ok(Some(BranchCompactionPreparedOutput {
             branch_id: self.branch_id,
@@ -2256,7 +2300,9 @@ impl BranchLocalState {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction plan must match request branch and kind",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction plan must match request branch and kind",
+                ),
             });
         }
         let Some(candidate) = plan.candidate() else {
@@ -2269,7 +2315,9 @@ impl BranchLocalState {
         };
         let prepared = self.prepare_branch_compaction_plan(request, plan)?.ok_or(
             BranchRuntimeError::InvalidCompaction {
-                reason: "compaction candidate must produce prepared output",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction candidate must produce prepared output",
+                ),
             },
         )?;
         let output_tables = self.compaction_output_tables(
@@ -2290,7 +2338,9 @@ impl BranchLocalState {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction plan must match request branch and kind",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction plan must match request branch and kind",
+                ),
             });
         }
         let Some(candidate) = plan.candidate() else {
@@ -2307,7 +2357,9 @@ impl BranchLocalState {
             .any(|table| table.descriptor().level() != candidate.output_level())
         {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "prepared compaction output level must match candidate",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "prepared compaction output level must match candidate",
+                ),
             });
         }
         let output_identities = output_tables
@@ -2328,6 +2380,14 @@ impl BranchLocalState {
 
         self.owned_levels = replacement_levels;
         self.refresh_observed_row_facts();
+        if report.dropped_rows() != 0 {
+            if let Some(floor) = request
+                .pruning_proof()
+                .and_then(BranchCompactionPruningProof::retained_timestamp_floor)
+            {
+                self.timestamp_coverage = BranchTimestampCoverage::complete_since(floor);
+            }
+        }
 
         let output_refs =
             self.compaction_output_refs(candidate.output_level(), &output_identities)?;
@@ -2351,19 +2411,27 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<()> {
         if request.branch_id() != self.branch_id {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction request branch id must match branch state",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction request branch id must match branch state",
+                ),
             });
         }
-        match request.retention_policy() {
-            BranchCompactionRetentionPolicy::KeepAll => Ok(()),
-            BranchCompactionRetentionPolicy::DropOlderVersions
-            | BranchCompactionRetentionPolicy::DropTombstones
-            | BranchCompactionRetentionPolicy::DropExpired => {
-                Err(BranchRuntimeError::InvalidCompaction {
-                    reason: "branch compaction pruning requires an explicit retention proof",
-                })
-            }
-        }?;
+        if request.retention_policy() == BranchCompactionRetentionPolicy::KeepAll
+            && request.pruning_proof().is_some()
+        {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "branch compaction keep-all request must not carry a pruning proof",
+                ),
+            });
+        }
+        if request.retention_policy() != BranchCompactionRetentionPolicy::KeepAll
+            && request.pruning_proof().is_none()
+        {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: super::BranchCompactionInvalidity::ProofMissing,
+            });
+        }
         request
             .table_compaction_config()
             .validate()
@@ -2467,12 +2535,16 @@ impl BranchLocalState {
         let level_index = usize::from(level.raw());
         if level_index == 0 {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "level-zero compaction requests must use CompactL0",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "level-zero compaction requests must use CompactL0",
+                ),
             });
         }
         if level_index >= self.owned_levels.len() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction level is outside configured level count",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction level is outside configured level count",
+                ),
             });
         }
         if level_index + 1 >= self.owned_levels.len() {
@@ -2491,7 +2563,9 @@ impl BranchLocalState {
         }
         if table_index >= self.owned_levels[level_index].len() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction table index is outside requested level",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction table index is outside requested level",
+                ),
             });
         }
         let input_refs = self.table_refs_at_level(level_index, table_index..table_index + 1)?;
@@ -2508,7 +2582,9 @@ impl BranchLocalState {
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
         let output_level = BranchLevel::new(u8::try_from(level_index + 1).map_err(|_| {
             BranchRuntimeError::InvalidCompaction {
-                reason: "compaction output level must fit in BranchLevel",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction output level must fit in BranchLevel",
+                ),
             }
         })?);
         let candidate = BranchCompactionCandidate::new(
@@ -2533,14 +2609,18 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<Vec<BranchTableRef>> {
         let level = BranchLevel::new(u8::try_from(level_index).map_err(|_| {
             BranchRuntimeError::InvalidCompaction {
-                reason: "compaction table level must fit in BranchLevel",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction table level must fit in BranchLevel",
+                ),
             }
         })?);
         range
             .map(|table_index| {
                 let table = self.owned_levels[level_index].get(table_index).ok_or(
                     BranchRuntimeError::InvalidCompaction {
-                        reason: "compaction table index must exist",
+                        reason: super::BranchCompactionInvalidity::Generic(
+                            "compaction table index must exist",
+                        ),
                     },
                 )?;
                 branch_table_ref_for_owned(self.branch_id, level, table_index, table)
@@ -2555,7 +2635,9 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<Vec<BranchTableRef>> {
         let target_level = BranchLevel::new(u8::try_from(target_level_index).map_err(|_| {
             BranchRuntimeError::InvalidCompaction {
-                reason: "compaction target level must fit in BranchLevel",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction target level must fit in BranchLevel",
+                ),
             }
         })?);
         let mut refs = Vec::new();
@@ -2581,11 +2663,15 @@ impl BranchLocalState {
             let table =
                 self.table_for_ref(table_ref)
                     .ok_or(BranchRuntimeError::InvalidCompaction {
-                        reason: "compaction table ref must exist",
+                        reason: super::BranchCompactionInvalidity::Generic(
+                            "compaction table ref must exist",
+                        ),
                     })?;
             count = count.saturating_add(u64::try_from(table.rows().len()).map_err(|_| {
                 BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction input row count must fit in u64",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction input row count must fit in u64",
+                    ),
                 }
             })?);
         }
@@ -2617,7 +2703,9 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<()> {
         if candidate.branch_id() != self.branch_id {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction candidate branch must match branch state",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction candidate branch must match branch state",
+                ),
             });
         }
         for table_ref in candidate
@@ -2627,7 +2715,9 @@ impl BranchLocalState {
         {
             let Some(table) = self.table_for_ref(table_ref) else {
                 return Err(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction candidate is stale",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction candidate is stale",
+                    ),
                 });
             };
             match table_ref.reference_kind() {
@@ -2636,13 +2726,17 @@ impl BranchLocalState {
                 super::BranchTableReferenceKind::Inherited { .. }
                 | super::BranchTableReferenceKind::MaterializingSource { .. } => {
                     return Err(BranchRuntimeError::InvalidCompaction {
-                        reason: "compaction candidate must reference branch-owned tables",
+                        reason: super::BranchCompactionInvalidity::Generic(
+                            "compaction candidate must reference branch-owned tables",
+                        ),
                     });
                 }
             }
             if table.level() != table_ref.level() {
                 return Err(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction candidate table level is stale",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction candidate table level is stale",
+                    ),
                 });
             }
         }
@@ -2662,7 +2756,9 @@ impl BranchLocalState {
                 let table =
                     self.table_for_ref(table_ref)
                         .ok_or(BranchRuntimeError::InvalidCompaction {
-                            reason: "compaction candidate source table must exist",
+                            reason: super::BranchCompactionInvalidity::Generic(
+                                "compaction candidate source table must exist",
+                            ),
                         })?;
                 let source_id = TableCompactionSourceId::new(format!(
                     "branch-{}-level-{}-table-{}-source-{source_index}",
@@ -2745,7 +2841,9 @@ impl BranchLocalState {
             self.owned_levels
                 .get(level_index)
                 .ok_or(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction output level must exist",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction output level must exist",
+                    ),
                 })?;
         output_identities
             .iter()
@@ -2755,7 +2853,9 @@ impl BranchLocalState {
                     .enumerate()
                     .find(|(_, table)| table.descriptor().identity() == identity)
                     .ok_or(BranchRuntimeError::InvalidCompaction {
-                        reason: "compaction output table must be installed",
+                        reason: super::BranchCompactionInvalidity::Generic(
+                            "compaction output table must be installed",
+                        ),
                     })?;
                 branch_table_ref_for_owned(self.branch_id, output_level, table_index, table)
             })
@@ -3536,17 +3636,23 @@ fn remove_compacted_tables(
             owned_levels
                 .get_mut(level_index)
                 .ok_or(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction removal level must exist",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction removal level must exist",
+                    ),
                 })?;
         let table =
             level
                 .get(table_ref.table_index())
                 .ok_or(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction removal table index must exist",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction removal table index must exist",
+                    ),
                 })?;
         if table.descriptor().identity() != table_ref.table_identity() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction removal table identity is stale",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction removal table identity is stale",
+                ),
             });
         }
         level.remove(table_ref.table_index());
@@ -3564,13 +3670,17 @@ fn insert_compaction_outputs(
         owned_levels
             .get_mut(output_level_index)
             .ok_or(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction output level must exist",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction output level must exist",
+                ),
             })?;
 
     for table in &output_tables {
         if table.level() != candidate.output_level() {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction output table level must match candidate",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction output table level must match candidate",
+                ),
             });
         }
     }
@@ -3604,12 +3714,16 @@ fn validate_compaction_output_identities(
     for identity in output_identities {
         if !output_seen.insert(identity.as_str()) {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction output identities must be unique",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction output identities must be unique",
+                ),
             });
         }
         if branch_reachable_table_identity_exists(identity, owned_levels, inherited_layers) {
             return Err(BranchRuntimeError::InvalidCompaction {
-                reason: "compaction output identity must not collide with existing reachable table",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction output identity must not collide with existing reachable table",
+                ),
             });
         }
     }
@@ -3713,14 +3827,18 @@ fn validate_compaction_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchR
     for (level_index, level) in owned_levels.iter().enumerate() {
         let branch_level = BranchLevel::new(u8::try_from(level_index).map_err(|_| {
             BranchRuntimeError::InvalidCompaction {
-                reason: "compaction level index must fit in BranchLevel",
+                reason: super::BranchCompactionInvalidity::Generic(
+                    "compaction level index must fit in BranchLevel",
+                ),
             }
         })?);
         let mut previous_first_key = None;
         for (left_index, table) in level.iter().enumerate() {
             if table.level() != branch_level {
                 return Err(BranchRuntimeError::InvalidCompaction {
-                    reason: "compaction table level must match installed level",
+                    reason: super::BranchCompactionInvalidity::Generic(
+                        "compaction table level must match installed level",
+                    ),
                 });
             }
             if branch_level != BranchLevel::ZERO {
@@ -3729,16 +3847,16 @@ fn validate_compaction_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchR
                     .as_ref()
                     .is_some_and(|previous| previous > &first_key)
                 {
-                    return Err(BranchRuntimeError::InvalidCompaction {
-                        reason: "compaction output leaves nonzero-level tables out of physical-key order",
-                    });
+                    return Err(BranchRuntimeError::InvalidCompaction { reason: super::BranchCompactionInvalidity::Generic("compaction output leaves nonzero-level tables out of physical-key order") });
                 }
                 previous_first_key = Some(first_key);
             }
             for row in table.rows() {
                 if !seen_keys.insert(row.key().clone()) {
                     return Err(BranchRuntimeError::InvalidCompaction {
-                        reason: "compaction levels must not contain duplicate internal keys",
+                        reason: super::BranchCompactionInvalidity::Generic(
+                            "compaction levels must not contain duplicate internal keys",
+                        ),
                     });
                 }
             }
@@ -3749,8 +3867,9 @@ fn validate_compaction_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchR
                     .any(|right| table_physical_ranges_overlap(table, right))
             {
                 return Err(BranchRuntimeError::InvalidCompaction {
-                    reason:
+                    reason: super::BranchCompactionInvalidity::Generic(
                         "compaction output leaves overlapping nonzero-level physical key ranges",
+                    ),
                 });
             }
         }

@@ -15,6 +15,7 @@ mod quarantine;
 mod recovery;
 mod retention;
 mod rewrite;
+mod row_pruning;
 mod script;
 
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
@@ -29,6 +30,7 @@ pub use quarantine::{check_lifecycle_quarantine_contract, LifecycleQuarantineCon
 pub use recovery::{check_lifecycle_recovery_contract, LifecycleRecoveryContractOutcome};
 pub use retention::{check_lifecycle_retention_contract, LifecycleRetentionContractOutcome};
 pub use rewrite::{check_lifecycle_table_rewrite_contract, LifecycleTableRewriteContractOutcome};
+pub use row_pruning::{check_lifecycle_row_pruning_contract, LifecycleRowPruningContractOutcome};
 pub use script::{
     check_lifecycle_generated_script_contract, check_lifecycle_maintenance_fuzz_contract,
     check_lifecycle_recovery_fuzz_contract, check_lifecycle_retention_fuzz_contract,

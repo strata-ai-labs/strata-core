@@ -17,6 +17,7 @@ mod immutable_reads;
 mod inheritance_materialization;
 mod owned_compaction;
 mod read_view;
+mod row_pruning;
 mod snapshot_install;
 
 fn assert_invalid_config_field(

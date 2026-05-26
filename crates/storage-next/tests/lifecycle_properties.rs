@@ -288,6 +288,46 @@ fn lifecycle_property_harness_runs_table_rewrite_contract() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_property_harness_runs_row_pruning_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_row_pruning_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 16,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-row-pruning.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=32), |script| {
+            let outcome = check_lifecycle_row_pruning_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.proof_rejected_cases() == 0
+                || outcome.old_version_dropped_cases() == 0
+                || outcome.tombstone_dropped_cases() == 0
+                || outcome.tombstone_kept_for_shadowing_cases() == 0
+                || outcome.expired_row_dropped_cases() == 0
+                || outcome.expired_row_kept_for_as_of_cases() == 0
+                || outcome.pinned_view_blocked_cases() == 0
+                || outcome.inherited_layer_blocked_cases() == 0
+                || outcome.retained_boundary_reported_cases() == 0
+                || outcome.recovery_boundary_enforced_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "lifecycle row pruning contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle row pruning property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_property_harness_runs_generated_script_contract() {
     use proptest::collection::vec;
     use proptest::prelude::any;

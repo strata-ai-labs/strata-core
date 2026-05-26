@@ -23,6 +23,7 @@ mod outcome;
 mod quarantine;
 mod recovery;
 mod result;
+mod retained_history_extension;
 mod retention;
 mod rewrite_publication;
 mod state;

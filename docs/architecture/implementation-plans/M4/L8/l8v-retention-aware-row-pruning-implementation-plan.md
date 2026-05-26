@@ -1,6 +1,7 @@
 # L8V Implementation Plan: Retention-Aware Row Pruning
 
-Status: draft implementation plan
+Status: branch-runtime implementation and proof-bound test suite landed;
+durable retained-history manifest extension remains deferred
 
 Parent plan:
 `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
@@ -106,7 +107,7 @@ L8V implements:
 9. L5 policy adapter that decides row drops using L8/L6 proof facts;
 10. lifecycle outcome facts for rows kept/dropped by reason;
 11. post-prune read/timestamp coverage facts;
-12. generated/model coverage for as-of/history/TTL/inheritance safety;
+12. branch-runtime coverage for as-of/history/TTL/inheritance safety;
 13. source guards preventing raw IO, object deletion, product policy, or
     milestone labels in Rust code/test names/fixture bytes.
 
@@ -115,11 +116,13 @@ L8V does not implement:
 1. table-object deletion or quarantine;
 2. snapshot pruning;
 3. WAL truncation or flush-watermark persistence;
-4. durable rewrite publication mechanics;
-5. public API retention configuration;
-6. branch delete/clear/fork-at-history completion;
-7. memory-budget optimization;
-8. lazy reader optimization.
+4. durable retained-history facts in table-manifest extension bytes;
+5. generated/model coverage over durable recovery after pruning;
+6. durable rewrite publication mechanics;
+7. public API retention configuration;
+8. branch delete/clear/fork-at-history completion;
+9. memory-budget optimization;
+10. lazy reader optimization.
 
 ## Safety Model
 
