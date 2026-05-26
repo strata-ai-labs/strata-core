@@ -118,7 +118,10 @@ pub(super) fn put_row(
     )
 }
 
-pub(super) fn physical_key(branch: BranchId, user_key: &'static [u8]) -> PhysicalKey {
+pub(in crate::lifecycle::tests) fn physical_key(
+    branch: BranchId,
+    user_key: &'static [u8],
+) -> PhysicalKey {
     PhysicalKey::new(
         branch,
         "checkpoint",
@@ -195,12 +198,12 @@ impl CheckpointTestBackend {
         self.fail_delete_call.store(call, Ordering::SeqCst);
     }
 
-    pub(super) fn fail_manifest_replacement_on_call(&self, call: usize) {
+    pub(in crate::lifecycle::tests) fn fail_manifest_replacement_on_call(&self, call: usize) {
         self.fail_manifest_replace_call
             .store(call, Ordering::SeqCst);
     }
 
-    pub(super) fn uncertain_manifest_replacement_on_call(&self, call: usize) {
+    pub(in crate::lifecycle::tests) fn uncertain_manifest_replacement_on_call(&self, call: usize) {
         self.uncertain_manifest_replace_call
             .store(call, Ordering::SeqCst);
     }

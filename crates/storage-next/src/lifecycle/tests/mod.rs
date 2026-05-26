@@ -11,6 +11,7 @@ mod close;
 mod compaction;
 mod durable;
 mod flush;
+mod flush_watermark;
 mod maintenance;
 mod quarantine;
 mod recovery;

@@ -646,7 +646,8 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
         persist_flush_watermark(
             shell.services().manifest(),
             CommitVersion::new(7),
-            table_only,
+            &table_only,
+            &LifecycleFlushWatermarkValidationContext::none(),
         ),
         Err(LifecycleError::WalRetentionProofIncomplete { .. })
     ));
@@ -654,13 +655,14 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
     let persisted = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(7),
-        LifecycleFlushWatermarkRequest::new(
+        &LifecycleFlushWatermarkRequest::new(
             CommitVersion::new(5),
             LifecycleFlushWatermarkProof::CheckpointCovered {
                 snapshot_watermark: CommitVersion::new(7),
             },
         )
         .expect("covered request"),
+        &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect("persisted");
     assert_eq!(persisted.status(), LifecycleFlushWatermarkStatus::Persisted);
@@ -669,11 +671,12 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
     let already = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(7),
-        LifecycleFlushWatermarkRequest::new(
+        &LifecycleFlushWatermarkRequest::new(
             CommitVersion::new(5),
             LifecycleFlushWatermarkProof::AlreadyPersisted,
         )
         .expect("already request"),
+        &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect("already persisted");
     assert_eq!(
@@ -698,35 +701,38 @@ fn flush_watermark_rejects_bounds_and_preserves_branch_state() {
     let above_checkpoint = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(8),
-        LifecycleFlushWatermarkRequest::new(
+        &LifecycleFlushWatermarkRequest::new(
             CommitVersion::new(7),
             LifecycleFlushWatermarkProof::CheckpointCovered {
                 snapshot_watermark: CommitVersion::new(6),
             },
         )
         .expect("covered request"),
+        &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect_err("above checkpoint rejects");
     let above_visible = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        LifecycleFlushWatermarkRequest::new(
+        &LifecycleFlushWatermarkRequest::new(
             CommitVersion::new(7),
             LifecycleFlushWatermarkProof::CheckpointCovered {
                 snapshot_watermark: CommitVersion::new(7),
             },
         )
         .expect("covered request"),
+        &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect_err("above visible rejects");
     let already_not_persisted = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        LifecycleFlushWatermarkRequest::new(
+        &LifecycleFlushWatermarkRequest::new(
             CommitVersion::new(5),
             LifecycleFlushWatermarkProof::AlreadyPersisted,
         )
         .expect("already request"),
+        &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect_err("not already persisted");
 
@@ -760,13 +766,14 @@ fn flush_watermark_persist_failure_preserves_source_chain() {
     let error = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(7),
-        LifecycleFlushWatermarkRequest::new(
+        &LifecycleFlushWatermarkRequest::new(
             CommitVersion::new(5),
             LifecycleFlushWatermarkProof::CheckpointCovered {
                 snapshot_watermark: CommitVersion::new(7),
             },
         )
         .expect("covered request"),
+        &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect_err("persist failure");
 

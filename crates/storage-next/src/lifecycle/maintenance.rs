@@ -12,7 +12,7 @@ use super::{
     RecoveryFaultKind, RecoveryHealth,
 };
 use crate::branch::BranchMaterializationHandle;
-use strata_core_next::BranchId;
+use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct MaintenanceTaskId(u64);
@@ -69,6 +69,7 @@ pub(crate) struct MaintenanceTaskRequest {
     scope: MaintenanceTaskScope,
     policy: MaintenanceTaskPolicy,
     checkpoint_options: Option<MaintenanceCheckpointOptions>,
+    flush_watermark_candidate: Option<CommitVersion>,
     retention_options: Option<MaintenanceRetentionOptions>,
     materialization_handle: Option<BranchMaterializationHandle>,
 }
@@ -96,6 +97,7 @@ pub(crate) struct MaintenanceCoalesceKey {
     kind: MaintenanceTaskKind,
     scope: MaintenanceTaskScope,
     checkpoint_options: Option<MaintenanceCheckpointOptions>,
+    flush_watermark_candidate: Option<CommitVersion>,
     retention_options: Option<MaintenanceRetentionOptions>,
 }
 
@@ -276,6 +278,7 @@ impl MaintenanceTaskRequest {
             scope,
             policy,
             checkpoint_options: None,
+            flush_watermark_candidate: None,
             retention_options: None,
             materialization_handle: None,
         };
@@ -330,6 +333,23 @@ impl MaintenanceTaskRequest {
             MaintenanceTaskPolicy::coalescing(),
         )
         .expect("WAL truncation task request is valid")
+    }
+
+    pub(crate) fn table_manifest_flush_watermark(candidate: CommitVersion) -> Self {
+        let request = Self {
+            kind: MaintenanceTaskKind::FlushWatermark,
+            priority: MaintenanceTaskPriority::Low,
+            scope: MaintenanceTaskScope::Wal,
+            policy: MaintenanceTaskPolicy::coalescing(),
+            checkpoint_options: None,
+            flush_watermark_candidate: Some(candidate),
+            retention_options: None,
+            materialization_handle: None,
+        };
+        request
+            .validate()
+            .expect("flush watermark task candidate is valid");
+        request
     }
 
     pub(crate) fn snapshot_pruning(retain_newest_snapshots: usize) -> Self {
@@ -452,6 +472,10 @@ impl MaintenanceTaskRequest {
         self.checkpoint_options
     }
 
+    pub(crate) const fn flush_watermark_candidate(self) -> Option<CommitVersion> {
+        self.flush_watermark_candidate
+    }
+
     pub(crate) const fn retention_options(self) -> Option<MaintenanceRetentionOptions> {
         self.retention_options
     }
@@ -467,6 +491,10 @@ impl MaintenanceTaskRequest {
                 scope: normalized_coalesce_scope(self.kind, self.scope),
                 checkpoint_options: match self.kind {
                     MaintenanceTaskKind::Checkpoint => self.checkpoint_options,
+                    _ => None,
+                },
+                flush_watermark_candidate: match self.kind {
+                    MaintenanceTaskKind::FlushWatermark => self.flush_watermark_candidate,
                     _ => None,
                 },
                 retention_options: match self.kind {
@@ -491,6 +519,21 @@ impl MaintenanceTaskRequest {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "checkpoint options require a checkpoint task",
             });
+        }
+        match (self.kind, self.flush_watermark_candidate) {
+            (MaintenanceTaskKind::FlushWatermark, Some(candidate))
+                if candidate != CommitVersion::ZERO => {}
+            (MaintenanceTaskKind::FlushWatermark, _) => {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "flush watermark task requires a nonzero candidate",
+                });
+            }
+            (_, Some(_)) => {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "flush watermark candidate requires a flush watermark task",
+                });
+            }
+            (_, None) => {}
         }
         if self.retention_options.is_some()
             && !matches!(
@@ -603,6 +646,10 @@ impl MaintenanceTask {
 
     pub(crate) const fn checkpoint_options(self) -> Option<MaintenanceCheckpointOptions> {
         self.request.checkpoint_options()
+    }
+
+    pub(crate) const fn flush_watermark_candidate(self) -> Option<CommitVersion> {
+        self.request.flush_watermark_candidate()
     }
 
     pub(crate) const fn retention_options(self) -> Option<MaintenanceRetentionOptions> {
@@ -1110,7 +1157,7 @@ fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) ->
             MaintenanceTaskKind::Checkpoint,
             MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
         ) | (
-            MaintenanceTaskKind::WalTruncation,
+            MaintenanceTaskKind::WalTruncation | MaintenanceTaskKind::FlushWatermark,
             MaintenanceTaskScope::Wal
         ) | (
             MaintenanceTaskKind::Compaction,

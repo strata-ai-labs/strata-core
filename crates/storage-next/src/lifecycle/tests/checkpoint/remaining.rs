@@ -332,6 +332,27 @@ fn wal_truncation_deletes_covered_segments_and_keeps_active_segment() {
 }
 
 #[test]
+fn wal_truncation_from_table_manifest_flush_watermark_deletes_covered_segments() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3d);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    let active = runtime.services().wal().active_segment_id();
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
+        CommitVersion::new(24),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation");
+
+    assert!(active > 1, "test setup must rotate segments");
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.deleted_segments() > 0);
+    assert!(outcome.protected_segments() >= 1);
+    assert_eq!(outcome.failed_segments(), 0);
+}
+
+#[test]
 fn wal_truncation_delete_failure_records_health_debt() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x34);
@@ -500,6 +521,41 @@ fn queued_wal_truncation_task_failure_adds_health_debt() {
 }
 
 #[test]
+fn maintenance_task_reports_health_debt_on_wal_truncation_failure() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x37);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    // Snapshot and flush both at v24 so the WAL maintenance task selects the
+    // typed flush-watermark proof (flush >= snapshot path in
+    // wal_truncation_request_from_maintenance_task).
+    runtime
+        .services()
+        .manifest()
+        .persist_snapshot_facts(1, CommitVersion::new(24))
+        .expect("snapshot facts");
+    runtime
+        .services()
+        .manifest()
+        .persist_flush_watermark(CommitVersion::new(24))
+        .expect("flush watermark");
+    backend.fail_delete();
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        .expect("enqueue");
+
+    let maintenance = runtime
+        .run_next_wal_truncation_maintenance()
+        .expect("run")
+        .expect("maintenance");
+
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(maintenance.recovery_health().is_some());
+    assert!(maintenance.retryable());
+    assert!(backend.delete_calls() > 0);
+}
+
+#[test]
 fn wal_truncation_keeps_segment_with_record_above_watermark() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x3b);
@@ -515,6 +571,43 @@ fn wal_truncation_keeps_segment_with_record_above_watermark() {
     assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
     assert_eq!(outcome.deleted_segments(), 0);
     assert!(outcome.protected_segments() > 1);
+}
+
+#[test]
+fn wal_truncation_keeps_segment_with_record_above_table_manifest_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3e);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_with_value_len(&mut runtime, branch, 12, 1);
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert_eq!(outcome.deleted_segments(), 0);
+    assert!(outcome.protected_segments() > 1);
+}
+
+#[test]
+fn wal_truncation_keeps_active_segment_under_table_manifest_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x3f);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    commit_many_to_rotate(&mut runtime, branch, 24);
+    let active = runtime.services().wal().active_segment_id();
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
+        CommitVersion::new(24),
+    ))
+    .expect("truncation request");
+
+    let outcome = runtime.truncate_wal(request).expect("truncation");
+
+    assert!(active > 1, "test setup must rotate segments");
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.protected_segments() >= 1);
 }
 
 #[test]
@@ -538,6 +631,38 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
     )
     .expect("active segment");
     let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = truncate_wal(&active_service, request).expect("truncation");
+
+    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert_eq!(outcome.deleted_segments(), 0);
+    assert_eq!(outcome.protected_segments(), 2);
+}
+
+#[test]
+fn wal_truncation_keeps_newer_than_active_segment() {
+    let backend = CheckpointTestBackend::new();
+    let config = crate::service::WalServiceConfig::new(1024);
+    let _future_service = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("future segment");
+    let active_service = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        1,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("active segment");
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
         CommitVersion::new(1),
     ))
     .expect("truncation request");
@@ -611,6 +736,52 @@ fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
     .expect("active segment");
     backend.fail_delete_on_call(2);
     let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
+        CommitVersion::new(1),
+    ))
+    .expect("truncation request");
+
+    let outcome = truncate_wal(&active, request).expect("truncation");
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleWalTruncationStatus::CompletedWithHealthDebt
+    );
+    assert_eq!(outcome.deleted_segments(), 1);
+    assert_eq!(outcome.failed_segments(), 1);
+    assert_eq!(outcome.protected_segments(), 1);
+    assert!(outcome.recovery_health().is_some());
+}
+
+#[test]
+fn wal_truncation_partial_delete_report_preserves_source_chain() {
+    let backend = CheckpointTestBackend::new();
+    let config = crate::service::WalServiceConfig::new(1024);
+    let _first = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        1,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("first segment");
+    let _second = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("second segment");
+    let active = crate::service::WalService::open(
+        &backend,
+        DATABASE_ID,
+        3,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("active segment");
+    backend.fail_delete_on_call(2);
+    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
         CommitVersion::new(1),
     ))
     .expect("truncation request");

@@ -296,6 +296,36 @@ pub(crate) fn preflight_table_manifest_with_checkpoint(
     Ok(any_overlap)
 }
 
+pub(crate) fn require_table_manifest_covers_checkpoint_rows(
+    checkpoint_branch: &BranchLocalState,
+    staged_branch: &BranchLocalState,
+) -> LifecycleResult<()> {
+    let mut staged_rows = BTreeMap::<&[u8], &TableRow>::new();
+    for table in staged_branch.owned_levels().iter().flatten() {
+        for row in table.rows() {
+            staged_rows.insert(row.key().as_slice(), row);
+        }
+    }
+    for table in checkpoint_branch.owned_levels().iter().flatten() {
+        for row in table.rows() {
+            match staged_rows.get(row.key().as_slice()) {
+                Some(staged_row) if staged_row.row() == row.row() => {}
+                Some(_) => {
+                    return Err(LifecycleError::table_manifest_checkpoint_conflict(
+                        "manifest row bytes diverge from checkpoint at internal key",
+                    ));
+                }
+                None => {
+                    return Err(LifecycleError::WalRetentionProofIncomplete {
+                        reason: "table manifest flush proof does not cover checkpoint row",
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn publish_table_manifest_for_branch(
     branch: &BranchLocalState,
     service: &TableManifestService<'_>,

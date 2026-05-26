@@ -275,6 +275,11 @@ impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
                 .maintenance_outcome())
             }
             MaintenanceTaskKind::Checkpoint => self.run_checkpoint(task),
+            MaintenanceTaskKind::FlushWatermark => Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::FlushWatermark,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("flush watermark maintenance is deferred during close")),
             MaintenanceTaskKind::WalTruncation => self.run_wal_truncation(task),
             MaintenanceTaskKind::Compaction => {
                 let request = compaction_request_from_maintenance_task(task)?;

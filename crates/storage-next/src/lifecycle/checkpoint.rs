@@ -3,11 +3,15 @@
 use super::{
     telemetry_health_debt, LifecycleDurableLocalServices, LifecycleError, LifecycleLowerLayer,
     LifecycleResult, LifecycleStats, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskKind, MaintenanceTaskScope,
+    MaintenanceTaskKind, MaintenanceTaskScope, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::branch::BranchLocalState;
 use crate::commit::CommitBranchGuardSet;
-use crate::format::SnapshotSection;
+use crate::format::{
+    SnapshotSection, TableManifest, TableManifestInheritedLayer, TableManifestLevel,
+    TableManifestTableRef,
+};
+use crate::layout::ObjectLayout;
 use crate::lifecycle::recovery::encode_checkpoint_row_section;
 use crate::object::ObjectName;
 use crate::service::{
@@ -53,23 +57,80 @@ pub(crate) enum LifecycleCheckpointStatus {
     FlushWatermarkFailed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleFlushWatermarkRequest {
     candidate: CommitVersion,
     proof: LifecycleFlushWatermarkProof,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleFlushWatermarkValidationContext {
+    table_manifest_epoch: Option<u64>,
+    recovery_health_epoch: Option<u64>,
+    required_branches: Vec<BranchId>,
+    required_branch_epochs: Vec<(BranchId, u64)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 #[allow(
     dead_code,
     reason = "flush-watermark proof vocabulary is exercised by dedicated maintenance tests"
 )]
 pub(crate) enum LifecycleFlushWatermarkProof {
-    CheckpointCovered { snapshot_watermark: CommitVersion },
+    CheckpointCovered {
+        snapshot_watermark: CommitVersion,
+    },
+    TableManifestCovered(LifecycleTableManifestFlushCoverageProof),
+    Combined {
+        checkpoint: CommitVersion,
+        table_manifest: LifecycleTableManifestFlushCoverageProof,
+    },
     AlreadyPersisted,
-    TableObjectsOnly { flushed_through: CommitVersion },
+    // Always rejected by `persist_flush_watermark`. Carried in the enum so the
+    // sensitivity probe can mutate the rejection arm and break the
+    // `flush_watermark_proofs_are_conservative_and_monotonic` test if anyone
+    // accidentally accepts table-object publication as a recovery proof.
+    TableObjectsOnly {
+        flushed_through: CommitVersion,
+    },
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleTableManifestFlushCoverageProof {
+    candidate: CommitVersion,
+    manifest_epoch: u64,
+    recovery_health_epoch: u64,
+    branch_coverages: Vec<LifecycleTableManifestBranchCoverage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleTableManifestBranchCoverage {
+    branch_id: BranchId,
+    covered_min: CommitVersion,
+    covered_max: CommitVersion,
+    covered_versions: Vec<CommitVersion>,
+    manifest_sequence: u64,
+    manifest_object: ObjectName,
+    table_count: usize,
+    row_families: LifecycleTableManifestCoverageFamilies,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleTableManifestCoverageFamilies {
+    bits: u8,
+}
+
+const COVERAGE_USER_ROWS: u8 = 0b0000_0001;
+const COVERAGE_TOMBSTONES: u8 = 0b0000_0010;
+const COVERAGE_TIMELINE_ROWS: u8 = 0b0000_0100;
+const COVERAGE_INHERITED_LAYERS: u8 = 0b0000_1000;
+const COVERAGE_MATERIALIZED_REPLACEMENTS: u8 = 0b0001_0000;
+const COVERAGE_COMPLETE: u8 = COVERAGE_USER_ROWS
+    | COVERAGE_TOMBSTONES
+    | COVERAGE_TIMELINE_ROWS
+    | COVERAGE_INHERITED_LAYERS
+    | COVERAGE_MATERIALIZED_REPLACEMENTS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleFlushWatermarkOutcome {
@@ -410,21 +471,737 @@ impl LifecycleFlushWatermarkRequest {
         Ok(request)
     }
 
-    pub(crate) const fn candidate(self) -> CommitVersion {
+    pub(crate) const fn candidate(&self) -> CommitVersion {
         self.candidate
     }
 
-    pub(crate) const fn proof(self) -> LifecycleFlushWatermarkProof {
-        self.proof
+    pub(crate) const fn proof(&self) -> &LifecycleFlushWatermarkProof {
+        &self.proof
     }
 
-    const fn validate_static(self) -> LifecycleResult<()> {
+    fn validate_static(&self) -> LifecycleResult<()> {
         if self.candidate.as_u64() == 0 {
             return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "flush watermark candidate must be nonzero",
             });
         }
+        match &self.proof {
+            LifecycleFlushWatermarkProof::TableManifestCovered(proof) => {
+                proof.validate_for_candidate(self.candidate)?;
+            }
+            LifecycleFlushWatermarkProof::Combined { table_manifest, .. } => {
+                table_manifest.validate_for_candidate(self.candidate)?;
+            }
+            LifecycleFlushWatermarkProof::CheckpointCovered { .. }
+            | LifecycleFlushWatermarkProof::AlreadyPersisted
+            | LifecycleFlushWatermarkProof::TableObjectsOnly { .. } => {}
+        }
         Ok(())
+    }
+}
+
+impl LifecycleFlushWatermarkValidationContext {
+    pub(crate) const fn none() -> Self {
+        Self {
+            table_manifest_epoch: None,
+            recovery_health_epoch: None,
+            required_branches: Vec::new(),
+            required_branch_epochs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn table_manifest(
+        table_manifest_epoch: u64,
+        recovery_health_epoch: u64,
+    ) -> LifecycleResult<Self> {
+        if table_manifest_epoch == 0 {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof manifest epoch must be nonzero",
+            });
+        }
+        if recovery_health_epoch == 0 {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof recovery health epoch must be nonzero",
+            });
+        }
+        Ok(Self {
+            table_manifest_epoch: Some(table_manifest_epoch),
+            recovery_health_epoch: Some(recovery_health_epoch),
+            required_branches: Vec::new(),
+            required_branch_epochs: Vec::new(),
+        })
+    }
+
+    pub(crate) fn with_required_branch_epochs(
+        mut self,
+        branch_epochs: impl IntoIterator<Item = (BranchId, u64)>,
+    ) -> LifecycleResult<Self> {
+        self.required_branch_epochs = branch_epochs.into_iter().collect();
+        self.required_branch_epochs
+            .sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+        if self
+            .required_branch_epochs
+            .iter()
+            .any(|(_, epoch)| *epoch == 0)
+        {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof branch epoch must be nonzero",
+            });
+        }
+        if self
+            .required_branch_epochs
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0)
+        {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof required branch epochs contain duplicates",
+            });
+        }
+        self.required_branches = self
+            .required_branch_epochs
+            .iter()
+            .map(|(branch, _)| *branch)
+            .collect();
+        Ok(self)
+    }
+
+    fn validate_table_manifest_proof_extending_checkpoint(
+        &self,
+        proof: &LifecycleTableManifestFlushCoverageProof,
+        checkpoint_watermark: CommitVersion,
+    ) -> LifecycleResult<()> {
+        let Some(manifest_epoch) = self.table_manifest_epoch else {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires current manifest epoch",
+            });
+        };
+        let Some(recovery_health_epoch) = self.recovery_health_epoch else {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires current recovery health epoch",
+            });
+        };
+        if self.required_branches.is_empty() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires a current branch set",
+            });
+        }
+        proof.validate_current_epochs(manifest_epoch, recovery_health_epoch)?;
+        proof.validate_current_branch_epochs(&self.required_branch_epochs)?;
+        proof.validate_required_branches(&self.required_branches)?;
+        proof.validate_extends_checkpoint(checkpoint_watermark)
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "table-manifest flush proof diagnostics are consumed by generated and closeout tests"
+)]
+impl LifecycleTableManifestFlushCoverageProof {
+    pub(crate) fn new(
+        candidate: CommitVersion,
+        manifest_epoch: u64,
+        recovery_health_epoch: u64,
+        mut branch_coverages: Vec<LifecycleTableManifestBranchCoverage>,
+    ) -> LifecycleResult<Self> {
+        branch_coverages.sort_by(|left, right| {
+            left.branch_id()
+                .as_bytes()
+                .cmp(right.branch_id().as_bytes())
+                .then_with(|| {
+                    left.manifest_object()
+                        .as_str()
+                        .cmp(right.manifest_object().as_str())
+                })
+        });
+        let proof = Self {
+            candidate,
+            manifest_epoch,
+            recovery_health_epoch,
+            branch_coverages,
+        };
+        proof.validate()?;
+        Ok(proof)
+    }
+
+    // Shape-only constructor: builds a proof from manifests without consulting
+    // branch state, so the resulting `covered_versions` are empty. That means
+    // `validate_extends_checkpoint` will always reject when the candidate sits
+    // above the checkpoint watermark — there's no per-commit evidence that the
+    // interval is covered. Use this for proof shape, staleness, and health
+    // tests, and use `from_branch_manifest` when actually persisting.
+    pub(crate) fn from_table_manifests(
+        candidate: CommitVersion,
+        manifests: &[TableManifest],
+        health: &RecoveryHealth,
+    ) -> LifecycleResult<Self> {
+        let manifest_epoch = manifests
+            .iter()
+            .map(TableManifest::manifest_sequence)
+            .max()
+            .ok_or(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires at least one manifest",
+            })?;
+        let recovery_health_epoch = recovery_health_epoch(health)?;
+        let branch_coverages = manifests
+            .iter()
+            .map(|manifest| branch_coverage_from_manifest(candidate, manifest))
+            .collect::<LifecycleResult<Vec<_>>>()?;
+        Self::new(
+            candidate,
+            manifest_epoch,
+            recovery_health_epoch,
+            branch_coverages,
+        )
+    }
+
+    pub(crate) fn from_branch_manifest(
+        candidate: CommitVersion,
+        branch: &BranchLocalState,
+        manifest: &TableManifest,
+        health: &RecoveryHealth,
+    ) -> LifecycleResult<Self> {
+        if branch.branch_id() != manifest.branch_id() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof branch does not match branch state",
+            });
+        }
+        if branch_has_unflushed_rows_at_or_below(branch, candidate) {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason:
+                    "mutable rows at or below flush watermark are not covered by table manifest",
+            });
+        }
+        let recovery_health_epoch = recovery_health_epoch(health)?;
+        let branch_coverage = branch_coverage_from_state_and_manifest(candidate, branch, manifest)?;
+        Self::new(
+            candidate,
+            manifest.manifest_sequence(),
+            recovery_health_epoch,
+            vec![branch_coverage],
+        )
+    }
+
+    pub(crate) fn validate_for_candidate(&self, candidate: CommitVersion) -> LifecycleResult<()> {
+        self.validate()?;
+        if self.candidate != candidate {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "flush watermark candidate does not match table manifest proof",
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_current_epochs(
+        &self,
+        manifest_epoch: u64,
+        recovery_health_epoch: u64,
+    ) -> LifecycleResult<()> {
+        if self.manifest_epoch != manifest_epoch {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof is stale",
+            });
+        }
+        if self.recovery_health_epoch != recovery_health_epoch {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof recovery health is stale",
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_current_branch_epochs(
+        &self,
+        branch_epochs: &[(BranchId, u64)],
+    ) -> LifecycleResult<()> {
+        for (branch, epoch) in branch_epochs {
+            let Some(coverage) = self
+                .branch_coverages
+                .iter()
+                .find(|coverage| coverage.branch_id() == *branch)
+            else {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
+                    reason: "table manifest flush proof is missing branch coverage",
+                });
+            };
+            if coverage.manifest_sequence() != *epoch {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
+                    reason: "table manifest flush proof has stale branch manifest epoch",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_required_branches(&self, branches: &[BranchId]) -> LifecycleResult<()> {
+        for branch in branches {
+            if !self
+                .branch_coverages
+                .iter()
+                .any(|coverage| coverage.branch_id() == *branch)
+            {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
+                    reason: "table manifest flush proof is missing branch coverage",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_extends_checkpoint(
+        &self,
+        checkpoint_watermark: CommitVersion,
+    ) -> LifecycleResult<()> {
+        if checkpoint_watermark == CommitVersion::ZERO {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires a nonzero checkpoint lower bound",
+            });
+        }
+        for coverage in &self.branch_coverages {
+            coverage.validate_extends_checkpoint(checkpoint_watermark, self.candidate)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn candidate(&self) -> CommitVersion {
+        self.candidate
+    }
+
+    pub(crate) const fn manifest_epoch(&self) -> u64 {
+        self.manifest_epoch
+    }
+
+    pub(crate) const fn recovery_health_epoch(&self) -> u64 {
+        self.recovery_health_epoch
+    }
+
+    pub(crate) fn branch_coverages(&self) -> &[LifecycleTableManifestBranchCoverage] {
+        &self.branch_coverages
+    }
+
+    fn validate(&self) -> LifecycleResult<()> {
+        if self.candidate == CommitVersion::ZERO {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "flush watermark candidate must be nonzero",
+            });
+        }
+        if self.manifest_epoch == 0 {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof manifest epoch must be nonzero",
+            });
+        }
+        if self.recovery_health_epoch == 0 {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof recovery health epoch must be nonzero",
+            });
+        }
+        if self.branch_coverages.is_empty() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires branch coverage",
+            });
+        }
+        let mut previous: Option<BranchId> = None;
+        for coverage in &self.branch_coverages {
+            coverage.validate(self.candidate)?;
+            if previous.is_some_and(|branch| branch == coverage.branch_id()) {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
+                    reason: "table manifest flush proof contains duplicate branch coverage",
+                });
+            }
+            previous = Some(coverage.branch_id());
+        }
+        Ok(())
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "table-manifest branch coverage accessors are consumed by proof tests"
+)]
+impl LifecycleTableManifestBranchCoverage {
+    pub(crate) fn new(
+        branch_id: BranchId,
+        covered_min: CommitVersion,
+        covered_max: CommitVersion,
+        manifest_object: ObjectName,
+        table_count: usize,
+        row_families: LifecycleTableManifestCoverageFamilies,
+    ) -> LifecycleResult<Self> {
+        let coverage = Self {
+            branch_id,
+            covered_min,
+            covered_max,
+            covered_versions: Vec::new(),
+            manifest_sequence: 1,
+            manifest_object,
+            table_count,
+            row_families,
+        };
+        coverage.validate(covered_max)?;
+        Ok(coverage)
+    }
+
+    fn new_with_versions(
+        branch_id: BranchId,
+        covered_min: CommitVersion,
+        covered_max: CommitVersion,
+        mut covered_versions: Vec<CommitVersion>,
+        manifest_sequence: u64,
+        manifest_object: ObjectName,
+        table_count: usize,
+        row_families: LifecycleTableManifestCoverageFamilies,
+    ) -> LifecycleResult<Self> {
+        covered_versions.sort();
+        covered_versions.dedup();
+        let coverage = Self {
+            branch_id,
+            covered_min,
+            covered_max,
+            covered_versions,
+            manifest_sequence,
+            manifest_object,
+            table_count,
+            row_families,
+        };
+        coverage.validate(covered_max)?;
+        Ok(coverage)
+    }
+
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn covered_min(&self) -> CommitVersion {
+        self.covered_min
+    }
+
+    pub(crate) const fn covered_max(&self) -> CommitVersion {
+        self.covered_max
+    }
+
+    pub(crate) fn covered_versions(&self) -> &[CommitVersion] {
+        &self.covered_versions
+    }
+
+    pub(crate) const fn manifest_sequence(&self) -> u64 {
+        self.manifest_sequence
+    }
+
+    pub(crate) const fn manifest_object(&self) -> &ObjectName {
+        &self.manifest_object
+    }
+
+    pub(crate) const fn table_count(&self) -> usize {
+        self.table_count
+    }
+
+    pub(crate) const fn row_families(&self) -> LifecycleTableManifestCoverageFamilies {
+        self.row_families
+    }
+
+    fn validate(&self, candidate: CommitVersion) -> LifecycleResult<()> {
+        if self.covered_min == CommitVersion::ZERO {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest branch coverage minimum must be nonzero",
+            });
+        }
+        if self.covered_min > self.covered_max {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest branch coverage range is invalid",
+            });
+        }
+        if self.covered_max < candidate {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "flush watermark candidate exceeds table manifest coverage",
+            });
+        }
+        if self.table_count == 0 {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest branch coverage requires at least one table",
+            });
+        }
+        self.row_families.validate()
+    }
+
+    fn validate_extends_checkpoint(
+        &self,
+        checkpoint_watermark: CommitVersion,
+        candidate: CommitVersion,
+    ) -> LifecycleResult<()> {
+        if candidate <= checkpoint_watermark {
+            return Ok(());
+        }
+        let Some(first_needed) = checkpoint_watermark.as_u64().checked_add(1) else {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof checkpoint lower bound overflowed",
+            });
+        };
+        if self.covered_min.as_u64() > first_needed || self.covered_max < candidate {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof does not cover checkpoint extension range",
+            });
+        }
+        if !versions_cover_interval(&self.covered_versions, first_needed, candidate.as_u64()) {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof has a commit-version gap",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "row-family proof toggles are consumed by coverage tests"
+)]
+impl LifecycleTableManifestCoverageFamilies {
+    pub(crate) const fn complete() -> Self {
+        Self {
+            bits: COVERAGE_COMPLETE,
+        }
+    }
+
+    pub(crate) const fn without_tombstones(mut self) -> Self {
+        self.bits &= !COVERAGE_TOMBSTONES;
+        self
+    }
+
+    pub(crate) const fn without_timeline_rows(mut self) -> Self {
+        self.bits &= !COVERAGE_TIMELINE_ROWS;
+        self
+    }
+
+    pub(crate) const fn without_inherited_layers(mut self) -> Self {
+        self.bits &= !COVERAGE_INHERITED_LAYERS;
+        self
+    }
+
+    pub(crate) const fn user_rows(self) -> bool {
+        self.bits & COVERAGE_USER_ROWS != 0
+    }
+
+    pub(crate) const fn tombstones(self) -> bool {
+        self.bits & COVERAGE_TOMBSTONES != 0
+    }
+
+    pub(crate) const fn timeline_rows(self) -> bool {
+        self.bits & COVERAGE_TIMELINE_ROWS != 0
+    }
+
+    pub(crate) const fn inherited_layers(self) -> bool {
+        self.bits & COVERAGE_INHERITED_LAYERS != 0
+    }
+
+    pub(crate) const fn materialized_replacements(self) -> bool {
+        self.bits & COVERAGE_MATERIALIZED_REPLACEMENTS != 0
+    }
+
+    const fn validate(self) -> LifecycleResult<()> {
+        if !self.user_rows() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof is missing user row coverage",
+            });
+        }
+        if !self.tombstones() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof is missing tombstone coverage",
+            });
+        }
+        if !self.timeline_rows() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof is missing timeline coverage",
+            });
+        }
+        if !self.inherited_layers() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof is missing inherited layer coverage",
+            });
+        }
+        if !self.materialized_replacements() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof is missing materialized replacement coverage",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn branch_coverage_from_manifest(
+    candidate: CommitVersion,
+    manifest: &TableManifest,
+) -> LifecycleResult<LifecycleTableManifestBranchCoverage> {
+    let mut tables = manifest_table_refs(manifest);
+    let Some(first) = tables.next() else {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof requires at least one table",
+        });
+    };
+    let mut covered_min = first.facts().commit_min();
+    let mut covered_max = first.facts().commit_max();
+    let mut table_count = 1usize;
+    for table in tables {
+        covered_min = covered_min.min(table.facts().commit_min());
+        covered_max = covered_max.max(table.facts().commit_max());
+        table_count = table_count.saturating_add(1);
+    }
+    let manifest_object = ObjectLayout::branch_table_manifest(&manifest.branch_id().to_string())
+        .map_err(|source| {
+            LifecycleError::lower_layer_with(
+                LifecycleLowerLayer::Layout,
+                "table manifest object layout failed",
+                source,
+            )
+        })?;
+    LifecycleTableManifestBranchCoverage::new_with_versions(
+        manifest.branch_id(),
+        covered_min,
+        covered_max,
+        Vec::new(),
+        manifest.manifest_sequence(),
+        manifest_object,
+        table_count,
+        LifecycleTableManifestCoverageFamilies::complete(),
+    )
+    .and_then(|coverage| {
+        coverage.validate(candidate)?;
+        Ok(coverage)
+    })
+}
+
+fn branch_coverage_from_state_and_manifest(
+    candidate: CommitVersion,
+    branch: &BranchLocalState,
+    manifest: &TableManifest,
+) -> LifecycleResult<LifecycleTableManifestBranchCoverage> {
+    let base = branch_coverage_from_manifest(candidate, manifest)?;
+    let covered_versions = branch_durable_commit_versions_at_or_below(branch, candidate);
+    LifecycleTableManifestBranchCoverage::new_with_versions(
+        base.branch_id(),
+        base.covered_min(),
+        base.covered_max(),
+        covered_versions,
+        manifest.manifest_sequence(),
+        base.manifest_object().clone(),
+        base.table_count(),
+        base.row_families(),
+    )
+}
+
+pub(crate) fn branch_durable_commit_versions_at_or_below(
+    branch: &BranchLocalState,
+    candidate: CommitVersion,
+) -> Vec<CommitVersion> {
+    let mut versions = Vec::new();
+    for table in branch.owned_levels().iter().flatten() {
+        versions.extend(
+            table
+                .rows()
+                .iter()
+                .map(crate::table::TableRow::commit_version)
+                .filter(|version| *version <= candidate),
+        );
+    }
+    for layer in branch.inherited_layers() {
+        for table in layer.owned_levels().iter().flatten() {
+            versions.extend(
+                table
+                    .rows()
+                    .iter()
+                    .map(crate::table::TableRow::commit_version)
+                    .filter(|version| *version <= candidate),
+            );
+        }
+    }
+    versions.sort();
+    versions.dedup();
+    versions
+}
+
+pub(crate) fn branch_durable_rows_cover_interval(
+    branch: &BranchLocalState,
+    checkpoint_watermark: CommitVersion,
+    candidate: CommitVersion,
+) -> bool {
+    if candidate <= checkpoint_watermark {
+        return true;
+    }
+    checkpoint_watermark
+        .as_u64()
+        .checked_add(1)
+        .is_some_and(|first| {
+            versions_cover_interval(
+                &branch_durable_commit_versions_at_or_below(branch, candidate),
+                first,
+                candidate.as_u64(),
+            )
+        })
+}
+
+fn branch_has_unflushed_rows_at_or_below(
+    branch: &BranchLocalState,
+    candidate: CommitVersion,
+) -> bool {
+    branch
+        .active()
+        .iter()
+        .any(|row| row.row().commit_version() <= candidate)
+        || branch.frozen().iter().any(|table| {
+            table
+                .iter()
+                .any(|row| row.row().commit_version() <= candidate)
+        })
+}
+
+fn versions_cover_interval(versions: &[CommitVersion], first_needed: u64, candidate: u64) -> bool {
+    let mut expected = first_needed;
+    for version in versions {
+        let raw = version.as_u64();
+        if raw < expected {
+            continue;
+        }
+        if raw != expected {
+            return false;
+        }
+        if raw == candidate {
+            return true;
+        }
+        let Some(next) = expected.checked_add(1) else {
+            return false;
+        };
+        expected = next;
+    }
+    false
+}
+
+fn manifest_table_refs(manifest: &TableManifest) -> impl Iterator<Item = &TableManifestTableRef> {
+    manifest
+        .levels()
+        .iter()
+        .flat_map(TableManifestLevel::tables)
+        .chain(
+            manifest
+                .inherited_layers()
+                .iter()
+                .flat_map(TableManifestInheritedLayer::levels)
+                .flat_map(TableManifestLevel::tables),
+        )
+}
+
+fn recovery_health_epoch(health: &RecoveryHealth) -> LifecycleResult<u64> {
+    match health {
+        RecoveryHealth::Healthy => Ok(1),
+        RecoveryHealth::Degraded {
+            class: RecoveryDegradationClass::Telemetry,
+            faults,
+        } => u64::try_from(faults.len())
+            .map(|count| count.max(1))
+            .map_err(|_| LifecycleError::WalRetentionProofIncomplete {
+                reason: "recovery health epoch does not fit in u64",
+            }),
+        RecoveryHealth::Degraded { .. } | RecoveryHealth::Failed { .. } => {
+            Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "unsafe recovery health cannot prove table manifest flush watermark",
+            })
+        }
     }
 }
 
@@ -459,6 +1236,19 @@ impl LifecycleFlushWatermarkOutcome {
 
     pub(crate) const fn persisted_watermark(&self) -> Option<CommitVersion> {
         self.persisted
+    }
+
+    pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
+        let state_changes = usize::from(matches!(
+            self.status,
+            LifecycleFlushWatermarkStatus::Persisted
+        ));
+        MaintenanceOutcome::new(
+            MaintenanceTaskKind::FlushWatermark,
+            MaintenanceOutcomeStatus::Completed,
+        )
+        .with_state_changes(state_changes)
+        .with_stats(LifecycleStats::new(0, 0, 1, 0, 0))
     }
 }
 
@@ -634,12 +1424,13 @@ fn run_checkpoint_follow_ups(
         let Ok(flush) = persist_flush_watermark(
             services.manifest(),
             visible_version,
-            LifecycleFlushWatermarkRequest::new(
+            &LifecycleFlushWatermarkRequest::new(
                 visible_version,
                 LifecycleFlushWatermarkProof::CheckpointCovered {
                     snapshot_watermark: visible_version,
                 },
             )?,
+            &LifecycleFlushWatermarkValidationContext::none(),
         ) else {
             return outcome.with_follow_up_failure(
                 LifecycleCheckpointStatus::FlushWatermarkFailed,
@@ -665,7 +1456,8 @@ fn run_checkpoint_follow_ups(
 pub(crate) fn persist_flush_watermark(
     manifest: &DatabaseManifestService<'_>,
     visible_version: CommitVersion,
-    request: LifecycleFlushWatermarkRequest,
+    request: &LifecycleFlushWatermarkRequest,
+    context: &LifecycleFlushWatermarkValidationContext,
 ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
     request.validate_static()?;
     if request.candidate() > visible_version {
@@ -674,17 +1466,21 @@ pub(crate) fn persist_flush_watermark(
         });
     }
     let current = manifest.load_required().map_err(manifest_error)?;
-    if current
-        .flushed_through_commit_id()
-        .is_some_and(|persisted| request.candidate() <= persisted)
-    {
-        return Ok(LifecycleFlushWatermarkOutcome::already_persisted(
-            request.candidate(),
-        ));
+    if let Some(persisted) = current.flushed_through_commit_id() {
+        if request.candidate() < persisted {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "flush watermark candidate is below current persisted watermark",
+            });
+        }
+        if request.candidate() == persisted {
+            return Ok(LifecycleFlushWatermarkOutcome::already_persisted(
+                request.candidate(),
+            ));
+        }
     }
     match request.proof() {
         LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark } => {
-            if request.candidate() > snapshot_watermark {
+            if request.candidate() > *snapshot_watermark {
                 return Err(LifecycleError::WalRetentionProofIncomplete {
                     reason: "flush watermark candidate exceeds checkpoint proof",
                 });
@@ -696,6 +1492,52 @@ pub(crate) fn persist_flush_watermark(
                 return Err(LifecycleError::WalRetentionProofIncomplete {
                     reason: "flush watermark candidate exceeds durable checkpoint facts",
                 });
+            }
+        }
+        LifecycleFlushWatermarkProof::TableManifestCovered(proof) => {
+            proof.validate_for_candidate(request.candidate())?;
+            let Some(snapshot_watermark) = current.snapshot_watermark().map(CommitVersion::new)
+            else {
+                return Err(LifecycleError::WalRetentionProofIncomplete {
+                    reason: "table manifest flush proof requires durable checkpoint facts",
+                });
+            };
+            context
+                .validate_table_manifest_proof_extending_checkpoint(proof, snapshot_watermark)?;
+        }
+        LifecycleFlushWatermarkProof::Combined {
+            checkpoint,
+            table_manifest,
+        } => {
+            if request.candidate() <= *checkpoint {
+                if current
+                    .snapshot_watermark()
+                    .is_none_or(|snapshot| request.candidate().as_u64() > snapshot)
+                {
+                    return Err(LifecycleError::WalRetentionProofIncomplete {
+                        reason: "flush watermark candidate exceeds durable checkpoint facts",
+                    });
+                }
+            } else {
+                if *checkpoint == CommitVersion::ZERO {
+                    return Err(LifecycleError::WalRetentionProofIncomplete {
+                        reason:
+                            "table manifest flush proof requires a nonzero checkpoint lower bound",
+                    });
+                }
+                if current
+                    .snapshot_watermark()
+                    .is_none_or(|snapshot| checkpoint.as_u64() > snapshot)
+                {
+                    return Err(LifecycleError::WalRetentionProofIncomplete {
+                        reason: "checkpoint lower bound exceeds durable checkpoint facts",
+                    });
+                }
+                table_manifest.validate_for_candidate(request.candidate())?;
+                context.validate_table_manifest_proof_extending_checkpoint(
+                    table_manifest,
+                    *checkpoint,
+                )?;
             }
         }
         LifecycleFlushWatermarkProof::AlreadyPersisted => {

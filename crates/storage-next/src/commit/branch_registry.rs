@@ -251,6 +251,17 @@ impl CommitBranchRegistry {
         self.descriptors.len()
     }
 
+    pub(crate) fn active_branch_ids(&self) -> Vec<BranchId> {
+        let mut branches = self
+            .descriptors
+            .iter()
+            .filter(|descriptor| descriptor.state() == CommitBranchState::Active)
+            .map(|descriptor| descriptor.branch_id())
+            .collect::<Vec<_>>();
+        branches.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        branches
+    }
+
     fn set_state(
         &mut self,
         branch_id: BranchId,

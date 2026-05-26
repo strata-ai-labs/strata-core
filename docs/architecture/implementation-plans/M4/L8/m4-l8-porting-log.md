@@ -2743,3 +2743,173 @@ cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 git diff --check
 ```
+
+## L8T - Table-Manifest-Backed Flush Watermarks
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/checkpoint.rs`
+- `crates/storage-next/src/lifecycle/facts.rs`
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/recovery.rs`
+- `crates/storage-next/src/lifecycle/table_manifest.rs`
+- `crates/storage-next/src/lifecycle/durable/close.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/tests/flush_watermark.rs`
+- `crates/storage-next/src/lifecycle/tests/flush_watermark/remaining.rs`
+- `crates/storage-next/src/lifecycle/tests/checkpoint/remaining.rs`
+- `crates/storage-next/src/lifecycle/tests/checkpoint/shared.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- Flush watermarks remain database-manifest facts.
+- WAL truncation still delegates to the WAL service through
+  `WalRetentionProof`; lifecycle does not parse WAL segment objects.
+- Table objects alone are not a recovery proof.
+- Table-manifest publication uncertainty is not a recovery proof.
+- Checkpoint coverage and table-manifest coverage can both contribute to a
+  trusted replay boundary, but recovery validates coverage before choosing the
+  WAL replay start.
+
+### Raw Health And Fact Vocabulary
+
+- `LifecycleTableManifestFlushCoverageProof` binds a candidate watermark to
+  manifest epoch, recovery-health epoch, and branch coverage.
+- `LifecycleTableManifestBranchCoverage` records the covered commit range,
+  manifest object, table count, and storage-row family coverage for a branch.
+- `LifecycleTableManifestCoverageFamilies` records required storage-row
+  families with bit flags, so missing tombstone, timeline, inherited-layer, or
+  materialized-replacement coverage fails closed.
+
+### Intentional Changes
+
+- Recovery now accepts a database flush watermark above checkpoint coverage only
+  when recovered table-manifest facts cover the watermark.
+- Recovery starts WAL replay at the validated flush watermark when table
+  manifests prove the covered rows are recoverable.
+- When checkpoint and table-manifest state are both present and the flush
+  watermark depends on table manifests, checkpoint rows must also be present in
+  the recovered table-manifest branch state before that state can become the
+  recovery base.
+- Durable runtime gained an explicit table-manifest-backed flush-watermark hook;
+  it loads the already-published branch table manifest and does not publish a
+  new table manifest as part of watermark persistence.
+- The maintenance executor now has an explicit flush-watermark task kind keyed
+  by candidate version. It coalesces by candidate, reports deferred coverage
+  gaps as maintenance outcomes, and keeps checkpoint execution separate.
+
+### Retired From V1 L8T
+
+- Persisting flush watermarks from table-object publication alone.
+- Treating a missing branch as coverage.
+- Inferring timeline/tombstone coverage from a table object's commit max alone.
+- Moving table-manifest publication into checkpoint execution.
+
+### Tests Added
+
+- `table_manifest_flush_proof_accepts_exact_coverage`
+- `table_manifest_flush_proof_rejects_missing_branch_coverage`
+- `table_manifest_flush_proof_rejects_stale_manifest_epoch`
+- `table_manifest_flush_proof_rejects_stale_recovery_health_epoch`
+- `table_manifest_flush_proof_is_deterministic_for_shuffled_inputs`
+- `table_manifest_flush_proof_rejects_active_rows_below_candidate`
+- `table_manifest_flush_proof_rejects_frozen_rows_below_candidate`
+- `table_manifest_coverage_rejects_timeline_gap`
+- `table_manifest_coverage_rejects_tombstone_gap`
+- `unsafe_recovery_health_blocks_table_manifest_flush_proof`
+- `flush_watermark_persists_from_table_manifest_coverage`
+- `flush_watermark_persists_from_combined_checkpoint_and_table_manifest_coverage`
+- `flush_watermark_rejects_table_manifest_candidate_above_coverage`
+- `flush_watermark_success_does_not_publish_table_manifest`
+- `durable_runtime_persists_table_manifest_flush_watermark_after_flush`
+- `recovery_accepts_flush_watermark_above_checkpoint_when_table_manifest_covers`
+- `recovery_rejects_flush_watermark_above_table_manifest_coverage`
+- `recovery_after_truncation_restores_latest_reads`
+- `table_manifest_flush_proof_accepts_coverage_above_checkpoint`
+- `table_manifest_flush_proof_rejects_table_object_without_manifest`
+- `table_manifest_flush_proof_rejects_manifest_publish_uncertain`
+- `table_manifest_flush_proof_rejects_candidate_above_visible_version`
+- `table_manifest_flush_proof_rejects_zero_candidate`
+- `table_manifest_coverage_includes_user_rows`
+- `table_manifest_coverage_includes_tombstones`
+- `table_manifest_coverage_includes_timeline_rows`
+- `table_manifest_coverage_includes_materialized_replacement_rows`
+- `table_manifest_coverage_includes_inherited_layer_rows`
+- `table_manifest_coverage_rejects_inherited_layer_gap`
+- `flush_watermark_rejects_table_manifest_candidate_below_current_as_stale`
+- `flush_watermark_equal_to_current_is_noop`
+- `flush_watermark_persist_failure_prevents_wal_truncation`
+- `flush_watermark_success_records_manifest_fact`
+- `flush_watermark_success_does_not_mutate_branch_state`
+- `cache_mode_rejects_table_manifest_flush_watermark`
+- `recovery_rejects_missing_table_manifest_for_flush_watermark`
+- `recovery_rejects_corrupt_table_manifest_for_flush_watermark`
+- `recovery_rejects_table_object_mismatch_for_flush_watermark`
+- `recovery_uses_table_manifest_flush_watermark_as_replay_start_after_validation`
+- `recovery_replays_wal_tail_above_table_manifest_flush_watermark`
+- `recovery_ignores_duplicate_record_at_table_manifest_flush_watermark`
+- `recovery_after_truncation_restores_history_reads_within_retained_bounds`
+- `policy_downgrade_blocks_table_manifest_flush_proof`
+- `data_loss_blocks_table_manifest_flush_proof`
+- `telemetry_health_allows_unrelated_table_manifest_flush_proof`
+- `table_manifest_reachability_debt_blocks_flush_proof`
+- `quarantine_inventory_mismatch_blocks_flush_proof_when_relevant`
+- `missing_branch_lifecycle_fact_blocks_absence_coverage`
+- `branch_absence_does_not_advance_flush_watermark`
+- `maintenance_task_can_request_table_manifest_flush_watermark`
+- `maintenance_task_coalesces_table_manifest_flush_watermark_by_candidate`
+- `maintenance_task_reports_deferred_when_table_coverage_missing`
+- `maintenance_task_reports_health_debt_on_wal_truncation_failure`
+- `maintenance_task_does_not_run_table_manifest_watermark_after_close_begins`
+- `maintenance_task_preserves_stats_for_watermark_and_truncation`
+- `maintenance_task_does_not_claim_checkpoint_execution`
+- `wal_truncation_from_table_manifest_flush_watermark_uses_typed_proof`
+- `wal_truncation_from_table_manifest_flush_watermark_deletes_covered_segments`
+- `wal_truncation_keeps_segment_with_record_above_table_manifest_watermark`
+- `wal_truncation_keeps_active_segment_under_table_manifest_watermark`
+- `wal_truncation_keeps_newer_than_active_segment`
+- `wal_truncation_partial_delete_report_preserves_source_chain`
+- `table_manifest_watermark_publish_uses_canonical_manifest_bytes`
+- Source guards:
+  `table_manifest_watermark_does_not_import_raw_io`,
+  `table_manifest_watermark_does_not_scan_wal_segments`,
+  `wal_truncation_does_not_parse_wal_objects_in_lifecycle`,
+  `table_manifest_watermark_does_not_decode_table_bytes_directly`,
+  `table_manifest_watermark_does_not_import_backend_delete`,
+  `table_manifest_watermark_does_not_import_engine_or_product_crates`,
+  `table_manifest_watermark_does_not_import_stratahub`,
+  `table_manifest_watermark_does_not_import_primitive_modules`,
+  `cache_mode_does_not_import_table_manifest_watermark_runner`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Accept table objects as proof | `crates/storage-next/src/lifecycle/checkpoint.rs` | Treat `TableObjectsOnly` as accepted coverage | `flush_watermark_proofs_are_conservative_and_monotonic` |
+| Ignore active rows | `crates/storage-next/src/lifecycle/checkpoint.rs` | Skip active-row check while building table-manifest proof | `table_manifest_flush_proof_rejects_active_rows_below_candidate` |
+| Ignore frozen rows | `crates/storage-next/src/lifecycle/checkpoint.rs` | Skip frozen-row check while building table-manifest proof | `table_manifest_flush_proof_rejects_frozen_rows_below_candidate` |
+| Ignore proof epoch | `crates/storage-next/src/lifecycle/checkpoint.rs` | Accept stale manifest/recovery-health epochs | `table_manifest_flush_proof_rejects_stale_manifest_epoch`, `table_manifest_flush_proof_rejects_stale_recovery_health_epoch` |
+| Ignore timeline coverage | `crates/storage-next/src/lifecycle/checkpoint.rs` | Allow proof with timeline-family bit cleared | `table_manifest_coverage_rejects_timeline_gap` |
+| Ignore tombstone coverage | `crates/storage-next/src/lifecycle/checkpoint.rs` | Allow proof with tombstone-family bit cleared | `table_manifest_coverage_rejects_tombstone_gap` |
+| Allow unsafe health | `crates/storage-next/src/lifecycle/checkpoint.rs` | Treat data-loss recovery health as safe for table-manifest proof | `unsafe_recovery_health_blocks_table_manifest_flush_proof` |
+| Start replay from untrusted flush | `crates/storage-next/src/lifecycle/recovery.rs` | Use manifest flush watermark before table-manifest validation | `recovery_rejects_flush_watermark_above_table_manifest_coverage` |
+| Replay from checkpoint only | `crates/storage-next/src/lifecycle/recovery.rs` | Ignore validated table-manifest flush watermark when choosing replay start | `recovery_accepts_flush_watermark_above_checkpoint_when_table_manifest_covers` |
+| Publish table manifest during watermark persist | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Call table-manifest publication from the watermark hook | `flush_watermark_success_does_not_publish_table_manifest` |
+
+### Verification
+
+Commands run for L8T (all passed):
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::flush_watermark
+cargo test -p strata-storage-next --locked --lib lifecycle::tests
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```

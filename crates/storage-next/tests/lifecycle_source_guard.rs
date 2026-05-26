@@ -300,6 +300,61 @@ fn cache_mode_does_not_import_table_manifest_service() {
 }
 
 #[test]
+fn table_manifest_watermark_does_not_import_raw_io() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn table_manifest_watermark_does_not_scan_wal_segments() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn wal_truncation_does_not_parse_wal_objects_in_lifecycle() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn table_manifest_watermark_does_not_decode_table_bytes_directly() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn table_manifest_watermark_does_not_import_backend_delete() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn table_manifest_watermark_does_not_import_engine_or_product_crates() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn table_manifest_watermark_does_not_import_stratahub() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn table_manifest_watermark_does_not_import_primitive_modules() {
+    assert_table_manifest_watermark_source_clean();
+}
+
+#[test]
+fn cache_mode_does_not_import_table_manifest_watermark_runner() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/cache.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle cache source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_table_manifest_watermark_runner_dependency(line),
+            "src/lifecycle/cache.rs:{} imports table-manifest watermark runner: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
 fn manifest_service_does_not_import_lifecycle() {
     let root = common::crate_root();
     let path = root.join("src/service/manifest.rs");
@@ -693,6 +748,25 @@ fn assert_table_reachability_source_clean() {
             "src/lifecycle/table_reachability.rs:{} calls forbidden table reachability dependency: {line}",
             line_number + 1
         );
+    }
+}
+
+fn assert_table_manifest_watermark_source_clean() {
+    let root = common::crate_root();
+    for relative in [
+        "src/lifecycle/checkpoint.rs",
+        "src/lifecycle/durable/maintenance.rs",
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read table-manifest watermark source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_forbidden_table_manifest_watermark_dependency(line),
+                "{}:{} calls forbidden table-manifest watermark dependency: {line}",
+                relative,
+                line_number + 1
+            );
+        }
     }
 }
 
@@ -1568,6 +1642,39 @@ fn contains_forbidden_table_manifest_publication_dependency(line: &str) -> bool 
         "persist_flush_watermark(",
         "repair_latest_tail(",
         "wal_truncation",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_table_manifest_watermark_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::fs",
+        "std::path",
+        "read_dir",
+        "list_prefix(",
+        "decode_wal",
+        "walrecord",
+        "decode_immutable_table",
+        "backend.delete_object(",
+        ".delete_object(",
+        "strata_engine",
+        "strata_intelligence",
+        "stratahub",
+        "primitive",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_table_manifest_watermark_runner_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "persist_table_manifest_flush_watermark",
+        "lifecycletablemanifestflushcoverageproof",
+        "tablemanifestcovered",
+        "tablemanifestservice",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

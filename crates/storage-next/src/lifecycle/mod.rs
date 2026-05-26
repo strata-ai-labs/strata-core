@@ -50,6 +50,8 @@ pub(crate) use checkpoint::{
     truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleCheckpointStatus, LifecycleFlushWatermarkOutcome,
     LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest, LifecycleFlushWatermarkStatus,
+    LifecycleFlushWatermarkValidationContext, LifecycleTableManifestBranchCoverage,
+    LifecycleTableManifestCoverageFamilies, LifecycleTableManifestFlushCoverageProof,
     LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest, LifecycleWalTruncationStatus,
 };
 #[allow(
@@ -188,9 +190,10 @@ pub(crate) use state::{
 )]
 pub(crate) use table_manifest::{
     preflight_table_manifest_with_checkpoint, publish_table_manifest_for_branch,
-    recover_table_manifest_for_branch, stage_table_manifest_for_branch,
-    table_manifest_debt_outcome, LifecycleDurableTableCatalog, LifecycleDurableTableCatalogEntry,
-    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
+    recover_table_manifest_for_branch, require_table_manifest_covers_checkpoint_rows,
+    stage_table_manifest_for_branch, table_manifest_debt_outcome, LifecycleDurableTableCatalog,
+    LifecycleDurableTableCatalogEntry, LifecycleTableManifestRecoveryOutcome,
+    LifecycleTableManifestRecoveryStage,
 };
 #[allow(
     unused_imports,

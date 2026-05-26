@@ -1,10 +1,12 @@
 //! Durable-local recovery orchestration.
 
+use super::checkpoint::branch_durable_rows_cover_interval;
 use super::{
-    preflight_table_manifest_with_checkpoint, LifecycleDurableLocalShell, LifecycleError,
-    LifecycleLowerLayer, LifecycleResult, LifecycleTableManifestRecoveryOutcome,
-    LifecycleTableManifestRecoveryStage, RecoveryDegradationClass, RecoveryFault,
-    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageOpenPlan,
+    preflight_table_manifest_with_checkpoint, require_table_manifest_covers_checkpoint_rows,
+    LifecycleDurableLocalShell, LifecycleError, LifecycleLowerLayer, LifecycleResult,
+    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
+    RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth, RecoveryStrictness,
+    StorageOpenPlan,
 };
 use crate::branch::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
@@ -114,25 +116,60 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
 
         let mut faults = Vec::new();
         let checkpoint = self.recover_checkpoint(request, &mut faults)?;
-        validate_flush_watermark_is_checkpoint_covered(
+        let quarantine = self.recover_quarantine(request, &mut faults)?;
+        let tables = self.recover_tables(request, &mut faults)?;
+        let trusted_flush_watermark = validate_flush_watermark_is_recoverable(
             self.shell.assembly_facts().manifest_flush_watermark(),
             &checkpoint.checkpoint,
+            &tables.recovered_tables,
+            tables
+                .table_manifest_stage
+                .as_ref()
+                .map(LifecycleTableManifestRecoveryStage::staged_branch),
             request.strictness(),
             &mut faults,
             request.max_faults(),
         )?;
-        let quarantine = self.recover_quarantine(request, &mut faults)?;
-        let tables = self.recover_tables(request, &mut faults)?;
-        let replay_start = trusted_replay_start(checkpoint.checkpoint.trusted_watermark());
+        let replay_start = trusted_replay_start(
+            checkpoint.checkpoint.trusted_watermark(),
+            trusted_flush_watermark,
+        );
         let wal = self.recover_wal(request, replay_start, &mut faults)?;
         let health = recovery_health_from_faults(request, faults)?;
+        let use_table_manifest_as_base = trusted_flush_watermark.is_some_and(|flush| {
+            checkpoint
+                .checkpoint
+                .trusted_watermark()
+                .is_none_or(|checkpoint| flush > checkpoint)
+        });
         if let Some(recovered_branch) = checkpoint.recovered_branch {
-            if let Some(stage) = tables.table_manifest_stage.as_ref() {
+            if let Some(stage) = tables.table_manifest_stage {
                 // Recovery Protocol rule 9: when both checkpoint rows and a
                 // table manifest are present, preflight the combined state
                 // before installing either source. Exact byte duplicates at
                 // the same internal key are accepted; divergent bytes fail.
                 preflight_table_manifest_with_checkpoint(&recovered_branch, stage.staged_branch())?;
+                if use_table_manifest_as_base {
+                    require_table_manifest_covers_checkpoint_rows(
+                        &recovered_branch,
+                        stage.staged_branch(),
+                    )?;
+                    self.shell.apply_table_manifest_recovery(stage);
+                    return Ok(LifecycleRecoveryOutcome {
+                        health,
+                        checkpoint: checkpoint.checkpoint,
+                        wal,
+                        quarantine,
+                        tables: tables.recovered_tables,
+                    });
+                }
+                // The flush watermark sits at or below the checkpoint, so the
+                // checkpoint is authoritative for the in-memory branch state.
+                // The staged manifest stays staged: its table objects remain
+                // reachable via the catalog and are protected by table-object
+                // reachability retention, but the rows are not promoted into
+                // the branch state — the checkpoint is a superset for this
+                // commit range.
             }
             *self.shell.branch_state_mut() = recovered_branch;
         } else if let Some(stage) = tables.table_manifest_stage {
@@ -786,23 +823,40 @@ fn install_checkpoint_rows(
     })
 }
 
-fn trusted_replay_start(checkpoint_watermark: Option<CommitVersion>) -> CommitVersion {
-    checkpoint_watermark.unwrap_or(CommitVersion::ZERO)
+fn trusted_replay_start(
+    checkpoint_watermark: Option<CommitVersion>,
+    flush_watermark: Option<CommitVersion>,
+) -> CommitVersion {
+    checkpoint_watermark
+        .into_iter()
+        .chain(flush_watermark)
+        .max()
+        .unwrap_or(CommitVersion::ZERO)
 }
 
-fn validate_flush_watermark_is_checkpoint_covered(
+fn validate_flush_watermark_is_recoverable(
     flush_watermark: Option<CommitVersion>,
     checkpoint: &LifecycleRecoveredCheckpoint,
+    tables: &LifecycleRecoveredTables,
+    staged_table_manifest_branch: Option<&crate::branch::BranchLocalState>,
     strictness: RecoveryStrictness,
     faults: &mut Vec<RecoveryFault>,
     max_faults: usize,
-) -> LifecycleResult<()> {
+) -> LifecycleResult<Option<CommitVersion>> {
     if let Some(flush_watermark) = flush_watermark {
         if checkpoint
             .trusted_watermark()
             .is_some_and(|watermark| flush_watermark <= watermark)
         {
-            return Ok(());
+            return Ok(Some(flush_watermark));
+        }
+        if table_manifest_covers_flush_watermark(
+            flush_watermark,
+            checkpoint.trusted_watermark(),
+            tables,
+            staged_table_manifest_branch,
+        ) {
+            return Ok(Some(flush_watermark));
         }
         if checkpoint.snapshot_id().is_some()
             && checkpoint.trusted_watermark().is_none()
@@ -814,7 +868,7 @@ fn validate_flush_watermark_is_checkpoint_covered(
                 RecoveryFaultKind::MissingSnapshotObject,
                 "manifest flush watermark lost with missing snapshot",
             )?;
-            return Ok(());
+            return Ok(None);
         }
         if checkpoint
             .trusted_watermark()
@@ -825,7 +879,29 @@ fn validate_flush_watermark_is_checkpoint_covered(
             });
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+fn table_manifest_covers_flush_watermark(
+    flush_watermark: CommitVersion,
+    checkpoint_watermark: Option<CommitVersion>,
+    tables: &LifecycleRecoveredTables,
+    staged_branch: Option<&crate::branch::BranchLocalState>,
+) -> bool {
+    let Some(checkpoint_watermark) = checkpoint_watermark else {
+        return false;
+    };
+    if tables
+        .table_manifest()
+        .install_outcome()
+        .and_then(crate::branch::BranchTableManifestRecoveryOutcome::max_commit_version)
+        .is_none_or(|max_commit_version| max_commit_version < flush_watermark)
+    {
+        return false;
+    }
+    staged_branch.is_some_and(|branch| {
+        branch_durable_rows_cover_interval(branch, checkpoint_watermark, flush_watermark)
+    })
 }
 
 fn manifest_snapshot_watermark(

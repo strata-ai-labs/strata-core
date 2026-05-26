@@ -3,12 +3,14 @@
 use super::bootstrap::LifecycleDurableLocalRuntime;
 use super::require_admitted;
 use crate::branch::{BranchLocalState, BranchRotationOutcome};
-use crate::commit::{CommitBranchGuardSet, VisibleVersionTracker};
+use crate::commit::{CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker};
 use crate::lifecycle::checkpoint::{
     checkpoint_durable_branch, checkpoint_request_from_maintenance_task_with_snapshot_id,
     persist_flush_watermark, truncate_wal, wal_truncation_request_from_maintenance_task,
     LifecycleCheckpointOutcome, LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome,
-    LifecycleFlushWatermarkRequest, LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
+    LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest,
+    LifecycleFlushWatermarkValidationContext, LifecycleTableManifestFlushCoverageProof,
+    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure, compact_durable_branch,
@@ -147,13 +149,64 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     )]
     pub(crate) fn persist_flush_watermark(
         &mut self,
-        request: LifecycleFlushWatermarkRequest,
+        request: &LifecycleFlushWatermarkRequest,
     ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         persist_flush_watermark(
             self.services.manifest(),
             self.visible.visible_version(),
             request,
+            &LifecycleFlushWatermarkValidationContext::none(),
+        )
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this table-manifest-backed watermark hook"
+    )]
+    pub(crate) fn persist_table_manifest_flush_watermark(
+        &mut self,
+        candidate: strata_core_next::CommitVersion,
+    ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let manifest = self
+            .services
+            .table_manifest()
+            .load_current(self.branch.branch_id())
+            .map_err(manifest_error)?
+            .ok_or(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires durable table manifest",
+            })?;
+        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+            candidate,
+            &self.branch,
+            &manifest,
+            &self.current_recovery_health,
+        )?;
+        // Forward-compat guard. The current durable runtime opens exactly one
+        // branch, so this check passes. If multi-branch runtimes land, the
+        // proof construction above must be expanded to load every active
+        // branch's manifest and per-branch state before this guard relaxes.
+        let active_branches = self.registry.active_branch_ids();
+        if active_branches != vec![self.branch.branch_id()] {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires all active branches to be loaded",
+            });
+        }
+        let request = LifecycleFlushWatermarkRequest::new(
+            candidate,
+            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        )?;
+        let context = LifecycleFlushWatermarkValidationContext::table_manifest(
+            proof.manifest_epoch(),
+            proof.recovery_health_epoch(),
+        )?
+        .with_required_branch_epochs([(self.branch.branch_id(), manifest.manifest_sequence())])?;
+        persist_flush_watermark(
+            self.services.manifest(),
+            self.visible.visible_version(),
+            &request,
+            &context,
         )
     }
 
@@ -391,6 +444,34 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let mut runner = DurableWalTruncationMaintenanceRunner { manifest, wal };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::WalTruncation
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime maintenance entry point is consumed by dedicated tests"
+    )]
+    pub(crate) fn run_next_flush_watermark_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let maintenance = &mut self.maintenance;
+        let branch = &self.branch;
+        let registry = &self.registry;
+        let manifest = self.services.manifest();
+        let table_manifest = self.services.table_manifest();
+        let visible_version = self.visible.visible_version();
+        let health = &self.current_recovery_health;
+        let mut runner = DurableFlushWatermarkMaintenanceRunner {
+            branch,
+            registry,
+            manifest,
+            table_manifest,
+            visible_version,
+            health,
+        };
+        maintenance.run_next_matching(state, &mut runner, |task| {
+            task.kind() == MaintenanceTaskKind::FlushWatermark
         })
     }
 
@@ -656,6 +737,15 @@ struct DurableWalTruncationMaintenanceRunner<'a, 'b> {
     wal: &'a crate::service::WalService<'b>,
 }
 
+struct DurableFlushWatermarkMaintenanceRunner<'a, 'b> {
+    branch: &'a BranchLocalState,
+    registry: &'a CommitBranchRegistry,
+    manifest: &'a crate::service::DatabaseManifestService<'b>,
+    table_manifest: &'a TableManifestService<'b>,
+    visible_version: strata_core_next::CommitVersion,
+    health: &'a RecoveryHealth,
+}
+
 impl MaintenanceTaskRunner for DurableWalTruncationMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let Some(request) = wal_truncation_request_from_maintenance_task(task, self.manifest)?
@@ -667,6 +757,68 @@ impl MaintenanceTaskRunner for DurableWalTruncationMaintenanceRunner<'_, '_> {
             .with_reason("WAL truncation has no retention proof"));
         };
         Ok(truncate_wal(self.wal, request)?.maintenance_outcome())
+    }
+}
+
+impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        if task.kind() != MaintenanceTaskKind::FlushWatermark {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "maintenance task is not a flush watermark task",
+            });
+        }
+        let Some(candidate) = task.flush_watermark_candidate() else {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush watermark task requires a candidate",
+            });
+        };
+        let branch_id = self.branch.branch_id();
+        let Some(table_manifest) = self
+            .table_manifest
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+        else {
+            return Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::FlushWatermark,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("table manifest coverage is missing"));
+        };
+        let proof = match LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+            candidate,
+            self.branch,
+            &table_manifest,
+            self.health,
+        ) {
+            Ok(proof) => proof,
+            Err(error @ LifecycleError::WalRetentionProofIncomplete { .. }) => {
+                return Ok(MaintenanceOutcome::new(
+                    MaintenanceTaskKind::FlushWatermark,
+                    MaintenanceOutcomeStatus::Deferred,
+                )
+                .with_reason("table manifest coverage is incomplete")
+                .with_source_error(error));
+            }
+            Err(error) => return Err(error),
+        };
+        if self.registry.active_branch_ids() != vec![branch_id] {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires all active branches to be loaded",
+            });
+        }
+        let request = LifecycleFlushWatermarkRequest::new(
+            candidate,
+            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        )?;
+        let context = LifecycleFlushWatermarkValidationContext::table_manifest(
+            proof.manifest_epoch(),
+            proof.recovery_health_epoch(),
+        )?
+        .with_required_branch_epochs([(branch_id, table_manifest.manifest_sequence())])?;
+        Ok(
+            persist_flush_watermark(self.manifest, self.visible_version, &request, &context)?
+                .maintenance_outcome(),
+        )
     }
 }
 

@@ -68,6 +68,7 @@ pub(crate) struct StorageOpenPlan {
 pub(crate) enum MaintenanceTaskKind {
     Flush,
     Checkpoint,
+    FlushWatermark,
     WalTruncation,
     Compaction,
     Materialization,
