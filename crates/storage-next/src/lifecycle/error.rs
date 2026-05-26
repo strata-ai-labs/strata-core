@@ -49,6 +49,20 @@ pub(crate) enum LifecycleError {
         reason: &'static str,
         source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
+    RewritePublicationFailed {
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    RewritePublicationUncertain {
+        objects: Vec<String>,
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
+    RewritePublicationOrphaned {
+        objects: Vec<String>,
+        reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    },
     TableManifestPublicationFailed {
         reason: &'static str,
         source: Option<Arc<dyn Error + Send + Sync + 'static>>,
@@ -183,6 +197,40 @@ impl LifecycleError {
         }
     }
 
+    pub(crate) fn rewrite_publication_failed_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::RewritePublicationFailed {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn rewrite_publication_uncertain_with_objects(
+        objects: Vec<String>,
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::RewritePublicationUncertain {
+            objects,
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) fn rewrite_publication_orphaned_with(
+        objects: Vec<String>,
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::RewritePublicationOrphaned {
+            objects,
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
     pub(crate) fn table_manifest_publication_uncertain_with(
         reason: &'static str,
         source: impl Error + Send + Sync + 'static,
@@ -286,6 +334,13 @@ impl LifecycleError {
             }
             Self::FlushPublicationUncertain { .. } => "unknown.lifecycle.flush_publication",
             Self::FlushPublicationOrphaned { .. } => "unknown.lifecycle.flush_publication_orphan",
+            Self::RewritePublicationFailed { .. } => {
+                "failed_precondition.lifecycle.rewrite_publication"
+            }
+            Self::RewritePublicationUncertain { .. } => "unknown.lifecycle.rewrite_publication",
+            Self::RewritePublicationOrphaned { .. } => {
+                "unknown.lifecycle.rewrite_publication_orphan"
+            }
             Self::TableManifestPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.table_manifest_publication"
             }
@@ -386,6 +441,10 @@ impl LifecycleError {
                 Self::FlushPublicationUncertain { reason: right, .. },
             )
             | (
+                Self::RewritePublicationFailed { reason: left, .. },
+                Self::RewritePublicationFailed { reason: right, .. },
+            )
+            | (
                 Self::TableManifestPublicationFailed { reason: left, .. },
                 Self::TableManifestPublicationFailed { reason: right, .. },
             )
@@ -450,11 +509,44 @@ impl LifecycleError {
             _ => None,
         }
     }
+
+    fn same_object_list_reason_variant(&self, other: &Self) -> Option<bool> {
+        match (self, other) {
+            (
+                Self::RewritePublicationOrphaned {
+                    objects: left_objects,
+                    reason: left_reason,
+                    ..
+                },
+                Self::RewritePublicationOrphaned {
+                    objects: right_objects,
+                    reason: right_reason,
+                    ..
+                },
+            )
+            | (
+                Self::RewritePublicationUncertain {
+                    objects: left_objects,
+                    reason: left_reason,
+                    ..
+                },
+                Self::RewritePublicationUncertain {
+                    objects: right_objects,
+                    reason: right_reason,
+                    ..
+                },
+            ) => Some(left_objects == right_objects && left_reason == right_reason),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for LifecycleError {
     fn eq(&self, other: &Self) -> bool {
         if let Some(equal) = self.same_static_reason_variant(other) {
+            return equal;
+        }
+        if let Some(equal) = self.same_object_list_reason_variant(other) {
             return equal;
         }
         match (self, other) {
@@ -598,6 +690,27 @@ impl fmt::Display for LifecycleError {
                 }
                 write!(formatter, ": {reason}")
             }
+            Self::RewritePublicationFailed { reason, .. } => {
+                write!(formatter, "table rewrite publication failed: {reason}")
+            }
+            Self::RewritePublicationUncertain {
+                objects, reason, ..
+            } => {
+                formatter.write_str("table rewrite publication uncertain")?;
+                if !objects.is_empty() {
+                    write!(formatter, " at {}", objects.join(","))?;
+                }
+                write!(formatter, ": {reason}")
+            }
+            Self::RewritePublicationOrphaned {
+                objects, reason, ..
+            } => {
+                formatter.write_str("table rewrite publication orphaned")?;
+                if !objects.is_empty() {
+                    write!(formatter, " at {}", objects.join(","))?;
+                }
+                write!(formatter, ": {reason}")
+            }
             Self::TableManifestPublicationFailed { reason, .. } => {
                 write!(formatter, "table manifest publication failed: {reason}")
             }
@@ -704,6 +817,18 @@ impl Error for LifecycleError {
                 ..
             }
             | Self::FlushPublicationOrphaned {
+                source: Some(source),
+                ..
+            }
+            | Self::RewritePublicationFailed {
+                source: Some(source),
+                ..
+            }
+            | Self::RewritePublicationUncertain {
+                source: Some(source),
+                ..
+            }
+            | Self::RewritePublicationOrphaned {
                 source: Some(source),
                 ..
             }

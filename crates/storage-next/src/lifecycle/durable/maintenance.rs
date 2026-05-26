@@ -13,9 +13,8 @@ use crate::lifecycle::checkpoint::{
     LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
 };
 use crate::lifecycle::compaction::{
-    bind_materialization_task_for_enqueue, collect_storage_pressure, compact_durable_branch,
+    bind_materialization_task_for_enqueue, collect_storage_pressure,
     compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
-    materialize_durable_branch,
 };
 use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
 use crate::lifecycle::retention::{
@@ -33,6 +32,7 @@ use crate::lifecycle::table_reachability::{
     LifecycleTableObjectProofEpochs, LifecycleTableObjectRetentionRequest,
 };
 use crate::lifecycle::{
+    compact_durable_branch_manifest_backed, materialize_durable_branch_manifest_backed,
     purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
     quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
     repair_quarantine as repair_lifecycle_quarantine, repair_request_from_maintenance_task,
@@ -102,7 +102,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCompactionRequest,
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        compact_durable_branch(&mut self.branch, request)
+        compact_durable_branch_manifest_backed(
+            &mut self.branch,
+            self.services.table_object(),
+            self.services.table_reader(),
+            self.services.table_manifest(),
+            &mut self.table_catalog,
+            request,
+        )
     }
 
     #[allow(
@@ -114,7 +121,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleMaterializationRequest,
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        materialize_durable_branch(&mut self.branch, request)
+        materialize_durable_branch_manifest_backed(
+            &mut self.branch,
+            self.services.table_object(),
+            self.services.table_reader(),
+            self.services.table_manifest(),
+            &mut self.table_catalog,
+            request,
+        )
     }
 
     #[allow(
@@ -485,7 +499,17 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = &mut self.branch;
-        let mut runner = DurableCompactionMaintenanceRunner { branch };
+        let table_object = self.services.table_object();
+        let table_reader = self.services.table_reader();
+        let table_manifest = self.services.table_manifest();
+        let table_catalog = &mut self.table_catalog;
+        let mut runner = DurableCompactionMaintenanceRunner {
+            branch,
+            table_object,
+            table_reader,
+            table_manifest,
+            table_catalog,
+        };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Compaction
         })
@@ -501,7 +525,17 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = &mut self.branch;
-        let mut runner = DurableMaterializationMaintenanceRunner { branch };
+        let table_object = self.services.table_object();
+        let table_reader = self.services.table_reader();
+        let table_manifest = self.services.table_manifest();
+        let table_catalog = &mut self.table_catalog;
+        let mut runner = DurableMaterializationMaintenanceRunner {
+            branch,
+            table_object,
+            table_reader,
+            table_manifest,
+            table_catalog,
+        };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Materialization
         })
@@ -822,25 +856,49 @@ impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
     }
 }
 
-struct DurableCompactionMaintenanceRunner<'a> {
+struct DurableCompactionMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
+    table_object: &'a TableObjectService<'b>,
+    table_reader: &'a TableObjectReaderService<'b>,
+    table_manifest: &'a TableManifestService<'b>,
+    table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
 }
 
-impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_> {
+impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = compaction_request_from_maintenance_task(task)?;
-        Ok(compact_durable_branch(self.branch, &request)?.maintenance_outcome())
+        Ok(compact_durable_branch_manifest_backed(
+            self.branch,
+            self.table_object,
+            self.table_reader,
+            self.table_manifest,
+            self.table_catalog,
+            &request,
+        )?
+        .maintenance_outcome())
     }
 }
 
-struct DurableMaterializationMaintenanceRunner<'a> {
+struct DurableMaterializationMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
+    table_object: &'a TableObjectService<'b>,
+    table_reader: &'a TableObjectReaderService<'b>,
+    table_manifest: &'a TableManifestService<'b>,
+    table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
 }
 
-impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_> {
+impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = materialization_request_from_maintenance_task(task)?;
-        Ok(materialize_durable_branch(self.branch, &request)?.maintenance_outcome())
+        Ok(materialize_durable_branch_manifest_backed(
+            self.branch,
+            self.table_object,
+            self.table_reader,
+            self.table_manifest,
+            self.table_catalog,
+            &request,
+        )?
+        .maintenance_outcome())
     }
 }
 

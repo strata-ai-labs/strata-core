@@ -260,6 +260,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.branch
     }
 
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn branch_state_mut(&mut self) -> &mut BranchLocalState {
+        &mut self.branch
+    }
+
     #[allow(
         dead_code,
         reason = "durable table catalog is asserted by recovery tests"

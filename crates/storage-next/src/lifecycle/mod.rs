@@ -24,6 +24,7 @@ mod quarantine;
 mod recovery;
 mod result;
 mod retention;
+mod rewrite_publication;
 mod state;
 mod table_manifest;
 mod table_reachability;
@@ -174,6 +175,13 @@ pub(crate) use retention::{
     LifecycleRetentionProofStatus, LifecycleRetentionRequest, LifecycleRetentionScope,
     LifecycleRetentionStatus, LifecycleSnapshotPruningOutcome, LifecycleSnapshotPruningRequest,
     LifecycleSnapshotPruningStatus,
+};
+#[allow(
+    unused_imports,
+    reason = "durable rewrite publication exports define the local surface for maintenance dispatch"
+)]
+pub(crate) use rewrite_publication::{
+    compact_durable_branch_manifest_backed, materialize_durable_branch_manifest_backed,
 };
 #[allow(
     unused_imports,

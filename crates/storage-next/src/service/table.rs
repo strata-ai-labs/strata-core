@@ -556,6 +556,37 @@ impl<'a> TableObjectReaderService<'a> {
         validate_reader_facts(object_facts, &reader)?;
         Ok(reader)
     }
+
+    pub(crate) fn require_exact_bytes(
+        &self,
+        object_facts: &TableObjectFacts,
+        expected_bytes: &[u8],
+    ) -> Result<(), TableObjectReadError> {
+        let expected_len =
+            u64::try_from(expected_bytes.len()).map_err(|_| TableObjectReadError::Source {
+                object: object_facts.object().clone(),
+                reason: "expected table object byte count is too large",
+            })?;
+        if object_facts.byte_count() != expected_len {
+            return Err(TableObjectReadError::FactMismatch {
+                object: object_facts.object().clone(),
+                field: "byte_count",
+            });
+        }
+        let source = TableObjectByteSource::new(
+            self.backend,
+            object_facts.object().clone(),
+            object_facts.byte_count(),
+        )?;
+        let existing_bytes = source.read_full()?;
+        if existing_bytes != expected_bytes {
+            return Err(TableObjectReadError::FactMismatch {
+                object: object_facts.object().clone(),
+                field: "bytes",
+            });
+        }
+        Ok(())
+    }
 }
 
 fn validate_reader_facts(

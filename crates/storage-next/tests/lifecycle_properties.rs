@@ -243,6 +243,51 @@ fn lifecycle_property_harness_runs_flush_contract() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_property_harness_runs_table_rewrite_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_table_rewrite_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 16,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-table-rewrite.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=32), |script| {
+            let outcome = check_lifecycle_table_rewrite_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.cache_compaction_cases() == 0
+                || outcome.durable_compaction_cases() == 0
+                || outcome.materialization_cases() == 0
+                || outcome.pressure_cases() == 0
+                || outcome.compaction_output_published_cases() == 0
+                || outcome.materialization_output_published_cases() == 0
+                || outcome.output_reopened_cases() == 0
+                || outcome.install_after_publish_cases() == 0
+                || outcome.manifest_after_install_cases() == 0
+                || outcome.publish_failed_before_install_cases() == 0
+                || outcome.install_failed_after_publish_cases() == 0
+                || outcome.manifest_failed_after_install_cases() == 0
+                || outcome.orphan_output_recorded_cases() == 0
+                || outcome.no_pruning_observed_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "lifecycle table rewrite contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle table rewrite property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_property_harness_runs_generated_script_contract() {
     use proptest::collection::vec;
     use proptest::prelude::any;

@@ -28,7 +28,7 @@ pub(super) fn open_runtime_with_wal_segment_size(
     shell.complete_recovery(&outcome).expect("open runtime")
 }
 
-pub(super) fn assemble_shell(
+pub(in crate::lifecycle::tests) fn assemble_shell(
     branch: BranchId,
     backend: &CheckpointTestBackend,
 ) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
@@ -152,15 +152,24 @@ pub(in crate::lifecycle::tests) struct CheckpointTestBackend {
     fail_delete_call: AtomicUsize,
     delete_calls: AtomicUsize,
     fail_manifest_replace_call: AtomicUsize,
+    fail_table_manifest_replace_call: AtomicUsize,
+    uncertain_table_manifest_replace_call: AtomicUsize,
+    fail_table_object_create_call: AtomicUsize,
+    uncertain_table_object_create_call: AtomicUsize,
+    corrupt_table_object_create_call: AtomicUsize,
     uncertain_manifest_replace_call: AtomicUsize,
     manifest_replace_calls: AtomicUsize,
+    table_manifest_replace_calls: AtomicUsize,
+    table_object_create_calls: AtomicUsize,
     lock_held: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CheckpointBackendEvent {
+pub(in crate::lifecycle::tests) enum CheckpointBackendEvent {
     DatabaseRecordReplace,
     SnapshotCreate,
+    TableObjectCreate,
+    TableManifestReplace,
     ObjectDelete,
     ObjectList,
 }
@@ -176,8 +185,15 @@ impl CheckpointTestBackend {
             fail_delete_call: AtomicUsize::new(0),
             delete_calls: AtomicUsize::new(0),
             fail_manifest_replace_call: AtomicUsize::new(0),
+            fail_table_manifest_replace_call: AtomicUsize::new(0),
+            uncertain_table_manifest_replace_call: AtomicUsize::new(0),
+            fail_table_object_create_call: AtomicUsize::new(0),
+            uncertain_table_object_create_call: AtomicUsize::new(0),
+            corrupt_table_object_create_call: AtomicUsize::new(0),
             uncertain_manifest_replace_call: AtomicUsize::new(0),
             manifest_replace_calls: AtomicUsize::new(0),
+            table_manifest_replace_calls: AtomicUsize::new(0),
+            table_object_create_calls: AtomicUsize::new(0),
             lock_held: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -200,6 +216,34 @@ impl CheckpointTestBackend {
 
     pub(in crate::lifecycle::tests) fn fail_manifest_replacement_on_call(&self, call: usize) {
         self.fail_manifest_replace_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    pub(in crate::lifecycle::tests) fn fail_table_manifest_replacement_on_call(&self, call: usize) {
+        self.fail_table_manifest_replace_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    pub(in crate::lifecycle::tests) fn uncertain_table_manifest_replacement_on_call(
+        &self,
+        call: usize,
+    ) {
+        self.uncertain_table_manifest_replace_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    pub(in crate::lifecycle::tests) fn fail_table_object_create_on_call(&self, call: usize) {
+        self.fail_table_object_create_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    pub(in crate::lifecycle::tests) fn uncertain_table_object_create_on_call(&self, call: usize) {
+        self.uncertain_table_object_create_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    pub(in crate::lifecycle::tests) fn corrupt_table_object_create_on_call(&self, call: usize) {
+        self.corrupt_table_object_create_call
             .store(call, Ordering::SeqCst);
     }
 
@@ -228,6 +272,10 @@ impl CheckpointTestBackend {
             .collect()
     }
 
+    pub(in crate::lifecycle::tests) fn events(&self) -> Vec<CheckpointBackendEvent> {
+        self.events.lock().expect("events").clone()
+    }
+
     pub(super) fn list_calls(&self) -> usize {
         self.events
             .lock()
@@ -239,6 +287,27 @@ impl CheckpointTestBackend {
 
     pub(in crate::lifecycle::tests) fn delete_calls(&self) -> usize {
         self.delete_calls.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::lifecycle::tests) fn table_object_create_calls(&self) -> usize {
+        self.table_object_create_calls.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::lifecycle::tests) fn table_manifest_replace_calls(&self) -> usize {
+        self.table_manifest_replace_calls.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::lifecycle::tests) fn table_object_names(&self) -> Vec<ObjectName> {
+        let objects = self.objects.lock().expect("objects");
+        let mut names = objects
+            .keys()
+            .filter(|name| {
+                name.as_str().starts_with("tables/") && !name.as_str().ends_with("/manifest")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     pub(in crate::lifecycle::tests) fn snapshot_objects(&self) -> Vec<ObjectName> {
@@ -265,6 +334,190 @@ impl CheckpointTestBackend {
         timestamps.sort();
         timestamps
     }
+
+    fn classify_publish(
+        name: &ObjectName,
+        bytes: &[u8],
+        mode: PublishMode,
+    ) -> CheckpointPublishKind {
+        if mode == PublishMode::Replace
+            && *name == ObjectLayout::database_manifest().expect("current database object")
+        {
+            CheckpointPublishKind::DatabaseRecord
+        } else if mode == PublishMode::Replace
+            && name.as_str().starts_with("tables/")
+            && name.as_str().ends_with("/manifest")
+        {
+            CheckpointPublishKind::TableManifestRecord
+        } else if mode == PublishMode::Create
+            && name.as_str().starts_with("tables/")
+            && !name.as_str().ends_with("/manifest")
+        {
+            CheckpointPublishKind::TableObjectCreate
+        } else if mode == PublishMode::Create && decode_snapshot_container(bytes).is_ok() {
+            CheckpointPublishKind::SnapshotCreate
+        } else {
+            CheckpointPublishKind::Other
+        }
+    }
+
+    fn record_publish_event(&self, kind: CheckpointPublishKind) {
+        let event = match kind {
+            CheckpointPublishKind::DatabaseRecord => {
+                Some(CheckpointBackendEvent::DatabaseRecordReplace)
+            }
+            CheckpointPublishKind::TableManifestRecord => {
+                Some(CheckpointBackendEvent::TableManifestReplace)
+            }
+            CheckpointPublishKind::TableObjectCreate => {
+                Some(CheckpointBackendEvent::TableObjectCreate)
+            }
+            CheckpointPublishKind::SnapshotCreate => Some(CheckpointBackendEvent::SnapshotCreate),
+            CheckpointPublishKind::Other => None,
+        };
+        if let Some(event) = event {
+            self.events.lock().expect("events").push(event);
+        }
+    }
+
+    fn maybe_fail_publish(
+        &self,
+        name: &ObjectName,
+        kind: CheckpointPublishKind,
+    ) -> PublishResult<()> {
+        match kind {
+            CheckpointPublishKind::SnapshotCreate => {
+                if self.fail_snapshot_publish.load(Ordering::SeqCst) {
+                    return Err(PublishError::new(
+                        name.clone(),
+                        PublishFailureKind::FailedBeforeVisibility,
+                        BackendError::new(
+                            BackendErrorKind::Unavailable,
+                            "injected snapshot create failure",
+                        ),
+                    ));
+                }
+            }
+            CheckpointPublishKind::DatabaseRecord => {
+                self.maybe_fail_database_record_publish(name)?;
+            }
+            CheckpointPublishKind::TableManifestRecord => {
+                self.maybe_fail_table_manifest_publish(name)?;
+            }
+            CheckpointPublishKind::TableObjectCreate => {
+                self.maybe_fail_table_object_publish(name)?;
+            }
+            CheckpointPublishKind::Other => {}
+        }
+        Ok(())
+    }
+
+    fn maybe_fail_database_record_publish(&self, name: &ObjectName) -> PublishResult<()> {
+        let call = self
+            .manifest_replace_calls
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        if self.fail_manifest_replace_call.load(Ordering::SeqCst) == call {
+            return Err(PublishError::precondition_failed(
+                name,
+                "injected current record replace failure",
+            ));
+        }
+        if self.uncertain_manifest_replace_call.load(Ordering::SeqCst) == call {
+            return Err(PublishError::new(
+                name.clone(),
+                PublishFailureKind::VisibilityUnknown,
+                BackendError::new(
+                    BackendErrorKind::Unavailable,
+                    "injected current record visibility uncertainty",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn maybe_fail_table_manifest_publish(&self, name: &ObjectName) -> PublishResult<()> {
+        let call = self
+            .table_manifest_replace_calls
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        if self.fail_table_manifest_replace_call.load(Ordering::SeqCst) == call {
+            return Err(PublishError::precondition_failed(
+                name,
+                "injected table manifest replace failure",
+            ));
+        }
+        if self
+            .uncertain_table_manifest_replace_call
+            .load(Ordering::SeqCst)
+            == call
+        {
+            return Err(PublishError::new(
+                name.clone(),
+                PublishFailureKind::VisibilityUnknown,
+                BackendError::new(
+                    BackendErrorKind::Unavailable,
+                    "injected table manifest visibility uncertainty",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn maybe_fail_table_object_publish(&self, name: &ObjectName) -> PublishResult<()> {
+        let call = self
+            .table_object_create_calls
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        if self.fail_table_object_create_call.load(Ordering::SeqCst) == call {
+            return Err(PublishError::new(
+                name.clone(),
+                PublishFailureKind::FailedBeforeVisibility,
+                BackendError::new(
+                    BackendErrorKind::Unavailable,
+                    "injected table object create failure",
+                ),
+            ));
+        }
+        if self
+            .uncertain_table_object_create_call
+            .load(Ordering::SeqCst)
+            == call
+        {
+            return Err(PublishError::new(
+                name.clone(),
+                PublishFailureKind::VisibilityUnknown,
+                BackendError::new(
+                    BackendErrorKind::Unavailable,
+                    "injected table object visibility uncertainty",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn published_bytes(&self, kind: CheckpointPublishKind, bytes: &[u8]) -> Vec<u8> {
+        if kind == CheckpointPublishKind::TableObjectCreate
+            && self.corrupt_table_object_create_call.load(Ordering::SeqCst)
+                == self.table_object_create_calls.load(Ordering::SeqCst)
+        {
+            let mut corrupted = bytes.to_vec();
+            if let Some(first) = corrupted.first_mut() {
+                *first ^= 0xff;
+            }
+            return corrupted;
+        }
+        bytes.to_vec()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckpointPublishKind {
+    DatabaseRecord,
+    TableManifestRecord,
+    TableObjectCreate,
+    SnapshotCreate,
+    Other,
 }
 
 impl Backend for CheckpointTestBackend {
@@ -391,53 +644,9 @@ impl Backend for CheckpointTestBackend {
         bytes: &[u8],
         mode: PublishMode,
     ) -> PublishResult<PublishOutcome> {
-        let is_database_record = mode == PublishMode::Replace
-            && *name == ObjectLayout::database_manifest().expect("current database object");
-        let is_snapshot_create =
-            mode == PublishMode::Create && decode_snapshot_container(bytes).is_ok();
-        if is_database_record {
-            self.events
-                .lock()
-                .expect("events")
-                .push(CheckpointBackendEvent::DatabaseRecordReplace);
-        } else if is_snapshot_create {
-            self.events
-                .lock()
-                .expect("events")
-                .push(CheckpointBackendEvent::SnapshotCreate);
-        }
-        if is_snapshot_create && self.fail_snapshot_publish.load(Ordering::SeqCst) {
-            return Err(PublishError::new(
-                name.clone(),
-                PublishFailureKind::FailedBeforeVisibility,
-                BackendError::new(
-                    BackendErrorKind::Unavailable,
-                    "injected snapshot create failure",
-                ),
-            ));
-        }
-        if is_database_record {
-            let call = self
-                .manifest_replace_calls
-                .fetch_add(1, Ordering::SeqCst)
-                .saturating_add(1);
-            if self.fail_manifest_replace_call.load(Ordering::SeqCst) == call {
-                return Err(PublishError::precondition_failed(
-                    name,
-                    "injected current record replace failure",
-                ));
-            }
-            if self.uncertain_manifest_replace_call.load(Ordering::SeqCst) == call {
-                return Err(PublishError::new(
-                    name.clone(),
-                    PublishFailureKind::VisibilityUnknown,
-                    BackendError::new(
-                        BackendErrorKind::Unavailable,
-                        "injected current record visibility uncertainty",
-                    ),
-                ));
-            }
-        }
+        let kind = Self::classify_publish(name, bytes, mode);
+        self.record_publish_event(kind);
+        self.maybe_fail_publish(name, kind)?;
         let mut objects = self.objects.lock().expect("objects");
         if mode == PublishMode::Create && objects.contains_key(name) {
             return Err(PublishError::precondition_failed(
@@ -445,10 +654,12 @@ impl Backend for CheckpointTestBackend {
                 "object already exists",
             ));
         }
-        objects.insert(name.clone(), bytes.to_vec());
+        let stored_bytes = self.published_bytes(kind, bytes);
+        let byte_count = stored_bytes.len() as u64;
+        objects.insert(name.clone(), stored_bytes);
         Ok(PublishOutcome::new(
             name.clone(),
-            BackendMetadata::new(bytes.len() as u64, None),
+            BackendMetadata::new(byte_count, None),
             PublishDurability::Durable,
         ))
     }

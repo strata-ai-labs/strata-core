@@ -72,9 +72,10 @@ pub(crate) use read::{
 pub(crate) use state::{
     install_snapshot_rows_into_branches, BranchAppendOutcome, BranchCompactionCandidate,
     BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionOutcome,
-    BranchCompactionPlan, BranchCompactionRecovery, BranchCompactionRequest,
-    BranchCompactionRetentionPolicy, BranchForkOutcome, BranchImmutableInstallOutcome,
-    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
+    BranchCompactionPlan, BranchCompactionPreparedOutput, BranchCompactionRecovery,
+    BranchCompactionRequest, BranchCompactionRetentionPolicy, BranchForkOutcome,
+    BranchImmutableInstallOutcome, BranchMaterializationHandle, BranchMaterializationIntent,
+    BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
     BranchMaterializationRecovery, BranchMaterializationRequest,
     BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
     BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,

@@ -187,6 +187,23 @@ fn cache_compaction_does_not_call_table_object_service() {
 }
 
 #[test]
+fn cache_rewrite_path_does_not_import_table_object_publication() {
+    let root = common::crate_root();
+    for relative in ["src/lifecycle/cache.rs", "src/lifecycle/compaction.rs"] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read cache rewrite source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_cache_table_object_service_dependency(line),
+                "{}:{} imports table object publication from cache rewrite path: {line}",
+                relative,
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_flush_source_does_not_manage_watermarks_or_log_retention() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/flush.rs");
@@ -678,6 +695,93 @@ fn lifecycle_table_rewrite_source_uses_branch_runtime_boundaries() {
 }
 
 #[test]
+fn lifecycle_rewrite_publication_avoids_cleanup_pruning_and_product_dependencies() {
+    assert_rewrite_publication_source_excludes(contains_forbidden_rewrite_publication_dependency);
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_raw_io() {
+    assert_rewrite_publication_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["std::fs", "std::path", "std::env", "openoptions", "mmap"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_backend_delete() {
+    assert_rewrite_publication_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "delete_object(",
+            "delete_covered_segments(",
+            "truncate_wal(",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_quarantine_mutation() {
+    assert_rewrite_publication_source_excludes(|line| {
+        line.to_ascii_lowercase().contains("quarantine_object(")
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_purge() {
+    assert_rewrite_publication_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("purge_quarantine") || lower.contains("purge_object(")
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_row_pruning_policy() {
+    assert_rewrite_publication_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "dropolderversions",
+            "droptombstones",
+            "dropexpired",
+            "retention_policy",
+            "prune",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_engine_or_product_crates() {
+    assert_rewrite_publication_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("strata_engine")
+            || lower.contains("strata_intelligence")
+            || lower.contains("retention_report")
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_stratahub() {
+    assert_rewrite_publication_source_excludes(|line| {
+        line.to_ascii_lowercase().contains("stratahub")
+    });
+}
+
+#[test]
+fn durable_rewrite_publication_does_not_import_primitive_modules() {
+    assert_rewrite_publication_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["primitive", "graph", "vector", "json"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+}
+
+#[test]
 fn lifecycle_retention_source_delegates_durable_mutation() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/retention.rs");
@@ -1031,6 +1135,21 @@ fn assert_table_rewrite_fixtures() {
     ));
     assert!(contains_forbidden_table_rewrite_dependency(
         "quarantine.load_inventory(branch, db, codec)?;"
+    ));
+    assert!(contains_forbidden_rewrite_publication_dependency(
+        "delete_covered_segments(proof)?;"
+    ));
+    assert!(contains_forbidden_rewrite_publication_dependency(
+        "quarantine_object(object)?;"
+    ));
+    assert!(contains_forbidden_rewrite_publication_dependency(
+        "BranchCompactionRetentionPolicy::DropExpired"
+    ));
+    assert!(contains_forbidden_rewrite_publication_dependency(
+        "use strata_engine_next::Runtime;"
+    ));
+    assert!(!contains_forbidden_rewrite_publication_dependency(
+        "TableObjectService::new(backend);"
     ));
 }
 
@@ -1697,6 +1816,54 @@ fn contains_forbidden_table_rewrite_dependency(line: &str) -> bool {
         "open_reader(",
         "tablecompactor",
         "keepalltablecompactionpolicy",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn assert_rewrite_publication_source_excludes(predicate: impl Fn(&str) -> bool) {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/rewrite_publication.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle rewrite publication source");
+
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !predicate(line),
+            "src/lifecycle/rewrite_publication.rs:{} calls forbidden rewrite publication dependency: {line}",
+            line_number + 1
+        );
+    }
+}
+
+fn contains_forbidden_rewrite_publication_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::fs",
+        "std::path",
+        "std::env",
+        "openoptions",
+        "mmap",
+        "truncate_wal(",
+        "persist_flush_watermark(",
+        "delete_covered_segments(",
+        "backend.delete_object(",
+        ".delete_object(",
+        "quarantine_object(",
+        "purge_quarantine",
+        "purge_object(",
+        "repair_latest_tail(",
+        "dropolderversions",
+        "droptombstones",
+        "dropexpired",
+        "retention_policy",
+        "strata_engine",
+        "strata_intelligence",
+        "stratahub",
+        "primitive",
+        "graph",
+        "vector",
+        "json",
+        "retention_report",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

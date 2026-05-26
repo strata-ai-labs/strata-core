@@ -1,6 +1,6 @@
 # L8U Test Plan: Durable Rewrite Publication
 
-Status: draft test plan
+Status: implemented
 
 Implementation plan:
 `docs/architecture/implementation-plans/M4/L8/l8u-durable-rewrite-publication-implementation-plan.md`
@@ -238,8 +238,8 @@ Required tests:
 
 1. `durable_rewrite_completion_does_not_directly_persist_flush_watermark`
 2. `durable_rewrite_completion_does_not_directly_truncate_wal`
-3. `durable_rewrite_manifest_facts_can_build_l8t_coverage_candidate`
-4. `durable_rewrite_manifest_failure_cannot_build_l8t_coverage_candidate`
+3. `durable_rewrite_manifest_facts_can_build_flush_coverage_candidate`
+4. `durable_rewrite_manifest_failure_cannot_build_flush_coverage_candidate`
 5. `durable_rewrite_checkpoint_debt_reduced_only_after_manifest_success`
 
 Assertions:

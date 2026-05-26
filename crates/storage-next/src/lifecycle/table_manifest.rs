@@ -77,7 +77,7 @@ impl LifecycleDurableTableCatalog {
         )
     }
 
-    fn record_table_with_provenance(
+    pub(crate) fn record_table_with_provenance(
         &mut self,
         identity: TableIdentity,
         object_facts: TableObjectFacts,

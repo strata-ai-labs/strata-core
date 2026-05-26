@@ -436,6 +436,237 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 git diff --check
 ```
 
+## L8U - Durable Rewrite Publication
+
+Status: runtime implementation and test suite landed
+
+### Shipped Files
+
+- `crates/storage-next/src/branch/mod.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/lifecycle/compaction.rs`
+- `crates/storage-next/src/lifecycle/rewrite_publication.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/checkpoint/shared.rs`
+- `crates/storage-next/src/lifecycle/tests/compaction/publication_plan.rs`
+- `crates/storage-next/src/lifecycle/tests/compaction/remaining.rs`
+- `crates/storage-next/src/testkit/lifecycle/rewrite.rs`
+- `crates/storage-next/tests/lifecycle_maintenance.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Preserved As Storage Vocabulary
+
+- Durable rewrite publication is expressed as table-object publication,
+  object-backed reader validation, branch-runtime install, durable table-catalog
+  update, and branch table-manifest publication.
+- Compaction and materialization outcomes distinguish volatile completion,
+  checkpoint-required completion, durable table-manifest-backed completion, and
+  post-install manifest debt.
+- Rewrite publication failures preserve source chains and use dedicated
+  lifecycle error codes for failed, uncertain, and orphaned publication
+  windows.
+- Durable output object names and retained input identifiers flow into
+  maintenance outcomes for later reachability, quarantine, and retention work.
+
+### Intentional Changes
+
+- Branch runtime now exposes prepared compaction/materialization outputs so L8
+  can publish the exact L5/L6 output bytes before installing them. The existing
+  branch install paths still own candidate validation, identity validation,
+  stale-candidate rejection, materialization handle checks, and atomic state
+  mutation.
+- Durable rewrite publication lives in a dedicated lifecycle module. The
+  generic compaction scheduler remains free of table-object services, preserving
+  the existing cache-mode and branch-runtime source boundaries.
+- Catalog updates are staged on a cloned durable table catalog before branch
+  install. If output objects were published but catalog validation rejects their
+  facts, the operation fails before branch mutation and reports orphaned output
+  objects.
+- Reopen, descriptor, branch-table, and provenance failures after object
+  publication are treated as orphaned-output windows rather than ordinary
+  pre-install failures.
+- Manifest publication failure after branch install is forward-progress debt:
+  the branch remains rewritten, the durable table catalog keeps the output
+  facts, and the maintenance outcome reports checkpoint-required health debt.
+
+### Retired From This Slice
+
+- Row pruning, tombstone pruning, TTL pruning, and retained-history policy.
+- Table-object deletion, quarantine, purge, or reclaim.
+- WAL truncation or flush-watermark advancement from rewrite publication.
+- Public compaction/materialization commands.
+- Object-store or distributed durability.
+
+### Deferred By Owner Slice
+
+- L8V adds proof-gated row pruning on top of the durable rewrite path.
+- L8W/L8X add memory-budget and lazy-reader behavior.
+- L8Y handles branch lifecycle hardening.
+- L8Z completes policy/closeout hardening before the public storage boundary.
+
+### Tests Added
+
+- `durable_compaction_publishes_manifest_after_install`
+- `durable_compaction_manifest_failure_reports_debt_after_install`
+- `durable_materialization_publishes_manifest_after_layer_removal`
+- `durable_compaction_rejects_existing_output_with_conflicting_bytes`
+- `durable_materialization_retry_after_manifest_debt_publishes_manifest`
+- `durable_compaction_publishes_output_before_manifest_and_reopens_before_install`
+- `durable_compaction_publishes_output_before_install`
+- `durable_compaction_reopens_output_before_install`
+- `durable_compaction_validates_output_facts_before_install`
+- `durable_compaction_installs_only_after_all_outputs_validate`
+- `durable_compaction_manifest_includes_outputs_and_excludes_replaced_inputs`
+- `durable_compaction_manifest_includes_outputs`
+- `durable_compaction_manifest_excludes_replaced_inputs`
+- `durable_compaction_catalog_marks_replaced_inputs_retained`
+- `durable_compaction_output_identities_are_retry_stable`
+- `durable_compaction_no_candidate_is_deferred_without_publication`
+- `durable_compaction_no_candidate_is_deferred`
+- `durable_materialization_manifest_includes_replacements_and_removes_inherited_layer`
+- `durable_materialization_binds_handle_before_output_publish`
+- `durable_materialization_publishes_replacement_before_layer_removal`
+- `durable_materialization_reopens_replacement_before_install`
+- `durable_materialization_validates_replacement_facts`
+- `durable_materialization_manifest_removes_inherited_layer`
+- `durable_materialization_manifest_includes_replacements`
+- `durable_materialization_preserves_child_local_precedence`
+- `durable_materialization_retry_after_removed_layer_uses_source_identity`
+- `durable_materialization_rejects_stale_layer_index_task`
+- `durable_compaction_preserves_reads_tombstones_timestamps_and_ttl_rows`
+- `durable_compaction_preserves_latest_reads`
+- `durable_compaction_preserves_history_reads`
+- `durable_compaction_preserves_prefix_scans`
+- `durable_compaction_preserves_range_scans`
+- `durable_compaction_preserves_tombstones`
+- `durable_compaction_preserves_ttl_expired_rows_under_keep_all`
+- `durable_compaction_preserves_commit_timestamps`
+- `durable_materialization_preserves_reads_and_fork_gate`
+- `durable_materialization_preserves_latest_reads`
+- `durable_materialization_preserves_history_reads`
+- `durable_materialization_preserves_fork_version_gate`
+- `rewrite_output_publish_failure_leaves_reads_unchanged`
+- `rewrite_output_publish_uncertain_reports_health_debt`
+- `rewrite_output_publish_uncertain_names_possibly_visible_object`
+- `rewrite_output_reopen_failure_leaves_reads_unchanged`
+- `rewrite_output_reopen_failure_leaves_reads_unchanged_and_names_orphan`
+- `rewrite_output_fact_mismatch_leaves_reads_unchanged`
+- `rewrite_install_failure_after_publish_names_orphan_outputs`
+- `rewrite_install_failure_after_publish_does_not_delete_outputs`
+- `rewrite_manifest_publish_failure_after_install_keeps_new_reads_visible`
+- `rewrite_manifest_publish_failure_after_install_reports_manifest_debt`
+- `rewrite_manifest_publish_uncertain_after_install_reports_debt`
+- `rewrite_manifest_publish_uncertain_after_install_reports_uncertainty`
+- `rewrite_retry_after_manifest_failure_reuses_catalog_entries`
+- `rewrite_retry_after_output_publish_collision_rejects_conflict`
+- `rewrite_stale_candidate_after_publish_fails_without_resurrection`
+- `recovery_after_durable_compaction_uses_manifest_outputs`
+- `recovery_after_durable_materialization_uses_manifest_replacements`
+- `recovery_after_manifest_publish_failure_uses_previous_manifest_or_wal`
+- `recovery_after_output_publish_before_install_ignores_orphan_output`
+- `recovery_after_install_before_manifest_records_health_debt`
+- `recovery_rejects_corrupt_rewrite_output_listed_by_manifest`
+- `recovery_rejects_missing_rewrite_output_listed_by_manifest`
+- `recovery_preserves_reads_after_wal_tail_replay`
+- `durable_rewrite_completion_does_not_persist_flush_watermark_or_truncate_wal`
+- `durable_rewrite_completion_does_not_directly_persist_flush_watermark`
+- `durable_rewrite_completion_does_not_directly_truncate_wal`
+- `durable_rewrite_manifest_facts_can_build_flush_coverage_candidate`
+- `durable_rewrite_manifest_failure_cannot_build_flush_coverage_candidate`
+- `durable_rewrite_checkpoint_debt_reduced_only_after_manifest_success`
+- `durable_rewrite_manifest_success_can_build_flush_coverage_candidate`
+- `durable_rewrite_does_not_delete_or_quarantine_replaced_or_orphaned_objects`
+- `durable_rewrite_does_not_delete_replaced_inputs`
+- `durable_rewrite_does_not_quarantine_replaced_inputs`
+- `durable_rewrite_does_not_delete_published_orphan_outputs`
+- `durable_rewrite_does_not_prune_old_versions`
+- `durable_rewrite_does_not_prune_tombstones`
+- `durable_rewrite_does_not_prune_ttl_expired_rows`
+- `durable_rewrite_does_not_call_quarantine_service`
+- `durable_rewrite_does_not_call_purge`
+- `durable_rewrite_rejects_cache_durable_publication_request`
+- `durable_rewrite_rejects_before_open`
+- `durable_rewrite_rejects_while_closing`
+- `durable_rewrite_rejects_empty_output_seed`
+- `durable_rewrite_rejects_path_like_output_seed`
+- `durable_rewrite_rejects_pruning_policy_without_retention_proof`
+- `durable_rewrite_uses_ordinary_maintenance_admission`
+- `durable_rewrite_releases_admission_after_publish_failure`
+- `lifecycle_table_rewrite_compaction_integration`
+- `lifecycle_table_rewrite_materialization_integration`
+- `lifecycle_property_harness_runs_table_rewrite_contract`
+- `lifecycle_rewrite_publication_avoids_cleanup_pruning_and_product_dependencies`
+- `cache_rewrite_path_does_not_import_table_object_publication`
+- `durable_rewrite_publication_does_not_import_raw_io`
+- `durable_rewrite_publication_does_not_import_backend_delete`
+- `durable_rewrite_publication_does_not_import_quarantine_mutation`
+- `durable_rewrite_publication_does_not_import_purge`
+- `durable_rewrite_publication_does_not_import_row_pruning_policy`
+- `durable_rewrite_publication_does_not_import_engine_or_product_crates`
+- `durable_rewrite_publication_does_not_import_stratahub`
+- `durable_rewrite_publication_does_not_import_primitive_modules`
+
+Existing compaction/materialization tests continue to cover cache behavior,
+checkpoint-debt durable behavior, materialization handle binding, stale
+candidate rejection, read parity, pressure facts, and source-chain preservation.
+The lifecycle source guards now exercise both the generic table-rewrite boundary
+through `lifecycle_table_rewrite_source_uses_branch_runtime_boundaries` and the
+durable rewrite-publication boundary through
+`lifecycle_rewrite_publication_avoids_cleanup_pruning_and_product_dependencies`.
+The generated lifecycle rewrite contract now drives real durable compaction and
+materialization routes, including output publication, object-backed reopen,
+install-after-publish, manifest-after-install, pre-install publication failure,
+post-install manifest failure, install-failed-after-publish, orphan-output
+reporting, and no-pruning counters. The dedicated publication-plan module
+contains one-to-one tests for the required request/admission, publication,
+materialization, read-parity, fault-window, recovery, watermark-boundary, and
+no-cleanup rows from the test plan. Test names that would have embedded
+architecture labels were renamed to `flush_coverage` equivalents to keep labels
+out of Rust code.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Skip output publication | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Install prepared branch outputs without publishing table objects | `durable_compaction_publishes_manifest_after_install` |
+| Skip output reopen | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Build branch tables from bytes without object-backed reader validation | `durable_compaction_publishes_manifest_after_install` |
+| Publish manifest before install | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Publish branch table manifest before L6 install | `durable_compaction_publishes_manifest_after_install` |
+| Ignore manifest publish failure | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Return clean durable completion when table-manifest replacement fails | `durable_compaction_manifest_failure_reports_debt_after_install` |
+| Use naked materialization index | `crates/storage-next/src/lifecycle/compaction.rs` | Drop bound materialization handles from maintenance tasks | `queued_materialization_uses_bound_source_after_layer_reindex` |
+| Import table service into scheduler | `crates/storage-next/src/lifecycle/compaction.rs` | Add table-object publication imports to the generic scheduler | `lifecycle_table_rewrite_source_uses_branch_runtime_boundaries` |
+| Trust conflicting pre-existing output | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Accept `PreconditionFailed` without byte-for-byte validation | `durable_compaction_rejects_existing_output_with_conflicting_bytes` |
+| Skip manifest publication for no-output materialization retry | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Return `LayerAlreadyMaterialized` without publishing the branch table manifest | `durable_materialization_retry_after_manifest_debt_publishes_manifest` |
+| Hide uncertain output names | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Drop the possibly-visible object from uncertain publication errors | `durable_compaction_rejects_existing_output_with_conflicting_bytes` |
+| Fail before install without preserving old reads | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Mutate branch state after table-object publication fails | `rewrite_output_publish_failure_leaves_reads_unchanged` |
+| Treat corrupt reopened output as installed | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Skip object-backed reopen error handling after publication | `rewrite_output_reopen_failure_leaves_reads_unchanged_and_names_orphan` |
+| Let orphan output become live after recovery | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Recover table objects that were published without manifest reachability | `recovery_after_output_publish_before_install_ignores_orphan_output` |
+| Advance flush watermark or truncate WAL during rewrite | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Persist flush coverage or truncate WAL from rewrite completion | `durable_rewrite_completion_does_not_persist_flush_watermark_or_truncate_wal` |
+| Delete or quarantine replaced/orphaned table objects | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Call cleanup services from durable rewrite publication | `durable_rewrite_does_not_delete_or_quarantine_replaced_or_orphaned_objects` |
+| Drop generated durable rewrite coverage | `crates/storage-next/src/testkit/lifecycle/rewrite.rs` | Stop bumping publication/reopen/install/manifest/failure counters | `lifecycle_property_harness_runs_table_rewrite_contract` |
+| Import cleanup or pruning from rewrite publication | `crates/storage-next/src/lifecycle/rewrite_publication.rs` | Add retention, quarantine, WAL truncation, or product dependencies | `lifecycle_rewrite_publication_avoids_cleanup_pruning_and_product_dependencies` |
+
+### Verification
+
+Commands run for the L8U implementation pass:
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo check -p strata-storage-next --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::compaction
+cargo test -p strata-storage-next --locked --lib branch::tests::owned_compaction
+cargo test -p strata-storage-next --locked --lib branch::tests::inheritance_materialization
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+git diff --check
+```
+
 ## L8N - Close And Shutdown Ordering
 
 ### Shipped Files

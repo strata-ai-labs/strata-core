@@ -133,6 +133,13 @@ fn lifecycle_table_rewrite_compaction_integration() {
 
     assert!(outcome.cache_compaction_cases() > 0);
     assert!(outcome.durable_compaction_cases() > 0);
+    assert!(outcome.compaction_output_published_cases() > 0);
+    assert!(outcome.output_reopened_cases() > 0);
+    assert!(outcome.install_after_publish_cases() > 0);
+    assert!(outcome.manifest_after_install_cases() > 0);
+    assert!(outcome.publish_failed_before_install_cases() > 0);
+    assert!(outcome.manifest_failed_after_install_cases() > 0);
+    assert!(outcome.no_pruning_observed_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -144,6 +151,7 @@ fn lifecycle_table_rewrite_materialization_integration() {
     .expect("table rewrite contract");
 
     assert!(outcome.materialization_cases() > 0);
+    assert!(outcome.materialization_output_published_cases() > 0);
     assert!(outcome.pressure_cases() > 0);
 }
 
@@ -583,6 +591,8 @@ fn generated_table_rewrite_preserves_reads_after_compaction() {
             .expect("table rewrite contract");
 
     assert!(outcome.cache_compaction_cases() > 0);
+    assert!(outcome.compaction_output_published_cases() > 0);
+    assert!(outcome.no_pruning_observed_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
@@ -593,6 +603,7 @@ fn generated_materialization_preserves_child_precedence() {
             .expect("table rewrite contract");
 
     assert!(outcome.materialization_cases() > 0);
+    assert!(outcome.materialization_output_published_cases() > 0);
 }
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]

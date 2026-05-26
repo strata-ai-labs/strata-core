@@ -1,7 +1,7 @@
 //! Branch table rewrite scheduling.
 
 use super::{
-    LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats,
+    telemetry_health_debt, LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats,
     MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskScope, RecoveryHealth,
 };
@@ -11,6 +11,7 @@ use crate::branch::{
     BranchMaterializationIntent, BranchMaterializationOutcome, BranchMaterializationRecovery,
     BranchMaterializationRequest, BranchRuntimeError,
 };
+use crate::object::ObjectName;
 use strata_core_next::BranchId;
 
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 2;
@@ -24,6 +25,7 @@ const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
 pub(crate) enum LifecycleTableRewriteDurability {
     VolatileOnly,
     CheckpointRequiredAfterRewrite,
+    DurableTableManifestBacked,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,6 +44,9 @@ pub(crate) struct LifecycleCompactionOutcome {
     branch_outcome: BranchCompactionOutcome,
     checkpoint_required: bool,
     recovery_health: Option<RecoveryHealth>,
+    durable_output_objects: Vec<ObjectName>,
+    retained_input_objects: Vec<String>,
+    failure: Option<LifecycleError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +54,8 @@ pub(crate) struct LifecycleCompactionOutcome {
 pub(crate) enum LifecycleCompactionStatus {
     Completed,
     CompletedCheckpointRequired,
+    CompletedDurable,
+    CompletedManifestDebt,
     DeferredNoCandidate,
 }
 
@@ -70,6 +77,8 @@ pub(crate) struct LifecycleMaterializationOutcome {
     branch_outcome: Option<BranchMaterializationOutcome>,
     checkpoint_required: bool,
     recovery_health: Option<RecoveryHealth>,
+    durable_output_objects: Vec<ObjectName>,
+    failure: Option<LifecycleError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +86,8 @@ pub(crate) struct LifecycleMaterializationOutcome {
 pub(crate) enum LifecycleMaterializationStatus {
     Completed,
     CompletedCheckpointRequired,
+    CompletedDurable,
+    CompletedManifestDebt,
     AlreadyMaterialized,
     DeferredNoLayer,
 }
@@ -154,14 +165,14 @@ impl LifecycleCompactionRequest {
         self.durability
     }
 
-    fn branch_request(&self) -> LifecycleResult<BranchCompactionRequest> {
+    pub(super) fn branch_request(&self) -> LifecycleResult<BranchCompactionRequest> {
         BranchCompactionRequest::new(self.branch_id, self.kind, self.output_identity_seed.clone())
             .map_err(branch_error)
     }
 }
 
 impl LifecycleCompactionOutcome {
-    fn new(
+    pub(super) fn new(
         request: &LifecycleCompactionRequest,
         plan: BranchCompactionPlan,
         branch_outcome: BranchCompactionOutcome,
@@ -187,7 +198,37 @@ impl LifecycleCompactionOutcome {
             branch_outcome,
             checkpoint_required,
             recovery_health: None,
+            durable_output_objects: Vec::new(),
+            retained_input_objects: Vec::new(),
+            failure: None,
         }
+    }
+
+    pub(super) fn completed_durable(
+        plan: BranchCompactionPlan,
+        branch_outcome: BranchCompactionOutcome,
+        durable_output_objects: Vec<ObjectName>,
+        retained_input_objects: Vec<String>,
+    ) -> Self {
+        Self {
+            status: LifecycleCompactionStatus::CompletedDurable,
+            branch_id: branch_outcome.branch_id(),
+            plan,
+            branch_outcome,
+            checkpoint_required: false,
+            recovery_health: None,
+            durable_output_objects,
+            retained_input_objects,
+            failure: None,
+        }
+    }
+
+    pub(super) fn manifest_debt(mut self, failure: LifecycleError) -> Self {
+        self.status = LifecycleCompactionStatus::CompletedManifestDebt;
+        self.checkpoint_required = true;
+        self.recovery_health = telemetry_health();
+        self.failure = Some(failure);
+        self
     }
 
     pub(crate) const fn status(&self) -> LifecycleCompactionStatus {
@@ -214,28 +255,44 @@ impl LifecycleCompactionOutcome {
         self.recovery_health.as_ref()
     }
 
+    pub(crate) fn durable_output_objects(&self) -> &[ObjectName] {
+        &self.durable_output_objects
+    }
+
+    pub(crate) const fn failure(&self) -> Option<&LifecycleError> {
+        self.failure.as_ref()
+    }
+
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
         let status = match self.status {
             LifecycleCompactionStatus::Completed
-            | LifecycleCompactionStatus::CompletedCheckpointRequired => {
+            | LifecycleCompactionStatus::CompletedCheckpointRequired
+            | LifecycleCompactionStatus::CompletedDurable
+            | LifecycleCompactionStatus::CompletedManifestDebt => {
                 MaintenanceOutcomeStatus::Completed
             }
             LifecycleCompactionStatus::DeferredNoCandidate => MaintenanceOutcomeStatus::Deferred,
         };
-        let affected_objects = self
-            .branch_outcome
-            .output_refs()
-            .len()
-            .saturating_add(self.branch_outcome.removed_refs().len());
-        let affected_object_names = self
-            .branch_outcome
-            .output_refs()
-            .iter()
-            .chain(self.branch_outcome.removed_refs())
-            .map(|table_ref| table_ref.table_identity().as_str().to_owned())
-            .collect();
+        // Durable rewrite outcomes carry ObjectNames for outputs and identity
+        // strings for retained inputs. Volatile/legacy-durable outcomes only
+        // have the branch refs, so fall back to table identities then. Either
+        // path lists each logical object once.
+        let affected_object_names: Vec<String> =
+            if self.durable_output_objects.is_empty() && self.retained_input_objects.is_empty() {
+                self.branch_outcome
+                    .output_refs()
+                    .iter()
+                    .chain(self.branch_outcome.removed_refs())
+                    .map(|table_ref| table_ref.table_identity().as_str().to_owned())
+                    .collect()
+            } else {
+                self.durable_output_objects
+                    .iter()
+                    .map(|object| object.as_str().to_owned())
+                    .chain(self.retained_input_objects.iter().cloned())
+                    .collect()
+            };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Compaction, status)
-            .with_effects(affected_objects, 0, false)
             .with_affected_object_names(affected_object_names)
             .with_state_changes(usize::from(!matches!(
                 self.status,
@@ -246,8 +303,17 @@ impl LifecycleCompactionOutcome {
         if matches!(self.status, LifecycleCompactionStatus::DeferredNoCandidate) {
             outcome = outcome.with_reason("compaction has no candidate tables");
         }
+        if matches!(
+            self.status,
+            LifecycleCompactionStatus::CompletedManifestDebt
+        ) {
+            outcome = outcome.with_reason("table rewrite manifest publication needs recovery");
+        }
         if let Some(health) = &self.recovery_health {
             outcome = outcome.with_recovery_health(health.clone());
+        }
+        if let Some(error) = &self.failure {
+            outcome = outcome.with_source_error(error.clone());
         }
         outcome
     }
@@ -313,7 +379,7 @@ impl LifecycleMaterializationRequest {
         self.durability
     }
 
-    fn branch_request(&self) -> LifecycleResult<BranchMaterializationRequest> {
+    pub(super) fn branch_request(&self) -> LifecycleResult<BranchMaterializationRequest> {
         match self.handle {
             Some(handle) => BranchMaterializationRequest::from_handle(
                 handle,
@@ -330,7 +396,7 @@ impl LifecycleMaterializationRequest {
 }
 
 impl LifecycleMaterializationOutcome {
-    fn deferred(request: &LifecycleMaterializationRequest) -> Self {
+    pub(super) fn deferred(request: &LifecycleMaterializationRequest) -> Self {
         Self {
             status: LifecycleMaterializationStatus::DeferredNoLayer,
             child_branch_id: request.child_branch_id(),
@@ -339,10 +405,12 @@ impl LifecycleMaterializationOutcome {
             branch_outcome: None,
             checkpoint_required: false,
             recovery_health: None,
+            durable_output_objects: Vec::new(),
+            failure: None,
         }
     }
 
-    fn completed(
+    pub(super) fn completed(
         request: &LifecycleMaterializationRequest,
         intent: BranchMaterializationIntent,
         branch_outcome: BranchMaterializationOutcome,
@@ -374,7 +442,35 @@ impl LifecycleMaterializationOutcome {
             branch_outcome: Some(branch_outcome),
             checkpoint_required,
             recovery_health: None,
+            durable_output_objects: Vec::new(),
+            failure: None,
         }
+    }
+
+    pub(super) fn completed_durable(
+        intent: BranchMaterializationIntent,
+        branch_outcome: BranchMaterializationOutcome,
+        durable_output_objects: Vec<ObjectName>,
+    ) -> Self {
+        Self {
+            status: LifecycleMaterializationStatus::CompletedDurable,
+            child_branch_id: branch_outcome.child_branch_id(),
+            layer_index: branch_outcome.layer_index(),
+            intent: Some(intent),
+            branch_outcome: Some(branch_outcome),
+            checkpoint_required: false,
+            recovery_health: None,
+            durable_output_objects,
+            failure: None,
+        }
+    }
+
+    pub(super) fn manifest_debt(mut self, failure: LifecycleError) -> Self {
+        self.status = LifecycleMaterializationStatus::CompletedManifestDebt;
+        self.checkpoint_required = true;
+        self.recovery_health = telemetry_health();
+        self.failure = Some(failure);
+        self
     }
 
     pub(crate) const fn status(&self) -> LifecycleMaterializationStatus {
@@ -409,27 +505,34 @@ impl LifecycleMaterializationOutcome {
         let status = match self.status {
             LifecycleMaterializationStatus::Completed
             | LifecycleMaterializationStatus::CompletedCheckpointRequired
+            | LifecycleMaterializationStatus::CompletedDurable
+            | LifecycleMaterializationStatus::CompletedManifestDebt
             | LifecycleMaterializationStatus::AlreadyMaterialized => {
                 MaintenanceOutcomeStatus::Completed
             }
             LifecycleMaterializationStatus::DeferredNoLayer => MaintenanceOutcomeStatus::Deferred,
         };
-        let affected_objects = self
-            .branch_outcome
-            .as_ref()
-            .map_or(0, BranchMaterializationOutcome::tables_created);
-        let affected_object_names = self
-            .branch_outcome
-            .as_ref()
-            .map_or_else(Vec::new, |outcome| {
-                outcome
-                    .created_table_identities()
-                    .iter()
-                    .map(|identity| identity.as_str().to_owned())
-                    .collect()
-            });
+        // Durable materialization carries ObjectNames for the published
+        // replacements. Volatile materialization only knows the table
+        // identities created by the branch runtime. Either path lists each
+        // output once.
+        let affected_object_names: Vec<String> = if self.durable_output_objects.is_empty() {
+            self.branch_outcome
+                .as_ref()
+                .map_or_else(Vec::new, |outcome| {
+                    outcome
+                        .created_table_identities()
+                        .iter()
+                        .map(|identity| identity.as_str().to_owned())
+                        .collect()
+                })
+        } else {
+            self.durable_output_objects
+                .iter()
+                .map(|object| object.as_str().to_owned())
+                .collect()
+        };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Materialization, status)
-            .with_effects(affected_objects, 0, false)
             .with_affected_object_names(affected_object_names)
             .with_state_changes(usize::from(!matches!(
                 self.status,
@@ -440,8 +543,17 @@ impl LifecycleMaterializationOutcome {
         if matches!(self.status, LifecycleMaterializationStatus::DeferredNoLayer) {
             outcome = outcome.with_reason("materialization has no inherited layer");
         }
+        if matches!(
+            self.status,
+            LifecycleMaterializationStatus::CompletedManifestDebt
+        ) {
+            outcome = outcome.with_reason("table rewrite manifest publication needs recovery");
+        }
         if let Some(health) = &self.recovery_health {
             outcome = outcome.with_recovery_health(health.clone());
+        }
+        if let Some(error) = &self.failure {
+            outcome = outcome.with_source_error(error.clone());
         }
         outcome
     }
@@ -789,12 +901,18 @@ fn materialization_layer_index_for_handle(
     })
 }
 
-fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {
+pub(super) fn branch_error(
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> LifecycleError {
     LifecycleError::lower_layer_with(
         LifecycleLowerLayer::BranchRuntime,
         "branch runtime failed",
         error,
     )
+}
+
+fn telemetry_health() -> Option<RecoveryHealth> {
+    telemetry_health_debt("table rewrite publication needs recovery").ok()
 }
 
 fn branch_component(branch_id: BranchId) -> String {

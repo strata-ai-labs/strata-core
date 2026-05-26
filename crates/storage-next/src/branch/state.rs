@@ -12,10 +12,10 @@ use super::{
 };
 use crate::row::StorageRow;
 use crate::table::{
-    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, KeepAllTableCompactionPolicy,
-    MutableTable, TableBuilderConfig, TableCompactionConfig, TableCompactionReport,
-    TableCompactionSource, TableCompactionSourceId, TableCompactor, TableIdentity,
-    TableInternalKeyBytes, TableReaderConfig, TableRuntimeError,
+    BuiltTableArtifact, FrozenTable, ImmutableTableBuilder, ImmutableTableReader,
+    KeepAllTableCompactionPolicy, MutableTable, TableBuilderConfig, TableCompactionConfig,
+    TableCompactionReport, TableCompactionSource, TableCompactionSourceId, TableCompactor,
+    TableIdentity, TableInternalKeyBytes, TableReaderConfig, TableRuntimeError,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -429,6 +429,21 @@ pub(crate) struct BranchMaterializationOutcome {
     recovery: BranchMaterializationRecovery,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMaterializationPreparedOutput {
+    child_branch_id: BranchId,
+    source_branch_id: BranchId,
+    fork_version: CommitVersion,
+    layer_index: usize,
+    rows: Vec<StorageRow>,
+    artifacts: Vec<BuiltTableArtifact>,
+    skipped_post_fork_rows: u64,
+    skipped_exact_duplicate_rows: u64,
+    existing_rows: u64,
+    existing_tables: usize,
+    materialization_source: BranchMaterializationSource,
+}
+
 impl BranchMaterializationOutcome {
     pub(crate) const fn child_branch_id(&self) -> BranchId {
         self.child_branch_id
@@ -476,6 +491,16 @@ impl BranchMaterializationOutcome {
 
     pub(crate) const fn recovery(&self) -> BranchMaterializationRecovery {
         self.recovery
+    }
+}
+
+impl BranchMaterializationPreparedOutput {
+    pub(crate) fn artifacts(&self) -> &[BuiltTableArtifact] {
+        &self.artifacts
+    }
+
+    pub(crate) const fn materialization_source(&self) -> BranchMaterializationSource {
+        self.materialization_source
     }
 }
 
@@ -662,6 +687,15 @@ pub(crate) struct BranchCompactionPlan {
     noop_reason: Option<BranchCompactionNoopReason>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchCompactionPreparedOutput {
+    branch_id: BranchId,
+    output_level: BranchLevel,
+    artifacts: Vec<BuiltTableArtifact>,
+    report: TableCompactionReport,
+    materialization_source: Option<BranchMaterializationSource>,
+}
+
 impl BranchCompactionPlan {
     fn with_candidate(
         branch_id: BranchId,
@@ -703,6 +737,24 @@ impl BranchCompactionPlan {
 
     pub(crate) const fn noop_reason(&self) -> Option<BranchCompactionNoopReason> {
         self.noop_reason
+    }
+}
+
+impl BranchCompactionPreparedOutput {
+    pub(crate) const fn output_level(&self) -> BranchLevel {
+        self.output_level
+    }
+
+    pub(crate) fn artifacts(&self) -> &[BuiltTableArtifact] {
+        &self.artifacts
+    }
+
+    pub(crate) const fn report(&self) -> &TableCompactionReport {
+        &self.report
+    }
+
+    pub(crate) const fn materialization_source(&self) -> Option<BranchMaterializationSource> {
+        self.materialization_source
     }
 }
 
@@ -1783,59 +1835,182 @@ impl BranchLocalState {
             }
         }
 
+        let Some(prepared) = self.prepare_materialization_output(request)? else {
+            return self.materialize_absent_layer_retry(request);
+        };
+        let replacement_tables = self.materialization_tables_from_artifacts(
+            prepared.layer_index,
+            prepared.materialization_source,
+            prepared.artifacts.clone(),
+        )?;
+        self.install_materialization_prepared_output(request, &prepared, replacement_tables)
+    }
+
+    pub(crate) fn prepare_materialization_output(
+        &self,
+        request: &BranchMaterializationRequest,
+    ) -> BranchRuntimeResult<Option<BranchMaterializationPreparedOutput>> {
+        if request.child_branch_id() != self.branch_id {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "materialization request branch id must match branch state",
+            });
+        }
+        let Some(layer) = self.inherited_layers.get(request.layer_index()) else {
+            return Ok(None);
+        };
+        let materialization_source =
+            BranchMaterializationSource::new(layer.source_branch_id(), layer.fork_version());
+        if request
+            .materialization_source()
+            .is_some_and(|expected| expected != materialization_source)
+        {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization request source identity must match target layer",
+            });
+        }
+        match layer.status() {
+            InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
+            InheritedLayerStatus::Materialized => {
+                return Ok(Some(BranchMaterializationPreparedOutput {
+                    child_branch_id: self.branch_id,
+                    source_branch_id: layer.source_branch_id(),
+                    fork_version: layer.fork_version(),
+                    layer_index: request.layer_index(),
+                    rows: Vec::new(),
+                    artifacts: Vec::new(),
+                    skipped_post_fork_rows: 0,
+                    skipped_exact_duplicate_rows: 0,
+                    existing_rows: 0,
+                    existing_tables: 0,
+                    materialization_source,
+                }));
+            }
+            InheritedLayerStatus::Unavailable => {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "unavailable inherited layers cannot be materialized",
+                });
+            }
+        }
         let materialized = self.collect_materialization_rows(request.layer_index())?;
         let existing_summary = self.existing_materialization_replacement_summary(
             materialization_source,
             request.output_identity_prefix(),
             request.layer_index(),
         );
-        if let Some(outcome) = self.try_finish_existing_materialization_retry(
-            request,
-            materialization_source,
-            &materialized,
-            existing_summary,
-        )? {
-            return Ok(outcome);
-        }
-        let replacement_tables = self.build_materialized_l0_tables(
+        let artifacts = Self::build_materialized_l0_artifacts(
             request.layer_index(),
             request.output_identity_prefix(),
             existing_summary.map_or(0, |summary| summary.next_output_index),
             &materialized.rows,
         )?;
+        Ok(Some(BranchMaterializationPreparedOutput {
+            child_branch_id: self.branch_id,
+            source_branch_id: layer.source_branch_id(),
+            fork_version: layer.fork_version(),
+            layer_index: request.layer_index(),
+            rows: materialized.rows,
+            artifacts,
+            skipped_post_fork_rows: materialized.skipped_post_fork_rows,
+            skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
+            existing_rows: existing_summary.map_or(0, |summary| summary.rows),
+            existing_tables: existing_summary.map_or(0, |summary| summary.tables),
+            materialization_source,
+        }))
+    }
+
+    pub(crate) fn install_materialization_prepared_output(
+        &mut self,
+        request: &BranchMaterializationRequest,
+        prepared: &BranchMaterializationPreparedOutput,
+        replacement_tables: Vec<BranchOwnedTable>,
+    ) -> BranchRuntimeResult<BranchMaterializationOutcome> {
+        if request.child_branch_id() != self.branch_id {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "materialization request branch id must match branch state",
+            });
+        }
+        if prepared.child_branch_id != self.branch_id
+            || prepared.layer_index != request.layer_index()
+            || request
+                .materialization_source()
+                .is_some_and(|expected| expected != prepared.materialization_source)
+        {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "prepared materialization output must match request",
+            });
+        }
+        let Some(layer) = self.inherited_layers.get(request.layer_index()) else {
+            return self.materialize_absent_layer_retry(request);
+        };
+        if layer.source_branch_id() != prepared.source_branch_id
+            || layer.fork_version() != prepared.fork_version
+        {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "prepared materialization source must match target layer",
+            });
+        }
+        match layer.status() {
+            InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
+            InheritedLayerStatus::Materialized => {
+                return Ok(self.materialized_layer_noop_outcome(
+                    prepared.source_branch_id,
+                    prepared.fork_version,
+                    prepared.layer_index,
+                ));
+            }
+            InheritedLayerStatus::Unavailable => {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "unavailable inherited layers cannot be materialized",
+                });
+            }
+        }
+        let materialized = self.collect_materialization_rows(request.layer_index())?;
+        if materialized.rows != prepared.rows {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization candidate changed after output publication",
+            });
+        }
+        if let Some(outcome) = self.try_finish_existing_materialization_retry(
+            request,
+            prepared.materialization_source,
+            &materialized,
+            self.existing_materialization_replacement_summary(
+                prepared.materialization_source,
+                request.output_identity_prefix(),
+                request.layer_index(),
+            ),
+        )? {
+            return Ok(outcome);
+        }
         let created_table_identities = replacement_tables
             .iter()
             .map(|table| table.facts().identity().clone())
             .collect();
-        let new_rows_materialized = u64::try_from(materialized.rows.len()).map_err(|_| {
+        let new_rows_materialized = u64::try_from(prepared.rows.len()).map_err(|_| {
             BranchRuntimeError::InvalidBranchState {
                 reason: "materialized row count must fit in u64",
             }
         })?;
-        let rows_materialized = existing_summary
-            .map_or(0, |summary| summary.rows)
-            .saturating_add(new_rows_materialized);
+        let rows_materialized = prepared.existing_rows.saturating_add(new_rows_materialized);
         let tables_created = replacement_tables.len();
-        let replacement_owned_table_count = existing_summary
-            .map_or(0, |summary| summary.tables)
-            .saturating_add(tables_created);
+        let replacement_owned_table_count = prepared.existing_tables.saturating_add(tables_created);
 
         let mut staged = self.clone();
         staged.install_materialization_replacement_tables(replacement_tables)?;
-        staged.remove_inherited_layer_by_source(materialization_source)?;
+        staged.remove_inherited_layer_by_source(prepared.materialization_source)?;
         *self = staged;
         self.refresh_observed_row_facts();
 
         Ok(BranchMaterializationOutcome {
             child_branch_id: self.branch_id,
-            source_branch_id,
-            fork_version,
-            layer_index: request.layer_index(),
+            source_branch_id: prepared.source_branch_id,
+            fork_version: prepared.fork_version,
+            layer_index: prepared.layer_index,
             rows_materialized,
             tables_created,
             created_table_identities,
-            skipped_post_fork_rows: materialized.skipped_post_fork_rows,
-            skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
+            skipped_post_fork_rows: prepared.skipped_post_fork_rows,
+            skipped_exact_duplicate_rows: prepared.skipped_exact_duplicate_rows,
             inherited_layers_remaining: self.inherited_layers.len(),
             replacement_owned_table_count,
             recovery: BranchMaterializationRecovery::ReplacementVisibleLayerRemoved,
@@ -2038,6 +2213,41 @@ impl BranchLocalState {
         self.install_branch_compaction_plan(request, &plan)
     }
 
+    pub(crate) fn prepare_branch_compaction_plan(
+        &self,
+        request: &BranchCompactionRequest,
+        plan: &BranchCompactionPlan,
+    ) -> BranchRuntimeResult<Option<BranchCompactionPreparedOutput>> {
+        self.validate_compaction_request(request)?;
+        if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: "compaction plan must match request branch and kind",
+            });
+        }
+        let Some(candidate) = plan.candidate() else {
+            return Ok(None);
+        };
+        self.require_candidate_current(candidate)?;
+        let sources = self.compaction_sources(candidate)?;
+        let compactor = TableCompactor::new(
+            request.table_compaction_config(),
+            request.table_builder_config(),
+        )
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let mut policy = KeepAllTableCompactionPolicy;
+        let output = compactor
+            .compact(request.output_identity_seed(), &sources, &mut policy)
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let (artifacts, report) = output.into_parts();
+        Ok(Some(BranchCompactionPreparedOutput {
+            branch_id: self.branch_id,
+            output_level: candidate.output_level(),
+            artifacts,
+            report,
+            materialization_source: Self::compaction_output_materialization_source(candidate),
+        }))
+    }
+
     pub(crate) fn install_branch_compaction_plan(
         &mut self,
         request: &BranchCompactionRequest,
@@ -2057,25 +2267,49 @@ impl BranchLocalState {
                 self.owned_table_count(),
             ));
         };
-        self.require_candidate_current(candidate)?;
-
-        let sources = self.compaction_sources(candidate)?;
-        let compactor = TableCompactor::new(
-            request.table_compaction_config(),
-            request.table_builder_config(),
-        )
-        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        let mut policy = KeepAllTableCompactionPolicy;
-        let output = compactor
-            .compact(request.output_identity_seed(), &sources, &mut policy)
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        let (artifacts, report) = output.into_parts();
-        let materialization_source = Self::compaction_output_materialization_source(candidate);
+        let prepared = self.prepare_branch_compaction_plan(request, plan)?.ok_or(
+            BranchRuntimeError::InvalidCompaction {
+                reason: "compaction candidate must produce prepared output",
+            },
+        )?;
         let output_tables = self.compaction_output_tables(
             candidate.output_level(),
-            artifacts,
-            materialization_source,
+            prepared.artifacts,
+            prepared.materialization_source,
         )?;
+        self.install_branch_compaction_prepared_plan(request, plan, output_tables, prepared.report)
+    }
+
+    pub(crate) fn install_branch_compaction_prepared_plan(
+        &mut self,
+        request: &BranchCompactionRequest,
+        plan: &BranchCompactionPlan,
+        output_tables: Vec<BranchOwnedTable>,
+        report: TableCompactionReport,
+    ) -> BranchRuntimeResult<BranchCompactionOutcome> {
+        self.validate_compaction_request(request)?;
+        if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: "compaction plan must match request branch and kind",
+            });
+        }
+        let Some(candidate) = plan.candidate() else {
+            return Ok(BranchCompactionOutcome::no_candidate(
+                self.branch_id,
+                plan.noop_reason()
+                    .expect("no-candidate compaction plan records reason"),
+                self.owned_table_count(),
+            ));
+        };
+        self.require_candidate_current(candidate)?;
+        if output_tables
+            .iter()
+            .any(|table| table.descriptor().level() != candidate.output_level())
+        {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: "prepared compaction output level must match candidate",
+            });
+        }
         let output_identities = output_tables
             .iter()
             .map(|table| table.descriptor().identity().clone())
@@ -2644,20 +2878,19 @@ impl BranchLocalState {
         Ok(rows_by_key)
     }
 
-    fn build_materialized_l0_tables(
-        &self,
+    fn build_materialized_l0_artifacts(
         layer_index: usize,
         output_identity_prefix: &str,
         output_index_start: usize,
         rows: &[StorageRow],
-    ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
+    ) -> BranchRuntimeResult<Vec<BuiltTableArtifact>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
 
         let builder = ImmutableTableBuilder::new(TableBuilderConfig::default())
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        let mut tables = Vec::new();
+        let mut artifacts = Vec::new();
         for (output_index, chunk) in rows
             .chunks(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE)
             .enumerate()
@@ -2670,6 +2903,25 @@ impl BranchLocalState {
             let artifact = builder
                 .build_from_storage_rows(identity.clone(), chunk)
                 .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            artifacts.push(artifact);
+        }
+        Ok(artifacts)
+    }
+
+    pub(crate) fn materialization_tables_from_artifacts(
+        &self,
+        layer_index: usize,
+        materialization_source: BranchMaterializationSource,
+        artifacts: Vec<BuiltTableArtifact>,
+    ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
+        if self.inherited_layers.get(layer_index).is_none() {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "materialization layer index must exist",
+            });
+        }
+        let mut tables = Vec::new();
+        for artifact in artifacts {
+            let identity = artifact.facts().identity().clone();
             let reader = ImmutableTableReader::open_bytes(
                 identity.clone(),
                 artifact.into_bytes(),
@@ -2678,12 +2930,11 @@ impl BranchLocalState {
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             let descriptor =
                 BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)?;
-            let layer = &self.inherited_layers[layer_index];
             tables.push(BranchOwnedTable::new_materialization_replacement(
                 self.branch_id,
                 descriptor,
                 reader,
-                BranchMaterializationSource::new(layer.source_branch_id(), layer.fork_version()),
+                materialization_source,
             )?);
         }
         Ok(tables)

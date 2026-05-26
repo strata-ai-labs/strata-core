@@ -1,3 +1,4 @@
+mod publication_plan;
 mod remaining;
 mod shared;
 
