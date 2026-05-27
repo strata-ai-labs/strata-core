@@ -122,6 +122,10 @@ impl ObjectLayout {
         object_name(&[ObjectFamily::Manifest.as_str(), "branch-catalog"])
     }
 
+    pub(crate) fn pending_releases_manifest() -> LayoutResult<ObjectName> {
+        object_name(&[ObjectFamily::Manifest.as_str(), "pending-releases"])
+    }
+
     pub(crate) fn wal_prefix() -> LayoutResult<ObjectPrefix> {
         Self::family_prefix(ObjectFamily::Wal)
     }

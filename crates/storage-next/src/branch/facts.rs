@@ -960,6 +960,25 @@ impl BranchReleasePlan {
         })
     }
 
+    /// Reconstruct a release plan from its persisted audit-trail form
+    /// (branch_id + sorted releasable table identities). `removed_refs`
+    /// and `protected_tables` are intentionally empty — the persisted
+    /// form omits them because the drain path only consumes
+    /// `releasable_tables`, and the manifest-driven retention pass
+    /// recomputes reachability on the next run.
+    pub(crate) fn from_releasable_tables(
+        released_branch_id: BranchId,
+        mut releasable_tables: Vec<TableIdentity>,
+    ) -> Self {
+        releasable_tables.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Self {
+            released_branch_id,
+            removed_refs: Vec::new(),
+            releasable_tables,
+            protected_tables: Vec::new(),
+        }
+    }
+
     pub(crate) const fn released_branch_id(&self) -> BranchId {
         self.released_branch_id
     }

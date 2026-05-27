@@ -51,6 +51,12 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     // BranchCatalogManifest publication. Loaded from the manifest on
     // recovery so monotonicity holds across restarts.
     pub(super) branch_catalog_sequence: u64,
+    // Pending-releases manifest publish sequence counter. Increments on
+    // each PendingReleasesManifest publication (push by clear/delete or
+    // drain by retention). Loaded from the manifest on recovery so the
+    // sequence remains monotonic across restarts. Zero before the first
+    // publication.
+    pub(super) pending_releases_sequence: u64,
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
@@ -83,14 +89,20 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         mut self,
         recovery: &LifecycleRecoveryOutcome,
     ) -> LifecycleResult<LifecycleDurableLocalRuntime<'a, S>> {
-        let (report, branch_catalog, branch_catalog_sequence, initial_branch_id) =
-            match self.prepare_catalog_and_replay(recovery) {
-                Ok(values) => values,
-                Err(error) => {
-                    self.mark_recovery_bootstrap_failed();
-                    return Err(error);
-                }
-            };
+        let (
+            report,
+            branch_catalog,
+            branch_catalog_sequence,
+            pending_releases_sequence,
+            pending_releases,
+            initial_branch_id,
+        ) = match self.prepare_catalog_and_replay(recovery) {
+            Ok(values) => values,
+            Err(error) => {
+                self.mark_recovery_bootstrap_failed();
+                return Err(error);
+            }
+        };
         let open_outcome = match StorageOpenOutcome::new(
             self.assembly_facts().mode(),
             self.assembly_facts().disposition(),
@@ -156,8 +168,9 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             recovered_checkpoint_timestamp_max: recovery.checkpoint().timestamp_max(),
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
-            pending_releases: Vec::new(),
+            pending_releases,
             branch_catalog_sequence,
+            pending_releases_sequence,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
             close_retry_state: None,
         })
@@ -173,6 +186,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         LifecycleRecoveryBootstrapReport,
         LifecycleBranchCatalog,
         u64,
+        u64,
+        Vec<crate::branch::BranchReleasePlan>,
         BranchId,
     )> {
         require_admitted(self.state, LifecycleOperationKind::RecoveryStep)?;
@@ -221,6 +236,43 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             None => 0,
         };
 
+        // Reload the durable PendingReleasesManifest if present. Each
+        // entry is converted back to a release plan carrying the
+        // persisted releasable-table list; protected_tables and
+        // removed_refs stay empty (the next retention pass recomputes
+        // reachability from the manifest).
+        let (pending_releases, pending_releases_sequence) = match self
+            .services
+            .pending_releases_manifest()
+            .load_current()
+            .map_err(pending_releases_manifest_service_error)?
+        {
+            Some(manifest) => {
+                let mut plans = Vec::with_capacity(manifest.entries().len());
+                for entry in manifest.entries() {
+                    let identities = entry
+                        .released_tables()
+                        .iter()
+                        .map(|identity| {
+                            crate::table::TableIdentity::new(identity.clone()).map_err(|source| {
+                                LifecycleError::lower_layer_with(
+                                    crate::lifecycle::LifecycleLowerLayer::Format,
+                                    "pending releases manifest table identity invalid",
+                                    source,
+                                )
+                            })
+                        })
+                        .collect::<LifecycleResult<Vec<_>>>()?;
+                    plans.push(crate::branch::BranchReleasePlan::from_releasable_tables(
+                        entry.branch_id(),
+                        identities,
+                    ));
+                }
+                (plans, manifest.manifest_sequence())
+            }
+            None => (Vec::new(), 0),
+        };
+
         // Install per-branch durable table manifests into non-seeded slots.
         // The seeded branch's manifest was already applied by the pre-catalog
         // recovery phase (apply_table_manifest_recovery on the shell).
@@ -259,6 +311,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             report,
             branch_catalog,
             branch_catalog_sequence,
+            pending_releases_sequence,
+            pending_releases,
             initial_branch_id,
         ))
     }
@@ -564,6 +618,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
+        self.publish_pending_releases()?;
         Ok(outcome)
     }
 
@@ -587,6 +642,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
+        self.publish_pending_releases()?;
         Ok(outcome)
     }
 
@@ -617,12 +673,83 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .map_err(branch_catalog_manifest_service_error)?;
         Ok(())
     }
+
+    /// Publish a fresh `PendingReleasesManifest` reflecting the current
+    /// in-memory buffer. Called after `clear_branch`, `delete_branch`,
+    /// and after each retention drain that consumed entries. The
+    /// sequence counter advances monotonically so recovery can resolve
+    /// concurrent-writer scenarios across restarts.
+    pub(super) fn publish_pending_releases(&mut self) -> LifecycleResult<()> {
+        let entries = pending_releases_to_durable_entries(&self.pending_releases)
+            .map_err(pending_releases_format_error)?;
+        self.pending_releases_sequence = self.pending_releases_sequence.saturating_add(1);
+        if self.pending_releases_sequence == 0 {
+            return Err(LifecycleError::CheckpointPublicationFailed {
+                reason: "pending releases sequence overflow",
+            });
+        }
+        let manifest = crate::format::PendingReleasesManifest::new(
+            *self.services.assembly_facts().database_id(),
+            self.pending_releases_sequence,
+            entries,
+        )
+        .map_err(pending_releases_format_error)?;
+        self.services
+            .pending_releases_manifest()
+            .publish_replace(&manifest)
+            .map_err(pending_releases_manifest_service_error)?;
+        Ok(())
+    }
+}
+
+fn pending_releases_to_durable_entries(
+    plans: &[crate::branch::BranchReleasePlan],
+) -> Result<Vec<crate::format::PendingReleasesEntry>, crate::format::FormatError> {
+    // Group by branch_id; multiple plans for the same branch (multiple
+    // clear/delete operations between drains) merge their releasable
+    // tables into a single entry. Entries are sorted by branch_id byte
+    // order to match the manifest's canonical encoding.
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<[u8; 16], Vec<String>> = BTreeMap::new();
+    for plan in plans {
+        let key = *plan.released_branch_id().as_bytes();
+        let bucket = grouped.entry(key).or_default();
+        for identity in plan.releasable_tables() {
+            bucket.push(identity.as_str().to_owned());
+        }
+    }
+    let mut entries = Vec::with_capacity(grouped.len());
+    for (key, mut tables) in grouped {
+        tables.sort();
+        tables.dedup();
+        let branch_id = strata_core_next::BranchId::from_bytes(key);
+        entries.push(crate::format::PendingReleasesEntry::new(branch_id, tables)?);
+    }
+    Ok(entries)
 }
 
 fn branch_catalog_format_error(error: crate::format::FormatError) -> LifecycleError {
     LifecycleError::lower_layer_with(
         crate::lifecycle::LifecycleLowerLayer::Format,
         "branch catalog manifest encode failed",
+        error,
+    )
+}
+
+fn pending_releases_format_error(error: crate::format::FormatError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Format,
+        "pending releases manifest encode failed",
+        error,
+    )
+}
+
+fn pending_releases_manifest_service_error(
+    error: crate::service::ManifestServiceError,
+) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Service,
+        "pending releases manifest service failed",
         error,
     )
 }

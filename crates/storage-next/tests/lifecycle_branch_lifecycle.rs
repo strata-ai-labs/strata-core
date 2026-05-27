@@ -69,3 +69,16 @@ fn lifecycle_branch_lifecycle_stale_maintenance_rejection() {
 
     assert!(outcome.stale_work_cases() > 0);
 }
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn lifecycle_branch_lifecycle_recovery_smoke() {
+    let outcome = strata_storage_next::testkit::check_lifecycle_branch_lifecycle_recovery_contract(
+        b"branch-recovery-smoke\x11\x22\x33\x44",
+    )
+    .expect("branch lifecycle recovery contract");
+
+    assert!(outcome.branches_recovered() > 0);
+    assert!(outcome.forks_recovered() > 0);
+    assert!(outcome.rows_recovered() > 0);
+}

@@ -64,6 +64,31 @@ non-seeded-branch flush helper); persisting `pending_releases`; recovery
 integration smoke (existing lib coverage is end-to-end durable but not a
 testkit-style integration harness).
 
+**Update (Follow-up B Phase 4 landed)**: B Phase 4 closes the last two
+items on the Follow-up B track:
+
+- **`pending_releases` persistence.** New `PendingReleasesManifest`
+  format (`STPR` magic, version 1, sorted by branch_id) lives at
+  `manifest/pending-releases`. Published on every `clear_branch` /
+  `delete_branch` and rewritten by the retention runner after any
+  drain consumes entries. Reloaded into the in-memory buffer during
+  `complete_recovery` via `BranchReleasePlan::from_releasable_tables`,
+  which carries only the audit trail (branch_id + sorted releasable
+  table identities); `removed_refs` and `protected_tables` are
+  recomputed by the next reachability pass. 10 format tests + 3
+  golden vectors. New § 7 lib test
+  `recovery_preserves_branch_release_facts`.
+- **Recovery integration smoke.** New testkit harness
+  `check_lifecycle_branch_lifecycle_recovery_contract` exercises the
+  durable open → create branch → commit → fork at history → close →
+  reopen → verify cycle through the public testkit surface. New
+  integration test `lifecycle_branch_lifecycle_recovery_smoke` wires
+  it into `tests/lifecycle_branch_lifecycle.rs`.
+
+With Follow-up B Phase 4 the entire Follow-up B track is closed.
+Follow-up C remains (observable Clearing/Deleting states +
+generated/fault/fuzz coverage).
+
 **Update (Follow-up B Phase 3 landed)**: B Phase 3 closes the
 multi-branch encoder + non-seeded flush sides of Gap 6:
 
@@ -167,7 +192,7 @@ dedup, deterministic listing, error-coded outcomes.
 | 2. typed errors for duplicate create, missing source, non-empty destination, stale generation, deleted branch, unretained fork version | Met | A1 added `SourceHasUnflushedRows`, `InsufficientTimestampHistory`, `PinnedViewReleaseBlocked` and used `SourceHasUnflushedRows` in fork rejections. |
 | 3. pinned read views remain valid across clear/delete/fork and protect reachability | Met | |
 | 4. stale flush/compaction/materialization tasks cannot resurrect cleared or deleted rows | Met | Stale descriptor CAS works. |
-| 5. recovery preserves branch catalog, generation, deleted markers, inherited layers, and fork-at-history facts | Met | Closed across B Phase 1/2/3: descriptor rebuild (Phase 1), WAL replay dispatch + per-branch TableManifest recovery + parent metadata (Phase 2), multi-branch checkpoint encoder + post-catalog row install + inherited layers round trip (Phase 3). Remaining: `pending_releases` persistence across restart. |
+| 5. recovery preserves branch catalog, generation, deleted markers, inherited layers, and fork-at-history facts | Met | Closed across B Phase 1/2/3/4: descriptor rebuild (Phase 1), WAL replay dispatch + per-branch TableManifest recovery + parent metadata (Phase 2), multi-branch checkpoint encoder + post-catalog row install + inherited layers round trip (Phase 3), pending releases persistence + testkit recovery smoke (Phase 4). |
 | 6. table-object retention receives release facts; branch lifecycle never directly deletes table objects | Met | |
 | 7. source guards prevent product policy and milestone labels in code/tests | Met | |
 | 8. generated/fault tests cover branch lifecycle ordering, not only examples | Not met | Generated model, fault windows, and fuzz targets all missing. Follow-up C. |
@@ -265,7 +290,7 @@ and delegates to `fork_at_retained_version`. Tests:
 - `fork_at_history_no_rows_at_or_before_timestamp_rejects`
 - `durable_runtime_fork_at_retained_timestamp_resolves_via_coverage`
 
-### 6. Multi-branch durable persistence and recovery — *Closed by B Phase 1 + 2 + 3*
+### 6. Multi-branch durable persistence and recovery — *Closed by B Phase 1 + 2 + 3 + 4*
 
 B Phase 1 added the `BranchCatalogManifest` (top-level
 `manifest/branch-catalog` object, STBC magic, version 1) and recovery
@@ -286,15 +311,20 @@ rotate-for-branch entry point all route by request branch_id, so
 non-seeded branches can be flushed through the normal maintenance
 flow.
 
-**Remaining**: `pending_releases` persistence across restart (the
-in-memory buffer is lost on close); recovery integration smoke
-through the testkit harness. Both are independent slices.
+B Phase 4 closed the audit-trail side: `pending_releases` now persists
+through a dedicated `PendingReleasesManifest` (`manifest/pending-releases`)
+that is rewritten by clear/delete and by the retention drain; recovery
+reloads it into the in-memory buffer. A testkit recovery smoke contract
+exposes the open → commit → fork → close → reopen → verify cycle for
+external integrators.
+
+Gap 6 is fully closed.
 
 ### 7. Test coverage gaps
 
 Counts are "test plan name → present in shipped code" (after A1 + A2 Phase 1).
 
-| Section | Required | Present | Missing | A2 Phase 1 delta | B Phase 1/2/3 delta |
+| Section | Required | Present | Missing | A2 Phase 1 delta | B Phase 1/2/3/4 delta |
 |---|---:|---:|---:|---:|---:|
 | § 1 Catalog Create and List | 10 | 10 | 0 | — | — |
 | § 2 Current-State Fork | 12 | 12 | 0 | — | — |
@@ -302,7 +332,7 @@ Counts are "test plan name → present in shipped code" (after A1 + A2 Phase 1).
 | § 4 Clear Branch | 12 | 11 | 1 (no backend delete; needs mock backend) | +1 | — |
 | § 5 Delete Branch | 12 | 9 | 3 (deleting state ×3) | +2 | +1 (`recovery_rejects_wal_row_for_deleted_generation`) |
 | § 6 Generation Reuse | 10 | 9 | 1 (recovery generation) | — | — |
-| § 7 Recovery | 14 | 9 | 5 (`recovery_reconciles_creating_branch`, `_clearing_branch`, `_deleting_branch`, `recovery_preserves_branch_release_facts`, integration smoke) | — | +9 (3 in Phase 1, 4 in Phase 2, 2 in Phase 3) |
+| § 7 Recovery | 14 | 10 | 4 (`recovery_reconciles_creating_branch`, `_clearing_branch`, `_deleting_branch`, integration smoke through testkit) | — | +10 (3 Phase 1, 4 Phase 2, 2 Phase 3, 1 Phase 4) |
 | § 8 Maintenance Interactions | 10 | 1 | 9 | +1 | — |
 | § 9 Inter-Branch Isolation | 10 | 10 | 0 | +1 | — |
 | § 10 Pinned View Reachability | 10 | 9 | 1 (partial-transition observability; C) | — | — |
@@ -311,8 +341,8 @@ Counts are "test plan name → present in shipped code" (after A1 + A2 Phase 1).
 | Generated Model | 8 | 0 | 8 | — | — |
 | Fault Windows | 12 | 0 | 12 | — | — |
 | Fuzz Targets | 4 | 0 | 4 | — | — |
-| Integration | 8 | 6 | 2 (durable smoke, recovery smoke) | — | — |
-| **Total** | **162** | **110** | **52** | **+10** | **+11** |
+| Integration | 8 | 7 | 1 (durable smoke) | — | +1 (`lifecycle_branch_lifecycle_recovery_smoke`) |
+| **Total** | **162** | **112** | **50** | **+10** | **+12** |
 
 A2 Phase 1 added 10 plan-required tests (5 §4/§5 catalog-direct, 1 §8
 retention drain, 1 §9 shared-table, 3 §11 cache runtime clear/delete) plus
@@ -321,19 +351,15 @@ is structural; it does not unblock additional test coverage** — the
 ~6 method signature changes affect existing call sites only.
 
 B Phase 1 added 3 § 7 descriptor-rebuild tests. B Phase 2 added 4 more
-§ 7 tests (active branch states, deleted-generation rejection, fork at
-history version, multi-branch TableManifest round trip), plus § 3 fork
-at history rebuild and § 5 deleted-generation rejection. B Phase 3
-added 2 more § 7 tests (multi-branch checkpoint round trip and
-inherited-layers round trip). Total § 7 coverage is now 9/14 (64%).
+§ 7 tests. B Phase 3 added 2 more § 7 tests. B Phase 4 added 1 more
+§ 7 test (`recovery_preserves_branch_release_facts`) plus the
+integration smoke that wires through the testkit. Total § 7 coverage
+is now 10/14 (71%).
 
-The remaining 5 § 7 tests split as:
-- 3 need Follow-up C observable Clearing/Deleting states
-  (`recovery_reconciles_creating_branch`, `_clearing_branch`,
-  `_deleting_branch`).
-- 1 needs `pending_releases` persistence
-  (`recovery_preserves_branch_release_facts`).
-- 1 integration smoke (`lifecycle_branch_lifecycle_recovery_smoke`).
+The remaining 3 § 7 tests are blocked on Follow-up C observable
+Clearing/Deleting states (`recovery_reconciles_creating_branch`,
+`_clearing_branch`, `_deleting_branch`); the 4th remaining item under
+the integration row is the durable smoke that pairs with Follow-up C.
 
 Follow-up C unblocks partial-transition tests and the
 generated/fault/fuzz lines.
@@ -386,12 +412,14 @@ rebuild; 4 new § 7 tests.
 dispatch; flush / compact / materialize / rotate handlers respect
 the request's branch_id; 2 § 7 tests.
 
-**Phase 4 (deferred):** Persist `pending_releases` across restart so
-retention drains pick up where they left off; testkit-backed recovery
-integration smoke. Unblocks the remaining 2 of 5 missing § 7
-tests on the Follow-up B track (`_preserves_branch_release_facts`,
-`recovery_smoke` integration). The other 3 § 7 tests are blocked on
-Follow-up C (observable Clearing/Deleting states).
+**Phase 4 (landed):** `PendingReleasesManifest` format
+(`manifest/pending-releases`, STPR magic, version 1) with publish on
+clear/delete + retention drain; recovery reload via
+`BranchReleasePlan::from_releasable_tables`; 3 golden vectors;
+`recovery_preserves_branch_release_facts` lib test; testkit-backed
+recovery smoke (`check_lifecycle_branch_lifecycle_recovery_contract` +
+`lifecycle_branch_lifecycle_recovery_smoke` integration test). The
+entire Follow-up B track is closed.
 
 ### Follow-up C — Lifecycle state observability and assurance
 

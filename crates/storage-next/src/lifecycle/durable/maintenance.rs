@@ -714,11 +714,13 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let health = self.current_recovery_health.clone();
         let branch_id = self.initial_branch_id;
         let pending_releases = &mut self.pending_releases;
+        let pending_releases_sequence = &mut self.pending_releases_sequence;
         let mut runner = DurableRetentionMaintenanceRunner {
             services,
             branch_id,
             health,
             pending_releases,
+            pending_releases_sequence,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -1089,6 +1091,7 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     branch_id: strata_core_next::BranchId,
     health: crate::lifecycle::RecoveryHealth,
     pending_releases: &'a mut Vec<crate::branch::BranchReleasePlan>,
+    pending_releases_sequence: &'a mut u64,
 }
 
 impl DurableRetentionMaintenanceRunner<'_, '_> {
@@ -1123,12 +1126,79 @@ impl DurableRetentionMaintenanceRunner<'_, '_> {
         *self.pending_releases = remaining;
         drained
     }
+
+    /// Publish a fresh `PendingReleasesManifest` reflecting the
+    /// post-drain buffer. Called after each drain that consumed
+    /// entries so the audit trail stays consistent across restarts.
+    fn publish_pending_releases(&mut self) -> LifecycleResult<()> {
+        let entries = pending_releases_to_durable_entries(self.pending_releases)
+            .map_err(pending_releases_format_error)?;
+        *self.pending_releases_sequence = self.pending_releases_sequence.saturating_add(1);
+        if *self.pending_releases_sequence == 0 {
+            return Err(LifecycleError::CheckpointPublicationFailed {
+                reason: "pending releases sequence overflow",
+            });
+        }
+        let manifest = crate::format::PendingReleasesManifest::new(
+            *self.services.assembly_facts().database_id(),
+            *self.pending_releases_sequence,
+            entries,
+        )
+        .map_err(pending_releases_format_error)?;
+        self.services
+            .pending_releases_manifest()
+            .publish_replace(&manifest)
+            .map_err(|error| {
+                LifecycleError::lower_layer_with(
+                    crate::lifecycle::LifecycleLowerLayer::Service,
+                    "pending releases manifest service failed",
+                    error,
+                )
+            })?;
+        Ok(())
+    }
+}
+
+fn pending_releases_to_durable_entries(
+    plans: &[crate::branch::BranchReleasePlan],
+) -> Result<Vec<crate::format::PendingReleasesEntry>, crate::format::FormatError> {
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<[u8; 16], Vec<String>> = BTreeMap::new();
+    for plan in plans {
+        let key = *plan.released_branch_id().as_bytes();
+        let bucket = grouped.entry(key).or_default();
+        for identity in plan.releasable_tables() {
+            bucket.push(identity.as_str().to_owned());
+        }
+    }
+    let mut entries = Vec::with_capacity(grouped.len());
+    for (key, mut tables) in grouped {
+        tables.sort();
+        tables.dedup();
+        let branch_id = strata_core_next::BranchId::from_bytes(key);
+        entries.push(crate::format::PendingReleasesEntry::new(branch_id, tables)?);
+    }
+    Ok(entries)
+}
+
+fn pending_releases_format_error(error: crate::format::FormatError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Format,
+        "pending releases manifest encode failed",
+        error,
+    )
 }
 
 impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = retention_request_from_maintenance_task(task)?;
         let drained = self.drain_pending_releases(request.scope());
+        // Persist the post-drain buffer when entries were actually
+        // removed so the audit trail stays in sync with the in-memory
+        // state across restarts.
+        if !drained.is_empty() {
+            self.publish_pending_releases()?;
+        }
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)

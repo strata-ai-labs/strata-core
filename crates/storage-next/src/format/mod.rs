@@ -13,6 +13,7 @@ use std::fmt;
 mod branch_catalog_manifest;
 mod key;
 mod manifest;
+mod pending_releases_manifest;
 pub(crate) mod quarantine;
 mod segment_metadata;
 mod snapshot;
@@ -28,6 +29,10 @@ pub(crate) use branch_catalog_manifest::{
 };
 pub(crate) use key::{decode_internal_key, encode_internal_key, encode_physical_key};
 pub(crate) use manifest::{decode_manifest, encode_manifest, DatabaseManifest};
+pub(crate) use pending_releases_manifest::{
+    decode_pending_releases_manifest, encode_pending_releases_manifest, PendingReleasesEntry,
+    PendingReleasesManifest,
+};
 pub(crate) use segment_metadata::{
     decode_segment_metadata, encode_segment_metadata, SegmentMetadata,
 };
@@ -77,6 +82,7 @@ mod tests;
 
 const BRANCH_CATALOG_FORMAT_VERSION: u32 = 1;
 const DATABASE_FORMAT_VERSION: u32 = 1;
+const PENDING_RELEASES_FORMAT_VERSION: u32 = 1;
 const MAX_CODEC_ID_LEN: usize = 256;
 const SEGMENT_METADATA_FORMAT_VERSION: u32 = 1;
 const SEGMENT_METADATA_SIZE: usize = 60;

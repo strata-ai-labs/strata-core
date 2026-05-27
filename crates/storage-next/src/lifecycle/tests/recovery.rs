@@ -2238,6 +2238,64 @@ fn recovery_rebuilds_inherited_layers() {
     );
 }
 
+#[test]
+fn recovery_preserves_branch_release_facts() {
+    // Open, create a branch, delete it (pushes a release plan into the
+    // in-memory buffer and publishes the pending-releases manifest),
+    // drop the runtime *without* running retention. Reopen and verify
+    // the buffer comes back with the same released branch_id.
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x3b);
+    let released = branch_id(0x4b);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        runtime
+            .create_branch(
+                released,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create branch");
+        runtime
+            .delete_branch(
+                released,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+                Some(CommitVersion::new(3)),
+            )
+            .expect("delete branch");
+        assert_eq!(runtime.pending_releases().len(), 1);
+        assert_eq!(runtime.pending_releases()[0].released_branch_id(), released,);
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let reloaded = runtime.pending_releases();
+    assert_eq!(
+        reloaded.len(),
+        1,
+        "pending releases buffer survived restart",
+    );
+    assert_eq!(reloaded[0].released_branch_id(), released);
+}
+
 fn publish_table_for_recovery(
     backend: &RecoveryTestBackend,
     branch: BranchId,

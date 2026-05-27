@@ -25,8 +25,8 @@ pub(crate) use checkpoint::{
 )]
 pub(crate) use manifest::{
     BranchCatalogManifestService, BranchCatalogManifestWrite, DatabaseManifestService,
-    DatabaseManifestWrite, ManifestRole, ManifestServiceError, TableManifestService,
-    TableManifestWrite,
+    DatabaseManifestWrite, ManifestRole, ManifestServiceError, PendingReleasesManifestService,
+    PendingReleasesManifestWrite, TableManifestService, TableManifestWrite,
 };
 
 pub(crate) use publish::{validate_publish_outcome, ObjectPublisher};

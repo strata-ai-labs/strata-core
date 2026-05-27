@@ -10,9 +10,10 @@
 
 use crate::backend::{Backend, BackendError, BackendErrorKind, PublishError, PublishOutcome};
 use crate::format::{
-    decode_branch_catalog_manifest, decode_manifest, decode_table_manifest,
-    encode_branch_catalog_manifest, encode_manifest, encode_table_manifest, BranchCatalogManifest,
-    DatabaseManifest, FormatError, TableManifest,
+    decode_branch_catalog_manifest, decode_manifest, decode_pending_releases_manifest,
+    decode_table_manifest, encode_branch_catalog_manifest, encode_manifest,
+    encode_pending_releases_manifest, encode_table_manifest, BranchCatalogManifest,
+    DatabaseManifest, FormatError, PendingReleasesManifest, TableManifest,
 };
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
@@ -27,6 +28,7 @@ pub(crate) enum ManifestRole {
     Database,
     Table,
     BranchCatalog,
+    PendingReleases,
 }
 
 impl ManifestRole {
@@ -35,6 +37,7 @@ impl ManifestRole {
             Self::Database => "database manifest",
             Self::Table => "table manifest",
             Self::BranchCatalog => "branch catalog manifest",
+            Self::PendingReleases => "pending releases manifest",
         }
     }
 }
@@ -475,6 +478,59 @@ impl BranchCatalogManifestWrite {
     }
 }
 
+pub(crate) struct PendingReleasesManifestService<'a> {
+    backend: &'a dyn Backend,
+}
+
+impl<'a> PendingReleasesManifestService<'a> {
+    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
+        Self { backend }
+    }
+
+    pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<PendingReleasesManifest>> {
+        let object = pending_releases_manifest_object()?;
+        read_optional(self.backend, ManifestRole::PendingReleases, &object)?
+            .map(|bytes| decode_pending_releases(&object, &bytes))
+            .transpose()
+    }
+
+    pub(crate) fn publish_replace(
+        &self,
+        manifest: &PendingReleasesManifest,
+    ) -> ManifestServiceResult<PendingReleasesManifestWrite> {
+        let object = pending_releases_manifest_object()?;
+        publish_pending_releases(self.backend, &object, manifest, PublishIntent::Replace)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingReleasesManifestWrite {
+    manifest: PendingReleasesManifest,
+    outcome: PublishOutcome,
+}
+
+impl PendingReleasesManifestWrite {
+    const fn new(manifest: PendingReleasesManifest, outcome: PublishOutcome) -> Self {
+        Self { manifest, outcome }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exposed for tests; first non-test caller lands with the public storage api"
+    )]
+    pub(crate) fn manifest(&self) -> &PendingReleasesManifest {
+        &self.manifest
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exposed for tests; first non-test caller lands with the public storage api"
+    )]
+    pub(crate) const fn outcome(&self) -> &PublishOutcome {
+        &self.outcome
+    }
+}
+
 pub(crate) struct TableManifestService<'a> {
     backend: &'a dyn Backend,
 }
@@ -647,6 +703,56 @@ fn branch_catalog_manifest_object() -> ManifestServiceResult<ObjectName> {
         role: ManifestRole::BranchCatalog,
         source,
     })
+}
+
+fn pending_releases_manifest_object() -> ManifestServiceResult<ObjectName> {
+    ObjectLayout::pending_releases_manifest().map_err(|source| ManifestServiceError::Layout {
+        role: ManifestRole::PendingReleases,
+        source,
+    })
+}
+
+fn decode_pending_releases(
+    object: &ObjectName,
+    bytes: &[u8],
+) -> ManifestServiceResult<PendingReleasesManifest> {
+    decode_pending_releases_manifest(bytes).map_err(|source| ManifestServiceError::Decode {
+        role: ManifestRole::PendingReleases,
+        object: object.clone(),
+        source,
+    })
+}
+
+fn publish_pending_releases(
+    backend: &dyn Backend,
+    object: &ObjectName,
+    manifest: &PendingReleasesManifest,
+    intent: PublishIntent,
+) -> ManifestServiceResult<PendingReleasesManifestWrite> {
+    let bytes = encode_pending_releases_manifest(manifest).map_err(|source| {
+        ManifestServiceError::Encode {
+            role: ManifestRole::PendingReleases,
+            object: object.clone(),
+            source,
+        }
+    })?;
+    let decoded = decode_pending_releases(object, &bytes)?;
+    let publisher = ObjectPublisher::new(backend);
+    let outcome = match intent {
+        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
+        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    }
+    .map_err(|source| ManifestServiceError::Publish {
+        role: ManifestRole::PendingReleases,
+        source,
+    })?;
+    validate_manifest_publish_outcome(
+        ManifestRole::PendingReleases,
+        object,
+        bytes.len() as u64,
+        &outcome,
+    )?;
+    Ok(PendingReleasesManifestWrite::new(decoded, outcome))
 }
 
 fn decode_branch_catalog(

@@ -2,6 +2,7 @@
 
 mod bootstrap;
 mod branch_lifecycle;
+mod branch_lifecycle_recovery;
 mod budget;
 mod cache;
 mod capability;
@@ -23,6 +24,10 @@ mod script;
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
 pub use branch_lifecycle::{
     check_lifecycle_branch_lifecycle_contract, LifecycleBranchLifecycleContractOutcome,
+};
+pub use branch_lifecycle_recovery::{
+    check_lifecycle_branch_lifecycle_recovery_contract,
+    LifecycleBranchLifecycleRecoveryContractOutcome,
 };
 pub use budget::{check_lifecycle_budget_contract, LifecycleBudgetContractOutcome};
 pub use checkpoint::{check_lifecycle_checkpoint_contract, LifecycleCheckpointContractOutcome};
