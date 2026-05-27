@@ -586,9 +586,8 @@ mod tests {
         bytes.extend_from_slice(&BRANCH_CATALOG_FORMAT_VERSION.to_le_bytes());
         bytes.extend_from_slice(&database_id());
         bytes.extend_from_slice(&1_u64.to_le_bytes());
-        let too_many: u32 = u32::try_from(MAX_BRANCH_CATALOG_ENTRIES)
-            .expect("test cap fits in u32")
-            + 1;
+        let too_many: u32 =
+            u32::try_from(MAX_BRANCH_CATALOG_ENTRIES).expect("test cap fits in u32") + 1;
         bytes.extend_from_slice(&too_many.to_le_bytes());
         let crc = crc32fast::hash(&bytes);
         bytes.extend_from_slice(&crc.to_le_bytes());

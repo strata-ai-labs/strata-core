@@ -13,6 +13,24 @@ on each gap. The plan for A1 lives at
 `/Users/aniruddhajoshi/.claude/plans/dapper-hatching-chipmunk.md` (working
 copy).
 
+**Update (Follow-up B Phase 1 landed)**: B Phase 1 persists the catalog
+descriptor list durably. New `BranchCatalogManifest` format (STBC magic,
+version 1, sorted entry list with status/generation/optional parent and
+timestamps) lives at `manifest/branch-catalog`. The durable runtime
+publishes a fresh manifest after every catalog mutation, tracking a
+monotonic `branch_catalog_sequence`. Recovery loads the manifest in
+`complete_recovery` and rebuilds the in-memory catalog (Active branches via
+`create_branch`, Deleted via `create_branch + delete_branch` with the
+persisted `deleted_at`). 11 format tests, 4 golden vectors, 3 § 7 recovery
+tests (`recovery_rebuilds_multiple_branch_descriptors`,
+`_deleted_marker_outranks_older_table_manifest`,
+`_newer_generation_outranks_older_deleted_marker`). Pre-B databases (no
+manifest) fall back to single-branch mode. **Still outstanding for B Phase
+2**: multi-branch WAL/checkpoint encoding (today only the seeded branch can
+carry rows durably); persisting `pending_releases`; durable-tombstone WAL
+guard test; recovery integration smoke; per-branch `TableManifest` for
+non-seeded branches.
+
 **Update (Follow-up A3 landed)**: A3 dropped the shadow `branch: BranchLocalState`
 field on both runtimes. The catalog is now the sole owner of branch state.
 A3 was structural cleanup — zero test edits required. The runtime stores an
@@ -77,7 +95,7 @@ dedup, deterministic listing, error-coded outcomes.
 | 2. typed errors for duplicate create, missing source, non-empty destination, stale generation, deleted branch, unretained fork version | Met | A1 added `SourceHasUnflushedRows`, `InsufficientTimestampHistory`, `PinnedViewReleaseBlocked` and used `SourceHasUnflushedRows` in fork rejections. |
 | 3. pinned read views remain valid across clear/delete/fork and protect reachability | Met | |
 | 4. stale flush/compaction/materialization tasks cannot resurrect cleared or deleted rows | Met | Stale descriptor CAS works. |
-| 5. recovery preserves branch catalog, generation, deleted markers, inherited layers, and fork-at-history facts | Not met | Multi-branch recovery not implemented. Follow-up B. |
+| 5. recovery preserves branch catalog, generation, deleted markers, inherited layers, and fork-at-history facts | Mostly met | B Phase 1 added durable BranchCatalogManifest + recovery rebuild. Multi-branch row state (inherited layers per non-seeded branch) defers to B Phase 2. |
 | 6. table-object retention receives release facts; branch lifecycle never directly deletes table objects | Met | |
 | 7. source guards prevent product policy and milestone labels in code/tests | Met | |
 | 8. generated/fault tests cover branch lifecycle ordering, not only examples | Not met | Generated model, fault windows, and fuzz targets all missing. Follow-up C. |

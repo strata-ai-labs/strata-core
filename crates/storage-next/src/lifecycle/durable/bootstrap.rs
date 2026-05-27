@@ -136,7 +136,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .map_err(commit_error)?
             .generation();
         let initial_branch_id = self.branch.branch_id();
-        let branch_catalog = LifecycleBranchCatalog::with_existing_branch(
+        let mut branch_catalog = LifecycleBranchCatalog::with_existing_branch(
             &self.branch,
             branch_generation,
             self.branch.max_commit_version(),
@@ -145,6 +145,27 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         // is no longer needed; drop it explicitly so the catalog is the
         // sole owner of branch state in the constructed runtime.
         drop(self.branch);
+        // Replay the durable BranchCatalogManifest if present so create /
+        // clear / delete / fork descriptors survive restart. Missing
+        // manifest = pre-B database (single-branch mode); falls through
+        // with the seeded branch the only catalog entry.
+        let branch_catalog_sequence = match self
+            .services
+            .branch_catalog_manifest()
+            .load_current()
+            .map_err(|error| {
+            LifecycleError::lower_layer_with(
+                crate::lifecycle::LifecycleLowerLayer::Service,
+                "branch catalog manifest load failed",
+                error,
+            )
+        })? {
+            Some(manifest) => {
+                replay_branch_catalog_manifest(&mut branch_catalog, initial_branch_id, &manifest)?;
+                manifest.manifest_sequence()
+            }
+            None => 0,
+        };
         Ok(LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
@@ -164,7 +185,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
             pending_releases: Vec::new(),
-            branch_catalog_sequence: 0,
+            branch_catalog_sequence,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
             close_retry_state: None,
         })
@@ -555,6 +576,70 @@ fn branch_catalog_format_error(error: crate::format::FormatError) -> LifecycleEr
         "branch catalog manifest encode failed",
         error,
     )
+}
+
+/// Reconstruct the in-memory catalog from a persisted
+/// `BranchCatalogManifest`. The seeded branch is already in the catalog
+/// (registered via `with_existing_branch`); reconcile its state against
+/// the manifest entry. Other entries are created (Active) or registered
+/// then deleted (Deleted) to produce the same descriptor as the original
+/// runtime did before close.
+fn replay_branch_catalog_manifest(
+    catalog: &mut LifecycleBranchCatalog,
+    initial_branch_id: BranchId,
+    manifest: &crate::format::BranchCatalogManifest,
+) -> LifecycleResult<()> {
+    use crate::commit::{CommitBranchGeneration, CommitBranchGenerationGuard};
+    use crate::format::BranchCatalogStatus;
+    for entry in manifest.entries() {
+        let branch_id = entry.branch_id();
+        let generation_value = entry.generation();
+        let generation = CommitBranchGeneration::new(generation_value).map_err(|_| {
+            LifecycleError::RecoveryFailed {
+                reason: "branch catalog manifest entry has invalid generation",
+            }
+        })?;
+        let created_at = entry.created_at().map(CommitVersion::new);
+
+        if branch_id == initial_branch_id {
+            // The seeded branch is already registered via with_existing_branch.
+            // For Active entries, no further work; for Deleted entries, mark
+            // the seeded branch as deleted now. Generation mismatches against
+            // the seeded branch's runtime generation surface as a recovery
+            // conflict (the catalog says "this generation was seen at close
+            // time"; if it disagrees with the runtime's seeded generation,
+            // the seeded generation wins since it was just constructed).
+            if matches!(entry.status(), BranchCatalogStatus::Deleted) {
+                let deleted_at = entry.deleted_at().map(CommitVersion::new);
+                // Use the current seeded generation rather than the manifest
+                // generation: tombstone applies to whichever generation the
+                // seeded branch carries today. Mismatches indicate corruption
+                // or an in-flight restart; in either case the catalog wins
+                // because the manifest survived past the runtime that wrote it.
+                let current = catalog.lookup(initial_branch_id)?.generation();
+                catalog.delete_branch(
+                    initial_branch_id,
+                    CommitBranchGenerationGuard::exact(current),
+                    deleted_at,
+                )?;
+            }
+            continue;
+        }
+
+        // Non-seeded branch: create_branch handles both fresh Active and
+        // resurrection-after-deleted-by-newer-generation flows via its
+        // existing generation arbitration.
+        catalog.create_branch(branch_id, generation, created_at)?;
+        if matches!(entry.status(), BranchCatalogStatus::Deleted) {
+            let deleted_at = entry.deleted_at().map(CommitVersion::new);
+            catalog.delete_branch(
+                branch_id,
+                CommitBranchGenerationGuard::exact(generation),
+                deleted_at,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn branch_catalog_manifest_service_error(

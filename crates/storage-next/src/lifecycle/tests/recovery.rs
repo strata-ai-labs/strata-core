@@ -1531,6 +1531,190 @@ fn recovery_decode_over_budget_fails_closed() {
     assert!(shell.branch_state().is_empty());
 }
 
+#[test]
+fn recovery_rebuilds_multiple_branch_descriptors() {
+    // Open a durable runtime, create two additional branches, drop the
+    // runtime, reopen on the same backend and verify all three branches
+    // (initial + two created) survive in the catalog after recovery.
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x31);
+    let new_a = branch_id(0x41);
+    let new_b = branch_id(0x42);
+
+    // First open: seed initial branch, create two additional branches.
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        runtime
+            .create_branch(
+                new_a,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create new_a");
+        runtime
+            .create_branch(
+                new_b,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(3)),
+            )
+            .expect("create new_b");
+        assert_eq!(runtime.list_branches(false).len(), 3);
+    }
+
+    // Second open: recovery should rebuild catalog from manifest.
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let descriptors = runtime.list_branches(true);
+    let mut ids = descriptors
+        .iter()
+        .map(|d| d.branch_id())
+        .collect::<Vec<_>>();
+    ids.sort_by_key(|id| *id.as_bytes());
+    assert_eq!(ids, vec![initial, new_a, new_b]);
+}
+
+#[test]
+fn recovery_deleted_marker_outranks_older_table_manifest() {
+    // Open, create a branch, delete it, drop runtime. Reopen and verify
+    // the branch is in Deleted status (not resurrected as Active).
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x32);
+    let deleted = branch_id(0x53);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+        runtime
+            .create_branch(
+                deleted,
+                CommitBranchGeneration::new(2).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create");
+        runtime
+            .delete_branch(
+                deleted,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(2).expect("generation"),
+                ),
+                Some(CommitVersion::new(3)),
+            )
+            .expect("delete");
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let with_deleted = runtime.list_branches(true);
+    let deleted_entry = with_deleted
+        .iter()
+        .find(|d| d.branch_id() == deleted)
+        .expect("deleted entry survives recovery");
+    assert_eq!(
+        deleted_entry.status(),
+        crate::lifecycle::LifecycleBranchStatus::Deleted
+    );
+    // Active list excludes the deleted branch.
+    assert!(runtime
+        .list_branches(false)
+        .iter()
+        .all(|d| d.branch_id() != deleted));
+}
+
+#[test]
+fn recovery_newer_generation_outranks_older_deleted_marker() {
+    // Open, create-then-delete a branch at gen 1, recreate at gen 2,
+    // drop runtime. Reopen and verify the branch is Active at gen 2.
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x33);
+    let target = branch_id(0x60);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+        runtime
+            .create_branch(
+                target,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create gen 1");
+        runtime
+            .delete_branch(
+                target,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+                Some(CommitVersion::new(3)),
+            )
+            .expect("delete gen 1");
+        runtime
+            .create_branch(
+                target,
+                CommitBranchGeneration::new(2).expect("generation"),
+                Some(CommitVersion::new(4)),
+            )
+            .expect("recreate gen 2");
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let active = runtime
+        .list_branches(false)
+        .into_iter()
+        .find(|d| d.branch_id() == target)
+        .expect("target is active after recovery");
+    assert_eq!(
+        active.generation(),
+        CommitBranchGeneration::new(2).expect("generation"),
+        "newer generation survives recovery"
+    );
+    assert_eq!(
+        active.status(),
+        crate::lifecycle::LifecycleBranchStatus::Active
+    );
+}
+
 fn assemble_shell(
     plan: StorageOpenPlan,
     branch: BranchId,
