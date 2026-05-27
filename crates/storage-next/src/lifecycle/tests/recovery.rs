@@ -871,6 +871,60 @@ fn recovery_rejects_snapshot_section_count_above_request_limit() {
 }
 
 #[test]
+fn manifest_decode_rejects_large_section_count_before_allocation() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x4b);
+    let alpha = put_row(branch, 4, b"section-alpha", b"value");
+    let beta = put_row(branch, 5, b"section-beta", b"value");
+    let gamma = put_row(branch, 6, b"section-gamma", b"value");
+    SnapshotService::new(&backend)
+        .publish_create(SnapshotPublishRequest::new(
+            11,
+            CommitVersion::new(6),
+            Timestamp::from_micros(7_000),
+            DATABASE_ID,
+            "identity",
+            vec![
+                encode_checkpoint_row_section(std::slice::from_ref(&alpha)).expect("alpha section"),
+                encode_checkpoint_row_section(std::slice::from_ref(&beta)).expect("beta section"),
+                encode_checkpoint_row_section(std::slice::from_ref(&gamma)).expect("gamma section"),
+            ],
+        ))
+        .expect("publish multi-section snapshot");
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(6), Some(11), None)
+            .expect("database root facts"),
+    );
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request = LifecycleRecoveryRequest::new(
+        RecoveryStrictness::Strict,
+        shell.open_plan().lifecycle_config().max_recovery_faults(),
+        2,
+        "bounded-sections",
+    )
+    .expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("section count over limit must reject before row decode");
+
+    assert_eq!(
+        error,
+        LifecycleError::RecoveryFailed {
+            reason: "snapshot section count exceeds lifecycle recovery limit",
+        }
+    );
+    // No checkpoint rows were decoded into branch state — the count check ran
+    // before `decode_checkpoint_rows` allocated any row vector.
+    assert!(shell.branch_state().is_empty());
+    assert_eq!(shell.visible_version(), CommitVersion::ZERO);
+}
+
+#[test]
 fn recovery_rejects_checkpoint_rows_for_unopened_branch() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x39);
@@ -1412,6 +1466,71 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
     assert!(shell.branch_state().is_empty());
 }
 
+#[test]
+fn recovery_decode_over_budget_fails_closed() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x8d);
+    let checkpoint_row = put_row(branch, 3, b"budgeted-checkpoint", b"checkpoint-value");
+    publish_snapshot(
+        &backend,
+        10,
+        CommitVersion::new(3),
+        std::slice::from_ref(&checkpoint_row),
+    );
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(3), Some(10), None)
+            .expect("database root facts"),
+    );
+    let mut parts = StorageRuntimeBudgetParts {
+        block_cache_bytes: 0,
+        table_reader_bytes: 8 * 1024,
+        active_mutable_bytes: 8 * 1024,
+        frozen_mutable_bytes: 8 * 1024,
+        maintenance_queue_bytes: 1024,
+        generated_artifact_bytes: 1,
+        manifest_catalog_bytes: 1024,
+        max_open_readers: 4,
+        max_frozen_tables: 4,
+        max_pending_maintenance_tasks: 4,
+        ..StorageRuntimeBudgetParts::default()
+    };
+    parts.total_bytes = parts.block_cache_bytes
+        + parts.table_reader_bytes
+        + parts.active_mutable_bytes
+        + parts.frozen_mutable_bytes
+        + parts.maintenance_queue_bytes
+        + parts.generated_artifact_bytes
+        + parts.manifest_catalog_bytes;
+    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+    let mut shell = assemble_shell(
+        open_plan_with_budget(RecoveryStrictness::Strict, budget),
+        branch,
+        &backend,
+    )
+    .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("checkpoint decode budget rejects");
+
+    assert!(matches!(
+        error,
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::GeneratedArtifact,
+            used_bytes: 0,
+            limit_bytes: 1,
+            ..
+        }
+    ));
+    assert_eq!(error.code(), "resource_exhausted.lifecycle.storage_budget");
+    assert!(shell.branch_state().is_empty());
+}
+
 fn assemble_shell(
     plan: StorageOpenPlan,
     branch: BranchId,
@@ -1442,6 +1561,22 @@ fn open_plan_for_mode(mode: StorageMode, recovery_policy: RecoveryStrictness) ->
         LifecycleCodecId::identity(),
         recovery_policy,
         LifecycleConfig::default(),
+    )
+    .expect("open plan")
+}
+
+fn open_plan_with_budget(
+    recovery_policy: RecoveryStrictness,
+    budget: StorageRuntimeBudget,
+) -> StorageOpenPlan {
+    let config = LifecycleConfig::default()
+        .with_storage_budget(budget)
+        .expect("budget config");
+    StorageOpenPlan::new(
+        StorageMode::DurableLocalStandard,
+        LifecycleCodecId::identity(),
+        recovery_policy,
+        config,
     )
     .expect("open plan")
 }

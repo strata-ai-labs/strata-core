@@ -97,9 +97,12 @@ where
         require_allocated_after_visible(stamp, current_visible_version)?;
         let rows = CacheCommitRows::prepare(&batch, stamp, self.config)?;
         let facts = visible_cache_facts(stamp)?;
+        let combined_rows = rows.combined_rows();
+        self.branch
+            .validate_committed_rows_before_apply(&combined_rows)?;
 
         self.branch
-            .append_committed_rows_atomically(rows.combined_rows())?;
+            .append_committed_rows_atomically(combined_rows)?;
 
         if let Err(error) = self.visible.publish_from_facts(facts) {
             // Cache mode has no WAL replay path. If publication fails after L6

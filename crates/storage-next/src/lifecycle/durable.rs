@@ -4,8 +4,8 @@ use super::{
     stage_table_manifest_for_branch, validate_backend_capabilities_for_open,
     LifecycleCapabilityOutcome, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
     LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine,
-    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageMode,
-    StorageOpenDisposition, StorageOpenPlan,
+    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageBudgetLedger,
+    StorageMode, StorageOpenDisposition, StorageOpenPlan,
 };
 use crate::backend::{Backend, BackendError, BackendWriterGuard, PublishFailureKind};
 use crate::branch::{BranchLocalState, BranchRuntimeConfig};
@@ -85,6 +85,7 @@ pub(crate) struct LifecycleDurableLocalShell<'a, S = CommitManualTimestampSource
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
     table_catalog: LifecycleDurableTableCatalog,
+    budget: StorageBudgetLedger,
 }
 
 impl LifecycleDurableLocalOpenRequest {
@@ -313,6 +314,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
 
         let branch = BranchLocalState::new(request.initial_branch_id(), request.branch_config())
             .map_err(branch_error)?;
+        let budget = StorageBudgetLedger::new(request.plan().lifecycle_config().storage_budget())?;
         let mut registry = CommitBranchRegistry::new();
         registry
             .register_active(request.initial_branch_id(), request.branch_generation())
@@ -360,6 +362,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             table_catalog: LifecycleDurableTableCatalog::new(),
+            budget,
         })
     }
 
@@ -391,6 +394,10 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         &mut self.branch
     }
 
+    pub(crate) const fn budget(&self) -> &StorageBudgetLedger {
+        &self.budget
+    }
+
     pub(crate) fn stage_table_manifest_recovery(
         &self,
     ) -> LifecycleResult<LifecycleTableManifestRecoveryStage> {
@@ -399,6 +406,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             self.services.table_manifest(),
             self.services.table_reader(),
             &self.table_catalog,
+            Some(&self.budget),
         )
     }
 

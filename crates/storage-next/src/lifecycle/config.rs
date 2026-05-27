@@ -1,6 +1,6 @@
 //! Lifecycle configuration facts.
 
-use super::{LifecycleError, LifecycleResult};
+use super::{LifecycleError, LifecycleResult, StorageRuntimeBudget};
 
 const DEFAULT_MAX_MAINTENANCE_QUEUE_DEPTH: usize = 1024;
 const DEFAULT_MAX_RECOVERY_FAULTS: usize = 64;
@@ -11,6 +11,7 @@ pub(crate) struct LifecycleConfig {
     max_recovery_faults: usize,
     close_timeout_policy: LifecycleCloseTimeoutPolicy,
     lossy_recovery: LifecycleLossyRecoveryPolicy,
+    storage_budget: StorageRuntimeBudget,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,9 +38,20 @@ impl LifecycleConfig {
             max_recovery_faults,
             close_timeout_policy,
             lossy_recovery,
+            storage_budget: StorageRuntimeBudget::default(),
         };
         config.validate()?;
         Ok(config)
+    }
+
+    pub(crate) fn with_storage_budget(
+        mut self,
+        storage_budget: StorageRuntimeBudget,
+    ) -> LifecycleResult<Self> {
+        storage_budget.validate()?;
+        self.storage_budget = storage_budget;
+        self.validate()?;
+        Ok(self)
     }
 
     pub(crate) const fn max_maintenance_queue_depth(self) -> usize {
@@ -58,6 +70,10 @@ impl LifecycleConfig {
         self.lossy_recovery
     }
 
+    pub(crate) const fn storage_budget(self) -> StorageRuntimeBudget {
+        self.storage_budget
+    }
+
     pub(crate) fn validate(self) -> LifecycleResult<()> {
         if self.max_maintenance_queue_depth == 0 {
             return Err(LifecycleError::InvalidConfig {
@@ -71,6 +87,7 @@ impl LifecycleConfig {
                 reason: "must be nonzero",
             });
         }
+        self.storage_budget.validate()?;
         Ok(())
     }
 }

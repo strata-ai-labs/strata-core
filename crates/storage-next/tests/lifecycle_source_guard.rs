@@ -975,6 +975,114 @@ fn lifecycle_retention_source_delegates_durable_mutation() {
 }
 
 #[test]
+fn memory_budget_does_not_probe_host_memory_or_use_global_cache() {
+    assert_budget_source_excludes(contains_forbidden_budget_dependency);
+}
+
+#[test]
+fn memory_budget_does_not_probe_host_memory() {
+    assert_budget_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("/proc/meminfo")
+            || lower.contains("memavailable")
+            || lower.contains("sysinfo")
+            || lower.contains("available_memory")
+            || lower.contains("host_memory")
+    });
+}
+
+#[test]
+fn memory_budget_does_not_use_process_global_cache() {
+    assert_budget_source_excludes(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("global_cache")
+            || lower.contains("static global")
+            || lower.contains("static mut")
+            || lower.contains("oncelock<")
+            || lower.contains("lazy_static")
+            || lower.contains("once_cell")
+    });
+}
+
+#[test]
+fn memory_budget_does_not_import_product_resource_policy() {
+    assert_budget_source_excludes(|line| {
+        let compact = line.to_ascii_lowercase();
+        compact.contains("strata_engine")
+            || compact.contains("strata_intelligence")
+            || compact.contains("resource_profile")
+            || compact.contains("resource_policy")
+            || compact.contains("primitive")
+            || compact.contains("stratahub")
+    });
+}
+
+#[test]
+fn memory_budget_does_not_import_raw_io() {
+    assert_budget_source_excludes(|line| {
+        let compact = line.to_ascii_lowercase();
+        compact.contains("std::fs")
+            || compact.contains("std::path")
+            || compact.contains("openoptions")
+            || compact.contains("mmap")
+            || compact.contains("std::env")
+    });
+}
+
+#[test]
+fn memory_budget_does_not_import_object_cleanup_boundaries() {
+    assert_budget_source_excludes(|line| {
+        let compact = line.to_ascii_lowercase();
+        compact.contains("delete_object")
+            || compact.contains("quarantineservice")
+            || compact.contains("purge_quarantine")
+    });
+}
+
+#[test]
+fn memory_budget_does_not_import_backend_delete_or_quarantine() {
+    assert_budget_source_excludes(|line| {
+        let compact = line.to_ascii_lowercase();
+        compact.contains("delete_object")
+            || compact.contains("quarantine_object")
+            || compact.contains("quarantineservice")
+            || compact.contains("purge_quarantine")
+    });
+}
+
+#[test]
+fn memory_budget_does_not_import_stratahub() {
+    assert_budget_source_excludes(|line| line.to_ascii_lowercase().contains("stratahub"));
+}
+
+#[test]
+fn memory_budget_does_not_import_primitive_modules() {
+    assert_budget_source_excludes(|line| line.to_ascii_lowercase().contains("primitive"));
+}
+
+#[test]
+fn memory_budget_code_and_fixture_names_do_not_use_milestone_labels() {
+    let root = common::crate_root();
+    let forbidden = [format!("l{}", 8), format!("l{}", 7), format!("m{}", 4)];
+    for relative in [
+        "src/lifecycle/budget.rs",
+        "src/lifecycle/tests/budget.rs",
+        "src/lifecycle/tests/budget_runtime.rs",
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read storage budget source");
+        for (line_number, line) in text.lines().enumerate() {
+            let compact = uncommented_text(line).to_ascii_lowercase();
+            assert!(
+                forbidden.iter().all(|label| !compact.contains(label)),
+                "{relative}:{} contains architecture label in storage budget code: {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_table_reachability_source_is_classification_only() {
     assert_table_reachability_source_clean();
 }
@@ -1033,6 +1141,42 @@ fn assert_table_reachability_source_clean() {
     }
 }
 
+fn assert_budget_fixtures() {
+    assert!(contains_forbidden_budget_dependency("use std::fs;"));
+    assert!(contains_forbidden_budget_dependency("let _: PathBuf;"));
+    assert!(contains_forbidden_budget_dependency(
+        "let _ = std::env::var(\"MEMORY\");"
+    ));
+    assert!(contains_forbidden_budget_dependency(
+        "let _ = sysinfo::System::new_all();"
+    ));
+    assert!(contains_forbidden_budget_dependency(
+        "let _ = proc_meminfo_available_bytes();"
+    ));
+    assert!(contains_forbidden_budget_dependency(
+        "static GLOBAL_CACHE: TableBlockCache = TableBlockCache::disabled();"
+    ));
+    assert!(!contains_forbidden_budget_dependency(
+        "StorageRuntimeBudget StorageBudgetLedger StorageBudgetPool"
+    ));
+}
+
+fn assert_budget_source_excludes(predicate: impl Fn(&str) -> bool) {
+    let root = common::crate_root();
+    for relative in ["src/lifecycle/budget.rs"] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read budget source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !predicate(line),
+                "{}:{} violates storage budget source guard: {line}",
+                relative,
+                line_number + 1
+            );
+        }
+    }
+}
+
 fn assert_table_manifest_watermark_source_clean() {
     let root = common::crate_root();
     for relative in [
@@ -1082,6 +1226,7 @@ fn lifecycle_source_guard_catches_fixture_violations() {
     assert_table_rewrite_fixtures();
     assert_retention_fixtures();
     assert_table_reachability_fixtures();
+    assert_budget_fixtures();
     assert_quarantine_fixtures();
     assert_public_surface_fixtures();
 }
@@ -2117,6 +2262,33 @@ fn contains_forbidden_retention_dependency(line: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_budget_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::fs",
+        "std::path",
+        "std::env",
+        "env::var",
+        "openoptions",
+        "mmap",
+        "memmap",
+        "sysinfo",
+        "proc_meminfo",
+        "available_memory",
+        "host_memory",
+        "num_cpus",
+        "global_cache",
+        "static mut",
+        "lazy_static",
+        "once_cell",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+        || contains_ascii_word(line, "Path")
+        || contains_ascii_word(line, "PathBuf")
+        || contains_ascii_word(line, "File")
 }
 
 fn contains_forbidden_table_reachability_dependency(line: &str) -> bool {

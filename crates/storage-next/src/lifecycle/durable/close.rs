@@ -4,8 +4,9 @@ use super::{commit_error, manifest_error, require_admitted, wal_error};
 use crate::branch::BranchLocalState;
 use crate::commit::{CommitBranchGuardSet, CommitRuntimeError, VisibleVersionTracker};
 use crate::lifecycle::checkpoint::{
-    checkpoint_durable_branch, checkpoint_request_from_maintenance_task_with_snapshot_id,
-    truncate_wal, wal_truncation_request_from_maintenance_task,
+    checkpoint_durable_branch_with_budget,
+    checkpoint_request_from_maintenance_task_with_snapshot_id, truncate_wal,
+    wal_truncation_request_from_maintenance_task,
 };
 use crate::lifecycle::compaction::{
     compact_durable_branch, compaction_request_from_maintenance_task,
@@ -14,7 +15,9 @@ use crate::lifecycle::compaction::{
 use crate::lifecycle::durable::maintenance::{
     checkpoint_created_at, durable_quarantine_service_error, purge_branch_id_from_task,
 };
-use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
+use crate::lifecycle::flush::{
+    flush_durable_branch_with_budget, flush_request_from_maintenance_task,
+};
 use crate::lifecycle::retention::{
     build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
     retention_outcome_for_delegated_families, retention_outcome_for_scope,
@@ -29,7 +32,7 @@ use crate::lifecycle::{
     LifecycleDurableLocalServices, LifecycleError, LifecycleLowerLayer, LifecycleOperationKind,
     LifecycleResult, LifecycleState, LifecycleStats, LifecycleTransitionTrigger,
     MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
-    MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth,
+    MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth, StorageBudgetLedger,
 };
 use strata_core_next::Timestamp;
 
@@ -96,6 +99,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             created_at,
             next_snapshot_id: &mut self.next_checkpoint_snapshot_id,
             health: self.current_recovery_health.clone(),
+            budget: &self.budget,
         };
         let active = match self
             .maintenance
@@ -259,6 +263,7 @@ struct DurableCloseMaintenanceRunner<'a, 'b> {
     created_at: Timestamp,
     next_snapshot_id: &'a mut u64,
     health: RecoveryHealth,
+    budget: &'a StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
@@ -266,11 +271,12 @@ impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
         match task.kind() {
             MaintenanceTaskKind::Flush => {
                 let request = flush_request_from_maintenance_task(task)?;
-                Ok(flush_durable_branch(
+                Ok(flush_durable_branch_with_budget(
                     self.branch,
                     self.services.table_object(),
                     self.services.table_reader(),
                     &request,
+                    Some(self.budget),
                 )?
                 .maintenance_outcome())
             }
@@ -312,12 +318,13 @@ impl DurableCloseMaintenanceRunner<'_, '_> {
             self.created_at,
             Some(*self.next_snapshot_id),
         )?;
-        let outcome = checkpoint_durable_branch(
+        let outcome = checkpoint_durable_branch_with_budget(
             self.branch,
             self.services,
             self.guard_set,
             || self.visible.visible_version(),
             &request,
+            Some(self.budget),
         )?;
         if let Some(snapshot_id) = outcome.snapshot_id() {
             *self.next_snapshot_id =

@@ -1,0 +1,935 @@
+//! Storage-local memory and cache budget accounting.
+//!
+//! The ledger exposes two complementary admission models:
+//!
+//! 1. RAII reservations via `StorageBudgetLedger::reserve` and the returned
+//!    `StorageBudgetReservation`. Acquired bytes and count stay charged to
+//!    a pool until the guard drops, at which point usage is released on
+//!    every path — panics, early returns, and failed nested work all
+//!    converge through `Drop`. Tests exercise this mode to prove the
+//!    accounting contract, and later lazy-block-reader work will use it
+//!    to track range reservations.
+//! 2. Admission checks via `check_available`, plus the
+//!    `require_table_reader_budget`, `require_generated_artifact_budget`,
+//!    and `require_manifest_catalog_budget` helpers. These verify that a
+//!    single requested allocation fits under the pool limit but do not
+//!    hold the budget after the call returns.
+//!
+//! V1 production paths use admission checks for the `TableReader`,
+//! `GeneratedArtifact`, and `ManifestCatalog` pools. Whole-object readers,
+//! generated artifacts, and manifest catalog bytes are admitted in a
+//! single check against the configured pool limit; once the call returns
+//! the ledger usage for those pools stays at zero. This bounds any single
+//! allocation but does not track cumulative usage across concurrent
+//! flushes, compactions, or recoveries. Block-range RAII reservations are
+//! deferred until whole-object reads are replaced by lazy block reads;
+//! those code paths will switch from `check_available` to `reserve`, and
+//! the existing ledger contract carries over without changes.
+//!
+//! `ActiveMutable`, `FrozenMutable`, and `MaintenanceQueue` usage are
+//! reported by [`snapshot_with_runtime_usage`] from runtime state — the
+//! current `BranchLocalState` and `MaintenanceExecutorStatus` — rather
+//! than from the ledger. The ledger snapshot still serves limit and
+//! pressure facts for those pools, but used bytes and counts derive from
+//! the live runtime, which is exact under the current single-threaded
+//! admission ordering and would need synchronized reservations to hold
+//! under multi-threaded admission.
+
+use super::{LifecycleError, LifecycleResult, MaintenanceExecutorStatus};
+use crate::branch::BranchLocalState;
+use crate::commit::{
+    CommitBranchApplyTarget, CommitLowerLayer, CommitRuntimeError, CommitRuntimeResult,
+};
+use crate::table::{TableCacheConfig, TableRow};
+use std::sync::{Arc, Mutex, MutexGuard};
+use strata_core_next::CommitVersion;
+
+const DEFAULT_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_BLOCK_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_TABLE_READER_BYTES: u64 = 128 * 1024 * 1024;
+const DEFAULT_ACTIVE_MUTABLE_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_FROZEN_MUTABLE_BYTES: u64 = 128 * 1024 * 1024;
+const DEFAULT_MAINTENANCE_QUEUE_BYTES: u64 = 1024 * 1024;
+const DEFAULT_GENERATED_ARTIFACT_BYTES: u64 = 96 * 1024 * 1024;
+const DEFAULT_MANIFEST_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_OPEN_READERS: u32 = 1024;
+const DEFAULT_MAX_FROZEN_TABLES: u32 = 1024;
+const DEFAULT_MAX_PENDING_MAINTENANCE_TASKS: u32 = 1024;
+const MAINTENANCE_TASK_METADATA_BYTES: u64 = 256;
+const POOL_COUNT: usize = 7;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StorageRuntimeBudget {
+    total_bytes: u64,
+    block_cache_bytes: u64,
+    table_reader_bytes: u64,
+    active_mutable_bytes: u64,
+    frozen_mutable_bytes: u64,
+    maintenance_queue_bytes: u64,
+    generated_artifact_bytes: u64,
+    manifest_catalog_bytes: u64,
+    max_open_readers: u32,
+    max_frozen_tables: u32,
+    max_pending_maintenance_tasks: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StorageRuntimeBudgetParts {
+    pub(crate) total_bytes: u64,
+    pub(crate) block_cache_bytes: u64,
+    pub(crate) table_reader_bytes: u64,
+    pub(crate) active_mutable_bytes: u64,
+    pub(crate) frozen_mutable_bytes: u64,
+    pub(crate) maintenance_queue_bytes: u64,
+    pub(crate) generated_artifact_bytes: u64,
+    pub(crate) manifest_catalog_bytes: u64,
+    pub(crate) max_open_readers: u32,
+    pub(crate) max_frozen_tables: u32,
+    pub(crate) max_pending_maintenance_tasks: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub(crate) enum StorageBudgetPool {
+    BlockCache,
+    TableReader,
+    ActiveMutable,
+    FrozenMutable,
+    MaintenanceQueue,
+    GeneratedArtifact,
+    ManifestCatalog,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub(crate) enum StorageBudgetPressureSeverity {
+    Normal,
+    Evicting,
+    DeferOptionalMaintenance,
+    RejectOptionalWork,
+    RejectMutatingAdmission,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StorageBudgetUsage {
+    pool: StorageBudgetPool,
+    used_bytes: u64,
+    limit_bytes: u64,
+    used_count: u64,
+    limit_count: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StorageBudgetPressure {
+    usage: StorageBudgetUsage,
+    severity: StorageBudgetPressureSeverity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StorageBudgetSnapshot {
+    budget: StorageRuntimeBudget,
+    usages: [StorageBudgetUsage; POOL_COUNT],
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StorageBudgetLedger {
+    budget: StorageRuntimeBudget,
+    state: Arc<Mutex<StorageBudgetState>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct StorageBudgetState {
+    used_bytes: [u64; POOL_COUNT],
+    used_count: [u64; POOL_COUNT],
+}
+
+#[derive(Debug)]
+pub(crate) struct StorageBudgetReservation {
+    ledger: StorageBudgetLedger,
+    pool: StorageBudgetPool,
+    bytes: u64,
+    count: u64,
+    released: bool,
+}
+
+pub(crate) struct BudgetedCommitBranch<'a> {
+    branch: &'a mut BranchLocalState,
+    ledger: &'a StorageBudgetLedger,
+}
+
+impl StorageRuntimeBudget {
+    pub(crate) fn from_parts(parts: StorageRuntimeBudgetParts) -> LifecycleResult<Self> {
+        let budget = Self {
+            total_bytes: parts.total_bytes,
+            block_cache_bytes: parts.block_cache_bytes,
+            table_reader_bytes: parts.table_reader_bytes,
+            active_mutable_bytes: parts.active_mutable_bytes,
+            frozen_mutable_bytes: parts.frozen_mutable_bytes,
+            maintenance_queue_bytes: parts.maintenance_queue_bytes,
+            generated_artifact_bytes: parts.generated_artifact_bytes,
+            manifest_catalog_bytes: parts.manifest_catalog_bytes,
+            max_open_readers: parts.max_open_readers,
+            max_frozen_tables: parts.max_frozen_tables,
+            max_pending_maintenance_tasks: parts.max_pending_maintenance_tasks,
+        };
+        budget.validate()?;
+        Ok(budget)
+    }
+
+    pub(crate) fn low_memory_test_profile() -> Self {
+        Self::from_parts(StorageRuntimeBudgetParts {
+            total_bytes: 64 * 1024,
+            block_cache_bytes: 0,
+            table_reader_bytes: 8 * 1024,
+            active_mutable_bytes: 8 * 1024,
+            frozen_mutable_bytes: 16 * 1024,
+            maintenance_queue_bytes: 1024,
+            generated_artifact_bytes: 24 * 1024,
+            manifest_catalog_bytes: 7 * 1024,
+            max_open_readers: 4,
+            max_frozen_tables: 4,
+            max_pending_maintenance_tasks: 4,
+        })
+        .expect("low-memory storage budget profile is valid")
+    }
+
+    pub(crate) fn validate(self) -> LifecycleResult<()> {
+        require_nonzero("storage_budget.total_bytes", self.total_bytes)?;
+        require_nonzero("storage_budget.table_reader_bytes", self.table_reader_bytes)?;
+        require_nonzero(
+            "storage_budget.active_mutable_bytes",
+            self.active_mutable_bytes,
+        )?;
+        require_nonzero(
+            "storage_budget.frozen_mutable_bytes",
+            self.frozen_mutable_bytes,
+        )?;
+        require_nonzero(
+            "storage_budget.maintenance_queue_bytes",
+            self.maintenance_queue_bytes,
+        )?;
+        require_nonzero(
+            "storage_budget.generated_artifact_bytes",
+            self.generated_artifact_bytes,
+        )?;
+        require_nonzero(
+            "storage_budget.manifest_catalog_bytes",
+            self.manifest_catalog_bytes,
+        )?;
+        if self.max_open_readers == 0 {
+            return Err(LifecycleError::InvalidConfig {
+                field: "storage_budget.max_open_readers",
+                reason: "must be nonzero",
+            });
+        }
+        if self.max_frozen_tables == 0 {
+            return Err(LifecycleError::InvalidConfig {
+                field: "storage_budget.max_frozen_tables",
+                reason: "must be nonzero",
+            });
+        }
+        if self.max_pending_maintenance_tasks == 0 {
+            return Err(LifecycleError::InvalidConfig {
+                field: "storage_budget.max_pending_maintenance_tasks",
+                reason: "must be nonzero",
+            });
+        }
+        let sum = self
+            .block_cache_bytes
+            .checked_add(self.table_reader_bytes)
+            .and_then(|sum| sum.checked_add(self.active_mutable_bytes))
+            .and_then(|sum| sum.checked_add(self.frozen_mutable_bytes))
+            .and_then(|sum| sum.checked_add(self.maintenance_queue_bytes))
+            .and_then(|sum| sum.checked_add(self.generated_artifact_bytes))
+            .and_then(|sum| sum.checked_add(self.manifest_catalog_bytes))
+            .ok_or(LifecycleError::InvalidConfig {
+                field: "storage_budget.total_bytes",
+                reason: "pool byte sum overflowed",
+            })?;
+        if sum > self.total_bytes {
+            return Err(LifecycleError::InvalidConfig {
+                field: "storage_budget.total_bytes",
+                reason: "pool byte sum exceeds total",
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn total_bytes(self) -> u64 {
+        self.total_bytes
+    }
+
+    pub(crate) const fn pool_limit_bytes(self, pool: StorageBudgetPool) -> u64 {
+        match pool {
+            StorageBudgetPool::BlockCache => self.block_cache_bytes,
+            StorageBudgetPool::TableReader => self.table_reader_bytes,
+            StorageBudgetPool::ActiveMutable => self.active_mutable_bytes,
+            StorageBudgetPool::FrozenMutable => self.frozen_mutable_bytes,
+            StorageBudgetPool::MaintenanceQueue => self.maintenance_queue_bytes,
+            StorageBudgetPool::GeneratedArtifact => self.generated_artifact_bytes,
+            StorageBudgetPool::ManifestCatalog => self.manifest_catalog_bytes,
+        }
+    }
+
+    pub(crate) const fn pool_limit_count(self, pool: StorageBudgetPool) -> Option<u64> {
+        match pool {
+            StorageBudgetPool::TableReader => Some(self.max_open_readers as u64),
+            StorageBudgetPool::FrozenMutable => Some(self.max_frozen_tables as u64),
+            StorageBudgetPool::MaintenanceQueue => Some(self.max_pending_maintenance_tasks as u64),
+            StorageBudgetPool::BlockCache
+            | StorageBudgetPool::ActiveMutable
+            | StorageBudgetPool::GeneratedArtifact
+            | StorageBudgetPool::ManifestCatalog => None,
+        }
+    }
+
+    pub(crate) const fn max_frozen_tables(self) -> u32 {
+        self.max_frozen_tables
+    }
+
+    pub(crate) const fn max_pending_maintenance_tasks(self) -> u32 {
+        self.max_pending_maintenance_tasks
+    }
+
+    pub(crate) fn table_cache_config(self) -> LifecycleResult<TableCacheConfig> {
+        let capacity =
+            usize::try_from(self.block_cache_bytes).map_err(|_| LifecycleError::InvalidConfig {
+                field: "storage_budget.block_cache_bytes",
+                reason: "must fit in usize",
+            })?;
+        TableCacheConfig::new(capacity > 0, capacity).map_err(|source| {
+            LifecycleError::lower_layer_with(
+                super::LifecycleLowerLayer::TableRuntime,
+                "table cache configuration rejected storage budget",
+                source,
+            )
+        })
+    }
+}
+
+impl Default for StorageRuntimeBudget {
+    fn default() -> Self {
+        Self::from_parts(StorageRuntimeBudgetParts::default())
+            .expect("default storage runtime budget is valid")
+    }
+}
+
+impl Default for StorageRuntimeBudgetParts {
+    fn default() -> Self {
+        Self {
+            total_bytes: DEFAULT_TOTAL_BYTES,
+            block_cache_bytes: DEFAULT_BLOCK_CACHE_BYTES,
+            table_reader_bytes: DEFAULT_TABLE_READER_BYTES,
+            active_mutable_bytes: DEFAULT_ACTIVE_MUTABLE_BYTES,
+            frozen_mutable_bytes: DEFAULT_FROZEN_MUTABLE_BYTES,
+            maintenance_queue_bytes: DEFAULT_MAINTENANCE_QUEUE_BYTES,
+            generated_artifact_bytes: DEFAULT_GENERATED_ARTIFACT_BYTES,
+            manifest_catalog_bytes: DEFAULT_MANIFEST_CATALOG_BYTES,
+            max_open_readers: DEFAULT_MAX_OPEN_READERS,
+            max_frozen_tables: DEFAULT_MAX_FROZEN_TABLES,
+            max_pending_maintenance_tasks: DEFAULT_MAX_PENDING_MAINTENANCE_TASKS,
+        }
+    }
+}
+
+impl StorageBudgetPool {
+    pub(crate) const ALL: [Self; POOL_COUNT] = [
+        Self::BlockCache,
+        Self::TableReader,
+        Self::ActiveMutable,
+        Self::FrozenMutable,
+        Self::MaintenanceQueue,
+        Self::GeneratedArtifact,
+        Self::ManifestCatalog,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::BlockCache => 0,
+            Self::TableReader => 1,
+            Self::ActiveMutable => 2,
+            Self::FrozenMutable => 3,
+            Self::MaintenanceQueue => 4,
+            Self::GeneratedArtifact => 5,
+            Self::ManifestCatalog => 6,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::BlockCache => "block_cache",
+            Self::TableReader => "table_reader",
+            Self::ActiveMutable => "active_mutable",
+            Self::FrozenMutable => "frozen_mutable",
+            Self::MaintenanceQueue => "maintenance_queue",
+            Self::GeneratedArtifact => "generated_artifact",
+            Self::ManifestCatalog => "manifest_catalog",
+        }
+    }
+}
+
+impl StorageBudgetUsage {
+    pub(crate) const fn new(
+        budget: StorageRuntimeBudget,
+        pool: StorageBudgetPool,
+        used_bytes: u64,
+        used_count: u64,
+    ) -> Self {
+        Self {
+            pool,
+            used_bytes,
+            limit_bytes: budget.pool_limit_bytes(pool),
+            used_count,
+            limit_count: budget.pool_limit_count(pool),
+        }
+    }
+
+    pub(crate) const fn pool(self) -> StorageBudgetPool {
+        self.pool
+    }
+
+    pub(crate) const fn used_bytes(self) -> u64 {
+        self.used_bytes
+    }
+
+    pub(crate) const fn limit_bytes(self) -> u64 {
+        self.limit_bytes
+    }
+
+    pub(crate) const fn used_count(self) -> u64 {
+        self.used_count
+    }
+
+    pub(crate) const fn limit_count(self) -> Option<u64> {
+        self.limit_count
+    }
+}
+
+impl StorageBudgetPressure {
+    pub(crate) const fn usage(self) -> StorageBudgetUsage {
+        self.usage
+    }
+
+    pub(crate) const fn severity(self) -> StorageBudgetPressureSeverity {
+        self.severity
+    }
+}
+
+impl StorageBudgetSnapshot {
+    fn from_state(budget: StorageRuntimeBudget, state: StorageBudgetState) -> Self {
+        let usages = StorageBudgetPool::ALL.map(|pool| {
+            StorageBudgetUsage::new(
+                budget,
+                pool,
+                state.used_bytes[pool.index()],
+                state.used_count[pool.index()],
+            )
+        });
+        Self { budget, usages }
+    }
+
+    pub(crate) const fn budget(&self) -> StorageRuntimeBudget {
+        self.budget
+    }
+
+    pub(crate) fn usage(&self, pool: StorageBudgetPool) -> StorageBudgetUsage {
+        self.usages[pool.index()]
+    }
+
+    pub(crate) fn usages(&self) -> &[StorageBudgetUsage] {
+        &self.usages
+    }
+
+    pub(crate) fn pressure(&self, pool: StorageBudgetPool) -> StorageBudgetPressure {
+        let usage = self.usage(pool);
+        StorageBudgetPressure {
+            usage,
+            severity: pressure_severity(usage),
+        }
+    }
+
+    pub(crate) fn with_usage(
+        mut self,
+        pool: StorageBudgetPool,
+        used_bytes: u64,
+        used_count: u64,
+    ) -> Self {
+        self.usages[pool.index()] =
+            StorageBudgetUsage::new(self.budget, pool, used_bytes, used_count);
+        self
+    }
+}
+
+impl StorageBudgetLedger {
+    pub(crate) fn new(budget: StorageRuntimeBudget) -> LifecycleResult<Self> {
+        budget.validate()?;
+        Ok(Self {
+            budget,
+            state: Arc::new(Mutex::new(StorageBudgetState::default())),
+        })
+    }
+
+    pub(crate) const fn budget(&self) -> StorageRuntimeBudget {
+        self.budget
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        pool: StorageBudgetPool,
+        bytes: u64,
+        count: u64,
+        reason: &'static str,
+    ) -> LifecycleResult<StorageBudgetReservation> {
+        let mut state = self.lock_state()?;
+        check_available(self.budget, *state, pool, bytes, count, reason)?;
+        let index = pool.index();
+        state.used_bytes[index] = state.used_bytes[index].checked_add(bytes).ok_or(
+            LifecycleError::StorageBudgetExceeded {
+                pool,
+                requested_bytes: bytes,
+                used_bytes: state.used_bytes[index],
+                limit_bytes: self.budget.pool_limit_bytes(pool),
+                requested_count: count,
+                used_count: state.used_count[index],
+                limit_count: self.budget.pool_limit_count(pool),
+                reason: "budget byte accounting overflow",
+            },
+        )?;
+        state.used_count[index] = state.used_count[index].checked_add(count).ok_or(
+            LifecycleError::StorageBudgetExceeded {
+                pool,
+                requested_bytes: bytes,
+                used_bytes: state.used_bytes[index],
+                limit_bytes: self.budget.pool_limit_bytes(pool),
+                requested_count: count,
+                used_count: state.used_count[index],
+                limit_count: self.budget.pool_limit_count(pool),
+                reason: "budget count accounting overflow",
+            },
+        )?;
+        Ok(StorageBudgetReservation {
+            ledger: self.clone(),
+            pool,
+            bytes,
+            count,
+            released: false,
+        })
+    }
+
+    pub(crate) fn check_available(
+        &self,
+        pool: StorageBudgetPool,
+        bytes: u64,
+        count: u64,
+        reason: &'static str,
+    ) -> LifecycleResult<()> {
+        let state = self.lock_state()?;
+        check_available(self.budget, *state, pool, bytes, count, reason)
+    }
+
+    pub(crate) fn snapshot(&self) -> StorageBudgetSnapshot {
+        let state = self
+            .state
+            .lock()
+            .map_or_else(|poisoned| *poisoned.into_inner(), |guard| *guard);
+        StorageBudgetSnapshot::from_state(self.budget, state)
+    }
+
+    fn release(&self, pool: StorageBudgetPool, bytes: u64, count: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = pool.index();
+        state.used_bytes[index] = state.used_bytes[index].saturating_sub(bytes);
+        state.used_count[index] = state.used_count[index].saturating_sub(count);
+    }
+
+    fn lock_state(&self) -> LifecycleResult<MutexGuard<'_, StorageBudgetState>> {
+        self.state
+            .lock()
+            .map_err(|_| LifecycleError::MaintenanceFailed {
+                reason: "storage budget ledger lock is poisoned",
+            })
+    }
+}
+
+impl StorageBudgetReservation {
+    pub(crate) const fn pool(&self) -> StorageBudgetPool {
+        self.pool
+    }
+
+    pub(crate) const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub(crate) const fn count(&self) -> u64 {
+        self.count
+    }
+
+    pub(crate) fn release(mut self) {
+        self.release_inner();
+    }
+
+    fn release_inner(&mut self) {
+        if !self.released {
+            self.ledger.release(self.pool, self.bytes, self.count);
+            self.released = true;
+        }
+    }
+}
+
+impl Drop for StorageBudgetReservation {
+    fn drop(&mut self) {
+        self.release_inner();
+    }
+}
+
+impl<'a> BudgetedCommitBranch<'a> {
+    pub(crate) fn new(branch: &'a mut BranchLocalState, ledger: &'a StorageBudgetLedger) -> Self {
+        Self { branch, ledger }
+    }
+}
+
+impl CommitBranchApplyTarget for BudgetedCommitBranch<'_> {
+    fn branch_id(&self) -> strata_core_next::BranchId {
+        self.branch.branch_id()
+    }
+
+    fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.branch.max_commit_version()
+    }
+
+    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::BranchReadView> {
+        self.branch.capture_read_view().map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::BranchRuntime,
+                "branch read view capture failed",
+                source,
+            )
+        })
+    }
+
+    fn validate_committed_rows_before_apply(
+        &self,
+        rows: &[crate::row::StorageRow],
+    ) -> CommitRuntimeResult<()> {
+        require_active_rows_budget(self.ledger, self.branch, rows).map_err(|source| {
+            CommitRuntimeError::lower_layer_with(
+                CommitLowerLayer::StorageBudget,
+                "storage budget rejected commit rows",
+                source,
+            )
+        })
+    }
+
+    fn append_committed_rows_atomically(
+        &mut self,
+        rows: Vec<crate::row::StorageRow>,
+    ) -> CommitRuntimeResult<()> {
+        self.branch
+            .append_committed_rows_atomically(rows)
+            .map(|_| ())
+            .map_err(|source| {
+                CommitRuntimeError::lower_layer_with(
+                    CommitLowerLayer::BranchRuntime,
+                    "branch state rejected commit rows",
+                    source,
+                )
+            })
+    }
+}
+
+fn require_active_rows_budget(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+    rows: &[crate::row::StorageRow],
+) -> LifecycleResult<()> {
+    let requested = estimate_rows_active_bytes(rows)?;
+    let current = branch.active().approximate_size_bytes() as u64;
+    require_projected_usage(
+        ledger.budget(),
+        StorageBudgetPool::ActiveMutable,
+        current,
+        0,
+        requested,
+        0,
+        "commit would exceed active mutable storage budget",
+    )
+}
+
+pub(crate) fn require_table_reader_budget(
+    ledger: &StorageBudgetLedger,
+    bytes: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    ledger.check_available(StorageBudgetPool::TableReader, bytes, 1, reason)
+}
+
+pub(crate) fn require_generated_artifact_budget(
+    ledger: &StorageBudgetLedger,
+    bytes: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    ledger.check_available(StorageBudgetPool::GeneratedArtifact, bytes, 0, reason)
+}
+
+pub(crate) fn require_manifest_catalog_budget(
+    ledger: &StorageBudgetLedger,
+    bytes: u64,
+    count: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    ledger.check_available(StorageBudgetPool::ManifestCatalog, bytes, count, reason)
+}
+
+pub(crate) fn require_rotate_budget(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+) -> LifecycleResult<()> {
+    if branch.active().is_empty() {
+        return Ok(());
+    }
+    let active_bytes = branch.active().approximate_size_bytes() as u64;
+    let frozen_bytes = frozen_bytes(branch)?;
+    let frozen_count = u64::try_from(branch.frozen().len()).unwrap_or(u64::MAX);
+    require_projected_usage(
+        ledger.budget(),
+        StorageBudgetPool::FrozenMutable,
+        frozen_bytes,
+        frozen_count,
+        active_bytes,
+        1,
+        "rotation would exceed frozen mutable storage budget",
+    )
+}
+
+pub(crate) fn require_maintenance_enqueue_budget(
+    ledger: &StorageBudgetLedger,
+    maintenance_status: MaintenanceExecutorStatus,
+) -> LifecycleResult<()> {
+    let used_count = u64::try_from(maintenance_task_count(maintenance_status)).unwrap_or(u64::MAX);
+    let used_bytes = used_count.saturating_mul(MAINTENANCE_TASK_METADATA_BYTES);
+    require_projected_usage(
+        ledger.budget(),
+        StorageBudgetPool::MaintenanceQueue,
+        used_bytes,
+        used_count,
+        MAINTENANCE_TASK_METADATA_BYTES,
+        1,
+        "maintenance queue would exceed storage budget",
+    )
+}
+
+pub(crate) fn snapshot_with_runtime_usage(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+    maintenance_status: MaintenanceExecutorStatus,
+) -> StorageBudgetSnapshot {
+    let active_bytes = branch.active().approximate_size_bytes() as u64;
+    let frozen_bytes = frozen_bytes(branch).unwrap_or(u64::MAX);
+    let frozen_count = u64::try_from(branch.frozen().len()).unwrap_or(u64::MAX);
+    let pending_count =
+        u64::try_from(maintenance_task_count(maintenance_status)).unwrap_or(u64::MAX);
+    let pending_bytes = pending_count.saturating_mul(MAINTENANCE_TASK_METADATA_BYTES);
+    ledger
+        .snapshot()
+        .with_usage(StorageBudgetPool::ActiveMutable, active_bytes, 0)
+        .with_usage(StorageBudgetPool::FrozenMutable, frozen_bytes, frozen_count)
+        .with_usage(
+            StorageBudgetPool::MaintenanceQueue,
+            pending_bytes,
+            pending_count,
+        )
+}
+
+fn maintenance_task_count(status: MaintenanceExecutorStatus) -> usize {
+    status
+        .pending_tasks()
+        .saturating_add(usize::from(status.active_task().is_some()))
+}
+
+fn estimate_rows_active_bytes(rows: &[crate::row::StorageRow]) -> LifecycleResult<u64> {
+    let mut total = 0_u64;
+    for row in rows {
+        total = add_estimated_row_bytes(total, row)?;
+    }
+    Ok(total)
+}
+
+fn add_estimated_row_bytes(total: u64, row: &crate::row::StorageRow) -> LifecycleResult<u64> {
+    let row_bytes = TableRow::new(row.clone()).approximate_size_bytes() as u64;
+    total
+        .checked_add(row_bytes)
+        .ok_or(LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::ActiveMutable,
+            requested_bytes: row_bytes,
+            used_bytes: total,
+            limit_bytes: u64::MAX,
+            requested_count: 0,
+            used_count: 0,
+            limit_count: None,
+            reason: "commit byte estimate overflowed",
+        })
+}
+
+fn frozen_bytes(branch: &BranchLocalState) -> LifecycleResult<u64> {
+    branch.frozen().iter().try_fold(0_u64, |total, table| {
+        total
+            .checked_add(table.approximate_size_bytes() as u64)
+            .ok_or(LifecycleError::StorageBudgetExceeded {
+                pool: StorageBudgetPool::FrozenMutable,
+                requested_bytes: table.approximate_size_bytes() as u64,
+                used_bytes: total,
+                limit_bytes: u64::MAX,
+                requested_count: 0,
+                used_count: 0,
+                limit_count: None,
+                reason: "frozen byte accounting overflowed",
+            })
+    })
+}
+
+fn require_projected_usage(
+    budget: StorageRuntimeBudget,
+    pool: StorageBudgetPool,
+    used_bytes: u64,
+    used_count: u64,
+    requested_bytes: u64,
+    requested_count: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    let state = state_with_usage(pool, used_bytes, used_count);
+    check_available(
+        budget,
+        state,
+        pool,
+        requested_bytes,
+        requested_count,
+        reason,
+    )
+}
+
+fn state_with_usage(
+    pool: StorageBudgetPool,
+    used_bytes: u64,
+    used_count: u64,
+) -> StorageBudgetState {
+    let mut state = StorageBudgetState::default();
+    state.used_bytes[pool.index()] = used_bytes;
+    state.used_count[pool.index()] = used_count;
+    state
+}
+
+fn check_available(
+    budget: StorageRuntimeBudget,
+    state: StorageBudgetState,
+    pool: StorageBudgetPool,
+    requested_bytes: u64,
+    requested_count: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    let index = pool.index();
+    let used_bytes = state.used_bytes[index];
+    let used_count = state.used_count[index];
+    let limit_bytes = budget.pool_limit_bytes(pool);
+    let limit_count = budget.pool_limit_count(pool);
+    let projected_bytes =
+        used_bytes
+            .checked_add(requested_bytes)
+            .ok_or(LifecycleError::StorageBudgetExceeded {
+                pool,
+                requested_bytes,
+                used_bytes,
+                limit_bytes,
+                requested_count,
+                used_count,
+                limit_count,
+                reason: "budget byte accounting overflow",
+            })?;
+    let projected_count =
+        used_count
+            .checked_add(requested_count)
+            .ok_or(LifecycleError::StorageBudgetExceeded {
+                pool,
+                requested_bytes,
+                used_bytes,
+                limit_bytes,
+                requested_count,
+                used_count,
+                limit_count,
+                reason: "budget count accounting overflow",
+            })?;
+    if projected_bytes > limit_bytes
+        || limit_count.is_some_and(|limit_count| projected_count > limit_count)
+    {
+        return Err(LifecycleError::StorageBudgetExceeded {
+            pool,
+            requested_bytes,
+            used_bytes,
+            limit_bytes,
+            requested_count,
+            used_count,
+            limit_count,
+            reason,
+        });
+    }
+    Ok(())
+}
+
+fn pressure_severity(usage: StorageBudgetUsage) -> StorageBudgetPressureSeverity {
+    if usage.used_bytes == 0 && usage.used_count == 0 {
+        return StorageBudgetPressureSeverity::Normal;
+    }
+    if usage.used_bytes > usage.limit_bytes
+        || usage
+            .limit_count
+            .is_some_and(|limit_count| usage.used_count > limit_count)
+    {
+        return match usage.pool {
+            StorageBudgetPool::ActiveMutable => {
+                StorageBudgetPressureSeverity::RejectMutatingAdmission
+            }
+            StorageBudgetPool::MaintenanceQueue
+            | StorageBudgetPool::GeneratedArtifact
+            | StorageBudgetPool::ManifestCatalog => {
+                StorageBudgetPressureSeverity::RejectOptionalWork
+            }
+            StorageBudgetPool::BlockCache => StorageBudgetPressureSeverity::Evicting,
+            StorageBudgetPool::TableReader | StorageBudgetPool::FrozenMutable => {
+                StorageBudgetPressureSeverity::DeferOptionalMaintenance
+            }
+        };
+    }
+    if usage.limit_bytes == 0 {
+        return StorageBudgetPressureSeverity::Normal;
+    }
+    let high_water = usage.limit_bytes.saturating_mul(4) / 5;
+    if usage.used_bytes >= high_water {
+        match usage.pool {
+            StorageBudgetPool::BlockCache => StorageBudgetPressureSeverity::Evicting,
+            StorageBudgetPool::ActiveMutable => {
+                StorageBudgetPressureSeverity::RejectMutatingAdmission
+            }
+            StorageBudgetPool::MaintenanceQueue
+            | StorageBudgetPool::GeneratedArtifact
+            | StorageBudgetPool::ManifestCatalog
+            | StorageBudgetPool::TableReader
+            | StorageBudgetPool::FrozenMutable => {
+                StorageBudgetPressureSeverity::DeferOptionalMaintenance
+            }
+        }
+    } else {
+        StorageBudgetPressureSeverity::Normal
+    }
+}
+
+const fn require_nonzero(field: &'static str, value: u64) -> LifecycleResult<()> {
+    if value == 0 {
+        return Err(LifecycleError::InvalidConfig {
+            field,
+            reason: "must be nonzero",
+        });
+    }
+    Ok(())
+}

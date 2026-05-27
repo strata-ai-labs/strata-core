@@ -833,6 +833,14 @@ impl LifecycleMaintenanceExecutor {
         self.enqueue_with_binding(state, request, Ok)
     }
 
+    pub(crate) fn would_coalesce(&self, request: MaintenanceTaskRequest) -> bool {
+        request.coalesce_key().is_some_and(|key| {
+            self.queue
+                .iter()
+                .any(|task| task.coalesce_key() == Some(key))
+        })
+    }
+
     pub(crate) fn enqueue_with_binding(
         &mut self,
         state: LifecycleStateMachine,

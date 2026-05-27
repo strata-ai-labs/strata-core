@@ -328,6 +328,48 @@ fn lifecycle_property_harness_runs_row_pruning_contract() {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 #[test]
+fn lifecycle_property_harness_runs_budget_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::testkit::check_lifecycle_budget_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/lifecycle-budget.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=32), |script| {
+            let outcome = check_lifecycle_budget_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.budget_accept_cases() == 0
+                || outcome.budget_reject_cases() == 0
+                || outcome.reservation_release_on_success_cases() == 0
+                || outcome.reservation_release_on_failure_cases() == 0
+                || outcome.cache_eviction_cases() == 0
+                || outcome.reader_reject_cases() == 0
+                || outcome.active_reject_cases() == 0
+                || outcome.artifact_defer_cases() == 0
+                || outcome.maintenance_queue_reject_cases() == 0
+                || outcome.low_memory_smoke_cases() == 0
+                || outcome.isolation_cases() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "lifecycle budget contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated lifecycle budget property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
 fn lifecycle_property_harness_runs_generated_script_contract() {
     use proptest::collection::vec;
     use proptest::prelude::any;

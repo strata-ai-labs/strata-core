@@ -5,18 +5,21 @@ use super::require_admitted;
 use crate::branch::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker};
 use crate::lifecycle::checkpoint::{
-    checkpoint_durable_branch, checkpoint_request_from_maintenance_task_with_snapshot_id,
-    persist_flush_watermark, truncate_wal, wal_truncation_request_from_maintenance_task,
-    LifecycleCheckpointOutcome, LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome,
-    LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest,
-    LifecycleFlushWatermarkValidationContext, LifecycleTableManifestFlushCoverageProof,
-    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
+    checkpoint_durable_branch_with_budget,
+    checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
+    truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
+    LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
+    LifecycleFlushWatermarkRequest, LifecycleFlushWatermarkValidationContext,
+    LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
+    LifecycleWalTruncationRequest,
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure,
     compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
 };
-use crate::lifecycle::flush::{flush_durable_branch, flush_request_from_maintenance_task};
+use crate::lifecycle::flush::{
+    flush_durable_branch_with_budget, flush_request_from_maintenance_task,
+};
 use crate::lifecycle::retention::{
     build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
     retention_outcome_for_delegated_families, retention_outcome_for_scope,
@@ -25,7 +28,7 @@ use crate::lifecycle::retention::{
     LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
 };
 use crate::lifecycle::table_manifest::{
-    publish_table_manifest_for_branch, table_manifest_debt_outcome,
+    publish_table_manifest_for_branch_with_budget, table_manifest_debt_outcome,
 };
 use crate::lifecycle::table_reachability::{
     table_object_retention_outcome, LifecycleTableObjectInventoryEntry,
@@ -36,8 +39,9 @@ use crate::lifecycle::{
     purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
     quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
     repair_quarantine as repair_lifecycle_quarantine, repair_request_from_maintenance_task,
-    telemetry_health_debt, FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId,
-    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
+    require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
+    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
     LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
     LifecyclePurgeOutcome, LifecyclePurgeRequest, LifecycleQuarantineOutcome,
     LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest,
@@ -60,6 +64,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        require_rotate_budget(&self.budget, &self.branch)?;
         Ok(self.branch.rotate_active())
     }
 
@@ -72,16 +77,18 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = flush_durable_branch(
+        let outcome = flush_durable_branch_with_budget(
             &mut self.branch,
             self.services.table_object(),
             self.services.table_reader(),
             request,
+            Some(&self.budget),
         )?;
         if publish_table_manifest_after_flush(
             &self.branch,
             self.services.table_manifest(),
             &mut self.table_catalog,
+            Some(&self.budget),
             &outcome,
         )
         .is_some()
@@ -109,6 +116,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             self.services.table_manifest(),
             &mut self.table_catalog,
             request,
+            Some(&self.budget),
         )
     }
 
@@ -128,6 +136,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             self.services.table_manifest(),
             &mut self.table_catalog,
             request,
+            Some(&self.budget),
         )
     }
 
@@ -148,12 +157,13 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCheckpointRequest,
     ) -> LifecycleResult<LifecycleCheckpointOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        checkpoint_durable_branch(
+        checkpoint_durable_branch_with_budget(
             &self.branch,
             &self.services,
             &self.guard_set,
             || self.visible.visible_version(),
             request,
+            Some(&self.budget),
         )
     }
 
@@ -367,9 +377,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
         request: MaintenanceTaskRequest,
     ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
+        let budget = self.budget.clone();
+        let maintenance_status = self.maintenance.status();
         let branch = &mut self.branch;
         self.maintenance
             .enqueue_with_binding(self.state, request, |request| {
+                require_maintenance_enqueue_budget(&budget, maintenance_status)?;
                 bind_materialization_task_for_enqueue(branch, request)
             })
     }
@@ -404,6 +417,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 table_reader,
                 table_manifest,
                 table_catalog,
+                budget: &self.budget,
             };
             maintenance.run_next_matching(state, &mut runner, |task| {
                 task.kind() == MaintenanceTaskKind::Flush
@@ -426,6 +440,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let services = &self.services;
         let guard_set = &self.guard_set;
         let visible = &self.visible;
+        let budget = &self.budget;
         let next_snapshot_id = &mut self.next_checkpoint_snapshot_id;
         let created_at = checkpoint_created_at(
             self.allocator.timestamp_guard().last_allocated(),
@@ -438,6 +453,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             visible,
             created_at,
             next_snapshot_id,
+            budget,
         };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Checkpoint
@@ -503,12 +519,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let table_reader = self.services.table_reader();
         let table_manifest = self.services.table_manifest();
         let table_catalog = &mut self.table_catalog;
+        let budget = &self.budget;
         let mut runner = DurableCompactionMaintenanceRunner {
             branch,
             table_object,
             table_reader,
             table_manifest,
             table_catalog,
+            budget,
         };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Compaction
@@ -529,12 +547,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let table_reader = self.services.table_reader();
         let table_manifest = self.services.table_manifest();
         let table_catalog = &mut self.table_catalog;
+        let budget = &self.budget;
         let mut runner = DurableMaterializationMaintenanceRunner {
             branch,
             table_object,
             table_reader,
             table_manifest,
             table_catalog,
+            budget,
         };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Materialization
@@ -674,18 +694,25 @@ struct DurableFlushMaintenanceRunner<'a, 'b> {
     table_reader: &'a TableObjectReaderService<'b>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
+    budget: &'a crate::lifecycle::StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = flush_request_from_maintenance_task(task)?;
-        let outcome =
-            flush_durable_branch(self.branch, self.table_object, self.table_reader, &request)?;
+        let outcome = flush_durable_branch_with_budget(
+            self.branch,
+            self.table_object,
+            self.table_reader,
+            &request,
+            Some(self.budget),
+        )?;
         let maintenance_outcome = outcome.maintenance_outcome();
         if let Some(error) = publish_table_manifest_after_flush(
             self.branch,
             self.table_manifest,
             self.table_catalog,
+            Some(self.budget),
             &outcome,
         ) {
             return Ok(table_manifest_debt_outcome(maintenance_outcome, error));
@@ -698,6 +725,7 @@ fn publish_table_manifest_after_flush(
     branch: &BranchLocalState,
     service: &TableManifestService<'_>,
     catalog: &mut crate::lifecycle::LifecycleDurableTableCatalog,
+    budget: Option<&crate::lifecycle::StorageBudgetLedger>,
     outcome: &FlushFrozenOutcome,
 ) -> Option<LifecycleError> {
     if !matches!(
@@ -713,7 +741,8 @@ fn publish_table_manifest_after_flush(
     if let Err(error) = catalog.record_table(identity.clone(), object_facts.clone()) {
         return Some(error);
     }
-    publish_table_manifest_for_branch(branch, service, catalog).map_or_else(Some, |_| None)
+    publish_table_manifest_for_branch_with_budget(branch, service, catalog, budget)
+        .map_or_else(Some, |_| None)
 }
 
 struct DurableCheckpointMaintenanceRunner<'a, 'b> {
@@ -723,6 +752,7 @@ struct DurableCheckpointMaintenanceRunner<'a, 'b> {
     visible: &'a VisibleVersionTracker,
     created_at: Timestamp,
     next_snapshot_id: &'a mut u64,
+    budget: &'a crate::lifecycle::StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
@@ -734,12 +764,13 @@ impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
             self.created_at,
             Some(*self.next_snapshot_id),
         )?;
-        let outcome = checkpoint_durable_branch(
+        let outcome = checkpoint_durable_branch_with_budget(
             self.branch,
             self.services,
             self.guard_set,
             || self.visible.visible_version(),
             &request,
+            Some(self.budget),
         )?;
         if let Some(snapshot_id) = outcome.snapshot_id() {
             *self.next_snapshot_id =
@@ -862,6 +893,7 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
     table_reader: &'a TableObjectReaderService<'b>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
+    budget: &'a crate::lifecycle::StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
@@ -874,6 +906,7 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
             self.table_manifest,
             self.table_catalog,
             &request,
+            Some(self.budget),
         )?
         .maintenance_outcome())
     }
@@ -885,6 +918,7 @@ struct DurableMaterializationMaintenanceRunner<'a, 'b> {
     table_reader: &'a TableObjectReaderService<'b>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
+    budget: &'a crate::lifecycle::StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_, '_> {
@@ -897,6 +931,7 @@ impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_, '_> {
             self.table_manifest,
             self.table_catalog,
             &request,
+            Some(self.budget),
         )?
         .maintenance_outcome())
     }

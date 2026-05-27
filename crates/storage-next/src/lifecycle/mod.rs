@@ -8,6 +8,7 @@
     )
 )]
 
+mod budget;
 mod cache;
 mod capability;
 mod checkpoint;
@@ -30,6 +31,17 @@ mod state;
 mod table_manifest;
 mod table_reachability;
 
+#[allow(
+    unused_imports,
+    reason = "storage budget exports define the local surface for budget enforcement"
+)]
+pub(crate) use budget::{
+    require_generated_artifact_budget, require_maintenance_enqueue_budget,
+    require_manifest_catalog_budget, require_rotate_budget, require_table_reader_budget,
+    snapshot_with_runtime_usage, BudgetedCommitBranch, StorageBudgetLedger, StorageBudgetPool,
+    StorageBudgetPressure, StorageBudgetPressureSeverity, StorageBudgetReservation,
+    StorageBudgetSnapshot, StorageBudgetUsage, StorageRuntimeBudget, StorageRuntimeBudgetParts,
+};
 #[allow(
     unused_imports,
     reason = "lifecycle cache runtime exports define the local surface for later slices"
@@ -199,10 +211,10 @@ pub(crate) use state::{
 )]
 pub(crate) use table_manifest::{
     preflight_table_manifest_with_checkpoint, publish_table_manifest_for_branch,
-    recover_table_manifest_for_branch, require_table_manifest_covers_checkpoint_rows,
-    stage_table_manifest_for_branch, table_manifest_debt_outcome, LifecycleDurableTableCatalog,
-    LifecycleDurableTableCatalogEntry, LifecycleTableManifestRecoveryOutcome,
-    LifecycleTableManifestRecoveryStage,
+    publish_table_manifest_for_branch_with_budget, recover_table_manifest_for_branch,
+    require_table_manifest_covers_checkpoint_rows, stage_table_manifest_for_branch,
+    table_manifest_debt_outcome, LifecycleDurableTableCatalog, LifecycleDurableTableCatalogEntry,
+    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
 };
 #[allow(
     unused_imports,

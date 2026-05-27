@@ -4,7 +4,7 @@ use super::{
     ClosePhase, LifecycleCloseFact, LifecycleError, LifecycleRecoveredCheckpoint,
     LifecycleRecoveredQuarantine, LifecycleRecoveredTables, LifecycleRecoveredWal,
     LifecycleRecoveryBootstrapReport, LifecycleRecoveryOutcome, LifecycleResult, LifecycleStats,
-    MaintenanceTaskKind, RecoveryHealth, StorageMode,
+    MaintenanceTaskKind, RecoveryHealth, StorageBudgetSnapshot, StorageMode,
 };
 use crate::backend::BackendCapabilities;
 use crate::lifecycle::maintenance::MaintenanceTaskId;
@@ -26,6 +26,7 @@ pub(crate) struct StorageOpenOutcome {
     tables: Option<LifecycleRecoveredTables>,
     quarantine: Option<LifecycleRecoveredQuarantine>,
     bootstrap: Option<LifecycleRecoveryBootstrapReport>,
+    budget: Option<StorageBudgetSnapshot>,
     stats: LifecycleStats,
 }
 
@@ -127,6 +128,7 @@ impl StorageOpenOutcome {
             tables: None,
             quarantine: None,
             bootstrap: None,
+            budget: None,
             stats: LifecycleStats::default(),
         })
     }
@@ -170,6 +172,11 @@ impl StorageOpenOutcome {
 
     pub(crate) const fn with_stats(mut self, stats: LifecycleStats) -> Self {
         self.stats = stats;
+        self
+    }
+
+    pub(crate) fn with_budget_snapshot(mut self, budget: StorageBudgetSnapshot) -> Self {
+        self.budget = Some(budget);
         self
     }
 
@@ -231,6 +238,10 @@ impl StorageOpenOutcome {
 
     pub(crate) const fn bootstrap(&self) -> Option<&LifecycleRecoveryBootstrapReport> {
         self.bootstrap.as_ref()
+    }
+
+    pub(crate) const fn budget(&self) -> Option<&StorageBudgetSnapshot> {
+        self.budget.as_ref()
     }
 
     pub(crate) const fn stats(&self) -> LifecycleStats {

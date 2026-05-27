@@ -1,6 +1,7 @@
 //! Lifecycle scaffold conformance helpers.
 
 mod bootstrap;
+mod budget;
 mod cache;
 mod capability;
 mod checkpoint;
@@ -19,6 +20,7 @@ mod row_pruning;
 mod script;
 
 pub use bootstrap::{check_lifecycle_bootstrap_contract, LifecycleBootstrapContractOutcome};
+pub use budget::{check_lifecycle_budget_contract, LifecycleBudgetContractOutcome};
 pub use checkpoint::{check_lifecycle_checkpoint_contract, LifecycleCheckpointContractOutcome};
 pub use close::{check_lifecycle_close_contract, LifecycleCloseContractOutcome};
 pub use crash::{check_lifecycle_crash_contract, LifecycleCrashContractOutcome};

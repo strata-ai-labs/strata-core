@@ -61,6 +61,12 @@ pub(crate) trait CommitBranchApplyTarget {
     fn branch_id(&self) -> BranchId;
     fn max_commit_version(&self) -> Option<CommitVersion>;
     fn capture_read_view(&self) -> CommitRuntimeResult<BranchReadView>;
+    fn validate_committed_rows_before_apply(
+        &self,
+        _rows: &[StorageRow],
+    ) -> CommitRuntimeResult<()> {
+        Ok(())
+    }
     fn append_committed_rows_atomically(
         &mut self,
         rows: Vec<StorageRow>,
@@ -92,6 +98,13 @@ impl CommitBranchApplyTarget for BranchLocalState {
                 source,
             )
         })
+    }
+
+    fn validate_committed_rows_before_apply(
+        &self,
+        _rows: &[StorageRow],
+    ) -> CommitRuntimeResult<()> {
+        Ok(())
     }
 
     fn append_committed_rows_atomically(
@@ -197,6 +210,8 @@ where
         require_allocated_after_visible(stamp, current_visible_version)?;
         let rows = CacheCommitRows::prepare(&batch, stamp, self.config)?;
         let combined_rows = rows.combined_rows();
+        self.branch
+            .validate_committed_rows_before_apply(&combined_rows)?;
         let record = build_wal_record(stamp, combined_rows.clone())?;
         let append = self.wal.append_commit_record(&record).map_err(|error| {
             error.into_commit_error(batch.batch().branch_id(), stamp.commit_version())

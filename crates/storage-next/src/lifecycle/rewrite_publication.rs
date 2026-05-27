@@ -6,8 +6,9 @@ use super::compaction::{
     LifecycleTableRewriteDurability,
 };
 use super::{
-    publish_table_manifest_for_branch, LifecycleDurableTableCatalog, LifecycleError,
-    LifecycleResult,
+    publish_table_manifest_for_branch_with_budget, require_generated_artifact_budget,
+    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleResult,
+    StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::{
@@ -31,6 +32,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleCompactionRequest,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
     let request = request
         .clone()
@@ -52,8 +54,13 @@ pub(crate) fn compact_durable_branch_manifest_backed(
             branch_outcome,
         ));
     };
-    let published =
-        publish_compaction_outputs(branch.branch_id(), table_service, reader_service, &prepared)?;
+    let published = publish_compaction_outputs(
+        branch.branch_id(),
+        table_service,
+        reader_service,
+        &prepared,
+        budget,
+    )?;
     let mut next_catalog = catalog.clone();
     record_published_outputs(&mut next_catalog, &published).map_err(|source| {
         LifecycleError::rewrite_publication_orphaned_with(
@@ -96,7 +103,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         output_objects,
         retained_input_objects,
     );
-    match publish_table_manifest_for_branch(branch, manifest_service, catalog) {
+    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
         Ok(_) => Ok(outcome),
         Err(error) => Ok(outcome.manifest_debt(error)),
     }
@@ -109,6 +116,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleMaterializationRequest,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
     let request = request
         .clone()
@@ -137,6 +145,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
             intent,
             branch_outcome,
             Vec::new(),
+            budget,
         ));
     };
     if prepared.artifacts().is_empty() {
@@ -151,6 +160,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
             intent,
             branch_outcome,
             Vec::new(),
+            budget,
         ));
     }
     let published = publish_materialization_outputs(
@@ -158,6 +168,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
         table_service,
         reader_service,
         &prepared,
+        budget,
     )?;
     let mut next_catalog = catalog.clone();
     record_published_outputs(&mut next_catalog, &published).map_err(|source| {
@@ -193,6 +204,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
         intent,
         branch_outcome,
         output_objects,
+        budget,
     ))
 }
 
@@ -204,6 +216,7 @@ fn finish_materialization_after_install(
     intent: BranchMaterializationIntent,
     branch_outcome: crate::branch::BranchMaterializationOutcome,
     output_objects: Vec<crate::object::ObjectName>,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleMaterializationOutcome {
     let outcome = if matches!(
         branch_outcome.recovery(),
@@ -213,7 +226,7 @@ fn finish_materialization_after_install(
     } else {
         LifecycleMaterializationOutcome::completed_durable(intent, branch_outcome, output_objects)
     };
-    match publish_table_manifest_for_branch(branch, manifest_service, catalog) {
+    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
         Ok(_) => outcome,
         Err(error) => outcome.manifest_debt(error),
     }
@@ -231,6 +244,7 @@ fn publish_compaction_outputs(
     table_service: &TableObjectService<'_>,
     reader_service: &TableObjectReaderService<'_>,
     prepared: &BranchCompactionPreparedOutput,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
     let mut published = Vec::new();
     for artifact in prepared.artifacts() {
@@ -241,6 +255,7 @@ fn publish_compaction_outputs(
             reader_service,
             artifact,
             prepared.materialization_source(),
+            budget,
         ) {
             Ok(output) => published.push(output),
             Err(error) => return Err(partial_publish_error(&published, error)),
@@ -254,6 +269,7 @@ fn publish_materialization_outputs(
     table_service: &TableObjectService<'_>,
     reader_service: &TableObjectReaderService<'_>,
     prepared: &BranchMaterializationPreparedOutput,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
     let mut published = Vec::new();
     for artifact in prepared.artifacts() {
@@ -264,6 +280,7 @@ fn publish_materialization_outputs(
             reader_service,
             artifact,
             Some(prepared.materialization_source()),
+            budget,
         ) {
             Ok(output) => published.push(output),
             Err(error) => return Err(partial_publish_error(&published, error)),
@@ -279,7 +296,10 @@ fn publish_rewrite_artifact(
     reader_service: &TableObjectReaderService<'_>,
     artifact: &BuiltTableArtifact,
     materialization_source: Option<BranchMaterializationSource>,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PublishedRewriteTable> {
+    require_optional_rewrite_generated_budget(budget, artifact.byte_count())?;
+    require_optional_rewrite_reader_budget(budget, artifact.byte_count())?;
     let identity = artifact.facts().identity().clone();
     let branch_component = branch_id.to_string();
     let object_facts = publish_or_load_rewrite_output(
@@ -353,6 +373,30 @@ fn publish_rewrite_artifact(
         object_facts,
         provenance,
     })
+}
+
+fn require_optional_rewrite_generated_budget(
+    budget: Option<&StorageBudgetLedger>,
+    bytes: u64,
+) -> LifecycleResult<()> {
+    if let Some(budget) = budget {
+        require_generated_artifact_budget(
+            budget,
+            bytes,
+            "table rewrite artifact exceeds generated artifact budget",
+        )?;
+    }
+    Ok(())
+}
+
+fn require_optional_rewrite_reader_budget(
+    budget: Option<&StorageBudgetLedger>,
+    bytes: u64,
+) -> LifecycleResult<()> {
+    if let Some(budget) = budget {
+        require_table_reader_budget(budget, bytes, "table rewrite reader exceeds storage budget")?;
+    }
+    Ok(())
 }
 
 fn publish_or_load_rewrite_output(

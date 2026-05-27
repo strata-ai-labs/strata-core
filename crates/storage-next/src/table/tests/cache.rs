@@ -149,6 +149,140 @@ fn disabled_cache_stores_nothing_and_reports_skips() {
 }
 
 #[test]
+fn zero_capacity_table_cache_does_not_store() {
+    let cache = TableBlockCache::new(TableCacheConfig::new(false, 0).expect("zero cache"));
+    let first = key("zero-capacity", TableBlockCacheKind::Data, 0, 4);
+
+    assert!(matches!(
+        cache.insert(first.clone(), bytes(1, 4)).expect("insert"),
+        CacheInsert::SkippedDisabled(_)
+    ));
+    assert!(cache.get(&first).is_none());
+    assert_eq!(cache.stats().entries(), 0);
+    assert_eq!(cache.stats().bytes(), 0);
+    assert_eq!(cache.stats().capacity_bytes(), 0);
+}
+
+#[test]
+fn small_cache_serves_oversized_block_uncached() {
+    let cache = enabled_cache(4);
+    let large = key("small-cache", TableBlockCacheKind::Data, 0, 8);
+
+    let inserted = cache.insert(large.clone(), bytes(2, 8)).expect("insert");
+
+    assert!(matches!(inserted, CacheInsert::SkippedOversized(_)));
+    assert_eq!(inserted.bytes().len(), 8);
+    assert!(cache.get(&large).is_none());
+    assert_eq!(cache.stats().skipped_oversized(), 1);
+    assert_eq!(cache.stats().bytes(), 0);
+}
+
+#[test]
+fn table_cache_respects_capacity_after_insert() {
+    let cache = enabled_cache(8);
+    for index in 0..4u64 {
+        cache
+            .insert(
+                key("capacity", TableBlockCacheKind::Data, index * 4, 4),
+                bytes(u8::try_from(index).expect("byte"), 4),
+            )
+            .expect("insert");
+        assert!(cache.stats().bytes() <= cache.stats().capacity_bytes());
+    }
+
+    assert_eq!(cache.stats().entries(), 2);
+    assert_eq!(cache.stats().bytes(), 8);
+    assert!(cache.stats().evictions() >= 2);
+}
+
+#[test]
+fn table_cache_eviction_effort_is_bounded() {
+    let cache = enabled_cache(16);
+    for index in 0..64u64 {
+        cache
+            .insert(
+                key("bounded-evict", TableBlockCacheKind::Data, index * 4, 4),
+                bytes(u8::try_from(index % 251).expect("byte"), 4),
+            )
+            .expect("insert");
+    }
+
+    let stats = cache.stats();
+    assert_eq!(stats.entries(), 4);
+    assert_eq!(stats.bytes(), 16);
+    assert_eq!(stats.evictions(), 60);
+}
+
+#[test]
+fn table_cache_shrink_records_pressure() {
+    let cache = enabled_cache(16);
+    for index in 0..4u64 {
+        cache
+            .insert(
+                key("shrink", TableBlockCacheKind::Data, index * 4, 4),
+                bytes(u8::try_from(index).expect("byte"), 4),
+            )
+            .expect("insert");
+    }
+
+    cache.resize(4);
+
+    let stats = cache.stats();
+    assert_eq!(stats.capacity_bytes(), 4);
+    assert_eq!(stats.bytes(), 4);
+    assert_eq!(stats.entries(), 1);
+    assert_eq!(stats.evictions(), 3);
+}
+
+#[test]
+fn table_cache_stats_include_hits_misses_entries_bytes() {
+    let cache = enabled_cache(8);
+    let first = key("stats", TableBlockCacheKind::Data, 0, 4);
+    assert!(cache.get(&first).is_none());
+    cache.insert(first.clone(), bytes(3, 4)).expect("insert");
+    assert!(cache.get(&first).is_some());
+
+    let stats = cache.stats();
+    assert_eq!(stats.misses(), 1);
+    assert_eq!(stats.hits(), 1);
+    assert_eq!(stats.entries(), 1);
+    assert_eq!(stats.bytes(), 4);
+    assert_eq!(stats.capacity_bytes(), 8);
+}
+
+#[test]
+fn table_cache_keys_use_table_identity_not_path() {
+    let cache = enabled_cache(16);
+    let path_like = key("dir/table", TableBlockCacheKind::Data, 0, 4);
+    let plain = key("table", TableBlockCacheKind::Data, 0, 4);
+
+    cache
+        .insert(path_like.clone(), bytes(4, 4))
+        .expect("path-like id");
+    cache.insert(plain.clone(), bytes(5, 4)).expect("plain id");
+
+    assert_eq!(
+        cache.get(&path_like).expect("path-like hit").as_ref(),
+        &[4; 4]
+    );
+    assert_eq!(cache.get(&plain).expect("plain hit").as_ref(), &[5; 4]);
+}
+
+#[test]
+fn two_runtime_caches_are_isolated() {
+    let left = enabled_cache(16);
+    let right = enabled_cache(16);
+    let shared = key("isolated", TableBlockCacheKind::Data, 0, 4);
+
+    left.insert(shared.clone(), bytes(6, 4))
+        .expect("left insert");
+
+    assert!(right.get(&shared).is_none());
+    assert_eq!(left.stats().entries(), 1);
+    assert_eq!(right.stats().entries(), 0);
+}
+
+#[test]
 fn cache_insert_get_duplicate_remove_clear_and_stats_are_deterministic() {
     let cache = enabled_cache(64);
     let first = key("table-a", TableBlockCacheKind::Data, 0, 4);

@@ -1,8 +1,10 @@
 //! Frozen-state flush orchestration.
 
 use super::{
-    LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats, MaintenanceOutcome,
+    require_generated_artifact_budget, require_table_reader_budget, LifecycleError,
+    LifecycleLowerLayer, LifecycleResult, LifecycleStats, MaintenanceOutcome,
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskScope,
+    StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::{
@@ -321,10 +323,28 @@ pub(crate) fn flush_cache_branch(
     branch: &mut BranchLocalState,
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<FlushFrozenOutcome> {
+    flush_cache_branch_with_budget(branch, request, None)
+}
+
+pub(crate) fn flush_cache_branch_with_budget(
+    branch: &mut BranchLocalState,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<FlushFrozenOutcome> {
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(FlushFrozenOutcome::deferred(request));
     };
     let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    require_optional_generated_artifact_budget(
+        budget,
+        artifact.byte_count(),
+        "flush artifact exceeds generated artifact budget",
+    )?;
+    require_optional_table_reader_budget(
+        budget,
+        artifact.byte_count(),
+        "flush table reader exceeds storage budget",
+    )?;
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
     let reader = ImmutableTableReader::open_bytes(
@@ -359,10 +379,30 @@ pub(crate) fn flush_durable_branch(
     reader_service: &TableObjectReaderService<'_>,
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<FlushFrozenOutcome> {
+    flush_durable_branch_with_budget(branch, table_service, reader_service, request, None)
+}
+
+pub(crate) fn flush_durable_branch_with_budget(
+    branch: &mut BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'_>,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<FlushFrozenOutcome> {
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(FlushFrozenOutcome::deferred(request));
     };
     let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    require_optional_generated_artifact_budget(
+        budget,
+        artifact.byte_count(),
+        "flush artifact exceeds generated artifact budget",
+    )?;
+    require_optional_table_reader_budget(
+        budget,
+        artifact.byte_count(),
+        "flush table reader exceeds storage budget",
+    )?;
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
     let branch_component = request.branch_id().to_string();
@@ -591,6 +631,28 @@ fn validate_single_component(field: &'static str, value: &str) -> LifecycleResul
         field,
         reason: "flush component must be a valid object name",
     })?;
+    Ok(())
+}
+
+fn require_optional_generated_artifact_budget(
+    budget: Option<&StorageBudgetLedger>,
+    bytes: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    if let Some(budget) = budget {
+        require_generated_artifact_budget(budget, bytes, reason)?;
+    }
+    Ok(())
+}
+
+fn require_optional_table_reader_budget(
+    budget: Option<&StorageBudgetLedger>,
+    bytes: u64,
+    reason: &'static str,
+) -> LifecycleResult<()> {
+    if let Some(budget) = budget {
+        require_table_reader_budget(budget, bytes, reason)?;
+    }
     Ok(())
 }
 

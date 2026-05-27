@@ -1,8 +1,9 @@
 //! Branch table-manifest publication and recovery helpers.
 
 use super::{
-    telemetry_health_debt, LifecycleError, LifecycleLowerLayer, LifecycleResult,
-    MaintenanceOutcome, MaintenanceOutcomeStatus,
+    require_manifest_catalog_budget, require_table_reader_budget, telemetry_health_debt,
+    LifecycleError, LifecycleLowerLayer, LifecycleResult, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, StorageBudgetLedger,
 };
 use crate::backend::{BackendErrorKind, PublishError, PublishFailureKind};
 use crate::branch::{
@@ -11,9 +12,9 @@ use crate::branch::{
     BranchTableManifestRecoveryRequest, InheritedLayerDescriptor, InheritedLayerStatus,
 };
 use crate::format::{
-    FormatError, TableManifest, TableManifestInheritedLayer, TableManifestInheritedLayerStatus,
-    TableManifestLevel, TableManifestTableBounds, TableManifestTableFacts,
-    TableManifestTableProvenance, TableManifestTableRef,
+    encode_table_manifest, FormatError, TableManifest, TableManifestInheritedLayer,
+    TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,
+    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef,
 };
 use crate::object::ObjectName;
 use crate::service::{
@@ -337,12 +338,34 @@ pub(crate) fn require_table_manifest_covers_checkpoint_rows(
     Ok(())
 }
 
+#[allow(
+    dead_code,
+    reason = "budget-free wrapper preserves the table-manifest helper surface for direct tests"
+)]
 pub(crate) fn publish_table_manifest_for_branch(
     branch: &BranchLocalState,
     service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
 ) -> LifecycleResult<TableManifestWrite> {
+    publish_table_manifest_for_branch_with_budget(branch, service, catalog, None)
+}
+
+pub(crate) fn publish_table_manifest_for_branch_with_budget(
+    branch: &BranchLocalState,
+    service: &TableManifestService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<TableManifestWrite> {
     let manifest = catalog.build_manifest(branch)?;
+    if let Some(budget) = budget {
+        let bytes = encode_table_manifest(&manifest).map_err(format_error)?;
+        require_manifest_catalog_budget(
+            budget,
+            bytes.len() as u64,
+            1,
+            "table manifest exceeds manifest catalog budget",
+        )?;
+    }
     let write = service
         .publish_replace_manifest(branch.branch_id(), &manifest)
         .map_err(table_manifest_service_error)?;
@@ -355,6 +378,7 @@ pub(crate) fn stage_table_manifest_for_branch(
     service: &TableManifestService<'_>,
     reader_service: &TableObjectReaderService<'_>,
     catalog: &LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleTableManifestRecoveryStage> {
     let mut staged_branch = branch.clone();
     let mut staged_catalog = catalog.clone();
@@ -363,6 +387,7 @@ pub(crate) fn stage_table_manifest_for_branch(
         service,
         reader_service,
         &mut staged_catalog,
+        budget,
     )?;
     Ok(LifecycleTableManifestRecoveryStage::new(
         staged_branch,
@@ -390,6 +415,7 @@ pub(crate) fn recover_table_manifest_for_branch(
     service: &TableManifestService<'_>,
     reader_service: &TableObjectReaderService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleTableManifestRecoveryOutcome> {
     let Some(manifest) = service
         .load_current(branch.branch_id())
@@ -406,7 +432,7 @@ pub(crate) fn recover_table_manifest_for_branch(
                     source,
                 )
             })?;
-    let request = recovery_request_from_manifest(&manifest, reader_service, catalog)?;
+    let request = recovery_request_from_manifest(&manifest, reader_service, catalog, budget)?;
     let install_outcome = branch
         .install_table_manifest_recovery(request)
         .map_err(branch_error)?;
@@ -422,17 +448,19 @@ fn recovery_request_from_manifest(
     manifest: &TableManifest,
     reader_service: &TableObjectReaderService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<BranchTableManifestRecoveryRequest> {
     let owned_levels = recover_manifest_levels(
         manifest.branch_id(),
         manifest.levels(),
         reader_service,
         catalog,
+        budget,
     )?;
     let inherited_layers = manifest
         .inherited_layers()
         .iter()
-        .map(|layer| recover_manifest_inherited_layer(layer, reader_service, catalog))
+        .map(|layer| recover_manifest_inherited_layer(layer, reader_service, catalog, budget))
         .collect::<LifecycleResult<Vec<_>>>()?;
     let request = BranchTableManifestRecoveryRequest::new(
         manifest.branch_id(),
@@ -455,12 +483,14 @@ fn recover_manifest_inherited_layer(
     layer: &TableManifestInheritedLayer,
     reader_service: &TableObjectReaderService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<BranchInheritedLayer> {
     let owned_levels = recover_manifest_levels(
         layer.source_branch_id(),
         layer.levels(),
         reader_service,
         catalog,
+        budget,
     )?;
     let table_count = owned_levels.iter().map(Vec::len).sum();
     BranchInheritedLayer::new(
@@ -480,6 +510,7 @@ fn recover_manifest_levels(
     levels: &[TableManifestLevel],
     reader_service: &TableObjectReaderService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<Vec<BranchOwnedTable>>> {
     let mut owned_levels = Vec::<Vec<BranchOwnedTable>>::new();
     for level in levels {
@@ -491,7 +522,14 @@ fn recover_manifest_levels(
             .tables()
             .iter()
             .map(|table| {
-                recover_manifest_table(branch_id, level.level(), table, reader_service, catalog)
+                recover_manifest_table(
+                    branch_id,
+                    level.level(),
+                    table,
+                    reader_service,
+                    catalog,
+                    budget,
+                )
             })
             .collect::<LifecycleResult<Vec<_>>>()?;
         owned_levels[level_index] = tables;
@@ -505,8 +543,16 @@ fn recover_manifest_table(
     table: &TableManifestTableRef,
     reader_service: &TableObjectReaderService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<BranchOwnedTable> {
     let object_facts = TableObjectFacts::from_table_manifest_ref(table);
+    if let Some(budget) = budget {
+        require_table_reader_budget(
+            budget,
+            object_facts.byte_count(),
+            "table manifest recovery reader exceeds storage budget",
+        )?;
+    }
     let reader = reader_service
         .open_reader(
             table.table_identity().clone(),

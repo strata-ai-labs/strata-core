@@ -6,17 +6,19 @@ use super::{
         compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
         materialize_cache_branch,
     },
-    flush::{flush_cache_branch, flush_request_from_maintenance_task},
-    validate_backend_capabilities_for_open, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus,
-    ClosePhase, FlushFrozenOutcome, FlushFrozenRequest, LifecycleCapabilityOutcome,
-    LifecycleCloseFact, LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
-    LifecycleMaintenanceExecutor, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
-    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    flush::{flush_cache_branch_with_budget, flush_request_from_maintenance_task},
+    require_maintenance_enqueue_budget, require_rotate_budget, snapshot_with_runtime_usage,
+    validate_backend_capabilities_for_open, BudgetedCommitBranch, CloseOutcome,
+    CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase, FlushFrozenOutcome, FlushFrozenRequest,
+    LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleError, LifecycleMaintenanceExecutor,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressure, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
     MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
-    MaintenanceTaskRunner, RecoveryHealth, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
-    StorageOpenPlan,
+    MaintenanceTaskRunner, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
+    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
@@ -50,6 +52,7 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
+    budget: StorageBudgetLedger,
     // The CloseOutcome from the first successful close is preserved here so
     // subsequent idempotent close calls return the *prior final facts*
     // (cancel count, stats, close fact) instead of fabricating fresh
@@ -119,6 +122,7 @@ impl<S> LifecycleCacheRuntime<S> {
             .register_active(request.initial_branch_id(), request.branch_generation())
             .map_err(commit_error)?;
         commit_config.validate().map_err(commit_error)?;
+        let budget = StorageBudgetLedger::new(request.plan.lifecycle_config().storage_budget())?;
         let open_outcome = StorageOpenOutcome::new(
             StorageMode::Cache,
             StorageOpenDisposition::Created,
@@ -127,7 +131,8 @@ impl<S> LifecycleCacheRuntime<S> {
             true,
         )?
         .with_backend_capabilities(capability_outcome.capabilities())
-        .with_stats(LifecycleStats::new(1, 0, 0, 0, 0));
+        .with_stats(LifecycleStats::new(1, 0, 0, 0, 0))
+        .with_budget_snapshot(budget.snapshot());
         let max_maintenance_queue_depth = request
             .plan
             .lifecycle_config()
@@ -152,6 +157,7 @@ impl<S> LifecycleCacheRuntime<S> {
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            budget,
             last_close_outcome: None,
         })
     }
@@ -166,6 +172,10 @@ impl<S> LifecycleCacheRuntime<S> {
 
     pub(crate) const fn open_outcome(&self) -> &StorageOpenOutcome {
         &self.open_outcome
+    }
+
+    pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
+        snapshot_with_runtime_usage(&self.budget, &self.branch, self.maintenance.status())
     }
 
     pub(crate) const fn capability_outcome(&self) -> &LifecycleCapabilityOutcome {
@@ -193,6 +203,7 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        require_rotate_budget(&self.budget, &self.branch)?;
         Ok(self.branch.rotate_active())
     }
 
@@ -201,7 +212,7 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        flush_cache_branch(&mut self.branch, request)
+        flush_cache_branch_with_budget(&mut self.branch, request, Some(&self.budget))
     }
 
     #[allow(
@@ -264,9 +275,12 @@ impl<S> LifecycleCacheRuntime<S> {
                 reason: "volatile runtime does not support durable maintenance task",
             });
         }
+        let budget = self.budget.clone();
+        let maintenance_status = self.maintenance.status();
         let branch = &mut self.branch;
         self.maintenance
             .enqueue_with_binding(self.state, request, |request| {
+                require_maintenance_enqueue_budget(&budget, maintenance_status)?;
                 bind_materialization_task_for_enqueue(branch, request)
             })
     }
@@ -288,7 +302,10 @@ impl<S> LifecycleCacheRuntime<S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = &mut self.branch;
-        let mut runner = CacheFlushMaintenanceRunner { branch };
+        let mut runner = CacheFlushMaintenanceRunner {
+            branch,
+            budget: &self.budget,
+        };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Flush
         })
@@ -417,7 +434,10 @@ impl<S> LifecycleCacheRuntime<S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = &mut self.branch;
-        let mut runner = CacheCloseRunner { branch };
+        let mut runner = CacheCloseRunner {
+            branch,
+            budget: &self.budget,
+        };
         let outcome = maintenance.drain_for_close(state, &mut runner)?;
         Ok(outcome.drained_tasks())
     }
@@ -425,6 +445,7 @@ impl<S> LifecycleCacheRuntime<S> {
 
 struct CacheCloseRunner<'a> {
     branch: &'a mut BranchLocalState,
+    budget: &'a StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
@@ -432,7 +453,10 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
         match task.kind() {
             MaintenanceTaskKind::Flush => {
                 let request = flush_request_from_maintenance_task(task)?;
-                Ok(flush_cache_branch(self.branch, &request)?.maintenance_outcome())
+                Ok(
+                    flush_cache_branch_with_budget(self.branch, &request, Some(self.budget))?
+                        .maintenance_outcome(),
+                )
             }
             MaintenanceTaskKind::Compaction => {
                 let request = compaction_request_from_maintenance_task(task)?;
@@ -464,12 +488,16 @@ const fn cache_unsupported_drain_reason(_kind: MaintenanceTaskKind) -> &'static 
 
 struct CacheFlushMaintenanceRunner<'a> {
     branch: &'a mut BranchLocalState,
+    budget: &'a StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for CacheFlushMaintenanceRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = flush_request_from_maintenance_task(task)?;
-        Ok(flush_cache_branch(self.branch, &request)?.maintenance_outcome())
+        Ok(
+            flush_cache_branch_with_budget(self.branch, &request, Some(self.budget))?
+                .maintenance_outcome(),
+        )
     }
 }
 
@@ -517,12 +545,13 @@ where
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
         require_admitted(self.state, LifecycleOperationKind::Commit)?;
+        let mut budgeted_branch = BudgetedCommitBranch::new(&mut self.branch, &self.budget);
         CommitCacheRuntime::new(
             &self.commit_config,
             &self.registry,
             &self.guard_set,
             &mut self.allocator,
-            &mut self.branch,
+            &mut budgeted_branch,
             &mut self.visible,
             &self.durable_gate,
         )

@@ -2,11 +2,11 @@
 
 use super::checkpoint::branch_durable_rows_cover_interval;
 use super::{
-    preflight_table_manifest_with_checkpoint, require_table_manifest_covers_checkpoint_rows,
-    LifecycleDurableLocalShell, LifecycleError, LifecycleLowerLayer, LifecycleResult,
-    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
-    RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth, RecoveryStrictness,
-    StorageOpenPlan,
+    preflight_table_manifest_with_checkpoint, require_generated_artifact_budget,
+    require_table_manifest_covers_checkpoint_rows, LifecycleDurableLocalShell, LifecycleError,
+    LifecycleLowerLayer, LifecycleResult, LifecycleTableManifestRecoveryOutcome,
+    LifecycleTableManifestRecoveryStage, RecoveryDegradationClass, RecoveryFault,
+    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageBudgetLedger, StorageOpenPlan,
 };
 use crate::branch::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
@@ -265,6 +265,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 reason: "snapshot section count exceeds lifecycle recovery limit",
             });
         }
+        require_checkpoint_decode_budget(self.shell.budget(), container.sections())?;
         let rows = decode_checkpoint_rows(container.sections())?;
         validate_checkpoint_rows(watermark, self.shell.branch_state().branch_id(), &rows)?;
         let row_count = rows.len();
@@ -416,6 +417,47 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             Err(source) => Err(quarantine_error(source)),
         }
     }
+}
+
+fn require_checkpoint_decode_budget(
+    budget: &StorageBudgetLedger,
+    sections: &[SnapshotSection],
+) -> LifecycleResult<()> {
+    let bytes = sections.iter().try_fold(0_u64, |total, section| {
+        let payload_len = u64::try_from(section.payload().len()).map_err(|_| {
+            LifecycleError::StorageBudgetExceeded {
+                pool: super::StorageBudgetPool::GeneratedArtifact,
+                requested_bytes: u64::MAX,
+                used_bytes: total,
+                limit_bytes: budget
+                    .budget()
+                    .pool_limit_bytes(super::StorageBudgetPool::GeneratedArtifact),
+                requested_count: 0,
+                used_count: 0,
+                limit_count: None,
+                reason: "checkpoint recovery decode byte count overflowed",
+            }
+        })?;
+        total
+            .checked_add(payload_len)
+            .ok_or(LifecycleError::StorageBudgetExceeded {
+                pool: super::StorageBudgetPool::GeneratedArtifact,
+                requested_bytes: payload_len,
+                used_bytes: total,
+                limit_bytes: budget
+                    .budget()
+                    .pool_limit_bytes(super::StorageBudgetPool::GeneratedArtifact),
+                requested_count: 0,
+                used_count: 0,
+                limit_count: None,
+                reason: "checkpoint recovery decode byte count overflowed",
+            })
+    })?;
+    require_generated_artifact_budget(
+        budget,
+        bytes,
+        "checkpoint recovery decode exceeds storage budget",
+    )
 }
 
 impl LifecycleRecoveryRequest {

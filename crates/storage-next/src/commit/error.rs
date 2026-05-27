@@ -124,6 +124,7 @@ pub(crate) enum CommitRuntimeError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommitLowerLayer {
     BranchRuntime,
+    StorageBudget,
     WalFormat,
     WalService,
 }
@@ -692,6 +693,7 @@ impl fmt::Display for CommitLowerLayer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BranchRuntime => formatter.write_str("branch runtime"),
+            Self::StorageBudget => formatter.write_str("storage budget"),
             Self::WalFormat => formatter.write_str("wal format"),
             Self::WalService => formatter.write_str("wal service"),
         }

@@ -14,10 +14,11 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    maintenance_ready_for_recovery_health, LifecycleDurableTableCatalog, LifecycleError,
-    LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
+    maintenance_ready_for_recovery_health, BudgetedCommitBranch, LifecycleDurableTableCatalog,
+    LifecycleError, LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleTransitionTrigger, RecoveryHealth, StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    LifecycleTransitionTrigger, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
+    StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -37,6 +38,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) durable_gate: CommitUnresolvedDurableGate,
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
     pub(super) table_catalog: LifecycleDurableTableCatalog,
+    pub(super) budget: StorageBudgetLedger,
     pub(super) recovered_checkpoint_timestamp_max: Option<Timestamp>,
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
@@ -88,6 +90,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                 )
                 .with_recovered_max_commit_version(Some(report.recovered_visible_version()))
                 .with_durable_recovery_facts(recovery, &report)
+                .with_budget_snapshot(self.budget.snapshot())
                 .with_stats(LifecycleStats::new(
                     1,
                     recovery.health().fault_count(),
@@ -133,6 +136,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
             table_catalog: self.table_catalog,
+            budget: self.budget,
             recovered_checkpoint_timestamp_max: recovery.checkpoint().timestamp_max(),
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
@@ -244,6 +248,18 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.open_outcome
     }
 
+    #[allow(
+        dead_code,
+        reason = "durable budget facts are consumed by integration and closeout slices"
+    )]
+    pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
+        crate::lifecycle::snapshot_with_runtime_usage(
+            &self.budget,
+            &self.branch,
+            self.maintenance.status(),
+        )
+    }
+
     pub(crate) const fn bootstrap_report(&self) -> &LifecycleRecoveryBootstrapReport {
         &self.bootstrap_report
     }
@@ -311,12 +327,13 @@ where
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
         require_admitted(self.state, LifecycleOperationKind::Commit)?;
+        let mut budgeted_branch = BudgetedCommitBranch::new(&mut self.branch, &self.budget);
         CommitDurableRuntime::new(
             &self.commit_config,
             &self.registry,
             &self.guard_set,
             &mut self.allocator,
-            &mut self.branch,
+            &mut budgeted_branch,
             &mut self.visible,
             &mut self.services.wal,
             &self.durable_gate,

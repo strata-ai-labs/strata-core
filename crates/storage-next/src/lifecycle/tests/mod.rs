@@ -4,6 +4,8 @@ use std::error::Error;
 use std::fmt;
 use strata_core_next::CommitVersion;
 
+mod budget;
+mod budget_runtime;
 mod cache;
 mod capability;
 mod checkpoint;

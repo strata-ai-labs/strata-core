@@ -1,9 +1,10 @@
 //! Checkpoint, flush-watermark, and WAL-retention orchestration.
 
 use super::{
-    telemetry_health_debt, LifecycleDurableLocalServices, LifecycleError, LifecycleLowerLayer,
-    LifecycleResult, LifecycleStats, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskKind, MaintenanceTaskScope, RecoveryDegradationClass, RecoveryHealth,
+    require_generated_artifact_budget, telemetry_health_debt, LifecycleDurableLocalServices,
+    LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskScope,
+    RecoveryDegradationClass, RecoveryHealth, StorageBudgetLedger,
 };
 use crate::branch::BranchLocalState;
 use crate::commit::CommitBranchGuardSet;
@@ -1343,6 +1344,24 @@ pub(crate) fn checkpoint_durable_branch(
     read_visible_version: impl FnOnce() -> CommitVersion,
     request: &LifecycleCheckpointRequest,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
+    checkpoint_durable_branch_with_budget(
+        branch,
+        services,
+        guard_set,
+        read_visible_version,
+        request,
+        None,
+    )
+}
+
+pub(crate) fn checkpoint_durable_branch_with_budget(
+    branch: &BranchLocalState,
+    services: &LifecycleDurableLocalServices<'_>,
+    guard_set: &CommitBranchGuardSet,
+    read_visible_version: impl FnOnce() -> CommitVersion,
+    request: &LifecycleCheckpointRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
     if branch.branch_id() != request.branch_id() {
         return Err(LifecycleError::MaintenanceTaskFailed {
@@ -1370,6 +1389,7 @@ pub(crate) fn checkpoint_durable_branch(
     let mut sections = Vec::with_capacity(1 + request.extra_sections().len());
     sections.push(encode_checkpoint_row_section(&rows).map_err(format_error)?);
     sections.extend(request.extra_sections().iter().cloned());
+    require_checkpoint_artifact_budget(budget, &sections)?;
     let active_wal_segment = services.wal().active_segment_id();
     drop(quiesce);
 
@@ -1412,6 +1432,28 @@ pub(crate) fn checkpoint_durable_branch(
     outcome = run_checkpoint_follow_ups(services, visible_version, request, outcome)?;
 
     Ok(outcome)
+}
+
+fn require_checkpoint_artifact_budget(
+    budget: Option<&StorageBudgetLedger>,
+    sections: &[SnapshotSection],
+) -> LifecycleResult<()> {
+    let Some(budget) = budget else {
+        return Ok(());
+    };
+    let bytes = sections.iter().try_fold(0_u64, |sum, section| {
+        let payload_len = u64::try_from(section.payload().len()).map_err(|_| {
+            LifecycleError::CheckpointPublicationFailed {
+                reason: "checkpoint section length must fit in u64",
+            }
+        })?;
+        sum.checked_add(payload_len)
+            .and_then(|sum| sum.checked_add(1))
+            .ok_or(LifecycleError::CheckpointPublicationFailed {
+                reason: "checkpoint artifact size overflowed",
+            })
+    })?;
+    require_generated_artifact_budget(budget, bytes, "checkpoint artifact exceeds storage budget")
 }
 
 fn run_checkpoint_follow_ups(

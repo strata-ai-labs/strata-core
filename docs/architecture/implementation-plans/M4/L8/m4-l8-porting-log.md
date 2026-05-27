@@ -436,6 +436,255 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 git diff --check
 ```
 
+## L8W Memory And Cache Budget Enforcement
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/budget.rs`
+- `crates/storage-next/src/lifecycle/config.rs`
+- `crates/storage-next/src/lifecycle/outcome.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/durable/close.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/maintenance.rs`
+- `crates/storage-next/src/lifecycle/checkpoint.rs`
+- `crates/storage-next/src/lifecycle/recovery.rs`
+- `crates/storage-next/src/lifecycle/tests/budget.rs`
+- `crates/storage-next/src/lifecycle/tests/budget_runtime.rs`
+- `crates/storage-next/src/lifecycle/tests/recovery.rs`
+- `crates/storage-next/src/testkit/lifecycle/budget.rs`
+- `crates/storage-next/tests/lifecycle_properties.rs`
+- `crates/storage-next/src/table/tests/cache.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Implementation Notes
+
+- Added explicit `StorageRuntimeBudget` limits for block cache, table reader,
+  active mutable state, frozen mutable state, maintenance queue, generated
+  artifacts, and manifest/catalog metadata.
+- Added a database-local `StorageBudgetLedger` with RAII reservations, stable
+  pool names, raw usage facts, pressure facts, and typed
+  `StorageBudgetExceeded` errors.
+- Threaded budget configuration through `LifecycleConfig`, selected budget
+  facts through `StorageOpenOutcome`, and live runtime usage through cache and
+  durable runtime snapshot helpers.
+- Wired cache/durable commit admission to active mutable bytes, maintenance
+  rotation to frozen byte/count limits, and maintenance enqueue admission to
+  queue byte/count limits with coalescing before budget checks.
+- Counted active maintenance tasks in queue budget snapshots and follow-on
+  enqueue admission, so a running task still consumes its reservation.
+- Added generated-artifact admission to checkpoint snapshot construction before
+  snapshot publication; durable maintenance and close checkpoint paths pass the
+  runtime budget through the same helper.
+- Wired flush, durable rewrite publication, and table-manifest publication
+  through generated-artifact, reader, and manifest-catalog budget checks.
+- Wired checkpoint recovery decode through the generated-artifact budget before
+  row-section decode/install so oversized checkpoint payloads fail closed before
+  allocating decoded rows.
+- Bound table cache configuration to the explicit block-cache budget; zero
+  block-cache budget maps to disabled cache rather than a hidden default.
+- Added a generated lifecycle budget contract that exercises budget accept and
+  reject routes, reservation release on success and failure, cache eviction,
+  reader rejection, active-row rejection, artifact deferral, maintenance queue
+  rejection, low-memory smoke, and database-local isolation from input-derived
+  scripts.
+- Added source guards preventing host-memory probing, hidden process-global
+  cache state, product resource-policy imports, object-cleanup imports, and
+  primitive/StrataHub dependencies in the budget module.
+- Follow-up review fixes:
+  - Recovery now admits manifest-listed readers through the table reader
+    budget. `recover_manifest_table` calls `require_table_reader_budget`
+    against the per-table object byte count before invoking
+    `reader_service.open_reader`, matching the admission rule already
+    applied in flush, compaction, materialization, and rewrite
+    publication. The budget threads through
+    `stage_table_manifest_for_branch` →
+    `recover_table_manifest_for_branch` →
+    `recovery_request_from_manifest` →
+    `recover_manifest_levels` / `recover_manifest_inherited_layer` →
+    `recover_manifest_table`. Prior to this fix, a recovered manifest
+    referencing a table larger than `table_reader_bytes` would silently
+    open the reader on a low-memory profile.
+  - Documented the admission-check vs RAII reservation split in the
+    `budget` module header: V1 production paths use admission checks for
+    `TableReader`, `GeneratedArtifact`, and `ManifestCatalog`, while the
+    ledger still exposes RAII reservations for tests and future
+    block-range reader work. `ActiveMutable`, `FrozenMutable`, and
+    `MaintenanceQueue` usage continues to derive from runtime state.
+
+### Preserved As Storage Vocabulary
+
+- Budget pressure is reported as raw storage usage and severity facts:
+  `Normal`, `Evicting`, `DeferOptionalMaintenance`,
+  `RejectOptionalWork`, and `RejectMutatingAdmission`.
+- Budget rejection uses the stable code
+  `resource_exhausted.lifecycle.storage_budget` and preserves pool,
+  requested bytes/count, used bytes/count, limits, and reason.
+- Low-memory profile values are explicit test fixtures. Storage does not
+  inspect host RAM, CPU count, device model, environment variables, or OS
+  probes to infer a profile.
+
+### Deferred Within The Budget Workstream
+
+- Lazy object-backed table reads and block/range reader reservations remain in
+  L8X.
+- Pinned-cache accounting remains deferred because storage-next does not yet
+  expose a pin/unpin cache contract. The shipped tests cover zero-capacity,
+  oversized uncached reads, bounded eviction, shrink pressure, stats, and
+  database-local identity isolation.
+- Full lazy-reader budget scripts remain with the reader/cache slice. The
+  shipped generated budget contract is intentionally limited to current
+  lifecycle/table-cache budget APIs.
+- Public profile selection and user-facing pressure/diagnostic rendering
+  remain L9 boundary work.
+
+### Tests Added
+
+- `storage_budget_accepts_explicit_low_memory_profile`
+- `storage_budget_accepts_zero_optional_block_cache`
+- `storage_budget_rejects_zero_mandatory_active_pool`
+- `storage_budget_rejects_total_smaller_than_required_pools`
+- `storage_budget_rejects_overflowing_pool_sum`
+- `storage_budget_reports_all_pool_limits`
+- `budget_reservation_acquire_and_release`
+- `budget_reservation_exact_fit_succeeds`
+- `budget_reservation_explicit_release_clears_usage`
+- `budget_reservation_failed_acquire_does_not_change_usage`
+- `budget_reservation_nested_failure_releases_outer`
+- `budget_reservation_overflow_rejects`
+- `budget_reservation_rejects_one_byte_over_limit`
+- `budget_reservation_drop_releases_usage`
+- `budget_ledger_is_database_local`
+- `budget_reservation_rejects_one_byte_over_limit_without_usage_change`
+- `budget_stats_are_deterministic`
+- `budget_pressure_reports_pool_usage_and_limit`
+- `cache_open_reports_selected_storage_budget`
+- `storage_budget_rejects_reader_count_zero_when_readers_required`
+- `storage_budget_rejects_frozen_table_count_zero_when_flush_enabled`
+- `storage_budget_profile_does_not_probe_host_memory`
+- `low_memory_profile_does_not_apply_hidden_minimum_cache`
+- `reader_open_exact_budget_succeeds`
+- `reader_count_limit_rejects_extra_reader`
+- `reader_open_over_budget_rejects_before_decode`
+- `reader_open_failure_releases_reservation`
+- `reader_drop_releases_reservation`
+- `reader_budget_counts_concurrent_readers`
+- `reader_budget_error_names_table_identity`
+- `reader_budget_cache_mode_and_durable_mode_match`
+- `active_append_under_budget_succeeds`
+- `active_append_over_budget_rejects_before_mutation`
+- `active_budget_reports_approximate_bytes_after_commit`
+- `rotate_active_under_frozen_budget_succeeds`
+- `rotate_active_over_frozen_count_budget_rejects_before_state_change`
+- `rotate_active_over_frozen_byte_budget_rejects_before_state_change`
+- `flush_releases_frozen_budget_after_install`
+- `flush_failure_keeps_frozen_budget_reserved`
+- `maintenance_queue_count_limit_rejects_extra_task`
+- `maintenance_queue_byte_limit_rejects_large_task`
+- `maintenance_coalescing_happens_before_budget_reservation`
+- `maintenance_cancel_releases_reservation`
+- `maintenance_close_drain_releases_reservations`
+- `maintenance_active_task_holds_reservation`
+- `maintenance_task_failure_releases_reservation`
+- `maintenance_optional_task_deferred_under_pressure`
+- `maintenance_mandatory_close_task_admitted_under_optional_pressure`
+- `maintenance_budget_pressure_added_to_outcome`
+- `cache_flush_generated_artifact_budget_rejects_before_install`
+- `cache_flush_table_reader_budget_rejects_before_install`
+- `checkpoint_encode_over_budget_rejects_before_snapshot_publish`
+- `flush_artifact_exact_budget_succeeds`
+- `compaction_artifact_over_budget_defers_before_publish`
+- `materialization_artifact_over_budget_defers_before_publish`
+- `recovery_decode_over_budget_fails_closed`
+- `partial_artifact_failure_releases_budget`
+- `artifact_actual_size_reconciles_with_estimate`
+- `artifact_budget_reports_output_bytes`
+- `artifact_budget_does_not_truncate_wal_or_delete_objects`
+- `table_manifest_publication_checks_manifest_catalog_budget_before_publish`
+- `metadata_budget_stats_report_catalog_bytes`
+- `recovery_mandatory_metadata_budget_failure_is_typed`
+- `quarantine_inventory_over_budget_rejects_before_vector_allocation`
+- `retention_graph_over_budget_defers_optional_reclaim`
+- `metadata_pressure_blocks_optional_maintenance_first`
+- `corrupt_metadata_does_not_allocate_unbounded_memory`
+- `low_memory_profile_opens_cache_runtime`
+- `low_memory_profile_opens_durable_runtime_on_test_backend`
+- `low_memory_profile_opens_durable_runtime_on_memory_backend`
+- `low_memory_profile_allows_small_commit_read_flush_checkpoint_close`
+- `low_memory_profile_defers_large_compaction_artifact`
+- `low_memory_profile_zero_cache_still_reads_uncached`
+- `low_memory_profile_reports_pressure_without_product_policy`
+- `low_memory_profile_does_not_auto_detect_host_memory`
+- `reader_budget_recovery_decode_rejects_large_table`
+- `reader_budget_fails_closed_for_large_whole_object_reads_until_lazy_reads_ship`
+- `low_memory_profile_rejects_large_whole_table_reader_until_lazy_reads`
+- `active_append_failure_does_not_advance_commit_visibility`
+- `cache_and_durable_active_budget_behavior_match`
+- `manifest_decode_rejects_large_section_count_before_allocation`
+- Generated/property test:
+  `lifecycle_property_harness_runs_budget_contract`.
+- Table cache tests:
+  `zero_capacity_table_cache_does_not_store`,
+  `small_cache_serves_oversized_block_uncached`,
+  `table_cache_respects_capacity_after_insert`,
+  `table_cache_eviction_effort_is_bounded`,
+  `table_cache_shrink_records_pressure`,
+  `table_cache_stats_include_hits_misses_entries_bytes`,
+  `table_cache_keys_use_table_identity_not_path`,
+  `two_runtime_caches_are_isolated`.
+- Source guards:
+  `memory_budget_does_not_probe_host_memory`,
+  `memory_budget_does_not_use_process_global_cache`,
+  `memory_budget_does_not_probe_host_memory_or_use_global_cache`,
+  `memory_budget_does_not_import_product_resource_policy`,
+  `memory_budget_does_not_import_raw_io`,
+  `memory_budget_does_not_import_backend_delete_or_quarantine`,
+  `memory_budget_does_not_import_object_cleanup_boundaries`,
+  `memory_budget_does_not_import_stratahub`,
+  `memory_budget_does_not_import_primitive_modules`,
+  `memory_budget_code_and_fixture_names_do_not_use_milestone_labels`.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| W1: Clamp zero cache to default capacity | `crates/storage-next/src/lifecycle/budget.rs` | Return enabled cache from zero block-cache budget | `storage_budget_accepts_zero_optional_block_cache` and `zero_capacity_table_cache_does_not_store` |
+| W2: Use process-global cache or budget state | `crates/storage-next/src/lifecycle/budget.rs` / table cache | Replace database-local state with static/global state | `budget_ledger_is_database_local`, `two_runtime_caches_are_isolated`, or source guard |
+| W3: Open reader before reserving bytes | `crates/storage-next/src/lifecycle/flush.rs` / `rewrite_publication.rs` | Skip `require_table_reader_budget` before opening generated tables | `reader_open_over_budget_rejects_before_decode`, `cache_flush_table_reader_budget_rejects_before_install`, or `reader_budget_cache_mode_and_durable_mode_match` |
+| W4: Leak reservation on publish failure | `crates/storage-next/src/lifecycle/budget.rs` / `flush.rs` | Remove release or mutate frozen state on failed publication | `budget_reservation_nested_failure_releases_outer`, `partial_artifact_failure_releases_budget`, `maintenance_task_failure_releases_reservation`, and `flush_failure_keeps_frozen_budget_reserved` |
+| W5: Ignore frozen byte budget on rotate | `crates/storage-next/src/lifecycle/budget.rs` | Do not pass active bytes into projected frozen usage | `rotate_active_over_frozen_byte_budget_rejects_before_state_change` |
+| W6: Allocate duplicate queue reservation before coalescing | `crates/storage-next/src/lifecycle/cache.rs` / `durable/maintenance.rs` | Run budget check before coalesce detection | `maintenance_coalescing_happens_before_budget_reservation` |
+| W7: Decode manifest count before budget check | `crates/storage-next/src/lifecycle/table_manifest.rs` / `recovery.rs` | Skip manifest-catalog/generated-artifact admission before publish/recover catalog growth | `table_manifest_publication_checks_manifest_catalog_budget_before_publish`, `recovery_decode_over_budget_fails_closed`, and `corrupt_metadata_does_not_allocate_unbounded_memory` |
+| W8: Report product write-stall wording | `crates/storage-next/src/lifecycle/budget.rs` | Import product policy/resource vocabulary | `memory_budget_does_not_import_product_resource_policy` |
+| W9: Probe host memory | `crates/storage-next/src/lifecycle/budget.rs` | Import `std::env`, `sysinfo`, or `/proc` helpers | `memory_budget_does_not_probe_host_memory` |
+| W10: Let generated usage exceed limit | `crates/storage-next/src/lifecycle/flush.rs` / `checkpoint.rs` / `rewrite_publication.rs` | Skip generated-artifact admission before publication | `cache_flush_generated_artifact_budget_rejects_before_install`, `checkpoint_encode_over_budget_rejects_before_snapshot_publish`, `compaction_artifact_over_budget_defers_before_publish`, and `materialization_artifact_over_budget_defers_before_publish` |
+
+### Verification
+
+Commands run for the implementation pass (all passed):
+
+```bash
+cargo fmt --package strata-storage-next --check
+cargo test -p strata-storage-next --locked --lib table::tests::cache
+cargo test -p strata-storage-next --locked --lib table::tests::reader
+cargo test -p strata-storage-next --locked --lib branch::tests
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::budget
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::budget_runtime
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::cache
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::durable
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::maintenance
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::flush
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::checkpoint
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```
+
 ## L8U - Durable Rewrite Publication
 
 Status: runtime implementation and test suite landed

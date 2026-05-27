@@ -556,6 +556,169 @@ fn recovery_rejects_table_object_fact_and_bounds_mismatches() {
 }
 
 #[test]
+fn reader_budget_recovery_decode_rejects_large_table() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x6a);
+    let row = put_row(branch, 31, b"recovery-reader", b"large-value");
+    let table =
+        publish_manifest_table(&backend, branch, BranchLevel::ZERO, "reader-budget", &[row]);
+    publish_table_manifest(
+        &backend,
+        &TableManifest::new(
+            branch,
+            None,
+            13,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest"),
+    );
+    let table_bytes = table.reference.facts().byte_count();
+    assert!(table_bytes > 1);
+    let mut parts = budget_parts_for_recovery();
+    parts.table_reader_bytes = table_bytes - 1;
+    parts.total_bytes = pool_sum(parts);
+    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+
+    let mut shell = assemble_shell_with_budget(&backend, branch, budget);
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("table reader budget rejects");
+
+    assert!(
+        matches!(
+            error,
+            LifecycleError::StorageBudgetExceeded {
+                pool: StorageBudgetPool::TableReader,
+                ..
+            }
+        ),
+        "expected table reader budget error, got {error:?}",
+    );
+    assert_eq!(error.code(), "resource_exhausted.lifecycle.storage_budget");
+    assert!(shell.branch_state().is_empty());
+    assert!(backend.object_bytes(table.reference.object()).is_some());
+}
+
+#[test]
+fn reader_budget_fails_closed_for_large_whole_object_reads_until_lazy_reads_ship() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x6b);
+    let row = put_row(branch, 32, b"whole-object-defer", b"value");
+    let table = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "whole-object-defer",
+        &[row],
+    );
+    publish_table_manifest(
+        &backend,
+        &TableManifest::new(
+            branch,
+            None,
+            14,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest"),
+    );
+    let table_bytes = table.reference.facts().byte_count();
+    let mut parts = budget_parts_for_recovery();
+    parts.table_reader_bytes = table_bytes.saturating_sub(1).max(1);
+    parts.total_bytes = pool_sum(parts);
+    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+
+    let mut shell = assemble_shell_with_budget(&backend, branch, budget);
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("whole-object reader fails closed until lazy reads exist");
+
+    match error {
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::TableReader,
+            requested_bytes,
+            limit_bytes,
+            ..
+        } => {
+            assert_eq!(requested_bytes, table_bytes);
+            assert!(limit_bytes < table_bytes);
+        }
+        other => panic!("expected fail-closed table reader budget error, got {other:?}"),
+    }
+    assert!(shell.branch_state().is_empty());
+}
+
+#[test]
+fn low_memory_profile_rejects_large_whole_table_reader_until_lazy_reads() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x6c);
+    let large_value = vec![0xab_u8; 64 * 1024];
+    let row = StorageRow::put(
+        physical_key(branch, b"low-memory-reader"),
+        CommitVersion::new(33),
+        Timestamp::from_micros(33 * 100),
+        Timestamp::EPOCH,
+        large_value,
+    );
+    let table = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "low-memory-reader",
+        &[row],
+    );
+    publish_table_manifest(
+        &backend,
+        &TableManifest::new(
+            branch,
+            None,
+            15,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest"),
+    );
+    let budget = StorageRuntimeBudget::low_memory_test_profile();
+    assert!(
+        table.reference.facts().byte_count()
+            > budget.pool_limit_bytes(StorageBudgetPool::TableReader)
+    );
+
+    let mut shell = assemble_shell_with_budget(&backend, branch, budget);
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("low-memory profile rejects large reader");
+
+    assert!(matches!(
+        error,
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::TableReader,
+            ..
+        }
+    ));
+    assert!(shell.branch_state().is_empty());
+}
+
+#[test]
 fn table_manifest_recovery_does_not_change_wal_replay_start() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x2d);
@@ -1221,6 +1384,63 @@ fn assemble_shell(
         CommitManualTimestampSource::new(Timestamp::from_micros(8_000)),
     )
     .expect("durable shell")
+}
+
+fn assemble_shell_with_budget(
+    backend: &ManifestRecoveryBackend,
+    branch: BranchId,
+    budget: StorageRuntimeBudget,
+) -> LifecycleDurableLocalShell<'_, CommitManualTimestampSource> {
+    let lifecycle_config = LifecycleConfig::default()
+        .with_storage_budget(budget)
+        .expect("storage budget config");
+    LifecycleDurableLocalShell::assemble(
+        LifecycleDurableLocalOpenRequest::new(
+            StorageOpenPlan::new(
+                StorageMode::DurableLocalStandard,
+                LifecycleCodecId::identity(),
+                RecoveryStrictness::Strict,
+                lifecycle_config,
+            )
+            .expect("open plan"),
+            DATABASE_ID,
+            branch,
+            CommitBranchGeneration::new(1).expect("generation"),
+            BranchRuntimeConfig::default(),
+            CommitRuntimeConfig::default(),
+            WalServiceConfig::default(),
+        )
+        .expect("open request"),
+        backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(8_000)),
+    )
+    .expect("durable shell")
+}
+
+fn budget_parts_for_recovery() -> StorageRuntimeBudgetParts {
+    StorageRuntimeBudgetParts {
+        block_cache_bytes: 0,
+        table_reader_bytes: 8 * 1024,
+        active_mutable_bytes: 8 * 1024,
+        frozen_mutable_bytes: 8 * 1024,
+        maintenance_queue_bytes: 1024,
+        generated_artifact_bytes: 8 * 1024,
+        manifest_catalog_bytes: 8 * 1024,
+        max_open_readers: 4,
+        max_frozen_tables: 4,
+        max_pending_maintenance_tasks: 4,
+        ..StorageRuntimeBudgetParts::default()
+    }
+}
+
+fn pool_sum(parts: StorageRuntimeBudgetParts) -> u64 {
+    parts.block_cache_bytes
+        + parts.table_reader_bytes
+        + parts.active_mutable_bytes
+        + parts.frozen_mutable_bytes
+        + parts.maintenance_queue_bytes
+        + parts.generated_artifact_bytes
+        + parts.manifest_catalog_bytes
 }
 
 fn publish_manifest_table(

@@ -1,6 +1,6 @@
 //! Lifecycle error vocabulary.
 
-use super::{ClosePhase, StorageMode};
+use super::{ClosePhase, StorageBudgetPool, StorageMode};
 use crate::backend::BackendCapability;
 use std::error::Error;
 use std::fmt;
@@ -35,6 +35,16 @@ pub(crate) enum LifecycleError {
         reason: &'static str,
     },
     MaintenanceTaskFailed {
+        reason: &'static str,
+    },
+    StorageBudgetExceeded {
+        pool: StorageBudgetPool,
+        requested_bytes: u64,
+        used_bytes: u64,
+        limit_bytes: u64,
+        requested_count: u64,
+        used_count: u64,
+        limit_count: Option<u64>,
         reason: &'static str,
     },
     FlushPublicationFailed {
@@ -329,6 +339,7 @@ impl LifecycleError {
             Self::MaintenanceFailed { .. } => "failed_precondition.lifecycle.maintenance",
             Self::MaintenanceQueueFull { .. } => "resource_exhausted.lifecycle.maintenance_queue",
             Self::MaintenanceTaskFailed { .. } => "failed_precondition.lifecycle.maintenance_task",
+            Self::StorageBudgetExceeded { .. } => "resource_exhausted.lifecycle.storage_budget",
             Self::FlushPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.flush_publication"
             }
@@ -542,6 +553,10 @@ impl LifecycleError {
 }
 
 impl PartialEq for LifecycleError {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "central lifecycle error equality keeps variant-specific comparisons explicit"
+    )]
     fn eq(&self, other: &Self) -> bool {
         if let Some(equal) = self.same_static_reason_variant(other) {
             return equal;
@@ -597,6 +612,37 @@ impl PartialEq for LifecycleError {
                 left_mode == right_mode
                     && left_required == right_required
                     && left_missing == right_missing
+            }
+            (
+                Self::StorageBudgetExceeded {
+                    pool: left_pool,
+                    requested_bytes: left_requested_bytes,
+                    used_bytes: left_used_bytes,
+                    limit_bytes: left_limit_bytes,
+                    requested_count: left_requested_count,
+                    used_count: left_used_count,
+                    limit_count: left_limit_count,
+                    reason: left_reason,
+                },
+                Self::StorageBudgetExceeded {
+                    pool: right_pool,
+                    requested_bytes: right_requested_bytes,
+                    used_bytes: right_used_bytes,
+                    limit_bytes: right_limit_bytes,
+                    requested_count: right_requested_count,
+                    used_count: right_used_count,
+                    limit_count: right_limit_count,
+                    reason: right_reason,
+                },
+            ) => {
+                left_pool == right_pool
+                    && left_requested_bytes == right_requested_bytes
+                    && left_used_bytes == right_used_bytes
+                    && left_limit_bytes == right_limit_bytes
+                    && left_requested_count == right_requested_count
+                    && left_used_count == right_used_count
+                    && left_limit_count == right_limit_count
+                    && left_reason == right_reason
             }
             (
                 Self::RecoveryVisibilityFailed {
@@ -676,6 +722,26 @@ impl fmt::Display for LifecycleError {
             }
             Self::MaintenanceTaskFailed { reason } => {
                 write!(formatter, "maintenance task failed: {reason}")
+            }
+            Self::StorageBudgetExceeded {
+                pool,
+                requested_bytes,
+                used_bytes,
+                limit_bytes,
+                requested_count,
+                used_count,
+                limit_count,
+                reason,
+            } => {
+                write!(
+                    formatter,
+                    "storage budget exceeded for {}: requested {requested_bytes} bytes/{requested_count} count, used {used_bytes} bytes/{used_count} count, limit {limit_bytes} bytes",
+                    pool.name(),
+                )?;
+                if let Some(limit_count) = limit_count {
+                    write!(formatter, "/{limit_count} count")?;
+                }
+                write!(formatter, ": {reason}")
             }
             Self::FlushPublicationFailed { reason } => {
                 write!(formatter, "flush publication failed: {reason}")
