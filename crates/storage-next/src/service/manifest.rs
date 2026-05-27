@@ -417,7 +417,7 @@ impl<'a> BranchCatalogManifestService<'a> {
 
     #[allow(
         dead_code,
-        reason = "first caller lands with B Phase 1 recovery rebuild"
+        reason = "branch catalog manifest load is consumed by recovery rebuild"
     )]
     pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<BranchCatalogManifest>> {
         let object = branch_catalog_manifest_object()?;

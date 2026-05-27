@@ -387,8 +387,7 @@ impl LifecycleBranchCatalog {
     /// publication. Entries are sorted by `branch_id` byte order (mirroring
     /// the catalog's internal ordering). Transient states (`Clearing` /
     /// `Deleting`) are not currently observable through the synchronous
-    /// catalog API and therefore not represented; they will be added in
-    /// Follow-up C if/when observable states land.
+    /// catalog API and therefore not represented.
     pub(crate) fn durable_entries(
         &self,
     ) -> Result<Vec<crate::format::BranchCatalogEntry>, crate::format::FormatError> {

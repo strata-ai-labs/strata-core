@@ -369,11 +369,10 @@ fn commit_semantic_validation_precedes_active_budget_rejection() {
         .expect_err("branch mismatch must win before budget");
 
     // Either BranchMismatch (from commit runtime admission) or BranchNotFound
-    // (from catalog registry lookup) is a valid pre-budget rejection. A1
-    // collapsed the registry into the catalog; A2 makes the commit path
-    // consult the catalog first, so wrong-branch batches now surface as
-    // BranchNotFound. Both error codes prove the same invariant: semantic
-    // validation precedes budget enforcement.
+    // (from catalog registry lookup) is a valid pre-budget rejection. The
+    // commit path consults the catalog before charging budget, so a wrong-
+    // branch batch can surface either typed variant. Both prove the same
+    // invariant: semantic validation precedes budget enforcement.
     assert_commit_runtime_error(&error, |commit_error| {
         matches!(
             commit_error,

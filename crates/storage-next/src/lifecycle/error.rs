@@ -49,7 +49,7 @@ pub(crate) enum LifecycleError {
     },
     #[allow(
         dead_code,
-        reason = "declared in A1; first emission lands with the A2 release-plan buffer"
+        reason = "emission site is the release-plan buffer; declared on the public surface"
     )]
     PinnedViewReleaseBlocked {
         branch_id: BranchId,

@@ -67,6 +67,17 @@ pub(crate) struct LifecycleRecoveredCheckpoint {
     section_count: usize,
     row_count: usize,
     install_outcome: Option<BranchSnapshotInstallOutcome>,
+    // Checkpoint rows whose `branch_id` does not match the shell's seeded
+    // branch. They are decoded here but installed post-catalog-build by
+    // `bootstrap::install_non_seeded_checkpoint_rows`, which routes each
+    // row to its catalog slot. Empty for single-branch checkpoints and
+    // any catalog where the seeded branch is the only one with checkpoint
+    // coverage.
+    non_seeded_rows: Vec<StorageRow>,
+    // Identity seed for L0 table materialization during post-catalog
+    // install. Carried from the recovery request so the seeded and non-
+    // seeded installs share the same derivation base.
+    install_identity_seed: Option<TableIdentity>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -267,12 +278,16 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         }
         require_checkpoint_decode_budget(self.shell.budget(), container.sections())?;
         let rows = decode_checkpoint_rows(container.sections())?;
-        validate_checkpoint_rows(watermark, self.shell.branch_state().branch_id(), &rows)?;
+        validate_checkpoint_rows(watermark, &rows)?;
         let row_count = rows.len();
+        let seeded_branch_id = self.shell.branch_state().branch_id();
+        let (seeded_rows, non_seeded_rows): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(|row| row.physical_key().branch_id() == seeded_branch_id);
         let install_outcome = install_checkpoint_rows(
             self.shell.branch_state().clone(),
             request.checkpoint_identity_seed(),
-            rows,
+            seeded_rows,
         )?;
         Ok(CheckpointRecovery {
             checkpoint: LifecycleRecoveredCheckpoint {
@@ -281,6 +296,8 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 section_count: container.sections().len(),
                 row_count,
                 install_outcome: Some(install_outcome.outcome),
+                non_seeded_rows,
+                install_identity_seed: Some(request.checkpoint_identity_seed().clone()),
             },
             recovered_branch: install_outcome.recovered_branch,
         })
@@ -594,6 +611,8 @@ impl LifecycleRecoveredCheckpoint {
             section_count: 0,
             row_count: 0,
             install_outcome: None,
+            non_seeded_rows: Vec::new(),
+            install_identity_seed: None,
         }
     }
 
@@ -604,7 +623,17 @@ impl LifecycleRecoveredCheckpoint {
             section_count: 0,
             row_count: 0,
             install_outcome: None,
+            non_seeded_rows: Vec::new(),
+            install_identity_seed: None,
         }
+    }
+
+    pub(crate) fn non_seeded_rows(&self) -> &[StorageRow] {
+        &self.non_seeded_rows
+    }
+
+    pub(crate) fn install_identity_seed(&self) -> Option<&TableIdentity> {
+        self.install_identity_seed.as_ref()
     }
 
     pub(crate) const fn snapshot_id(&self) -> Option<u64> {
@@ -991,20 +1020,16 @@ fn validate_snapshot_watermark(
     Ok(())
 }
 
-fn validate_checkpoint_rows(
-    watermark: CommitVersion,
-    open_branch_id: strata_core_next::BranchId,
-    rows: &[StorageRow],
-) -> LifecycleResult<()> {
+/// Validate checkpoint row watermarks before partitioning by branch.
+/// Branch_id membership validation now happens post-catalog-build in
+/// `bootstrap::install_non_seeded_checkpoint_rows`, so unknown / Deleted
+/// branches can be rejected against the rebuilt catalog rather than the
+/// shell's seeded branch only.
+fn validate_checkpoint_rows(watermark: CommitVersion, rows: &[StorageRow]) -> LifecycleResult<()> {
     for row in rows {
         if row.commit_version() > watermark {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "checkpoint row commit version exceeds snapshot watermark",
-            });
-        }
-        if row.physical_key().branch_id() != open_branch_id {
-            return Err(LifecycleError::RecoveryFailed {
-                reason: "checkpoint contains rows for unopened branch",
             });
         }
     }

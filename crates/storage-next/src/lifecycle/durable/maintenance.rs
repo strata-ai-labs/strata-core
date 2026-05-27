@@ -1,13 +1,13 @@
 //! Durable-local maintenance dispatch.
 
 use super::bootstrap::LifecycleDurableLocalRuntime;
-use super::{commit_error, require_admitted};
+use super::{branch_error, commit_error, require_admitted};
 use crate::branch::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
 };
 use crate::lifecycle::checkpoint::{
-    checkpoint_durable_branch_with_budget,
+    checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
     truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
@@ -65,8 +65,22 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn rotate_active_for_maintenance(
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
+        self.rotate_active_for_branch_for_maintenance(self.initial_branch_id)
+    }
+
+    /// Rotate any branch's active state into frozen. Used by maintenance
+    /// flows that operate on non-seeded branches; the seeded entry point
+    /// `rotate_active_for_maintenance` is preserved for compatibility
+    /// with existing test callers.
+    #[allow(
+        dead_code,
+        reason = "non-seeded rotation is exercised by multi-branch checkpoint tests"
+    )]
+    pub(crate) fn rotate_active_for_branch_for_maintenance(
+        &mut self,
+        branch_id: strata_core_next::BranchId,
+    ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
         let generation = self
             .branch_catalog
             .registry()
@@ -77,7 +91,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             &self.budget,
             self.branch_catalog
                 .branch_state(branch_id)
-                .expect("seeded branch is always present in the catalog"),
+                .map_err(branch_error)?,
         )?;
         let outcome = {
             let branch = self
@@ -97,7 +111,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
+        let branch_id = request.branch_id();
         let generation = self
             .branch_catalog
             .registry()
@@ -119,7 +133,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         if publish_table_manifest_after_flush(
             self.branch_catalog
                 .branch_state(branch_id)
-                .expect("seeded branch is always present in the catalog"),
+                .map_err(branch_error)?,
             self.services.table_manifest(),
             &mut self.table_catalog,
             Some(&self.budget),
@@ -143,7 +157,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCompactionRequest,
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
+        let branch_id = request.branch_id();
         let generation = self
             .branch_catalog
             .registry()
@@ -176,7 +190,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleMaterializationRequest,
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
+        let branch_id = request.child_branch_id();
         let generation = self
             .branch_catalog
             .registry()
@@ -221,12 +235,8 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCheckpointRequest,
     ) -> LifecycleResult<LifecycleCheckpointOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch = self
-            .branch_catalog
-            .branch_state(self.initial_branch_id)
-            .expect("seeded branch is always present in the catalog");
-        checkpoint_durable_branch_with_budget(
-            branch,
+        checkpoint_durable_runtime_with_budget(
+            &self.branch_catalog,
             &self.services,
             &self.guard_set,
             || self.visible.visible_version(),
@@ -533,10 +543,8 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
-        let branch = self
-            .branch_catalog
-            .branch_state(self.initial_branch_id)
-            .expect("seeded branch is always present in the catalog");
+        let branch_catalog = &self.branch_catalog;
+        let initial_branch_id = self.initial_branch_id;
         let services = &self.services;
         let guard_set = &self.guard_set;
         let visible = &self.visible;
@@ -547,7 +555,8 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             self.recovered_checkpoint_timestamp_max,
         );
         let mut runner = DurableCheckpointMaintenanceRunner {
-            branch,
+            branch_catalog,
+            initial_branch_id,
             services,
             guard_set,
             visible,
@@ -879,7 +888,8 @@ fn publish_table_manifest_after_flush(
 }
 
 struct DurableCheckpointMaintenanceRunner<'a, 'b> {
-    branch: &'a BranchLocalState,
+    branch_catalog: &'a crate::lifecycle::LifecycleBranchCatalog,
+    initial_branch_id: strata_core_next::BranchId,
     services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
     guard_set: &'a CommitBranchGuardSet,
     visible: &'a VisibleVersionTracker,
@@ -890,15 +900,19 @@ struct DurableCheckpointMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        // The maintenance task may not be branch-scoped (checkpoint is
+        // a global operation in this catalog-aware path); fall back to
+        // the seeded branch_id for request identification when the task
+        // scope does not carry one.
         let request = checkpoint_request_from_maintenance_task_with_snapshot_id(
             task,
-            self.branch.branch_id(),
+            self.initial_branch_id,
             self.services.manifest(),
             self.created_at,
             Some(*self.next_snapshot_id),
         )?;
-        let outcome = checkpoint_durable_branch_with_budget(
-            self.branch,
+        let outcome = checkpoint_durable_runtime_with_budget(
+            self.branch_catalog,
             self.services,
             self.guard_set,
             || self.visible.visible_version(),
@@ -1081,8 +1095,8 @@ impl DurableRetentionMaintenanceRunner<'_, '_> {
     /// Drain pending release plans matching this retention pass's scope.
     /// `Global` scope drains all; `TableObjects { branch_id }` drains plans
     /// targeting that branch. Returns the drained release plans for
-    /// downstream tagging (the A2 classifier itself remains
-    /// manifest-driven; durable physical reclaim defers to Follow-up B).
+    /// downstream tagging; durable physical reclaim is manifest-driven and
+    /// runs through the table-object retention handler.
     fn drain_pending_releases(
         &mut self,
         scope: LifecycleRetentionScope,
@@ -1542,7 +1556,7 @@ fn truncate_hash_to_u64(digest: &[u8]) -> u64 {
 /// releases that were drained from the pending-releases buffer during
 /// this retention pass. The classification itself remains
 /// manifest-driven; this is informational so callers can observe what
-/// the buffer surfaced (durable physical reclaim defers to Follow-up B).
+/// the buffer surfaced.
 fn append_released_table_names(
     outcome: MaintenanceOutcome,
     drained: &[crate::branch::BranchReleasePlan],

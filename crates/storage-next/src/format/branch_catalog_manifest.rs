@@ -12,9 +12,10 @@ const ENTRY_FLAG_DELETED_AT_PRESENT: u8 = 0b0000_0100;
 const ENTRY_FLAGS_RESERVED: u8 =
     !(ENTRY_FLAG_PARENT_PRESENT | ENTRY_FLAG_CREATED_AT_PRESENT | ENTRY_FLAG_DELETED_AT_PRESENT);
 
-// Status discriminants (Clearing/Deleting reserved for Follow-up C —
-// reject them at decode so older databases with stale catalog markers
-// never observe an in-flight status that this version cannot honor).
+// Status discriminants. Clearing/Deleting are not yet representable
+// (the in-memory catalog collapses them synchronously); reject anything
+// outside Active/Deleted at decode so stale or forward-compat catalogs
+// never observe an in-flight status that this version cannot honor.
 const STATUS_ACTIVE: u8 = 0;
 const STATUS_DELETED: u8 = 1;
 

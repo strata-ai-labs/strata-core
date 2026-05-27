@@ -923,10 +923,11 @@ fn failed_flush_for_wrong_branch_does_not_persist_watermark() {
         .flush_frozen(&flush_request(other, None))
         .expect_err("wrong branch rejects");
 
-    assert_eq!(
-        error.code(),
-        "failed_precondition.lifecycle.maintenance_task"
-    );
+    // The handler now routes by `request.branch_id()`; an unknown branch
+    // fails at the registry lookup (commit runtime layer) rather than at
+    // the maintenance task validator that used to gate the prior single-
+    // branch implementation.
+    assert_eq!(error.code(), "failed_precondition.lifecycle.commit_runtime");
     let manifest = DatabaseManifestService::new(&backend)
         .load_required()
         .expect("manifest");
@@ -957,10 +958,10 @@ fn branch_absence_does_not_advance_flush_watermark() {
         .flush_frozen(&flush_request(absent, None))
         .expect_err("absent branch rejects");
 
-    assert_eq!(
-        error.code(),
-        "failed_precondition.lifecycle.maintenance_task"
-    );
+    // Per-branch routing surfaces an absent branch as a registry lookup
+    // failure (commit runtime layer) rather than a maintenance task
+    // validator rejection on the seeded branch.
+    assert_eq!(error.code(), "failed_precondition.lifecycle.commit_runtime");
     assert_eq!(backend.operations(), operations_before);
     let manifest = DatabaseManifestService::new(&backend)
         .load_required()

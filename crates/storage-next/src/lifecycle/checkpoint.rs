@@ -1368,15 +1368,76 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
             reason: "checkpoint branch id must match branch state",
         });
     }
+    publish_checkpoint(
+        services,
+        guard_set,
+        read_visible_version,
+        request,
+        budget,
+        |visible_version| {
+            branch
+                .checkpoint_rows(visible_version)
+                .map_err(branch_error)
+        },
+    )
+}
+
+/// Multi-branch checkpoint entry point: collect rows from every active
+/// branch in the catalog and publish a single snapshot section that
+/// covers all of them. Used by the durable maintenance dispatch path so
+/// non-seeded branch rows survive restart even when no WAL tail covers
+/// them. Rows carry `branch_id` via their `PhysicalKey`; the snapshot
+/// section format is branch-agnostic.
+pub(crate) fn checkpoint_durable_runtime_with_budget(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    services: &LifecycleDurableLocalServices<'_>,
+    guard_set: &CommitBranchGuardSet,
+    read_visible_version: impl FnOnce() -> CommitVersion,
+    request: &LifecycleCheckpointRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleCheckpointOutcome> {
+    request.validate()?;
+    // The request's `branch_id` is informational — it identifies the
+    // branch whose maintenance task triggered the checkpoint. The
+    // encoder reads rows from every active branch in the catalog so
+    // forked / created branches survive restart through the snapshot
+    // path.
+    publish_checkpoint(
+        services,
+        guard_set,
+        read_visible_version,
+        request,
+        budget,
+        |visible_version| {
+            let active_descriptors = branch_catalog.list_branches(false);
+            let mut combined = Vec::new();
+            for descriptor in &active_descriptors {
+                let branch = branch_catalog.branch_state(descriptor.branch_id())?;
+                let mut rows = branch
+                    .checkpoint_rows(visible_version)
+                    .map_err(branch_error)?;
+                combined.append(&mut rows);
+            }
+            Ok(combined)
+        },
+    )
+}
+
+fn publish_checkpoint(
+    services: &LifecycleDurableLocalServices<'_>,
+    guard_set: &CommitBranchGuardSet,
+    read_visible_version: impl FnOnce() -> CommitVersion,
+    request: &LifecycleCheckpointRequest,
+    budget: Option<&StorageBudgetLedger>,
+    collect_rows: impl FnOnce(CommitVersion) -> LifecycleResult<Vec<crate::row::StorageRow>>,
+) -> LifecycleResult<LifecycleCheckpointOutcome> {
     let quiesce = guard_set.try_begin_quiesce().map_err(commit_error)?;
     let visible_version = read_visible_version();
     if visible_version == CommitVersion::ZERO {
         drop(quiesce);
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
-    let rows = branch
-        .checkpoint_rows(visible_version)
-        .map_err(branch_error)?;
+    let rows = collect_rows(visible_version)?;
     if rows.is_empty() {
         drop(quiesce);
         return Ok(LifecycleCheckpointOutcome::deferred(request));

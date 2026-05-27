@@ -43,8 +43,9 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
     // Released table references from `clear_branch`/`delete_branch` queue
-    // here until the next retention pass drains them. Slice A2 in-memory
-    // only — restart loses the buffer (Follow-up B persists tombstones).
+    // here until the next retention pass drains them. In-memory only —
+    // restart loses the buffer; durable persistence of release tombstones
+    // is tracked in the closeout doc as a separate workstream.
     pub(super) pending_releases: Vec<crate::branch::BranchReleasePlan>,
     // Branch catalog publish sequence counter. Increments on each
     // BranchCatalogManifest publication. Loaded from the manifest on
@@ -204,8 +205,9 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         // returns.
 
         // Replay the durable BranchCatalogManifest if present so non-seeded
-        // descriptors survive restart. Missing manifest = pre-B database
-        // (single-branch mode); the seeded branch is the only catalog entry.
+        // descriptors survive restart. A missing manifest means the database
+        // never published a multi-branch catalog; the seeded branch is the
+        // only catalog entry.
         let branch_catalog_sequence = match self
             .services
             .branch_catalog_manifest()
@@ -228,6 +230,15 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             &mut branch_catalog,
             initial_branch_id,
             Some(&self.budget),
+        )?;
+
+        // Install non-seeded checkpoint rows into their catalog slots.
+        // Seeded-branch rows were installed during `recover_checkpoint`;
+        // anything else came from the multi-branch checkpoint encoder.
+        install_non_seeded_checkpoint_rows(
+            &mut branch_catalog,
+            recovery.checkpoint().non_seeded_rows(),
+            recovery.checkpoint().install_identity_seed(),
         )?;
 
         // Validate the WAL package against the catalog (multi-branch aware).
@@ -446,12 +457,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         branch.capture_read_view().map_err(branch_error)
     }
 
-    /// Storage-internal: create a new branch in the catalog. Caveat for A1:
-    /// commits route through the runtime's `self.branch` (the seeded branch).
-    /// New branches created here are visible via `list_branches` and the
-    /// catalog accessor but cannot accept commits until A2 makes the runtime
-    /// catalog-authoritative for mutations. Durable mode in A1 is in-memory
-    /// only — restart loses these descriptors (Follow-up B persists them).
+    /// Storage-internal: create a new branch in the catalog. The new
+    /// branch is visible via `list_branches` and the catalog accessor and
+    /// can accept commits routed through the catalog's per-branch slot.
+    /// `publish_branch_catalog` writes the updated descriptor list to
+    /// `manifest/branch-catalog` so the entry survives restart.
     pub(crate) fn create_branch(
         &mut self,
         branch_id: BranchId,
@@ -475,7 +485,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     #[allow(
         dead_code,
-        reason = "exposed for A1 catalog surface; durable callers land in A2"
+        reason = "fork-at-history surface exposed for durable callers"
     )]
     pub(crate) fn fork_current(
         &mut self,
@@ -493,7 +503,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     #[allow(
         dead_code,
-        reason = "exposed for A1 catalog surface; durable callers land in A2"
+        reason = "fork-at-history surface exposed for durable callers"
     )]
     pub(crate) fn fork_at_retained_version(
         &mut self,
@@ -926,6 +936,75 @@ fn recover_per_branch_table_manifests(
             table_catalog,
             budget,
         )?;
+    }
+    Ok(())
+}
+
+/// Install checkpoint rows that did not belong to the seeded branch.
+/// `recover_checkpoint` partitions rows by branch_id at decode time and
+/// returns non-seeded rows in the recovery outcome; this helper drives
+/// them into the catalog's per-branch slots after the catalog has been
+/// rebuilt from `BranchCatalogManifest` and per-branch table manifests.
+///
+/// Validation: each row's `branch_id` must be present in the catalog
+/// and not in `Deleted` status. Unknown or deleted branch_ids fail closed
+/// with typed `RecoveryFailed` errors, mirroring the multi-branch WAL
+/// validator. Empty input is a no-op (common when the seeded branch is
+/// the only branch with checkpoint coverage).
+fn install_non_seeded_checkpoint_rows(
+    branch_catalog: &mut LifecycleBranchCatalog,
+    rows: &[crate::row::StorageRow],
+    identity_seed: Option<&crate::table::TableIdentity>,
+) -> LifecycleResult<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let Some(identity_seed) = identity_seed else {
+        return Err(LifecycleError::RecoveryFailed {
+            reason: "non-seeded checkpoint rows require an install identity seed",
+        });
+    };
+    use crate::lifecycle::LifecycleBranchStatus;
+    let mut affected: Vec<BranchId> = Vec::new();
+    for row in rows {
+        let id = row.physical_key().branch_id();
+        if !affected.contains(&id) {
+            affected.push(id);
+        }
+    }
+    affected.sort_by_key(|id| *id.as_bytes());
+    for id in &affected {
+        let descriptor =
+            branch_catalog
+                .lookup(*id)
+                .map_err(|_| LifecycleError::RecoveryFailed {
+                    reason: "checkpoint references an unknown branch",
+                })?;
+        if descriptor.status() == LifecycleBranchStatus::Deleted {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "checkpoint references a deleted branch",
+            });
+        }
+    }
+    let mut staged: Vec<BranchLocalState> = affected
+        .iter()
+        .map(|id| {
+            branch_catalog
+                .branch_state(*id)
+                .map(BranchLocalState::clone)
+        })
+        .collect::<LifecycleResult<Vec<_>>>()?;
+    let request = crate::branch::BranchSnapshotInstallRequest::from_rows(
+        identity_seed.as_str(),
+        rows.to_vec(),
+    )
+    .map_err(branch_error)?;
+    crate::branch::install_snapshot_rows_into_branches(&mut staged, &request)
+        .map_err(branch_error)?;
+    for branch in staged {
+        let branch_id = branch.branch_id();
+        let descriptor = branch_catalog.lookup(branch_id)?;
+        branch_catalog.replace_active_branch_state_with_descriptor(descriptor, branch)?;
     }
     Ok(())
 }

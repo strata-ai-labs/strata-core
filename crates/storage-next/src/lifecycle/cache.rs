@@ -249,11 +249,10 @@ impl<S> LifecycleCacheRuntime<S> {
         Ok(outcome)
     }
 
-    /// Storage-internal: create a new branch in the catalog. Caveat for A1:
-    /// commits route through the runtime's `self.branch` field — new branches
-    /// created through this method are visible via `list_branches` and
-    /// `branch_catalog().branch_state(...)`, but cannot accept commits until
-    /// A2 makes the runtime catalog-authoritative for mutations.
+    /// Storage-internal: create a new branch in the catalog. The new
+    /// branch is visible via `list_branches` and
+    /// `branch_catalog().branch_state(...)` and can accept commits routed
+    /// through the catalog's per-branch slot.
     pub(crate) fn create_branch(
         &mut self,
         branch_id: BranchId,
@@ -282,7 +281,7 @@ impl<S> LifecycleCacheRuntime<S> {
 
     #[allow(
         dead_code,
-        reason = "exposed for A1 catalog surface; cache callers land in A2"
+        reason = "fork-at-history surface exposed for cache callers"
     )]
     pub(crate) fn fork_at_retained_version(
         &mut self,
@@ -304,7 +303,7 @@ impl<S> LifecycleCacheRuntime<S> {
 
     #[allow(
         dead_code,
-        reason = "exposed for A1 catalog surface; cache callers land in A2"
+        reason = "fork-at-history surface exposed for cache callers"
     )]
     pub(crate) fn fork_at_retained_timestamp(
         &mut self,

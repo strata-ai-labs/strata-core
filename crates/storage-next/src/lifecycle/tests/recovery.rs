@@ -925,7 +925,11 @@ fn manifest_decode_rejects_large_section_count_before_allocation() {
 }
 
 #[test]
-fn recovery_rejects_checkpoint_rows_for_unopened_branch() {
+fn recovery_rejects_checkpoint_rows_for_unknown_branch() {
+    // Inject a checkpoint whose rows reference a branch_id that is not in
+    // the rebuilt catalog. Decode partitions the row out as a non-seeded
+    // row; `complete_recovery` rejects it post-catalog-build because no
+    // catalog entry exists for the referenced branch.
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x39);
     let other_branch_row = put_row(branch_id(0x3a), 3, b"other", b"value");
@@ -947,13 +951,18 @@ fn recovery_rejects_checkpoint_rows_for_unopened_branch() {
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery decodes the checkpoint");
+    assert_eq!(outcome.checkpoint().non_seeded_rows().len(), 1);
     assert_eq!(
-        LifecycleRecoveryRuntime::new(&mut shell).recover(&request),
-        Err(LifecycleError::RecoveryFailed {
-            reason: "checkpoint contains rows for unopened branch",
-        })
+        shell
+            .complete_recovery(&outcome)
+            .expect_err("checkpoint row for unknown branch must reject"),
+        LifecycleError::RecoveryFailed {
+            reason: "checkpoint references an unknown branch",
+        }
     );
-    assert!(shell.branch_state().is_empty());
 }
 
 #[test]
@@ -2017,6 +2026,216 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         .expect("extra read view")
         .expect("extra row recovered");
     assert_eq!(extra_row.row().value(), b"extra-value");
+}
+
+#[test]
+fn recovery_checkpoint_multi_branch_rows_round_trip() {
+    // Open a durable runtime, create a non-seeded branch, commit a row to
+    // each branch, trigger a checkpoint, drop the runtime, reopen, and
+    // verify both rows survive via per-branch checkpoint row dispatch.
+    use crate::lifecycle::LifecycleCheckpointRequest;
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x38);
+    let extra = branch_id(0x48);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        runtime
+            .create_branch(
+                extra,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create extra branch");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(initial, b"initial-row", b"initial-value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to initial");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(extra, b"extra-row", b"extra-value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to extra");
+
+        let checkpoint_request =
+            LifecycleCheckpointRequest::new(initial, 1, Timestamp::from_micros(9_500))
+                .expect("checkpoint request");
+        let outcome = runtime
+            .checkpoint(&checkpoint_request)
+            .expect("checkpoint succeeds");
+        assert_eq!(
+            outcome.status(),
+            crate::lifecycle::LifecycleCheckpointStatus::Completed
+        );
+        assert!(
+            outcome.row_count() >= 2,
+            "checkpoint must include both rows"
+        );
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let initial_state = runtime
+        .branch_catalog()
+        .branch_state(initial)
+        .expect("initial branch state");
+    let initial_view = initial_state.capture_read_view().expect("initial view");
+    let initial_row = initial_view
+        .latest(&physical_key(initial, b"initial-row"))
+        .expect("initial read view")
+        .expect("initial row recovered from checkpoint");
+    assert_eq!(initial_row.row().value(), b"initial-value");
+
+    let extra_state = runtime
+        .branch_catalog()
+        .branch_state(extra)
+        .expect("extra branch state");
+    let extra_view = extra_state.capture_read_view().expect("extra view");
+    let extra_row = extra_view
+        .latest(&physical_key(extra, b"extra-row"))
+        .expect("extra read view")
+        .expect("extra row recovered from checkpoint");
+    assert_eq!(extra_row.row().value(), b"extra-value");
+}
+
+#[test]
+fn recovery_rebuilds_inherited_layers() {
+    // Open a durable runtime, commit + rotate + flush a row to the seeded
+    // branch so its table manifest carries owned levels, fork a child,
+    // commit + rotate + flush a row to the child so its table manifest
+    // carries both owned levels AND inherited layers pointing back to
+    // the parent. Drop, reopen, and verify the child's inherited layer
+    // facts survive.
+    use crate::lifecycle::{FlushTableIdentitySeed, FlushTableObjectId};
+    let backend = RecoveryTestBackend::new();
+    let parent = branch_id(0x3a);
+    let child = branch_id(0x4a);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        // Commit + rotate + flush parent.
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(parent, b"parent-row", b"parent-value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to parent");
+        runtime
+            .rotate_active_for_maintenance()
+            .expect("rotate parent active");
+        let parent_flush = FlushFrozenRequest::new(
+            parent,
+            None,
+            FlushTableIdentitySeed::new("parent-flush-seed").expect("seed"),
+            FlushTableObjectId::new("parent-flush-object").expect("object id"),
+        )
+        .expect("parent flush request");
+        let parent_outcome = runtime
+            .flush_frozen(&parent_flush)
+            .expect("parent flush succeeds");
+        assert_eq!(
+            parent_outcome.status(),
+            crate::lifecycle::FlushFrozenStatus::Completed,
+            "parent flush must publish the manifest",
+        );
+
+        // Fork child from parent. Parent's active+frozen must both be
+        // empty; the flush above moved the row into owned_levels.
+        let fork_outcome = runtime
+            .fork_current(
+                parent,
+                child,
+                CommitBranchGeneration::new(1).expect("generation"),
+            )
+            .expect("fork child");
+        assert!(
+            fork_outcome.inherited_layer_count() > 0,
+            "child must inherit at least one layer",
+        );
+
+        // Commit + rotate + flush child so its table manifest is
+        // published with both owned and inherited content.
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(child, b"child-row", b"child-value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to child");
+        runtime
+            .rotate_active_for_branch_for_maintenance(child)
+            .expect("rotate child active");
+        let child_flush = FlushFrozenRequest::new(
+            child,
+            None,
+            FlushTableIdentitySeed::new("child-flush-seed").expect("seed"),
+            FlushTableObjectId::new("child-flush-object").expect("object id"),
+        )
+        .expect("child flush request");
+        let child_outcome = runtime
+            .flush_frozen(&child_flush)
+            .expect("child flush succeeds");
+        assert_eq!(
+            child_outcome.status(),
+            crate::lifecycle::FlushFrozenStatus::Completed,
+            "child flush must publish the manifest",
+        );
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let child_state = runtime
+        .branch_catalog()
+        .branch_state(child)
+        .expect("child branch state");
+    assert!(
+        child_state.inherited_layer_count() > 0,
+        "child must recover with at least one inherited layer",
+    );
+    assert!(
+        child_state.owned_table_count() > 0,
+        "child must recover its own owned tables",
+    );
 }
 
 fn publish_table_for_recovery(
