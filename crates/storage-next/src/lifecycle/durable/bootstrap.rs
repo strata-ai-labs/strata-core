@@ -46,6 +46,10 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     // here until the next retention pass drains them. Slice A2 in-memory
     // only — restart loses the buffer (Follow-up B persists tombstones).
     pub(super) pending_releases: Vec<crate::branch::BranchReleasePlan>,
+    // Branch catalog publish sequence counter. Increments on each
+    // BranchCatalogManifest publication. Loaded from the manifest on
+    // recovery so monotonicity holds across restarts.
+    pub(super) branch_catalog_sequence: u64,
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
@@ -160,6 +164,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
             pending_releases: Vec::new(),
+            branch_catalog_sequence: 0,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
             close_retry_state: None,
         })
@@ -394,8 +399,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         created_at: Option<CommitVersion>,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchCreateOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        self.branch_catalog
-            .create_branch(branch_id, generation, created_at)
+        let outcome = self
+            .branch_catalog
+            .create_branch(branch_id, generation, created_at)?;
+        self.publish_branch_catalog()?;
+        Ok(outcome)
     }
 
     pub(crate) fn list_branches(
@@ -416,8 +424,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         destination_generation: CommitBranchGeneration,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        self.branch_catalog
-            .fork_current(source, destination, destination_generation)
+        let outcome =
+            self.branch_catalog
+                .fork_current(source, destination, destination_generation)?;
+        self.publish_branch_catalog()?;
+        Ok(outcome)
     }
 
     #[allow(
@@ -433,13 +444,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         retained_floor: CommitVersion,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        self.branch_catalog.fork_at_retained_version(
+        let outcome = self.branch_catalog.fork_at_retained_version(
             source,
             destination,
             destination_generation,
             fork_version,
             retained_floor,
-        )
+        )?;
+        self.publish_branch_catalog()?;
+        Ok(outcome)
     }
 
     pub(crate) fn fork_at_retained_timestamp(
@@ -451,13 +464,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         retained_floor: CommitVersion,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        self.branch_catalog.fork_at_retained_timestamp(
+        let outcome = self.branch_catalog.fork_at_retained_timestamp(
             source,
             destination,
             destination_generation,
             timestamp,
             retained_floor,
-        )
+        )?;
+        self.publish_branch_catalog()?;
+        Ok(outcome)
     }
 
     pub(crate) fn clear_branch(
@@ -478,6 +493,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             }
         }
         self.pending_releases.push(plan);
+        self.publish_branch_catalog()?;
         Ok(outcome)
     }
 
@@ -500,8 +516,55 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             }
         }
         self.pending_releases.push(plan);
+        self.publish_branch_catalog()?;
         Ok(outcome)
     }
+
+    /// Publish a fresh `BranchCatalogManifest` reflecting the current
+    /// catalog state. Called after every durable catalog mutation. The
+    /// runtime's `branch_catalog_sequence` is incremented monotonically
+    /// so recovery can resolve concurrent-writer scenarios.
+    fn publish_branch_catalog(&mut self) -> LifecycleResult<()> {
+        let entries = self
+            .branch_catalog
+            .durable_entries()
+            .map_err(branch_catalog_format_error)?;
+        self.branch_catalog_sequence = self.branch_catalog_sequence.saturating_add(1);
+        if self.branch_catalog_sequence == 0 {
+            return Err(LifecycleError::CheckpointPublicationFailed {
+                reason: "branch catalog sequence overflow",
+            });
+        }
+        let manifest = crate::format::BranchCatalogManifest::new(
+            *self.services.assembly_facts().database_id(),
+            self.branch_catalog_sequence,
+            entries,
+        )
+        .map_err(branch_catalog_format_error)?;
+        self.services
+            .branch_catalog_manifest()
+            .publish_replace(&manifest)
+            .map_err(branch_catalog_manifest_service_error)?;
+        Ok(())
+    }
+}
+
+fn branch_catalog_format_error(error: crate::format::FormatError) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Format,
+        "branch catalog manifest encode failed",
+        error,
+    )
+}
+
+fn branch_catalog_manifest_service_error(
+    error: crate::service::ManifestServiceError,
+) -> LifecycleError {
+    LifecycleError::lower_layer_with(
+        crate::lifecycle::LifecycleLowerLayer::Service,
+        "branch catalog manifest service failed",
+        error,
+    )
 }
 
 impl<S> LifecycleDurableLocalRuntime<'_, S>

@@ -1,0 +1,6 @@
+# BranchCatalogManifest with one Active entry.
+# database_id [0xAB; 16], manifest_sequence 5.
+# Entry: branch [0x10; 16], generation 3, status Active, created_at 7, state_revision 2.
+5354424301000000abababababababababababababababab0500000000000000
+0100000010101010101010101010101010101010030000000000000000020200
+0000000000000700000000000000e1abd993

@@ -12,6 +12,10 @@ fn format_golden_harness_has_storage_format_directory() {
 
     assert!(dir.is_dir());
     for file in [
+        "branch-catalog-manifest-active-and-deleted.hex",
+        "branch-catalog-manifest-empty.hex",
+        "branch-catalog-manifest-single-active.hex",
+        "branch-catalog-manifest-with-parent.hex",
         "internal-key-ordinary.hex",
         "internal-key-zero-user-byte.hex",
         "manifest-identity.hex",

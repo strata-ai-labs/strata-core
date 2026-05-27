@@ -366,6 +366,48 @@ impl LifecycleBranchCatalog {
         descriptors
     }
 
+    /// Build a deterministic snapshot of catalog descriptors for durable
+    /// publication. Entries are sorted by `branch_id` byte order (mirroring
+    /// the catalog's internal ordering). Transient states (`Clearing` /
+    /// `Deleting`) are not currently observable through the synchronous
+    /// catalog API and therefore not represented; they will be added in
+    /// Follow-up C if/when observable states land.
+    pub(crate) fn durable_entries(
+        &self,
+    ) -> Result<Vec<crate::format::BranchCatalogEntry>, crate::format::FormatError> {
+        use crate::format::{BranchCatalogEntry, BranchCatalogParent, BranchCatalogStatus};
+        let mut entries = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let descriptor = entry.descriptor;
+            let status = match descriptor.status() {
+                LifecycleBranchStatus::Active
+                | LifecycleBranchStatus::Clearing
+                | LifecycleBranchStatus::Deleting => BranchCatalogStatus::Active,
+                LifecycleBranchStatus::Deleted => BranchCatalogStatus::Deleted,
+            };
+            let mut durable = BranchCatalogEntry::new(
+                descriptor.branch_id(),
+                descriptor.generation().get(),
+                status,
+            )?
+            .with_state_revision(descriptor.state_revision());
+            if let Some(parent) = descriptor.parent() {
+                durable = durable.with_parent(BranchCatalogParent::new(
+                    parent.source_branch_id(),
+                    parent.fork_version().as_u64(),
+                ));
+            }
+            if let Some(created) = descriptor.created_at() {
+                durable = durable.with_created_at(created.as_u64())?;
+            }
+            if let Some(deleted) = descriptor.deleted_at() {
+                durable = durable.with_deleted_at(deleted.as_u64())?;
+            }
+            entries.push(durable);
+        }
+        Ok(entries)
+    }
+
     pub(crate) fn lookup(&self, branch_id: BranchId) -> LifecycleResult<LifecycleBranchDescriptor> {
         Ok(self.entry(branch_id)?.descriptor)
     }

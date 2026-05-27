@@ -20,9 +20,10 @@ use crate::format::DatabaseManifest;
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{
-    CheckpointService, DatabaseManifestService, ManifestServiceError, QuarantineService,
-    SnapshotService, TableManifestService, TableObjectReaderService, TableObjectService,
-    WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
+    BranchCatalogManifestService, CheckpointService, DatabaseManifestService, ManifestServiceError,
+    QuarantineService, SnapshotService, TableManifestService, TableObjectReaderService,
+    TableObjectService, WalSegmentMetadataSidecarService, WalService, WalServiceConfig,
+    WalServiceError,
 };
 use std::fmt;
 use strata_core_next::{BranchId, CommitVersion};
@@ -62,6 +63,7 @@ pub(crate) struct LifecycleDurableLocalServices<'a> {
     capability_outcome: LifecycleCapabilityOutcome,
     manifest: DatabaseManifestService<'a>,
     table_manifest: TableManifestService<'a>,
+    branch_catalog_manifest: BranchCatalogManifestService<'a>,
     wal: WalService<'a>,
     wal_sidecar: WalSegmentMetadataSidecarService<'a>,
     snapshot: SnapshotService<'a>,
@@ -250,6 +252,10 @@ impl<'a> LifecycleDurableLocalServices<'a> {
         &self.table_manifest
     }
 
+    pub(crate) const fn branch_catalog_manifest(&self) -> &BranchCatalogManifestService<'a> {
+        &self.branch_catalog_manifest
+    }
+
     pub(crate) const fn wal_sidecar(&self) -> &WalSegmentMetadataSidecarService<'a> {
         &self.wal_sidecar
     }
@@ -332,6 +338,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             capability_outcome,
             manifest: manifest_service,
             table_manifest: TableManifestService::new(backend),
+            branch_catalog_manifest: BranchCatalogManifestService::new(backend),
             wal,
             wal_sidecar: WalSegmentMetadataSidecarService::new(backend),
             snapshot: SnapshotService::new(backend),

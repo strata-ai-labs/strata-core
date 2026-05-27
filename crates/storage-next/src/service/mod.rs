@@ -24,8 +24,9 @@ pub(crate) use checkpoint::{
     reason = "manifest services are consumed by lifecycle and table services added later"
 )]
 pub(crate) use manifest::{
-    DatabaseManifestService, DatabaseManifestWrite, ManifestRole, ManifestServiceError,
-    TableManifestService, TableManifestWrite,
+    BranchCatalogManifestService, BranchCatalogManifestWrite, DatabaseManifestService,
+    DatabaseManifestWrite, ManifestRole, ManifestServiceError, TableManifestService,
+    TableManifestWrite,
 };
 
 pub(crate) use publish::{validate_publish_outcome, ObjectPublisher};

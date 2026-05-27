@@ -118,6 +118,10 @@ impl ObjectLayout {
         object_name(&[ObjectFamily::Manifest.as_str(), "current"])
     }
 
+    pub(crate) fn branch_catalog_manifest() -> LayoutResult<ObjectName> {
+        object_name(&[ObjectFamily::Manifest.as_str(), "branch-catalog"])
+    }
+
     pub(crate) fn wal_prefix() -> LayoutResult<ObjectPrefix> {
         Self::family_prefix(ObjectFamily::Wal)
     }

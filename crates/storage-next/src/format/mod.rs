@@ -10,6 +10,7 @@
 
 use std::fmt;
 
+mod branch_catalog_manifest;
 mod key;
 mod manifest;
 pub(crate) mod quarantine;
@@ -21,6 +22,10 @@ mod table_manifest;
 mod wal;
 mod watermark;
 
+pub(crate) use branch_catalog_manifest::{
+    decode_branch_catalog_manifest, encode_branch_catalog_manifest, BranchCatalogEntry,
+    BranchCatalogManifest, BranchCatalogParent, BranchCatalogStatus,
+};
 pub(crate) use key::{decode_internal_key, encode_internal_key, encode_physical_key};
 pub(crate) use manifest::{decode_manifest, encode_manifest, DatabaseManifest};
 pub(crate) use segment_metadata::{
@@ -70,6 +75,7 @@ pub(crate) mod fuzzing;
 #[cfg(test)]
 mod tests;
 
+const BRANCH_CATALOG_FORMAT_VERSION: u32 = 1;
 const DATABASE_FORMAT_VERSION: u32 = 1;
 const MAX_CODEC_ID_LEN: usize = 256;
 const SEGMENT_METADATA_FORMAT_VERSION: u32 = 1;

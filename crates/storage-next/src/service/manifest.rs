@@ -10,7 +10,8 @@
 
 use crate::backend::{Backend, BackendError, BackendErrorKind, PublishError, PublishOutcome};
 use crate::format::{
-    decode_manifest, decode_table_manifest, encode_manifest, encode_table_manifest,
+    decode_branch_catalog_manifest, decode_manifest, decode_table_manifest,
+    encode_branch_catalog_manifest, encode_manifest, encode_table_manifest, BranchCatalogManifest,
     DatabaseManifest, FormatError, TableManifest,
 };
 use crate::layout::{LayoutError, ObjectLayout};
@@ -25,6 +26,7 @@ pub(crate) type ManifestServiceResult<T> = Result<T, ManifestServiceError>;
 pub(crate) enum ManifestRole {
     Database,
     Table,
+    BranchCatalog,
 }
 
 impl ManifestRole {
@@ -32,6 +34,7 @@ impl ManifestRole {
         match self {
             Self::Database => "database manifest",
             Self::Table => "table manifest",
+            Self::BranchCatalog => "branch catalog manifest",
         }
     }
 }
@@ -403,6 +406,75 @@ impl<'a> DatabaseManifestService<'a> {
     }
 }
 
+pub(crate) struct BranchCatalogManifestService<'a> {
+    backend: &'a dyn Backend,
+}
+
+impl<'a> BranchCatalogManifestService<'a> {
+    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
+        Self { backend }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "first caller lands with B Phase 1 recovery rebuild"
+    )]
+    pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<BranchCatalogManifest>> {
+        let object = branch_catalog_manifest_object()?;
+        read_optional(self.backend, ManifestRole::BranchCatalog, &object)?
+            .map(|bytes| decode_branch_catalog(&object, &bytes))
+            .transpose()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "publish_replace handles both create and replace via durable replace semantics; create kept for parity with sibling services"
+    )]
+    pub(crate) fn publish_create(
+        &self,
+        manifest: &BranchCatalogManifest,
+    ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
+        let object = branch_catalog_manifest_object()?;
+        publish_branch_catalog(self.backend, &object, manifest, PublishIntent::Create)
+    }
+
+    pub(crate) fn publish_replace(
+        &self,
+        manifest: &BranchCatalogManifest,
+    ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
+        let object = branch_catalog_manifest_object()?;
+        publish_branch_catalog(self.backend, &object, manifest, PublishIntent::Replace)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchCatalogManifestWrite {
+    manifest: BranchCatalogManifest,
+    outcome: PublishOutcome,
+}
+
+impl BranchCatalogManifestWrite {
+    const fn new(manifest: BranchCatalogManifest, outcome: PublishOutcome) -> Self {
+        Self { manifest, outcome }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exposed for tests; first non-test caller lands with the public storage api"
+    )]
+    pub(crate) fn manifest(&self) -> &BranchCatalogManifest {
+        &self.manifest
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exposed for tests; first non-test caller lands with the public storage api"
+    )]
+    pub(crate) const fn outcome(&self) -> &PublishOutcome {
+        &self.outcome
+    }
+}
+
 pub(crate) struct TableManifestService<'a> {
     backend: &'a dyn Backend,
 }
@@ -568,6 +640,56 @@ fn database_manifest_object() -> ManifestServiceResult<ObjectName> {
         role: ManifestRole::Database,
         source,
     })
+}
+
+fn branch_catalog_manifest_object() -> ManifestServiceResult<ObjectName> {
+    ObjectLayout::branch_catalog_manifest().map_err(|source| ManifestServiceError::Layout {
+        role: ManifestRole::BranchCatalog,
+        source,
+    })
+}
+
+fn decode_branch_catalog(
+    object: &ObjectName,
+    bytes: &[u8],
+) -> ManifestServiceResult<BranchCatalogManifest> {
+    decode_branch_catalog_manifest(bytes).map_err(|source| ManifestServiceError::Decode {
+        role: ManifestRole::BranchCatalog,
+        object: object.clone(),
+        source,
+    })
+}
+
+fn publish_branch_catalog(
+    backend: &dyn Backend,
+    object: &ObjectName,
+    manifest: &BranchCatalogManifest,
+    intent: PublishIntent,
+) -> ManifestServiceResult<BranchCatalogManifestWrite> {
+    let bytes = encode_branch_catalog_manifest(manifest).map_err(|source| {
+        ManifestServiceError::Encode {
+            role: ManifestRole::BranchCatalog,
+            object: object.clone(),
+            source,
+        }
+    })?;
+    let decoded = decode_branch_catalog(object, &bytes)?;
+    let publisher = ObjectPublisher::new(backend);
+    let outcome = match intent {
+        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
+        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    }
+    .map_err(|source| ManifestServiceError::Publish {
+        role: ManifestRole::BranchCatalog,
+        source,
+    })?;
+    validate_manifest_publish_outcome(
+        ManifestRole::BranchCatalog,
+        object,
+        bytes.len() as u64,
+        &outcome,
+    )?;
+    Ok(BranchCatalogManifestWrite::new(decoded, outcome))
 }
 
 fn validate_active_wal_segment(active_wal_segment: u64) -> ManifestServiceResult<()> {
