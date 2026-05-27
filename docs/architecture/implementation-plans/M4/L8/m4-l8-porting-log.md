@@ -739,19 +739,42 @@ contract.
   contract so validation and reads can operate through cursors/facts without
   requiring `&[TableRow]` at install time. That is intentionally not hidden by
   this porting entry.
+- Metadata-only open uses `decode_table_footer_metadata`, which intentionally
+  skips the table-wide footer CRC because the full byte stream is not loaded.
+  Footer-field bit-flips are caught downstream by per-frame CRC checks and the
+  index/properties/header cross-reference validation in
+  `validate_metadata_against_header_and_footer`. The eager byte-slice path
+  (`decode_immutable_table`) still verifies the table-wide CRC for fixtures
+  and in-memory callers.
+- `TableObjectReaderService::require_exact_bytes` keeps a single full-object
+  range read (`read_all_for_exact_match`) for publish-dedup equality checks.
+  This is sanctioned and scoped to `service/table.rs`; the new
+  `lazy_open_path_does_not_perform_full_object_reads` source guard forbids the
+  same pattern in `table/reader.rs` and `lifecycle/table_manifest.rs`.
 
 ### Tests Updated
 
 - `immutable_reader_opens_table_source_and_maps_source_failures`
 - `immutable_reader_bytes_and_source_paths_are_identical_for_queries`
+- `table_object_byte_source_enforces_capabilities_and_exact_ranges`
+- `table_object_reader_materialized_open_reads_expected_bounded_ranges`
 - `table_object_reader_opens_published_object_through_range_source`
+- `cache_mode_can_use_eager_reader_without_durable_claim`
 - `table_object_reader_allows_missing_metadata_capability`
+- `table_object_reader_rejects_missing_range_capability_before_io`
 - `table_object_reader_distinguishes_read_decode_and_fact_errors`
 - `table_object_reader_routes_corruption_to_table_errors`
+- `table_object_reader_rejects_corrupt_index_properties_and_count_mismatch`
+- `table_object_reader_rejects_corrupt_data_block_payload_on_materialized_open`
+- `table_object_reader_rejects_corrupt_footer_length_fields`
 - `reader_budget_recovery_decode_rejects_materialized_table_over_budget`
 - `reader_budget_rejects_below_whole_object_while_rows_are_materialized`
 - `low_memory_profile_rejects_large_materialized_table_reader`
+- `recovery_opens_manifest_table_with_bounded_range_reads`
+- `recovery_with_large_manifest_table_does_not_read_full_object`
+- `recovery_range_backed_reader_preserves_branch_read_parity`
 - `lazy_reader_does_not_full_read_durable_object_on_open`
+- `lazy_open_path_does_not_perform_full_object_reads`
 - `lazy_reader_does_not_import_raw_io`
 - `lazy_reader_does_not_use_path_cache_identity_or_global_cache`
 - `lazy_reader_does_not_import_product_or_cleanup_policy`
@@ -761,11 +784,19 @@ contract.
 
 | Probe | Mutated file/line | Mutation | Expected failing test |
 |---|---|---|---|
-| Full object read during durable open | `crates/storage-next/src/service/table.rs` | Reintroduce whole-object read in `open_reader` | `lazy_reader_does_not_full_read_durable_object_on_open` |
-| Undercount materialized rows | `crates/storage-next/src/lifecycle/table_manifest.rs` | Admit recovered manifest tables by metadata estimate only or skip budget check | `reader_budget_recovery_decode_rejects_materialized_table_over_budget` |
+| X1: Full object read during open | `crates/storage-next/src/service/table.rs` | Reintroduce whole-object read in `open_reader` | `lazy_reader_does_not_full_read_durable_object_on_open`, `lazy_open_path_does_not_perform_full_object_reads`, `table_object_reader_materialized_open_reads_expected_bounded_ranges` |
+| X2: Skip index for point lookup | — | Out of scope; branch-resident cursor laziness is deferred (see Current Boundary). |
+| X3: Cursor reads past upper bound | — | Out of scope; bounded cursor laziness is deferred (see Current Boundary). |
+| X4: Cache by path or object name only | `crates/storage-next/src/table/reader.rs` | Add path-derived cache key or global cache state | `lazy_reader_does_not_use_path_cache_identity_or_global_cache` |
+| X5: Skip block budget release on decode error | — | Out of scope; touched-block budget is deferred. |
+| X6: Treat corrupt untouched block as open failure | — | Out of scope; untouched-block corruption classification is deferred. |
+| X7: Treat corrupt touched block as absence | `crates/storage-next/src/format/table/artifact.rs` | Skip header/footer/index/properties/data-block validation | `table_object_reader_routes_corruption_to_table_errors`, `table_object_reader_rejects_corrupt_index_properties_and_count_mismatch`, `table_object_reader_rejects_corrupt_data_block_payload_on_materialized_open`, `table_object_reader_rejects_corrupt_footer_length_fields` |
+| X8: Drop tombstone/TTL metadata during decode | `crates/storage-next/src/format/table/data.rs` | Strip tombstone/TTL fields from per-block decode | `table_object_reader_matches_byte_reader_for_queries_and_row_shapes` |
+| X9: Reintroduce process-global cache | `crates/storage-next/src/table/reader.rs` | Use `OnceLock`/`lazy_static` for cache state | `lazy_reader_does_not_use_path_cache_identity_or_global_cache` |
+| X10: Import raw file IO in reader | `crates/storage-next/src/table/reader.rs` | Add `std::fs` or `OpenOptions` imports | `lazy_reader_does_not_import_raw_io` |
+| Materialized budget undercount | `crates/storage-next/src/lifecycle/table_manifest.rs` | Admit recovered manifest tables by metadata estimate or skip budget check | `reader_budget_recovery_decode_rejects_materialized_table_over_budget`, `reader_budget_rejects_below_whole_object_while_rows_are_materialized`, `low_memory_profile_rejects_large_materialized_table_reader` |
 | Collapse backend read error | `crates/storage-next/src/service/table.rs` | Wrap `TableObjectReadError::Backend` as object-neutral table error | `table_object_reader_distinguishes_read_decode_and_fact_errors` |
-| Accept corrupt metadata | `crates/storage-next/src/format/table/artifact.rs` | Skip header/footer/index/properties validation | `table_object_reader_routes_corruption_to_table_errors` |
-| Use path/global cache identity | `crates/storage-next/src/table/reader.rs` | Add path-derived cache key or global cache state | `lazy_reader_does_not_use_path_cache_identity_or_global_cache` |
+| Misread manifest table object during recovery | `crates/storage-next/src/lifecycle/table_manifest.rs` | Reopen manifest-listed tables through a full-object read or unbounded range | `recovery_opens_manifest_table_with_bounded_range_reads`, `recovery_with_large_manifest_table_does_not_read_full_object` |
 
 ### Verification
 
@@ -778,7 +809,9 @@ cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery
 cargo test -p strata-storage-next --locked --lib lifecycle::tests::table_manifest_recovery
 cargo test -p strata-storage-next --locked --lib table::tests::cache
 cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test table_runtime_properties
 cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo fmt --package strata-storage-next --check
 cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings

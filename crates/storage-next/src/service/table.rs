@@ -679,7 +679,9 @@ mod tests {
         PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     };
     use crate::format::{
-        decode_immutable_table, encode_immutable_table, FormatError, TableCompression,
+        decode_immutable_table, decode_immutable_table_metadata, decode_table_footer_metadata,
+        encode_immutable_table, FormatError, TableCompression, MAX_TABLE_FOOTER_SIZE,
+        MAX_TABLE_HEADER_SIZE,
     };
     use crate::layout::{LayoutError, ObjectLayout};
     use crate::object::{ObjectName, ObjectPrefix};
@@ -1177,7 +1179,69 @@ mod tests {
     }
 
     #[test]
-    fn table_object_reader_accepts_memory_backend_without_durable_capabilities() {
+    fn table_object_reader_materialized_open_reads_expected_bounded_ranges() {
+        let backend = RecordingBackend::durable();
+        let rows = diverse_rows();
+        let (bytes, _) = built_table_bytes(
+            "object-range-accounting-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let write = TableObjectService::new(&backend)
+            .publish_create(&branch, 2, "table0005", &bytes)
+            .expect("publish range accounting table");
+        let identity = TableIdentity::new("object-range-accounting-reader").expect("identity");
+
+        let reader = TableObjectReaderService::new(&backend)
+            .open_reader(identity, write.facts(), TableReaderConfig::default())
+            .expect("open range accounting reader");
+
+        assert_eq!(reader.rows().len(), rows.len());
+        let expected_ranges = expected_materialized_open_ranges(&bytes);
+        assert_eq!(
+            backend
+                .range_reads()
+                .iter()
+                .map(|(_, range)| *range)
+                .collect::<Vec<_>>(),
+            expected_ranges
+        );
+        assert_range_open_avoids_full_object_read(
+            &backend.range_reads(),
+            write.facts().object(),
+            bytes.len() as u64,
+        );
+    }
+
+    #[test]
+    fn table_object_reader_rejects_missing_range_capability_before_io() {
+        let backend = RecordingBackend::durable().without_capability(BackendCapability::ReadRange);
+        let bytes = valid_table_bytes();
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 0, "table0006").expect("table object");
+        backend.seed(object.clone(), &bytes);
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let identity = TableIdentity::new("object-no-range-reader").expect("identity");
+
+        assert_eq!(
+            TableObjectReaderService::new(&backend).open_reader(
+                identity,
+                &facts,
+                TableReaderConfig::default(),
+            ),
+            Err(TableObjectReadError::UnsupportedCapability {
+                object,
+                capability: BackendCapability::ReadRange,
+            })
+        );
+        assert_eq!(backend.metadata_calls(), 0);
+        assert!(backend.range_reads().is_empty());
+    }
+
+    #[test]
+    fn cache_mode_can_use_eager_reader_without_durable_claim() {
         let backend = MemoryBackend::new();
         let bytes = valid_table_bytes();
         let branch = branch_id().to_string();
@@ -1695,6 +1759,122 @@ mod tests {
     }
 
     #[test]
+    fn table_object_reader_rejects_corrupt_index_properties_and_count_mismatch() {
+        let rows = diverse_rows();
+        let (bytes, _) = built_table_bytes(
+            "object-metadata-corruption-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 0, "table0007").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let (index_offset, _, properties_offset, _) = table_footer_ranges(&bytes);
+
+        for (label, corrupt_bytes) in [
+            ("index-frame", {
+                let mut corrupt = bytes.clone();
+                corrupt[checked_offset(index_offset)] ^= 0xff;
+                corrupt
+            }),
+            ("properties-frame", {
+                let mut corrupt = bytes.clone();
+                corrupt[checked_offset(properties_offset)] ^= 0xff;
+                corrupt
+            }),
+            ("header-data-block-count", {
+                let mut corrupt = bytes.clone();
+                corrupt[20..24].copy_from_slice(&(facts.data_block_count() + 1).to_le_bytes());
+                corrupt
+            }),
+        ] {
+            let backend = RecordingBackend::durable();
+            backend.seed(object.clone(), &corrupt_bytes);
+            let identity =
+                TableIdentity::new(format!("object-metadata-corrupt-{label}")).expect("identity");
+
+            assert_table_decode_error(&TableObjectReaderService::new(&backend).open_reader(
+                identity,
+                &facts,
+                TableReaderConfig::default(),
+            ));
+        }
+    }
+
+    #[test]
+    fn table_object_reader_rejects_corrupt_data_block_payload_on_materialized_open() {
+        let rows = diverse_rows();
+        let (bytes, _) = built_table_bytes(
+            "object-data-block-corruption-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 0, "table0008").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let (index_offset, _, _, _) = table_footer_ranges(&bytes);
+        let index_start = checked_offset(index_offset);
+        // Skip the 12-byte frame header so the corruption hits the encoded
+        // payload of the first data block instead of a header field that
+        // would fail an earlier validation.
+        let data_payload_offset = MAX_TABLE_HEADER_SIZE + 12;
+        assert!(data_payload_offset + 4 < index_start);
+        let mut corrupt = bytes.clone();
+        corrupt[data_payload_offset] ^= 0xff;
+        let backend = RecordingBackend::durable();
+        backend.seed(object.clone(), &corrupt);
+        let identity = TableIdentity::new("object-data-block-corrupt").expect("identity");
+
+        assert_table_decode_error(&TableObjectReaderService::new(&backend).open_reader(
+            identity,
+            &facts,
+            TableReaderConfig::default(),
+        ));
+    }
+
+    #[test]
+    fn table_object_reader_rejects_corrupt_footer_length_fields() {
+        let rows = diverse_rows();
+        let (bytes, _) = built_table_bytes(
+            "object-footer-length-corruption-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 0, "table0009").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        // Footer field layout: [index_offset:u64][index_frame_len:u32]
+        // [filter_offset:u64][filter_frame_len:u32][properties_offset:u64]
+        // [properties_frame_len:u32][magic:[u8;4]][reserved:[u8;20]][crc:u32].
+        let footer_start = bytes.len() - MAX_TABLE_FOOTER_SIZE;
+        let index_frame_len_offset = footer_start + 8;
+        let properties_frame_len_offset = footer_start + 32;
+        for (label, target) in [
+            ("index-frame-len", index_frame_len_offset),
+            ("properties-frame-len", properties_frame_len_offset),
+        ] {
+            let mut corrupt = bytes.clone();
+            // Flip a single byte inside the length field. The footer carries
+            // no per-field CRC, so the corruption must surface through
+            // downstream frame-CRC or layout validation.
+            corrupt[target] ^= 0xff;
+            let backend = RecordingBackend::durable();
+            backend.seed(object.clone(), &corrupt);
+            let identity =
+                TableIdentity::new(format!("object-footer-corrupt-{label}")).expect("identity");
+
+            assert_table_decode_error(&TableObjectReaderService::new(&backend).open_reader(
+                identity,
+                &facts,
+                TableReaderConfig::default(),
+            ));
+        }
+    }
+
+    #[test]
     fn invalid_table_identity_is_rejected_before_object_read() {
         let backend = RecordingBackend::durable();
         assert!(matches!(
@@ -1772,6 +1952,65 @@ mod tests {
         assert!(!ranges
             .iter()
             .any(|(_, range)| range.offset() == 0 && range.length() == byte_count));
+    }
+
+    fn expected_materialized_open_ranges(bytes: &[u8]) -> Vec<BackendRange> {
+        let (index_offset, index_len, properties_offset, properties_len) =
+            table_footer_ranges(bytes);
+        let metadata = decode_immutable_table_metadata(
+            bytes.len() as u64,
+            &bytes[..MAX_TABLE_HEADER_SIZE],
+            &bytes[bytes.len() - MAX_TABLE_FOOTER_SIZE..],
+            table_range(bytes, index_offset, index_len),
+            table_range(bytes, properties_offset, properties_len),
+        )
+        .expect("decode table metadata");
+        let mut ranges = vec![
+            BackendRange::new(0, MAX_TABLE_HEADER_SIZE as u64),
+            BackendRange::new(
+                bytes.len().saturating_sub(MAX_TABLE_FOOTER_SIZE) as u64,
+                MAX_TABLE_FOOTER_SIZE as u64,
+            ),
+            BackendRange::new(index_offset, u64::from(index_len)),
+            BackendRange::new(properties_offset, u64::from(properties_len)),
+        ];
+        ranges.extend(metadata.index().entries().iter().map(|entry| {
+            BackendRange::new(entry.block_offset(), u64::from(entry.block_frame_len()))
+        }));
+        ranges
+    }
+
+    fn table_footer_ranges(bytes: &[u8]) -> (u64, u32, u64, u32) {
+        let footer_offset = bytes.len() - MAX_TABLE_FOOTER_SIZE;
+        let footer = decode_table_footer_metadata(&bytes[footer_offset..], footer_offset)
+            .expect("decode table footer metadata");
+        (
+            footer.index_block_offset(),
+            footer.index_block_frame_len(),
+            footer.properties_block_offset(),
+            footer.properties_block_frame_len(),
+        )
+    }
+
+    fn table_range(bytes: &[u8], offset: u64, len: u32) -> &[u8] {
+        let start = checked_offset(offset);
+        let len = usize::try_from(len).expect("range length fits usize");
+        let end = start.checked_add(len).expect("range end fits usize");
+        &bytes[start..end]
+    }
+
+    fn checked_offset(offset: u64) -> usize {
+        usize::try_from(offset).expect("table fixture offset fits usize")
+    }
+
+    fn assert_table_decode_error(result: &Result<ImmutableTableReader, TableObjectReadError>) {
+        assert!(matches!(
+            result,
+            Err(TableObjectReadError::Table {
+                source: TableRuntimeError::DecodeFormat { .. },
+                ..
+            })
+        ));
     }
 
     fn assert_reader_query_parity(

@@ -93,6 +93,153 @@ fn recovery_loads_table_manifest_for_branch_and_reports_facts() {
 }
 
 #[test]
+fn recovery_opens_manifest_table_with_bounded_range_reads() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x71);
+    let rows = [
+        put_row(branch, 3, b"range-open-a", b"a"),
+        put_row(branch, 4, b"range-open-b", b"b"),
+    ];
+    let table = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "range-open-table",
+        &rows,
+    );
+    publish_table_manifest(
+        &backend,
+        &TableManifest::new(
+            branch,
+            None,
+            16,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest"),
+    );
+
+    let (shell, outcome) = recover_shell(&backend, branch, RecoveryStrictness::Strict);
+
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert_eq!(shell.branch_state().owned_table_count(), 1);
+    let table_ranges = backend.range_reads_for(table.reference.object());
+    assert_no_full_object_range(&table_ranges, table.reference.facts().byte_count());
+}
+
+#[test]
+fn recovery_with_large_manifest_table_does_not_read_full_object() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x72);
+    let rows = [
+        StorageRow::put(
+            physical_key(branch, b"large-range-open-a"),
+            CommitVersion::new(5),
+            Timestamp::from_micros(500),
+            Timestamp::EPOCH,
+            vec![0xa5; 48 * 1024],
+        ),
+        StorageRow::put(
+            physical_key(branch, b"large-range-open-b"),
+            CommitVersion::new(6),
+            Timestamp::from_micros(600),
+            Timestamp::EPOCH,
+            vec![0x5a; 48 * 1024],
+        ),
+    ];
+    let table = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "large-range-open-table",
+        &rows,
+    );
+    publish_table_manifest(
+        &backend,
+        &TableManifest::new(
+            branch,
+            None,
+            17,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest"),
+    );
+
+    let (shell, outcome) = recover_shell(&backend, branch, RecoveryStrictness::Strict);
+
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert_eq!(shell.branch_state().owned_table_count(), 1);
+    let table_ranges = backend.range_reads_for(table.reference.object());
+    assert_no_full_object_range(&table_ranges, table.reference.facts().byte_count());
+}
+
+#[test]
+fn recovery_range_backed_reader_preserves_branch_read_parity() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x73);
+    let rows = [
+        put_row(branch, 7, b"range-parity-a", b"first"),
+        put_row(branch, 8, b"range-parity-b", b"second"),
+    ];
+    let table = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "range-parity-table",
+        &rows,
+    );
+    publish_table_manifest(
+        &backend,
+        &TableManifest::new(
+            branch,
+            None,
+            18,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest"),
+    );
+
+    let (shell, outcome) = recover_shell(&backend, branch, RecoveryStrictness::Strict);
+
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    let view = shell.branch_state().capture_read_view().expect("read view");
+    assert_eq!(
+        view.latest(&physical_key(branch, b"range-parity-a"))
+            .expect("read first")
+            .expect("first visible")
+            .row()
+            .value(),
+        b"first"
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"range-parity-b"))
+            .expect("read second")
+            .expect("second visible")
+            .row()
+            .value(),
+        b"second"
+    );
+    assert_no_full_object_range(
+        &backend.range_reads_for(table.reference.object()),
+        table.reference.facts().byte_count(),
+    );
+}
+
+#[test]
 fn recovery_installs_manifest_owned_front_and_sorted_tables() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x22);
@@ -1641,10 +1788,18 @@ fn assert_table_manifest_data_loss(health: &RecoveryHealth, expected_kind: Recov
     ));
 }
 
+fn assert_no_full_object_range(ranges: &[BackendRange], byte_count: u64) {
+    assert!(ranges.len() > 1);
+    assert!(!ranges
+        .iter()
+        .any(|range| range.offset() == 0 && range.length() == byte_count));
+}
+
 #[derive(Debug)]
 struct ManifestRecoveryBackend {
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     fail_reads: Mutex<BTreeSet<ObjectName>>,
+    range_reads: Mutex<Vec<(ObjectName, BackendRange)>>,
     list_prefix_calls: AtomicUsize,
     table_list_prefix_calls: AtomicUsize,
     lock_held: Arc<AtomicBool>,
@@ -1655,6 +1810,7 @@ impl ManifestRecoveryBackend {
         Self {
             objects: Mutex::new(BTreeMap::new()),
             fail_reads: Mutex::new(BTreeSet::new()),
+            range_reads: Mutex::new(Vec::new()),
             list_prefix_calls: AtomicUsize::new(0),
             table_list_prefix_calls: AtomicUsize::new(0),
             lock_held: Arc::new(AtomicBool::new(false)),
@@ -1678,6 +1834,15 @@ impl ManifestRecoveryBackend {
 
     fn table_list_prefix_calls(&self) -> usize {
         self.table_list_prefix_calls.load(Ordering::SeqCst)
+    }
+
+    fn range_reads_for(&self, object: &ObjectName) -> Vec<BackendRange> {
+        self.range_reads
+            .lock()
+            .expect("range reads")
+            .iter()
+            .filter_map(|(range_object, range)| (range_object == object).then_some(*range))
+            .collect()
     }
 }
 
@@ -1707,6 +1872,10 @@ impl Backend for ManifestRecoveryBackend {
     }
 
     fn read_range(&self, name: &ObjectName, range: BackendRange) -> BackendResult<Vec<u8>> {
+        self.range_reads
+            .lock()
+            .expect("range reads")
+            .push((name.clone(), range));
         let bytes = self.read_object(name)?;
         let start = usize::try_from(range.offset()).unwrap_or(usize::MAX);
         let end = usize::try_from(range.end_offset().unwrap_or(u64::MAX)).unwrap_or(usize::MAX);

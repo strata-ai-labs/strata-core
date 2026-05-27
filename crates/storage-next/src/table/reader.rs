@@ -24,10 +24,6 @@ impl BytesTableSource {
             bytes: bytes.into(),
         }
     }
-
-    pub(crate) fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
 }
 
 impl TableByteSource for BytesTableSource {
@@ -76,14 +72,17 @@ pub(crate) struct ImmutableTableReader {
 }
 
 impl ImmutableTableReader {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "owned Vec preserves the eager-open API symmetry with open_source and lets future implementations cache the buffer without changing call sites"
+    )]
     pub(crate) fn open_bytes(
         identity: TableIdentity,
         bytes: Vec<u8>,
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
-        let source = BytesTableSource::new(bytes);
-        let (facts, rows) = decode_reader_rows(identity, source.bytes())?;
+        let (facts, rows) = decode_reader_rows(identity, &bytes)?;
         Ok(Self {
             config,
             facts,

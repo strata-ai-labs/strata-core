@@ -1093,6 +1093,23 @@ fn lazy_reader_does_not_full_read_durable_object_on_open() {
 }
 
 #[test]
+fn lazy_open_path_does_not_perform_full_object_reads() {
+    // `service/table.rs` is intentionally exempt because it owns the
+    // publish-dedup `require_exact_bytes` helper that reads the entire
+    // object once via `read_all_for_exact_match`. That helper is a
+    // post-publish equality check, not an open path. The two files below
+    // are the lazy-open paths and must never perform a full-object read.
+    assert_lazy_open_path_source_excludes(|line| {
+        let compact = uncommented_text(line).to_ascii_lowercase();
+        compact.contains("read_all_for_exact_match")
+            || compact.contains("read_all(")
+            || compact.contains("read_full")
+            || compact.contains("read_full_source")
+            || compact.contains("read_object(")
+    });
+}
+
+#[test]
 fn lazy_reader_does_not_import_raw_io() {
     assert_lazy_reader_source_excludes(|line| {
         let compact = uncommented_text(line).to_ascii_lowercase();
@@ -1260,6 +1277,21 @@ fn assert_lazy_reader_source_excludes(predicate: impl Fn(&str) -> bool) {
             assert!(
                 !predicate(line),
                 "{relative}:{} violates lazy reader source guard: {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
+fn assert_lazy_open_path_source_excludes(predicate: impl Fn(&str) -> bool) {
+    let root = common::crate_root();
+    for relative in ["src/table/reader.rs", "src/lifecycle/table_manifest.rs"] {
+        let path = root.join(relative);
+        let text = production_text(&path);
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !predicate(line),
+                "{relative}:{} violates lazy open path source guard: {line}",
                 line_number + 1
             );
         }
