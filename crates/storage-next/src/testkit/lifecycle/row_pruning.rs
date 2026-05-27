@@ -351,7 +351,7 @@ fn check_inherited_layer_block(
     outcome: &mut LifecycleRowPruningContractOutcome,
 ) -> Result<(), TestkitError> {
     let parent = branch_id(script_byte(script, 7).max(8));
-    let child = branch_id(script_byte(script, 8).max(9));
+    let child = distinct_branch_id(parent, script_byte(script, 8).max(9));
     let mut parent_state = BranchLocalState::empty(parent);
     install_l0_table(
         &mut parent_state,
@@ -587,6 +587,15 @@ fn history_for(
 
 fn branch_id(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+}
+
+fn distinct_branch_id(other: BranchId, byte: u8) -> BranchId {
+    let candidate = branch_id(byte);
+    if candidate == other {
+        branch_id(byte.wrapping_add(1))
+    } else {
+        candidate
+    }
 }
 
 fn pruning_error(error: impl std::error::Error) -> TestkitError {

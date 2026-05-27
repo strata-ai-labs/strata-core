@@ -418,7 +418,7 @@ impl<'a> TableObjectByteSource<'a> {
         Ok(bytes)
     }
 
-    fn read_full(&self) -> Result<Vec<u8>, TableObjectReadError> {
+    fn read_all_for_exact_match(&self) -> Result<Vec<u8>, TableObjectReadError> {
         let len = usize::try_from(self.byte_count).map_err(|_| TableObjectReadError::Source {
             object: self.object.clone(),
             reason: "table object byte count is too large",
@@ -542,17 +542,8 @@ impl<'a> TableObjectReaderService<'a> {
             object_facts.object().clone(),
             object_facts.byte_count(),
         )?;
-        // Keep the backend read at the L4/L5 boundary so object diagnostics
-        // retain the original backend error instead of collapsing into L5's
-        // object-neutral source-read vocabulary.
-        let bytes = source.read_full()?;
-        let reader =
-            ImmutableTableReader::open_bytes(identity, bytes, config).map_err(|source| {
-                TableObjectReadError::Table {
-                    object: object_facts.object().clone(),
-                    source,
-                }
-            })?;
+        let reader = ImmutableTableReader::open_source(identity, source, config)
+            .map_err(|source| table_object_open_error(object_facts.object(), source))?;
         validate_reader_facts(object_facts, &reader)?;
         Ok(reader)
     }
@@ -578,7 +569,7 @@ impl<'a> TableObjectReaderService<'a> {
             object_facts.object().clone(),
             object_facts.byte_count(),
         )?;
-        let existing_bytes = source.read_full()?;
+        let existing_bytes = source.read_all_for_exact_match()?;
         if existing_bytes != expected_bytes {
             return Err(TableObjectReadError::FactMismatch {
                 object: object_facts.object().clone(),
@@ -586,6 +577,22 @@ impl<'a> TableObjectReaderService<'a> {
             });
         }
         Ok(())
+    }
+}
+
+fn table_object_open_error(object: &ObjectName, source: TableRuntimeError) -> TableObjectReadError {
+    if let TableRuntimeError::SourceRead {
+        source: Some(lower),
+        ..
+    } = &source
+    {
+        if let Some(read_error) = lower.downcast_ref::<TableObjectReadError>() {
+            return read_error.clone();
+        }
+    }
+    TableObjectReadError::Table {
+        object: object.clone(),
+        source,
     }
 }
 
@@ -1154,12 +1161,10 @@ mod tests {
                 .expect("open byte reader");
 
         assert_reader_matches(&object_reader, &byte_reader);
-        assert_eq!(
-            backend.range_reads(),
-            vec![(
-                write.facts().object().clone(),
-                BackendRange::new(0, bytes.len() as u64)
-            )]
+        assert_range_open_avoids_full_object_read(
+            &backend.range_reads(),
+            write.facts().object(),
+            bytes.len() as u64,
         );
         assert_eq!(backend.metadata_calls(), 1);
         assert_eq!(
@@ -1217,12 +1222,10 @@ mod tests {
 
         assert_reader_matches(&object_reader, &byte_reader);
         assert_eq!(backend.metadata_calls(), 0);
-        assert_eq!(
-            backend.range_reads(),
-            vec![(
-                facts.object().clone(),
-                BackendRange::new(0, facts.byte_count())
-            )]
+        assert_range_open_avoids_full_object_read(
+            &backend.range_reads(),
+            facts.object(),
+            facts.byte_count(),
         );
     }
 
@@ -1352,10 +1355,12 @@ mod tests {
         );
 
         let corrupt = RecordingBackend::durable();
-        corrupt.seed(object.clone(), b"not table");
+        let mut corrupt_bytes = bytes.clone();
+        corrupt_bytes[0] ^= 0xff;
+        corrupt.seed(object.clone(), &corrupt_bytes);
         let corrupt_facts = TableObjectFacts {
             object: object.clone(),
-            byte_count: 9,
+            byte_count: corrupt_bytes.len() as u64,
             row_count: facts.row_count(),
             data_block_count: facts.data_block_count(),
             commit_min: facts.commit_min(),
@@ -1659,10 +1664,10 @@ mod tests {
                 corrupt[0] ^= 0xff;
                 corrupt
             }),
-            ("bad-footer-crc", {
+            ("bad-footer-magic", {
                 let mut corrupt = bytes.clone();
-                let last = corrupt.len() - 1;
-                corrupt[last] ^= 0xff;
+                let footer_magic = corrupt.len() - crate::format::MAX_TABLE_FOOTER_SIZE + 36;
+                corrupt[footer_magic] ^= 0xff;
                 corrupt
             }),
             ("legacy-magic", {
@@ -1753,6 +1758,20 @@ mod tests {
                 .map(|row| row.row().clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn assert_range_open_avoids_full_object_read(
+        ranges: &[(ObjectName, BackendRange)],
+        object: &ObjectName,
+        byte_count: u64,
+    ) {
+        assert!(ranges.len() > 1);
+        assert!(ranges
+            .iter()
+            .all(|(range_object, _)| range_object == object));
+        assert!(!ranges
+            .iter()
+            .any(|(_, range)| range.offset() == 0 && range.length() == byte_count));
     }
 
     fn assert_reader_query_parity(

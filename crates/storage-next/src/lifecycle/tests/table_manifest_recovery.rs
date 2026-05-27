@@ -556,7 +556,7 @@ fn recovery_rejects_table_object_fact_and_bounds_mismatches() {
 }
 
 #[test]
-fn reader_budget_recovery_decode_rejects_large_table() {
+fn reader_budget_recovery_decode_rejects_metadata_over_budget() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x6a);
     let row = put_row(branch, 31, b"recovery-reader", b"large-value");
@@ -577,10 +577,8 @@ fn reader_budget_recovery_decode_rejects_large_table() {
         )
         .expect("manifest"),
     );
-    let table_bytes = table.reference.facts().byte_count();
-    assert!(table_bytes > 1);
     let mut parts = budget_parts_for_recovery();
-    parts.table_reader_bytes = table_bytes - 1;
+    parts.table_reader_bytes = 1;
     parts.total_bytes = pool_sum(parts);
     let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
 
@@ -607,7 +605,7 @@ fn reader_budget_recovery_decode_rejects_large_table() {
 }
 
 #[test]
-fn reader_budget_fails_closed_for_large_whole_object_reads_until_lazy_reads_ship() {
+fn reader_budget_accepts_metadata_open_below_whole_object_size() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x6b);
     let row = put_row(branch, 32, b"whole-object-defer", b"value");
@@ -642,27 +640,16 @@ fn reader_budget_fails_closed_for_large_whole_object_reads_until_lazy_reads_ship
     let mut shell = assemble_shell_with_budget(&backend, branch, budget);
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-    let error = LifecycleRecoveryRuntime::new(&mut shell)
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
-        .expect_err("whole-object reader fails closed until lazy reads exist");
+        .expect("metadata reader budget accepts range open");
 
-    match error {
-        LifecycleError::StorageBudgetExceeded {
-            pool: StorageBudgetPool::TableReader,
-            requested_bytes,
-            limit_bytes,
-            ..
-        } => {
-            assert_eq!(requested_bytes, table_bytes);
-            assert!(limit_bytes < table_bytes);
-        }
-        other => panic!("expected fail-closed table reader budget error, got {other:?}"),
-    }
-    assert!(shell.branch_state().is_empty());
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert!(!shell.branch_state().is_empty());
 }
 
 #[test]
-fn low_memory_profile_rejects_large_whole_table_reader_until_lazy_reads() {
+fn low_memory_profile_accepts_large_table_metadata_open() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x6c);
     let large_value = vec![0xab_u8; 64 * 1024];
@@ -704,18 +691,12 @@ fn low_memory_profile_rejects_large_whole_table_reader_until_lazy_reads() {
     let mut shell = assemble_shell_with_budget(&backend, branch, budget);
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-    let error = LifecycleRecoveryRuntime::new(&mut shell)
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
-        .expect_err("low-memory profile rejects large reader");
+        .expect("low-memory profile accepts metadata reader open");
 
-    assert!(matches!(
-        error,
-        LifecycleError::StorageBudgetExceeded {
-            pool: StorageBudgetPool::TableReader,
-            ..
-        }
-    ));
-    assert!(shell.branch_state().is_empty());
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert!(!shell.branch_state().is_empty());
 }
 
 #[test]

@@ -685,6 +685,95 @@ cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D 
 git diff --check
 ```
 
+## L8X Lazy Object-Backed Table Reads
+
+Status: implemented as bounded range-backed open; full branch-resident cursor
+laziness remains gated by the branch table row-slice contract.
+
+### Shipped Files
+
+- `crates/storage-next/src/format/table/mod.rs`
+- `crates/storage-next/src/format/table/artifact.rs`
+- `crates/storage-next/src/table/reader.rs`
+- `crates/storage-next/src/table/tests/reader.rs`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/lifecycle/table_manifest.rs`
+- `crates/storage-next/src/lifecycle/tests/table_manifest_recovery.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+
+### Implementation Notes
+
+- Added table-format helpers for metadata-only decode from header, footer,
+  index-frame, and properties-frame ranges without changing the physical table
+  byte format.
+- Added a per-data-block decode helper that validates the touched data frame
+  against its index entry.
+- Changed `ImmutableTableReader::open_source` to read header, footer, index,
+  properties, and then bounded data-block ranges instead of performing a
+  single whole-object read.
+- Changed `TableObjectReaderService::open_reader` to route durable objects
+  through the range-backed table source. Backend range-read failures still
+  preserve the backend source chain.
+- Preserved the byte-slice eager reader path for table fixtures and in-memory
+  callers.
+- Changed table-manifest recovery reader admission from whole object byte count
+  to metadata/index estimate, so large manifest-listed tables can open under
+  low-memory profiles when their metadata fits.
+- Added source guards that forbid full-object durable reads, raw IO, path cache
+  identity, process-global cache state, product/primitive imports, cleanup
+  mutation, and milestone labels in the lazy-reader path.
+
+### Current Boundary
+
+- Branch state still stores `BranchOwnedTable` with a row-slice reader contract,
+  and L6 validation, compaction, checkpoint, manifest publication, and
+  materialization code still call `table.rows()`. Because of that contract,
+  recovered table objects are opened by bounded ranges but their rows are still
+  materialized before installation into branch state.
+- A fully branch-resident lazy cursor requires changing the L6 branch table
+  contract so validation and reads can operate through cursors/facts without
+  requiring `&[TableRow]` at install time. That is intentionally not hidden by
+  this porting entry.
+
+### Tests Updated
+
+- `immutable_reader_opens_table_source_and_maps_source_failures`
+- `immutable_reader_bytes_and_source_paths_are_identical_for_queries`
+- `table_object_reader_opens_published_object_through_range_source`
+- `table_object_reader_allows_missing_metadata_capability`
+- `table_object_reader_distinguishes_read_decode_and_fact_errors`
+- `table_object_reader_routes_corruption_to_table_errors`
+- `reader_budget_recovery_decode_rejects_metadata_over_budget`
+- `reader_budget_accepts_metadata_open_below_whole_object_size`
+- `low_memory_profile_accepts_large_table_metadata_open`
+- `lazy_reader_does_not_full_read_durable_object_on_open`
+- `lazy_reader_does_not_import_raw_io`
+- `lazy_reader_does_not_use_path_cache_identity_or_global_cache`
+- `lazy_reader_does_not_import_product_or_cleanup_policy`
+- `lazy_reader_code_and_fixture_names_do_not_use_milestone_labels`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Full object read during durable open | `crates/storage-next/src/service/table.rs` | Reintroduce whole-object read in `open_reader` | `lazy_reader_does_not_full_read_durable_object_on_open` |
+| Ignore metadata budget | `crates/storage-next/src/lifecycle/table_manifest.rs` | Admit recovered manifest tables by object byte count or skip budget check | `reader_budget_recovery_decode_rejects_metadata_over_budget` |
+| Collapse backend read error | `crates/storage-next/src/service/table.rs` | Wrap `TableObjectReadError::Backend` as object-neutral table error | `table_object_reader_distinguishes_read_decode_and_fact_errors` |
+| Accept corrupt metadata | `crates/storage-next/src/format/table/artifact.rs` | Skip header/footer/index/properties validation | `table_object_reader_routes_corruption_to_table_errors` |
+| Use path/global cache identity | `crates/storage-next/src/table/reader.rs` | Add path-derived cache key or global cache state | `lazy_reader_does_not_use_path_cache_identity_or_global_cache` |
+
+### Verification
+
+Commands run for the implementation pass (all passed):
+
+```bash
+cargo test -p strata-storage-next --locked --lib table::tests::reader
+cargo test -p strata-storage-next --locked --lib service::table
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::table_manifest_recovery
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard lazy_reader
+```
+
 ## L8U - Durable Rewrite Publication
 
 Status: runtime implementation and test suite landed

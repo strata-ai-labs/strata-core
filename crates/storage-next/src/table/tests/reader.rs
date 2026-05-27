@@ -295,7 +295,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
         TableReaderConfig::default(),
     )
     .expect("open source");
-    assert_eq!(source_probe.calls(), 1);
+    assert!(source_probe.calls() > 1);
     assert_eq!(reader.facts(), artifact.facts());
     assert_eq!(reader.rows(), rows.as_slice());
 
@@ -315,7 +315,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
     .expect_err("short source read should fail");
     assert_eq!(
         short,
-        TableRuntimeError::source_read("short table source read")
+        TableRuntimeError::source_read("short table header read")
     );
 
     let short_advertised = TestSource::with_advertised_len(
@@ -329,7 +329,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
         TableReaderConfig::default(),
     )
     .expect_err("advertised prefix should decode as a partial table");
-    assert_eq!(short_advertised_probe.calls(), 1);
+    assert_eq!(short_advertised_probe.calls(), 2);
     assert!(matches!(error, TableRuntimeError::DecodeFormat { .. }));
 
     let long_advertised = ImmutableTableReader::open_source(
@@ -343,7 +343,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
     .expect_err("advertised length beyond source should be a short read");
     assert_eq!(
         long_advertised,
-        TableRuntimeError::source_read("short table source read")
+        TableRuntimeError::source_read("short table footer read")
     );
 }
 
@@ -897,7 +897,7 @@ fn immutable_reader_bytes_and_source_paths_are_identical_for_queries() {
         ImmutableTableReader::open_source(identity("reader-parity"), source, config)
             .expect("open source reader");
 
-    assert_eq!(source_probe.calls(), 1);
+    assert!(source_probe.calls() > 1);
     assert_eq!(byte_reader, source_reader);
     assert_eq!(
         all_reader_keys(&byte_reader),

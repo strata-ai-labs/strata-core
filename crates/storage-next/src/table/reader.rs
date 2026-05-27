@@ -1,10 +1,15 @@
 //! Immutable table reader.
 
 use super::{
-    BoundedTableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableReaderConfig,
-    TableRow, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    BoundedTableCursor, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyBounds,
+    TableKeyRange, TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts,
+    TableRuntimeResult,
 };
-use crate::format::decode_immutable_table;
+use crate::format::{
+    decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
+    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata,
+    MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
+};
 
 use super::facts::table_facts_from_decoded;
 
@@ -92,8 +97,10 @@ impl ImmutableTableReader {
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
-        let bytes = read_full_source(&source)?;
-        let (facts, rows) = decode_reader_rows(identity, &bytes)?;
+        let metadata = read_table_metadata(&source)?;
+        let facts = table_facts_from_metadata(identity, &metadata)?;
+        let rows = read_rows_from_metadata(&source, &metadata)?;
+        super::validate_strictly_sorted_unique_rows(&rows)?;
         Ok(Self {
             config,
             facts,
@@ -185,18 +192,6 @@ fn require_validate_on_open(config: TableReaderConfig) {
     }
 }
 
-fn read_full_source(source: &impl TableByteSource) -> TableRuntimeResult<Vec<u8>> {
-    let len =
-        usize::try_from(source.byte_count()).map_err(|_| TableRuntimeError::InvalidRange {
-            field: "byte_count",
-        })?;
-    let bytes = source.read_at(0, len)?;
-    if bytes.len() != len {
-        return Err(TableRuntimeError::source_read("short table source read"));
-    }
-    Ok(bytes)
-}
-
 fn decode_reader_rows(
     identity: TableIdentity,
     bytes: &[u8],
@@ -212,4 +207,125 @@ fn decode_reader_rows(
     super::validate_strictly_sorted_unique_rows(&rows)?;
     let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
     Ok((facts, rows))
+}
+
+fn read_table_metadata(
+    source: &impl TableByteSource,
+) -> TableRuntimeResult<ImmutableTableMetadata> {
+    let byte_count = source.byte_count();
+    let footer_offset = byte_count.checked_sub(MAX_TABLE_FOOTER_SIZE as u64).ok_or(
+        TableRuntimeError::InvalidRange {
+            field: "byte_count",
+        },
+    )?;
+    let header_bytes =
+        read_exact_source(source, 0, MAX_TABLE_HEADER_SIZE, "short table header read")?;
+    let footer_bytes = read_exact_source(
+        source,
+        footer_offset,
+        MAX_TABLE_FOOTER_SIZE,
+        "short table footer read",
+    )?;
+
+    let (_, header_len) = decode_table_header(&header_bytes)
+        .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+    if header_len != MAX_TABLE_HEADER_SIZE {
+        return Err(TableRuntimeError::DecodeFormat {
+            source: crate::format::FormatError::InvalidLength {
+                field: "table_header_size",
+            },
+        });
+    }
+    let footer = decode_table_footer_metadata(
+        &footer_bytes,
+        usize::try_from(footer_offset).map_err(|_| TableRuntimeError::InvalidRange {
+            field: "footer_offset",
+        })?,
+    )
+    .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+    let index_len = usize::try_from(footer.index_block_frame_len()).map_err(|_| {
+        TableRuntimeError::InvalidRange {
+            field: "index_block_frame_len",
+        }
+    })?;
+    let properties_len = usize::try_from(footer.properties_block_frame_len()).map_err(|_| {
+        TableRuntimeError::InvalidRange {
+            field: "properties_block_frame_len",
+        }
+    })?;
+    let index_bytes = read_exact_source(
+        source,
+        footer.index_block_offset(),
+        index_len,
+        "short table index read",
+    )?;
+    let properties_bytes = read_exact_source(
+        source,
+        footer.properties_block_offset(),
+        properties_len,
+        "short table properties read",
+    )?;
+    decode_immutable_table_metadata(
+        byte_count,
+        &header_bytes,
+        &footer_bytes,
+        &index_bytes,
+        &properties_bytes,
+    )
+    .map_err(|source| TableRuntimeError::DecodeFormat { source })
+}
+
+fn read_rows_from_metadata(
+    source: &impl TableByteSource,
+    metadata: &ImmutableTableMetadata,
+) -> TableRuntimeResult<Vec<TableRow>> {
+    let mut rows = Vec::new();
+    for entry in metadata.index().entries() {
+        let frame_len = usize::try_from(entry.block_frame_len()).map_err(|_| {
+            TableRuntimeError::InvalidRange {
+                field: "block_frame_len",
+            }
+        })?;
+        let frame_bytes = read_exact_source(
+            source,
+            entry.block_offset(),
+            frame_len,
+            "short table data block read",
+        )?;
+        let block = decode_immutable_table_data_block(entry, &frame_bytes)
+            .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+        rows.extend(block.rows().cloned().map(TableRow::new));
+    }
+    Ok(rows)
+}
+
+fn table_facts_from_metadata(
+    identity: TableIdentity,
+    metadata: &ImmutableTableMetadata,
+) -> TableRuntimeResult<TableRuntimeFacts> {
+    let header = metadata.header();
+    TableRuntimeFacts::new(
+        identity,
+        header.row_count(),
+        header.data_block_count(),
+        TableKeyRange::new(
+            metadata.properties().min_key_bytes().to_vec(),
+            metadata.properties().max_key_bytes().to_vec(),
+        )?,
+        TableCommitRange::new(header.commit_min(), header.commit_max())?,
+        metadata.byte_count(),
+    )
+}
+
+fn read_exact_source(
+    source: &impl TableByteSource,
+    offset: u64,
+    len: usize,
+    short_reason: &'static str,
+) -> TableRuntimeResult<Vec<u8>> {
+    let bytes = source.read_at(offset, len)?;
+    if bytes.len() != len {
+        return Err(TableRuntimeError::source_read(short_reason));
+    }
+    Ok(bytes)
 }

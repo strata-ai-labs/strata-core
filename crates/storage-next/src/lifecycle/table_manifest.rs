@@ -549,7 +549,7 @@ fn recover_manifest_table(
     if let Some(budget) = budget {
         require_table_reader_budget(
             budget,
-            object_facts.byte_count(),
+            manifest_reader_metadata_budget_bytes(&object_facts),
             "table manifest recovery reader exceeds storage budget",
         )?;
     }
@@ -567,6 +567,15 @@ fn recover_manifest_table(
         table.provenance().clone(),
     )?;
     branch_table_from_reader(branch_id, level, table.provenance(), reader)
+}
+
+fn manifest_reader_metadata_budget_bytes(object_facts: &TableObjectFacts) -> u64 {
+    let metadata_floor =
+        (crate::format::MAX_TABLE_HEADER_SIZE + crate::format::MAX_TABLE_FOOTER_SIZE) as u64;
+    let per_block_index_estimate = u64::from(object_facts.data_block_count()).saturating_mul(256);
+    metadata_floor
+        .saturating_add(per_block_index_estimate)
+        .min(object_facts.byte_count())
 }
 
 fn branch_table_from_reader(

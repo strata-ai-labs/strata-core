@@ -7,9 +7,12 @@ mod index;
 mod properties;
 
 pub(crate) use artifact::{
-    decode_immutable_table, encode_immutable_table, encode_immutable_table_with_block_compressions,
-    ImmutableTable,
+    decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
+    encode_immutable_table, encode_immutable_table_with_block_compressions, ImmutableTable,
+    ImmutableTableMetadata,
 };
+pub(crate) const MAX_TABLE_HEADER_SIZE: usize = TABLE_HEADER_SIZE;
+pub(crate) const MAX_TABLE_FOOTER_SIZE: usize = TABLE_FOOTER_SIZE;
 
 const TABLE_HEADER_FORMAT: &str = "table_header";
 const TABLE_FOOTER_FORMAT: &str = "table_footer";
@@ -17,9 +20,9 @@ const TABLE_BLOCK_FRAME_FORMAT: &str = "table_block_frame";
 const TABLE_MAGIC: [u8; 4] = *b"STTB";
 const TABLE_FOOTER_MAGIC: [u8; 4] = *b"STTF";
 const TABLE_FORMAT_VERSION: u32 = 1;
-const TABLE_HEADER_SIZE: usize = 64;
+pub(crate) const TABLE_HEADER_SIZE: usize = 64;
 const TABLE_HEADER_SIZE_U32: u32 = 64;
-const TABLE_FOOTER_SIZE: usize = 64;
+pub(crate) const TABLE_FOOTER_SIZE: usize = 64;
 const TABLE_BLOCK_FRAME_HEADER_SIZE: usize = 12;
 const TABLE_BLOCK_FRAME_OVERHEAD: usize = TABLE_BLOCK_FRAME_HEADER_SIZE + 4;
 pub(crate) const MAX_TABLE_DATA_BLOCKS: u32 = 1_048_576;
@@ -253,6 +256,51 @@ pub(crate) fn decode_table_footer(table_bytes: &[u8]) -> Result<TableFooter, For
 
     let footer_bytes = &table_bytes[footer_start..table_bytes.len() - 4];
     let mut reader = ByteReader::new(TABLE_FOOTER_FORMAT, footer_bytes);
+    let index_block_offset = reader.read_u64_le()?;
+    let index_block_frame_len = reader.read_u32_le()?;
+    let filter_block_offset = reader.read_u64_le()?;
+    let filter_block_frame_len = reader.read_u32_le()?;
+    if filter_block_offset != 0 || filter_block_frame_len != 0 {
+        return Err(FormatError::InvalidValue {
+            field: "filter_block",
+        });
+    }
+    let properties_block_offset = reader.read_u64_le()?;
+    let properties_block_frame_len = reader.read_u32_le()?;
+    if reader.read_exact(4)? != TABLE_FOOTER_MAGIC {
+        return Err(FormatError::InvalidMagic {
+            format: TABLE_FOOTER_FORMAT,
+        });
+    }
+    let reserved = reader.read_exact(20)?;
+    if reserved.iter().any(|byte| *byte != 0) {
+        return Err(FormatError::InvalidValue { field: "reserved" });
+    }
+    reader.finish()?;
+
+    let footer = TableFooter::new(
+        index_block_offset,
+        index_block_frame_len,
+        properties_block_offset,
+        properties_block_frame_len,
+    )?;
+    validate_footer_layout(&footer, footer_start)?;
+    Ok(footer)
+}
+
+pub(crate) fn decode_table_footer_metadata(
+    footer_bytes: &[u8],
+    footer_start: usize,
+) -> Result<TableFooter, FormatError> {
+    if footer_bytes.len() != TABLE_FOOTER_SIZE {
+        return Err(FormatError::InsufficientBytes {
+            format: TABLE_FOOTER_FORMAT,
+            needed: TABLE_FOOTER_SIZE,
+            actual: footer_bytes.len(),
+        });
+    }
+
+    let mut reader = ByteReader::new(TABLE_FOOTER_FORMAT, &footer_bytes[..TABLE_FOOTER_SIZE - 4]);
     let index_block_offset = reader.read_u64_le()?;
     let index_block_frame_len = reader.read_u32_le()?;
     let filter_block_offset = reader.read_u64_le()?;

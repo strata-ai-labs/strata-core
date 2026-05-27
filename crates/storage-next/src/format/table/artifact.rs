@@ -6,10 +6,10 @@ use super::properties::{
     TableProperties,
 };
 use super::{
-    decode_table_block_frame_as, decode_table_footer, decode_table_header,
-    encode_table_block_frame, encode_table_footer, encode_table_header, TableBlockFrame,
-    TableBlockKind, TableCompression, TableFooter, TableHeader, MAX_TABLE_DATA_BLOCKS,
-    MAX_TABLE_ROWS, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
+    decode_table_block_frame_as, decode_table_footer, decode_table_footer_metadata,
+    decode_table_header, encode_table_block_frame, encode_table_footer, encode_table_header,
+    TableBlockFrame, TableBlockKind, TableCompression, TableFooter, TableHeader,
+    MAX_TABLE_DATA_BLOCKS, MAX_TABLE_ROWS, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
 };
 use crate::format::FormatError;
 use crate::row::StorageRow;
@@ -23,6 +23,32 @@ pub(crate) struct ImmutableTable {
     index: TableIndexBlock,
     properties: TableProperties,
     rows: Vec<StorageRow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ImmutableTableMetadata {
+    header: TableHeader,
+    index: TableIndexBlock,
+    properties: TableProperties,
+    byte_count: u64,
+}
+
+impl ImmutableTableMetadata {
+    pub(crate) const fn header(&self) -> TableHeader {
+        self.header
+    }
+
+    pub(crate) const fn index(&self) -> &TableIndexBlock {
+        &self.index
+    }
+
+    pub(crate) const fn properties(&self) -> &TableProperties {
+        &self.properties
+    }
+
+    pub(crate) const fn byte_count(&self) -> u64 {
+        self.byte_count
+    }
 }
 
 impl ImmutableTable {
@@ -258,6 +284,85 @@ pub(crate) fn decode_immutable_table(bytes: &[u8]) -> Result<ImmutableTable, For
     })
 }
 
+pub(crate) fn decode_immutable_table_metadata(
+    byte_count: u64,
+    header_bytes: &[u8],
+    footer_bytes: &[u8],
+    index_frame_bytes: &[u8],
+    properties_frame_bytes: &[u8],
+) -> Result<ImmutableTableMetadata, FormatError> {
+    let byte_count_usize = usize::try_from(byte_count).map_err(|_| FormatError::InvalidLength {
+        field: TABLE_ARTIFACT_FORMAT,
+    })?;
+    let min_len =
+        TABLE_HEADER_SIZE
+            .checked_add(TABLE_FOOTER_SIZE)
+            .ok_or(FormatError::InvalidLength {
+                field: TABLE_ARTIFACT_FORMAT,
+            })?;
+    if byte_count_usize < min_len {
+        return Err(FormatError::InsufficientBytes {
+            format: TABLE_ARTIFACT_FORMAT,
+            needed: min_len,
+            actual: byte_count_usize,
+        });
+    }
+    let footer_start = byte_count_usize - TABLE_FOOTER_SIZE;
+
+    let (header, header_len) = decode_table_header(header_bytes)?;
+    if header_len != TABLE_HEADER_SIZE {
+        return Err(FormatError::InvalidLength {
+            field: "table_header_size",
+        });
+    }
+    let footer = decode_table_footer_metadata(footer_bytes, footer_start)?;
+    let (index_frame, _) = decode_exact_frame(index_frame_bytes, TableBlockKind::Index)?;
+    let index = decode_table_index_block_for_data_blocks(
+        index_frame.decoded_payload(),
+        header.data_block_count(),
+    )?;
+    let (properties_frame, _) =
+        decode_exact_frame(properties_frame_bytes, TableBlockKind::Properties)?;
+    let properties = decode_table_properties(properties_frame.decoded_payload())?;
+
+    validate_metadata_against_header_and_footer(&header, &footer, &index, &properties)?;
+    let index_start =
+        usize::try_from(footer.index_block_offset()).map_err(|_| FormatError::InvalidLength {
+            field: "index_block_offset",
+        })?;
+    for index_entry in index.entries() {
+        validate_index_entry_range(index_entry, index_start)?;
+    }
+
+    Ok(ImmutableTableMetadata {
+        header,
+        index,
+        properties,
+        byte_count,
+    })
+}
+
+pub(crate) fn decode_immutable_table_data_block(
+    index_entry: &TableIndexEntry,
+    frame_bytes: &[u8],
+) -> Result<TableDataBlock, FormatError> {
+    let (frame, consumed) = decode_exact_frame(frame_bytes, TableBlockKind::Data)?;
+    if consumed
+        != usize::try_from(index_entry.block_frame_len()).map_err(|_| {
+            FormatError::InvalidLength {
+                field: "block_frame_len",
+            }
+        })?
+    {
+        return Err(FormatError::InvalidLength {
+            field: "block_frame_len",
+        });
+    }
+    let block = decode_table_data_block(frame.decoded_payload())?;
+    validate_data_block_against_index(index_entry, &block)?;
+    Ok(block)
+}
+
 fn decode_data_region(
     table_bytes: &[u8],
     index_start: usize,
@@ -383,6 +488,75 @@ fn validate_table_against_decoded_facts(
         }
     }
 
+    Ok(())
+}
+
+fn validate_metadata_against_header_and_footer(
+    header: &TableHeader,
+    footer: &TableFooter,
+    index: &TableIndexBlock,
+    properties: &TableProperties,
+) -> Result<(), FormatError> {
+    validate_table_properties_against_header(
+        properties,
+        header.row_count(),
+        header.data_block_count(),
+        header.commit_min(),
+        header.commit_max(),
+    )?;
+    if properties.min_key_bytes() != index.entries()[0].first_key_bytes() {
+        return Err(FormatError::InvalidValue {
+            field: "index_first_key",
+        });
+    }
+    if properties.max_key_bytes() != index.entries()[index.entries().len() - 1].last_key_bytes() {
+        return Err(FormatError::InvalidValue {
+            field: "index_last_key",
+        });
+    }
+    let indexed_rows = index.entries().iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(u64::from(entry.row_count()))
+            .ok_or(FormatError::InvalidLength { field: "row_count" })
+    })?;
+    if indexed_rows != header.row_count() {
+        return Err(FormatError::InvalidValue {
+            field: "index_row_count",
+        });
+    }
+    let index_end = footer
+        .index_block_offset()
+        .checked_add(u64::from(footer.index_block_frame_len()))
+        .ok_or(FormatError::InvalidLength {
+            field: "index_block_range",
+        })?;
+    if index_end != footer.properties_block_offset() {
+        return Err(FormatError::InvalidLength {
+            field: "properties_block_offset",
+        });
+    }
+    Ok(())
+}
+
+fn validate_data_block_against_index(
+    index_entry: &TableIndexEntry,
+    data_block: &TableDataBlock,
+) -> Result<(), FormatError> {
+    if index_entry.row_count() as usize != data_block.row_count() {
+        return Err(FormatError::InvalidValue {
+            field: "index_row_count",
+        });
+    }
+    if index_entry.first_key_bytes() != data_block.first_key_bytes() {
+        return Err(FormatError::InvalidValue {
+            field: "index_first_key",
+        });
+    }
+    if index_entry.last_key_bytes() != data_block.last_key_bytes() {
+        return Err(FormatError::InvalidValue {
+            field: "index_last_key",
+        });
+    }
     Ok(())
 }
 

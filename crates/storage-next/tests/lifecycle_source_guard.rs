@@ -1083,6 +1083,76 @@ fn memory_budget_code_and_fixture_names_do_not_use_milestone_labels() {
 }
 
 #[test]
+fn lazy_reader_does_not_full_read_durable_object_on_open() {
+    assert_lazy_reader_source_excludes(|line| {
+        let compact = uncommented_text(line).to_ascii_lowercase();
+        compact.contains("read_full")
+            || compact.contains("read_full_source")
+            || compact.contains("read_object(")
+    });
+}
+
+#[test]
+fn lazy_reader_does_not_import_raw_io() {
+    assert_lazy_reader_source_excludes(|line| {
+        let compact = uncommented_text(line).to_ascii_lowercase();
+        compact.contains("std::fs")
+            || compact.contains("std::path::path")
+            || compact.contains("file::")
+            || compact.contains("openoptions")
+            || compact.contains("mmap")
+    });
+}
+
+#[test]
+fn lazy_reader_does_not_use_path_cache_identity_or_global_cache() {
+    assert_lazy_reader_source_excludes(|line| {
+        let compact = uncommented_text(line).to_ascii_lowercase();
+        compact.contains("file_path_hash")
+            || compact.contains("path_hash")
+            || compact.contains("static global")
+            || compact.contains("oncelock<")
+            || compact.contains("lazy_static")
+    });
+}
+
+#[test]
+fn lazy_reader_does_not_import_product_or_cleanup_policy() {
+    assert_lazy_reader_source_excludes(|line| {
+        let compact = uncommented_text(line).to_ascii_lowercase();
+        compact.contains("strata_engine")
+            || compact.contains("stratahub")
+            || compact.contains("primitive")
+            || compact.contains("vector")
+            || compact.contains("graph")
+            || compact.contains("delete_object")
+            || compact.contains("quarantine_object")
+    });
+}
+
+#[test]
+fn lazy_reader_code_and_fixture_names_do_not_use_milestone_labels() {
+    let forbidden = [format!("l{}", 8), format!("l{}", 7), format!("m{}", 4)];
+    let root = common::crate_root();
+    for relative in [
+        "src/table/reader.rs",
+        "src/service/table.rs",
+        "src/lifecycle/table_manifest.rs",
+    ] {
+        let path = root.join(relative);
+        let text = production_text(&path);
+        for (line_number, line) in text.lines().enumerate() {
+            let compact = uncommented_text(line).to_ascii_lowercase();
+            assert!(
+                forbidden.iter().all(|label| !compact.contains(label)),
+                "{relative}:{} contains architecture label in lazy reader path: {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_table_reachability_source_is_classification_only() {
     assert_table_reachability_source_clean();
 }
@@ -1175,6 +1245,33 @@ fn assert_budget_source_excludes(predicate: impl Fn(&str) -> bool) {
             );
         }
     }
+}
+
+fn assert_lazy_reader_source_excludes(predicate: impl Fn(&str) -> bool) {
+    let root = common::crate_root();
+    for relative in [
+        "src/table/reader.rs",
+        "src/service/table.rs",
+        "src/lifecycle/table_manifest.rs",
+    ] {
+        let path = root.join(relative);
+        let text = production_text(&path);
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !predicate(line),
+                "{relative}:{} violates lazy reader source guard: {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
+fn production_text(path: &Path) -> String {
+    let text = fs::read_to_string(path).expect("read production source");
+    text.split("#[cfg(test)]")
+        .next()
+        .unwrap_or(text.as_str())
+        .to_string()
 }
 
 fn assert_table_manifest_watermark_source_clean() {
