@@ -1385,6 +1385,63 @@ impl BranchLocalState {
         self.max_commit_version
     }
 
+    /// Map a wall-clock timestamp to the highest commit version whose row was
+    /// stamped at or before `timestamp`. Walks active, frozen, owned, and
+    /// inherited rows (inherited rows are bounded by their layer's fork
+    /// version). Returns `None` when no row qualifies.
+    ///
+    /// Tiebreaker: among rows with identical timestamps, the largest commit
+    /// version wins — consistent with the rest of the storage-next timeline
+    /// rule.
+    pub(crate) fn resolve_timestamp_to_commit_version(
+        &self,
+        timestamp: Timestamp,
+    ) -> Option<CommitVersion> {
+        let mut best: Option<CommitVersion> = None;
+        let mut consider = |version: CommitVersion| {
+            best = match best {
+                Some(current) if current.as_u64() >= version.as_u64() => Some(current),
+                _ => Some(version),
+            };
+        };
+        for row in self.active.iter() {
+            if row.row().commit_timestamp() <= timestamp {
+                consider(row.row().commit_version());
+            }
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                if row.row().commit_timestamp() <= timestamp {
+                    consider(row.row().commit_version());
+                }
+            }
+        }
+        for tables in &self.owned_levels {
+            for table in tables {
+                for row in table.rows() {
+                    if row.row().commit_timestamp() <= timestamp {
+                        consider(row.row().commit_version());
+                    }
+                }
+            }
+        }
+        for layer in &self.inherited_layers {
+            let fork_version = layer.fork_version();
+            for tables in layer.owned_levels() {
+                for table in tables {
+                    for row in table.rows() {
+                        if row.row().commit_timestamp() <= timestamp
+                            && row.row().commit_version().as_u64() <= fork_version.as_u64()
+                        {
+                            consider(row.row().commit_version());
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
     pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
         self.timestamp_min
     }
@@ -1464,6 +1521,76 @@ impl BranchLocalState {
         }
 
         rows.sort_by_key(TableInternalKeyBytes::from_row);
+        validate_checkpoint_rows(&rows)?;
+        Ok(rows)
+    }
+
+    pub(crate) fn fork_snapshot_rows(
+        &self,
+        watermark: CommitVersion,
+        target_branch_id: BranchId,
+    ) -> BranchRuntimeResult<Vec<StorageRow>> {
+        if watermark == CommitVersion::ZERO {
+            return Ok(Vec::new());
+        }
+
+        let mut rows_by_key = BTreeMap::<TableInternalKeyBytes, StorageRow>::new();
+        for row in self.active.iter() {
+            insert_own_fork_snapshot_row(
+                &mut rows_by_key,
+                self.branch_id,
+                target_branch_id,
+                watermark,
+                row.row(),
+            )?;
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                insert_own_fork_snapshot_row(
+                    &mut rows_by_key,
+                    self.branch_id,
+                    target_branch_id,
+                    watermark,
+                    row.row(),
+                )?;
+            }
+        }
+        for table in self.owned_levels.iter().flatten() {
+            for row in table.rows() {
+                insert_own_fork_snapshot_row(
+                    &mut rows_by_key,
+                    self.branch_id,
+                    target_branch_id,
+                    watermark,
+                    row.row(),
+                )?;
+            }
+        }
+        for layer in &self.inherited_layers {
+            match layer.status() {
+                InheritedLayerStatus::Active | InheritedLayerStatus::Materializing => {}
+                InheritedLayerStatus::Materialized => continue,
+                InheritedLayerStatus::Unavailable => {
+                    return Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "unavailable inherited layers cannot be snapshotted for fork",
+                    });
+                }
+            }
+            let inherited_watermark = watermark.min(layer.fork_version());
+            for table in layer.owned_levels().iter().flatten() {
+                for row in table.rows() {
+                    insert_lower_precedence_fork_snapshot_row(
+                        &mut rows_by_key,
+                        layer.source_branch_id(),
+                        target_branch_id,
+                        inherited_watermark,
+                        row.row(),
+                    )?;
+                }
+            }
+        }
+
+        let rows = rows_by_key.into_values().collect::<Vec<_>>();
         validate_checkpoint_rows(&rows)?;
         Ok(rows)
     }
@@ -3338,6 +3465,43 @@ fn push_checkpoint_row(
     if row.commit_version() <= watermark {
         rows.push(row.clone());
     }
+    Ok(())
+}
+
+fn insert_own_fork_snapshot_row(
+    rows_by_key: &mut BTreeMap<TableInternalKeyBytes, StorageRow>,
+    source_branch_id: BranchId,
+    target_branch_id: BranchId,
+    watermark: CommitVersion,
+    row: &StorageRow,
+) -> BranchRuntimeResult<()> {
+    if row.commit_version() > watermark {
+        return Ok(());
+    }
+    let rewritten = rewrite_row_branch(row, source_branch_id, target_branch_id)?;
+    let key = TableInternalKeyBytes::from_row(&rewritten);
+    if rows_by_key.insert(key, rewritten).is_some() {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "fork snapshot own rows must not contain duplicate internal keys",
+        });
+    }
+    Ok(())
+}
+
+fn insert_lower_precedence_fork_snapshot_row(
+    rows_by_key: &mut BTreeMap<TableInternalKeyBytes, StorageRow>,
+    source_branch_id: BranchId,
+    target_branch_id: BranchId,
+    watermark: CommitVersion,
+    row: &StorageRow,
+) -> BranchRuntimeResult<()> {
+    if row.commit_version() > watermark {
+        return Ok(());
+    }
+    let rewritten = rewrite_row_branch(row, source_branch_id, target_branch_id)?;
+    rows_by_key
+        .entry(TableInternalKeyBytes::from_row(&rewritten))
+        .or_insert(rewritten);
     Ok(())
 }
 

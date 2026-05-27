@@ -5,7 +5,7 @@ use crate::backend::BackendCapability;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
-use strata_core_next::CommitVersion;
+use strata_core_next::{BranchId, CommitVersion};
 
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -19,6 +19,48 @@ pub(crate) enum LifecycleError {
     },
     InvalidOpenPlan {
         reason: &'static str,
+    },
+    BranchAlreadyExists {
+        branch_id: BranchId,
+    },
+    BranchNotFound {
+        branch_id: BranchId,
+    },
+    BranchNotWritable {
+        branch_id: BranchId,
+        state: &'static str,
+    },
+    BranchGenerationMismatch {
+        branch_id: BranchId,
+        expected: u64,
+        actual: u64,
+    },
+    BranchGenerationExhausted {
+        branch_id: BranchId,
+        generation: u64,
+    },
+    BranchHistoryUnavailable {
+        branch_id: BranchId,
+        reason: &'static str,
+    },
+    InsufficientTimestampHistory {
+        branch_id: BranchId,
+        reason: &'static str,
+    },
+    #[allow(
+        dead_code,
+        reason = "declared in A1; first emission lands with the A2 release-plan buffer"
+    )]
+    PinnedViewReleaseBlocked {
+        branch_id: BranchId,
+        reason: &'static str,
+    },
+    SourceHasUnflushedRows {
+        branch_id: BranchId,
+    },
+    BranchStateMismatch {
+        expected: BranchId,
+        actual: BranchId,
     },
     CapabilityMismatch {
         storage_mode: StorageMode,
@@ -334,6 +376,26 @@ impl LifecycleError {
             Self::InvalidConfig { .. } => "invalid_argument.lifecycle.config",
             Self::InvalidLifecycleState { .. } => "failed_precondition.lifecycle.state",
             Self::InvalidOpenPlan { .. } => "invalid_argument.lifecycle.open_plan",
+            Self::BranchAlreadyExists { .. } => "already_exists.lifecycle.branch",
+            Self::BranchNotFound { .. } => "not_found.lifecycle.branch",
+            Self::BranchNotWritable { .. } => "failed_precondition.lifecycle.branch",
+            Self::BranchGenerationMismatch { .. } => {
+                "failed_precondition.lifecycle.branch_generation"
+            }
+            Self::BranchGenerationExhausted { .. } => {
+                "resource_exhausted.lifecycle.branch_generation"
+            }
+            Self::BranchHistoryUnavailable { .. } => "failed_precondition.lifecycle.branch_history",
+            Self::InsufficientTimestampHistory { .. } => {
+                "failed_precondition.lifecycle.timestamp_history"
+            }
+            Self::PinnedViewReleaseBlocked { .. } => {
+                "failed_precondition.lifecycle.pinned_view_release"
+            }
+            Self::SourceHasUnflushedRows { .. } => {
+                "failed_precondition.lifecycle.fork_source_unflushed"
+            }
+            Self::BranchStateMismatch { .. } => "failed_precondition.lifecycle.branch_state",
             Self::CapabilityMismatch { .. } => "failed_precondition.lifecycle.capability",
             Self::RecoveryFailed { .. } => "corruption.lifecycle.recovery",
             Self::MaintenanceFailed { .. } => "failed_precondition.lifecycle.maintenance",
@@ -576,6 +638,106 @@ impl PartialEq for LifecycleError {
                 },
             ) => left_field == right_field && left_reason == right_reason,
             (
+                Self::BranchAlreadyExists {
+                    branch_id: left_branch,
+                },
+                Self::BranchAlreadyExists {
+                    branch_id: right_branch,
+                },
+            )
+            | (
+                Self::BranchNotFound {
+                    branch_id: left_branch,
+                },
+                Self::BranchNotFound {
+                    branch_id: right_branch,
+                },
+            )
+            | (
+                Self::SourceHasUnflushedRows {
+                    branch_id: left_branch,
+                },
+                Self::SourceHasUnflushedRows {
+                    branch_id: right_branch,
+                },
+            ) => left_branch == right_branch,
+            (
+                Self::BranchNotWritable {
+                    branch_id: left_branch,
+                    state: left_state,
+                },
+                Self::BranchNotWritable {
+                    branch_id: right_branch,
+                    state: right_state,
+                },
+            ) => left_branch == right_branch && left_state == right_state,
+            (
+                Self::BranchGenerationMismatch {
+                    branch_id: left_branch,
+                    expected: left_expected,
+                    actual: left_actual,
+                },
+                Self::BranchGenerationMismatch {
+                    branch_id: right_branch,
+                    expected: right_expected,
+                    actual: right_actual,
+                },
+            ) => {
+                left_branch == right_branch
+                    && left_expected == right_expected
+                    && left_actual == right_actual
+            }
+            (
+                Self::BranchGenerationExhausted {
+                    branch_id: left_branch,
+                    generation: left_generation,
+                },
+                Self::BranchGenerationExhausted {
+                    branch_id: right_branch,
+                    generation: right_generation,
+                },
+            ) => left_branch == right_branch && left_generation == right_generation,
+            (
+                Self::BranchHistoryUnavailable {
+                    branch_id: left_branch,
+                    reason: left_reason,
+                },
+                Self::BranchHistoryUnavailable {
+                    branch_id: right_branch,
+                    reason: right_reason,
+                },
+            )
+            | (
+                Self::InsufficientTimestampHistory {
+                    branch_id: left_branch,
+                    reason: left_reason,
+                },
+                Self::InsufficientTimestampHistory {
+                    branch_id: right_branch,
+                    reason: right_reason,
+                },
+            )
+            | (
+                Self::PinnedViewReleaseBlocked {
+                    branch_id: left_branch,
+                    reason: left_reason,
+                },
+                Self::PinnedViewReleaseBlocked {
+                    branch_id: right_branch,
+                    reason: right_reason,
+                },
+            ) => left_branch == right_branch && left_reason == right_reason,
+            (
+                Self::BranchStateMismatch {
+                    expected: left_expected,
+                    actual: left_actual,
+                },
+                Self::BranchStateMismatch {
+                    expected: right_expected,
+                    actual: right_actual,
+                },
+            ) => left_expected == right_expected && left_actual == right_actual,
+            (
                 Self::FlushPublicationOrphaned {
                     object: left_object,
                     reason: left_reason,
@@ -700,6 +862,61 @@ impl fmt::Display for LifecycleError {
             }
             Self::InvalidOpenPlan { reason } => {
                 write!(formatter, "invalid storage open plan: {reason}")
+            }
+            Self::BranchAlreadyExists { branch_id } => {
+                write!(formatter, "branch already exists: {branch_id}")
+            }
+            Self::BranchNotFound { branch_id } => {
+                write!(formatter, "branch not found: {branch_id}")
+            }
+            Self::BranchNotWritable { branch_id, state } => {
+                write!(formatter, "branch {branch_id} is not writable: {state}")
+            }
+            Self::BranchGenerationMismatch {
+                branch_id,
+                expected,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "branch generation mismatch for {branch_id}: expected {expected}, actual {actual}"
+                )
+            }
+            Self::BranchGenerationExhausted {
+                branch_id,
+                generation,
+            } => {
+                write!(
+                    formatter,
+                    "branch generation exhausted for {branch_id}: {generation}"
+                )
+            }
+            Self::BranchHistoryUnavailable { branch_id, reason } => {
+                write!(
+                    formatter,
+                    "branch retained history unavailable for {branch_id}: {reason}"
+                )
+            }
+            Self::InsufficientTimestampHistory { branch_id, reason } => {
+                write!(
+                    formatter,
+                    "branch timestamp history insufficient for {branch_id}: {reason}"
+                )
+            }
+            Self::PinnedViewReleaseBlocked { branch_id, reason } => {
+                write!(
+                    formatter,
+                    "pinned view release blocked for {branch_id}: {reason}"
+                )
+            }
+            Self::SourceHasUnflushedRows { branch_id } => {
+                write!(formatter, "fork source {branch_id} contains unflushed rows")
+            }
+            Self::BranchStateMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "branch state mismatch: expected {expected}, actual {actual}"
+                )
             }
             Self::CapabilityMismatch {
                 storage_mode,

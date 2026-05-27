@@ -170,6 +170,32 @@ fn lifecycle_cache_runtime_stays_cache_only() {
 }
 
 #[test]
+fn lifecycle_branch_lifecycle_source_stays_storage_internal() {
+    let root = common::crate_root();
+    for relative in [
+        "src/lifecycle/branch_lifecycle.rs",
+        "src/lifecycle/tests/branch_lifecycle/catalog.rs",
+        "src/lifecycle/tests/branch_lifecycle/clear_delete.rs",
+        "src/lifecycle/tests/branch_lifecycle/fork.rs",
+        "src/lifecycle/tests/branch_lifecycle/isolation.rs",
+        "src/lifecycle/tests/branch_lifecycle/mod.rs",
+        "src/testkit/lifecycle/branch_lifecycle.rs",
+        "tests/lifecycle_branch_lifecycle.rs",
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read branch lifecycle source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !contains_forbidden_branch_lifecycle_dependency(line),
+                "{}:{} violates branch lifecycle source guard: {line}",
+                relative,
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn cache_compaction_does_not_call_table_object_service() {
     let root = common::crate_root();
     for relative in ["src/lifecycle/cache.rs", "src/lifecycle/compaction.rs"] {
@@ -2439,6 +2465,36 @@ fn contains_forbidden_table_reachability_dependency(line: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+fn contains_forbidden_branch_lifecycle_dependency(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "std::fs",
+        "std::path",
+        "openoptions",
+        "mmap",
+        "std::env",
+        "delete_object",
+        "tableobjectservice",
+        "strata_engine",
+        "strata_intelligence",
+        "primitive",
+        "query",
+        "remote",
+        "stratahub",
+        "workspace policy",
+        "permission",
+        "cherry-pick",
+        "merge",
+        "revert",
+        "restore",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+        || contains_ascii_word(line, "Path")
+        || contains_ascii_word(line, "PathBuf")
+        || contains_ascii_word(line, "File")
 }
 
 fn contains_forbidden_quarantine_dependency(line: &str) -> bool {

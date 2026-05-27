@@ -8,6 +8,7 @@
     )
 )]
 
+mod branch_lifecycle;
 mod budget;
 mod cache;
 mod capability;
@@ -31,6 +32,15 @@ mod state;
 mod table_manifest;
 mod table_reachability;
 
+#[allow(
+    unused_imports,
+    reason = "branch lifecycle catalog exports define the local surface for branch completion"
+)]
+pub(crate) use branch_lifecycle::{
+    LifecycleBranchCatalog, LifecycleBranchClearOutcome, LifecycleBranchCreateOutcome,
+    LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
+    LifecycleBranchParent, LifecycleBranchStatus, LifecyclePinnedBranchReachability,
+};
 #[allow(
     unused_imports,
     reason = "storage budget exports define the local surface for budget enforcement"

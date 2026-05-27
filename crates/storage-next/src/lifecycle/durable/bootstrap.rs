@@ -6,7 +6,7 @@ use super::{
 };
 use crate::branch::{BranchLocalState, BranchReadView};
 use crate::commit::{
-    CommitBatch, CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry,
+    CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
     CommitDurabilityClass, CommitDurableRuntime, CommitFactAllocator, CommitManualTimestampSource,
     CommitOutcome, CommitReplayAction, CommitReplayRequest, CommitReplayRuntime,
     CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
@@ -14,11 +14,11 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    maintenance_ready_for_recovery_health, BudgetedCommitBranch, LifecycleDurableTableCatalog,
-    LifecycleError, LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
-    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleTransitionTrigger, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
-    StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    maintenance_ready_for_recovery_health, BudgetedCommitBranch, LifecycleBranchCatalog,
+    LifecycleDurableTableCatalog, LifecycleError, LifecycleMaintenanceExecutor,
+    LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
+    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, RecoveryHealth,
+    StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -31,7 +31,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) bootstrap_report: LifecycleRecoveryBootstrapReport,
     pub(super) services: LifecycleDurableLocalServices<'a>,
     pub(super) branch: BranchLocalState,
-    pub(super) registry: CommitBranchRegistry,
+    pub(super) branch_catalog: LifecycleBranchCatalog,
     pub(super) guard_set: CommitBranchGuardSet,
     pub(super) allocator: CommitFactAllocator<S>,
     pub(super) visible: VisibleVersionTracker,
@@ -42,6 +42,10 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) recovered_checkpoint_timestamp_max: Option<Timestamp>,
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
+    // Released table references from `clear_branch`/`delete_branch` queue
+    // here until the next retention pass drains them. Slice A2 in-memory
+    // only — restart loses the buffer (Follow-up B persists tombstones).
+    pub(super) pending_releases: Vec<crate::branch::BranchReleasePlan>,
     #[allow(
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
@@ -122,6 +126,16 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .ok_or(LifecycleError::CheckpointPublicationFailed {
                 reason: "checkpoint snapshot id overflow",
             })?;
+        let branch_generation = self
+            .registry
+            .lookup(self.branch.branch_id())
+            .map_err(commit_error)?
+            .generation();
+        let branch_catalog = LifecycleBranchCatalog::with_existing_branch(
+            &self.branch,
+            branch_generation,
+            self.branch.max_commit_version(),
+        )?;
         Ok(LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
@@ -129,7 +143,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             bootstrap_report: report,
             services: self.services,
             branch: self.branch,
-            registry: self.registry,
+            branch_catalog,
             guard_set: self.guard_set,
             allocator: self.allocator,
             visible: self.visible,
@@ -140,6 +154,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             recovered_checkpoint_timestamp_max: recovery.checkpoint().timestamp_max(),
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
+            pending_releases: Vec::new(),
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
             close_retry_state: None,
         })
@@ -264,6 +279,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.bootstrap_report
     }
 
+    #[allow(
+        dead_code,
+        reason = "exposed for runtime tests; first non-test caller lands with the public storage api"
+    )]
+    pub(crate) fn pending_releases(&self) -> &[crate::branch::BranchReleasePlan] {
+        &self.pending_releases
+    }
+
     pub(crate) const fn current_recovery_health(&self) -> &RecoveryHealth {
         &self.current_recovery_health
     }
@@ -274,6 +297,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) const fn branch_state(&self) -> &BranchLocalState {
         &self.branch
+    }
+
+    #[allow(
+        dead_code,
+        reason = "branch lifecycle API uses this runtime catalog surface when public wrappers land"
+    )]
+    pub(crate) const fn branch_catalog(&self) -> &LifecycleBranchCatalog {
+        &self.branch_catalog
     }
 
     #[cfg(any(test, feature = "testkit"))]
@@ -315,6 +346,157 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         self.branch.capture_read_view().map_err(branch_error)
     }
+
+    /// Storage-internal: create a new branch in the catalog. Caveat for A1:
+    /// commits route through the runtime's `self.branch` (the seeded branch).
+    /// New branches created here are visible via `list_branches` and the
+    /// catalog accessor but cannot accept commits until A2 makes the runtime
+    /// catalog-authoritative for mutations. Durable mode in A1 is in-memory
+    /// only — restart loses these descriptors (Follow-up B persists them).
+    pub(crate) fn create_branch(
+        &mut self,
+        branch_id: BranchId,
+        generation: CommitBranchGeneration,
+        created_at: Option<CommitVersion>,
+    ) -> LifecycleResult<crate::lifecycle::LifecycleBranchCreateOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        self.branch_catalog
+            .create_branch(branch_id, generation, created_at)
+    }
+
+    pub(crate) fn list_branches(
+        &self,
+        include_deleted: bool,
+    ) -> Vec<crate::lifecycle::LifecycleBranchDescriptor> {
+        self.branch_catalog.list_branches(include_deleted)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exposed for A1 catalog surface; durable callers land in A2"
+    )]
+    pub(crate) fn fork_current(
+        &mut self,
+        source: BranchId,
+        destination: BranchId,
+        destination_generation: CommitBranchGeneration,
+    ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        self.branch_catalog
+            .fork_current(source, destination, destination_generation)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exposed for A1 catalog surface; durable callers land in A2"
+    )]
+    pub(crate) fn fork_at_retained_version(
+        &mut self,
+        source: BranchId,
+        destination: BranchId,
+        destination_generation: CommitBranchGeneration,
+        fork_version: CommitVersion,
+        retained_floor: CommitVersion,
+    ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        self.branch_catalog.fork_at_retained_version(
+            source,
+            destination,
+            destination_generation,
+            fork_version,
+            retained_floor,
+        )
+    }
+
+    pub(crate) fn fork_at_retained_timestamp(
+        &mut self,
+        source: BranchId,
+        destination: BranchId,
+        destination_generation: CommitBranchGeneration,
+        timestamp: Timestamp,
+        retained_floor: CommitVersion,
+    ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        self.branch_catalog.fork_at_retained_timestamp(
+            source,
+            destination,
+            destination_generation,
+            timestamp,
+            retained_floor,
+        )
+    }
+
+    pub(crate) fn clear_branch(
+        &mut self,
+        branch_id: BranchId,
+        generation_guard: CommitBranchGenerationGuard,
+    ) -> LifecycleResult<crate::lifecycle::LifecycleBranchClearOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let outcome = self
+            .branch_catalog
+            .clear_branch(branch_id, generation_guard)?;
+        // Mirror cleared state back to the shadow so the A2 transition shape
+        // keeps existing readers consistent.
+        if branch_id == self.branch.branch_id() {
+            self.branch =
+                BranchLocalState::new(branch_id, self.branch.config()).map_err(branch_error)?;
+        }
+        let plan = outcome.release_plan().clone();
+        if !plan.protected_tables().is_empty() {
+            if let Ok(health) =
+                crate::lifecycle::telemetry_health_debt("pinned view blocks clear/delete release")
+            {
+                self.record_recovery_health(Some(&health));
+            }
+        }
+        self.pending_releases.push(plan);
+        Ok(outcome)
+    }
+
+    pub(crate) fn delete_branch(
+        &mut self,
+        branch_id: BranchId,
+        generation_guard: CommitBranchGenerationGuard,
+        deleted_at: Option<CommitVersion>,
+    ) -> LifecycleResult<crate::lifecycle::LifecycleBranchDeleteOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let outcome = self
+            .branch_catalog
+            .delete_branch(branch_id, generation_guard, deleted_at)?;
+        // The seeded branch can be deleted in A2; the shadow field's branch
+        // stays the seeded id but its state becomes empty (the catalog
+        // already cleared its inherited/owned tables on delete).
+        if branch_id == self.branch.branch_id() {
+            self.branch =
+                BranchLocalState::new(branch_id, self.branch.config()).map_err(branch_error)?;
+        }
+        let plan = outcome.release_plan().clone();
+        if !plan.protected_tables().is_empty() {
+            if let Ok(health) =
+                crate::lifecycle::telemetry_health_debt("pinned view blocks clear/delete release")
+            {
+                self.record_recovery_health(Some(&health));
+            }
+        }
+        self.pending_releases.push(plan);
+        Ok(outcome)
+    }
+
+    pub(super) fn sync_branch_catalog(&mut self) -> LifecycleResult<()> {
+        self.branch_catalog
+            .sync_active_branch_state(&self.branch)
+            .map(|_| ())
+    }
+
+    /// A2 transition helper: after a runner mutates the catalog-owned
+    /// branch state, copy it back into the shadow `self.branch` so existing
+    /// `branch_state()` readers stay consistent until Step 2 drops the
+    /// shadow field entirely.
+    pub(super) fn mirror_branch_to_shadow(&mut self, branch_id: BranchId) -> LifecycleResult<()> {
+        let snapshot = self.branch_catalog.branch_state(branch_id)?.clone();
+        self.branch = snapshot;
+        Ok(())
+    }
 }
 
 impl<S> LifecycleDurableLocalRuntime<'_, S>
@@ -327,19 +509,37 @@ where
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
         require_admitted(self.state, LifecycleOperationKind::Commit)?;
-        let mut budgeted_branch = BudgetedCommitBranch::new(&mut self.branch, &self.budget);
-        CommitDurableRuntime::new(
-            &self.commit_config,
-            &self.registry,
-            &self.guard_set,
-            &mut self.allocator,
-            &mut budgeted_branch,
-            &mut self.visible,
-            &mut self.services.wal,
-            &self.durable_gate,
-        )
-        .execute(batch, generation_guard)
-        .map_err(commit_error)
+        let branch_id = batch.branch_id();
+        // Pre-sync shadow into catalog so the commit runtime sees any direct
+        // shadow mutations (test-only) before fetching from the catalog.
+        self.sync_branch_catalog()?;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
+                branch_id,
+                CommitBranchGenerationGuard::exact(generation),
+            )?;
+            let mut budgeted_branch = BudgetedCommitBranch::new(branch, &self.budget);
+            CommitDurableRuntime::new(
+                &self.commit_config,
+                registry,
+                &self.guard_set,
+                &mut self.allocator,
+                &mut budgeted_branch,
+                &mut self.visible,
+                &mut self.services.wal,
+                &self.durable_gate,
+            )
+            .execute(batch, generation_guard)
+            .map_err(commit_error)
+        };
+        self.mirror_branch_to_shadow(branch_id)?;
+        outcome
     }
 }
 

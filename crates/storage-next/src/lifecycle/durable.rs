@@ -610,7 +610,7 @@ fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> Lifecy
     )
 }
 
-fn commit_error(error: CommitRuntimeError) -> LifecycleError {
+pub(super) fn commit_error(error: CommitRuntimeError) -> LifecycleError {
     match error {
         CommitRuntimeError::InvalidTimelineFact { reason }
         | CommitRuntimeError::TimelineConflict { reason } => {

@@ -1,9 +1,11 @@
 //! Durable-local maintenance dispatch.
 
 use super::bootstrap::LifecycleDurableLocalRuntime;
-use super::require_admitted;
+use super::{commit_error, require_admitted};
 use crate::branch::{BranchLocalState, BranchRotationOutcome};
-use crate::commit::{CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker};
+use crate::commit::{
+    CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
+};
 use crate::lifecycle::checkpoint::{
     checkpoint_durable_branch_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
@@ -65,7 +67,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         require_rotate_budget(&self.budget, &self.branch)?;
-        Ok(self.branch.rotate_active())
+        let outcome = self.branch.rotate_active();
+        self.sync_branch_catalog()?;
+        Ok(outcome)
     }
 
     #[allow(
@@ -97,6 +101,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 self.record_recovery_health(Some(&health));
             }
         }
+        self.sync_branch_catalog()?;
         Ok(outcome)
     }
 
@@ -109,7 +114,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCompactionRequest,
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        compact_durable_branch_manifest_backed(
+        let outcome = compact_durable_branch_manifest_backed(
             &mut self.branch,
             self.services.table_object(),
             self.services.table_reader(),
@@ -117,7 +122,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             &mut self.table_catalog,
             request,
             Some(&self.budget),
-        )
+        );
+        self.sync_branch_catalog()?;
+        outcome
     }
 
     #[allow(
@@ -129,7 +136,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleMaterializationRequest,
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        materialize_durable_branch_manifest_backed(
+        let outcome = materialize_durable_branch_manifest_backed(
             &mut self.branch,
             self.services.table_object(),
             self.services.table_reader(),
@@ -137,7 +144,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             &mut self.table_catalog,
             request,
             Some(&self.budget),
-        )
+        );
+        self.sync_branch_catalog()?;
+        outcome
     }
 
     #[allow(
@@ -211,7 +220,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         // branch, so this check passes. If multi-branch runtimes land, the
         // proof construction above must be expanded to load every active
         // branch's manifest and per-branch state before this guard relaxes.
-        let active_branches = self.registry.active_branch_ids();
+        let active_branches = self.branch_catalog.registry().active_branch_ids();
         if active_branches != vec![self.branch.branch_id()] {
             return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "table manifest flush proof requires all active branches to be loaded",
@@ -403,10 +412,22 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_flush_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let branch_id = self.branch.branch_id();
+        // Pre-sync shadow into catalog so the runner sees direct shadow
+        // mutations (test-only) before fetching from the catalog.
+        self.sync_branch_catalog()?;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
         let outcome = {
-            let state = self.state;
             let maintenance = &mut self.maintenance;
-            let branch = &mut self.branch;
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             let table_object = self.services.table_object();
             let table_reader = self.services.table_reader();
             let table_manifest = self.services.table_manifest();
@@ -423,6 +444,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 task.kind() == MaintenanceTaskKind::Flush
             })
         };
+        self.mirror_branch_to_shadow(branch_id)?;
         self.record_optional_maintenance_health(&outcome);
         outcome
     }
@@ -487,7 +509,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = &self.branch;
-        let registry = &self.registry;
+        let registry = self.branch_catalog.registry();
         let manifest = self.services.manifest();
         let table_manifest = self.services.table_manifest();
         let visible_version = self.visible.visible_version();
@@ -513,24 +535,40 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let maintenance = &mut self.maintenance;
-        let branch = &mut self.branch;
-        let table_object = self.services.table_object();
-        let table_reader = self.services.table_reader();
-        let table_manifest = self.services.table_manifest();
-        let table_catalog = &mut self.table_catalog;
-        let budget = &self.budget;
-        let mut runner = DurableCompactionMaintenanceRunner {
-            branch,
-            table_object,
-            table_reader,
-            table_manifest,
-            table_catalog,
-            budget,
+        let branch_id = self.branch.branch_id();
+        // Pre-sync shadow into catalog so the runner sees direct shadow
+        // mutations (test-only) before fetching from the catalog.
+        self.sync_branch_catalog()?;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let maintenance = &mut self.maintenance;
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            let table_object = self.services.table_object();
+            let table_reader = self.services.table_reader();
+            let table_manifest = self.services.table_manifest();
+            let table_catalog = &mut self.table_catalog;
+            let budget = &self.budget;
+            let mut runner = DurableCompactionMaintenanceRunner {
+                branch,
+                table_object,
+                table_reader,
+                table_manifest,
+                table_catalog,
+                budget,
+            };
+            maintenance.run_next_matching(state, &mut runner, |task| {
+                task.kind() == MaintenanceTaskKind::Compaction
+            })
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
-            task.kind() == MaintenanceTaskKind::Compaction
-        })
+        self.mirror_branch_to_shadow(branch_id)?;
+        outcome
     }
 
     #[allow(
@@ -541,24 +579,40 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let maintenance = &mut self.maintenance;
-        let branch = &mut self.branch;
-        let table_object = self.services.table_object();
-        let table_reader = self.services.table_reader();
-        let table_manifest = self.services.table_manifest();
-        let table_catalog = &mut self.table_catalog;
-        let budget = &self.budget;
-        let mut runner = DurableMaterializationMaintenanceRunner {
-            branch,
-            table_object,
-            table_reader,
-            table_manifest,
-            table_catalog,
-            budget,
+        let branch_id = self.branch.branch_id();
+        // Pre-sync shadow into catalog so the runner sees direct shadow
+        // mutations (test-only) before fetching from the catalog.
+        self.sync_branch_catalog()?;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let maintenance = &mut self.maintenance;
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            let table_object = self.services.table_object();
+            let table_reader = self.services.table_reader();
+            let table_manifest = self.services.table_manifest();
+            let table_catalog = &mut self.table_catalog;
+            let budget = &self.budget;
+            let mut runner = DurableMaterializationMaintenanceRunner {
+                branch,
+                table_object,
+                table_reader,
+                table_manifest,
+                table_catalog,
+                budget,
+            };
+            maintenance.run_next_matching(state, &mut runner, |task| {
+                task.kind() == MaintenanceTaskKind::Materialization
+            })
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
-            task.kind() == MaintenanceTaskKind::Materialization
-        })
+        self.mirror_branch_to_shadow(branch_id)?;
+        outcome
     }
 
     #[allow(
@@ -573,10 +627,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let services = &self.services;
         let health = self.current_recovery_health.clone();
         let branch_id = self.branch.branch_id();
+        let pending_releases = &mut self.pending_releases;
         let mut runner = DurableRetentionMaintenanceRunner {
             services,
             branch_id,
             health,
+            pending_releases,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -941,16 +997,55 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
     branch_id: strata_core_next::BranchId,
     health: crate::lifecycle::RecoveryHealth,
+    pending_releases: &'a mut Vec<crate::branch::BranchReleasePlan>,
+}
+
+impl DurableRetentionMaintenanceRunner<'_, '_> {
+    /// Drain pending release plans matching this retention pass's scope.
+    /// `Global` scope drains all; `TableObjects { branch_id }` drains plans
+    /// targeting that branch. Returns the drained release plans for
+    /// downstream tagging (the A2 classifier itself remains
+    /// manifest-driven; durable physical reclaim defers to Follow-up B).
+    fn drain_pending_releases(
+        &mut self,
+        scope: LifecycleRetentionScope,
+    ) -> Vec<crate::branch::BranchReleasePlan> {
+        let drain_all = matches!(scope, LifecycleRetentionScope::Global);
+        let scoped_branch = match scope {
+            LifecycleRetentionScope::TableObjects { branch_id } => Some(branch_id),
+            _ => None,
+        };
+        if !drain_all && scoped_branch.is_none() {
+            return Vec::new();
+        }
+        let mut remaining = Vec::with_capacity(self.pending_releases.len());
+        let mut drained = Vec::new();
+        for plan in self.pending_releases.drain(..) {
+            let matches_scope = drain_all
+                || scoped_branch.is_some_and(|target| plan.released_branch_id() == target);
+            if matches_scope {
+                drained.push(plan);
+            } else {
+                remaining.push(plan);
+            }
+        }
+        *self.pending_releases = remaining;
+        drained
+    }
 }
 
 impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let request = retention_request_from_maintenance_task(task)?;
+        let drained = self.drain_pending_releases(request.scope());
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)
                     .and_then(|request| table_object_retention_outcome(&request))?;
-            return Ok(table_retention.retention().maintenance_outcome());
+            return Ok(append_released_table_names(
+                table_retention.retention().maintenance_outcome(),
+                &drained,
+            ));
         }
         if recovery_health_prevents_listing(&request, &self.health) {
             let proof = retention_proof_from_assembly(&request, self.services, &self.health);
@@ -965,7 +1060,10 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
                             .maintenance_outcome(),
                     )
                 }
-                _ => Ok(retention_outcome_for_scope(&request, proof, &[])?.maintenance_outcome()),
+                _ => Ok(append_released_table_names(
+                    retention_outcome_for_scope(&request, proof, &[])?.maintenance_outcome(),
+                    &drained,
+                )),
             };
         }
         let manifest = self
@@ -1001,10 +1099,13 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
                 let table_retention =
                     table_object_retention_request(self.services, self.branch_id, &self.health)
                         .and_then(|request| table_object_retention_outcome(&request))?;
-                Ok(global_retention_maintenance_outcome(
-                    &snapshot_outcome,
-                    &retention_outcome,
-                    table_retention.retention(),
+                Ok(append_released_table_names(
+                    global_retention_maintenance_outcome(
+                        &snapshot_outcome,
+                        &retention_outcome,
+                        table_retention.retention(),
+                    ),
+                    &drained,
                 ))
             }
             // `retention_request_from_maintenance_task` only emits
@@ -1358,6 +1459,27 @@ fn truncate_hash_to_u64(digest: &[u8]) -> u64 {
     let take = digest.len().min(8);
     buffer[..take].copy_from_slice(&digest[..take]);
     u64::from_be_bytes(buffer)
+}
+
+/// Tag the maintenance outcome with the table identities of branch
+/// releases that were drained from the pending-releases buffer during
+/// this retention pass. The classification itself remains
+/// manifest-driven; this is informational so callers can observe what
+/// the buffer surfaced (durable physical reclaim defers to Follow-up B).
+fn append_released_table_names(
+    outcome: MaintenanceOutcome,
+    drained: &[crate::branch::BranchReleasePlan],
+) -> MaintenanceOutcome {
+    if drained.is_empty() {
+        return outcome;
+    }
+    let mut names: Vec<String> = outcome.affected_object_names().to_vec();
+    for plan in drained {
+        for table in plan.releasable_tables() {
+            names.push(format!("branch-release:{}", table.as_str()));
+        }
+    }
+    outcome.with_affected_object_names(names)
 }
 
 fn manifest_error(error: crate::service::ManifestServiceError) -> LifecycleError {

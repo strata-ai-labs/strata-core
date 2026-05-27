@@ -3800,3 +3800,181 @@ cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 git diff --check
 ```
+
+## L8Y - Branch Lifecycle Completeness
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/branch_lifecycle.rs`
+- `crates/storage-next/src/lifecycle/tests/branch_lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/branch_lifecycle/catalog.rs`
+- `crates/storage-next/src/lifecycle/tests/branch_lifecycle/clear_delete.rs`
+- `crates/storage-next/src/lifecycle/tests/branch_lifecycle/fork.rs`
+- `crates/storage-next/src/lifecycle/tests/branch_lifecycle/isolation.rs`
+- `crates/storage-next/src/testkit/lifecycle/branch_lifecycle.rs`
+- `crates/storage-next/tests/lifecycle_branch_lifecycle.rs`
+- `crates/storage-next/tests/lifecycle_source_guard.rs`
+- `crates/storage-next/src/branch/state.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/error.rs`
+- `crates/storage-next/src/lifecycle/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/testkit/lifecycle/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+
+### Implementation Notes
+
+- Added a storage-internal lifecycle branch catalog that keeps branch
+  descriptors, branch-local state, and the commit branch registry coherent.
+- Added descriptor/status/outcome vocabulary for create, fork, clear, and
+  delete paths. The status vocabulary covers active, clearing, deleting, and
+  deleted states used by the synchronous catalog implementation.
+- Added storage-internal create/list/lookup helpers with duplicate-branch,
+  missing-branch, generation-mismatch, generation-exhaustion, and branch-state
+  mismatch errors.
+- Added current-state fork over the lower-layer inherited-layer API. The fork
+  path rejects unflushed active/frozen source rows through the existing branch
+  runtime invariant rather than silently dropping them.
+- Added fork-at-retained-version support by snapshotting rows visible at the
+  requested version, rewriting them to the destination branch id, and installing
+  them atomically into the destination branch state.
+- Added clear and delete operations that preserve pinned read-view
+  reachability. Release planning excludes the removed branch's replacement
+  empty state from the post-removal aggregate, while retained pinned snapshots
+  continue to protect referenced table identities.
+- Added branch lifecycle error codes using the repository error-code format.
+- Added `BranchLocalState::fork_snapshot_rows` so fork-at-retained-version can
+  snapshot both owned rows and inherited-layer rows visible at a requested
+  commit version without requiring eager materialization.
+- Wired cache and durable local runtimes to maintain a lifecycle branch catalog
+  mirror after commits, flushes, compactions, materializations, and maintenance
+  transitions that mutate branch state.
+- Split branch lifecycle tests into catalog, fork, clear/delete, and isolation
+  modules to keep each source file under the 1,000-line navigation budget.
+- Added a testkit branch-lifecycle contract and integration smoke tests for
+  catalog, fork-at-version, clear/delete, pinned-view retention, generation, and
+  stale-work behavior.
+
+### Tests Added
+
+- `branch_catalog_create_empty_branch`
+- `branch_catalog_duplicate_create_rejects`
+- `branch_catalog_create_rejects_zero_generation`
+- `branch_catalog_list_active_branches_in_deterministic_order`
+- `branch_catalog_list_includes_deleted_when_requested`
+- `branch_catalog_commit_registry_stays_coherent`
+- `branch_catalog_missing_lookup_rejects`
+- `branch_catalog_descriptor_branch_mismatch_rejects`
+- `branch_catalog_create_does_not_publish_table_objects`
+- `branch_catalog_cache_create_reports_no_durable_claim`
+- `branch_catalog_runtime_syncs_after_cache_commit`
+- `branch_catalog_runtime_syncs_after_durable_commit`
+- `cache_branch_lifecycle_after_close_rejects`
+- `cache_branch_lifecycle_while_closing_rejects`
+- `clear_branch_new_view_empty_and_pinned_view_keeps_old_rows`
+- `clear_branch_keeps_branch_id_and_generation_active`
+- `clear_branch_rejects_missing_branch`
+- `clear_branch_rejects_deleted_branch`
+- `clear_branch_removes_active_frozen_owned_and_inherited_rows`
+- `clear_branch_after_clear_accepts_new_commits`
+- `clear_branch_stale_flush_output_cannot_resurrect_rows`
+- `delete_branch_marks_deleted_and_recreate_requires_greater_generation`
+- `delete_branch_missing_branch_rejects`
+- `delete_branch_already_deleted_is_typed`
+- `delete_branch_commit_rejects_after_deleted`
+- `delete_branch_new_read_rejects_after_deleted`
+- `delete_branch_pinned_view_can_still_read_old_rows`
+- `delete_branch_with_shared_parent_table_keeps_parent_readable`
+- `recreate_deleted_branch_rejects_generation_exhaustion`
+- `recreate_deleted_branch_rejects_same_generation`
+- `recreate_deleted_branch_rejects_lower_generation`
+- `stale_commit_generation_rejects_after_recreate`
+- `stale_flush_task_generation_rejects_after_recreate`
+- `stale_compaction_task_generation_rejects_after_recreate`
+- `stale_materialization_task_generation_rejects_after_recreate`
+- `new_generation_does_not_see_old_rows`
+- `fork_current_inherits_owned_tables_without_copying_objects`
+- `fork_current_missing_source_rejects_before_destination_mutation`
+- `fork_current_existing_destination_rejects`
+- `fork_current_nonempty_destination_rejects`
+- `fork_current_source_with_active_rows_is_rejected_explicitly`
+- `fork_current_inherited_rows_are_visible_in_child`
+- `fork_current_child_local_row_shadows_inherited_row`
+- `fork_current_source_later_write_does_not_change_child_view`
+- `fork_current_records_source_branch_and_fork_version`
+- `fork_current_reachability_facts_include_shared_tables`
+- `fork_current_works_from_materialized_replacement_tables`
+- `fork_current_preserves_inherited_chain_order`
+- `fork_at_history_child_excludes_rows_after_requested_version`
+- `fork_at_history_child_includes_rows_at_requested_version`
+- `fork_at_history_retained_version_succeeds`
+- `fork_at_history_visible_latest_matches_current_fork`
+- `fork_at_history_after_visible_version_rejects`
+- `fork_at_history_below_retained_floor_rejects`
+- `fork_at_history_from_inherited_source_includes_visible_parent_row`
+- `fork_at_history_tombstone_at_boundary_is_preserved`
+- `fork_at_history_source_deleted_before_capture_rejects`
+- `fork_at_history_destination_generation_guard_is_enforced`
+- `pinned_reachability_protects_removed_tables_from_release`
+- `pinned_view_survives_recreate_same_branch_id_new_generation`
+- `pinned_view_release_unblocks_retention_candidate`
+- `repeated_pinned_reachability_for_same_branch_is_deduped`
+- `commit_to_branch_a_does_not_change_branch_b`
+- `clear_branch_a_does_not_change_branch_b`
+- `delete_branch_a_does_not_change_branch_b`
+- `fork_branch_a_to_branch_c_does_not_change_branch_b`
+- `row_with_wrong_branch_id_rejects_install`
+- `prefix_scan_branch_a_does_not_emit_branch_b_rows`
+- `lifecycle_branch_lifecycle_cache_smoke`
+- `lifecycle_branch_lifecycle_fork_at_history`
+- `lifecycle_branch_lifecycle_clear_delete_no_resurrection`
+- `lifecycle_branch_lifecycle_pinned_view_retention`
+- `lifecycle_branch_lifecycle_source_stays_storage_internal`
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Accept duplicate create | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Skip existing descriptor check in `create_branch` | `branch_catalog_duplicate_create_rejects` |
+| Drop source rows during current fork | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Construct an empty child instead of calling `fork_into_empty_child` | `fork_current_inherits_owned_tables_without_copying_objects` |
+| Allow fork from unflushed source rows | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Ignore the lower-layer fork error and install an empty child | `fork_current_source_with_active_rows_is_rejected_explicitly` |
+| Include rows newer than fork-at-history version | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Snapshot rows at latest rather than requested fork version | `fork_at_history_child_excludes_rows_after_requested_version` |
+| Ignore retained-history floor | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Remove the retained-floor check | `fork_at_history_below_retained_floor_rejects` |
+| Lose pinned reachability on clear | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Build release aggregate without pinned snapshots | `pinned_reachability_protects_removed_tables_from_release` |
+| Double-count repeated pins | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Feed repeated same-branch pinned snapshots directly into the aggregate | `repeated_pinned_reachability_for_same_branch_is_deduped` |
+| Reuse deleted branch generation without increment | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Change recreate comparison from greater-than to greater-or-equal | `delete_branch_marks_deleted_and_recreate_requires_greater_generation` |
+| Skip stale descriptor check | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Replace state using a queued descriptor after clear/delete/recreate | `clear_branch_stale_compaction_output_cannot_resurrect_rows` / `stale_flush_task_generation_rejects_after_recreate` |
+| Lose inherited-layer rows during fork-at-version | `crates/storage-next/src/branch/state.rs` | Omit inherited-layer rows from `fork_snapshot_rows` | `fork_at_history_from_inherited_source_includes_visible_parent_row` |
+| Treat inherited table owner as source branch | `crates/storage-next/src/branch/facts.rs` | Collapse owner branch and source branch in inherited table refs | `fork_current_reachability_facts_include_shared_tables` |
+| Cross-branch read leakage | `crates/storage-next/src/lifecycle/branch_lifecycle.rs` | Return the wrong branch state from catalog lookup | `commit_to_branch_a_does_not_change_branch_b` |
+
+### Deferred To Remaining Branch-Lifecycle Work
+
+- Durable branch catalog/table-manifest publication and recovery of multi-branch
+  create/fork/clear/delete descriptors. The current durable runtime mirrors the
+  active branch into a catalog, but the persisted database manifest still owns
+  only the single active branch path.
+- Public branch lifecycle API wrappers and product-facing branch naming stay in
+  the public storage API boundary.
+- Timeline-based timestamp fork lookup is not exposed by the branch catalog yet;
+  current fork-at-version tests cover explicit retained commit versions.
+- Full generated model, fault-window tests, and fuzz targets over branch
+  lifecycle scripts remain future assurance work; the shipped testkit contract is
+  a deterministic integration smoke, not a byte-decoded reference model.
+- Durable recovery round trips for branch delete/recreate catalog state are
+  blocked on the durable multi-branch catalog format.
+
+### Verification
+
+Commands run for this implementation pass (all passed):
+
+```bash
+cargo fmt --package strata-storage-next
+cargo test -p strata-storage-next --locked --lib lifecycle::tests::branch_lifecycle
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_branch_lifecycle
+cargo test -p strata-storage-next --locked --test lifecycle_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
+```
