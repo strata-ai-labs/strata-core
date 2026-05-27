@@ -348,7 +348,7 @@ fn bootstrap_rejects_recovered_log_record_for_unopened_branch() {
             .complete_recovery(&outcome)
             .expect_err("foreign branch recovered record rejects"),
         LifecycleError::RecoveryFailed {
-            reason: "recovered WAL package contains an unopened branch",
+            reason: "recovered WAL package references an unknown branch",
         }
     );
 }
@@ -1713,6 +1713,397 @@ fn recovery_newer_generation_outranks_older_deleted_marker() {
         active.status(),
         crate::lifecycle::LifecycleBranchStatus::Active
     );
+}
+
+#[test]
+fn recovery_rebuilds_active_branch_states() {
+    // Open a durable runtime, create a non-seeded branch, commit a row to
+    // it (durable WAL append), drop the runtime, reopen on the same
+    // backend, and verify the row survives via per-branch WAL replay.
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x34);
+    let new_branch = branch_id(0x44);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        runtime
+            .create_branch(
+                new_branch,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create branch");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(new_branch, b"non-seeded-row", b"value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to new branch");
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let restored_state = runtime
+        .branch_catalog()
+        .branch_state(new_branch)
+        .expect("non-seeded branch state survives");
+    let view = restored_state
+        .capture_read_view()
+        .expect("non-seeded branch read view");
+    let row = view
+        .latest(&physical_key(new_branch, b"non-seeded-row"))
+        .expect("read view")
+        .expect("row visible on non-seeded branch after recovery");
+    assert_eq!(row.row().commit_version(), CommitVersion::new(1));
+    assert_eq!(row.row().value(), b"value");
+}
+
+#[test]
+fn recovery_rejects_wal_row_for_deleted_generation() {
+    // Open, create a branch, delete it (durable tombstone), drop. Inject a
+    // WAL record stamped for the deleted branch_id into the backend and
+    // reopen — recovery must refuse to resurrect the deleted branch.
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x35);
+    let deleted = branch_id(0x45);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+        runtime
+            .create_branch(
+                deleted,
+                CommitBranchGeneration::new(2).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create branch");
+        runtime
+            .delete_branch(
+                deleted,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(2).expect("generation"),
+                ),
+                Some(CommitVersion::new(3)),
+            )
+            .expect("delete branch");
+    }
+
+    // Inject a WAL record stamped for the deleted branch.
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let resurrected = wal_record(deleted, 5, b"resurrect-attempt", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&resurrected)
+        .expect("append wal record for deleted branch");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    assert_eq!(
+        shell
+            .complete_recovery(&outcome)
+            .expect_err("deleted-branch WAL must reject"),
+        LifecycleError::RecoveryFailed {
+            reason: "recovered WAL package references a deleted branch",
+        }
+    );
+}
+
+#[test]
+fn recovery_rebuilds_fork_at_history_version() {
+    // Open, commit a row to the seeded branch, fork a child at the visible
+    // history version, drop. Reopen and verify the child descriptor's
+    // parent metadata (source branch + fork version) survives recovery.
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x36);
+    let child = branch_id(0x46);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(initial, b"fork-source-row", b"value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to seeded branch");
+        runtime
+            .fork_at_retained_version(
+                initial,
+                child,
+                CommitBranchGeneration::new(1).expect("generation"),
+                CommitVersion::new(1),
+                CommitVersion::ZERO,
+            )
+            .expect("fork child at history version");
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let child_descriptor = runtime
+        .list_branches(false)
+        .into_iter()
+        .find(|d| d.branch_id() == child)
+        .expect("child descriptor survives recovery");
+    let parent = child_descriptor
+        .parent()
+        .expect("forked child has parent metadata");
+    assert_eq!(parent.source_branch_id(), initial);
+    assert_eq!(parent.fork_version(), CommitVersion::new(1));
+    assert_eq!(
+        child_descriptor.created_at(),
+        Some(CommitVersion::new(1)),
+        "fork created_at matches fork version",
+    );
+}
+
+#[test]
+fn recovery_table_manifest_multi_branch_rows_round_trip() {
+    // Inject a BranchCatalogManifest with two active branches plus a
+    // TableManifest per branch carrying owned rows. Open the database
+    // afresh and verify both branches' row state is rebuilt from their
+    // per-branch TableManifests.
+    use crate::format::{
+        encode_table_manifest, BranchCatalogEntry, BranchCatalogManifest, BranchCatalogStatus,
+        TableManifest, TableManifestLevel,
+    };
+    use crate::layout::ObjectLayout;
+
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x37);
+    let extra = branch_id(0x47);
+
+    // Publish two table objects (one per branch).
+    let initial_table = publish_table_for_recovery(
+        &backend,
+        initial,
+        0,
+        "initial-table",
+        &[put_row(initial, 1, b"initial-row", b"initial-value")],
+    );
+    let extra_table = publish_table_for_recovery(
+        &backend,
+        extra,
+        0,
+        "extra-table",
+        &[put_row(extra, 1, b"extra-row", b"extra-value")],
+    );
+
+    // Build + publish per-branch TableManifests.
+    let initial_manifest = TableManifest::new(
+        initial,
+        None,
+        4,
+        vec![TableManifestLevel::new(
+            crate::branch::BranchLevel::ZERO,
+            vec![initial_table.clone()],
+        )
+        .expect("initial level")],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("initial table manifest");
+    let extra_manifest = TableManifest::new(
+        extra,
+        None,
+        5,
+        vec![
+            TableManifestLevel::new(crate::branch::BranchLevel::ZERO, vec![extra_table.clone()])
+                .expect("extra level"),
+        ],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("extra table manifest");
+    backend.write_raw(
+        ObjectLayout::branch_table_manifest(&initial.to_string()).expect("initial manifest object"),
+        encode_table_manifest(&initial_manifest).expect("initial manifest bytes"),
+    );
+    backend.write_raw(
+        ObjectLayout::branch_table_manifest(&extra.to_string()).expect("extra manifest object"),
+        encode_table_manifest(&extra_manifest).expect("extra manifest bytes"),
+    );
+
+    // Publish a BranchCatalogManifest listing both branches as Active.
+    let initial_entry = BranchCatalogEntry::new(initial, 1, BranchCatalogStatus::Active)
+        .expect("initial entry")
+        .with_created_at(1)
+        .expect("initial created_at");
+    let extra_entry = BranchCatalogEntry::new(extra, 1, BranchCatalogStatus::Active)
+        .expect("extra entry")
+        .with_created_at(2)
+        .expect("extra created_at");
+    let catalog_manifest =
+        BranchCatalogManifest::new(DATABASE_ID, 1, vec![initial_entry, extra_entry])
+            .expect("branch catalog manifest");
+    backend.write_raw(
+        ObjectLayout::branch_catalog_manifest().expect("branch catalog manifest object"),
+        crate::format::encode_branch_catalog_manifest(&catalog_manifest)
+            .expect("branch catalog manifest bytes"),
+    );
+
+    // Open and recover; the catalog manifest replay attaches the extra
+    // branch and `recover_per_branch_table_manifests` installs both
+    // branches' rows from the per-branch TableManifests.
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let initial_state = runtime
+        .branch_catalog()
+        .branch_state(initial)
+        .expect("initial branch state");
+    let initial_view = initial_state.capture_read_view().expect("initial view");
+    let initial_row = initial_view
+        .latest(&physical_key(initial, b"initial-row"))
+        .expect("initial read view")
+        .expect("initial row recovered");
+    assert_eq!(initial_row.row().value(), b"initial-value");
+
+    let extra_state = runtime
+        .branch_catalog()
+        .branch_state(extra)
+        .expect("extra branch state");
+    let extra_view = extra_state.capture_read_view().expect("extra view");
+    let extra_row = extra_view
+        .latest(&physical_key(extra, b"extra-row"))
+        .expect("extra read view")
+        .expect("extra row recovered");
+    assert_eq!(extra_row.row().value(), b"extra-value");
+}
+
+fn publish_table_for_recovery(
+    backend: &RecoveryTestBackend,
+    branch: BranchId,
+    level: u8,
+    identity: &str,
+    rows: &[StorageRow],
+) -> crate::format::TableManifestTableRef {
+    use crate::format::{
+        TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
+        TableManifestTableRef,
+    };
+    use crate::table::{ImmutableTableReader, TablePhysicalKeyBytes, TableReaderConfig};
+    let identity = TableIdentity::new(identity).expect("table identity");
+    let bytes = table_bytes(identity.clone(), rows);
+    let write = TableObjectService::new(backend)
+        .publish_create(
+            &branch.to_string(),
+            u32::from(level),
+            identity.as_str(),
+            &bytes,
+        )
+        .expect("publish table object");
+    let reader =
+        ImmutableTableReader::open_bytes(identity.clone(), bytes, TableReaderConfig::default())
+            .expect("table reader");
+    let table_rows = reader.rows();
+    let (timestamp_min, timestamp_max) = {
+        let mut timestamps = table_rows.iter().map(TableRow::commit_timestamp);
+        match timestamps.next() {
+            Some(first) => {
+                let (min, max) =
+                    timestamps.fold((first, first), |(min, max), ts| (min.min(ts), max.max(ts)));
+                (Some(min), Some(max))
+            }
+            None => (None, None),
+        }
+    };
+    let facts = TableManifestTableFacts::new(
+        reader.facts().byte_count(),
+        reader.facts().row_count(),
+        reader.facts().data_block_count(),
+        reader.facts().commit_range().min(),
+        reader.facts().commit_range().max(),
+        timestamp_min,
+        timestamp_max,
+    )
+    .expect("table manifest facts");
+    let bounds = {
+        let first = table_rows.first().expect("table has at least one row");
+        let mut physical_first = TablePhysicalKeyBytes::from_row(first.row());
+        let mut physical_last = physical_first.clone();
+        let mut internal_first = first.key().clone();
+        let mut internal_last = internal_first.clone();
+        for row in table_rows.iter().skip(1) {
+            let physical = TablePhysicalKeyBytes::from_row(row.row());
+            if physical < physical_first {
+                physical_first = physical.clone();
+            }
+            if physical > physical_last {
+                physical_last = physical;
+            }
+            if row.key() < &internal_first {
+                internal_first = row.key().clone();
+            }
+            if row.key() > &internal_last {
+                internal_last = row.key().clone();
+            }
+        }
+        TableManifestTableBounds::new(
+            physical_first.as_slice().to_vec(),
+            physical_last.as_slice().to_vec(),
+            internal_first.as_slice().to_vec(),
+            internal_last.as_slice().to_vec(),
+        )
+        .expect("table manifest bounds")
+    };
+    TableManifestTableRef::new(
+        identity,
+        write.facts().object().clone(),
+        0,
+        facts,
+        bounds,
+        TableManifestTableProvenance::Flush,
+    )
+    .expect("table manifest ref")
 }
 
 fn assemble_shell(

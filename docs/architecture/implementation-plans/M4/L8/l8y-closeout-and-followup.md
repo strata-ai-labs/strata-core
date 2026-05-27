@@ -25,11 +25,44 @@ persisted `deleted_at`). 11 format tests, 4 golden vectors, 3 § 7 recovery
 tests (`recovery_rebuilds_multiple_branch_descriptors`,
 `_deleted_marker_outranks_older_table_manifest`,
 `_newer_generation_outranks_older_deleted_marker`). Pre-B databases (no
-manifest) fall back to single-branch mode. **Still outstanding for B Phase
-2**: multi-branch WAL/checkpoint encoding (today only the seeded branch can
-carry rows durably); persisting `pending_releases`; durable-tombstone WAL
-guard test; recovery integration smoke; per-branch `TableManifest` for
-non-seeded branches.
+manifest) fall back to single-branch mode.
+
+**Update (Follow-up B Phase 2 landed)**: B Phase 2 extends recovery to
+restore per-branch row state. Changes:
+
+- `validate_recovered_wal_package` is now catalog-aware: accepts records
+  for any non-Deleted branch known to the catalog; rejects records for
+  Deleted or unknown branch_ids with typed `RecoveryFailed` errors.
+- `complete_recovery` reorders to build the catalog (seeded slot +
+  `BranchCatalogManifest` replay) before validating and replaying the
+  WAL.
+- New helper `recover_per_branch_table_manifests` enumerates
+  `TableManifestService::load_all_current()` and installs each
+  non-seeded branch's state into the catalog via the new
+  `apply_loaded_table_manifest_to_branch` factored out of
+  `recover_table_manifest_for_branch`.
+- WAL replay loop dispatches by `branch_id`, looking up the target slot
+  via `branch_catalog.branch_state_mut(branch_id, guard)`.
+- `replay_branch_catalog_manifest` now preserves parent metadata via a
+  new `LifecycleBranchCatalog::set_parent_for_recovery` helper, so
+  forked descriptors survive restart with their `source_branch_id` and
+  `fork_version`.
+
+§ 7 tests added: `recovery_rebuilds_active_branch_states`,
+`recovery_rejects_wal_row_for_deleted_generation`,
+`recovery_rebuilds_fork_at_history_version`,
+`recovery_table_manifest_multi_branch_rows_round_trip`. The existing
+`bootstrap_rejects_recovered_log_record_for_unopened_branch` covers
+test § 7.7 (`recovery_rejects_wal_row_for_missing_branch`); its expected
+message updated to "references an unknown branch".
+
+**Deferred to B Phase 3**: multi-branch checkpoint encoder (`SnapshotService`
+still writes seeded-branch rows only — `validate_checkpoint_rows` stays
+single-branch); `recovery_checkpoint_multi_branch_rows_round_trip` test
+(needs encoder); `recovery_rebuilds_inherited_layers` test (needs a
+non-seeded-branch flush helper); persisting `pending_releases`; recovery
+integration smoke (existing lib coverage is end-to-end durable but not a
+testkit-style integration harness).
 
 **Update (Follow-up A3 landed)**: A3 dropped the shadow `branch: BranchLocalState`
 field on both runtimes. The catalog is now the sole owner of branch state.
@@ -95,7 +128,7 @@ dedup, deterministic listing, error-coded outcomes.
 | 2. typed errors for duplicate create, missing source, non-empty destination, stale generation, deleted branch, unretained fork version | Met | A1 added `SourceHasUnflushedRows`, `InsufficientTimestampHistory`, `PinnedViewReleaseBlocked` and used `SourceHasUnflushedRows` in fork rejections. |
 | 3. pinned read views remain valid across clear/delete/fork and protect reachability | Met | |
 | 4. stale flush/compaction/materialization tasks cannot resurrect cleared or deleted rows | Met | Stale descriptor CAS works. |
-| 5. recovery preserves branch catalog, generation, deleted markers, inherited layers, and fork-at-history facts | Mostly met | B Phase 1 added durable BranchCatalogManifest + recovery rebuild. Multi-branch row state (inherited layers per non-seeded branch) defers to B Phase 2. |
+| 5. recovery preserves branch catalog, generation, deleted markers, inherited layers, and fork-at-history facts | Mostly met | B Phase 1 added durable BranchCatalogManifest + descriptor rebuild. B Phase 2 added catalog-aware WAL validation + per-branch WAL replay dispatch + per-branch TableManifest recovery + parent metadata preservation. Multi-branch checkpoint encoder + inherited_layers test defer to B Phase 3. |
 | 6. table-object retention receives release facts; branch lifecycle never directly deletes table objects | Met | |
 | 7. source guards prevent product policy and milestone labels in code/tests | Met | |
 | 8. generated/fault tests cover branch lifecycle ordering, not only examples | Not met | Generated model, fault windows, and fuzz targets all missing. Follow-up C. |
@@ -193,57 +226,81 @@ and delegates to `fork_at_retained_version`. Tests:
 - `fork_at_history_no_rows_at_or_before_timestamp_rejects`
 - `durable_runtime_fork_at_retained_timestamp_resolves_via_coverage`
 
-### 6. Multi-branch durable persistence and recovery missing
+### 6. Multi-branch durable persistence and recovery — *Mostly closed by B Phase 1 + 2*
 
-The database manifest still tracks a single branch.
-`LifecycleRecoveryRuntime` returns `recovered_branch: Option<BranchLocalState>`
-(recovery.rs:839, 845, 875) — singular. Bootstrap creates the catalog with
-`LifecycleBranchCatalog::with_existing_branch(...)` (bootstrap.rs:131) which
-only seeds one entry. There is no path that persists multi-branch catalog
-state, deleted markers, or fork-at-history descriptors, and no path that
-rebuilds them on recovery.
+B Phase 1 added the `BranchCatalogManifest` (top-level
+`manifest/branch-catalog` object, STBC magic, version 1) and recovery
+rebuild for non-seeded descriptors.
 
-This blocks all of test plan § 7 Recovery (14 tests) and the
-durable-tombstone, recovery-generation, and recovery-fork-at-version tests in
-§ 3, § 5, § 6.
+B Phase 2 closed the row-state side: WAL validator + replay loop now
+dispatch by `branch_id`; persisted per-branch `TableManifest` objects
+are enumerated and installed into the catalog; forked descriptors
+preserve their parent metadata across restart.
 
-This is the largest single gap. It likely needs its own slice; would touch:
+**Still outstanding (B Phase 3)**: the snapshot/checkpoint encoder
+still emits seeded-branch rows only (`encode_checkpoint_row_section`
+filters by the open branch). `validate_checkpoint_rows` is therefore
+left at the single-branch read shape because the catalog is not
+available at checkpoint-load time and no rows for non-seeded branches
+would survive the encoder anyway. Multi-branch checkpoint encoding +
+read-side dispatch + the
+`recovery_checkpoint_multi_branch_rows_round_trip` test land together
+in B Phase 3.
 
-- Database manifest format (frozen at M3 — extension needed).
-- Recovery flow.
-- Durable catalog publication for create / fork / clear / delete.
+Also outstanding for B Phase 3: persisting `pending_releases`,
+inherited-layer round-trip test (needs a non-seeded-branch flush
+helper for the runtime).
 
 ### 7. Test coverage gaps
 
 Counts are "test plan name → present in shipped code" (after A1 + A2 Phase 1).
 
-| Section | Required | Present | Missing | A2 Phase 1 delta |
-|---|---:|---:|---:|---:|
-| § 1 Catalog Create and List | 10 | 10 | 0 | — |
-| § 2 Current-State Fork | 12 | 12 | 0 | — |
-| § 3 Fork At History | 12 | 11 | 1 (`recovered_child_keeps_requested_fork_version`; Gap 6) | — |
-| § 4 Clear Branch | 12 | 11 | 1 (no backend delete; needs mock backend) | +1 |
-| § 5 Delete Branch | 12 | 8 | 4 (deleting state ×3, durable tombstone) | +2 |
-| § 6 Generation Reuse | 10 | 9 | 1 (recovery generation; Gap 6) | — |
-| § 7 Recovery | 14 | 0 | 14 (Gap 6) | — |
-| § 8 Maintenance Interactions | 10 | 1 | 9 (retention drains pending_releases verified) | +1 |
-| § 9 Inter-Branch Isolation | 10 | 10 | 0 | +1 |
-| § 10 Pinned View Reachability | 10 | 9 | 1 (partial-transition observability; C) | — |
-| Cache Mode | 8 | 9 | -1 (Phase 1 added 3 runtime clear/delete tests; over-quota) | +3 |
-| Durable Mode | 10 | 3 | 7 (Gaps 1 Phase 2 + 6) | +2 |
-| Generated Model | 8 | 0 | 8 | — |
-| Fault Windows | 12 | 0 | 12 | — |
-| Fuzz Targets | 4 | 0 | 4 | — |
-| Integration | 8 | 6 | 2 (durable smoke, recovery smoke) | — |
-| **Total** | **162** | **99** | **63** | **+10** |
+| Section | Required | Present | Missing | A2 Phase 1 delta | B Phase 1/2 delta |
+|---|---:|---:|---:|---:|---:|
+| § 1 Catalog Create and List | 10 | 10 | 0 | — | — |
+| § 2 Current-State Fork | 12 | 12 | 0 | — | — |
+| § 3 Fork At History | 12 | 12 | 0 | — | +1 (`recovery_rebuilds_fork_at_history_version`) |
+| § 4 Clear Branch | 12 | 11 | 1 (no backend delete; needs mock backend) | +1 | — |
+| § 5 Delete Branch | 12 | 9 | 3 (deleting state ×3) | +2 | +1 (`recovery_rejects_wal_row_for_deleted_generation`) |
+| § 6 Generation Reuse | 10 | 9 | 1 (recovery generation) | — | — |
+| § 7 Recovery | 14 | 7 | 7 (`recovery_rebuilds_inherited_layers`, `recovery_checkpoint_multi_branch_rows_round_trip`, `recovery_reconciles_creating_branch`, `_clearing_branch`, `_deleting_branch`, `recovery_preserves_branch_release_facts`, integration smoke) | — | +7 (3 in B Phase 1 + 4 in B Phase 2) |
+| § 8 Maintenance Interactions | 10 | 1 | 9 | +1 | — |
+| § 9 Inter-Branch Isolation | 10 | 10 | 0 | +1 | — |
+| § 10 Pinned View Reachability | 10 | 9 | 1 (partial-transition observability; C) | — | — |
+| Cache Mode | 8 | 9 | -1 | +3 | — |
+| Durable Mode | 10 | 3 | 7 | +2 | — |
+| Generated Model | 8 | 0 | 8 | — | — |
+| Fault Windows | 12 | 0 | 12 | — | — |
+| Fuzz Targets | 4 | 0 | 4 | — | — |
+| Integration | 8 | 6 | 2 (durable smoke, recovery smoke) | — | — |
+| **Total** | **162** | **108** | **54** | **+10** | **+9** |
 
 A2 Phase 1 added 10 plan-required tests (5 §4/§5 catalog-direct, 1 §8
 retention drain, 1 §9 shared-table, 3 §11 cache runtime clear/delete) plus
 2 durable runtime pending_releases tests. **Phase 2 (shadow-field removal)
 is structural; it does not unblock additional test coverage** — the
 ~6 method signature changes affect existing call sites only.
-Follow-up B unblocks § 7 and durable tombstone tests; Follow-up C unblocks
-partial-transition tests and the generated/fault/fuzz lines.
+
+B Phase 1 added 3 § 7 descriptor-rebuild tests. B Phase 2 added 4 more
+§ 7 tests (active branch states, deleted-generation rejection, fork at
+history version, multi-branch TableManifest round trip), plus § 3 fork
+at history rebuild and § 5 deleted-generation rejection. Total § 7
+coverage is now 7/14 (50%).
+
+The remaining 7 § 7 tests split as:
+- 1 needs B Phase 3 multi-branch checkpoint encoder
+  (`recovery_checkpoint_multi_branch_rows_round_trip`).
+- 1 needs B Phase 3 non-seeded flush helper
+  (`recovery_rebuilds_inherited_layers`).
+- 3 need Follow-up C observable Clearing/Deleting states
+  (`recovery_reconciles_creating_branch`, `_clearing_branch`,
+  `_deleting_branch`).
+- 1 needs B Phase 3 release-facts persistence
+  (`recovery_preserves_branch_release_facts`).
+- 1 integration smoke (`lifecycle_branch_lifecycle_recovery_smoke`).
+
+Follow-up C unblocks partial-transition tests and the
+generated/fault/fuzz lines.
 
 ### 8. Minor implementation issues — *Closed by A1*
 
@@ -278,12 +335,25 @@ become writable.
 
 ### Follow-up B — Multi-branch durable persistence and recovery
 
-- Gap 6 (multi-branch durable manifest + recovery)
-- Test gaps in § 5 (durable tombstone), § 6 (recovery generation), § 7
-  (recovery), Durable Mode, recovery integration smoke
+Split into three phases:
 
-Touches the M3-frozen manifest format. Likely needs to coordinate with L8Q /
-L8R owners and the format golden vectors.
+**Phase 1 (landed):** `BranchCatalogManifest` durable format,
+publication on every catalog mutation, descriptor rebuild on
+recovery, 4 golden vectors, 3 § 7 descriptor tests.
+
+**Phase 2 (landed):** Catalog-aware WAL validator + per-branch WAL
+replay dispatch; per-branch `TableManifest` recovery via
+`load_all_current()`; parent metadata preservation in catalog
+rebuild; 4 new § 7 tests.
+
+**Phase 3 (deferred):** Multi-branch checkpoint encoder (snapshot
+container writes rows from all active branches) and read-side
+dispatch; non-seeded-branch flush helper for the runtime; persist
+`pending_releases` across restart so retention drains pick up
+where they left off. Unblocks the remaining 4 of 7 missing § 7
+tests (`_checkpoint_multi_branch_rows_round_trip`,
+`_rebuilds_inherited_layers`, `_preserves_branch_release_facts`,
+`recovery_smoke` integration).
 
 ### Follow-up C — Lifecycle state observability and assurance
 

@@ -311,6 +311,23 @@ impl LifecycleBranchCatalog {
         }
     }
 
+    /// Set the parent descriptor for a branch during recovery. The
+    /// `replay_branch_catalog_manifest` path uses `create_branch` to
+    /// install non-seeded entries, which initializes them without a
+    /// parent; this helper attaches the parent metadata recovered from
+    /// the `BranchCatalogManifest`. Production fork paths set parent on
+    /// initial install via `install_new_branch_state`, so this method is
+    /// recovery-only.
+    pub(crate) fn set_parent_for_recovery(
+        &mut self,
+        branch_id: BranchId,
+        parent: LifecycleBranchParent,
+    ) -> LifecycleResult<()> {
+        let index = self.entry_index(branch_id)?;
+        self.entries[index].descriptor = self.entries[index].descriptor.with_parent(parent);
+        Ok(())
+    }
+
     pub(crate) fn recreate_deleted_branch(
         &mut self,
         branch_id: BranchId,

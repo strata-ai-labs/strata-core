@@ -82,7 +82,14 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         mut self,
         recovery: &LifecycleRecoveryOutcome,
     ) -> LifecycleResult<LifecycleDurableLocalRuntime<'a, S>> {
-        let report = self.bootstrap_commit_runtime_or_fail(recovery)?;
+        let (report, branch_catalog, branch_catalog_sequence, initial_branch_id) =
+            match self.prepare_catalog_and_replay(recovery) {
+                Ok(values) => values,
+                Err(error) => {
+                    self.mark_recovery_bootstrap_failed();
+                    return Err(error);
+                }
+            };
         let open_outcome = match StorageOpenOutcome::new(
             self.assembly_facts().mode(),
             self.assembly_facts().disposition(),
@@ -130,42 +137,6 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .ok_or(LifecycleError::CheckpointPublicationFailed {
                 reason: "checkpoint snapshot id overflow",
             })?;
-        let branch_generation = self
-            .registry
-            .lookup(self.branch.branch_id())
-            .map_err(commit_error)?
-            .generation();
-        let initial_branch_id = self.branch.branch_id();
-        let mut branch_catalog = LifecycleBranchCatalog::with_existing_branch(
-            &self.branch,
-            branch_generation,
-            self.branch.max_commit_version(),
-        )?;
-        // The shell's `self.branch` was used to seed the catalog above and
-        // is no longer needed; drop it explicitly so the catalog is the
-        // sole owner of branch state in the constructed runtime.
-        drop(self.branch);
-        // Replay the durable BranchCatalogManifest if present so create /
-        // clear / delete / fork descriptors survive restart. Missing
-        // manifest = pre-B database (single-branch mode); falls through
-        // with the seeded branch the only catalog entry.
-        let branch_catalog_sequence = match self
-            .services
-            .branch_catalog_manifest()
-            .load_current()
-            .map_err(|error| {
-            LifecycleError::lower_layer_with(
-                crate::lifecycle::LifecycleLowerLayer::Service,
-                "branch catalog manifest load failed",
-                error,
-            )
-        })? {
-            Some(manifest) => {
-                replay_branch_catalog_manifest(&mut branch_catalog, initial_branch_id, &manifest)?;
-                manifest.manifest_sequence()
-            }
-            None => 0,
-        };
         Ok(LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
@@ -191,19 +162,106 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         })
     }
 
+    /// Build the runtime catalog, replay durable manifests, and dispatch
+    /// WAL replay per branch. Runs inside `complete_recovery`; any error
+    /// here triggers the bootstrap-failure transition in the caller.
+    fn prepare_catalog_and_replay(
+        &mut self,
+        recovery: &LifecycleRecoveryOutcome,
+    ) -> LifecycleResult<(
+        LifecycleRecoveryBootstrapReport,
+        LifecycleBranchCatalog,
+        u64,
+        BranchId,
+    )> {
+        require_admitted(self.state, LifecycleOperationKind::RecoveryStep)?;
+        if matches!(recovery.health(), RecoveryHealth::Failed { .. }) {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "failed recovery package cannot be opened",
+            });
+        }
+        let durability = commit_durability_class_for_mode(self.assembly_facts().mode())?;
+        let checkpoint_watermark = recovery
+            .checkpoint()
+            .trusted_watermark()
+            .unwrap_or(CommitVersion::ZERO);
+
+        // Build the catalog from the seeded branch's post-checkpoint state.
+        let initial_branch_id = self.branch.branch_id();
+        let branch_generation = self
+            .registry
+            .lookup(initial_branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let mut branch_catalog = LifecycleBranchCatalog::with_existing_branch(
+            &self.branch,
+            branch_generation,
+            self.branch.max_commit_version(),
+        )?;
+        // The shell's `self.branch` was cloned into the catalog above;
+        // the catalog owns the canonical state from here on. The shell's
+        // copy is dropped together with `self` when `complete_recovery`
+        // returns.
+
+        // Replay the durable BranchCatalogManifest if present so non-seeded
+        // descriptors survive restart. Missing manifest = pre-B database
+        // (single-branch mode); the seeded branch is the only catalog entry.
+        let branch_catalog_sequence = match self
+            .services
+            .branch_catalog_manifest()
+            .load_current()
+            .map_err(branch_catalog_manifest_service_error)?
+        {
+            Some(manifest) => {
+                replay_branch_catalog_manifest(&mut branch_catalog, initial_branch_id, &manifest)?;
+                manifest.manifest_sequence()
+            }
+            None => 0,
+        };
+
+        // Install per-branch durable table manifests into non-seeded slots.
+        // The seeded branch's manifest was already applied by the pre-catalog
+        // recovery phase (apply_table_manifest_recovery on the shell).
+        recover_per_branch_table_manifests(
+            &self.services,
+            &mut self.table_catalog,
+            &mut branch_catalog,
+            initial_branch_id,
+            Some(&self.budget),
+        )?;
+
+        // Validate the WAL package against the catalog (multi-branch aware).
+        validate_recovered_wal_package(&branch_catalog, recovery.wal().records())?;
+
+        // Dispatch WAL replay by branch_id into per-branch catalog slots.
+        let report = replay_wal_into_catalog(
+            &mut branch_catalog,
+            &self.commit_config,
+            &mut self.allocator,
+            &mut self.visible,
+            &self.durable_gate,
+            recovery,
+            durability,
+            checkpoint_watermark,
+        )?;
+        Ok((
+            report,
+            branch_catalog,
+            branch_catalog_sequence,
+            initial_branch_id,
+        ))
+    }
+
+    /// Test-only entry point that mirrors the production validation +
+    /// replay path against a temporary catalog seeded from the shell's
+    /// branch. Used to exercise per-record replay failures (e.g.
+    /// unresolved-gate mismatches) without consuming the shell.
     #[cfg(test)]
     pub(crate) fn try_bootstrap_commit_runtime_for_test(
         &mut self,
         recovery: &LifecycleRecoveryOutcome,
     ) -> LifecycleResult<LifecycleRecoveryBootstrapReport> {
-        self.bootstrap_commit_runtime_or_fail(recovery)
-    }
-
-    fn bootstrap_commit_runtime_or_fail(
-        &mut self,
-        recovery: &LifecycleRecoveryOutcome,
-    ) -> LifecycleResult<LifecycleRecoveryBootstrapReport> {
-        match self.bootstrap_commit_runtime(recovery) {
+        match self.try_bootstrap_commit_runtime_for_test_inner(recovery) {
             Ok(report) => Ok(report),
             Err(error) => {
                 self.mark_recovery_bootstrap_failed();
@@ -212,17 +270,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         }
     }
 
-    fn mark_recovery_bootstrap_failed(&mut self) {
-        // The original bootstrap error is already being returned; this best-effort
-        // transition only preserves the state-machine terminal fact.
-        let _ = self
-            .state
-            .transition(LifecycleTransitionTrigger::PhaseFailed {
-                reason: "recovery bootstrap failed",
-            });
-    }
-
-    fn bootstrap_commit_runtime(
+    #[cfg(test)]
+    fn try_bootstrap_commit_runtime_for_test_inner(
         &mut self,
         recovery: &LifecycleRecoveryOutcome,
     ) -> LifecycleResult<LifecycleRecoveryBootstrapReport> {
@@ -237,47 +286,37 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .checkpoint()
             .trusted_watermark()
             .unwrap_or(CommitVersion::ZERO);
-        validate_recovered_wal_package(self.branch.branch_id(), recovery.wal().records())?;
+        let branch_generation = self
+            .registry
+            .lookup(self.branch.branch_id())
+            .map_err(commit_error)?
+            .generation();
+        let mut branch_catalog = LifecycleBranchCatalog::with_existing_branch(
+            &self.branch,
+            branch_generation,
+            self.branch.max_commit_version(),
+        )?;
+        validate_recovered_wal_package(&branch_catalog, recovery.wal().records())?;
+        replay_wal_into_catalog(
+            &mut branch_catalog,
+            &self.commit_config,
+            &mut self.allocator,
+            &mut self.visible,
+            &self.durable_gate,
+            recovery,
+            durability,
+            checkpoint_watermark,
+        )
+    }
 
-        let mut report = LifecycleRecoveryBootstrapReport::new(recovery.health().clone());
-        let mut replayed_max = CommitVersion::ZERO;
-        for record in recovery.wal().records() {
-            replayed_max = replayed_max.max(record.commit_version());
-            let replay = CommitReplayRequest::new(record.clone(), durability);
-            let replay_report = CommitReplayRuntime::new(
-                &self.commit_config,
-                &mut self.allocator,
-                &mut self.branch,
-                &mut self.visible,
-                &self.durable_gate,
-            )
-            .replay(&replay)
-            .map_err(commit_error)?;
-            report.record_replay(&replay_report);
-        }
-
-        let recovered_visible_version = checkpoint_watermark.max(replayed_max);
-        self.allocator
-            .catch_up_to_recovered_version(recovered_visible_version);
-        if let Some(timestamp) = recovery.checkpoint().timestamp_max() {
-            self.allocator.catch_up_to_recovered_timestamp(timestamp);
-        }
-        let checkpoint_visible_publish =
-            if recovered_visible_version > self.visible.visible_version() {
-                Some(
-                    self.visible
-                        .catch_up_visible_after_replay(recovered_visible_version)
-                        .map_err(|error| LifecycleError::RecoveryVisibilityFailed {
-                            recovered_visible_version,
-                            reason: "recovered rows were installed but visibility catch-up failed",
-                            source: Some(Arc::new(error)),
-                        })?,
-                )
-            } else {
-                None
-            };
-        report.finish(checkpoint_visible_publish, recovered_visible_version);
-        Ok(report)
+    fn mark_recovery_bootstrap_failed(&mut self) {
+        // The original bootstrap error is already being returned; this best-effort
+        // transition only preserves the state-machine terminal fact.
+        let _ = self
+            .state
+            .transition(LifecycleTransitionTrigger::PhaseFailed {
+                reason: "recovery bootstrap failed",
+            });
     }
 }
 
@@ -591,6 +630,7 @@ fn replay_branch_catalog_manifest(
 ) -> LifecycleResult<()> {
     use crate::commit::{CommitBranchGeneration, CommitBranchGenerationGuard};
     use crate::format::BranchCatalogStatus;
+    use crate::lifecycle::LifecycleBranchParent;
     for entry in manifest.entries() {
         let branch_id = entry.branch_id();
         let generation_value = entry.generation();
@@ -609,6 +649,15 @@ fn replay_branch_catalog_manifest(
             // conflict (the catalog says "this generation was seen at close
             // time"; if it disagrees with the runtime's seeded generation,
             // the seeded generation wins since it was just constructed).
+            if let Some(parent) = entry.parent() {
+                catalog.set_parent_for_recovery(
+                    initial_branch_id,
+                    LifecycleBranchParent::new(
+                        parent.source_branch_id(),
+                        CommitVersion::new(parent.fork_version()),
+                    ),
+                )?;
+            }
             if matches!(entry.status(), BranchCatalogStatus::Deleted) {
                 let deleted_at = entry.deleted_at().map(CommitVersion::new);
                 // Use the current seeded generation rather than the manifest
@@ -630,6 +679,15 @@ fn replay_branch_catalog_manifest(
         // resurrection-after-deleted-by-newer-generation flows via its
         // existing generation arbitration.
         catalog.create_branch(branch_id, generation, created_at)?;
+        if let Some(parent) = entry.parent() {
+            catalog.set_parent_for_recovery(
+                branch_id,
+                LifecycleBranchParent::new(
+                    parent.source_branch_id(),
+                    CommitVersion::new(parent.fork_version()),
+                ),
+            )?;
+        }
         if matches!(entry.status(), BranchCatalogStatus::Deleted) {
             let deleted_at = entry.deleted_at().map(CommitVersion::new);
             catalog.delete_branch(
@@ -784,15 +842,28 @@ fn commit_durability_class_for_mode(mode: StorageMode) -> LifecycleResult<Commit
     }
 }
 
+/// Validate the recovered WAL package against the rebuilt catalog. Each
+/// record must reference a branch present in the catalog and not in
+/// `Deleted` status; unknown or deleted branches indicate corruption or
+/// post-deletion resurrection attempts and must fail closed. Records
+/// must remain strictly ordered by commit version across all branches —
+/// the WAL is a single durable log.
 fn validate_recovered_wal_package(
-    branch_id: BranchId,
+    catalog: &LifecycleBranchCatalog,
     records: &[WalRecord],
 ) -> LifecycleResult<()> {
+    use crate::lifecycle::LifecycleBranchStatus;
     let mut previous = None;
     for record in records {
-        if record.branch_id() != branch_id {
+        let branch_id = record.branch_id();
+        let descriptor = catalog
+            .lookup(branch_id)
+            .map_err(|_| LifecycleError::RecoveryFailed {
+                reason: "recovered WAL package references an unknown branch",
+            })?;
+        if descriptor.status() == LifecycleBranchStatus::Deleted {
             return Err(LifecycleError::RecoveryFailed {
-                reason: "recovered WAL package contains an unopened branch",
+                reason: "recovered WAL package references a deleted branch",
             });
         }
         if previous.is_some_and(|previous| record.commit_version() <= previous) {
@@ -803,4 +874,118 @@ fn validate_recovered_wal_package(
         previous = Some(record.commit_version());
     }
     Ok(())
+}
+
+/// Enumerate persisted per-branch table manifests and install each into
+/// its catalog slot. The seeded branch's manifest was already applied by
+/// the pre-catalog recovery phase; skip it. Deleted descriptors are
+/// resurrection-guarded — the manifest is treated as stale.
+fn recover_per_branch_table_manifests(
+    services: &LifecycleDurableLocalServices<'_>,
+    table_catalog: &mut crate::lifecycle::LifecycleDurableTableCatalog,
+    branch_catalog: &mut LifecycleBranchCatalog,
+    initial_branch_id: BranchId,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<()> {
+    use crate::lifecycle::LifecycleBranchStatus;
+    let manifests = services
+        .table_manifest()
+        .load_all_current()
+        .map_err(|error| {
+            LifecycleError::lower_layer_with(
+                crate::lifecycle::LifecycleLowerLayer::Service,
+                "branch table manifest enumeration failed",
+                error,
+            )
+        })?;
+    for manifest in manifests {
+        let branch_id = manifest.branch_id();
+        if branch_id == initial_branch_id {
+            continue;
+        }
+        let descriptor =
+            branch_catalog
+                .lookup(branch_id)
+                .map_err(|_| LifecycleError::RecoveryFailed {
+                    reason: "persisted table manifest references an unknown branch",
+                })?;
+        if descriptor.status() == LifecycleBranchStatus::Deleted {
+            continue;
+        }
+        let generation = branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let branch_state = branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+        crate::lifecycle::apply_loaded_table_manifest_to_branch(
+            branch_state,
+            &manifest,
+            services.table_reader(),
+            table_catalog,
+            budget,
+        )?;
+    }
+    Ok(())
+}
+
+/// Replay WAL records against the rebuilt catalog. Each record is routed
+/// to its branch's slot in the catalog. After all records replay, advance
+/// the allocator and the visibility tracker to the highest version
+/// observed (across all branches, including the checkpoint watermark).
+fn replay_wal_into_catalog<S>(
+    branch_catalog: &mut LifecycleBranchCatalog,
+    commit_config: &crate::commit::CommitRuntimeConfig,
+    allocator: &mut CommitFactAllocator<S>,
+    visible: &mut VisibleVersionTracker,
+    durable_gate: &CommitUnresolvedDurableGate,
+    recovery: &LifecycleRecoveryOutcome,
+    durability: CommitDurabilityClass,
+    checkpoint_watermark: CommitVersion,
+) -> LifecycleResult<LifecycleRecoveryBootstrapReport> {
+    let mut report = LifecycleRecoveryBootstrapReport::new(recovery.health().clone());
+    let mut replayed_max = CommitVersion::ZERO;
+    for record in recovery.wal().records() {
+        replayed_max = replayed_max.max(record.commit_version());
+        let branch_id = record.branch_id();
+        let generation = branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let target_branch = branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+        let replay = CommitReplayRequest::new(record.clone(), durability);
+        let replay_report = CommitReplayRuntime::new(
+            commit_config,
+            allocator,
+            target_branch,
+            visible,
+            durable_gate,
+        )
+        .replay(&replay)
+        .map_err(commit_error)?;
+        report.record_replay(&replay_report);
+    }
+    let recovered_visible_version = checkpoint_watermark.max(replayed_max);
+    allocator.catch_up_to_recovered_version(recovered_visible_version);
+    if let Some(timestamp) = recovery.checkpoint().timestamp_max() {
+        allocator.catch_up_to_recovered_timestamp(timestamp);
+    }
+    let checkpoint_visible_publish = if recovered_visible_version > visible.visible_version() {
+        Some(
+            visible
+                .catch_up_visible_after_replay(recovered_visible_version)
+                .map_err(|error| LifecycleError::RecoveryVisibilityFailed {
+                    recovered_visible_version,
+                    reason: "recovered rows were installed but visibility catch-up failed",
+                    source: Some(Arc::new(error)),
+                })?,
+        )
+    } else {
+        None
+    };
+    report.finish(checkpoint_visible_publish, recovered_visible_version);
+    Ok(report)
 }

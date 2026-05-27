@@ -423,6 +423,21 @@ pub(crate) fn recover_table_manifest_for_branch(
     else {
         return Ok(LifecycleTableManifestRecoveryOutcome::absent());
     };
+    apply_loaded_table_manifest_to_branch(branch, &manifest, reader_service, catalog, budget)
+}
+
+pub(crate) fn apply_loaded_table_manifest_to_branch(
+    branch: &mut BranchLocalState,
+    manifest: &TableManifest,
+    reader_service: &TableObjectReaderService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleTableManifestRecoveryOutcome> {
+    if manifest.branch_id() != branch.branch_id() {
+        return Err(LifecycleError::RecoveryFailed {
+            reason: "table manifest branch id does not match branch state",
+        });
+    }
     let manifest_object =
         crate::layout::ObjectLayout::branch_table_manifest(&branch.branch_id().to_string())
             .map_err(|source| {
@@ -432,14 +447,14 @@ pub(crate) fn recover_table_manifest_for_branch(
                     source,
                 )
             })?;
-    let request = recovery_request_from_manifest(&manifest, reader_service, catalog, budget)?;
+    let request = recovery_request_from_manifest(manifest, reader_service, catalog, budget)?;
     let install_outcome = branch
         .install_table_manifest_recovery(request)
         .map_err(branch_error)?;
-    catalog.record_manifest(&manifest)?;
+    catalog.record_manifest(manifest)?;
     Ok(LifecycleTableManifestRecoveryOutcome::installed(
         manifest_object,
-        &manifest,
+        manifest,
         install_outcome,
     ))
 }
