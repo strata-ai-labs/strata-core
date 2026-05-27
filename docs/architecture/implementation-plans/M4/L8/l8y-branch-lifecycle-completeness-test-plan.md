@@ -214,26 +214,28 @@ Assertions:
 
 ### 5. Delete Branch
 
+Storage-internal clear and delete are atomic synchronous transitions:
+the only externally observable branch states are `Active` and
+`Deleted`. Observable transients (a `Deleting` state visible to
+admission guards) belong at higher layers where async work happens and
+are intentionally out of scope here.
+
 Required tests:
 
-1. `delete_branch_marks_deleting_before_release`
-2. `delete_branch_rejects_new_commits_while_deleting`
-3. `delete_branch_rejects_new_maintenance_while_deleting`
-4. `delete_branch_pinned_view_can_still_read_old_rows`
-5. `delete_branch_new_read_rejects_after_deleted`
-6. `delete_branch_commit_rejects_after_deleted`
-7. `delete_branch_release_facts_feed_retention`
-8. `delete_branch_does_not_backend_delete_shared_table_objects`
-9. `delete_branch_missing_branch_rejects`
-10. `delete_branch_already_deleted_is_idempotent_or_typed`
-11. `delete_branch_with_shared_parent_table_keeps_parent_readable`
-12. `delete_branch_durable_tombstone_prevents_recovery_resurrection`
+1. `delete_branch_pinned_view_can_still_read_old_rows`
+2. `delete_branch_new_read_rejects_after_deleted`
+3. `delete_branch_commit_rejects_after_deleted`
+4. `delete_branch_release_facts_feed_retention`
+5. `delete_branch_does_not_backend_delete_shared_table_objects`
+6. `delete_branch_missing_branch_rejects`
+7. `delete_branch_already_deleted_is_idempotent_or_typed`
+8. `delete_branch_with_shared_parent_table_keeps_parent_readable`
+9. `delete_branch_durable_tombstone_prevents_recovery_resurrection`
 
 Assertions:
 
-1. deleting state is observable by admission guards;
-2. delete returns raw release facts;
-3. shared tables remain reachable while another branch or pinned view references
+1. delete returns raw release facts;
+2. shared tables remain reachable while another branch or pinned view references
    them.
 
 ### 6. Generation Reuse
@@ -269,12 +271,9 @@ Required tests:
 6. `recovery_newer_generation_outranks_older_deleted_marker`
 7. `recovery_rejects_wal_row_for_missing_branch`
 8. `recovery_rejects_wal_row_for_deleted_generation`
-9. `recovery_reconciles_creating_branch`
-10. `recovery_reconciles_clearing_branch`
-11. `recovery_reconciles_deleting_branch`
-12. `recovery_preserves_branch_release_facts`
-13. `recovery_checkpoint_multi_branch_rows_round_trip`
-14. `recovery_table_manifest_multi_branch_rows_round_trip`
+9. `recovery_preserves_branch_release_facts`
+10. `recovery_checkpoint_multi_branch_rows_round_trip`
+11. `recovery_table_manifest_multi_branch_rows_round_trip`
 
 Assertions:
 

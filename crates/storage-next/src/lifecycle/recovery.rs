@@ -1021,7 +1021,7 @@ fn validate_snapshot_watermark(
 }
 
 /// Validate checkpoint row watermarks before partitioning by branch.
-/// Branch_id membership validation now happens post-catalog-build in
+/// `branch_id` membership validation now happens post-catalog-build in
 /// `bootstrap::install_non_seeded_checkpoint_rows`, so unknown / Deleted
 /// branches can be rejected against the rebuilt catalog rather than the
 /// shell's seeded branch only.

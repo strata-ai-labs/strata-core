@@ -178,30 +178,30 @@ Exact names can change. Required properties:
 
 ## Branch States
 
+Storage-internal clear and delete are atomic synchronous transitions
+at the storage layer; transient observable states (Creating /
+Clearing / Deleting visible to external admission guards) belong at
+higher layers where async work happens.
+
 Minimum lifecycle states:
 
 1. `Active`: commits, reads, maintenance, fork, clear, and delete may be
    admitted subject to normal guards.
-2. `Creating`: branch descriptor is durable or in-flight, but the branch is not
-   yet writable. Recovery either completes or removes it using deterministic
-   facts.
-3. `Clearing`: clear has stopped new commits and is removing/releasing branch
-   state. Pinned views remain valid.
-4. `Deleting`: delete has stopped new commits and is removing/releasing branch
-   state. Pinned views remain valid.
-5. `Deleted`: new commits and reads reject unless a later generation recreates
+2. `Deleted`: new commits and reads reject unless a later generation recreates
    the branch id.
 
 State-transition rules:
 
-1. `Active -> Clearing -> Active` for successful clear.
-2. `Active -> Deleting -> Deleted` for successful delete.
-3. `Deleted -> Creating -> Active` only with a strictly greater generation.
-4. `Creating`, `Clearing`, and `Deleting` are recovery-reconcilable states.
-5. Commit admission must reject `Creating`, `Clearing`, `Deleting`, and
-   `Deleted`.
-6. Maintenance admission must reject stale generations and non-active states
-   unless the task is the lifecycle operation that owns the transition.
+1. Successful clear preserves `Active`; the branch's row state is
+   atomically replaced while pinned views retain their references to
+   the released tables until the next retention pass.
+2. Successful delete transitions `Active -> Deleted` atomically.
+3. Recreate transitions `Deleted -> Active` only with a strictly
+   greater generation.
+4. Commit admission must reject `Deleted`.
+5. Maintenance admission must reject stale generations and non-active
+   states unless the task is the lifecycle operation that owns the
+   transition.
 
 ## Create Protocol
 
@@ -398,11 +398,9 @@ Recovery rules:
 
 1. Deleted branch markers outrank older table manifests for the same generation.
 2. Newer generation active descriptors outrank older deleted markers.
-3. In-flight `Creating`, `Clearing`, and `Deleting` states reconcile
-   deterministically or fail closed with health facts.
-4. WAL rows for missing/deleted/stale-generation branches reject unless recovery
+3. WAL rows for missing/deleted/stale-generation branches reject unless recovery
    can prove they belong to a newer recovered descriptor.
-5. Recovery never chooses product policy. It returns raw conflicts and health
+4. Recovery never chooses product policy. It returns raw conflicts and health
    facts.
 
 ## Error Vocabulary

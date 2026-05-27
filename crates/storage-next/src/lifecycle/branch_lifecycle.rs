@@ -18,8 +18,6 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LifecycleBranchStatus {
     Active,
-    Clearing,
-    Deleting,
     Deleted,
 }
 
@@ -385,9 +383,9 @@ impl LifecycleBranchCatalog {
 
     /// Build a deterministic snapshot of catalog descriptors for durable
     /// publication. Entries are sorted by `branch_id` byte order (mirroring
-    /// the catalog's internal ordering). Transient states (`Clearing` /
-    /// `Deleting`) are not currently observable through the synchronous
-    /// catalog API and therefore not represented.
+    /// the catalog's internal ordering). Storage-internal clear / delete
+    /// are atomic synchronous transitions — only `Active` and `Deleted`
+    /// are externally observable.
     pub(crate) fn durable_entries(
         &self,
     ) -> Result<Vec<crate::format::BranchCatalogEntry>, crate::format::FormatError> {
@@ -396,9 +394,7 @@ impl LifecycleBranchCatalog {
         for entry in &self.entries {
             let descriptor = entry.descriptor;
             let status = match descriptor.status() {
-                LifecycleBranchStatus::Active
-                | LifecycleBranchStatus::Clearing
-                | LifecycleBranchStatus::Deleting => BranchCatalogStatus::Active,
+                LifecycleBranchStatus::Active => BranchCatalogStatus::Active,
                 LifecycleBranchStatus::Deleted => BranchCatalogStatus::Deleted,
             };
             let mut durable = BranchCatalogEntry::new(
@@ -598,7 +594,6 @@ impl LifecycleBranchCatalog {
         let release_plan = self.release_plan_after_removing(branch_id, &old_snapshot)?;
 
         let active = descriptor.with_next_revision();
-        self.entries[index].descriptor = descriptor.with_status(LifecycleBranchStatus::Clearing);
         self.entries[index].state = Some(empty_state);
         self.entries[index].descriptor = active;
         Ok(LifecycleBranchClearOutcome {
@@ -634,7 +629,6 @@ impl LifecycleBranchCatalog {
         self.registry
             .mark_deleted(branch_id)
             .map_err(commit_error)?;
-        self.entries[index].descriptor = descriptor.with_status(LifecycleBranchStatus::Deleting);
         self.entries[index].descriptor = deleted;
         self.entries[index].state = None;
         Ok(LifecycleBranchDeleteOutcome {
@@ -1106,8 +1100,6 @@ impl LifecycleBranchStatus {
     const fn name(self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Clearing => "clearing",
-            Self::Deleting => "deleting",
             Self::Deleted => "deleted",
         }
     }
@@ -1164,9 +1156,6 @@ impl From<LifecycleBranchDescriptor> for CommitBranchDescriptor {
         let state = match descriptor.status() {
             LifecycleBranchStatus::Active => CommitBranchState::Active,
             LifecycleBranchStatus::Deleted => CommitBranchState::Deleted,
-            LifecycleBranchStatus::Clearing | LifecycleBranchStatus::Deleting => {
-                CommitBranchState::Deleting
-            }
         };
         Self::new(descriptor.branch_id(), descriptor.generation(), state)
     }

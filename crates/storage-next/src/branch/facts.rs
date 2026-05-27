@@ -961,7 +961,7 @@ impl BranchReleasePlan {
     }
 
     /// Reconstruct a release plan from its persisted audit-trail form
-    /// (branch_id + sorted releasable table identities). `removed_refs`
+    /// (`branch_id` + sorted releasable table identities). `removed_refs`
     /// and `protected_tables` are intentionally empty — the persisted
     /// form omits them because the drain path only consumes
     /// `releasable_tables`, and the manifest-driven retention pass

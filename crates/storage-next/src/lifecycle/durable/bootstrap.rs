@@ -1068,21 +1068,23 @@ fn recover_per_branch_table_manifests(
 }
 
 /// Install checkpoint rows that did not belong to the seeded branch.
-/// `recover_checkpoint` partitions rows by branch_id at decode time and
-/// returns non-seeded rows in the recovery outcome; this helper drives
-/// them into the catalog's per-branch slots after the catalog has been
-/// rebuilt from `BranchCatalogManifest` and per-branch table manifests.
+/// `recover_checkpoint` partitions rows by `branch_id` at decode time
+/// and returns non-seeded rows in the recovery outcome; this helper
+/// drives them into the catalog's per-branch slots after the catalog
+/// has been rebuilt from `BranchCatalogManifest` and per-branch table
+/// manifests.
 ///
 /// Validation: each row's `branch_id` must be present in the catalog
-/// and not in `Deleted` status. Unknown or deleted branch_ids fail closed
-/// with typed `RecoveryFailed` errors, mirroring the multi-branch WAL
-/// validator. Empty input is a no-op (common when the seeded branch is
-/// the only branch with checkpoint coverage).
+/// and not in `Deleted` status. Unknown or deleted `branch_ids` fail
+/// closed with typed `RecoveryFailed` errors, mirroring the multi-branch
+/// WAL validator. Empty input is a no-op (common when the seeded branch
+/// is the only branch with checkpoint coverage).
 fn install_non_seeded_checkpoint_rows(
     branch_catalog: &mut LifecycleBranchCatalog,
     rows: &[crate::row::StorageRow],
     identity_seed: Option<&crate::table::TableIdentity>,
 ) -> LifecycleResult<()> {
+    use crate::lifecycle::LifecycleBranchStatus;
     if rows.is_empty() {
         return Ok(());
     }
@@ -1091,7 +1093,6 @@ fn install_non_seeded_checkpoint_rows(
             reason: "non-seeded checkpoint rows require an install identity seed",
         });
     };
-    use crate::lifecycle::LifecycleBranchStatus;
     let mut affected: Vec<BranchId> = Vec::new();
     for row in rows {
         let id = row.physical_key().branch_id();
@@ -1115,11 +1116,7 @@ fn install_non_seeded_checkpoint_rows(
     }
     let mut staged: Vec<BranchLocalState> = affected
         .iter()
-        .map(|id| {
-            branch_catalog
-                .branch_state(*id)
-                .map(BranchLocalState::clone)
-        })
+        .map(|id| branch_catalog.branch_state(*id).cloned())
         .collect::<LifecycleResult<Vec<_>>>()?;
     let request = crate::branch::BranchSnapshotInstallRequest::from_rows(
         identity_seed.as_str(),

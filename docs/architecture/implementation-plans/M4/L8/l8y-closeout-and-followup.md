@@ -86,8 +86,19 @@ items on the Follow-up B track:
   it into `tests/lifecycle_branch_lifecycle.rs`.
 
 With Follow-up B Phase 4 the entire Follow-up B track is closed.
-Follow-up C remains (observable Clearing/Deleting states +
-generated/fault/fuzz coverage).
+
+**Update (Follow-up C Phase 1 landed)**: Option B for Gap 4 — drop
+transient observable states from the storage-internal spec.
+`LifecycleBranchStatus::Clearing` and `::Deleting` removed from the
+enum, the dead-write lines in `clear_branch` / `delete_branch`
+deleted, the `durable_entries` and `CommitBranchDescriptor` matches
+collapsed to two arms. Test plan + implementation plan + closeout doc
+record the decision: storage-internal clear / delete are atomic
+synchronous transitions; observable transients belong at higher
+layers. Six tests dropped from the required set (3 § 5
+deleting-state, 3 § 7 reconciliation); total required = 156.
+Follow-up C Phase 2 remains (generated model, fault windows, fuzz
+targets, durable integration smoke).
 
 **Update (Follow-up B Phase 3 landed)**: B Phase 3 closes the
 multi-branch encoder + non-seeded flush sides of Gap 6:
@@ -248,32 +259,25 @@ A1 added three typed variants:
 
 Still outstanding:
 
-- `BranchDeleting` — depends on Gap 4 (Clearing/Deleting observable state) and
-  defers to Follow-up C.
 - `BranchManifestMismatch` and `BranchRecoveryConflict` — recovery-specific
   and defer to Follow-up B.
 
-### 4. Clearing / Deleting states are never observable
+### 4. Clearing / Deleting states are never observable — *Closed by Follow-up C Phase 1 via Option B*
 
-`clear_branch` (branch_lifecycle.rs:521–524) and `delete_branch`
-(branch_lifecycle.rs:558–559) set the intermediate state and immediately
-overwrite it in the same synchronous block. The Clearing/Deleting status is
-never visible from outside the function. As a consequence, plan-required tests
+Storage-internal `clear_branch` and `delete_branch` are atomic
+synchronous transitions; the `Clearing` and `Deleting` variants
+previously defined on `LifecycleBranchStatus` were never observable
+from outside those methods (each set the intermediate status and
+overwrote it on the very next line). Follow-up C Phase 1 dropped the
+dead enum variants, deleted the dead-write lines, and collapsed the
+two matches that used to handle Clearing/Deleting as Active.
 
-- `delete_branch_marks_deleting_before_release`
-- `delete_branch_rejects_new_commits_while_deleting`
-- `delete_branch_rejects_new_maintenance_while_deleting`
-
-cannot be written against the current implementation and are absent.
-
-Fix shape: pick one and stick with it.
-
-- Option A: refactor to a begin/commit/abort handle pattern so the
-  intermediate state is published, observed, and then advanced. Matches the
-  plan's State-Transition Rules verbatim.
-- Option B: drop the intermediate states from the spec; document that
-  storage-internal clear/delete are atomic synchronous transitions and the
-  three tests above are not applicable.
+The implementation plan and test plan now record that observable
+transients belong at higher layers where async work happens — the
+storage layer never has async work mid-transition, so the type system
+need not carry the variants. Six tests that depended on observable
+transients are dropped from the required set (3 § 5 deleting-state
+tests and 3 § 7 reconciliation tests).
 
 ### 5. Timestamp coverage missing in fork-at-history — *Closed by A1*
 
@@ -324,25 +328,29 @@ Gap 6 is fully closed.
 
 Counts are "test plan name → present in shipped code" (after A1 + A2 Phase 1).
 
-| Section | Required | Present | Missing | A2 Phase 1 delta | B Phase 1/2/3/4 delta |
-|---|---:|---:|---:|---:|---:|
-| § 1 Catalog Create and List | 10 | 10 | 0 | — | — |
-| § 2 Current-State Fork | 12 | 12 | 0 | — | — |
-| § 3 Fork At History | 12 | 12 | 0 | — | +1 (`recovery_rebuilds_fork_at_history_version`) |
-| § 4 Clear Branch | 12 | 11 | 1 (no backend delete; needs mock backend) | +1 | — |
-| § 5 Delete Branch | 12 | 9 | 3 (deleting state ×3) | +2 | +1 (`recovery_rejects_wal_row_for_deleted_generation`) |
-| § 6 Generation Reuse | 10 | 9 | 1 (recovery generation) | — | — |
-| § 7 Recovery | 14 | 10 | 4 (`recovery_reconciles_creating_branch`, `_clearing_branch`, `_deleting_branch`, integration smoke through testkit) | — | +10 (3 Phase 1, 4 Phase 2, 2 Phase 3, 1 Phase 4) |
-| § 8 Maintenance Interactions | 10 | 1 | 9 | +1 | — |
-| § 9 Inter-Branch Isolation | 10 | 10 | 0 | +1 | — |
-| § 10 Pinned View Reachability | 10 | 9 | 1 (partial-transition observability; C) | — | — |
-| Cache Mode | 8 | 9 | -1 | +3 | — |
-| Durable Mode | 10 | 3 | 7 | +2 | — |
-| Generated Model | 8 | 0 | 8 | — | — |
-| Fault Windows | 12 | 0 | 12 | — | — |
-| Fuzz Targets | 4 | 0 | 4 | — | — |
-| Integration | 8 | 7 | 1 (durable smoke) | — | +1 (`lifecycle_branch_lifecycle_recovery_smoke`) |
-| **Total** | **162** | **112** | **50** | **+10** | **+12** |
+After Follow-up C Phase 1 dropped the 3 § 5 deleting-state tests and
+the 3 § 7 reconciliation tests, the required total drops from 162 to
+156.
+
+| Section | Required | Present | Missing | A2 Phase 1 delta | B Phase 1/2/3/4 delta | C Phase 1 delta |
+|---|---:|---:|---:|---:|---:|---:|
+| § 1 Catalog Create and List | 10 | 10 | 0 | — | — | — |
+| § 2 Current-State Fork | 12 | 12 | 0 | — | — | — |
+| § 3 Fork At History | 12 | 12 | 0 | — | +1 | — |
+| § 4 Clear Branch | 12 | 11 | 1 (no backend delete; needs mock backend) | +1 | — | — |
+| § 5 Delete Branch | 9 | 9 | 0 | +2 | +1 | −3 (deleting-state tests removed from spec) |
+| § 6 Generation Reuse | 10 | 9 | 1 (recovery generation) | — | — | — |
+| § 7 Recovery | 11 | 10 | 1 (durable integration smoke) | — | +10 | −3 (reconciliation tests removed from spec) |
+| § 8 Maintenance Interactions | 10 | 1 | 9 | +1 | — | — |
+| § 9 Inter-Branch Isolation | 10 | 10 | 0 | +1 | — | — |
+| § 10 Pinned View Reachability | 10 | 10 | 0 | — | — | — |
+| Cache Mode | 8 | 9 | -1 | +3 | — | — |
+| Durable Mode | 10 | 3 | 7 | +2 | — | — |
+| Generated Model | 8 | 0 | 8 | — | — | — |
+| Fault Windows | 12 | 0 | 12 | — | — | — |
+| Fuzz Targets | 4 | 0 | 4 | — | — | — |
+| Integration | 8 | 7 | 1 (durable smoke) | — | +1 | — |
+| **Total** | **156** | **113** | **43** | **+10** | **+12** | **−6 required** |
 
 A2 Phase 1 added 10 plan-required tests (5 §4/§5 catalog-direct, 1 §8
 retention drain, 1 §9 shared-table, 3 §11 cache runtime clear/delete) plus
@@ -353,16 +361,12 @@ is structural; it does not unblock additional test coverage** — the
 B Phase 1 added 3 § 7 descriptor-rebuild tests. B Phase 2 added 4 more
 § 7 tests. B Phase 3 added 2 more § 7 tests. B Phase 4 added 1 more
 § 7 test (`recovery_preserves_branch_release_facts`) plus the
-integration smoke that wires through the testkit. Total § 7 coverage
-is now 10/14 (71%).
+integration smoke that wires through the testkit. C Phase 1 dropped 3
+§ 7 reconciliation tests from the required set (Option B for Gap 4).
+Total § 7 coverage is now 10/11 (91%); the remaining test is the
+durable integration smoke that lands with C Phase 2.
 
-The remaining 3 § 7 tests are blocked on Follow-up C observable
-Clearing/Deleting states (`recovery_reconciles_creating_branch`,
-`_clearing_branch`, `_deleting_branch`); the 4th remaining item under
-the integration row is the durable smoke that pairs with Follow-up C.
-
-Follow-up C unblocks partial-transition tests and the
-generated/fault/fuzz lines.
+Follow-up C Phase 2 unblocks the generated/fault/fuzz lines.
 
 ### 8. Minor implementation issues — *Closed by A1*
 
@@ -421,28 +425,28 @@ recovery smoke (`check_lifecycle_branch_lifecycle_recovery_contract` +
 `lifecycle_branch_lifecycle_recovery_smoke` integration test). The
 entire Follow-up B track is closed.
 
-### Follow-up C — Lifecycle state observability and assurance
+### Follow-up C — Lifecycle assurance
 
-- Gap 4 (Clearing/Deleting observability — Option A or B)
-- Generated model, fault windows, fuzz targets
+**Phase 1 (landed):** Gap 4 closed via Option B. Removed
+`LifecycleBranchStatus::Clearing` and `::Deleting`; deleted dead-write
+lines in `clear_branch` / `delete_branch`; collapsed the affected
+matches. Test plan + implementation plan + closeout doc record that
+storage-internal clear / delete are atomic synchronous transitions
+and observable transients belong at higher layers. Six tests dropped
+from the required set.
 
-If Option B is chosen for Gap 4, the three deleting-state tests are dropped
-from scope; otherwise they land here.
-
-Coding suggestion: L8AA / L8AB / L8AC, or fold into L9 setup. The naming is
-not load-bearing; the split is.
+**Phase 2 (deferred):** Generated model (§ 11, 8 tests), fault-window
+coverage (§ 12, 12 tests), fuzz targets (§ 13, 4 tests), and the
+durable integration smoke (Integration row, 1 remaining).
 
 ## Open Questions
 
 1. **V1 scope for multi-branch durable recovery**: required before L9, or can
    L9 ship with single-branch persistence and L10 add the rest?
-2. **Clearing/Deleting observable states**: is this a hard plan invariant or
-   can the plan accept atomic synchronous transitions and drop the three
-   related tests?
-3. **`LifecycleBranchCatalog` ownership model**: should the catalog be the
+2. **`LifecycleBranchCatalog` ownership model**: should the catalog be the
    single owner of `BranchLocalState`, or stay a parallel mirror of the
    runtime's `branch` field after runtime wiring lands?
-4. **Format extension**: does Gap 6 require a new manifest format version
+3. **Format extension**: does Gap 6 require a new manifest format version
    gated by new golden vectors, or can it ride a backward-compatible
    extension?
 

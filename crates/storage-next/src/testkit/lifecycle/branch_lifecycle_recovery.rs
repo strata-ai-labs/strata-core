@@ -54,6 +54,10 @@ pub fn check_lifecycle_branch_lifecycle_recovery_contract(
     Ok(outcome)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single-pass scenario walks open + create + commit + fork + reopen + verify; splitting would split related assertions"
+)]
 fn check_durable_branch_recovery_round_trip(
     script: &[u8],
     outcome: &mut LifecycleBranchLifecycleRecoveryContractOutcome,
