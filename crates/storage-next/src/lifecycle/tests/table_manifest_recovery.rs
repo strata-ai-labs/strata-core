@@ -556,7 +556,7 @@ fn recovery_rejects_table_object_fact_and_bounds_mismatches() {
 }
 
 #[test]
-fn reader_budget_recovery_decode_rejects_metadata_over_budget() {
+fn reader_budget_recovery_decode_rejects_materialized_table_over_budget() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x6a);
     let row = put_row(branch, 31, b"recovery-reader", b"large-value");
@@ -605,7 +605,7 @@ fn reader_budget_recovery_decode_rejects_metadata_over_budget() {
 }
 
 #[test]
-fn reader_budget_accepts_metadata_open_below_whole_object_size() {
+fn reader_budget_rejects_below_whole_object_while_rows_are_materialized() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x6b);
     let row = put_row(branch, 32, b"whole-object-defer", b"value");
@@ -640,16 +640,22 @@ fn reader_budget_accepts_metadata_open_below_whole_object_size() {
     let mut shell = assemble_shell_with_budget(&backend, branch, budget);
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
-        .expect("metadata reader budget accepts range open");
+        .expect_err("materialized reader budget rejects below object size");
 
-    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
-    assert!(!shell.branch_state().is_empty());
+    assert!(matches!(
+        error,
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::TableReader,
+            ..
+        }
+    ));
+    assert!(shell.branch_state().is_empty());
 }
 
 #[test]
-fn low_memory_profile_accepts_large_table_metadata_open() {
+fn low_memory_profile_rejects_large_materialized_table_reader() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x6c);
     let large_value = vec![0xab_u8; 64 * 1024];
@@ -691,12 +697,18 @@ fn low_memory_profile_accepts_large_table_metadata_open() {
     let mut shell = assemble_shell_with_budget(&backend, branch, budget);
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
-        .expect("low-memory profile accepts metadata reader open");
+        .expect_err("low-memory profile rejects materialized table reader");
 
-    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
-    assert!(!shell.branch_state().is_empty());
+    assert!(matches!(
+        error,
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::TableReader,
+            ..
+        }
+    ));
+    assert!(shell.branch_state().is_empty());
 }
 
 #[test]

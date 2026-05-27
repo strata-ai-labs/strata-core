@@ -1,6 +1,13 @@
 # L8X Implementation Plan: Lazy Object-Backed Table Reads
 
-Status: draft implementation plan
+Status: split implementation plan
+
+Implementation note: the shipped storage-next change implements bounded
+range-backed durable table open and removes the single full-object read, but it
+does not yet implement branch-resident lazy cursors. `BranchOwnedTable` still
+requires a row-slice reader contract for validation, reads, compaction,
+checkpointing, manifest publication, and materialization. Full lazy query-time
+block loading is therefore deferred until that branch/table contract is changed.
 
 Parent plan:
 `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
@@ -95,23 +102,31 @@ Do not port:
 
 ## Scope
 
-L8X implements:
+L8X current implementation implements:
 
-1. lazy immutable table reader over `TableByteSource`;
+1. bounded range-backed immutable table open over `TableByteSource`;
 2. metadata-only table open from header/footer/index/properties;
-3. per-data-block range read and decode;
-4. index-assisted point lookup;
-5. bounded prefix/range cursor that reads blocks on demand;
-6. block cache integration with database-local budget;
-7. reader and block reservations using L8W budget pools;
-8. lazy recovery/open for manifest-listed table objects;
-9. corruption and backend-range-read error classification by phase;
-10. parity with eager byte readers for point, prefix, range, tombstone, TTL, and
-    timestamp metadata;
-11. no-default/wasm-compatible memory backend coverage where possible;
-12. source guards preventing full-object reads in durable lazy paths, raw IO,
-    path cache keys, product imports, and milestone labels in Rust code/test
-    names/fixture bytes.
+3. per-data-block range read and decode during materialized open;
+4. eager query parity after materialized open;
+5. reader reservations using the materialized table-object budget;
+6. range-backed recovery/open for manifest-listed table objects;
+7. source-chain preservation for backend range reads;
+8. no-default/wasm-compatible memory backend coverage where possible;
+9. source guards preventing full-object reads in durable range-backed paths,
+   raw IO, path cache keys, product imports, and milestone labels in Rust code.
+
+The follow-up branch-resident lazy reader work implements:
+
+1. index-assisted point lookup;
+2. bounded prefix/range cursor that reads blocks on demand;
+3. block cache integration with database-local budget;
+4. touched-block reservations using L8W budget pools;
+5. query-scoped data-block corruption classification;
+6. lazy recovery/open for manifest-listed table objects without collecting all
+   rows before branch installation;
+7. corruption and backend-range-read error classification by phase;
+8. parity with eager byte readers for point, prefix, range, tombstone, TTL, and
+   timestamp metadata.
 
 L8X does not implement:
 
@@ -225,34 +240,38 @@ Rules:
 
 ## Recovery And Lifecycle Integration
 
-Rules:
+Current rules:
 
-1. Durable recovery of table manifests opens lazy readers by default.
-2. Recovery validates table facts from metadata/index/properties without reading
-   every data block.
+1. Durable recovery of table manifests opens table objects by bounded ranges,
+   but still materializes rows before branch installation.
+2. Recovery validates table facts from metadata/index/properties before reading
+   data blocks.
 3. Optional deep validation can remain a maintenance/repair operation that scans
    every block under budget.
 4. Flush/rewrite publication may still use eager bytes immediately after build,
-   but reopened durable objects should use lazy readers when installed into
-   branch state.
+   but reopened durable objects still use materialized readers until the
+   branch table contract accepts lazy cursors.
 5. Cache mode can use eager in-memory byte readers for small tables, but must
    pass the same query parity tests.
 
 ## Error And Health Vocabulary
 
-Add typed errors/facts for:
+Current implementation covers:
 
-1. lazy reader open unsupported because backend lacks range read;
+1. backend lacks range read;
 2. table metadata range read failed;
-3. table data block range read failed;
+3. table data block range read failed during materialized open;
 4. short/long metadata range read;
 5. short/long data block range read;
-6. corrupt header/footer/index/properties;
-7. corrupt data block discovered on query;
-8. cache decode failure;
-9. reader budget exceeded;
-10. block budget exceeded;
-11. lazy reader deep validation debt.
+6. corrupt header/footer/index/properties.
+
+Follow-up lazy cursor work adds typed errors/facts for:
+
+1. corrupt data block discovered on query;
+2. cache decode failure;
+3. reader budget exceeded;
+4. block budget exceeded;
+5. lazy reader deep validation debt.
 
 Every error must expose a stable code and preserve source chains.
 
@@ -288,7 +307,8 @@ include milestone labels.
 5. Add cache lookup/insert around decoded data blocks.
 6. Add reader/block budget reservations from L8W.
 7. Update branch table state/recovery to accept lazy readers without collecting
-   all rows.
+   all rows. This remains the required follow-up before full lazy query-time
+   loading can be claimed.
 8. Preserve eager reader path for byte fixtures and small in-memory tables.
 9. Add direct tests, generated scripts, source guards, and porting-log entry.
 

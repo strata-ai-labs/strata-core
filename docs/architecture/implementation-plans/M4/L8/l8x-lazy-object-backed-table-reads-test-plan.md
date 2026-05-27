@@ -1,6 +1,13 @@
 # L8X Test Plan: Lazy Object-Backed Table Reads
 
-Status: draft test plan
+Status: split test plan
+
+Implementation note: the shipped storage-next reader currently performs
+bounded range-backed materialized open. It avoids a single full-object read and
+preserves source-chain diagnostics, but branch state still requires a row-slice
+reader and therefore loads all data blocks before installation. The point,
+range, cache, touched-block corruption, and block-budget tests below remain the
+required follow-up for full lazy cursor support.
 
 Implementation plan:
 `docs/architecture/implementation-plans/M4/L8/l8x-lazy-object-backed-table-reads-implementation-plan.md`
@@ -32,18 +39,24 @@ to other planning documents.
 
 ## Coverage Boundary
 
-Covered:
+Covered by the current implementation:
 
 1. metadata-only open;
-2. point lookup laziness;
-3. prefix/range cursor laziness;
-4. eager/lazy parity;
-5. cache hit/miss/eviction integration;
-6. reader/block budget integration;
-7. corruption and backend range-read failures;
-8. recovery/open integration;
-9. no-default/wasm-compatible memory backend smoke;
-10. generated/model and source-guard coverage.
+2. bounded range-backed data-block reads during materialized open;
+3. eager/source parity after materialized open;
+4. reader budget integration using materialized object size;
+5. metadata/data-block corruption and backend range-read failures during open;
+6. recovery/open integration;
+7. no-default/wasm-compatible memory backend smoke;
+8. generated/model and source-guard coverage.
+
+Follow-up coverage required for full lazy cursor support:
+
+1. point lookup laziness;
+2. prefix/range cursor laziness;
+3. cache hit/miss/eviction integration in the reader path;
+4. touched-block budget integration;
+5. untouched corrupt block succeeds at open and fails when queried.
 
 Not covered:
 

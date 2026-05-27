@@ -151,6 +151,7 @@ struct TestSource {
     bytes: Vec<u8>,
     advertised_len: u64,
     short_read: bool,
+    long_read: bool,
     fail_read: bool,
     calls: Rc<Cell<usize>>,
 }
@@ -161,6 +162,7 @@ impl TestSource {
             advertised_len: bytes.len() as u64,
             bytes,
             short_read: false,
+            long_read: false,
             fail_read: false,
             calls: Rc::new(Cell::new(0)),
         }
@@ -171,6 +173,18 @@ impl TestSource {
             advertised_len: bytes.len() as u64,
             bytes,
             short_read: true,
+            long_read: false,
+            fail_read: false,
+            calls: Rc::new(Cell::new(0)),
+        }
+    }
+
+    fn long(bytes: Vec<u8>) -> Self {
+        Self {
+            advertised_len: bytes.len() as u64,
+            bytes,
+            short_read: false,
+            long_read: true,
             fail_read: false,
             calls: Rc::new(Cell::new(0)),
         }
@@ -181,6 +195,7 @@ impl TestSource {
             advertised_len: bytes.len() as u64,
             bytes,
             short_read: false,
+            long_read: false,
             fail_read: true,
             calls: Rc::new(Cell::new(0)),
         }
@@ -191,6 +206,7 @@ impl TestSource {
             advertised_len,
             bytes,
             short_read: false,
+            long_read: false,
             fail_read: false,
             calls: Rc::new(Cell::new(0)),
         }
@@ -231,7 +247,11 @@ impl TableByteSource for TestSource {
         if self.short_read && end > start {
             end -= 1;
         }
-        Ok(self.bytes[start..end].to_vec())
+        let mut bytes = self.bytes[start..end].to_vec();
+        if self.long_read {
+            bytes.push(0);
+        }
+        Ok(bytes)
     }
 }
 
@@ -316,6 +336,17 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
     assert_eq!(
         short,
         TableRuntimeError::source_read("short table header read")
+    );
+
+    let long = ImmutableTableReader::open_source(
+        identity("reader-source-long"),
+        TestSource::long(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect_err("long source read should fail");
+    assert_eq!(
+        long,
+        TableRuntimeError::source_read("long table source range read")
     );
 
     let short_advertised = TestSource::with_advertised_len(

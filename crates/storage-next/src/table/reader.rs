@@ -325,7 +325,12 @@ fn read_exact_source(
 ) -> TableRuntimeResult<Vec<u8>> {
     let bytes = source.read_at(offset, len)?;
     if bytes.len() != len {
-        return Err(TableRuntimeError::source_read(short_reason));
+        let reason = if bytes.len() < len {
+            short_reason
+        } else {
+            "long table source range read"
+        };
+        return Err(TableRuntimeError::source_read(reason));
     }
     Ok(bytes)
 }

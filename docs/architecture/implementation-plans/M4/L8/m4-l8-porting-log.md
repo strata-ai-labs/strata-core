@@ -687,8 +687,9 @@ git diff --check
 
 ## L8X Lazy Object-Backed Table Reads
 
-Status: implemented as bounded range-backed open; full branch-resident cursor
-laziness remains gated by the branch table row-slice contract.
+Status: implemented as bounded range-backed materialized open; full
+branch-resident cursor laziness remains gated by the branch table row-slice
+contract.
 
 ### Shipped Files
 
@@ -716,9 +717,10 @@ laziness remains gated by the branch table row-slice contract.
   preserve the backend source chain.
 - Preserved the byte-slice eager reader path for table fixtures and in-memory
   callers.
-- Changed table-manifest recovery reader admission from whole object byte count
-  to metadata/index estimate, so large manifest-listed tables can open under
-  low-memory profiles when their metadata fits.
+- Kept table-manifest recovery reader admission at the materialized table-object
+  byte count. Even though durable object open uses bounded ranges, the current
+  branch table contract still materializes all rows before installation, so
+  metadata-only budget admission would undercount memory.
 - Added source guards that forbid full-object durable reads, raw IO, path cache
   identity, process-global cache state, product/primitive imports, cleanup
   mutation, and milestone labels in the lazy-reader path.
@@ -730,6 +732,9 @@ laziness remains gated by the branch table row-slice contract.
   materialization code still call `table.rows()`. Because of that contract,
   recovered table objects are opened by bounded ranges but their rows are still
   materialized before installation into branch state.
+- Corrupt data blocks still fail during materialized open rather than at first
+  point/range query. Query-scoped corruption reporting requires the same
+  branch-resident lazy cursor contract change.
 - A fully branch-resident lazy cursor requires changing the L6 branch table
   contract so validation and reads can operate through cursors/facts without
   requiring `&[TableRow]` at install time. That is intentionally not hidden by
@@ -743,9 +748,9 @@ laziness remains gated by the branch table row-slice contract.
 - `table_object_reader_allows_missing_metadata_capability`
 - `table_object_reader_distinguishes_read_decode_and_fact_errors`
 - `table_object_reader_routes_corruption_to_table_errors`
-- `reader_budget_recovery_decode_rejects_metadata_over_budget`
-- `reader_budget_accepts_metadata_open_below_whole_object_size`
-- `low_memory_profile_accepts_large_table_metadata_open`
+- `reader_budget_recovery_decode_rejects_materialized_table_over_budget`
+- `reader_budget_rejects_below_whole_object_while_rows_are_materialized`
+- `low_memory_profile_rejects_large_materialized_table_reader`
 - `lazy_reader_does_not_full_read_durable_object_on_open`
 - `lazy_reader_does_not_import_raw_io`
 - `lazy_reader_does_not_use_path_cache_identity_or_global_cache`
@@ -757,7 +762,7 @@ laziness remains gated by the branch table row-slice contract.
 | Probe | Mutated file/line | Mutation | Expected failing test |
 |---|---|---|---|
 | Full object read during durable open | `crates/storage-next/src/service/table.rs` | Reintroduce whole-object read in `open_reader` | `lazy_reader_does_not_full_read_durable_object_on_open` |
-| Ignore metadata budget | `crates/storage-next/src/lifecycle/table_manifest.rs` | Admit recovered manifest tables by object byte count or skip budget check | `reader_budget_recovery_decode_rejects_metadata_over_budget` |
+| Undercount materialized rows | `crates/storage-next/src/lifecycle/table_manifest.rs` | Admit recovered manifest tables by metadata estimate only or skip budget check | `reader_budget_recovery_decode_rejects_materialized_table_over_budget` |
 | Collapse backend read error | `crates/storage-next/src/service/table.rs` | Wrap `TableObjectReadError::Backend` as object-neutral table error | `table_object_reader_distinguishes_read_decode_and_fact_errors` |
 | Accept corrupt metadata | `crates/storage-next/src/format/table/artifact.rs` | Skip header/footer/index/properties validation | `table_object_reader_routes_corruption_to_table_errors` |
 | Use path/global cache identity | `crates/storage-next/src/table/reader.rs` | Add path-derived cache key or global cache state | `lazy_reader_does_not_use_path_cache_identity_or_global_cache` |
@@ -771,6 +776,13 @@ cargo test -p strata-storage-next --locked --lib table::tests::reader
 cargo test -p strata-storage-next --locked --lib service::table
 cargo test -p strata-storage-next --locked --lib lifecycle::tests::recovery
 cargo test -p strata-storage-next --locked --lib lifecycle::tests::table_manifest_recovery
+cargo test -p strata-storage-next --locked --lib table::tests::cache
+cargo test -p strata-storage-next --locked --test lifecycle_maintenance
+cargo test -p strata-storage-next --features testkit --locked --test lifecycle_properties
+cargo fmt --package strata-storage-next --check
+cargo check -p strata-storage-next --no-default-features --target wasm32-unknown-unknown --all-targets --locked
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+git diff --check
 cargo test -p strata-storage-next --locked --test lifecycle_source_guard lazy_reader
 ```
 
