@@ -85,14 +85,28 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "close drain orchestrates several phases that read cleaner inline than split"
+    )]
     fn finish_close(&mut self) -> LifecycleResult<CloseOutcome> {
         let cancel = self.maintenance.cancel_pending_for_close(self.state)?;
         let created_at = checkpoint_created_at(
             self.allocator.timestamp_guard().last_allocated(),
             self.recovered_checkpoint_timestamp_max,
         );
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
         let mut runner = DurableCloseMaintenanceRunner {
-            branch: &mut self.branch,
+            branch: self.branch_catalog.branch_state_mut(
+                branch_id,
+                crate::commit::CommitBranchGenerationGuard::exact(generation),
+            )?,
             services: &self.services,
             guard_set: &self.guard_set,
             visible: &self.visible,

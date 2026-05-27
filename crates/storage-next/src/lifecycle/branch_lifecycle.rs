@@ -448,24 +448,6 @@ impl LifecycleBranchCatalog {
         Ok(snapshot)
     }
 
-    /// Mirror a runtime-owned `BranchLocalState` into the catalog without
-    /// re-checking the generation guard. This is the only path that bypasses
-    /// the guard, and it exists because the runtime already validated the
-    /// generation through its own commit/maintenance admission before
-    /// mutating its branch state — re-running the guard against a
-    /// post-mutation descriptor would re-do work and require threading the
-    /// guard through every internal mutation site.
-    pub(crate) fn sync_active_branch_state(
-        &mut self,
-        state: &BranchLocalState,
-    ) -> LifecycleResult<BranchReachabilitySnapshot> {
-        let index = self.active_entry_index(state.branch_id())?;
-        let snapshot = state.reachability_snapshot().map_err(branch_error)?;
-        self.advance_state_revision(index);
-        self.entries[index].state = Some(state.clone());
-        Ok(snapshot)
-    }
-
     fn seed_active_branch_state(
         &mut self,
         state: &BranchLocalState,

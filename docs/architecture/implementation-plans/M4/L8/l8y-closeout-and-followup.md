@@ -13,14 +13,22 @@ on each gap. The plan for A1 lives at
 `/Users/aniruddhajoshi/.claude/plans/dapper-hatching-chipmunk.md` (working
 copy).
 
+**Update (Follow-up A3 landed)**: A3 dropped the shadow `branch: BranchLocalState`
+field on both runtimes. The catalog is now the sole owner of branch state.
+A3 was structural cleanup — zero test edits required. The runtime stores an
+`initial_branch_id: BranchId` field at open time; the public `branch_state()`
+and `branch_state_mut()` accessor signatures are unchanged but now delegate
+to the catalog via `branch_catalog.branch_state(initial_branch_id)` (and the
+mut equivalent). All 7 internal runtime methods (rotate / flush_frozen /
+compact / materialize / storage_pressure / read_view / budget_snapshot),
+both commit paths, and the close drain runner now fetch from the catalog.
+`sync_branch_catalog` and `mirror_branch_to_shadow` deleted. Gap 1 is now
+fully closed.
+
 **Update (Follow-up A2 Phase 1 landed)**: A2 was further split into Phase 1
 (transition shape — catalog-authoritative for commits/maintenance via reverse
-sync) and Phase 2 (shadow field removal). Phase 1 shipped. Phase 2 deferred
-to A3 because it requires ~21 test-site migrations to switch from
-`runtime.branch_state()` to `runtime.branch_state(branch_id)` plus
-restructuring ~6 internal runtime methods (rotate / flush_frozen /
-compact_branch_tables / materialize_inherited_layer / storage_pressure /
-read_view) to take or default a branch_id. A2 Phase 1 shipped:
+sync) and Phase 2 (shadow field removal). Phase 1 shipped, then A3 shipped
+Phase 2. A2 Phase 1 shipped:
 
 - `pending_releases: Vec<BranchReleasePlan>` field on
   `LifecycleDurableLocalRuntime`.
@@ -65,7 +73,7 @@ dedup, deterministic listing, error-coded outcomes.
 
 | Gate | Status | Notes |
 |---|---|---|
-| 1. create/list/clear/delete/fork/fork-at-history work in cache and durable local modes | Mostly met | A1 exposed create / list / fork-current / fork-at-retained-version / fork-at-retained-timestamp. A2 Phase 1 added clear / delete on both runtimes. Catalog is now authoritative for mutations. Shadow-field removal (A3 / Phase 2) is structural cleanup only. |
+| 1. create/list/clear/delete/fork/fork-at-history work in cache and durable local modes | Met | A1 exposed create / list / fork. A2 Phase 1 added clear / delete. A3 dropped the shadow field — catalog is sole owner. |
 | 2. typed errors for duplicate create, missing source, non-empty destination, stale generation, deleted branch, unretained fork version | Met | A1 added `SourceHasUnflushedRows`, `InsufficientTimestampHistory`, `PinnedViewReleaseBlocked` and used `SourceHasUnflushedRows` in fork rejections. |
 | 3. pinned read views remain valid across clear/delete/fork and protect reachability | Met | |
 | 4. stale flush/compaction/materialization tasks cannot resurrect cleared or deleted rows | Met | Stale descriptor CAS works. |
@@ -77,26 +85,19 @@ dedup, deterministic listing, error-coded outcomes.
 
 ## Gaps
 
-### 1. Catalog is shadow state, not wired into runtimes — *A1 + A2 Phase 1 landed; Phase 2 deferred*
+### 1. Catalog is shadow state, not wired into runtimes — *Closed by A1 + A2 + A3*
 
-A1 added `create_branch`, `list_branches`, `fork_current`, `fork_at_retained_version`,
-and `fork_at_retained_timestamp` to both runtimes. A2 Phase 1 added
-`clear_branch` and `delete_branch` (both runtimes), the durable
-`pending_releases` buffer, retention drain wiring, and rewired the 5
-mutating maintenance runners + both commit paths to fetch `&mut
-BranchLocalState` from the catalog. The catalog is now **authoritative for
-mutations** during a runtime open: commits and maintenance go through
-`branch_catalog.branch_state_mut(...)`. The shadow `self.branch` field is
-kept as a reverse-sync mirror so existing `branch_state()` readers stay
-consistent.
-
-**Still outstanding** (deferred to A3 / Phase 2): drop the shadow
-`branch: BranchLocalState` field; delete `sync_branch_catalog` and
-`mirror_branch_to_shadow`; convert the `branch_state(&self) -> &BranchLocalState`
-accessor to take a `branch_id` parameter; restructure the 6 remaining
-runtime methods that operate on a default-branch context (rotate /
-flush_frozen / compact_branch_tables / materialize_inherited_layer /
-storage_pressure / read_view).
+A1 added `create_branch`, `list_branches`, and the fork family.
+A2 Phase 1 added `clear_branch` and `delete_branch`, the durable
+`pending_releases` buffer, retention drain wiring, and routed the 5
+mutating maintenance runners + both commit paths through the catalog.
+A3 dropped the shadow `branch: BranchLocalState` field, deleted
+`sync_branch_catalog` and `mirror_branch_to_shadow`, and added an
+`initial_branch_id: BranchId` field as the default-branch anchor. The
+public `branch_state()` / `branch_state_mut()` accessor signatures stay
+unchanged but delegate to the catalog. All 7 internal runtime methods,
+both commit paths, and the durable close drain runner fetch from the
+catalog. The catalog is the sole owner of branch state.
 
 References:
 

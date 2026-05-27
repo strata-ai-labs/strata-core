@@ -30,8 +30,8 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) open_outcome: StorageOpenOutcome,
     pub(super) bootstrap_report: LifecycleRecoveryBootstrapReport,
     pub(super) services: LifecycleDurableLocalServices<'a>,
-    pub(super) branch: BranchLocalState,
     pub(super) branch_catalog: LifecycleBranchCatalog,
+    pub(super) initial_branch_id: BranchId,
     pub(super) guard_set: CommitBranchGuardSet,
     pub(super) allocator: CommitFactAllocator<S>,
     pub(super) visible: VisibleVersionTracker,
@@ -131,19 +131,24 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .lookup(self.branch.branch_id())
             .map_err(commit_error)?
             .generation();
+        let initial_branch_id = self.branch.branch_id();
         let branch_catalog = LifecycleBranchCatalog::with_existing_branch(
             &self.branch,
             branch_generation,
             self.branch.max_commit_version(),
         )?;
+        // The shell's `self.branch` was used to seed the catalog above and
+        // is no longer needed; drop it explicitly so the catalog is the
+        // sole owner of branch state in the constructed runtime.
+        drop(self.branch);
         Ok(LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
             open_outcome,
             bootstrap_report: report,
             services: self.services,
-            branch: self.branch,
             branch_catalog,
+            initial_branch_id,
             guard_set: self.guard_set,
             allocator: self.allocator,
             visible: self.visible,
@@ -268,9 +273,13 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         reason = "durable budget facts are consumed by integration and closeout slices"
     )]
     pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
         crate::lifecycle::snapshot_with_runtime_usage(
             &self.budget,
-            &self.branch,
+            branch,
             self.maintenance.status(),
         )
     }
@@ -295,8 +304,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.services
     }
 
-    pub(crate) const fn branch_state(&self) -> &BranchLocalState {
-        &self.branch
+    /// Return the seeded branch's state. The seeded branch is registered
+    /// at open time via `LifecycleBranchCatalog::with_existing_branch` and
+    /// is the canonical anchor for the runtime's default-branch view; the
+    /// `.expect(...)` reflects that invariant.
+    pub(crate) fn branch_state(&self) -> &BranchLocalState {
+        self.branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog")
     }
 
     #[allow(
@@ -307,9 +322,24 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.branch_catalog
     }
 
+    /// Test-only mutable accessor; delegates to the catalog's
+    /// `branch_state_mut` with the seeded branch's current generation.
+    /// Each call advances the catalog's `state_revision` counter.
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn branch_state_mut(&mut self) -> &mut BranchLocalState {
-        &mut self.branch
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .expect("seeded branch is always registered")
+            .generation();
+        self.branch_catalog
+            .branch_state_mut(
+                branch_id,
+                crate::commit::CommitBranchGenerationGuard::exact(generation),
+            )
+            .expect("seeded branch is always present in the catalog")
     }
 
     #[allow(
@@ -344,7 +374,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
-        self.branch.capture_read_view().map_err(branch_error)
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
+        branch.capture_read_view().map_err(branch_error)
     }
 
     /// Storage-internal: create a new branch in the catalog. Caveat for A1:
@@ -435,12 +469,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let outcome = self
             .branch_catalog
             .clear_branch(branch_id, generation_guard)?;
-        // Mirror cleared state back to the shadow so the A2 transition shape
-        // keeps existing readers consistent.
-        if branch_id == self.branch.branch_id() {
-            self.branch =
-                BranchLocalState::new(branch_id, self.branch.config()).map_err(branch_error)?;
-        }
         let plan = outcome.release_plan().clone();
         if !plan.protected_tables().is_empty() {
             if let Ok(health) =
@@ -463,13 +491,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let outcome = self
             .branch_catalog
             .delete_branch(branch_id, generation_guard, deleted_at)?;
-        // The seeded branch can be deleted in A2; the shadow field's branch
-        // stays the seeded id but its state becomes empty (the catalog
-        // already cleared its inherited/owned tables on delete).
-        if branch_id == self.branch.branch_id() {
-            self.branch =
-                BranchLocalState::new(branch_id, self.branch.config()).map_err(branch_error)?;
-        }
         let plan = outcome.release_plan().clone();
         if !plan.protected_tables().is_empty() {
             if let Ok(health) =
@@ -480,22 +501,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }
         self.pending_releases.push(plan);
         Ok(outcome)
-    }
-
-    pub(super) fn sync_branch_catalog(&mut self) -> LifecycleResult<()> {
-        self.branch_catalog
-            .sync_active_branch_state(&self.branch)
-            .map(|_| ())
-    }
-
-    /// A2 transition helper: after a runner mutates the catalog-owned
-    /// branch state, copy it back into the shadow `self.branch` so existing
-    /// `branch_state()` readers stay consistent until Step 2 drops the
-    /// shadow field entirely.
-    pub(super) fn mirror_branch_to_shadow(&mut self, branch_id: BranchId) -> LifecycleResult<()> {
-        let snapshot = self.branch_catalog.branch_state(branch_id)?.clone();
-        self.branch = snapshot;
-        Ok(())
     }
 }
 
@@ -512,7 +517,6 @@ where
         let branch_id = batch.branch_id();
         // Pre-sync shadow into catalog so the commit runtime sees any direct
         // shadow mutations (test-only) before fetching from the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -538,7 +542,6 @@ where
             .execute(batch, generation_guard)
             .map_err(commit_error)
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 }

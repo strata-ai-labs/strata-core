@@ -46,8 +46,8 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     open_plan: StorageOpenPlan,
     open_outcome: StorageOpenOutcome,
     capability_outcome: LifecycleCapabilityOutcome,
-    branch: BranchLocalState,
     branch_catalog: LifecycleBranchCatalog,
+    initial_branch_id: BranchId,
     guard_set: CommitBranchGuardSet,
     allocator: CommitFactAllocator<S>,
     visible: VisibleVersionTracker,
@@ -143,13 +143,18 @@ impl<S> LifecycleCacheRuntime<S> {
 
         state.transition(LifecycleTransitionTrigger::CacheOpenReady)?;
 
+        let initial_branch_id = request.initial_branch_id();
+        // The local `branch` value was used to seed the catalog via
+        // `with_existing_branch` and is no longer needed; drop it to make
+        // the catalog the sole owner.
+        drop(branch);
         Ok(Self {
             state,
             open_plan: request.plan,
             open_outcome,
             capability_outcome,
-            branch,
             branch_catalog,
+            initial_branch_id,
             guard_set: CommitBranchGuardSet::new(),
             allocator: CommitFactAllocator::new(
                 CommitVersionAllocator::default(),
@@ -178,15 +183,25 @@ impl<S> LifecycleCacheRuntime<S> {
     }
 
     pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
-        snapshot_with_runtime_usage(&self.budget, &self.branch, self.maintenance.status())
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
+        snapshot_with_runtime_usage(&self.budget, branch, self.maintenance.status())
     }
 
     pub(crate) const fn capability_outcome(&self) -> &LifecycleCapabilityOutcome {
         &self.capability_outcome
     }
 
-    pub(crate) const fn branch_state(&self) -> &BranchLocalState {
-        &self.branch
+    /// Return the seeded branch's state. The seeded branch is registered
+    /// at open time via `LifecycleBranchCatalog::with_existing_branch` and
+    /// is the canonical anchor for the runtime's default-branch view; the
+    /// `.expect(...)` reflects that invariant.
+    pub(crate) fn branch_state(&self) -> &BranchLocalState {
+        self.branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog")
     }
 
     pub(crate) const fn branch_catalog(&self) -> &LifecycleBranchCatalog {
@@ -203,16 +218,34 @@ impl<S> LifecycleCacheRuntime<S> {
 
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
-        self.branch.capture_read_view().map_err(branch_error)
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
+        branch.capture_read_view().map_err(branch_error)
     }
 
     pub(crate) fn rotate_active_for_maintenance(
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        require_rotate_budget(&self.budget, &self.branch)?;
-        let outcome = self.branch.rotate_active();
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        require_rotate_budget(
+            &self.budget,
+            self.branch_catalog
+                .branch_state(branch_id)
+                .expect("seeded branch present"),
+        )?;
+        let branch = self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+        let outcome = branch.rotate_active();
         Ok(outcome)
     }
 
@@ -300,13 +333,6 @@ impl<S> LifecycleCacheRuntime<S> {
         let outcome = self
             .branch_catalog
             .clear_branch(branch_id, generation_guard)?;
-        // If the cleared branch is the seeded (shadow) one, mirror the
-        // empty state back so existing readers stay coherent during the
-        // A2 transition shape.
-        if branch_id == self.branch.branch_id() {
-            self.branch =
-                BranchLocalState::new(branch_id, self.branch.config()).map_err(branch_error)?;
-        }
         // Cache has no retention pass; release plan is discarded after
         // the outcome leaves this method.
         Ok(outcome)
@@ -331,8 +357,19 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = flush_cache_branch_with_budget(&mut self.branch, request, Some(&self.budget));
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            flush_cache_branch_with_budget(branch, request, Some(&self.budget))
+        };
         outcome
     }
 
@@ -345,8 +382,19 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &LifecycleCompactionRequest,
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = compact_cache_branch(&mut self.branch, request);
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            compact_cache_branch(branch, request)
+        };
         outcome
     }
 
@@ -359,8 +407,19 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &LifecycleMaterializationRequest,
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = materialize_cache_branch(&mut self.branch, request);
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            materialize_cache_branch(branch, request)
+        };
         outcome
     }
 
@@ -369,7 +428,11 @@ impl<S> LifecycleCacheRuntime<S> {
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(crate) fn storage_pressure(&self) -> LifecycleStoragePressure {
-        collect_storage_pressure(&self.branch, self.maintenance.status())
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
+        collect_storage_pressure(branch, self.maintenance.status())
     }
 
     #[allow(
@@ -402,12 +465,25 @@ impl<S> LifecycleCacheRuntime<S> {
         }
         let budget = self.budget.clone();
         let maintenance_status = self.maintenance.status();
-        let branch = &mut self.branch;
-        self.maintenance
-            .enqueue_with_binding(self.state, request, |request| {
+        let state = self.state;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let maintenance = &mut self.maintenance;
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            maintenance.enqueue_with_binding(state, request, |request| {
                 require_maintenance_enqueue_budget(&budget, maintenance_status)?;
                 bind_materialization_task_for_enqueue(branch, request)
             })
+        };
+        outcome
     }
 
     #[allow(
@@ -425,11 +501,10 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
         // when the runner fetches branch state via the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -449,7 +524,6 @@ impl<S> LifecycleCacheRuntime<S> {
                 task.kind() == MaintenanceTaskKind::Flush
             })
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 
@@ -461,11 +535,10 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
         // when the runner fetches branch state via the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -482,7 +555,6 @@ impl<S> LifecycleCacheRuntime<S> {
                 task.kind() == MaintenanceTaskKind::Compaction
             })
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 
@@ -494,11 +566,10 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
         // when the runner fetches branch state via the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -515,7 +586,6 @@ impl<S> LifecycleCacheRuntime<S> {
                 task.kind() == MaintenanceTaskKind::Materialization
             })
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 
@@ -608,10 +678,9 @@ impl<S> LifecycleCacheRuntime<S> {
         // `maintenance_tasks` stat so callers see drained work, parity
         // with the durable runtime.
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync shadow into catalog so the close-time drain runs over
         // up-to-date branch state.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -629,24 +698,7 @@ impl<S> LifecycleCacheRuntime<S> {
             };
             maintenance.drain_for_close(state, &mut runner)?
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         Ok(drained.drained_tasks())
-    }
-
-    fn sync_branch_catalog(&mut self) -> LifecycleResult<()> {
-        self.branch_catalog
-            .sync_active_branch_state(&self.branch)
-            .map(|_| ())
-    }
-
-    /// A2 transition helper: after a runner mutates the catalog-owned
-    /// branch state, copy it back into the shadow `self.branch` so existing
-    /// `branch_state()` readers stay consistent until Step 2 drops the
-    /// shadow field entirely.
-    fn mirror_branch_to_shadow(&mut self, branch_id: BranchId) -> LifecycleResult<()> {
-        let snapshot = self.branch_catalog.branch_state(branch_id)?.clone();
-        self.branch = snapshot;
-        Ok(())
     }
 }
 
@@ -755,7 +807,6 @@ where
         let branch_id = batch.branch_id();
         // Pre-sync shadow into catalog so the commit runtime sees any direct
         // shadow mutations (test-only) before fetching from the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -780,7 +831,6 @@ where
             .execute(batch, generation_guard)
             .map_err(commit_error)
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 }

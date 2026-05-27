@@ -66,9 +66,25 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        require_rotate_budget(&self.budget, &self.branch)?;
-        let outcome = self.branch.rotate_active();
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        require_rotate_budget(
+            &self.budget,
+            self.branch_catalog
+                .branch_state(branch_id)
+                .expect("seeded branch is always present in the catalog"),
+        )?;
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            branch.rotate_active()
+        };
         Ok(outcome)
     }
 
@@ -81,15 +97,29 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = flush_durable_branch_with_budget(
-            &mut self.branch,
-            self.services.table_object(),
-            self.services.table_reader(),
-            request,
-            Some(&self.budget),
-        )?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            flush_durable_branch_with_budget(
+                branch,
+                self.services.table_object(),
+                self.services.table_reader(),
+                request,
+                Some(&self.budget),
+            )?
+        };
         if publish_table_manifest_after_flush(
-            &self.branch,
+            self.branch_catalog
+                .branch_state(branch_id)
+                .expect("seeded branch is always present in the catalog"),
             self.services.table_manifest(),
             &mut self.table_catalog,
             Some(&self.budget),
@@ -101,7 +131,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 self.record_recovery_health(Some(&health));
             }
         }
-        self.sync_branch_catalog()?;
         Ok(outcome)
     }
 
@@ -114,16 +143,27 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCompactionRequest,
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = compact_durable_branch_manifest_backed(
-            &mut self.branch,
-            self.services.table_object(),
-            self.services.table_reader(),
-            self.services.table_manifest(),
-            &mut self.table_catalog,
-            request,
-            Some(&self.budget),
-        );
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            compact_durable_branch_manifest_backed(
+                branch,
+                self.services.table_object(),
+                self.services.table_reader(),
+                self.services.table_manifest(),
+                &mut self.table_catalog,
+                request,
+                Some(&self.budget),
+            )
+        };
         outcome
     }
 
@@ -136,16 +176,27 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleMaterializationRequest,
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = materialize_durable_branch_manifest_backed(
-            &mut self.branch,
-            self.services.table_object(),
-            self.services.table_reader(),
-            self.services.table_manifest(),
-            &mut self.table_catalog,
-            request,
-            Some(&self.budget),
-        );
-        self.sync_branch_catalog()?;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            materialize_durable_branch_manifest_backed(
+                branch,
+                self.services.table_object(),
+                self.services.table_reader(),
+                self.services.table_manifest(),
+                &mut self.table_catalog,
+                request,
+                Some(&self.budget),
+            )
+        };
         outcome
     }
 
@@ -154,7 +205,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         reason = "durable maintenance dispatch uses this concrete pressure hook"
     )]
     pub(crate) fn storage_pressure(&self) -> LifecycleStoragePressure {
-        collect_storage_pressure(&self.branch, self.maintenance.status())
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
+        collect_storage_pressure(branch, self.maintenance.status())
     }
 
     #[allow(
@@ -166,8 +221,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         request: &LifecycleCheckpointRequest,
     ) -> LifecycleResult<LifecycleCheckpointOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
         checkpoint_durable_branch_with_budget(
-            &self.branch,
+            branch,
             &self.services,
             &self.guard_set,
             || self.visible.visible_version(),
@@ -202,17 +261,22 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         candidate: strata_core_next::CommitVersion,
     ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let branch_id = self.initial_branch_id;
         let manifest = self
             .services
             .table_manifest()
-            .load_current(self.branch.branch_id())
+            .load_current(branch_id)
             .map_err(manifest_error)?
             .ok_or(LifecycleError::WalRetentionProofIncomplete {
                 reason: "table manifest flush proof requires durable table manifest",
             })?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
         let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
             candidate,
-            &self.branch,
+            branch,
             &manifest,
             &self.current_recovery_health,
         )?;
@@ -221,7 +285,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         // proof construction above must be expanded to load every active
         // branch's manifest and per-branch state before this guard relaxes.
         let active_branches = self.branch_catalog.registry().active_branch_ids();
-        if active_branches != vec![self.branch.branch_id()] {
+        if active_branches != vec![branch_id] {
             return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "table manifest flush proof requires all active branches to be loaded",
             });
@@ -234,7 +298,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             proof.manifest_epoch(),
             proof.recovery_health_epoch(),
         )?
-        .with_required_branch_epochs([(self.branch.branch_id(), manifest.manifest_sequence())])?;
+        .with_required_branch_epochs([(branch_id, manifest.manifest_sequence())])?;
         persist_flush_watermark(
             self.services.manifest(),
             self.visible.visible_version(),
@@ -388,12 +452,25 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<MaintenanceEnqueueOutcome> {
         let budget = self.budget.clone();
         let maintenance_status = self.maintenance.status();
-        let branch = &mut self.branch;
-        self.maintenance
-            .enqueue_with_binding(self.state, request, |request| {
+        let state = self.state;
+        let branch_id = self.initial_branch_id;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let outcome = {
+            let maintenance = &mut self.maintenance;
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            maintenance.enqueue_with_binding(state, request, |request| {
                 require_maintenance_enqueue_budget(&budget, maintenance_status)?;
                 bind_materialization_task_for_enqueue(branch, request)
             })
+        };
+        outcome
     }
 
     #[allow(
@@ -413,10 +490,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -444,7 +520,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 task.kind() == MaintenanceTaskKind::Flush
             })
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         self.record_optional_maintenance_health(&outcome);
         outcome
     }
@@ -458,7 +533,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
-        let branch = &self.branch;
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
         let services = &self.services;
         let guard_set = &self.guard_set;
         let visible = &self.visible;
@@ -508,7 +586,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
-        let branch = &self.branch;
+        let branch = self
+            .branch_catalog
+            .branch_state(self.initial_branch_id)
+            .expect("seeded branch is always present in the catalog");
         let registry = self.branch_catalog.registry();
         let manifest = self.services.manifest();
         let table_manifest = self.services.table_manifest();
@@ -535,10 +616,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -567,7 +647,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 task.kind() == MaintenanceTaskKind::Compaction
             })
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 
@@ -579,10 +658,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
-        self.sync_branch_catalog()?;
         let generation = self
             .branch_catalog
             .registry()
@@ -611,7 +689,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 task.kind() == MaintenanceTaskKind::Materialization
             })
         };
-        self.mirror_branch_to_shadow(branch_id)?;
         outcome
     }
 
@@ -626,7 +703,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
-        let branch_id = self.branch.branch_id();
+        let branch_id = self.initial_branch_id;
         let pending_releases = &mut self.pending_releases;
         let mut runner = DurableRetentionMaintenanceRunner {
             services,
@@ -657,7 +734,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let database_id = *self.services.assembly_facts().database_id();
         let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
         let health = self.current_recovery_health.clone();
-        let default_branch_id = self.branch.branch_id();
+        let default_branch_id = self.initial_branch_id;
         let mut runner = DurablePurgeMaintenanceRunner {
             quarantine,
             database_id,
