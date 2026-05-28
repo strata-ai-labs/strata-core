@@ -75,6 +75,9 @@ feature-gated testkit helper with a narrow documented purpose.
 
 ## Part Gates
 
+Detailed per-slice test plans live under
+`docs/architecture/implementation-plans/M4/L9/`.
+
 ### Part 1: Boundary Core
 
 Boundary Core closes when tests prove:

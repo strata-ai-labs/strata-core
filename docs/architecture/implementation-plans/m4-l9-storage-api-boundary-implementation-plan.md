@@ -153,6 +153,9 @@ L9 is delivered in three logical parts with detailed slices. The slice labels
 are planning labels only and should not appear in production Rust identifiers,
 fixtures, or user-facing strings.
 
+Detailed slice plans live under
+`docs/architecture/implementation-plans/M4/L9/`.
+
 ### Part 1: Boundary Core
 
 Boundary Core establishes the public storage shell.
