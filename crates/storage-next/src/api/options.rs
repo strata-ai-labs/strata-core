@@ -18,10 +18,31 @@ pub enum StorageMode {
     DistributedCandidate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageBudgetPolicy {
+    Default,
+    LowMemory,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageWalGrowthPolicy {
+    Default,
+    Disabled,
+    Thresholds {
+        max_retained_wal_bytes: u64,
+        max_retained_wal_segments: usize,
+        max_commits_since_checkpoint: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageOpenOptions {
     mode: StorageMode,
     strict_recovery: bool,
+    budget_policy: StorageBudgetPolicy,
+    wal_growth_policy: StorageWalGrowthPolicy,
 }
 
 impl StorageOpenOptions {
@@ -30,6 +51,8 @@ impl StorageOpenOptions {
         Self {
             mode: StorageMode::Cache,
             strict_recovery: true,
+            budget_policy: StorageBudgetPolicy::Default,
+            wal_growth_policy: StorageWalGrowthPolicy::Default,
         }
     }
 
@@ -38,6 +61,8 @@ impl StorageOpenOptions {
         Self {
             mode: StorageMode::DurableLocal { policy },
             strict_recovery: true,
+            budget_policy: StorageBudgetPolicy::Default,
+            wal_growth_policy: StorageWalGrowthPolicy::Default,
         }
     }
 
@@ -46,6 +71,8 @@ impl StorageOpenOptions {
         Self {
             mode: StorageMode::ObjectDurableCandidate,
             strict_recovery: true,
+            budget_policy: StorageBudgetPolicy::Default,
+            wal_growth_policy: StorageWalGrowthPolicy::Default,
         }
     }
 
@@ -54,6 +81,8 @@ impl StorageOpenOptions {
         Self {
             mode: StorageMode::DistributedCandidate,
             strict_recovery: true,
+            budget_policy: StorageBudgetPolicy::Default,
+            wal_growth_policy: StorageWalGrowthPolicy::Default,
         }
     }
 
@@ -63,8 +92,28 @@ impl StorageOpenOptions {
         self
     }
 
+    #[must_use]
+    pub const fn with_budget_policy(mut self, budget_policy: StorageBudgetPolicy) -> Self {
+        self.budget_policy = budget_policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_wal_growth_policy(
+        mut self,
+        wal_growth_policy: StorageWalGrowthPolicy,
+    ) -> Self {
+        self.wal_growth_policy = wal_growth_policy;
+        self
+    }
+
     pub fn validate(&self) -> StorageApiResult<()> {
+        self.wal_growth_policy.validate()?;
         match self.mode {
+            StorageMode::Cache if !self.strict_recovery => Err(StorageApiError::InvalidArgument {
+                field: "strict_recovery",
+                reason: "cache mode cannot request lossy durable recovery fallback",
+            }),
             StorageMode::Cache | StorageMode::DurableLocal { .. } => Ok(()),
             StorageMode::ObjectDurableCandidate => Err(StorageApiError::UnsupportedCapability {
                 capability: "object_durable",
@@ -78,6 +127,11 @@ impl StorageOpenOptions {
     }
 
     #[must_use]
+    pub const fn requires_backend(self) -> bool {
+        matches!(self.mode, StorageMode::DurableLocal { .. })
+    }
+
+    #[must_use]
     pub const fn mode(&self) -> StorageMode {
         self.mode
     }
@@ -85,5 +139,63 @@ impl StorageOpenOptions {
     #[must_use]
     pub const fn strict_recovery(&self) -> bool {
         self.strict_recovery
+    }
+
+    #[must_use]
+    pub const fn budget_policy(&self) -> StorageBudgetPolicy {
+        self.budget_policy
+    }
+
+    #[must_use]
+    pub const fn wal_growth_policy(&self) -> StorageWalGrowthPolicy {
+        self.wal_growth_policy
+    }
+}
+
+impl Default for StorageOpenOptions {
+    fn default() -> Self {
+        Self::cache()
+    }
+}
+
+impl StorageWalGrowthPolicy {
+    #[must_use]
+    pub const fn thresholds(
+        max_retained_wal_bytes: u64,
+        max_retained_wal_segments: usize,
+        max_commits_since_checkpoint: u64,
+    ) -> Self {
+        Self::Thresholds {
+            max_retained_wal_bytes,
+            max_retained_wal_segments,
+            max_commits_since_checkpoint,
+        }
+    }
+
+    fn validate(self) -> StorageApiResult<()> {
+        match self {
+            Self::Thresholds {
+                max_retained_wal_bytes: 0,
+                ..
+            } => Err(StorageApiError::InvalidArgument {
+                field: "max_retained_wal_bytes",
+                reason: "WAL growth byte limit must be greater than zero",
+            }),
+            Self::Thresholds {
+                max_retained_wal_segments: 0,
+                ..
+            } => Err(StorageApiError::InvalidArgument {
+                field: "max_retained_wal_segments",
+                reason: "WAL growth segment limit must be greater than zero",
+            }),
+            Self::Thresholds {
+                max_commits_since_checkpoint: 0,
+                ..
+            } => Err(StorageApiError::InvalidArgument {
+                field: "max_commits_since_checkpoint",
+                reason: "WAL growth commit limit must be greater than zero",
+            }),
+            Self::Default | Self::Disabled | Self::Thresholds { .. } => Ok(()),
+        }
     }
 }

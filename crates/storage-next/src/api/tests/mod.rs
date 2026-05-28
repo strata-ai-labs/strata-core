@@ -1,5 +1,7 @@
 use std::error::Error;
 use std::fmt;
+#[cfg(feature = "localfs")]
+use std::path::PathBuf;
 
 use super::*;
 
@@ -17,6 +19,21 @@ fn space() -> StorageSpaceId {
 
 fn key(name: &[u8]) -> StorageKey {
     StorageKey::new(name.to_vec()).expect("valid key")
+}
+
+#[cfg(feature = "localfs")]
+fn temp_dir_for_api_test(name: &str) -> PathBuf {
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "strata-storage-api-{name}-{}-{}",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    if path.exists() {
+        std::fs::remove_dir_all(&path).expect("clear old temp dir");
+    }
+    path
 }
 
 #[derive(Debug)]
@@ -47,6 +64,15 @@ fn api_module_exports_storage_runtime_shell() {
         StorageRuntime::closed().state(),
         StorageRuntimeState::Closed
     );
+}
+
+#[test]
+fn open_options_default_is_cache_or_explicitly_invalid() {
+    let options = StorageOpenOptions::default();
+
+    assert_eq!(options.mode(), StorageMode::Cache);
+    assert!(options.validate().is_ok());
+    assert!(!options.requires_backend());
 }
 
 #[test]
@@ -405,6 +431,488 @@ fn open_options_reject_unsupported_modes() {
             .code(),
         "unsupported.storage_api.capability"
     );
+}
+
+#[test]
+fn open_options_rejects_zero_limits() {
+    for policy in [
+        StorageWalGrowthPolicy::thresholds(0, 1, 1),
+        StorageWalGrowthPolicy::thresholds(1, 0, 1),
+        StorageWalGrowthPolicy::thresholds(1, 1, 0),
+    ] {
+        let error = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_wal_growth_policy(policy)
+            .validate()
+            .expect_err("zero WAL growth limits are rejected");
+        assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+    }
+}
+
+#[test]
+fn open_rejects_zero_limits_before_lifecycle_mapping() {
+    let error = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(0, 1, 1)),
+    )
+    .expect_err("zero WAL growth byte limit is rejected before open");
+
+    match error {
+        StorageApiError::InvalidArgument { field, reason } => {
+            assert_eq!(field, "max_retained_wal_bytes");
+            assert_eq!(reason, "WAL growth byte limit must be greater than zero");
+        }
+        _ => panic!("expected invalid argument"),
+    }
+}
+
+#[test]
+fn open_options_rejects_cache_with_durable_path_requirement() {
+    let options = StorageOpenOptions::cache().with_strict_recovery(false);
+    let error = options
+        .validate()
+        .expect_err("cache cannot request durable recovery fallback");
+
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+    assert!(!options.requires_backend());
+}
+
+#[test]
+fn open_options_rejects_durable_without_local_path() {
+    let error = StorageRuntime::open(StorageOpenOptions::durable_local(
+        StorageDurabilityPolicy::Standard,
+    ))
+    .expect_err("durable local open requires explicit backend");
+
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+}
+
+#[test]
+fn open_options_rejects_object_durable_candidate() {
+    let error = StorageOpenOptions::object_durable_candidate()
+        .validate()
+        .expect_err("object durable mode is unsupported");
+
+    assert_eq!(error.code(), "unsupported.storage_api.capability");
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+}
+
+#[test]
+fn open_options_rejects_distributed_writer_mode() {
+    let error = StorageOpenOptions::distributed_candidate()
+        .validate()
+        .expect_err("distributed writer mode is unsupported");
+
+    assert_eq!(error.code(), "unsupported.storage_api.capability");
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+}
+
+#[test]
+fn open_options_preserves_budget_policy() {
+    let options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+        .with_budget_policy(StorageBudgetPolicy::LowMemory)
+        .with_wal_growth_policy(StorageWalGrowthPolicy::Disabled);
+
+    assert_eq!(options.budget_policy(), StorageBudgetPolicy::LowMemory);
+    assert_eq!(
+        options.wal_growth_policy(),
+        StorageWalGrowthPolicy::Disabled
+    );
+    assert!(options.validate().is_ok());
+}
+
+#[test]
+fn open_options_reject_cache_lossy_recovery() {
+    let options = StorageOpenOptions::cache().with_strict_recovery(false);
+    let validation = options
+        .validate()
+        .expect_err("cache lossy recovery rejected");
+    let open = StorageRuntime::open(options).expect_err("cache lossy recovery rejected");
+
+    assert_eq!(validation.code(), "invalid_argument.storage_api.argument");
+    assert_eq!(open.code(), "invalid_argument.storage_api.argument");
+}
+
+#[test]
+fn open_options_rejects_durable_without_local_backend() {
+    let error = StorageRuntime::open(StorageOpenOptions::durable_local(
+        StorageDurabilityPolicy::Standard,
+    ))
+    .expect_err("durable local open requires explicit backend");
+
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+}
+
+#[test]
+fn open_options_preserves_recovery_strictness() {
+    let strict = StorageOpenOptions::cache();
+    let lossy = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+        .with_strict_recovery(false);
+
+    assert!(strict.strict_recovery());
+    assert!(!lossy.strict_recovery());
+}
+
+#[test]
+fn open_cache_returns_open_runtime_and_cache_summary() {
+    let outcome =
+        StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open should succeed");
+    let summary = outcome.summary();
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert!(runtime.is_open());
+    assert_eq!(summary.mode(), StorageMode::Cache);
+    assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
+    assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Healthy);
+    assert_eq!(summary.recovered_visible_version(), None);
+    assert!(summary.maintenance_ready());
+    assert!(!summary.has_durable_recovery_facts());
+    assert!(summary.backend_capabilities_used());
+}
+
+#[test]
+fn open_cache_returns_open_runtime() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert!(runtime.is_open());
+}
+
+#[test]
+fn open_cache_reports_cache_mode() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+
+    assert_eq!(outcome.summary().mode(), StorageMode::Cache);
+}
+
+#[test]
+fn open_cache_reports_no_durable_recovery_facts() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+
+    assert!(!outcome.summary().has_durable_recovery_facts());
+}
+
+#[test]
+fn open_cache_does_not_construct_wal_or_manifest_services() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let mut runtime = outcome.into_runtime();
+    let close = runtime.close().expect("cache close");
+
+    assert!(!close.durable_synced());
+}
+
+#[test]
+fn open_cache_close_is_idempotent() {
+    let outcome =
+        StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open should succeed");
+    let mut runtime = outcome.into_runtime();
+
+    let first = runtime.close().expect("first close");
+    assert_eq!(first.state(), StorageRuntimeState::Closed);
+    assert!(!first.idempotent());
+    assert!(first.commits_quiesced());
+    assert!(first.maintenance_drained());
+    assert!(!first.durable_synced());
+    assert!(first.guards_released());
+
+    let second = runtime.close().expect("second close");
+    assert_eq!(second.state(), StorageRuntimeState::Closed);
+    assert!(second.idempotent());
+}
+
+#[test]
+fn close_open_cache_returns_final_facts() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let mut runtime = outcome.into_runtime();
+    let close = runtime.close().expect("cache close");
+
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert!(close.commits_quiesced());
+    assert!(close.maintenance_drained());
+    assert!(!close.durable_synced());
+    assert!(close.guards_released());
+}
+
+#[test]
+fn close_twice_returns_idempotent_outcome() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let mut runtime = outcome.into_runtime();
+
+    let first = runtime.close().expect("first close");
+    let second = runtime.close().expect("second close");
+
+    assert!(!first.idempotent());
+    assert!(second.idempotent());
+    assert_eq!(second.state(), StorageRuntimeState::Closed);
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn close_failure_preserves_source_chain() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-close-failure"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open should succeed");
+    let mut runtime = outcome.into_runtime();
+    assert!(runtime.release_writer_guard_for_test());
+
+    let error = runtime
+        .close()
+        .expect_err("missing writer guard fails close");
+
+    assert_eq!(error.code(), "internal.storage_api.lower_layer");
+    assert_eq!(error.class(), StorageApiErrorClass::Internal);
+    let source = error.source().expect("lifecycle source is preserved");
+    assert!(source.is::<crate::lifecycle::LifecycleError>());
+}
+
+#[test]
+fn close_then_read_rejects_closed_runtime() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let mut runtime = outcome.into_runtime();
+    runtime.close().expect("close");
+
+    let error = runtime
+        .require_open("read requires an open storage runtime")
+        .expect_err("closed runtime rejects read");
+
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+fn close_then_commit_rejects_closed_runtime() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let mut runtime = outcome.into_runtime();
+    runtime.close().expect("close");
+
+    let error = runtime
+        .require_open("commit requires an open storage runtime")
+        .expect_err("closed runtime rejects commit");
+
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+fn close_then_maintenance_rejects_closed_runtime() {
+    let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let mut runtime = outcome.into_runtime();
+    runtime.close().expect("close");
+
+    let error = runtime
+        .require_open("maintenance requires an open storage runtime")
+        .expect_err("closed runtime rejects maintenance");
+
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+fn open_cache_operation_after_close_rejects() {
+    let outcome =
+        StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open should succeed");
+    let mut runtime = outcome.into_runtime();
+
+    runtime.close().expect("close");
+    let error = runtime
+        .require_open("read requires an open storage runtime")
+        .expect_err("closed runtime rejects operation");
+
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_modes_return_open_runtime() {
+    for policy in [
+        StorageDurabilityPolicy::Standard,
+        StorageDurabilityPolicy::Always,
+    ] {
+        let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-mode"));
+        let outcome =
+            StorageRuntime::open_with_backend(StorageOpenOptions::durable_local(policy), &backend)
+                .expect("durable open should succeed");
+        let summary = outcome.summary();
+        let mut runtime = outcome.into_runtime();
+
+        assert_eq!(summary.mode(), StorageMode::DurableLocal { policy });
+        assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
+        assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Healthy);
+        assert!(summary.recovered_visible_version().is_some());
+        assert!(summary.has_durable_recovery_facts());
+        assert!(summary.backend_capabilities_used());
+        assert_eq!(runtime.state(), StorageRuntimeState::Open);
+
+        let close = runtime.close().expect("durable close");
+        assert_eq!(close.state(), StorageRuntimeState::Closed);
+        assert!(close.durable_synced());
+    }
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_standard_returns_open_runtime() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-standard"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("standard durable open should succeed");
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert!(runtime.is_open());
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_always_returns_open_runtime() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-always"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("always durable open should succeed");
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert!(runtime.is_open());
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn create_durable_local_returns_created_disposition() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-created"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable create should succeed");
+
+    assert_eq!(
+        outcome.summary().disposition(),
+        StorageOpenDisposition::Created
+    );
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn durable_open_reports_backend_capabilities_used() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-capabilities"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open should succeed");
+
+    assert!(outcome.summary().backend_capabilities_used());
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn durable_open_reports_recovery_health() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-health"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open should succeed");
+
+    assert_eq!(
+        outcome.summary().recovery_health(),
+        RecoveryHealthSummary::Healthy
+    );
+}
+
+#[test]
+fn durable_open_degraded_health_survives_boundary_mapping() {
+    let summary = StorageOpenSummary::with_open_facts(
+        StorageMode::DurableLocal {
+            policy: StorageDurabilityPolicy::Standard,
+        },
+        StorageOpenDisposition::OpenedExisting,
+        RecoveryHealthSummary::Degraded,
+        Some(CommitVersion::new(3)),
+        true,
+        true,
+        true,
+    );
+
+    assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Degraded);
+    assert!(summary.has_durable_recovery_facts());
+}
+
+#[test]
+fn durable_open_failure_returns_storage_api_error() {
+    let backend = StorageBackend::memory();
+    let error = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect_err("memory backend cannot satisfy durable local mode");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn close_open_durable_returns_final_facts() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-close"));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("durable open should succeed");
+    let mut runtime = outcome.into_runtime();
+    let close = runtime.close().expect("durable close");
+
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert!(close.commits_quiesced());
+    assert!(close.maintenance_drained());
+    assert!(close.durable_synced());
+    assert!(close.guards_released());
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_existing_durable_local_returns_opened_disposition() {
+    let root = temp_dir_for_api_test("durable-reopen");
+    let first_backend = StorageBackend::local_fs(root.clone());
+    let first = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &first_backend,
+    )
+    .expect("first durable open");
+    let mut first_runtime = first.into_runtime();
+    first_runtime.close().expect("first close");
+    drop(first_runtime);
+    drop(first_backend);
+
+    let second_backend = StorageBackend::local_fs(root);
+    let second = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &second_backend,
+    )
+    .expect("second durable open");
+
+    assert_eq!(
+        second.summary().disposition(),
+        StorageOpenDisposition::OpenedExisting
+    );
+}
+
+#[test]
+fn durable_open_with_memory_backend_returns_storage_api_error() {
+    let backend = StorageBackend::memory();
+    let error = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect_err("memory backend cannot satisfy durable local mode");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    assert!(error.source().is_none());
 }
 
 #[test]

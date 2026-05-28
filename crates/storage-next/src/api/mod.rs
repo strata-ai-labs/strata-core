@@ -6,6 +6,7 @@
 )]
 
 mod atoms;
+mod backend;
 mod branch;
 mod commit;
 mod diagnostics;
@@ -18,19 +19,23 @@ mod result;
 mod runtime;
 
 pub use atoms::{BranchGeneration, ReadLimit, ScanRange, StorageKey, StorageSpaceId, StorageValue};
+pub use backend::StorageBackend;
 pub use branch::{BranchAction, BranchRequest};
 pub use commit::{CommitBatch, CommitMutation, CommitOptions};
 pub use diagnostics::{DiagnosticsRequest, DiagnosticsScope};
 pub use error::{StorageApiError, StorageApiErrorClass, StorageApiLowerLayer};
 pub use maintenance::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
-pub use options::{StorageDurabilityPolicy, StorageMode, StorageOpenOptions};
+pub use options::{
+    StorageBudgetPolicy, StorageDurabilityPolicy, StorageMode, StorageOpenOptions,
+    StorageWalGrowthPolicy,
+};
 pub use outcome::{
     CommitSummary, RecoveryHealthSummary, StorageCloseSummary, StorageOpenDisposition,
-    StorageOpenSummary, StorageRuntimeState,
+    StorageOpenOutcome, StorageOpenSummary, StorageRuntimeState,
 };
 pub use read::{PointReadRequest, ReadBound, ScanReadRequest};
 pub use result::StorageApiResult;
-pub use runtime::StorageRuntime;
+pub use runtime::{StorageCloseOptions, StorageRuntime};
 pub use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[cfg(test)]

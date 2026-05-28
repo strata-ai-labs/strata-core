@@ -1,16 +1,113 @@
 //! Engine-facing API conformance harness entry point.
 
-#![cfg(feature = "testkit")]
 #![deny(unsafe_code)]
 
 mod common;
 
+#[cfg(feature = "localfs")]
+use std::path::PathBuf;
+#[cfg(feature = "localfs")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use strata_storage_next::api::{
+    StorageApiErrorClass, StorageMode, StorageOpenOptions, StorageRuntime, StorageRuntimeState,
+};
+
+#[cfg(feature = "localfs")]
+use strata_storage_next::api::{StorageBackend, StorageDurabilityPolicy, StorageOpenDisposition};
+
+#[cfg(feature = "testkit")]
 use strata_storage_next::testkit::TestBackendKind;
 
+#[cfg(feature = "localfs")]
+static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+
 #[test]
+#[cfg(feature = "testkit")]
 fn api_conformance_harness_can_use_test_backend_selection() {
     let backend = TestBackendKind::parse("memory").expect("memory backend should be supported");
 
     assert_eq!(backend.name(), "memory");
     assert!(common::crate_root().join("src/api/mod.rs").is_file());
+}
+
+#[test]
+fn api_conformance_cache_open_close_round_trip() {
+    let open = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
+    let summary = open.summary();
+    let mut runtime = open.into_runtime();
+
+    assert_eq!(summary.mode(), StorageMode::Cache);
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+
+    let close = runtime.close().expect("cache close");
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert!(!close.durable_synced());
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn api_conformance_durable_open_close_round_trip() {
+    let backend = StorageBackend::local_fs(temp_dir("api-conformance-durable"));
+    let open = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("durable open");
+    let summary = open.summary();
+    let mut runtime = open.into_runtime();
+
+    assert_eq!(
+        summary.mode(),
+        StorageMode::DurableLocal {
+            policy: StorageDurabilityPolicy::Always,
+        }
+    );
+    assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
+    assert!(summary.has_durable_recovery_facts());
+
+    let close = runtime.close().expect("durable close");
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert!(close.durable_synced());
+}
+
+#[test]
+fn api_conformance_unsupported_modes_fail_before_runtime_construction() {
+    for options in [
+        StorageOpenOptions::object_durable_candidate(),
+        StorageOpenOptions::distributed_candidate(),
+    ] {
+        let error = options.validate().expect_err("unsupported mode");
+        assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    }
+}
+
+#[test]
+fn api_conformance_closed_runtime_rejects_operations() {
+    let mut runtime = StorageRuntime::closed();
+    let close = runtime.close().expect("closed runtime close is idempotent");
+    assert!(close.idempotent());
+    assert!(!close.commits_quiesced());
+    assert!(!close.maintenance_drained());
+    assert!(!close.durable_synced());
+    assert!(!close.guards_released());
+
+    let error = runtime
+        .require_open("commit requires an open storage runtime")
+        .expect_err("closed runtime rejects operation");
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[cfg(feature = "localfs")]
+fn temp_dir(name: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "strata-storage-{name}-{}-{}",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    if path.exists() {
+        std::fs::remove_dir_all(&path).expect("clear old temp dir");
+    }
+    path
 }

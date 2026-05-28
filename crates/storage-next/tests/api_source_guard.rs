@@ -69,7 +69,8 @@ fn api_public_signatures_do_not_expose_lower_layer_concrete_types() {
         "BackendError",
         "BackendResult",
         "LifecycleError",
-        "StorageOpenOutcome",
+        "LifecycleWalGrowthPolicy",
+        "StorageRuntimeBudget",
         "MaintenanceOutcome",
         "CloseOutcome",
         "CommitOutcome",
@@ -102,21 +103,53 @@ fn api_public_signatures_do_not_expose_lower_layer_concrete_types() {
 
     for file in api_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read API source");
-        for (line_number, line) in text.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if !trimmed.starts_with("pub ") {
-                continue;
-            }
-            for type_name in forbidden {
-                assert!(
-                    !trimmed.contains(type_name),
-                    "{}:{} exposes lower-layer concrete type {type_name}: {line}",
-                    file.strip_prefix(&root).unwrap_or(&file).display(),
-                    line_number + 1
-                );
-            }
-        }
+        assert_no_forbidden_public_signature(&root, &file, &text, &forbidden);
     }
+}
+
+#[test]
+fn api_open_signatures_do_not_expose_lifecycle_types() {
+    assert_api_public_signatures_do_not_expose(&[
+        "LifecycleCacheOpenRequest",
+        "LifecycleDurableLocalOpenRequest",
+        "LifecycleCacheRuntime",
+        "LifecycleDurableLocalRuntime",
+        "LifecycleStorageOpenOutcome",
+        "LifecycleRecoveryRuntime",
+        "StorageOpenPlan",
+    ]);
+}
+
+#[test]
+fn api_close_signatures_do_not_expose_lifecycle_types() {
+    assert_api_public_signatures_do_not_expose(&[
+        "CloseOutcome",
+        "CloseOutcomeStatus",
+        "LifecycleStateMachine",
+        "LifecycleCloseFact",
+        "LifecycleCloseTimeoutPolicy",
+    ]);
+}
+
+#[test]
+fn api_open_does_not_expose_backend_services() {
+    assert_api_public_signatures_do_not_expose(&[
+        "TableObjectService",
+        "ManifestService",
+        "SnapshotService",
+        "WalService",
+        "BackendCapabilities",
+        "BackendError",
+    ]);
+}
+
+#[test]
+fn api_open_unsupported_modes_do_not_claim_production_support() {
+    let root = common::crate_root();
+    let options = fs::read_to_string(root.join("src/api/options.rs")).expect("read options");
+
+    assert!(options.contains("object-durable storage is not a V1 production mode"));
+    assert!(options.contains("distributed writer coordination is not a V1 production mode"));
 }
 
 #[test]
@@ -205,23 +238,6 @@ fn api_source_files(root: &Path) -> Vec<PathBuf> {
 
 fn contains_forbidden_api_dependency(line: &str) -> bool {
     let compact = compact_line(line);
-    let forbidden_modules = [
-        "backend",
-        "layout",
-        "format",
-        "service",
-        "table",
-        "branch",
-        "commit",
-        "lifecycle",
-    ];
-    if forbidden_modules
-        .iter()
-        .any(|module| imports_crate_module(&compact, module))
-    {
-        return true;
-    }
-
     [
         "strata_engine",
         "strata_intelligence",
@@ -281,13 +297,64 @@ fn compact_line(line: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn assert_no_forbidden_public_signature(root: &Path, file: &Path, text: &str, forbidden: &[&str]) {
+    let mut signature = String::new();
+    let mut start_line = 0;
+    let mut collecting = false;
+
+    for (line_number, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if !collecting && trimmed.starts_with("pub ") {
+            collecting = true;
+            start_line = line_number + 1;
+            signature.clear();
+        }
+        if collecting {
+            signature.push_str(trimmed);
+            signature.push(' ');
+            if public_signature_is_complete(trimmed) {
+                assert_signature_has_no_forbidden_type(
+                    root, file, start_line, &signature, forbidden,
+                );
+                collecting = false;
+            }
+        }
+    }
+}
+
+fn assert_api_public_signatures_do_not_expose(forbidden: &[&str]) {
+    let root = common::crate_root();
+    for file in api_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read API source");
+        assert_no_forbidden_public_signature(&root, &file, &text, forbidden);
+    }
+}
+
+fn public_signature_is_complete(line: &str) -> bool {
+    line.ends_with(';') || line.ends_with('{') || line.ends_with('}')
+}
+
+fn assert_signature_has_no_forbidden_type(
+    root: &Path,
+    file: &Path,
+    start_line: usize,
+    signature: &str,
+    forbidden: &[&str],
+) {
+    for type_name in forbidden {
+        assert!(
+            !signature.contains(type_name),
+            "{}:{} exposes lower-layer concrete type {type_name}: {signature}",
+            file.strip_prefix(root).unwrap_or(file).display(),
+            start_line
+        );
+    }
+}
+
 #[test]
-fn api_dependency_guard_catches_grouped_lower_layer_imports() {
+fn api_dependency_guard_catches_engine_product_imports() {
     assert!(contains_forbidden_api_dependency(
-        "use crate::{backend::BackendCapabilities, lifecycle::StorageMode};"
-    ));
-    assert!(contains_forbidden_api_dependency(
-        "use crate::service::WalService;"
+        "use strata_engine::{Database, Runtime};"
     ));
     assert!(!contains_forbidden_api_dependency(
         "use super::{StorageApiError, StorageApiResult};"
@@ -303,6 +370,24 @@ fn upward_api_guard_catches_grouped_api_imports() {
         "use super::{api::StorageRuntime, cache::CacheRuntime};"
     ));
     assert!(!imports_api("use crate::lifecycle::LifecycleError;"));
+}
+
+#[test]
+fn public_signature_guard_catches_multiline_lower_types() {
+    let root = Path::new("/crate");
+    let file = root.join("src/api/example.rs");
+    let text = "\
+pub fn leaky(
+    error: LifecycleError,
+) -> StorageApiResult<()> {
+    Ok(())
+}
+";
+    let result = std::panic::catch_unwind(|| {
+        assert_no_forbidden_public_signature(root, &file, text, &["LifecycleError"]);
+    });
+
+    assert!(result.is_err());
 }
 
 #[test]

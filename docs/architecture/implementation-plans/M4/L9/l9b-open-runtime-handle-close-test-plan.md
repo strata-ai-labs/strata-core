@@ -1,6 +1,6 @@
 # L9B Test Plan: Open, Runtime Handle, And Close
 
-Status: draft test plan
+Status: implemented
 
 Parent plan:
 `docs/architecture/implementation-plans/M4/L9/l9b-open-runtime-handle-close-implementation-plan.md`
@@ -13,7 +13,7 @@ runtime handle.
 
 ## Test Locations
 
-1. `crates/storage-next/src/api/tests/open.rs`
+1. `crates/storage-next/src/api/tests/mod.rs`
 2. `crates/storage-next/tests/api_conformance.rs`
 3. `crates/storage-next/tests/api_source_guard.rs`
 4. `crates/storage-next/src/testkit/api/open.rs` if shared fixtures are needed.
@@ -30,6 +30,16 @@ runtime handle.
 6. `open_options_rejects_distributed_writer_mode`
 7. `open_options_preserves_recovery_strictness`
 8. `open_options_preserves_budget_policy`
+
+Notes:
+
+- The V1 API boundary does not expose a durable path field directly. Durable
+  local open requires an explicit opaque `StorageBackend`; therefore
+  `open_options_rejects_durable_without_local_path` is implemented as the
+  explicit-backend-required check.
+- Budget policy coverage is currently option-preservation and lifecycle-plan
+  wiring coverage. Pool-level budget behavior remains owned by lifecycle budget
+  tests.
 
 ### Cache Open
 
@@ -78,7 +88,12 @@ runtime handle.
 ## Verification
 
 ```bash
+cargo fmt --package strata-storage-next --check
+git diff --check
 cargo test -p strata-storage-next --locked --lib api
 cargo test -p strata-storage-next --locked --test api_conformance
 cargo test -p strata-storage-next --locked --test api_source_guard
+cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
+cargo test -p strata-storage-next --no-default-features --locked --lib api --no-run
+cargo test -p strata-storage-next --no-default-features --locked --test api_conformance --no-run
 ```
