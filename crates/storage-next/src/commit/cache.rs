@@ -109,6 +109,15 @@ where
             // apply, block all later mutations through the global gate so a
             // cross-branch visible-version advance cannot expose these rows by
             // side effect.
+            //
+            // Note: the applied row stays in branch state by design. A
+            // same-branch `latest()` read after this failure still returns
+            // the applied row — this preserves read-your-writes for cache
+            // mode. The cross-branch leak is closed by the unresolved gate
+            // recorded just below; OTHER branches cannot advance their
+            // visible version past this in-flight row until the gate is
+            // resolved. See `cache_applied_not_visible_row_is_visible_to_same_branch_read_your_writes`
+            // for the pinning test.
             let reason = applied_not_visible_reason(&error);
             let unresolved = CommitUnresolvedDurable::applied_not_visible(
                 stamp,

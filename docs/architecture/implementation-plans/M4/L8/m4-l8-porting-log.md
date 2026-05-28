@@ -4391,3 +4391,48 @@ The catalog manifest is authoritative for the live generation. The future slice 
 | `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
 | `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
 | `git diff --check` | PASS |
+
+### L8Z Phase 6 - Timeline + Visibility Edge-Case Pinning
+
+Date: 2026-05-28. The L8Z impl-plan flagged four read-side correctness
+gaps in §"Timeline Hardening" and §"Global Visibility Safety". Plan-
+mode exploration found three of the four already closed by shipped
+code; the fourth (fork timeline inheritance) is correct-but-
+unspecified behavior. Phase 6 is a documentation + pinning slice,
+not a refactor.
+
+#### Disposition of Audit Gaps
+
+| Audit Gap | Disposition |
+|---|---|
+| **Timeline-only WAL rejection** | Already closed. `validate_replay_rows` (`commit/replay.rs:312-341`) returns `CommitRuntimeError::InvalidCommitState { reason: "replay payload is missing user mutation rows" }` for timeline-only payloads. Test `replay_rejects_timeline_only_payload_without_user_mutation` covers it. No Phase 6 work needed. |
+| **Fork timeline inheritance** | Pinned as Option C. Implementation uses `BranchEffectiveReadBound::for_inherited_layer` to cap as-of reads at `(fork_version, timestamp)`; parent's physical rows are read via inherited layers; per-row `commit_timestamp` drives timestamp matching. No timeline transcription at fork; no centralized parent-timeline lookup at read. Three new pinning tests + a docstring on `for_inherited_layer` lock the contract. Impl plan §"Open Questions" §B closes with the Option C resolution. |
+| **Cache RYW under AppliedButNotVisible** | Real but intentional. Same-branch `latest()` reads on the failing branch return the applied row (read-your-writes preservation). Cross-branch leak is closed by the unresolved durable gate. Phase 6 adds one explicit pinning test + a source-level comment on the failure path. |
+| **Allocator-vs-uncertain replay** | Closed by construction. Uncertain WAL records are not durable — they do not survive the failure. Existing test `durable_uncertain_wal_failure_is_distinct_and_leaves_no_visible_rows` (`commit/tests/durable.rs:1065`) verifies the precondition (`fixture.wal.records.len() == 0`). Recovery-side property (no WAL → no replay → no phantom row) is structurally implied; no additional recovery test was added because that would require extending `DurableTestBackend` with a new uncertain-WAL-append mode (~150 LOC of fake backend code) for a property that holds by construction. |
+
+#### Artifacts Added
+
+| File | Change |
+|---|---|
+| `src/lifecycle/tests/branch_lifecycle/fork.rs` | Added three pinning tests: `forked_branch_at_timestamp_before_fork_returns_parent_row`, `forked_branch_at_timestamp_after_fork_returns_child_row`, `forked_branch_isolated_from_parent_post_fork_commits`. |
+| `src/branch/read.rs` | Added a 25-line docstring on `BranchEffectiveReadBound::for_inherited_layer` documenting the fork-inheritance contract (Option C). |
+| `src/commit/cache.rs` | Added a 10-line comment on the visibility-failure path explaining the same-branch RYW contract and the cross-branch protection via the unresolved gate. |
+| `src/commit/tests/cache.rs` | Added `cache_applied_not_visible_row_is_visible_to_same_branch_read_your_writes` pinning test. |
+| `l8z-commit-hardening-pre-l9-readiness-implementation-plan.md` | Replaced Open Questions §B deferral with the Option C decision, referencing the three pinning tests and the `for_inherited_layer` docstring. |
+| `l8z-commit-hardening-pre-l9-readiness-test-plan.md` | Annotated §6 (Global Visibility Safety) items 1-10 with shipped/Phase 6 references. Annotated §9 (Timeline Hardening) items 1-12 with shipped tests + Phase 6 pinning tests for items 5, 8, 12. |
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests::branch_lifecycle::fork` | PASS, 30 tests (27 existing + 3 new) |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests::cache` | PASS (26 existing + 1 new) |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_branch_lifecycle` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | PASS |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |

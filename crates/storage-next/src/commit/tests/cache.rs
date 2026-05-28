@@ -702,6 +702,65 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
 }
 
 #[test]
+fn cache_applied_not_visible_row_is_visible_to_same_branch_read_your_writes() {
+    // Pins the cache-mode read-your-writes contract under
+    // `AppliedButNotVisible`: when the visibility-publication step fails
+    // after the row has been appended to branch state, the row stays
+    // visible to a same-branch `latest()` read on the failing branch.
+    // The cross-branch leak is closed by the unresolved durable gate
+    // (verified by `cache_commit_rejects_any_unresolved_durable_gate_before_allocation`
+    // earlier in this file); this test pins the same-branch half of the
+    // contract that `commit/cache.rs::execute` comments as RYW
+    // preservation.
+    let branch = branch_id(57);
+    let key = physical_key(branch, 0x20, b"ryw-applied-not-visible".to_vec());
+    let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);
+    let mut state = FailingCacheApplyTarget::new(branch, false);
+    let mut visible = FailingCacheVisiblePublisher::new(true);
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            key.clone(),
+            b"ryw-visible-after-publication-failure".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    let error = execute_injected_cache_commit(
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &durable_gate,
+        batch,
+    )
+    .expect_err("cache visible failure reports AppliedButNotVisible");
+
+    assert!(matches!(
+        error,
+        CommitRuntimeError::AppliedButNotVisible { branch_id: b, .. } if b == branch
+    ));
+    // Read-your-writes: the applied row IS visible to a same-branch
+    // read view despite the visible_version not advancing.
+    let read_view = state.state.capture_read_view().expect("read view");
+    let row = read_view
+        .latest(&key)
+        .expect("latest read")
+        .expect("applied row visible to same-branch read");
+    assert_eq!(row.row().value(), b"ryw-visible-after-publication-failure");
+    assert_eq!(row.row().commit_version(), CommitVersion::new(1));
+    // Visible-version tracker did not advance, even though the row is
+    // visible to the branch's own read view.
+    assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
+    // The unresolved gate is recorded so OTHER branches are blocked.
+    assert_cache_applied_not_visible_gate(&durable_gate, branch);
+}
+
+#[test]
 fn cache_commit_visibility_gap_blocks_same_branch_follow_on() {
     let branch = branch_id(41);
     let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);

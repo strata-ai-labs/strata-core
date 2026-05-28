@@ -460,6 +460,186 @@ fn fork_at_history_child_excludes_rows_after_requested_version() {
     );
 }
 
+// Phase 6 fork-timeline inheritance contract (Option C from L8Z impl plan
+// Open Question §B). The inherited-layer read path uses
+// `BranchEffectiveReadBound::for_inherited_layer`, which caps
+// `AtTimestamp(T)` reads at `(fork_version, T)`. Per-row commit_timestamp
+// drives timestamp matching. The three tests below pin the contract:
+// - reads at T < fork return the parent's row through the inherited layer,
+// - reads at T inside the child's own commits return the child's row,
+// - parent post-fork commits are invisible to the child.
+
+#[test]
+fn forked_branch_at_timestamp_before_fork_returns_parent_row() {
+    let source = branch_id(120);
+    let child = branch_id(121);
+    let mut catalog = catalog_with_branch(source, generation(1));
+    catalog
+        .replace_active_branch_state(
+            source,
+            CommitBranchGenerationGuard::exact(generation(1)),
+            owned_state_with_timestamp_coverage(
+                source,
+                &[
+                    put_row(source, 1, b"history-key", b"v1"),
+                    put_row(source, 5, b"history-key", b"v5"),
+                ],
+                BranchTimestampCoverage::complete(),
+            ),
+        )
+        .expect("replace source");
+
+    // Fork at version 5 so the child inherits both v1 and v5 in the
+    // parent's inherited layer.
+    catalog
+        .fork_at_retained_version(
+            source,
+            child,
+            generation(1),
+            CommitVersion::new(5),
+            CommitVersion::new(1),
+        )
+        .expect("fork at retained version");
+
+    // Give the child the same timestamp coverage as the parent so
+    // `AtTimestamp` reads can resolve without an
+    // InsufficientTimestampHistory error.
+    catalog
+        .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("child state")
+        .set_timestamp_coverage(BranchTimestampCoverage::complete());
+
+    let child_key = physical_key(child, b"history-key");
+    let child_view = catalog.capture_read_view(child).expect("child view");
+    // Pre-fork timestamp 300 micros sits between v1 (100) and v5 (500);
+    // the inherited-layer read returns the v1 row.
+    let row = child_view
+        .read_point(
+            &child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(300)),
+        )
+        .expect("read")
+        .expect("inherited v1 row");
+    assert_eq!(row.row().commit_version(), CommitVersion::new(1));
+    assert_eq!(row.row().value(), b"v1");
+}
+
+#[test]
+fn forked_branch_at_timestamp_after_fork_returns_child_row() {
+    let source = branch_id(122);
+    let child = branch_id(123);
+    let mut catalog = catalog_with_branch(source, generation(1));
+    catalog
+        .replace_active_branch_state(
+            source,
+            CommitBranchGenerationGuard::exact(generation(1)),
+            owned_state_with_timestamp_coverage(
+                source,
+                &[put_row(source, 5, b"history-key", b"parent-v5")],
+                BranchTimestampCoverage::complete(),
+            ),
+        )
+        .expect("replace source");
+
+    catalog
+        .fork_at_retained_version(
+            source,
+            child,
+            generation(1),
+            CommitVersion::new(5),
+            CommitVersion::new(1),
+        )
+        .expect("fork at retained version");
+
+    catalog
+        .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("child state")
+        .set_timestamp_coverage(BranchTimestampCoverage::complete());
+    // Child commits its own row at version 12 (timestamp 1200 micros).
+    catalog
+        .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("child state")
+        .append_committed_row(put_row(child, 12, b"history-key", b"child-v12"))
+        .expect("append child");
+
+    let child_key = physical_key(child, b"history-key");
+    let child_view = catalog.capture_read_view(child).expect("child view");
+    // At timestamp 1300 micros (post-child-commit), the child's own v12
+    // row is the latest visible.
+    let row = child_view
+        .read_point(
+            &child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(1300)),
+        )
+        .expect("read")
+        .expect("child v12 row");
+    assert_eq!(row.row().commit_version(), CommitVersion::new(12));
+    assert_eq!(row.row().value(), b"child-v12");
+}
+
+#[test]
+fn forked_branch_isolated_from_parent_post_fork_commits() {
+    let source = branch_id(124);
+    let child = branch_id(125);
+    let mut catalog = catalog_with_branch(source, generation(1));
+    catalog
+        .replace_active_branch_state(
+            source,
+            CommitBranchGenerationGuard::exact(generation(1)),
+            owned_state_with_timestamp_coverage(
+                source,
+                &[put_row(source, 5, b"history-key", b"parent-v5")],
+                BranchTimestampCoverage::complete(),
+            ),
+        )
+        .expect("replace source");
+
+    catalog
+        .fork_at_retained_version(
+            source,
+            child,
+            generation(1),
+            CommitVersion::new(5),
+            CommitVersion::new(1),
+        )
+        .expect("fork at retained version");
+
+    catalog
+        .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("child state")
+        .set_timestamp_coverage(BranchTimestampCoverage::complete());
+    catalog
+        .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("child state")
+        .append_committed_row(put_row(child, 12, b"history-key", b"child-v12"))
+        .expect("append child");
+
+    // Parent commits a NEW row at version 15 (timestamp 1500 micros) AFTER
+    // the fork. The fork_version (5) caps the child's view of the parent's
+    // inherited layer; the parent's v15 row is post-fork and invisible.
+    catalog
+        .branch_state_mut(source, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("source state")
+        .append_committed_row(put_row(source, 15, b"history-key", b"parent-v15"))
+        .expect("append source");
+
+    let child_key = physical_key(child, b"history-key");
+    let child_view = catalog.capture_read_view(child).expect("child view");
+    // Timestamp 1600 micros is post-parent-v15. The child's read still
+    // returns the child's own v12 row because the parent's post-fork
+    // commit cannot enter the child's view (the inherited-layer read is
+    // capped at fork_version=5; the parent's v15 exceeds the cap).
+    let row = child_view
+        .read_point(
+            &child_key,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(1600)),
+        )
+        .expect("read")
+        .expect("child v12 row stays visible");
+    assert_eq!(row.row().commit_version(), CommitVersion::new(12));
+    assert_eq!(row.row().value(), b"child-v12");
+}
+
 #[test]
 fn fork_at_history_child_includes_rows_at_requested_version() {
     let source = branch_id(91);

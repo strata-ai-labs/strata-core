@@ -60,6 +60,32 @@ impl BranchEffectiveReadBound {
         }
     }
 
+    /// Compute the effective read bound for a forked child reading rows
+    /// from a parent's inherited layer. The fork inheritance contract is:
+    ///
+    /// - `Latest` and `AtVersion(version)` reads cap the version at
+    ///   `fork_version`. The child sees parent rows up to and including
+    ///   the fork point; parent post-fork commits are invisible.
+    /// - `AtTimestamp(timestamp)` reads apply BOTH the `fork_version` cap
+    ///   AND the timestamp filter. Per-row `commit_timestamp` drives
+    ///   timestamp matching against parent's physical rows in the
+    ///   inherited layer; no timeline transcription happens at fork
+    ///   time and no parent-timeline lookup happens at read time.
+    /// - For `T < fork_timestamp`, reads resolve through the parent's
+    ///   inherited rows.
+    /// - For `T >= fork_timestamp`, the version cap still bounds the
+    ///   view at `fork_version`; the child's own (post-fork) commits
+    ///   are read via `for_own_branch`, not this helper.
+    ///
+    /// This implements L8Z Open Question §B as Option C
+    /// ("implicit via inherited-layer reads + per-row timestamps"):
+    /// the catalog does not transcribe parent timeline rows under the
+    /// child's `branch_id` at fork, and the read path does not consult
+    /// the parent's timeline metadata. Three pinning tests in
+    /// `lifecycle/tests/branch_lifecycle/fork.rs` verify the contract:
+    /// `forked_branch_at_timestamp_before_fork_returns_parent_row`,
+    /// `forked_branch_at_timestamp_after_fork_returns_child_row`, and
+    /// `forked_branch_isolated_from_parent_post_fork_commits`.
     pub(crate) const fn for_inherited_layer(
         bound: BranchReadBound,
         fork_version: CommitVersion,

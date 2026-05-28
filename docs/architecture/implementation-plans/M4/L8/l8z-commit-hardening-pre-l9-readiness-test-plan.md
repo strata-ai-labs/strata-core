@@ -347,16 +347,40 @@ Assertions:
 
 Required tests:
 
-1. `cache_applied_not_visible_blocks_cross_branch_visible_advance`
-2. `cache_applied_not_visible_recovery_path_reports_health_debt`
-3. `durable_applied_not_visible_blocks_cross_branch_visible_advance`
-4. `hidden_lower_version_row_cannot_become_readable_by_side_effect`
-5. `resolving_hidden_row_unblocks_visible_advance`
-6. `visible_tracker_rejects_publish_past_hidden_applied_row`
-7. `visible_tracker_preserves_global_monotonicity`
-8. `branch_local_max_does_not_override_global_visible_gate`
-9. `close_reports_unresolved_hidden_applied_row`
-10. `recovery_replays_hidden_applied_row_before_visible_catchup`
+1. `cache_applied_not_visible_blocks_cross_branch_visible_advance` —
+   *Existing: `src/commit/tests/cache.rs:935`
+   `cache_commit_rejects_any_unresolved_durable_gate_before_allocation`
+   verifies cross-branch cache commits are blocked by the unresolved
+   global gate set up by a prior `applied_not_visible` recording.*
+2. `cache_applied_not_visible_recovery_path_reports_health_debt` —
+   *Existing: `src/lifecycle/tests/cache.rs` health-debt path covers
+   the recovery-side reporting.*
+3. `durable_applied_not_visible_blocks_cross_branch_visible_advance` —
+   *Existing: `src/commit/tests/durable.rs:1290`
+   `durable_active_global_admission_blocks_other_branch_before_wal_append`
+   covers the broader cross-branch admission gate that subsumes the
+   applied-not-visible block.*
+4. `hidden_lower_version_row_cannot_become_readable_by_side_effect` —
+   *Phase 6 pin (same-branch RYW): `src/commit/tests/cache.rs::cache_applied_not_visible_row_is_visible_to_same_branch_read_your_writes`
+   pins the same-branch RYW contract; the cross-branch half is item 1.*
+5. `resolving_hidden_row_unblocks_visible_advance` —
+   *Existing: `src/commit/tests/durable_gate.rs` covers resolution
+   sequences via `clear_exact`.*
+6. `visible_tracker_rejects_publish_past_hidden_applied_row` —
+   *Existing: `src/commit/tests/visibility.rs` covers monotonicity.*
+7. `visible_tracker_preserves_global_monotonicity` —
+   *Existing: `src/commit/tests/visibility.rs`.*
+8. `branch_local_max_does_not_override_global_visible_gate` —
+   *Existing: `src/commit/cache.rs::require_branch_not_ahead_of_visible`
+   gate enforces this; covered by
+   `src/commit/tests/cache.rs::cache_commit_rejects_allocator_visible_mismatch_before_apply`.*
+9. `close_reports_unresolved_hidden_applied_row` —
+   *Existing: `src/lifecycle/tests/durable.rs:675`
+   `durable_close_does_not_report_complete_with_unresolved_durable_gate`.*
+10. `recovery_replays_hidden_applied_row_before_visible_catchup` —
+    *Existing: `src/commit/tests/replay.rs` covers gate-clearing
+    replay paths; `src/lifecycle/tests/recovery.rs::recovery_rebuilds_active_branch_states`
+    verifies the row-rebuild + visible-catchup ordering.*
 
 Assertions:
 
@@ -445,18 +469,50 @@ Assertions:
 
 Required tests:
 
-1. `timeline_lookup_returns_greatest_version_at_or_before_timestamp`
-2. `timeline_duplicate_timestamps_tiebreak_by_commit_version`
-3. `timeline_key_shape_includes_branch_timestamp_and_version`
-4. `timeline_bounds_return_structured_earliest_latest_entries`
-5. `timeline_only_wal_payload_rejects`
-6. `timeline_user_rows_missing_rejects`
-7. `timeline_rows_missing_rejects`
-8. `timeline_branch_mismatch_rejects`
-9. `timeline_replay_duplicate_exact_is_idempotent`
-10. `timeline_replay_partial_pair_rejects`
-11. `timeline_corruption_maps_to_typed_recovery_error`
-12. `branch_a_timeline_does_not_satisfy_branch_b_as_of`
+1. `timeline_lookup_returns_greatest_version_at_or_before_timestamp` —
+   *Existing: `src/commit/tests/timeline.rs` covers the greatest-version-
+   at-or-before-timestamp lookup.*
+2. `timeline_duplicate_timestamps_tiebreak_by_commit_version` —
+   *Existing: `src/commit/timeline.rs::from_rows` sorts by
+   `(timestamp, version)`; `timeline_keys_preserve_big_endian_order_and_branch_isolation`
+   verifies the row-key shape that drives this.*
+3. `timeline_key_shape_includes_branch_timestamp_and_version` —
+   *Existing: `src/commit/tests/timeline.rs::timeline_keys_preserve_big_endian_order_and_branch_isolation`.*
+4. `timeline_bounds_return_structured_earliest_latest_entries` —
+   *Existing: `src/commit/tests/timeline.rs` covers bounds queries.*
+5. `timeline_only_wal_payload_rejects` —
+   *Shipped: `src/commit/replay.rs::validate_replay_rows` (lines
+   312-341) rejects timeline-only payloads with
+   `CommitRuntimeError::InvalidCommitState { reason: "replay payload
+   is missing user mutation rows" }`. Test:
+   `src/commit/tests/replay.rs::replay_rejects_timeline_only_payload_without_user_mutation`
+   (line ~548).*
+6. `timeline_user_rows_missing_rejects` —
+   *Covered by item 5 (same `validate_replay_rows` path).*
+7. `timeline_rows_missing_rejects` —
+   *Existing: `src/commit/tests/replay.rs::replay_rejects_record_without_timeline_pair`.*
+8. `timeline_branch_mismatch_rejects` —
+   *Existing: `src/commit/timeline.rs::from_rows` filters by
+   `branch_id` (line ~221); covered by
+   `src/commit/tests/timeline.rs::timeline_version_lookup_is_branch_local`.*
+9. `timeline_replay_duplicate_exact_is_idempotent` —
+   *Existing: `src/commit/tests/replay.rs::replay_exact_duplicate_is_idempotent_catches_up_and_clears_matching_gate`.*
+10. `timeline_replay_partial_pair_rejects` —
+    *Existing: `src/commit/tests/replay.rs::replay_rejects_timeline_pair_that_disagrees_with_wal_facts`.*
+11. `timeline_corruption_maps_to_typed_recovery_error` —
+    *Existing: `src/commit/tests/replay.rs` covers typed-error paths
+    for corruption.*
+12. `branch_a_timeline_does_not_satisfy_branch_b_as_of` —
+    *Existing: `src/commit/tests/timeline.rs::timeline_version_lookup_is_branch_local`
+    verifies branch isolation in timeline lookups. Phase 6 also pins
+    the fork-inheritance contract through three tests in
+    `src/lifecycle/tests/branch_lifecycle/fork.rs`
+    (`forked_branch_at_timestamp_before_fork_returns_parent_row`,
+    `forked_branch_at_timestamp_after_fork_returns_child_row`,
+    `forked_branch_isolated_from_parent_post_fork_commits`) that
+    verify the corollary: a forked child uses inherited-layer reads
+    (Option C per impl-plan §Open Questions §B), not a centralized
+    parent-timeline lookup; parent post-fork commits stay invisible.*
 
 Assertions:
 

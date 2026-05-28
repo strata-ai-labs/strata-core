@@ -454,18 +454,41 @@ into bootstrap.
 
 ### B. Fork timeline inheritance
 
-Deferred to Phase 6 plan mode. Two candidate semantics:
+Locked in L8Z Phase 6: **Option C**. Fork timeline inheritance is
+implemented via inherited-layer reads + per-row timestamps. The
+shipped code path uses `BranchEffectiveReadBound::for_inherited_layer`
+(`branch/read.rs:63-81`) to cap as-of reads at `(fork_version,
+timestamp)`. Parent's physical rows are read directly via inherited
+layers; row `commit_timestamp` drives timestamp matching. No timeline
+transcription happens at fork time and no parent-timeline lookup
+happens at read time.
 
-- transcribe parent timeline rows under the child branch id at fork time
-  (storage and encoder cost; clean read path);
-- have as-of reads consult the parent when `T < fork_version` (read-path
-  complexity; zero fork-time overhead).
+The candidates rejected:
 
-This decision impacts the `from_rows` filter contract (today it filters by
-`branch_id`, so a child branch has no parent timeline rows for
-`T < fork_version`). The §"Timeline Hardening" rule
+- *Option A* (transcribe parent timeline rows under child `branch_id`
+  at fork time): unnecessary because the read path uses inherited-
+  layer rows directly; no centralized timeline lookup is needed.
+- *Option B* (as-of reads consult parent timeline when
+  `T < fork_version`): same — the shipped code does not need a
+  parent-timeline consultation step.
+
+The `from_rows` filter contract is preserved
+(`from_rows` filters by `branch_id`, so a forked child has no parent
+timeline rows of its own). The §"Timeline Hardening" rule
 *"Branch A timeline rows must never satisfy Branch B as-of reads"*
-interacts with this and must not be relaxed in Phase 1.
+holds: forked children read parent physical rows via inherited
+layers, not parent timeline metadata.
+
+Pinning tests (Phase 6): three tests in
+`crates/storage-next/src/lifecycle/tests/branch_lifecycle/fork.rs`
+verify the contract:
+
+- `forked_branch_at_timestamp_before_fork_returns_parent_row`
+- `forked_branch_at_timestamp_after_fork_returns_child_row`
+- `forked_branch_isolated_from_parent_post_fork_commits`
+
+The `for_inherited_layer` docstring documents the contract for
+source readers.
 
 ### C. Generation field in WAL record
 
