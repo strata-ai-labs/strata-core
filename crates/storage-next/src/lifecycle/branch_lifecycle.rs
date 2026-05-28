@@ -21,6 +21,29 @@ pub(crate) enum LifecycleBranchStatus {
     Deleted,
 }
 
+/// Compile-time witness that a recovery-only catalog mutation is being
+/// performed from inside the bootstrap path. Required by
+/// [`LifecycleBranchCatalog::set_parent_for_recovery`] and any future
+/// helper that mutates descriptor metadata outside the normal
+/// generation-guarded surface. The constructor is private to the
+/// `lifecycle::durable::bootstrap` module; non-recovery callers cannot
+/// mint a token, so any cross-module misuse fails at compile time.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RecoveryExclusivityToken {
+    _private: (),
+}
+
+impl RecoveryExclusivityToken {
+    /// Build a token. This constructor is `pub(super)` so only modules
+    /// inside `crate::lifecycle` can call it; the source-guard test
+    /// `recovery_exclusivity_token_is_minted_only_in_bootstrap` (see
+    /// `tests/lifecycle_source_guard.rs`) tightens the policy further
+    /// by rejecting any caller outside `lifecycle/durable/bootstrap.rs`.
+    pub(super) const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleBranchParent {
     source_branch_id: BranchId,
@@ -315,11 +338,14 @@ impl LifecycleBranchCatalog {
     /// parent; this helper attaches the parent metadata recovered from
     /// the `BranchCatalogManifest`. Production fork paths set parent on
     /// initial install via `install_new_branch_state`, so this method is
-    /// recovery-only.
+    /// recovery-only — enforced at compile time by the
+    /// [`RecoveryExclusivityToken`] parameter (constructable only inside
+    /// `lifecycle::durable::bootstrap`).
     pub(crate) fn set_parent_for_recovery(
         &mut self,
         branch_id: BranchId,
         parent: LifecycleBranchParent,
+        _token: RecoveryExclusivityToken,
     ) -> LifecycleResult<()> {
         let index = self.entry_index(branch_id)?;
         self.entries[index].descriptor = self.entries[index].descriptor.with_parent(parent);
@@ -366,6 +392,24 @@ impl LifecycleBranchCatalog {
             descriptor,
             branch_count: self.entries.len(),
         })
+    }
+
+    /// Look up the live descriptor for a branch, including deleted entries.
+    ///
+    /// Callers use this to inspect non-mutating descriptor facts
+    /// (`generation`, `status`, `created_at`, `deleted_at`, `parent`) without
+    /// acquiring a branch-state borrow. Returns `BranchNotFound` if the
+    /// `branch_id` has never been registered.
+    #[allow(
+        dead_code,
+        reason = "general-purpose descriptor accessor; consumed once the deferred replay-safety slice ships"
+    )]
+    pub(crate) fn lookup_descriptor(
+        &self,
+        branch_id: BranchId,
+    ) -> LifecycleResult<LifecycleBranchDescriptor> {
+        let index = self.entry_index(branch_id)?;
+        Ok(self.entries[index].descriptor)
     }
 
     pub(crate) fn list_branches(&self, include_deleted: bool) -> Vec<LifecycleBranchDescriptor> {

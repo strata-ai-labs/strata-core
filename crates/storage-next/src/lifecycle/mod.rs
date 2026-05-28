@@ -31,6 +31,7 @@ mod rewrite_publication;
 mod state;
 mod table_manifest;
 mod table_reachability;
+mod wal_growth;
 
 #[allow(
     unused_imports,
@@ -40,6 +41,7 @@ pub(crate) use branch_lifecycle::{
     LifecycleBranchCatalog, LifecycleBranchClearOutcome, LifecycleBranchCreateOutcome,
     LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
     LifecycleBranchParent, LifecycleBranchStatus, LifecyclePinnedBranchReachability,
+    RecoveryExclusivityToken,
 };
 #[allow(
     unused_imports,
@@ -97,6 +99,7 @@ pub(crate) use compaction::{
 )]
 pub(crate) use config::{
     LifecycleCloseTimeoutPolicy, LifecycleConfig, LifecycleLossyRecoveryPolicy,
+    LifecycleWalGrowthPolicy,
 };
 #[allow(
     unused_imports,
@@ -236,6 +239,14 @@ pub(crate) use table_reachability::{
     LifecycleTableObjectInventoryEntry, LifecycleTableObjectProofContext,
     LifecycleTableObjectProofEpochs, LifecycleTableObjectProofToken,
     LifecycleTableObjectRetentionOutcome, LifecycleTableObjectRetentionRequest,
+};
+#[allow(
+    unused_imports,
+    reason = "WAL growth facts define the pre-public-boundary lifecycle policy surface"
+)]
+pub(crate) use wal_growth::{
+    checkpoint_task_for_wal_growth, commits_since_checkpoint, policy_admission_error,
+    LifecycleWalGrowthOutcome, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
 };
 
 #[cfg(test)]

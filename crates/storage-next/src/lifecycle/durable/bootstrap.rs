@@ -18,8 +18,8 @@ use crate::lifecycle::{
     LifecycleDurableTableCatalog, LifecycleError, LifecycleMaintenanceExecutor,
     LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
     LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
-    RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome,
-    StorageOpenPlan,
+    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
+    StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::service::WalGrowthFacts;
 use std::sync::Arc;
@@ -813,6 +813,7 @@ fn replay_branch_catalog_manifest(
                         parent.source_branch_id(),
                         CommitVersion::new(parent.fork_version()),
                     ),
+                    RecoveryExclusivityToken::new(),
                 )?;
             }
             if matches!(entry.status(), BranchCatalogStatus::Deleted) {
@@ -843,6 +844,7 @@ fn replay_branch_catalog_manifest(
                     parent.source_branch_id(),
                     CommitVersion::new(parent.fork_version()),
                 ),
+                RecoveryExclusivityToken::new(),
             )?;
         }
         if matches!(entry.status(), BranchCatalogStatus::Deleted) {

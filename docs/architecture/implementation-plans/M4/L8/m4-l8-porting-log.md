@@ -4328,3 +4328,66 @@ tests) or Phase 1 lock-in (item 7). Item 12 remains aspirational.
 | `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
 | `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
 | `git diff --check` | PASS |
+
+### L8Z Phase 5 - Branch-Generation Guard Plumbing
+
+Date: 2026-05-28. The L8Z impl-plan's §"Branch Generation Guard
+Coverage" lists twelve required surfaces. Plan-mode exploration
+found that most of the audit's gaps are addressed structurally by
+the existing `CommitBranchGenerationGuard` validation in
+`branch_state_mut` and `replace_active_branch_state_with_descriptor`,
+combined with Phase 4's quiesce wiring on branch-lifecycle wrappers.
+
+#### Disposition Summary
+
+| Audit Gap | Disposition |
+|---|---|
+| **Replay generation gate** | **Deferred to a future slice**. Three options considered: (D) recovery-time `created_at` filter without WAL format change, (A) `branch_generation` field added to `WalRecord` with format-version bump, (C) defer. Option D required strict semantics on `created_at` that 15+ existing call sites violate (caller-controlled label, not a strict commit-version bound). Option A and a refined D′ both require format changes of comparable LOC. Deferred so a dedicated future slice picks one path and lands it cleanly. The gap is real: stale pre-recreate WAL records below the live `created_at` are silently applied to live state. Catalog manifest is authoritative for the live generation. |
+| **Table-manifest publication generation** | **Already structurally safe**. The helper takes `branch: &BranchLocalState` which is only obtainable via `branch_state_mut(branch_id, Guard::exact(gen))`. The guard fails on stale generation before any `&BranchLocalState` reaches `publish_table_manifest_for_branch_with_budget`. Existing `stale_flush_task_generation_rejects_after_recreate` and `stale_compaction_task_generation_rejects_after_recreate` tests verify the rejection path. |
+| **Retention / quarantine generation** | **Already structurally safe**. Same model as table-manifest publication: branch-scoped helpers receive validated `&BranchLocalState` references; the catalog guard rejects stale generations before any retention work begins. |
+| **Close-drain per-task generation** | **Already structurally safe** under Phase 4's quiesce wiring. Recreate cannot run during close (close acquires quiesce; recreate fails on quiesce token). The drain's up-front `branch_state_mut(..., Guard::exact(captured_gen))` rejects on mismatch before the runner begins. |
+| **`set_parent_for_recovery` exclusivity** | **Phase 5: `RecoveryExclusivityToken`**. Added a `pub(crate)` zero-size token in `lifecycle/branch_lifecycle.rs` whose constructor is `pub(super)` and further constrained by source guard. The bootstrap module is the only minting site. Threaded through both `set_parent_for_recovery` call sites in `lifecycle/durable/bootstrap.rs` (lines 810, 840). |
+| **No-generation paths source guard** | **Phase 5: `recovery_exclusivity_token_is_minted_only_in_bootstrap`**. Source-guard test in `tests/lifecycle_source_guard.rs` scans the lifecycle production tree (excluding `lifecycle/branch_lifecycle.rs` definition and `lifecycle/durable/bootstrap.rs` minting site) and rejects any `RecoveryExclusivityToken::new(` occurrence. A future slice may extend the scan to a broader generic guard-free helper inventory. |
+
+#### Artifacts Added
+
+| File | Change |
+|---|---|
+| `src/lifecycle/branch_lifecycle.rs` | Added `RecoveryExclusivityToken` zero-size type with `pub(super) new()`. Added `lookup_descriptor` accessor on `LifecycleBranchCatalog` (general utility for future generation-aware paths). Updated `set_parent_for_recovery` signature to take a `_token: RecoveryExclusivityToken` parameter. Updated docstring to point at the token. |
+| `src/lifecycle/mod.rs` | Re-exported `RecoveryExclusivityToken` from `branch_lifecycle::*`. |
+| `src/lifecycle/durable/bootstrap.rs` | Imported `RecoveryExclusivityToken`. Updated both `set_parent_for_recovery` call sites (lines 810, 840) to pass `RecoveryExclusivityToken::new()`. |
+| `tests/lifecycle_source_guard.rs` | Added `recovery_exclusivity_token_is_minted_only_in_bootstrap` source guard. |
+| `l8z-commit-hardening-pre-l9-readiness-test-plan.md` | Annotated all 12 §2 items with shipped / Phase 5 / deferred dispositions. |
+
+#### Deferred Replay-Safety Gap (documented for future slice)
+
+Scenario:
+
+1. Branch A is active at generation 1.
+2. Several commits land via durable WAL → WAL records carry `branch_id = A`, `commit_version` 1..N.
+3. Branch A is deleted.
+4. Branch A is recreated at generation 2 (next `commit_version` N+1 or higher).
+5. Crash before checkpoint (so WAL still has the deleted A's records).
+6. Recovery:
+   - Catalog manifest replays first → catalog shows Branch A at gen 2 with new `created_at` value.
+   - WAL replay loop encounters records 1..N (gen-1 records).
+   - The record carries no generation field; the dispatcher uses the live catalog generation (2) as the guard.
+   - `validate_recovered_wal_package` accepts the records (branch is "non-Deleted").
+   - Gen-1 records get applied into Branch A's gen-2 state. Silent corruption.
+
+The catalog manifest is authoritative for the live generation. The future slice must either add `branch_generation` to `WalRecord` (format change with version bump and ~4 golden vector regenerations) OR refactor `LifecycleBranchDescriptor::created_at` semantics so a recovery-time filter (`record.commit_version < live_descriptor.created_at`) can rely on it.
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests` | PASS, 969 tests |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_branch_lifecycle` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | PASS |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS, 97 tests (96 existing + 1 new) |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |

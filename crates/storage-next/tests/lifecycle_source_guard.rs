@@ -36,6 +36,32 @@ fn lifecycle_source_does_not_import_engine_product_or_raw_io() {
 }
 
 #[test]
+fn recovery_exclusivity_token_is_minted_only_in_bootstrap() {
+    let root = common::crate_root();
+    let allowed_minting_file = root.join("src/lifecycle/durable/bootstrap.rs");
+    let definition_file = root.join("src/lifecycle/branch_lifecycle.rs");
+
+    for file in lifecycle_source_files(&root)
+        .into_iter()
+        .chain(lifecycle_testkit_files(&root).into_iter())
+    {
+        if file == allowed_minting_file || file == definition_file {
+            continue;
+        }
+        let text = fs::read_to_string(&file).expect("read lifecycle source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !line.contains("RecoveryExclusivityToken::new("),
+                "{}:{} mints RecoveryExclusivityToken outside the bootstrap module; \
+                 only `lifecycle/durable/bootstrap.rs` may construct this token: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1,
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_implementation_avoids_architecture_labels() {
     let root = common::crate_root();
     for file in lifecycle_source_files(&root)

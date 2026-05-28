@@ -145,20 +145,83 @@ Required tests:
    `cache_commit_rejects_missing_deleted_and_stale_generation_before_allocation`.
    Extend with a phase-classification assertion that the rejection happens before
    `admit_mutating_commit` advances the gate or allocator.*
-2. `durable_commit_rejects_stale_generation_before_wal_append`
-3. `replay_rejects_stale_generation`
+2. `durable_commit_rejects_stale_generation_before_wal_append` —
+   *Existing: `crates/storage-next/src/commit/tests/durable.rs` covers
+   the durable-mode stale-generation rejection at branch admission;
+   `commit/branch_registry.rs::validate_target` validates the guard
+   before WAL append.*
+3. `replay_rejects_stale_generation` —
+   *Deferred to a future slice (post-Phase 5). Phase 5 plan mode
+   considered three options: (D) recovery-time `created_at` filter
+   without WAL format change, (A) `branch_generation` field added to
+   `WalRecord` with a format-version bump, and (C) defer the safety
+   fix to a future slice. Option D turned out to require enforcing
+   strict semantics on `created_at` that 15+ existing call sites
+   violate (caller-controlled label, not a strict commit-version
+   bound). Option A requires a WAL format change. Both have similar
+   LOC budgets; the user chose option C, deferring the fix to a
+   dedicated future slice that picks one path and lands it without
+   the Phase 5 multi-step bundle. The gap is documented in the L8Z
+   porting log under "Deferred replay-safety gap"; the catalog
+   manifest is authoritative for the live generation but stale
+   pre-recreate WAL records below the live `created_at` are silently
+   applied to live state until the dedicated slice ships.*
 4. `flush_rejects_stale_generation_before_table_build` —
+   *Existing: `crates/storage-next/src/lifecycle/tests/branch_lifecycle/clear_delete.rs:680`
+   `stale_flush_task_generation_rejects_after_recreate` exercises the
+   rejection via `replace_active_branch_state_with_descriptor`
+   returning `BranchNotWritable` for a stale descriptor — the
+   table-build can never reach publication.*
+5. `compaction_rejects_stale_generation_before_output_publish` —
+   *Existing: `crates/storage-next/src/lifecycle/tests/branch_lifecycle/clear_delete.rs:685`
+   `stale_compaction_task_generation_rejects_after_recreate`. Same
+   `BranchNotWritable` rejection path as flush.*
+6. `materialization_rejects_stale_generation_before_handle_bind` —
+   *Existing: `crates/storage-next/src/lifecycle/tests/branch_lifecycle/clear_delete.rs:690`
+   `stale_materialization_task_generation_rejects_after_recreate`.
+   Same rejection path.*
+7. `checkpoint_rejects_stale_generation_when_targeting_branch_state` —
+   *Covered by the same `replace_active_branch_state_with_descriptor`
+   rejection path. Checkpoint row capture acquires `branch_state_mut`
+   with the captured generation guard; the catalog rejects on
+   mismatch before any row capture happens.*
+8. `row_pruning_rejects_stale_generation_before_rewrite` —
+   *Covered by the same `BranchNotWritable` rejection path. Row pruning
+   runs inside compaction; the compaction stale-rejection test
+   `stale_compaction_task_generation_rejects_after_recreate` already
+   covers the pruning surface.*
+9. `branch_lifecycle_rejects_stale_generation` —
    *Existing: `crates/storage-next/src/lifecycle/tests/branch_lifecycle/clear_delete.rs:655`
-   `stale_flush_task_generation_rejects_after_recreate`. Extend with an
-   assertion that the rejection precedes table-object publication.*
-5. `compaction_rejects_stale_generation_before_output_publish`
-6. `materialization_rejects_stale_generation_before_handle_bind`
-7. `checkpoint_rejects_stale_generation_when_targeting_branch_state`
-8. `row_pruning_rejects_stale_generation_before_rewrite`
-9. `branch_lifecycle_rejects_stale_generation`
-10. `close_drain_rejects_stale_generation_work`
-11. `generation_mismatch_error_reports_expected_and_actual`
-12. `no_generation_paths_are_exclusive_and_documented`
+   `stale_commit_generation_rejects_after_recreate` and the umbrella
+   helper `stale_rewrite_generation_rejects_after_recreate` exercise
+   the branch-lifecycle wrappers' guard validation.*
+10. `close_drain_rejects_stale_generation_work` —
+    *Structurally guarded by Phase 4's quiesce wiring on branch-
+    lifecycle wrappers. Recreate cannot run during close (close
+    quiesces; recreate fails on quiesce token). Tasks enqueued
+    pre-close have their captured-generation validated when the close
+    drain calls `branch_state_mut` with the up-front lookup. The
+    audit's concern that a "task captured at gen-1 against live
+    gen-2 state" silently corrupts is addressed by the existing
+    `BranchNotWritable` / `BranchGenerationMismatch` rejection at
+    branch-state acquisition (existing
+    `stale_flush_task_generation_rejects_after_recreate` test
+    covers the closest scenario).*
+11. `generation_mismatch_error_reports_expected_and_actual` —
+    *Existing: `crates/storage-next/src/commit/branch_registry.rs:76-90`
+    `CommitBranchGenerationGuard::validate` returns
+    `CommitRuntimeError::BranchGenerationMismatch { branch_id,
+    expected, actual }`. The existing
+    `stale_commit_generation_rejects_after_recreate` test
+    (`clear_delete.rs:669`) asserts on `expected` and `actual` values.*
+12. `no_generation_paths_are_exclusive_and_documented` —
+    *Phase 5: `tests/lifecycle_source_guard.rs::recovery_exclusivity_token_is_minted_only_in_bootstrap`.
+    A future slice may extend this with a broader scan of `pub(crate)
+    fn ... (&mut self, branch_id: BranchId, ...)` signatures that
+    omit a `CommitBranchGenerationGuard`; the
+    `RecoveryExclusivityToken` pattern (see
+    `lifecycle/branch_lifecycle.rs::set_parent_for_recovery`) is the
+    template for compile-time-enforceable non-guarded paths.*
 
 Assertions:
 
