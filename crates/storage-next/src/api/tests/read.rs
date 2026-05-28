@@ -1,5 +1,7 @@
 use super::*;
 
+use std::time::Duration;
+
 use crate::branch::BranchTimestampCoverage;
 use crate::commit::COMMIT_TIMELINE_SPACE;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
@@ -27,13 +29,17 @@ fn api_key(bytes: &[u8]) -> StorageKey {
 }
 
 fn put_batch(key: &[u8], value: &[u8]) -> CommitBatch {
+    put_batch_with_ttl(key, value, None)
+}
+
+fn put_batch_with_ttl(key: &[u8], value: &[u8], ttl: Option<Duration>) -> CommitBatch {
     CommitBatch::new(
         branch(),
         vec![CommitMutation::Put {
             storage_space: engine_space(),
             key: api_key(key),
             value: StorageValue::new(value.to_vec()),
-            ttl: None,
+            ttl,
         }],
         CommitOptions::default().require_conflict_check(false),
     )
@@ -61,6 +67,21 @@ fn commit_put(
     runtime
         .commit_for_test(&put_batch(key, value), Timestamp::from_micros(ts))
         .expect("commit put")
+}
+
+fn commit_put_with_ttl(
+    runtime: &mut StorageRuntime<'static>,
+    key: &[u8],
+    value: &[u8],
+    ts: u64,
+    ttl: Duration,
+) -> CommitSummary {
+    runtime
+        .commit_for_test(
+            &put_batch_with_ttl(key, value, Some(ttl)),
+            Timestamp::from_micros(ts),
+        )
+        .expect("commit put with ttl")
 }
 
 fn commit_delete(runtime: &mut StorageRuntime<'static>, key: &[u8], ts: u64) -> CommitSummary {
@@ -171,6 +192,20 @@ fn read_at_version_rejects_unretained_history() {
 }
 
 #[test]
+fn read_at_version_rejects_unrecorded_future_version() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"alpha", b"value", 10);
+
+    let error = runtime
+        .read_point(&point_request(
+            b"alpha",
+            ReadBound::AtVersion(CommitVersion::new(99)),
+        ))
+        .expect_err("unrecorded version is not a retained frontier");
+    assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+}
+
+#[test]
 fn read_at_timestamp_resolves_to_commit_version() {
     let mut runtime = open_runtime();
     let first = commit_put(&mut runtime, b"alpha", b"old", 10);
@@ -185,6 +220,20 @@ fn read_at_timestamp_resolves_to_commit_version() {
     let row = outcome.row().expect("row present");
     assert_eq!(read_value(row), b"old");
     assert_eq!(row.commit_version(), first.commit_version());
+}
+
+#[test]
+fn read_at_timestamp_after_latest_rejects() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"alpha", b"value", 10);
+
+    let error = runtime
+        .read_point(&point_request(
+            b"alpha",
+            ReadBound::AtTimestamp(Timestamp::from_micros(20)),
+        ))
+        .expect_err("after-latest timestamp read must not clamp to current");
+    assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
 }
 
 #[test]
@@ -232,6 +281,82 @@ fn read_unknown_branch_rejects() {
         ))
         .expect_err("unknown branch rejected");
     assert_eq!(error.class(), StorageApiErrorClass::NotFound);
+}
+
+#[test]
+fn read_at_version_applies_ttl_at_selected_frontier() {
+    let mut runtime = open_runtime();
+    let first = commit_put_with_ttl(
+        &mut runtime,
+        b"alpha",
+        b"value",
+        10,
+        Duration::from_micros(5),
+    );
+    let second = commit_put(&mut runtime, b"beta", b"other", 20);
+
+    let before_expiry = runtime
+        .read_point(&point_request(
+            b"alpha",
+            ReadBound::AtVersion(first.commit_version()),
+        ))
+        .expect("read before expiry");
+    assert_eq!(
+        read_value(before_expiry.row().expect("row before expiry")),
+        b"value"
+    );
+
+    let after_expiry = runtime
+        .read_point(&point_request(
+            b"alpha",
+            ReadBound::AtVersion(second.commit_version()),
+        ))
+        .expect("read after expiry");
+    assert!(after_expiry.row().is_none());
+}
+
+#[test]
+fn read_at_timestamp_applies_ttl_at_matched_commit_frontier() {
+    let mut runtime = open_runtime();
+    commit_put_with_ttl(
+        &mut runtime,
+        b"alpha",
+        b"value",
+        10,
+        Duration::from_micros(12),
+    );
+    commit_put(&mut runtime, b"beta", b"beta", 20);
+    commit_put(&mut runtime, b"gamma", b"gamma", 30);
+
+    let outcome = runtime
+        .read_point(&point_request(
+            b"alpha",
+            ReadBound::AtTimestamp(Timestamp::from_micros(25)),
+        ))
+        .expect("timestamp read between commits");
+    assert_eq!(
+        read_value(outcome.row().expect("ttl is evaluated at matched commit")),
+        b"value"
+    );
+}
+
+#[test]
+fn scan_at_version_applies_ttl_at_selected_frontier() {
+    let mut runtime = open_runtime();
+    commit_put_with_ttl(&mut runtime, b"item-a", b"a", 10, Duration::from_micros(5));
+    let second = commit_put(&mut runtime, b"item-b", b"b", 20);
+
+    let scan = runtime
+        .scan_prefix(&PrefixScanReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"item-"),
+            ReadBound::AtVersion(second.commit_version()),
+            None,
+        ))
+        .expect("scan after ttl expiry");
+    assert_eq!(scan.rows().len(), 1);
+    assert_eq!(scan.rows()[0].key().as_bytes(), b"item-b");
 }
 
 #[test]
@@ -559,6 +684,25 @@ fn timestamp_lookup_before_retained_range_rejects() {
 }
 
 #[test]
+fn timestamp_lookup_after_latest_returns_matched_with_miss_flag() {
+    let mut runtime = open_runtime();
+    let latest = commit_put(&mut runtime, b"a", b"a", 50);
+
+    let lookup = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(60),
+        ))
+        .expect("after-latest timeline lookup");
+    assert_eq!(lookup.matched_version(), latest.commit_version());
+    assert_eq!(lookup.matched_timestamp(), latest.commit_timestamp());
+    assert_eq!(
+        lookup.miss(),
+        Some(TimestampLookupMiss::AfterLatestRetained)
+    );
+}
+
+#[test]
 fn version_lookup_returns_commit_timestamp() {
     let mut runtime = open_runtime();
     let commit = commit_put(&mut runtime, b"a", b"a", 50);
@@ -621,4 +765,217 @@ fn timeline_corruption_maps_to_diagnostic_error() {
         .expect_err("timeline corruption rejected");
     assert_eq!(error.class(), StorageApiErrorClass::Internal);
     assert!(error.source().is_some());
+}
+
+#[test]
+fn timeline_tombstone_corruption_maps_to_diagnostic_error() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"a", b"a", 10);
+    let mut user_key = b"ver-v1\0".to_vec();
+    user_key.extend_from_slice(&99_u64.to_be_bytes());
+    let bad_key = PhysicalKey::new(
+        branch(),
+        COMMIT_TIMELINE_SPACE,
+        RowStorageSpaceId::COMMIT_TIMELINE,
+        user_key,
+    )
+    .expect("timeline key");
+    runtime
+        .append_raw_row_for_test(StorageRow::tombstone(
+            bad_key,
+            CommitVersion::new(99),
+            Timestamp::from_micros(99),
+        ))
+        .expect("append corrupt timeline tombstone");
+
+    let error = runtime
+        .timeline_bounds(TimelineBoundsRequest::new(branch()))
+        .expect_err("timeline tombstone rejected");
+    assert_eq!(error.class(), StorageApiErrorClass::Internal);
+    assert!(error.source().is_some());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn generated_read_contract_matches_model_for_mutations_and_reads() {
+    use std::collections::BTreeMap;
+
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::{Config, TestCaseError, TestRunner};
+
+    let mut runner = TestRunner::new(Config {
+        cases: 48,
+        ..Config::default()
+    });
+    runner
+        .run(&vec(any::<u8>(), 1..=96), |script| {
+            let mut runtime = open_runtime();
+            let mut model = BTreeMap::<Vec<u8>, Vec<ModelRow>>::new();
+
+            for (index, chunk) in script.chunks(4).take(24).enumerate() {
+                let key = vec![b'k', b'0' + chunk.get(1).copied().unwrap_or(0) % 4];
+                let timestamp = Timestamp::from_micros(10 + u64::try_from(index).unwrap() * 10);
+                let value =
+                    (chunk[0] % 4 != 0).then(|| vec![b'v', chunk.get(2).copied().unwrap_or(0)]);
+                let summary = if let Some(value) = &value {
+                    runtime
+                        .commit_for_test(&put_batch(&key, value), timestamp)
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?
+                } else {
+                    runtime
+                        .commit_for_test(&delete_batch(&key), timestamp)
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?
+                };
+                model.entry(key.clone()).or_default().push(ModelRow {
+                    key: key.clone(),
+                    value,
+                    commit_version: summary.commit_version(),
+                    commit_timestamp: summary.commit_timestamp(),
+                });
+
+                assert_point_matches_model(&runtime, &model, &key, ReadBound::Latest)?;
+                assert_point_matches_model(
+                    &runtime,
+                    &model,
+                    &key,
+                    ReadBound::AtVersion(summary.commit_version()),
+                )?;
+                assert_point_matches_model(
+                    &runtime,
+                    &model,
+                    &key,
+                    ReadBound::AtTimestamp(summary.commit_timestamp()),
+                )?;
+                assert_history_matches_model(&runtime, &model, &key)?;
+                assert_prefix_scan_matches_model(&runtime, &model, ReadBound::Latest)?;
+                assert_prefix_scan_matches_model(
+                    &runtime,
+                    &model,
+                    ReadBound::AtVersion(summary.commit_version()),
+                )?;
+            }
+            Ok(())
+        })
+        .expect("generated API read model");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModelRow {
+    key: Vec<u8>,
+    value: Option<Vec<u8>>,
+    commit_version: CommitVersion,
+    commit_timestamp: Timestamp,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_point_matches_model(
+    runtime: &StorageRuntime<'static>,
+    model: &std::collections::BTreeMap<Vec<u8>, Vec<ModelRow>>,
+    key: &[u8],
+    bound: ReadBound,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let outcome = runtime
+        .read_point(&point_request(key, bound))
+        .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    let expected = model_visible_row(model.get(key), bound);
+    assert_api_row_matches_model(outcome.row(), expected)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_history_matches_model(
+    runtime: &StorageRuntime<'static>,
+    model: &std::collections::BTreeMap<Vec<u8>, Vec<ModelRow>>,
+    key: &[u8],
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let limit = ReadLimit::new(3)
+        .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    let outcome = runtime
+        .read_history(&HistoryReadRequest::new(branch(), engine_space(), api_key(key)).limit(limit))
+        .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    let expected = model
+        .get(key)
+        .into_iter()
+        .flat_map(|rows| rows.iter().rev().take(limit.get()));
+    for (actual, expected) in outcome.rows().iter().zip(expected.clone()) {
+        assert_storage_row_matches_model(actual, expected)?;
+    }
+    if outcome.rows().len() != expected.count() {
+        return Err(proptest::test_runner::TestCaseError::fail(
+            "history row count disagrees with model",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_prefix_scan_matches_model(
+    runtime: &StorageRuntime<'static>,
+    model: &std::collections::BTreeMap<Vec<u8>, Vec<ModelRow>>,
+    bound: ReadBound,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let outcome = runtime
+        .scan_prefix(&PrefixScanReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"k"),
+            bound,
+            None,
+        ))
+        .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    let expected = model
+        .values()
+        .filter_map(|rows| model_visible_row(Some(rows), bound))
+        .collect::<Vec<_>>();
+    for (actual, expected) in outcome.rows().iter().zip(&expected) {
+        assert_storage_row_matches_model(actual, expected)?;
+    }
+    if outcome.rows().len() != expected.len() {
+        return Err(proptest::test_runner::TestCaseError::fail(
+            "scan row count disagrees with model",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn model_visible_row(rows: Option<&Vec<ModelRow>>, bound: ReadBound) -> Option<&ModelRow> {
+    rows?.iter().rev().find(|row| match bound {
+        ReadBound::Latest => true,
+        ReadBound::AtVersion(version) => row.commit_version <= version,
+        ReadBound::AtTimestamp(timestamp) => row.commit_timestamp <= timestamp,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_api_row_matches_model(
+    actual: Option<&StorageReadRow>,
+    expected: Option<&ModelRow>,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    match (actual, expected) {
+        (None, None) => Ok(()),
+        (Some(actual), Some(expected)) => assert_storage_row_matches_model(actual, expected),
+        _ => Err(proptest::test_runner::TestCaseError::fail(
+            "point row presence disagrees with model",
+        )),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_storage_row_matches_model(
+    actual: &StorageReadRow,
+    expected: &ModelRow,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    if actual.key().as_bytes() != expected.key
+        || actual.commit_version() != expected.commit_version
+        || actual.commit_timestamp() != expected.commit_timestamp
+        || actual.value().map(StorageValue::as_bytes) != expected.value.as_deref()
+        || actual.is_tombstone() != expected.value.is_none()
+    {
+        return Err(proptest::test_runner::TestCaseError::fail(
+            "row facts disagree with model",
+        ));
+    }
+    Ok(())
 }

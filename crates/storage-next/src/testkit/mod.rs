@@ -4,6 +4,7 @@
 
 use std::fmt;
 
+mod api;
 mod branch_lsm;
 mod commit_runtime;
 mod commit_runtime_allocator;
@@ -23,6 +24,7 @@ mod quarantine_fuzz;
 mod service_fuzz;
 mod table_runtime;
 
+pub use api::{check_storage_api_read_model_contract, StorageApiReadModelOutcome};
 pub use branch_lsm::{
     check_branch_lsm_fault_window_contract, check_branch_lsm_inheritance_contract,
     check_branch_lsm_install_contract, check_branch_lsm_reads_contract,

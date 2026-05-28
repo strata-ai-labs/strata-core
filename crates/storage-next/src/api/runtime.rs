@@ -4,7 +4,7 @@ use crate::branch::{
     BranchHistoryOptions, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
     BranchUserKeyBound,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 use crate::commit::CommitBranchGenerationGuard;
 use crate::commit::{
     CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig, CommitTimelineMiss,
@@ -41,6 +41,12 @@ const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_L
 const DEFAULT_BRANCH_GENERATION: u64 = 1;
 const DEFAULT_TIMESTAMP: Timestamp = Timestamp::from_micros(1);
 const API_PHYSICAL_SPACE: &str = "api";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedReadBound {
+    branch_bound: BranchReadBound,
+    selected_timestamp: Option<Timestamp>,
+}
 
 #[derive(Debug)]
 pub struct StorageRuntime<'a> {
@@ -88,7 +94,6 @@ impl StorageRuntime<'static> {
                 reason: "durable local open requires an explicit storage backend handle",
             }),
             StorageMode::ObjectDurableCandidate | StorageMode::DistributedCandidate => {
-                options.validate()?;
                 unreachable!("unsupported modes are rejected during validation")
             }
         }
@@ -177,11 +182,13 @@ impl<'a> StorageRuntime<'a> {
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
         let view = self.read_view_for_branch(request.branch_id())?;
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
-        let bound = map_read_bound(request.bound());
-        require_version_retained_for_bound(&view, bound)?;
-        let row = match view.read_point(&key, bound).map_err(branch_error)? {
-            Some(row) => Some(read_row_from_storage(row.row())?),
-            None => visible_tombstone_at_bound(&view, &key, bound)?,
+        let resolved = resolve_read_bound(&view, request.bound())?;
+        let row = match view
+            .read_point(&key, resolved.branch_bound)
+            .map_err(branch_error)?
+        {
+            Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
+            None => visible_tombstone_at_bound(&view, &key, resolved)?,
         };
         Ok(PointReadOutcome::new(row))
     }
@@ -222,23 +229,22 @@ impl<'a> StorageRuntime<'a> {
             request.storage_space(),
             request.prefix(),
         )?;
-        let bound = map_read_bound(request.bound());
-        require_version_retained_for_bound(&view, bound)?;
+        let resolved = resolve_read_bound(&view, request.bound())?;
         let bounds = BranchScanBounds::prefix(&prefix);
         let rows = view
-            .scan_prefix_including_tombstones(&bounds, bound)
+            .scan_prefix_including_tombstones(&bounds, resolved.branch_bound)
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::BranchHistoryRow::row),
             request.limit(),
+            resolved.selected_timestamp,
         )
     }
 
     pub fn scan_range(&self, request: &ScanReadRequest) -> StorageApiResult<ScanReadOutcome> {
         let view = self.read_view_for_branch(request.branch_id())?;
         let storage_space = map_storage_space(request.storage_space())?;
-        let bound = map_read_bound(request.bound());
-        require_version_retained_for_bound(&view, bound)?;
+        let resolved = resolve_read_bound(&view, request.bound())?;
         let bounds = BranchScanBounds::range(
             request.branch_id(),
             API_PHYSICAL_SPACE,
@@ -258,11 +264,12 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(branch_error)?;
         let rows = view
-            .scan_range_including_tombstones(&bounds, bound)
+            .scan_range_including_tombstones(&bounds, resolved.branch_bound)
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::BranchHistoryRow::row),
             request.limit(),
+            resolved.selected_timestamp,
         )
     }
 
@@ -429,13 +436,13 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(branch_error)?;
         let timeline_rows = view
-            .scan_range(&bounds, BranchReadBound::Latest)
+            .scan_range_including_tombstones(&bounds, BranchReadBound::Latest)
             .map_err(branch_error)?;
         CommitTimelineView::from_rows(
             branch_id,
             timeline_rows
                 .iter()
-                .map(crate::branch::BranchVisibleRow::row),
+                .map(crate::branch::BranchHistoryRow::row),
         )
         .map_err(commit_error)
     }
@@ -445,7 +452,7 @@ impl<'a> StorageRuntime<'a> {
         DEFAULT_BRANCH_ID
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn commit_for_test(
         &mut self,
         batch: &super::CommitBatch,
@@ -633,7 +640,6 @@ fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPl
             policy: StorageDurabilityPolicy::Always,
         } => LifecycleStorageMode::DurableLocalAlways,
         StorageMode::ObjectDurableCandidate | StorageMode::DistributedCandidate => {
-            options.validate()?;
             unreachable!("unsupported modes are rejected during validation")
         }
     };
@@ -739,14 +745,6 @@ fn map_close_effects(outcome: CloseOutcome) -> StorageCloseEffects {
     effects
 }
 
-fn map_read_bound(bound: ReadBound) -> BranchReadBound {
-    match bound {
-        ReadBound::Latest => BranchReadBound::Latest,
-        ReadBound::AtVersion(version) => BranchReadBound::AtVersion(version),
-        ReadBound::AtTimestamp(timestamp) => BranchReadBound::AtTimestamp(timestamp),
-    }
-}
-
 fn physical_key(
     branch_id: BranchId,
     storage_space: &StorageSpaceId,
@@ -801,16 +799,36 @@ fn read_row_from_storage(row: &StorageRow) -> StorageApiResult<StorageReadRow> {
     ))
 }
 
+fn read_row_from_storage_if_visible(
+    row: &StorageRow,
+    selected_timestamp: Option<Timestamp>,
+) -> StorageApiResult<Option<StorageReadRow>> {
+    if row_is_expired_at_selected_frontier(row, selected_timestamp) {
+        Ok(None)
+    } else {
+        read_row_from_storage(row).map(Some)
+    }
+}
+
+fn row_is_expired_at_selected_frontier(
+    row: &StorageRow,
+    selected_timestamp: Option<Timestamp>,
+) -> bool {
+    selected_timestamp.is_some_and(|timestamp| {
+        !row.is_tombstone() && row.expires_at() != Timestamp::EPOCH && row.expires_at() <= timestamp
+    })
+}
+
 fn visible_tombstone_at_bound(
     view: &BranchReadView,
     key: &PhysicalKey,
-    bound: BranchReadBound,
+    resolved: ResolvedReadBound,
 ) -> StorageApiResult<Option<StorageReadRow>> {
     let rows = view
         .history(key, BranchHistoryOptions::all())
         .map_err(branch_error)?;
     for row in rows {
-        if !row_matches_read_bound(row.row(), bound) {
+        if !row_matches_read_bound(row.row(), resolved.branch_bound) {
             continue;
         }
         if row.row().is_tombstone() {
@@ -832,25 +850,18 @@ fn row_matches_read_bound(row: &StorageRow, bound: BranchReadBound) -> bool {
 fn map_scan_rows<'a>(
     rows: impl Iterator<Item = &'a StorageRow>,
     limit: Option<ReadLimit>,
+    selected_timestamp: Option<Timestamp>,
 ) -> StorageApiResult<ScanReadOutcome> {
     let mut mapped = Vec::new();
     for row in rows {
         if limit.is_some_and(|limit| mapped.len() >= limit.get()) {
             break;
         }
-        mapped.push(read_row_from_storage(row)?);
+        if let Some(read_row) = read_row_from_storage_if_visible(row, selected_timestamp)? {
+            mapped.push(read_row);
+        }
     }
     Ok(ScanReadOutcome::new(mapped))
-}
-
-fn require_version_retained_for_bound(
-    view: &BranchReadView,
-    bound: BranchReadBound,
-) -> StorageApiResult<()> {
-    if let BranchReadBound::AtVersion(version) = bound {
-        require_version_retained(view, version)?;
-    }
-    Ok(())
 }
 
 fn require_version_retained(view: &BranchReadView, version: CommitVersion) -> StorageApiResult<()> {
@@ -868,7 +879,66 @@ fn require_version_retained(view: &BranchReadView, version: CommitVersion) -> St
     Ok(())
 }
 
+fn resolve_read_bound(
+    view: &BranchReadView,
+    bound: ReadBound,
+) -> StorageApiResult<ResolvedReadBound> {
+    match bound {
+        ReadBound::Latest => Ok(ResolvedReadBound {
+            branch_bound: BranchReadBound::Latest,
+            selected_timestamp: None,
+        }),
+        ReadBound::AtVersion(version) => {
+            let timeline = timeline_view_from_read_view(view)?;
+            let selected_timestamp = timeline.timestamp_for_version(version).ok_or(
+                StorageApiError::RetainedHistoryUnavailable {
+                    branch_id: view.branch_id(),
+                    reason: "commit version is outside retained timeline history",
+                },
+            )?;
+            Ok(ResolvedReadBound {
+                branch_bound: BranchReadBound::AtVersion(version),
+                selected_timestamp: Some(selected_timestamp),
+            })
+        }
+        ReadBound::AtTimestamp(timestamp) => {
+            let lookup = timeline_view_from_read_view(view)?.version_at_or_before(timestamp);
+            match lookup.miss() {
+                CommitTimelineMiss::Matched => Ok(ResolvedReadBound {
+                    branch_bound: BranchReadBound::AtVersion(lookup.matched_version().ok_or(
+                        StorageApiError::TimestampHistoryUnavailable {
+                            branch_id: view.branch_id(),
+                            reason: "timestamp lookup did not return a retained version",
+                        },
+                    )?),
+                    selected_timestamp: Some(lookup.matched_timestamp().ok_or(
+                        StorageApiError::TimestampHistoryUnavailable {
+                            branch_id: view.branch_id(),
+                            reason: "timestamp lookup did not return a retained timestamp",
+                        },
+                    )?),
+                }),
+                CommitTimelineMiss::BeforeRetainedHistory | CommitTimelineMiss::Empty => {
+                    Err(StorageApiError::TimestampHistoryUnavailable {
+                        branch_id: view.branch_id(),
+                        reason: "timestamp is before retained timeline history",
+                    })
+                }
+                CommitTimelineMiss::AfterLatestRetained => {
+                    Err(StorageApiError::TimestampHistoryUnavailable {
+                        branch_id: view.branch_id(),
+                        reason: "timestamp is after latest retained timeline history",
+                    })
+                }
+            }
+        }
+    }
+}
+
 fn timeline_view_from_read_view(view: &BranchReadView) -> StorageApiResult<CommitTimelineView> {
+    // This intentionally rebuilds the timeline from branch rows today. The public
+    // boundary should grow a retained timeline index/cache before high-cardinality
+    // timestamp reads become a hot path.
     let bounds = BranchScanBounds::unbounded(
         view.branch_id(),
         COMMIT_TIMELINE_SPACE,
@@ -876,18 +946,18 @@ fn timeline_view_from_read_view(view: &BranchReadView) -> StorageApiResult<Commi
     )
     .map_err(branch_error)?;
     let timeline_rows = view
-        .scan_range(&bounds, BranchReadBound::Latest)
+        .scan_range_including_tombstones(&bounds, BranchReadBound::Latest)
         .map_err(branch_error)?;
     CommitTimelineView::from_rows(
         view.branch_id(),
         timeline_rows
             .iter()
-            .map(crate::branch::BranchVisibleRow::row),
+            .map(crate::branch::BranchHistoryRow::row),
     )
     .map_err(commit_error)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 fn map_api_commit_batch(
     batch: &super::CommitBatch,
     timestamp: Timestamp,
@@ -937,7 +1007,7 @@ fn map_api_commit_batch(
     ))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 fn map_expiry(
     timestamp: Timestamp,
     ttl: Option<std::time::Duration>,

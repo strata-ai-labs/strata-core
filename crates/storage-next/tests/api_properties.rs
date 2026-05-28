@@ -77,3 +77,41 @@ fn api_property_harness_rejects_closed_runtime_reads() {
         .expect_err("closed runtime must reject reads");
     assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
 }
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn api_property_harness_matches_generated_read_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestCaseError, TestRunner};
+    use strata_storage_next::testkit::check_storage_api_read_model_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/storage_api_read_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 1..=96), |script| {
+            let outcome = check_storage_api_read_model_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.puts() == 0
+                || outcome.deletes() == 0
+                || outcome.point_reads() == 0
+                || outcome.history_reads() == 0
+                || outcome.prefix_scans() == 0
+                || outcome.range_scans() == 0
+                || outcome.timestamp_lookups() == 0
+                || outcome.retained_history_misses() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "generated read script did not exercise every required route",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated API read model property");
+}

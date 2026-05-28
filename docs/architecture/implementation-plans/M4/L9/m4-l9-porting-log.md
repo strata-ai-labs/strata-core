@@ -315,9 +315,9 @@ Status: implemented
   commit version, commit timestamp, optional expiry, and tombstone facts without
   exposing `StorageRow`, branch row sources, table identities, or timeline row
   internals.
-- Point and scan reads route through L6 read views. L9 adds only mapping,
-  storage-space validation, public outcomes, and retained-history/timeline
-  error translation.
+- Point and scan reads route through L6 read views after L9 resolves timestamp
+  selectors to retained L7 timeline frontiers. This prevents timestamp reads from
+  silently clamping after-latest requests to current state.
 - API storage spaces map to one engine-owned storage-space byte for this slice.
   Multi-byte product namespaces stay above storage or in later boundary work.
 - The API physical-key space is a storage-boundary implementation detail and is
@@ -328,8 +328,23 @@ Status: implemented
 - Timestamp lookups rebuild the timeline view from L7 timeline rows and use the
   L7 rule: newest commit at or before the requested timestamp, with greatest
   commit version as the equal-timestamp tie-breaker.
-- Version lookups and version-bounded reads reject requests below the retained
-  timeline floor when a retained floor is known.
+- Version lookups and version-bounded reads require an exact retained L7
+  timeline entry. The selected commit timestamp is carried back into the API
+  mapper so TTL is evaluated at the selected temporal frontier for version and
+  timestamp reads.
+- Timestamp read selectors use the matched commit's timestamp as the temporal
+  frontier. A request between two commits therefore observes the previous commit
+  frontier, including TTL evaluation at that commit timestamp. Direct timeline
+  lookup remains diagnostic-friendly and returns the latest retained commit with
+  an `AfterLatestRetained` miss flag for after-latest timestamps; point and scan
+  timestamp reads reject after-latest requests.
+- Timeline reconstruction uses the tombstone-preserving branch scan path so
+  storage-owned timeline tombstones are validated as corruption instead of being
+  hidden as ordinary value absence.
+- Timeline reconstruction currently scans timeline rows from the branch read
+  view for each non-latest read. That is correct for the boundary but should be
+  replaced by a retained timeline index/cache before high-cardinality timestamp
+  reads become performance-sensitive.
 - Cache and durable runtimes expose branch-specific read-view accessors. Unknown
   branches map to the public branch-not-found error instead of a lower-layer
   internal failure.
@@ -345,8 +360,13 @@ Status: implemented
 - `read_at_version_returns_exact_retained_value`
 - `read_at_version_uses_latest_at_or_before_version`
 - `read_at_version_rejects_unretained_history`
+- `read_at_version_rejects_unrecorded_future_version`
 - `read_at_timestamp_resolves_to_commit_version`
+- `read_at_timestamp_after_latest_rejects`
 - `read_at_timestamp_rejects_insufficient_history`
+- `read_at_version_applies_ttl_at_selected_frontier`
+- `read_at_timestamp_applies_ttl_at_matched_commit_frontier`
+- `scan_at_version_applies_ttl_at_selected_frontier`
 - `read_after_close_rejects_closed_runtime`
 - `read_unknown_branch_rejects`
 - `history_returns_newest_first`
@@ -366,10 +386,13 @@ Status: implemented
 - `timestamp_lookup_returns_newest_commit_at_or_before_timestamp`
 - `timestamp_lookup_equal_timestamps_uses_greatest_version`
 - `timestamp_lookup_before_retained_range_rejects`
+- `timestamp_lookup_after_latest_returns_matched_with_miss_flag`
 - `version_lookup_returns_commit_timestamp`
 - `version_lookup_unretained_version_rejects`
 - `timeline_bounds_report_retained_range`
 - `timeline_corruption_maps_to_diagnostic_error`
+- `timeline_tombstone_corruption_maps_to_diagnostic_error`
+- `generated_read_contract_matches_model_for_mutations_and_reads`
 - `api_property_harness_checks_empty_runtime_reads_are_deterministic`
 - `api_property_harness_rejects_closed_runtime_reads`
 
@@ -389,7 +412,20 @@ Status: implemented
 - Dropping inherited rows from scans is caught by
   `scan_inherited_rows_match_point_reads`.
 - Collapsing timeline corruption into not-found/history miss is caught by
-  `timeline_corruption_maps_to_diagnostic_error`.
+  `timeline_corruption_maps_to_diagnostic_error` and
+  `timeline_tombstone_corruption_maps_to_diagnostic_error`.
+- Bypassing timeline resolution for timestamp reads is caught by
+  `read_at_timestamp_after_latest_rejects`.
+- Treating version reads as raw commit-version bounds instead of retained
+  timeline frontiers is caught by `read_at_version_rejects_unrecorded_future_version`.
+- Ignoring TTL at selected temporal frontiers is caught by
+  `read_at_version_applies_ttl_at_selected_frontier`,
+  `read_at_timestamp_applies_ttl_at_matched_commit_frontier`, and
+  `scan_at_version_applies_ttl_at_selected_frontier`.
+- Generated put/delete/read/history/scan scripts are covered by
+  `generated_read_contract_matches_model_for_mutations_and_reads`. This remains
+  an in-tree unit contract until L9D exposes public commit APIs to integration
+  tests.
 
 ### Verification
 
