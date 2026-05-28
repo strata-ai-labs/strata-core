@@ -17,9 +17,11 @@ use crate::lifecycle::{
     maintenance_ready_for_recovery_health, BudgetedCommitBranch, LifecycleBranchCatalog,
     LifecycleDurableTableCatalog, LifecycleError, LifecycleMaintenanceExecutor,
     LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, RecoveryHealth,
-    StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
+    RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome,
+    StorageOpenPlan,
 };
+use crate::service::WalGrowthFacts;
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -42,6 +44,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) recovered_checkpoint_timestamp_max: Option<Timestamp>,
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
+    pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
     // Released table references from `clear_branch`/`delete_branch` queue
     // here until the next retention pass drains them. In-memory only —
     // restart loses the buffer; durable persistence of release tombstones
@@ -168,6 +171,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             recovered_checkpoint_timestamp_max: recovery.checkpoint().timestamp_max(),
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
+            last_wal_growth_outcome: None,
             pending_releases,
             branch_catalog_sequence,
             pending_releases_sequence,
@@ -430,6 +434,17 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.current_recovery_health
     }
 
+    pub(crate) const fn last_wal_growth_outcome(&self) -> Option<&LifecycleWalGrowthOutcome> {
+        self.last_wal_growth_outcome.as_ref()
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn force_close_requested_for_test(&mut self) -> LifecycleResult<()> {
+        self.state
+            .transition(LifecycleTransitionTrigger::CloseRequested)?;
+        Ok(())
+    }
+
     pub(crate) const fn services(&self) -> &LifecycleDurableLocalServices<'_> {
         &self.services
     }
@@ -548,6 +563,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         destination_generation: CommitBranchGeneration,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome =
             self.branch_catalog
                 .fork_current(source, destination, destination_generation)?;
@@ -568,6 +584,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         retained_floor: CommitVersion,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome = self.branch_catalog.fork_at_retained_version(
             source,
             destination,
@@ -588,6 +605,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         retained_floor: CommitVersion,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome = self.branch_catalog.fork_at_retained_timestamp(
             source,
             destination,
@@ -605,6 +623,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchClearOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome = self
             .branch_catalog
             .clear_branch(branch_id, generation_guard)?;
@@ -629,6 +648,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         deleted_at: Option<CommitVersion>,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchDeleteOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome = self
             .branch_catalog
             .delete_branch(branch_id, generation_guard, deleted_at)?;
@@ -885,7 +905,26 @@ where
             .execute(batch, generation_guard)
             .map_err(commit_error)
         };
+        if outcome.is_ok() {
+            match self.evaluate_wal_growth_policy() {
+                Ok(policy_outcome) => self.record_wal_growth_outcome(policy_outcome),
+                Err(error) => self.record_wal_growth_policy_error(error),
+            }
+        }
         outcome
+    }
+
+    fn record_wal_growth_outcome(&mut self, outcome: LifecycleWalGrowthOutcome) {
+        self.record_recovery_health(outcome.recovery_health());
+        self.last_wal_growth_outcome = Some(outcome);
+    }
+
+    fn record_wal_growth_policy_error(&mut self, error: LifecycleError) {
+        if let Ok(outcome) =
+            LifecycleWalGrowthOutcome::deferred_with_health(WalGrowthFacts::empty(), 0, None, error)
+        {
+            self.record_wal_growth_outcome(outcome);
+        }
     }
 }
 

@@ -16,11 +16,12 @@ use super::{
     LifecycleCompactionRequest, LifecycleError, LifecycleMaintenanceExecutor,
     LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleStoragePressure, LifecycleTransitionTrigger, MaintenanceCancelOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
-    MaintenanceTaskRunner, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
-    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
+    LifecycleStoragePressure, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
+    MaintenanceCancelOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth, StorageBudgetLedger,
+    StorageBudgetSnapshot, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
+    StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
@@ -275,6 +276,7 @@ impl<S> LifecycleCacheRuntime<S> {
         destination_generation: CommitBranchGeneration,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         self.branch_catalog
             .fork_current(source, destination, destination_generation)
     }
@@ -292,6 +294,7 @@ impl<S> LifecycleCacheRuntime<S> {
         retained_floor: CommitVersion,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         self.branch_catalog.fork_at_retained_version(
             source,
             destination,
@@ -314,6 +317,7 @@ impl<S> LifecycleCacheRuntime<S> {
         retained_floor: CommitVersion,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         self.branch_catalog.fork_at_retained_timestamp(
             source,
             destination,
@@ -329,6 +333,7 @@ impl<S> LifecycleCacheRuntime<S> {
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<LifecycleBranchClearOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome = self
             .branch_catalog
             .clear_branch(branch_id, generation_guard)?;
@@ -344,6 +349,7 @@ impl<S> LifecycleCacheRuntime<S> {
         deleted_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchDeleteOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
         let outcome = self
             .branch_catalog
             .delete_branch(branch_id, generation_guard, deleted_at)?;
@@ -440,6 +446,15 @@ impl<S> LifecycleCacheRuntime<S> {
     )]
     pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
         self.maintenance.status()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "pre-public-boundary policy hook is consumed by lifecycle hardening tests"
+    )]
+    pub(crate) fn evaluate_wal_growth_policy(&self) -> LifecycleWalGrowthOutcome {
+        debug_assert_eq!(self.state(), LifecycleState::Open);
+        LifecycleWalGrowthOutcome::cache_mode()
     }
 
     #[cfg(test)]
@@ -790,6 +805,11 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<MaintenanceCancelOutcome> {
         self.maintenance.cancel_pending_for_close(self.state)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn guard_set(&self) -> &CommitBranchGuardSet {
+        &self.guard_set
     }
 }
 

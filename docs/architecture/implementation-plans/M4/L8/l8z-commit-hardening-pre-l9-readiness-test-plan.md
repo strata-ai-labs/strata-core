@@ -227,17 +227,51 @@ Assertions:
 
 Required tests:
 
-1. `quiesce_rejects_while_branch_guard_active`
-2. `branch_guard_rejects_while_quiesce_active`
-3. `checkpoint_uses_quiesce_before_row_capture`
-4. `fork_uses_quiesce_before_source_capture`
-5. `clear_uses_quiesce_before_state_swap`
-6. `delete_uses_quiesce_before_release_facts`
-7. `recovery_replay_runs_under_exclusive_open`
-8. `close_uses_quiesce_before_final_sync`
-9. `quiesce_guard_releases_on_checkpoint_failure`
-10. `quiesce_guard_releases_on_branch_lifecycle_failure`
-11. `quiesce_guard_releases_on_close_failure`
+1. `quiesce_rejects_while_branch_guard_active` —
+   *Existing: `src/commit/tests/guard.rs:119`
+   `quiesce_cannot_start_with_active_guards_or_while_already_active`.*
+2. `branch_guard_rejects_while_quiesce_active` —
+   *Existing: `src/commit/tests/guard.rs:94`
+   `quiesce_blocks_new_mutating_guards_until_token_drops`; also
+   `src/lifecycle/tests/durable.rs:1324`
+   `cross_branch_commit_after_quiesce_rejects`.*
+3. `checkpoint_uses_quiesce_before_row_capture` —
+   *Shipped: `src/lifecycle/checkpoint.rs:1434` acquires
+   `try_begin_quiesce` before row capture; existing tests
+   `src/lifecycle/tests/checkpoint.rs:182, 213`.*
+4. `fork_uses_quiesce_before_source_capture` —
+   *Phase 4. Covered by six new tests (three fork variants × two
+   modes):
+   `src/lifecycle/tests/durable.rs::durable_fork_{current,at_retained_version,at_retained_timestamp}_requires_quiesce_and_rejects_when_branch_guard_active`
+   and
+   `src/lifecycle/tests/cache.rs::cache_fork_{current,at_retained_version,at_retained_timestamp}_requires_quiesce_and_rejects_when_branch_guard_active`.*
+5. `clear_uses_quiesce_before_state_swap` —
+   *Phase 4. Covered by
+   `src/lifecycle/tests/durable.rs::durable_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active`
+   and
+   `src/lifecycle/tests/cache.rs::cache_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active`.*
+6. `delete_uses_quiesce_before_release_facts` —
+   *Phase 4. Covered by
+   `src/lifecycle/tests/durable.rs::durable_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active`
+   and
+   `src/lifecycle/tests/cache.rs::cache_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active`.*
+7. `recovery_replay_runs_under_exclusive_open` —
+   *Locked by Phase 1 (Open Questions §A). Recovery bootstrap relies
+   on exclusive open + `LifecycleStateMachine::admit` gating.*
+8. `close_uses_quiesce_before_final_sync` —
+   *Shipped: `src/lifecycle/durable/close.rs:151` acquires
+   `try_begin_quiesce` before WAL sync; existing test
+   `src/lifecycle/tests/durable.rs:1283`
+   `quiesce_blocks_new_branch_guards_until_close_completes`.*
+9. `quiesce_guard_releases_on_checkpoint_failure` —
+   *Shipped: `src/lifecycle/tests/checkpoint.rs:213`
+   `checkpoint_snapshot_publish_failure_releases_quiesce_and_keeps_recovery_facts`.*
+10. `quiesce_guard_releases_on_branch_lifecycle_failure` —
+    *Phase 4. Covered by
+    `src/lifecycle/tests/durable.rs::branch_lifecycle_quiesce_guard_releases_on_failure_so_followup_acquire_succeeds`.*
+11. `quiesce_guard_releases_on_close_failure` —
+    *Shipped: `src/lifecycle/tests/durable.rs:1294`
+    `quiesce_guard_released_on_retryable_failure_when_contract_allows_retry`.*
 12. `quiesce_error_preserves_source_code`
 
 Assertions:

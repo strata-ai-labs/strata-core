@@ -999,6 +999,177 @@ fn assert_commit_runtime_error(error: &LifecycleError) {
     ));
 }
 
+#[test]
+fn cache_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let branch = branch_id(0x60);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .clear_branch(
+            branch,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("clear_branch must reject while branch guard is active");
+    assert_cache_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn cache_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let branch = branch_id(0x61);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .delete_branch(
+            branch,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+            None,
+        )
+        .expect_err("delete_branch must reject while branch guard is active");
+    assert_cache_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn cache_fork_current_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let branch = branch_id(0x62);
+    let other = branch_id(0x63);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .fork_current(
+            branch,
+            other,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect_err("fork_current must reject while branch guard is active");
+    assert_cache_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn cache_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let branch = branch_id(0x64);
+    let other = branch_id(0x65);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    // Seed a commit so the fork target version exists in retained history.
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"fork-seed"),
+                b"value".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("seed cache commit");
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .fork_at_retained_version(
+            branch,
+            other,
+            CommitBranchGeneration::new(1).expect("generation"),
+            CommitVersion::new(1),
+            CommitVersion::ZERO,
+        )
+        .expect_err("fork_at_retained_version must reject while branch guard is active");
+    assert_cache_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn cache_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let branch = branch_id(0x66);
+    let other = branch_id(0x67);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    // Seed a commit so the fork target timestamp exists in retained history.
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"fork-seed-ts"),
+                b"value".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("seed cache commit");
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .fork_at_retained_timestamp(
+            branch,
+            other,
+            CommitBranchGeneration::new(1).expect("generation"),
+            Timestamp::from_micros(2_000),
+            CommitVersion::ZERO,
+        )
+        .expect_err("fork_at_retained_timestamp must reject while branch guard is active");
+    assert_cache_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+fn assert_cache_quiesce_unavailable(error: &LifecycleError) {
+    use crate::commit::CommitRuntimeError;
+    let LifecycleError::LowerLayer { layer, source, .. } = error else {
+        panic!("expected LifecycleError::LowerLayer, got {error:?}");
+    };
+    assert_eq!(*layer, LifecycleLowerLayer::CommitRuntime);
+    let source = source
+        .as_ref()
+        .expect("lower-layer error must carry a source");
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("source must downcast to CommitRuntimeError");
+    assert!(
+        matches!(
+            commit_error,
+            CommitRuntimeError::CommitQuiesceUnavailable { .. }
+        ),
+        "expected CommitQuiesceUnavailable, got {commit_error:?}"
+    );
+}
+
 fn physical_key(branch: BranchId, user_key: &[u8]) -> PhysicalKey {
     PhysicalKey::new(
         branch,

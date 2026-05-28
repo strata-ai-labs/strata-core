@@ -1337,6 +1337,194 @@ fn cross_branch_commit_after_quiesce_rejects() {
 }
 
 #[test]
+fn durable_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x50);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .clear_branch(branch, generation_guard())
+        .expect_err("clear_branch must reject while branch guard is active");
+    assert_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn durable_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x51);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .delete_branch(branch, generation_guard(), None)
+        .expect_err("delete_branch must reject while branch guard is active");
+    assert_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn durable_fork_current_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x52);
+    let other = branch_id(0x53);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .fork_current(
+            branch,
+            other,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect_err("fork_current must reject while branch guard is active");
+    assert_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn durable_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x54);
+    let other = branch_id(0x55);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"fork-source", b"value"),
+            generation_guard(),
+        )
+        .expect("seed commit so fork target version is retained");
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .fork_at_retained_version(
+            branch,
+            other,
+            CommitBranchGeneration::new(1).expect("generation"),
+            CommitVersion::new(1),
+            CommitVersion::ZERO,
+        )
+        .expect_err("fork_at_retained_version must reject while branch guard is active");
+    assert_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn durable_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_guard_active() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x56);
+    let other = branch_id(0x57);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"fork-source-ts", b"value"),
+            generation_guard(),
+        )
+        .expect("seed commit so fork target timestamp is retained");
+    let pre_branches = runtime.list_branches(false).len();
+
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+
+    let error = runtime
+        .fork_at_retained_timestamp(
+            branch,
+            other,
+            CommitBranchGeneration::new(1).expect("generation"),
+            Timestamp::from_micros(1_000_000),
+            CommitVersion::ZERO,
+        )
+        .expect_err("fork_at_retained_timestamp must reject while branch guard is active");
+    assert_quiesce_unavailable(&error);
+    assert_eq!(runtime.list_branches(false).len(), pre_branches);
+    drop(guard);
+}
+
+#[test]
+fn branch_lifecycle_quiesce_guard_releases_on_failure_so_followup_acquire_succeeds() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x58);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    // Hold a branch guard so the next clear_branch call fails on quiesce
+    // acquisition. The wrapper returns an error; if RAII Drop did not run,
+    // the runtime's guard set would remain quiesced and subsequent attempts
+    // would keep failing even after the guard is released.
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active commit guard");
+    let first_attempt = runtime.clear_branch(branch, generation_guard());
+    assert!(
+        first_attempt.is_err(),
+        "first clear_branch attempt must fail while guard held"
+    );
+    drop(guard);
+
+    // The wrapper's failure must have released the quiesce token via the
+    // `_quiesce` RAII binding. Confirm by acquiring a fresh quiesce token
+    // directly on the guard set.
+    let post_failure_quiesce = runtime
+        .guard_set()
+        .try_begin_quiesce()
+        .expect("quiesce token after wrapper failure proves Drop ran");
+    drop(post_failure_quiesce);
+
+    // And the wrapper should now succeed because no guard is held.
+    runtime
+        .clear_branch(branch, generation_guard())
+        .expect("clear_branch succeeds once guard is released");
+}
+
+fn assert_quiesce_unavailable(error: &LifecycleError) {
+    use crate::commit::CommitRuntimeError;
+    let LifecycleError::LowerLayer { layer, source, .. } = error else {
+        panic!("expected LifecycleError::LowerLayer, got {error:?}");
+    };
+    assert_eq!(*layer, super::super::LifecycleLowerLayer::CommitRuntime);
+    let source = source
+        .as_ref()
+        .expect("lower-layer error must carry a source");
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("source must downcast to CommitRuntimeError");
+    assert!(
+        matches!(
+            commit_error,
+            CommitRuntimeError::CommitQuiesceUnavailable { .. }
+        ),
+        "expected CommitQuiesceUnavailable, got {commit_error:?}"
+    );
+}
+
+#[test]
 fn commit_after_close_requested_rejects_before_version_allocation() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x28);

@@ -2593,6 +2593,10 @@ fn contains_forbidden_bootstrap_maintenance_dependency(line: &str) -> bool {
 }
 
 fn contains_forbidden_bootstrap_close_dependency(line: &str) -> bool {
+    // `try_begin_quiesce(` is intentionally NOT in this list. Quiesce is
+    // a shared primitive used by checkpoint, durable close, and the five
+    // branch-lifecycle wrappers (clear, delete, three fork variants).
+    // Bootstrap is allowed to invoke it directly.
     let lower = line.to_ascii_lowercase();
     [
         "closeoutcome",
@@ -2601,7 +2605,6 @@ fn contains_forbidden_bootstrap_close_dependency(line: &str) -> bool {
         "closephase",
         "drain_for_close(",
         "cancel_pending_for_close(",
-        "try_begin_quiesce(",
         "wal_mut().close(",
         "release_writer_guard(",
     ]

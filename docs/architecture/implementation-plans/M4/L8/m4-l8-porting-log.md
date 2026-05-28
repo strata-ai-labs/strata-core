@@ -4232,3 +4232,99 @@ tests by their actual names.
 | `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests::durable` | PASS |
 | `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
 | `git diff --check` | PASS |
+
+### L8Z Phase 4 - Quiesce Wire-up for Branch Lifecycle
+
+Date: 2026-05-28. The L8Z impl-plan's §"Quiesce Integration" lists
+five required quiesce users — checkpoint, branch fork, branch
+clear/delete, durable close, and L9-bound maintenance. Two were
+already wired (checkpoint, durable close). Phase 4 wires the
+remaining three (clear, delete, fork) in both durable and cache
+runtimes so the rule holds uniformly across modes (matching
+Phase 1's required-users list).
+
+#### Wrapper Edits (10 sites)
+
+| Wrapper | File:Line | Quiesce holds through |
+|---|---|---|
+| `LifecycleDurableLocalRuntime::fork_current` | `lifecycle/durable/bootstrap.rs:559` | catalog fork + `publish_branch_catalog` |
+| `LifecycleDurableLocalRuntime::fork_at_retained_version` | `lifecycle/durable/bootstrap.rs:578` | catalog fork + `publish_branch_catalog` |
+| `LifecycleDurableLocalRuntime::fork_at_retained_timestamp` | `lifecycle/durable/bootstrap.rs:599` | catalog fork + `publish_branch_catalog` |
+| `LifecycleDurableLocalRuntime::clear_branch` | `lifecycle/durable/bootstrap.rs:619` | catalog clear + health-debt push + `publish_branch_catalog` + `publish_pending_releases` |
+| `LifecycleDurableLocalRuntime::delete_branch` | `lifecycle/durable/bootstrap.rs:643` | catalog delete + health-debt push + `publish_branch_catalog` + `publish_pending_releases` |
+| `LifecycleCacheRuntime::fork_current` | `lifecycle/cache.rs:273` | catalog fork |
+| `LifecycleCacheRuntime::fork_at_retained_version` | `lifecycle/cache.rs:289` | catalog fork |
+| `LifecycleCacheRuntime::fork_at_retained_timestamp` | `lifecycle/cache.rs:311` | catalog fork |
+| `LifecycleCacheRuntime::clear_branch` | `lifecycle/cache.rs:329` | catalog clear |
+| `LifecycleCacheRuntime::delete_branch` | `lifecycle/cache.rs:344` | catalog delete |
+
+All ten use the same RAII pattern: `let _quiesce =
+self.guard_set.try_begin_quiesce().map_err(commit_error)?;`. The
+catalog (`LifecycleBranchCatalog`) stays unchanged; the wrappers own
+the quiesce window. A `#[cfg(test)] guard_set()` accessor was added
+to `LifecycleCacheRuntime` (mirroring the existing durable one) so
+tests can hold a branch guard while asserting the wrapper rejects.
+
+#### Tests Added (11)
+
+In `src/lifecycle/tests/durable.rs`:
+
+- `durable_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active`
+- `durable_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active`
+- `durable_fork_current_requires_quiesce_and_rejects_when_branch_guard_active`
+- `durable_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_guard_active`
+- `durable_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_guard_active`
+- `branch_lifecycle_quiesce_guard_releases_on_failure_so_followup_acquire_succeeds`
+- `assert_quiesce_unavailable` helper
+
+In `src/lifecycle/tests/cache.rs`:
+
+- `cache_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active`
+- `cache_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active`
+- `cache_fork_current_requires_quiesce_and_rejects_when_branch_guard_active`
+- `cache_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_guard_active`
+- `cache_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_guard_active`
+- `assert_cache_quiesce_unavailable` helper
+
+Each rejection test acquires a branch guard on the target branch,
+calls the wrapper, asserts `LifecycleError::LowerLayer { layer:
+CommitRuntime, source: CommitRuntimeError::CommitQuiesceUnavailable
+}`, and confirms catalog state is unchanged via
+`runtime.list_branches(false)`. The release-on-failure test holds a
+guard so the first wrapper call fails on quiesce acquisition, then
+drops the guard, acquires a fresh quiesce token directly (proving
+RAII Drop ran), and re-invokes the wrapper to confirm it now
+succeeds.
+
+#### Test-Plan §5 Inventory
+
+Test plan §5 items 1-11 annotated to reference shipped tests
+(checkpoint guard set tests, durable close tests, Phase 4 new
+tests) or Phase 1 lock-in (item 7). Item 12 remains aspirational.
+
+#### Disposition Summary
+
+| Required user (impl plan §"Quiesce Integration") | Status |
+|---|---|
+| checkpoint row capture | **Shipped** (`lifecycle/checkpoint.rs:1434`) |
+| branch fork and fork-at-history | **Phase 4** (durable + cache wrappers) |
+| branch clear and delete | **Phase 4** (durable + cache wrappers) |
+| durable close | **Shipped** (`lifecycle/durable/close.rs:151`) |
+| L9-bound maintenance | **Deferred** (L9 is post-V1) |
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests::durable` | PASS, 69 tests (63 existing + 6 new) |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests::cache` | PASS, 31 tests (26 existing + 5 new) |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests::branch_lifecycle` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests::guard` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_branch_lifecycle` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | PASS |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |
