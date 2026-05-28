@@ -198,7 +198,7 @@ impl CheckpointTestBackend {
         }
     }
 
-    pub(super) fn fail_wal_listing(&self) {
+    pub(in crate::lifecycle::tests) fn fail_wal_listing(&self) {
         self.fail_list.store(true, Ordering::SeqCst);
     }
 

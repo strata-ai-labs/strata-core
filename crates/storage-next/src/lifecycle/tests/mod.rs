@@ -11,6 +11,7 @@ mod cache;
 mod capability;
 mod checkpoint;
 mod close;
+mod commit_hardening;
 mod compaction;
 mod durable;
 mod flush;
@@ -52,6 +53,10 @@ fn lifecycle_default_config_is_valid_and_lossless() {
         config.lossy_recovery(),
         LifecycleLossyRecoveryPolicy::Disabled
     );
+    assert!(config.wal_growth_policy().enabled());
+    assert!(config.wal_growth_policy().max_retained_wal_bytes() > 0);
+    assert!(config.wal_growth_policy().max_retained_wal_segments() > 0);
+    assert!(config.wal_growth_policy().max_commits_since_checkpoint() > 0);
 }
 
 #[test]
@@ -102,6 +107,28 @@ fn lifecycle_config_rejects_zero_limits() {
             reason: "must be nonzero",
         })
     );
+    for (field, policy) in [
+        (
+            "max_retained_wal_bytes",
+            LifecycleWalGrowthPolicy::new(0, 1, 1),
+        ),
+        (
+            "max_retained_wal_segments",
+            LifecycleWalGrowthPolicy::new(1, 0, 1),
+        ),
+        (
+            "max_commits_since_checkpoint",
+            LifecycleWalGrowthPolicy::new(1, 1, 0),
+        ),
+    ] {
+        assert!(matches!(
+            LifecycleConfig::default().with_wal_growth_policy(policy),
+            Err(LifecycleError::InvalidConfig {
+                field: actual,
+                reason: "must be nonzero when WAL growth policy is enabled",
+            }) if actual == field
+        ));
+    }
 }
 
 #[test]

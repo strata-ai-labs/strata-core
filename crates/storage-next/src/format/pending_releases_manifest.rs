@@ -424,8 +424,8 @@ mod tests {
         let crc_len = 4;
         encoded.truncate(encoded.len() - crc_len);
         let entry_count_offset = encoded.len() - 4;
-        let oversized = u32::try_from(MAX_PENDING_RELEASE_ENTRIES + 1)
-            .expect("oversized fixture fits in u32");
+        let oversized =
+            u32::try_from(MAX_PENDING_RELEASE_ENTRIES + 1).expect("oversized fixture fits in u32");
         encoded[entry_count_offset..entry_count_offset + 4]
             .copy_from_slice(&oversized.to_le_bytes());
         let fresh_crc = crc32fast::hash(&encoded);

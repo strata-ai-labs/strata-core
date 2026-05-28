@@ -364,6 +364,16 @@ pub(crate) struct WalAppend {
     forced_durable: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WalGrowthFacts {
+    retained_segments: usize,
+    retained_bytes: u64,
+    active_segment_id: u64,
+    active_segment_size: u64,
+    dirty_bytes: u64,
+    dirty_records: u64,
+}
+
 impl WalAppend {
     const fn new(
         segment_id: u64,
@@ -399,6 +409,72 @@ impl WalAppend {
 
     pub(crate) const fn forced_durable(&self) -> bool {
         self.forced_durable
+    }
+}
+
+impl WalGrowthFacts {
+    const fn new(
+        retained_segments: usize,
+        retained_bytes: u64,
+        active_segment_id: u64,
+        active_segment_size: u64,
+        dirty_bytes: u64,
+        dirty_records: u64,
+    ) -> Self {
+        Self {
+            retained_segments,
+            retained_bytes,
+            active_segment_id,
+            active_segment_size,
+            dirty_bytes,
+            dirty_records,
+        }
+    }
+
+    pub(crate) const fn new_for_policy(
+        retained_segments: usize,
+        retained_bytes: u64,
+        active_segment_id: u64,
+        active_segment_size: u64,
+        dirty_bytes: u64,
+        dirty_records: u64,
+    ) -> Self {
+        Self::new(
+            retained_segments,
+            retained_bytes,
+            active_segment_id,
+            active_segment_size,
+            dirty_bytes,
+            dirty_records,
+        )
+    }
+
+    pub(crate) const fn empty() -> Self {
+        Self::new(0, 0, 0, 0, 0, 0)
+    }
+
+    pub(crate) const fn retained_segments(self) -> usize {
+        self.retained_segments
+    }
+
+    pub(crate) const fn retained_bytes(self) -> u64 {
+        self.retained_bytes
+    }
+
+    pub(crate) const fn active_segment_id(self) -> u64 {
+        self.active_segment_id
+    }
+
+    pub(crate) const fn active_segment_size(self) -> u64 {
+        self.active_segment_size
+    }
+
+    pub(crate) const fn dirty_bytes(self) -> u64 {
+        self.dirty_bytes
+    }
+
+    pub(crate) const fn dirty_records(self) -> u64 {
+        self.dirty_records
     }
 }
 
@@ -748,6 +824,36 @@ impl<'a> WalService<'a> {
             .filter(|record| record.commit_version() > watermark)
             .collect();
         Ok(WalRead::new(records, read.truncation))
+    }
+
+    pub(crate) fn growth_facts(&self) -> WalServiceResult<WalGrowthFacts> {
+        let segments = list_segments(self.backend)?;
+        let mut retained_bytes = 0_u64;
+        for segment in &segments {
+            let metadata = self
+                .backend
+                .object_metadata(&segment.object)
+                .map_err(|source| WalServiceError::Backend {
+                    operation: WalOperation::List,
+                    object: segment.object.clone(),
+                    source,
+                })?;
+            retained_bytes = retained_bytes.checked_add(metadata.size_bytes()).ok_or(
+                WalServiceError::UnexpectedObjectSize {
+                    object: segment.object.clone(),
+                    expected: retained_bytes,
+                    actual: metadata.size_bytes(),
+                },
+            )?;
+        }
+        Ok(WalGrowthFacts::new(
+            segments.len(),
+            retained_bytes,
+            self.active_segment_id,
+            self.active_segment_size,
+            self.dirty_bytes,
+            self.dirty_records,
+        ))
     }
 
     pub(crate) fn repair_latest_tail(

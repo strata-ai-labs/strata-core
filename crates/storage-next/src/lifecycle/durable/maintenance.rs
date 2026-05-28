@@ -37,25 +37,27 @@ use crate::lifecycle::table_reachability::{
     LifecycleTableObjectProofEpochs, LifecycleTableObjectRetentionRequest,
 };
 use crate::lifecycle::{
+    checkpoint_task_for_wal_growth, commits_since_checkpoint,
     compact_durable_branch_manifest_backed, materialize_durable_branch_manifest_backed,
-    purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
-    quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
-    repair_quarantine as repair_lifecycle_quarantine, repair_request_from_maintenance_task,
-    require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
-    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
-    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
-    LifecyclePurgeOutcome, LifecyclePurgeRequest, LifecycleQuarantineOutcome,
-    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest, LifecycleQuarantineRequest,
-    LifecycleResult, LifecycleStats, LifecycleStoragePressure, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryDegradationClass,
-    RecoveryHealth,
+    policy_admission_error, purge_quarantine as purge_lifecycle_quarantine,
+    purge_request_from_maintenance_task, quarantine_object as quarantine_lifecycle_object,
+    quarantine_task_without_request, repair_quarantine as repair_lifecycle_quarantine,
+    repair_request_from_maintenance_task, require_maintenance_enqueue_budget,
+    require_rotate_budget, telemetry_health_debt, FlushFrozenOutcome, FlushFrozenRequest,
+    LifecycleCodecId, LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
+    LifecycleLowerLayer, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
+    LifecycleOperationKind, LifecyclePurgeOutcome, LifecyclePurgeRequest,
+    LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest,
+    LifecycleQuarantineRequest, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
+    LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
+    WalGrowthFacts,
 };
-use strata_core_next::Timestamp;
+use strata_core_next::{CommitVersion, Timestamp};
 
 impl<S> LifecycleDurableLocalRuntime<'_, S> {
     #[allow(
@@ -481,6 +483,98 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             })
         };
         outcome
+    }
+
+    #[allow(
+        dead_code,
+        reason = "pre-public-boundary policy hook is consumed by lifecycle hardening tests"
+    )]
+    pub(crate) fn evaluate_wal_growth_policy(
+        &mut self,
+    ) -> LifecycleResult<LifecycleWalGrowthOutcome> {
+        let policy = self.open_plan.lifecycle_config().wal_growth_policy();
+        if !policy.enabled() {
+            return Ok(LifecycleWalGrowthOutcome::disabled(
+                crate::service::WalGrowthFacts::empty(),
+                0,
+            ));
+        }
+        let facts = match self.services.wal().growth_facts() {
+            Ok(facts) => facts,
+            Err(error) => {
+                return LifecycleWalGrowthOutcome::deferred_with_health(
+                    WalGrowthFacts::empty(),
+                    0,
+                    None,
+                    wal_error(error),
+                );
+            }
+        };
+        let current_manifest = match self.services.manifest().load_required() {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                let trigger = policy.trigger_for(facts, 0);
+                return LifecycleWalGrowthOutcome::deferred_with_health(
+                    facts,
+                    0,
+                    trigger,
+                    manifest_error(error),
+                );
+            }
+        };
+        let checkpoint_watermark = current_manifest
+            .snapshot_watermark()
+            .map(CommitVersion::new);
+        let commits_since_checkpoint =
+            commits_since_checkpoint(self.visible.visible_version(), checkpoint_watermark);
+        let Some(trigger) = policy.trigger_for(facts, commits_since_checkpoint) else {
+            return Ok(LifecycleWalGrowthOutcome::below_threshold(
+                facts,
+                commits_since_checkpoint,
+            ));
+        };
+        if self.guard_set.is_quiescing().map_err(commit_error)? {
+            return Ok(LifecycleWalGrowthOutcome::deferred(
+                facts,
+                commits_since_checkpoint,
+                Some(trigger),
+                LifecycleError::InvalidLifecycleState {
+                    reason: "checkpoint policy deferred while commit quiesce is active",
+                },
+            ));
+        }
+        if self.guard_set.active_guard_count().map_err(commit_error)? > 0 {
+            return Ok(LifecycleWalGrowthOutcome::deferred(
+                facts,
+                commits_since_checkpoint,
+                Some(trigger),
+                LifecycleError::InvalidLifecycleState {
+                    reason: "checkpoint policy deferred while branch commit guard is active",
+                },
+            ));
+        }
+        if let Some(error) = policy_admission_error(self.state) {
+            return Ok(LifecycleWalGrowthOutcome::deferred(
+                facts,
+                commits_since_checkpoint,
+                Some(trigger),
+                error,
+            ));
+        }
+        match self.enqueue_maintenance(checkpoint_task_for_wal_growth()) {
+            Ok(enqueue) => Ok(LifecycleWalGrowthOutcome::enqueued(
+                facts,
+                commits_since_checkpoint,
+                trigger,
+                enqueue,
+            )),
+            Err(error) => LifecycleWalGrowthOutcome::deferred_with_health(
+                facts,
+                commits_since_checkpoint,
+                Some(trigger),
+                error,
+            ),
+        }
     }
 
     #[allow(
@@ -1657,6 +1751,10 @@ fn snapshot_error(error: crate::service::SnapshotServiceError) -> LifecycleError
         "snapshot service failed",
         error,
     )
+}
+
+fn wal_error(error: crate::service::WalServiceError) -> LifecycleError {
+    LifecycleError::lower_layer_with(LifecycleLowerLayer::Service, "WAL service failed", error)
 }
 
 fn table_object_service_error(error: crate::service::TableObjectServiceError) -> LifecycleError {

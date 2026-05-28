@@ -80,6 +80,7 @@ pub(crate) use table::{
     reason = "WAL service is consumed by commit and lifecycle services added later"
 )]
 pub(crate) use wal::{
-    WalAppend, WalDeleteReport, WalOperation, WalRead, WalRepair, WalRetentionProof,
-    WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError, WalTruncation,
+    WalAppend, WalDeleteReport, WalGrowthFacts, WalOperation, WalRead, WalRepair,
+    WalRetentionProof, WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError,
+    WalTruncation,
 };
