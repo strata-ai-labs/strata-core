@@ -4436,3 +4436,98 @@ not a refactor.
 | `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
 | `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
 | `git diff --check` | PASS |
+
+### L8Z Phase 7 - Assurance Closeout
+
+Date: 2026-05-28. The L8Z impl-plan §"Implementation Steps" items
+11-13 cover the assurance layer: generated/fault/fuzz tests + Q-Z
+closeout source guards + porting log records. Plan-mode exploration
+found that most plan-listed assurance items are already covered by
+existing tests at adjacent layers (`tests/lifecycle_faults.rs` has
+19 fault tests; `tests/lifecycle_closeout.rs` has 11 closeout
+tests; `tests/commit_runtime_closeout.rs` has 9; existing 4 fuzz
+targets cover the audit's hardening intent under different names).
+
+The user chose Path B (Pragmatic): annotate the test plan with
+existing-coverage references; add the 4 Q-Z closeout tests that
+scan real inventory; defer the 4 most speculative Q-Z tests
+(covered indirectly); document the fuzz-target rationale; add the
+porting log sensitivity ledger + command matrix; do not add new
+fuzz targets.
+
+#### Sensitivity-Probe Ledger
+
+| Probe | Mutation Site | Mutation Description | Fired Test | Notes |
+|---|---|---|---|---|
+| S1 | `format/wal.rs::WalRecord` | Add a `transaction_id: u64` field | `commit_runtime_source_guard_catches_product_vocabulary`, `wal_format_source_does_not_use_legacy_payload_vocabulary` | Locks the V1 commit-version-as-ordering-identity rule. |
+| S2 | `commit/cache.rs::execute` | Skip `admit_mutating_commit` generation validation | `cache_commit_rejects_missing_deleted_and_stale_generation_before_allocation` | Stale-generation rejection at cache mode. |
+| S3 | `commit/durable.rs::execute` | Skip `admit_mutating_commit` generation validation | `stale_commit_generation_rejects_after_recreate` | Stale-generation rejection at durable mode. |
+| S4 | `lifecycle/durable/maintenance.rs` (flush task path) | Drop the captured-generation validation on flush task | `stale_flush_task_generation_rejects_after_recreate` | Catalog-level guard rejects via `BranchNotWritable`. |
+| S5 | `lifecycle/durable/maintenance.rs` (compaction task path) | Drop the captured-generation validation on compaction task | `stale_compaction_task_generation_rejects_after_recreate` | Same `BranchNotWritable` rejection path. |
+| S6 | `lifecycle/durable/maintenance.rs` (materialization task path) | Drop the captured-generation validation on materialization task | `stale_materialization_task_generation_rejects_after_recreate` | Same rejection path. |
+| S7 | `commit/replay.rs::validate_replay_rows` | Accept a timeline-only payload | `replay_rejects_timeline_only_payload_without_user_mutation` | Catches the "timeline rows + no user mutation" case. |
+| S8 | `commit/cache.rs` visibility-failure path | Skip `record_unresolved` on visibility failure | `cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard` | Pins the AppliedButNotVisible gate recording. |
+| S9 | `lifecycle/durable/bootstrap.rs` / `lifecycle/cache.rs` branch-lifecycle wrappers | Skip `try_begin_quiesce` on clear/delete/fork wrappers | `durable_{clear,delete,fork_*}_requires_quiesce_and_rejects_when_branch_guard_active`, `cache_{clear,delete,fork_*}_requires_quiesce_and_rejects_when_branch_guard_active` | Phase 4 quiesce wiring; 10 wrappers + 11 tests. |
+| S10 | `lifecycle/durable/close.rs` | Drop the unresolved-durable-gate clean-state check | `durable_close_does_not_report_complete_with_unresolved_durable_gate` | Phase 3 audit gap already shipped. |
+| S11 | `lifecycle/branch_lifecycle.rs::set_parent_for_recovery` | Remove the `RecoveryExclusivityToken` parameter or call from outside bootstrap | `recovery_exclusivity_token_is_minted_only_in_bootstrap` | Phase 5 compile-time enforcement + source guard. |
+| S12 | `commit/branch_registry.rs::mark_deleting` | Call from outside `delete_branch` | `mark_deleting_is_only_called_from_delete_branch` | Phase 3 source guard with helper-validation sub-tests. |
+| S13 | `branch/read.rs::for_inherited_layer` | Remove the `fork_version` cap | `forked_branch_isolated_from_parent_post_fork_commits` | Phase 6 fork-inheritance contract. |
+| S14 | `commit/cache.rs` apply-success path | Advance `visible_version` even when publication fails | `cache_applied_not_visible_row_is_visible_to_same_branch_read_your_writes` | Phase 6 RYW pin; visible-version must not advance. |
+| S15 | `commit/durable_gate.rs::replace_exact` | Skip the "different existing fact" rejection | `unresolved_durable_gate_replaces_only_exact_existing_fact` | Audit-flagged "replay gate replace_exact" path covered by existing test. |
+
+#### Command Matrix
+
+| Command | What it verifies | Phase |
+|---|---|---|
+| `cargo fmt --package strata-storage-next --check` | Formatting consistency | All |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | Lint cleanliness | All |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | Milestone-label absence, source-vocabulary hygiene, recovery-exclusivity-token scope, pre-L9 crate-private surface | 2, 5 |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | Commit-runtime isolation, `mark_deleting` scope | 2, 3 |
+| `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard` | Branch-LSM isolation | 2 |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | Closeout-inventory, Q-Z assurance | 1, 7 |
+| `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_closeout` | Fuzz inventory + generated counter coverage | 3 |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_branch_lifecycle` | Quiesce wiring across runtimes | 4 |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_recovery` | Replay + generation guards + recovery boundary | 5 |
+| `cargo test -p strata-storage-next --features testkit --locked --lib` | Full lib suite including Phase 6 pinning tests | All |
+
+#### Disposition Summary
+
+| Audit Item | Disposition |
+|---|---|
+| 15 plan-listed fault windows | 1 covered by existing `fault_replay_visible_publication_failure_records_durable_not_visible`; 14 annotated in test plan as covered by existing `tests/lifecycle_faults.rs` (19 tests) and `commit/tests/*` rejection tests. |
+| 4 audit-flagged edge-case fault tests | `_replay_gate_replace_exact` covered by `unresolved_durable_gate_replaces_only_exact_existing_fact` (`commit/tests/durable_gate.rs:408`). `_conflict_validation_panic_safe` covered structurally by Rust RAII guards (Drop on unwind). `_after_allocation_partial_rollback` covered by `cache_commit_apply_failure_releases_guard_*` and `durable_apply_failure_after_wal_success_*`. `_replay_partial_wal_record` covered by `fault_partial_wal_tail_strict_fails_before_repair` + `fault_partial_wal_tail_lossy_repairs_and_degrades_health`. |
+| 5 audit-recommended fuzz targets | Not adopted. Existing 4 targets (`commit_runtime_{batch,conflict,durable,timeline}`) cover the audit's hardening intent. The 2 net-new (`commit_hardening_{quiesce,checkpoint_policy}`) are structurally covered by Phase 4 wrapper tests (10+) and Phase 4 WAL-growth tests (16). |
+| 8 Q-Z closeout tests | 4 shipped: `lifecycle_hardening_closeout_lists_q_to_z_plans`, `_fuzz_targets_are_distinct`, `_sensitivity_ledger_has_mutation_rows`, `_pre_l9_public_surface_is_crate_private`. 4 deferred as redundant with existing closeout tests. |
+
+#### L8Z Closeout Summary
+
+L8Z was carved into 7 phases via the audit-and-followup doc:
+
+- **Phase 1** — Plan corrections (11 edits across impl plan + test plan)
+- **Phase 2** — Milestone-label sweep + source-guard widening (13 prose rephrases + 6 test renames + 3 new source-guard tests + shared `source_guard_helpers` module)
+- **Phase 3** — Durable gate consolidation + `mark_deleting` source guard (1 new source-guard test with helper sub-tests; 4 audit gaps shipped already)
+- **Phase 4** — Quiesce wire-up for branch-lifecycle (10 wrapper edits + 11 tests + `guard_set()` accessor)
+- **Phase 5** — Branch-generation guard plumbing (`RecoveryExclusivityToken` + source guard + `lookup_descriptor` accessor; replay-safety fix deferred to a future slice)
+- **Phase 6** — Timeline + visibility edge-case pinning (3 fork-inheritance tests + 1 cache RYW test + `for_inherited_layer` docstring + cache.rs source comment)
+- **Phase 7** — Assurance closeout (4 new Q-Z closeout tests + sensitivity ledger + command matrix + test plan annotations)
+
+Remaining deferred items (carry forward to future slices):
+
+- **Replay-safety fix**: stale-generation WAL records below the live `created_at` get silently applied to live state after delete+recreate. Three options remain (WAL format change, catalog manifest format change, recovery-time filter with refactored `created_at` semantics); deferred to a dedicated slice.
+- **`commit_hardening_*` fuzz target aliases**: not adopted; documented rationale in test plan §"Fuzz Targets". Future slice may add explicit aliases if a reviewer wants the audit-faithful naming.
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests::durable_gate` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests::replay` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | PASS, 15 tests (11 existing + 4 new) |
+| `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_closeout` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_faults` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --test commit_runtime_faults` | PASS |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |

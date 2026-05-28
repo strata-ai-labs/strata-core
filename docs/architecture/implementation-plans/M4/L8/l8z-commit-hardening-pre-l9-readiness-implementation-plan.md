@@ -508,19 +508,55 @@ under the M3 freeze rules.
 L8Z is complete when:
 
 1. transaction ids are explicitly absent from V1 commit/runtime code or fully
-   implemented with recovery catch-up;
+   implemented with recovery catch-up —
+   **Shipped (Phase 2)**: source-guard sweeps in
+   `tests/commit_runtime_source_guard.rs` and
+   `tests/wal_commit_payload_source_guard.rs`. Probe S1.
 2. every boundary-crossing branch operation is generation-checked or has a
-   recorded exclusive no-generation reason;
-3. same-branch and cross-branch conflict/concurrency windows are tested;
+   recorded exclusive no-generation reason —
+   **Shipped (Phases 2-5)**: existing `stale_*_generation_rejects_after_recreate`
+   tests cover cache, durable, flush, compaction, materialization paths.
+   `RecoveryExclusivityToken` (Phase 5) compile-time-enforces the
+   `set_parent_for_recovery` exclusivity. The replay-time
+   stale-generation gate is deferred (see porting log).
+3. same-branch and cross-branch conflict/concurrency windows are tested —
+   **Shipped**: `commit/tests/conflict.rs` (12 tests),
+   `commit/tests/durable.rs:1290`
+   `durable_active_global_admission_blocks_other_branch_before_wal_append`.
 4. quiesce blocks and releases correctly across commit, recovery, branch
-   lifecycle, checkpoint, and close paths;
+   lifecycle, checkpoint, and close paths —
+   **Shipped (Phase 4)**: 10 wrapper edits + 11 tests covering durable
+   and cache modes. Recovery uses exclusive open instead of quiesce
+   (Phase 1 Open Question §A decision).
 5. applied-not-visible and durable-uncertain facts cannot become silently
-   visible by side effect;
-6. cross-branch post-WAL failures retain typed phase classification;
+   visible by side effect —
+   **Shipped (Phase 6)**: `cache_applied_not_visible_row_is_visible_to_same_branch_read_your_writes`
+   pins the RYW + cross-branch gate contract. Durable-uncertain is
+   structurally closed (uncertain records don't reach disk).
+6. cross-branch post-WAL failures retain typed phase classification —
+   **Structurally unreachable (Phase 3)**: single-admission lock
+   prevents the scenario; documented in §"Durable Gate Hardening" rule 1.
 7. timeline lookup, duplicate timestamps, and timeline-only WAL validation are
-   pinned;
-8. outcome validation rejects impossible fact combinations;
+   pinned —
+   **Shipped**: `commit/tests/timeline.rs` covers lookups/duplicates;
+   `replay_rejects_timeline_only_payload_without_user_mutation`
+   (`commit/tests/replay.rs:548`) rejects timeline-only payloads.
+8. outcome validation rejects impossible fact combinations —
+   **Shipped**: `commit/tests/outcome.rs` covers the validation matrix.
 9. minimal automatic checkpoint/WAL-growth policy prevents unbounded WAL growth
-   or records typed pressure/deferred facts without unsafe truncation;
-10. generated/fault/fuzz tests cover commit ordering and not only examples;
-11. Q-Z source guards and command matrix pass and are recorded.
+   or records typed pressure/deferred facts without unsafe truncation —
+   **Shipped (pre-Phase 1)**: `lifecycle/wal_growth.rs` +
+   `lifecycle/tests/commit_hardening.rs` (16 tests; verification
+   matrix in test plan §11). Phase 1 marked §11 as shipped.
+10. generated/fault/fuzz tests cover commit ordering and not only examples —
+    **Shipped + Annotated (Phase 7)**: existing `tests/lifecycle_faults.rs`
+    (19 tests) + `commit/tests/*` rejection tests cover the 15 plan
+    fault windows + 4 audit-flagged edges. Existing 4 fuzz targets
+    cover the audit's hardening intent. Test plan §"Fault Windows"
+    and §"Fuzz Targets" annotated with the dispositions.
+11. Q-Z source guards and command matrix pass and are recorded —
+    **Shipped (Phase 7)**: 4 new Q-Z closeout tests in
+    `tests/lifecycle_closeout.rs` (lists plans, fuzz distinctness,
+    sensitivity ledger, pre-L9 crate-private surface); porting log
+    carries the sensitivity ledger + command matrix + closeout
+    summary.

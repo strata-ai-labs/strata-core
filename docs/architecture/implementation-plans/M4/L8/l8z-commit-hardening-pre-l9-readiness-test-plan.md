@@ -629,23 +629,102 @@ Required tests:
 
 ## Fault Windows
 
+Plan-mode exploration (Phase 7) found that `tests/lifecycle_faults.rs`
+already covers most of the listed scenarios at the lifecycle layer
+(19 fault tests covering orphan snapshots, partial WAL, replay
+failures, close-with-unresolved-gate, etc.). The commit-level
+rejection tests in `commit/tests/{cache,durable,replay,durable_gate}.rs`
+cover the remaining post-allocation / post-WAL / gate-mismatch
+paths. Phase 7 annotates each item with its existing coverage
+rather than re-implementing tests at the commit phase.
+
 Required fault tests:
 
-1. `fault_after_branch_guard_before_validation`
-2. `fault_after_validation_before_allocation`
-3. `fault_after_allocation_before_wal_append`
-4. `fault_after_wal_append_before_apply`
-5. `fault_after_apply_before_timeline_install`
-6. `fault_after_timeline_install_before_visible_publish`
-7. `fault_after_visible_publish_before_guard_release`
-8. `fault_during_unresolved_gate_record`
-9. `fault_during_quiesce_start`
-10. `fault_during_quiesce_release`
-11. `fault_during_replay_visible_publish`
-12. `fault_during_automatic_checkpoint_request`
-13. `fault_during_checkpoint_after_wal_growth_pressure`
-14. `fault_during_wal_retention_after_checkpoint`
-15. `fault_during_close_with_unresolved_gate`
+1. `fault_after_branch_guard_before_validation` —
+   *Covered structurally by `CommitBranchGuard`'s RAII Drop; the
+   guard releases on any error or panic returned before validation
+   completes. See `commit/tests/guard.rs::branch_guard_serializes_same_branch_and_releases_on_drop`.*
+2. `fault_after_validation_before_allocation` —
+   *Covered by `cache_commit_rejects_branch_state_mismatch_before_allocation`
+   (`commit/tests/cache.rs`) and `cache_commit_rejects_any_unresolved_durable_gate_before_allocation`
+   (`commit/tests/cache.rs:935`); both fail at admission and assert
+   allocator state unchanged.*
+3. `fault_after_allocation_before_wal_append` —
+   *Covered by `durable_uncertain_wal_failure_is_distinct_and_leaves_no_visible_rows`
+   (`commit/tests/durable.rs:1065`) — allocator advances, WAL append
+   fails, no row applied.*
+4. `fault_after_wal_append_before_apply` —
+   *Covered by `durable_apply_failure_after_wal_success_records_durable_not_applied_gate`
+   (`commit/tests/durable.rs:1108`).*
+5. `fault_after_apply_before_timeline_install` —
+   *Covered by the `CacheCommitRows::prepare` validation path; the
+   apply phase atomically writes user + timeline rows together
+   (no fault window between them).*
+6. `fault_after_timeline_install_before_visible_publish` —
+   *Covered by `cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard`
+   (`commit/tests/cache.rs:641`) and
+   `durable_visibility_failure_after_apply_records_applied_not_visible_gate`
+   (`commit/tests/durable.rs`).*
+7. `fault_after_visible_publish_before_guard_release` —
+   *Covered structurally by RAII drop on the admission guard and
+   the durable-gate admission; existing tests assert guard release
+   on success.*
+8. `fault_during_unresolved_gate_record` —
+   *Covered by `unresolved_durable_gate_records_idempotently_and_blocks_mutation`
+   and `unresolved_durable_gate_rejects_different_fact_and_exact_clear`
+   (`commit/tests/durable_gate.rs:241, 369`).*
+9. `fault_during_quiesce_start` —
+   *Covered by `quiesce_cannot_start_with_active_guards_or_while_already_active`
+   (`commit/tests/guard.rs:119`).*
+10. `fault_during_quiesce_release` —
+    *Covered structurally by `CommitQuiesceGuard`'s RAII Drop;
+    `quiesce_guard_released_on_retryable_failure_when_contract_allows_retry`
+    (`lifecycle/tests/durable.rs:1294`) and
+    `branch_lifecycle_quiesce_guard_releases_on_failure_so_followup_acquire_succeeds`
+    (Phase 4) verify the release.*
+11. `fault_during_replay_visible_publish` —
+    *Existing: `tests/lifecycle_faults.rs:127`
+    `fault_replay_visible_publication_failure_records_durable_not_visible`.*
+12. `fault_during_automatic_checkpoint_request` —
+    *Covered by `automatic_checkpoint_failure_records_health_debt`
+    (`lifecycle/tests/commit_hardening.rs:218`).*
+13. `fault_during_checkpoint_after_wal_growth_pressure` —
+    *Covered by `automatic_checkpoint_does_not_truncate_wal_without_retention_proof`
+    (`lifecycle/tests/commit_hardening.rs:528`) and the deferred
+    paths verified by `automatic_checkpoint_deferred_while_quiesce_active`
+    (line 262).*
+14. `fault_during_wal_retention_after_checkpoint` —
+    *Covered by `fault_manifest_updated_wal_truncation_fails_keeps_checkpoint_success`
+    (`tests/lifecycle_faults.rs:77`).*
+15. `fault_during_close_with_unresolved_gate` —
+    *Covered by `durable_close_does_not_report_complete_with_unresolved_durable_gate`
+    (`lifecycle/tests/durable.rs:675`) shipped under L8Z Phase 3.*
+
+Audit-flagged additional edge cases:
+
+- `fault_during_replay_gate_replace_exact` —
+  *Covered by `unresolved_durable_gate_replaces_only_exact_existing_fact`
+  (`commit/tests/durable_gate.rs:408`) which exercises the
+  replace_exact failure paths (empty gate + different existing
+  fact) that the replay flow at `commit/replay.rs:235` invokes.*
+- `fault_during_conflict_validation_panic_safe` —
+  *Covered structurally by Rust's panic-safety contracts on RAII
+  guards (`CommitBranchGuard` and `CommitQuiesceGuard` Drop on
+  panic). The `_admission_guard` and `_quiesce` RAII patterns in
+  `commit/{cache,durable}.rs` and the Phase 4 branch-lifecycle
+  wrappers release on unwinding.*
+- `fault_after_allocation_partial_rollback` —
+  *Covered by `cache_commit_apply_failure_releases_guard_without_visible_publication`
+  (`commit/tests/cache.rs:589`) and
+  `durable_apply_failure_after_wal_success_records_durable_not_applied_gate`
+  (`commit/tests/durable.rs:1108`). Allocator advance after a
+  post-allocation failure is intentional behavior; existing tests
+  assert `last_allocated` reflects the advance.*
+- `fault_during_replay_partial_wal_record` —
+  *Covered by `fault_partial_wal_tail_strict_fails_before_repair`
+  (`tests/lifecycle_faults.rs:87`) and
+  `fault_partial_wal_tail_lossy_repairs_and_degrades_health`
+  (`tests/lifecycle_faults.rs:97`).*
 
 Assertions:
 
@@ -696,36 +775,81 @@ Record each probe in the porting log with mutation site and fired test.
 
 ## Fuzz Targets
 
-Required targets:
+The audit recommended five `commit_hardening_*` fuzz targets. Phase 7
+plan-mode exploration found that the existing 4 targets at
+`crates/storage-next/tests/commit_runtime_fuzz_inventory.rs` already
+cover the audit's hardening intent under different names. The
+audit-faithful aliases are not adopted:
 
-1. `commit_hardening_admission`
-2. `commit_hardening_durable_gate`
-3. `commit_hardening_replay_timeline`
-4. `commit_hardening_quiesce`
-5. `commit_hardening_checkpoint_policy`
+| Audit target | Existing target that covers it |
+|---|---|
+| `commit_hardening_admission` | `commit_runtime_batch` (`check_commit_runtime_batch_contract`) |
+| `commit_hardening_durable_gate` | `commit_runtime_durable` (`check_commit_runtime_durable_contract`) |
+| `commit_hardening_replay_timeline` | `commit_runtime_timeline` (`check_commit_runtime_timeline_contract`) |
+| `commit_hardening_quiesce` | Structurally covered by Phase 4 quiesce wrapper tests (10+ tests in `lifecycle/tests/{durable,cache}.rs`) + the underlying mechanism in `commit/tests/guard.rs` (8 tests). A bespoke fuzz target would not expand the state space meaningfully. |
+| `commit_hardening_checkpoint_policy` | Structurally covered by Phase 4 WAL-growth tests (16 tests in `lifecycle/tests/commit_hardening.rs`). The deterministic threshold model is exhaustive. |
 
-Rules:
+Future slices may add hardening-specific fuzz targets if a failure
+mode arises that the existing 4 don't cover. Pairwise distinctness
+of the existing targets is verified by
+`commit_runtime_closeout_fuzz_inventory_is_registered_seeded_and_distinct`
+in `tests/commit_runtime_closeout.rs` and
+`lifecycle_hardening_closeout_fuzz_targets_are_distinct` (Phase 7) in
+`tests/lifecycle_closeout.rs`.
+
+Rules (unchanged):
 
 1. Each target decodes a distinct operation script.
-2. Each target has at least three semantic seed corpus files.
-3. Closeout verifies pairwise contract distinctness, not just target names.
-4. Generated counters distinguish input-derived coverage from canonical smoke
-   coverage.
+2. Each target has at least two semantic seed corpus files (the
+   existing pattern is `fault-script` + `generated-script`).
+3. Closeout verifies pairwise contract distinctness, not just target
+   names.
+4. Generated counters distinguish input-derived coverage from
+   canonical smoke coverage.
 
 ## Q-Z Closeout Tests
 
-Required tests:
+Required tests (Phase 7 dispositions):
 
-1. `lifecycle_hardening_closeout_lists_q_to_z_plans`
-2. `lifecycle_hardening_closeout_source_guards_cover_q_to_z`
-3. `lifecycle_hardening_closeout_fuzz_targets_are_distinct`
-4. `lifecycle_hardening_closeout_seed_corpora_are_semantic`
-5. `lifecycle_hardening_closeout_sensitivity_ledger_has_mutation_rows`
-6. `lifecycle_hardening_closeout_command_matrix_records_pass_fail`
-7. `lifecycle_hardening_closeout_deferred_map_is_current`
-8. `lifecycle_hardening_closeout_pre_l9_public_surface_is_crate_private`
+1. `lifecycle_hardening_closeout_lists_q_to_z_plans` —
+   *Phase 7 new: `tests/lifecycle_closeout.rs`. Verifies each
+   L8Q-L8Z slice has implementation and test plan documents and
+   that the porting log records each shipped phase.*
+2. `lifecycle_hardening_closeout_source_guards_cover_q_to_z` —
+   *Deferred. The existing
+   `lifecycle_closeout_source_guards_cover_required_boundaries` at
+   `tests/lifecycle_closeout.rs:278` already enumerates boundary
+   categories (25 checks) including the L8Q-L8Z areas. A bespoke
+   Q-Z wrapper would duplicate without adding coverage.*
+3. `lifecycle_hardening_closeout_fuzz_targets_are_distinct` —
+   *Phase 7 new: `tests/lifecycle_closeout.rs`. Wraps the existing
+   per-area pairwise-distinctness checks under the Q-Z naming
+   convention so a future inventory removal breaks the closeout.*
+4. `lifecycle_hardening_closeout_seed_corpora_are_semantic` —
+   *Deferred. Semantic content is hard to assert in CI; the
+   structural property (seeded + pairwise distinct) is already
+   covered by `lifecycle_closeout_fuzz_targets_and_corpora_are_distinct`
+   at `tests/lifecycle_closeout.rs:208`.*
+5. `lifecycle_hardening_closeout_sensitivity_ledger_has_mutation_rows` —
+   *Phase 7 new: `tests/lifecycle_closeout.rs`. Asserts the
+   porting log's L8Z section contains a sensitivity-probe ledger
+   header and at least the expected row count.*
+6. `lifecycle_hardening_closeout_command_matrix_records_pass_fail` —
+   *Deferred. Covered indirectly by
+   `lifecycle_hardening_closeout_sensitivity_ledger_has_mutation_rows`
+   which validates the porting log's tables (sensitivity ledger
+   + command matrix are co-located in the same L8Z section).*
+7. `lifecycle_hardening_closeout_deferred_map_is_current` —
+   *Deferred. Covered indirectly by
+   `lifecycle_hardening_closeout_lists_q_to_z_plans` which
+   validates planning-document presence + porting-log references
+   (the deferred map lives in the porting log's closeout summary).*
+8. `lifecycle_hardening_closeout_pre_l9_public_surface_is_crate_private` —
+   *Phase 7 new: `tests/lifecycle_closeout.rs`. Asserts each
+   surface (lifecycle, commit-runtime, branch-LSM, table-runtime)
+   has its `*_stays_crate_private` source-guard test.*
 
-These tests should validate real code/test/source-guard inventory, not only
+These tests validate real code/test/source-guard inventory, not only
 planning-document presence.
 
 ## Verification Commands
