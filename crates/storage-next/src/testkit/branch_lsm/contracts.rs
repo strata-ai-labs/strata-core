@@ -161,7 +161,7 @@ pub fn check_branch_lsm_reference_model_contract(script: &[u8]) -> Result<(), Te
     Ok(())
 }
 
-/// Exercises L6 state-transition fault windows that do not require an L1 backend.
+/// Exercises branch state-transition fault windows that do not require an L1 backend.
 pub fn check_branch_lsm_fault_window_contract(script: &[u8]) -> Result<(), TestkitError> {
     let branch = branch_id(script_byte(script, 228));
     let other = branch_id(script_byte(script, 228).wrapping_add(1));

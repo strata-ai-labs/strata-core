@@ -1143,8 +1143,8 @@ fn select_visible_row(
 }
 
 fn row_is_expired_at(row: &StorageRow, read_timestamp: Option<Timestamp>) -> bool {
-    // L6 only applies TTL when the caller supplies an as-of timestamp. Latest
-    // and version reads have no wall-clock input at this layer.
+    // This layer only applies TTL when the caller supplies an as-of timestamp.
+    // Latest and version reads have no wall-clock input at this layer.
     read_timestamp.is_some_and(|timestamp| {
         !row.is_tombstone() && row.expires_at() != Timestamp::EPOCH && row.expires_at() <= timestamp
     })

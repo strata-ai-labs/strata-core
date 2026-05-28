@@ -685,7 +685,7 @@ fn branch_read_view_source_maps_wrong_branch_to_lower_layer_error() {
 
     let error = source
         .current_observed_version(&key)
-        .expect_err("wrong branch should fail through L6");
+        .expect_err("wrong branch should fail through the branch layer");
 
     assert_eq!(
         error,

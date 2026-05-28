@@ -1,4 +1,4 @@
-//! Closeout guards for the M4-L5 table-runtime milestone.
+//! Closeout guards for the table-runtime implementation.
 
 #![deny(unsafe_code)]
 

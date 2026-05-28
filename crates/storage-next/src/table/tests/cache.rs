@@ -673,7 +673,7 @@ fn bloom_filter_many_long_keys_and_probe_cap_stay_bounded() {
 }
 
 #[test]
-fn bloom_filter_over_physical_key_bytes_preserves_l5_key_boundaries() {
+fn bloom_filter_over_physical_key_bytes_preserves_key_boundaries() {
     let present = physical_key(1, 0x20, b"prefix".to_vec());
     let other_branch = physical_key(2, 0x20, b"prefix".to_vec());
     let other_space = physical_key(1, 0x21, b"prefix".to_vec());

@@ -1,4 +1,4 @@
-//! Model-vs-runtime execution for generated L7M commit scripts.
+//! Model-vs-runtime execution for generated commit-runtime scripts.
 
 use crate::branch::{
     BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,

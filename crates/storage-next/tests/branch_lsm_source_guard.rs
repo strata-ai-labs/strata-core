@@ -119,6 +119,26 @@ fn branch_lsm_source_does_not_use_io_backend_or_lifecycle_apis() {
 }
 
 #[test]
+fn branch_lsm_implementation_avoids_architecture_labels() {
+    let root = common::crate_root();
+    for file in branch_lsm_source_files(&root)
+        .into_iter()
+        .chain(branch_lsm_testkit_files(&root).into_iter())
+        .chain(branch_lsm_integration_test_files(&root).into_iter())
+    {
+        let text = fs::read_to_string(&file).expect("read branch LSM source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !common::source_guard_helpers::contains_milestone_label(line),
+                "{}:{} contains architecture label: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn branch_lsm_runtime_stays_crate_private() {
     let root = common::crate_root();
     let lib = fs::read_to_string(root.join("src/lib.rs")).expect("read lib.rs");
@@ -142,20 +162,19 @@ fn branch_lsm_runtime_stays_crate_private() {
 fn branch_lsm_source_has_no_premature_behavior_entrypoints() {
     let root = common::crate_root();
 
-    // L6C owns branch-local committed-row append and active rotation. L6D owns
-    // pinned own-branch read-view methods. L6E owns branch-owned immutable
-    // level install methods. L6F owns storage-level fork/inheritance helpers.
-    // L6H owns materialization mechanics. L6I owns reachability snapshots and
-    // shared table registry facts. L6J owns branch-local compaction planning
-    // and keep-all owned-table replacement. L6K owns row-native snapshot
-    // install. Later behavior-owning L6 slices should narrow this guard as
-    // they add entrypoints.
+    // Branch-LSM surface owns: committed-row append and active rotation,
+    // pinned own-branch read-view methods, branch-owned immutable level
+    // install, storage-level fork and inheritance helpers, materialization
+    // mechanics, reachability snapshots and shared table registry facts,
+    // branch-local compaction planning, keep-all owned-table replacement,
+    // and row-native snapshot install. Later behavior-owning additions
+    // should narrow this guard as they add entrypoints.
     for file in branch_lsm_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read branch LSM source");
         for (line_number, line) in text.lines().enumerate() {
             assert!(
                 !contains_premature_behavior_entrypoint(line),
-                "{}:{} implements behavior before its owning L6 slice: {line}",
+                "{}:{} implements behavior before its owning surface: {line}",
                 file.strip_prefix(&root).unwrap_or(&file).display(),
                 line_number + 1
             );
@@ -285,7 +304,7 @@ fn branch_lsm_source_guard_catches_io_and_orchestration_terms() {
 }
 
 #[test]
-fn branch_lsm_source_guard_allows_owned_l6_entrypoints() {
+fn branch_lsm_source_guard_allows_owned_entrypoints() {
     assert!(!is_public_surface_leak("pub(crate) struct BranchRuntime;"));
     for line in [
         "pub(crate) fn append_committed_row() {}",
@@ -355,6 +374,37 @@ fn branch_lsm_source_guard_catches_backend_operation_call_forms() {
 fn branch_lsm_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_rs_files(&root.join("src/branch"), &mut files);
+    files.sort();
+    files
+}
+
+fn branch_lsm_testkit_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let testkit_dir = root.join("src/testkit/branch_lsm");
+    if testkit_dir.exists() {
+        collect_rs_files(&testkit_dir, &mut files);
+    }
+    files.sort();
+    files
+}
+
+fn branch_lsm_integration_test_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let tests_dir = root.join("tests");
+    for entry in fs::read_dir(tests_dir).expect("read integration tests dir") {
+        let path = entry.expect("read integration test entry").path();
+        if path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("branch_lsm_"))
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        {
+            files.push(path);
+        }
+    }
     files.sort();
     files
 }

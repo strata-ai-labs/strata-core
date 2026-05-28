@@ -76,9 +76,10 @@ where
         &mut self,
         request: &CommitReplayRequest,
     ) -> CommitRuntimeResult<CommitReplayReport> {
-        // Replay installs already-durable rows selected by L8. It does not run
-        // normal mutating admission; callers that need process-wide exclusion
-        // should quiesce normal commits before invoking replay.
+        // Replay installs already-durable rows selected by the recovery phase.
+        // It does not run normal mutating admission; callers that need
+        // process-wide exclusion should quiesce normal commits before invoking
+        // replay.
         self.config.validate()?;
         request.validate()?;
         if request.branch_id() != self.branch.branch_id() {

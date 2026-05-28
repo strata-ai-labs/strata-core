@@ -6,6 +6,8 @@
     reason = "shared integration support is consumed by different harness targets"
 )]
 
+pub(crate) mod source_guard_helpers;
+
 use std::env;
 use std::fmt;
 use std::path::PathBuf;

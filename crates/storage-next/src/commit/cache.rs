@@ -76,7 +76,7 @@ where
         // so check it before target-branch admission or allocation.
         let mut unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
-        // Keep this guard alive through conflict validation, L6 apply, and
+        // Keep this guard alive through conflict validation, apply, and
         // visible publication. That is the single-process safety window for
         // target-branch read-set/CAS checks.
         let _admission_guard =
@@ -105,7 +105,7 @@ where
             .append_committed_rows_atomically(combined_rows)?;
 
         if let Err(error) = self.visible.publish_from_facts(facts) {
-            // Cache mode has no WAL replay path. If publication fails after L6
+            // Cache mode has no WAL replay path. If publication fails after
             // apply, block all later mutations through the global gate so a
             // cross-branch visible-version advance cannot expose these rows by
             // side effect.

@@ -404,7 +404,7 @@ fn durable_always_commit_requires_forced_wal_append_fact() {
 }
 
 #[test]
-fn durable_always_commit_rejects_unforced_success_before_l6_apply() {
+fn durable_always_commit_rejects_unforced_success_before_apply_phase() {
     let branch = branch_id(53);
     let mut fixture = DurableFixture::new(
         branch,

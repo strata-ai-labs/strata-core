@@ -354,8 +354,9 @@ impl TableBlockKind {
             1 => Ok(Self::Data),
             2 => Ok(Self::Index),
             4 => Ok(Self::Properties),
-            // Filter blocks are deliberately reserved until L5 assigns filter
-            // semantics; accepting them in M3G would create a silent compat shim.
+            // Filter blocks are deliberately reserved until the table-format
+            // layer assigns filter semantics; accepting them at this stage
+            // would create a silent compatibility shim.
             _ => Err(invalid_block_type()),
         }
     }

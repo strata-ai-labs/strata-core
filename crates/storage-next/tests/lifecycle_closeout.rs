@@ -384,6 +384,30 @@ fn lifecycle_closeout_integration_surfaces_cover_required_categories() {
 }
 
 #[test]
+fn closeout_files_avoid_architecture_labels() {
+    let root = common::crate_root();
+    for closeout_file in [
+        root.join("tests/commit_runtime_closeout.rs"),
+        root.join("tests/table_runtime_closeout.rs"),
+        root.join("tests/lifecycle_closeout.rs"),
+        root.join("tests/branch_lsm_closeout.rs"),
+    ] {
+        let text = fs::read_to_string(&closeout_file).expect("read closeout file");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !common::source_guard_helpers::contains_milestone_label(line),
+                "{}:{} contains architecture label: {line}",
+                closeout_file
+                    .strip_prefix(&root)
+                    .unwrap_or(&closeout_file)
+                    .display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn lifecycle_closeout_has_no_mutation_probe_artifacts() {
     let root = workspace_root();
     let mut files = Vec::new();

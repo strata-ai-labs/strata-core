@@ -136,7 +136,8 @@ impl<'a> CommitBranchReadViewConflictSource<'a> {
     }
 
     /// Builds a conflict source capped at the executor's current visible
-    /// version so unpublished L6 rows are not treated as committed facts.
+    /// version so unpublished branch-local rows are not treated as committed
+    /// facts.
     pub(crate) const fn new_at_version(
         read_view: &'a BranchReadView,
         visible_version: strata_core_next::CommitVersion,

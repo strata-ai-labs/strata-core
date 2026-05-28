@@ -1,4 +1,4 @@
-//! Bounded generated commit-runtime scripts for L7M assurance.
+//! Bounded generated commit-runtime scripts for commit-conflict assurance.
 
 use strata_core_next::BranchId;
 

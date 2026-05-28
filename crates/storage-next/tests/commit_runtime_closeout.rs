@@ -1,4 +1,4 @@
-//! Closeout inventory for the L7 commit-runtime milestone.
+//! Closeout inventory for the commit-runtime implementation.
 
 #![deny(unsafe_code)]
 
@@ -131,7 +131,7 @@ fn commit_runtime_closeout_fault_tests_cover_required_phase_families() {
     for required in [
         "durable_clean_wal_failure_leaves_no_visible_rows_but_allocation_may_gap",
         "durable_uncertain_wal_failure_is_distinct_and_leaves_no_visible_rows",
-        "durable_always_commit_rejects_unforced_success_before_l6_apply",
+        "durable_always_commit_rejects_unforced_success_before_apply_phase",
         "durable_writer_halted_failure_is_clean_durability_unavailable",
         "durable_apply_failure_after_wal_success_records_durable_not_applied_gate",
         "durable_visibility_failure_after_apply_records_applied_not_visible_gate",
@@ -184,7 +184,7 @@ fn commit_runtime_closeout_cache_and_durable_visibility_safety_is_exercised() {
     let properties = read_file(&root.join("tests/commit_runtime_properties.rs"));
 
     for required in [
-        "cache_commit_l6_apply_failure_releases_guard_without_visible_publication",
+        "cache_commit_apply_failure_releases_guard_without_visible_publication",
         "cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard",
         "cache_commit_rejects_allocator_visible_mismatch_before_apply",
         "cache_commit_rejects_any_unresolved_durable_gate_before_allocation",

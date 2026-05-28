@@ -189,8 +189,8 @@ where
         // so check it before target-branch admission, allocation, or WAL work.
         let mut unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
-        // Keep this guard alive through WAL append, L6 apply, gate recording,
-        // and visible publication. Same-branch commits cannot observe a stale
+        // Keep this guard alive through WAL append, apply, gate recording, and
+        // visible publication. Same-branch commits cannot observe a stale
         // conflict window while this token is held.
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;

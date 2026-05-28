@@ -47,7 +47,7 @@ fn lifecycle_implementation_avoids_architecture_labels() {
         let text = fs::read_to_string(&file).expect("read lifecycle implementation source");
         for (line_number, line) in text.lines().enumerate() {
             assert!(
-                !contains_architecture_label(line),
+                !common::source_guard_helpers::contains_milestone_label(line),
                 "{}:{} contains architecture label: {line}",
                 file.strip_prefix(&root).unwrap_or(&file).display(),
                 line_number + 1
@@ -1906,13 +1906,6 @@ fn contains_forbidden_import_or_io(line: &str) -> bool {
         || contains_ascii_word(line, "Path")
         || contains_ascii_word(line, "PathBuf")
         || contains_ascii_word(line, "File")
-}
-
-fn contains_architecture_label(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    bytes
-        .windows(2)
-        .any(|window| (window[0] == b'L' || window[0] == b'l') && matches!(window[1], b'1'..=b'9'))
 }
 
 fn contains_sleep_or_thread_spawn(line: &str) -> bool {

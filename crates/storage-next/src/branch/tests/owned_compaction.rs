@@ -2105,7 +2105,7 @@ fn branch_compaction_preserves_replacement_refs_for_single_materialization_sourc
 }
 
 #[test]
-fn branch_compaction_l5_build_failure_preserves_state_without_partial_outputs() {
+fn branch_compaction_build_failure_preserves_state_without_partial_outputs() {
     let branch = branch_id(134);
     let mut state = BranchLocalState::empty(branch);
     state

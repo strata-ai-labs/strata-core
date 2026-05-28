@@ -478,12 +478,13 @@ Required source-guard tests:
 2. commit/lifecycle code imports no engine, primitive, query, remote, hub, raw
    filesystem, environment, or network APIs;
 3. commit code does not use product transaction wording in user-facing errors;
-4. milestone labels do not appear in Rust code, test names, fixture bytes, fuzz
-   corpora, or user-facing error strings;
+4. milestone labels do not appear in Rust code, test names, fixture bytes, or
+   user-facing error strings (the latter caught via source scans of `format!`
+   templates and `#[error(...)]` attributes);
 5. L6 branch modules do not import commit hardening helpers;
 6. L7 commit modules do not import lifecycle catalog types except through
    allowed guard/admission abstractions;
-7. source guards scan production source, tests, fuzz targets, and corpora.
+7. source guards scan production source, tests, and fuzz targets.
 
 ## Sensitivity Probes
 

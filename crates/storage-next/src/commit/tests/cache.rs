@@ -586,7 +586,7 @@ fn cache_commit_row_limit_counts_timeline_rows_after_allocation_without_apply() 
 }
 
 #[test]
-fn cache_commit_l6_apply_failure_releases_guard_without_visible_publication() {
+fn cache_commit_apply_failure_releases_guard_without_visible_publication() {
     let branch = branch_id(37);
     let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);
     let mut state = FailingCacheApplyTarget::new(branch, true);

@@ -144,6 +144,27 @@ fn commit_runtime_source_does_not_use_table_backend_layout_or_io_apis() {
 }
 
 #[test]
+fn commit_runtime_implementation_avoids_architecture_labels() {
+    let root = common::crate_root();
+    for file in commit_runtime_source_files(&root)
+        .into_iter()
+        .chain(commit_runtime_unit_test_files(&root).into_iter())
+        .chain(commit_runtime_testkit_files(&root).into_iter())
+        .chain(commit_runtime_integration_test_files(&root).into_iter())
+    {
+        let text = fs::read_to_string(&file).expect("read commit runtime source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !common::source_guard_helpers::contains_milestone_label(line),
+                "{}:{} contains architecture label: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn commit_runtime_stays_crate_private() {
     let root = common::crate_root();
     let lib = fs::read_to_string(root.join("src/lib.rs")).expect("read lib.rs");
@@ -452,6 +473,54 @@ fn lower_storage_layers_do_not_import_commit_runtime_upward() {
 fn commit_runtime_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_rs_files(&root.join("src/commit"), &mut files);
+    files.sort();
+    files
+}
+
+fn commit_runtime_unit_test_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    common::source_guard_helpers::collect_rs_files_including_tests(
+        &root.join("src/commit/tests"),
+        &mut files,
+    );
+    files.sort();
+    files
+}
+
+fn commit_runtime_testkit_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for candidate in [
+        root.join("src/testkit/commit_runtime.rs"),
+        root.join("src/testkit/commit_runtime_allocator.rs"),
+        root.join("src/testkit/commit_runtime_model.rs"),
+        root.join("src/testkit/commit_runtime_runner.rs"),
+        root.join("src/testkit/commit_runtime_script.rs"),
+    ] {
+        if candidate.exists() {
+            files.push(candidate);
+        }
+    }
+    files.sort();
+    files
+}
+
+fn commit_runtime_integration_test_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let tests_dir = root.join("tests");
+    for entry in fs::read_dir(tests_dir).expect("read integration tests dir") {
+        let path = entry.expect("read integration test entry").path();
+        if path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("commit_runtime_"))
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        {
+            files.push(path);
+        }
+    }
     files.sort();
     files
 }

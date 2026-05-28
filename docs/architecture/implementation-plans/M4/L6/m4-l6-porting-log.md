@@ -1458,7 +1458,7 @@ deferred, and what old code became eligible for retirement.
 - `branch_compaction_materialized_replacements_are_inputs_but_outputs_are_plain_owned_refs`
   catches rejected materialized-replacement inputs and replacement provenance
   leaking into ordinary compaction outputs.
-- `branch_compaction_l5_build_failure_preserves_state_without_partial_outputs`
+- `branch_compaction_build_failure_preserves_state_without_partial_outputs`
   catches partial output visibility after an L5 output-build failure.
 - `branch_compaction_release_facts_cover_shared_refs_disagreement_and_clear_outputs`
   catches registry-disagreement misclassification and branch-clear release of

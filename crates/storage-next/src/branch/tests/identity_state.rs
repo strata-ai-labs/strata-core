@@ -555,7 +555,7 @@ fn branch_effective_bounds_filter_row_chains_without_collapsing_versions() {
     assert_eq!(combined, vec![4, 3]);
     assert!(
         combined.len() > 1,
-        "L6B candidate filtering must not collapse row history into one visible row",
+        "candidate filtering must not collapse row history into one visible row",
     );
 
     let candidates = rows

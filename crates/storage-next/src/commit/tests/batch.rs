@@ -70,7 +70,7 @@ fn commit_batch_accepts_valid_storage_mutations_and_options() {
 }
 
 #[test]
-fn commit_batch_options_cover_all_l7b_modes() {
+fn commit_batch_options_cover_all_durability_modes() {
     let branch = branch_id(32);
     let cases = [
         CommitBatchOptions::new(

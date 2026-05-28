@@ -657,7 +657,7 @@ impl CommitRuntimeScaffoldOutcome {
         self.cache_conflict_rejections
     }
 
-    /// Number of non-cache durability rejection cases exercised by L7H.
+    /// Number of non-cache durability rejection cases exercised.
     pub const fn cache_non_cache_rejection_cases(self) -> usize {
         self.cache_non_cache_rejections
     }

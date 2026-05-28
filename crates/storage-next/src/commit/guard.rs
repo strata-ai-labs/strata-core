@@ -2,7 +2,7 @@
 //!
 //! These guards are crate-local, in-process admission tokens. They serialize
 //! mutating work for one branch, allow independent branches to proceed at the
-//! same time, and provide a nonblocking quiesce token for L8 maintenance and
+//! same time, and provide a nonblocking quiesce token for maintenance and
 //! recovery orchestration.
 
 use super::{CommitRuntimeError, CommitRuntimeResult};
@@ -60,9 +60,10 @@ impl CommitBranchGuardSet {
 
     /// Attempts to begin V1 quiesce.
     ///
-    /// V1 deliberately fast-fails instead of waiting: L8 owns retry/deadline
-    /// policy above this crate-private token. Once a token is returned, new
-    /// mutating branch guards are rejected until the token is dropped.
+    /// V1 deliberately fast-fails instead of waiting: the maintenance layer
+    /// owns retry/deadline policy above this crate-private token. Once a token
+    /// is returned, new mutating branch guards are rejected until the token is
+    /// dropped.
     pub(crate) fn try_begin_quiesce(&self) -> CommitRuntimeResult<CommitQuiesceGuard> {
         let mut state = self.lock_state()?;
         if state.quiescing {
