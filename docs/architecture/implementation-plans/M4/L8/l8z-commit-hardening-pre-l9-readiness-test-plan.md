@@ -272,27 +272,57 @@ Required tests:
 
 1. `durable_post_wal_apply_failure_records_durable_not_applied`
 2. `durable_post_apply_visible_failure_records_applied_not_visible`
-3. `cross_branch_two_post_wal_failures_preserve_both_classifications`
-4. `cross_branch_second_failure_does_not_return_generic_gate_error` —
+3. `cross_branch_two_post_wal_failures_preserve_both_classifications` —
    *Structurally unreachable per impl plan §"Durable Gate Hardening" rule 1
    (single-admission lock blocks the second branch from reaching
-   `record_unresolved`). Verification target moves to Phase 3's structural
-   test `cross_branch_second_admission_blocks_at_active_admission` (working
-   title); the existing
+   `record_unresolved`). The existing
    `crates/storage-next/src/commit/tests/durable.rs:1290`
    `durable_active_global_admission_blocks_other_branch_before_wal_append`
-   witnesses the property today.*
+   verifies the structural property: the second branch is rejected before
+   WAL append, so two cross-branch post-WAL failures cannot occur.*
+4. `cross_branch_second_failure_does_not_return_generic_gate_error` —
+   *Structurally unreachable per impl plan §"Durable Gate Hardening" rule 1.
+   Covered by the same shipped test cited for item 3.*
 5. `same_branch_unresolved_gate_blocks_later_commit`
 6. `matching_replay_clears_unresolved_gate`
 7. `different_replay_preserves_unresolved_gate`
 8. `durable_gate_serializes_or_tracks_multiple_unresolved_facts`
-9. `durable_gate_close_requires_clean_state`
+9. `durable_gate_close_requires_clean_state` —
+   *Existing: `src/lifecycle/durable/close.rs:164-175` rejects close with
+   `LifecycleError::CloseFailed` when `durable_gate.unresolved().is_some()`;
+   `src/lifecycle/tests/durable.rs:675`
+   `durable_close_does_not_report_complete_with_unresolved_durable_gate`
+   verifies the contract.*
 10. `durable_gate_error_codes_are_phase_specific`
 
 Assertions:
 
 1. every post-WAL failure has typed phase classification;
 2. gate behavior is deterministic for same-branch and cross-branch cases.
+
+#### Cache Mode (Phase 3 verification)
+
+Cache-mode commits acquire the global durable admission lock at
+`src/commit/cache.rs:77` and record `applied_not_visible` gate entries
+with `CommitDurabilityClass::NotDurable` on visibility failure. The
+following shipped tests verify the participation:
+
+1. `cache_commit_rejects_any_unresolved_durable_gate_before_allocation` —
+   *`src/commit/tests/cache.rs:935`. Verifies cache mode acquires the
+   global admission lock and is blocked by a pre-recorded unresolved
+   fact from another branch; asserts allocator not advanced, no rows
+   applied, visible version unchanged, branch guard released.*
+2. `cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard` —
+   *`src/commit/tests/cache.rs:641`. Verifies cache-mode visibility
+   failure records `CommitUnresolvedDurable` carrying
+   `CommitDurabilityClass::NotDurable` (distinct from durable-mode
+   `AppliedButNotVisible` which carries durable facts).*
+
+Static enforcement: `mark_deleting_is_only_called_from_delete_branch`
+in `crates/storage-next/tests/commit_runtime_source_guard.rs` scans
+production source and rejects any `mark_deleting(` call outside
+`branch_registry.rs` (definition) or
+`branch_lifecycle::delete_branch` body.
 
 ### 8. Durability-Uncertain Outcomes
 

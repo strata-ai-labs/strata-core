@@ -4121,3 +4121,114 @@ the verification matrix below.
 | `grep -n "Status: shipped" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md` | one hit | PASS |
 | `grep -n "lifecycle/tests/commit_hardening" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md` | at least one hit | PASS |
 | `grep -n "recovery_replay_runs_under_exclusive_open\b" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md` | one hit | PASS |
+
+### L8Z Phase 2 - Milestone-Label Sweep + Source-Guard Widening
+
+Date: 2026-05-27. The Pre-L9 surface-readiness rule mandates that V1
+slice labels (`L4`-`L9`, `L7M`/`L8Y`/`L8Z`-style slice codes, `M0`-`M9`
+milestones, `M3B2`-style milestone slices) must not appear in source,
+test names, fixture bytes, or user-facing error strings. Until this
+phase, the rule was enforced only inside `src/lifecycle/`. The audit
+found 13 prose comments, 6 test names, 2 closeout docstrings, and one
+slice-mapping multiline comment carrying labels outside that scope.
+
+#### Sweep
+
+| Site | Change |
+|---|---|
+| `src/commit/{guard,replay,conflict,cache,durable}.rs`, `src/branch/read.rs`, `src/testkit/{commit_runtime,commit_runtime_runner,commit_runtime_script}.rs`, `src/format/{mod,table/mod}.rs` | 13 prose comments rephrased: dropped "L6 apply", "L8 owns", "L7M scripts", "L5 assigns" wording while preserving architectural meaning. |
+| `src/commit/tests/conflict.rs`, `src/branch/tests/identity_state.rs`, `src/testkit/branch_lsm/contracts.rs` | 3 additional prose sites the audit missed (test-message strings + a testkit docstring). |
+| `tests/commit_runtime_closeout.rs`, `tests/table_runtime_closeout.rs` | 2 closeout docstrings rephrased: dropped "L7" / "M4-L5" prefix. |
+| `tests/branch_lsm_source_guard.rs:145-158` | Slice-mapping multiline comment rephrased from `L6C - commit append, L6D - read-view pinning, ...` to behavior names without slice codes. Assertion message at line 158 updated. |
+| `src/commit/tests/batch.rs:73`, `src/commit/tests/cache.rs:589`, `src/commit/tests/durable.rs:407`, `src/branch/tests/owned_compaction.rs:2108`, `src/table/tests/cache.rs:676`, `tests/branch_lsm_source_guard.rs:287` | 6 test functions renamed to drop slice labels: `_all_l7b_modes` -> `_all_durability_modes`; `cache_commit_l6_apply_failure_*` -> `cache_commit_apply_failure_*`; `_before_l6_apply` -> `_before_apply_phase`; `branch_compaction_l5_build_failure_*` -> `branch_compaction_build_failure_*`; `_preserves_l5_key_boundaries` -> `_preserves_key_boundaries`; `_allows_owned_l6_entrypoints` -> `_allows_owned_entrypoints`. |
+| `tests/commit_runtime_closeout.rs:134,187` | Updated inventory strings to match renamed tests. |
+| `docs/architecture/implementation-plans/M4/L6/m4-l6-porting-log.md:1461`, `docs/architecture/implementation-plans/M4/L7/m4-l7-porting-log.md:1435` | Updated sensitivity-probe ledger references to renamed tests. |
+
+#### Widen
+
+| Artifact | Detail |
+|---|---|
+| `crates/storage-next/tests/common/source_guard_helpers.rs` (new) | Shared helper module exporting `contains_milestone_label` (tighter pattern than the previous `contains_architecture_label`: catches `L[4-9]`, `M[0-9]`, and slice codes; allows LSM-level `L[0-3]` references and PascalCase symbol names via a 4-char lookahead for lowercase) plus `collect_rs_files` and `collect_rs_files_including_tests`. |
+| `tests/lifecycle_source_guard.rs::lifecycle_implementation_avoids_architecture_labels` | Refactored to call `common::source_guard_helpers::contains_milestone_label`. Inline byte-pair helper removed. |
+| `tests/commit_runtime_source_guard.rs::commit_runtime_implementation_avoids_architecture_labels` | New. Scans `src/commit/`, `src/testkit/commit_runtime*.rs`, `tests/commit_runtime_*.rs`. |
+| `tests/branch_lsm_source_guard.rs::branch_lsm_implementation_avoids_architecture_labels` | New. Scans `src/branch/`, `src/testkit/branch_lsm/`, `tests/branch_lsm_*.rs`. |
+| `tests/lifecycle_closeout.rs::closeout_files_avoid_architecture_labels` | New. Scans the four closeout integration-test files. |
+
+#### Test-plan edit
+
+`docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md`
+§"Source Guards" item 4 reframed: dropped "fuzz corpora" (architecturally
+noisy; corpus seeds are random bytes whose label-shaped substrings carry
+no semantic meaning) and clarified the error-string clause as caught via
+source scans of `format!` templates and `#[error(...)]` attributes. Item
+7 dropped "corpora" from the scan scope.
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS, 96 tests |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS, 12 tests |
+| `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard` | PASS, 10 tests |
+| `cargo test -p strata-storage-next --locked --test table_runtime_source_guard` | PASS, 15 tests |
+| `cargo test -p strata-storage-next --features testkit --locked --test lifecycle_closeout` | PASS, 11 tests |
+| `cargo test -p strata-storage-next --features testkit --locked --lib` | PASS, 2358 tests |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |
+
+### L8Z Phase 3 - Durable Gate Consolidation
+
+Date: 2026-05-28. Phase 3 was scoped as durable gate consolidation +
+close-clean enforcement + cache-mode test coverage. Plan-mode
+exploration found that four of the audit's five Phase 3 items were
+already shipped or covered by existing tests under different names;
+the fifth (sequential same-branch error split) was overridden by Phase
+1's impl-plan rewrite. The remaining work was a single source guard.
+
+#### Disposition of Audit Phase 3 Items
+
+| Audit Item | Disposition |
+|---|---|
+| Close rejects clean-state report when `durable_gate.unresolved.is_some()` | **Shipped**: `src/lifecycle/durable/close.rs:164-175` rejects with `LifecycleError::CloseFailed`. Test `durable_close_does_not_report_complete_with_unresolved_durable_gate` at `src/lifecycle/tests/durable.rs:675`. Audit doc cited stale line numbers `638-642`. |
+| `cross_branch_second_admission_blocks_at_active_admission` (working title) | **Shipped**: `durable_active_global_admission_blocks_other_branch_before_wal_append` at `src/commit/tests/durable.rs:1290` already asserts the structural property (second branch rejected before `record_unresolved`). |
+| `cache_commit_observes_global_durable_admission_lock` (working title) | **Shipped**: `cache_commit_rejects_any_unresolved_durable_gate_before_allocation` at `src/commit/tests/cache.rs:935` exercises cache mode acquiring the global lock and being blocked by a pre-recorded unresolved fact. |
+| `cache_record_unresolved_uses_not_durable_class` (working title) | **Shipped**: `cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard` at `src/commit/tests/cache.rs:641` asserts `CommitDurabilityClass::NotDurable` on the recorded gate entry. |
+| Split generic same-branch `record_unresolved` mismatch error | **Overridden by Phase 1**: impl-plan §"Durable Gate Hardening" rule 1b explicitly keeps the generic error code because existing tests (`commit/tests/durable_gate.rs:369-405`) depend on it. |
+| Restrict `mark_deleting` to `delete_branch` | **Implemented via source guard** (visibility tightening would have broken the cross-module call from `lifecycle::branch_lifecycle::delete_branch` into `commit::branch_registry::mark_deleting`). |
+
+#### Artifact Added
+
+`tests/commit_runtime_source_guard.rs::mark_deleting_is_only_called_from_delete_branch`
+scans `src/commit/`, `src/branch/`, and `src/lifecycle/` for every
+`mark_deleting(` occurrence. Allowed call sites: the definition in
+`src/commit/branch_registry.rs`, and calls inside the
+`fn delete_branch(` body in `src/lifecycle/branch_lifecycle.rs`
+(detected by brace-matched function-body byte-range analysis). Two
+sibling helper-validation sub-tests (`_classifier_accepts_*` and
+`_classifier_rejects_*`) exercise the call classifier against
+synthetic source fragments.
+
+#### Test-plan edit
+
+`docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md`
+§7 items 3 and 4 re-annotated as structurally unreachable, with
+cross-references to the shipped `durable_active_global_admission_blocks_other_branch_before_wal_append`
+test. Item 9 (`durable_gate_close_requires_clean_state`) annotated
+with the shipped `close.rs:164-175` reference. New "Cache Mode (Phase
+3 verification)" subsection added listing the two shipped cache-mode
+tests by their actual names.
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --locked --test commit_runtime_source_guard` | PASS, 15 tests (12 existing + 3 new) |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS, 96 tests |
+| `cargo test -p strata-storage-next --locked --test branch_lsm_source_guard` | PASS, 10 tests |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests::cache` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib commit::tests::durable` | PASS |
+| `cargo test -p strata-storage-next --features testkit --locked --lib lifecycle::tests::durable` | PASS |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |

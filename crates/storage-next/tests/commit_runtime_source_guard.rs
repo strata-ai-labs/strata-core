@@ -165,6 +165,142 @@ fn commit_runtime_implementation_avoids_architecture_labels() {
 }
 
 #[test]
+fn mark_deleting_is_only_called_from_delete_branch() {
+    let root = common::crate_root();
+
+    let mut production_files = Vec::new();
+    common::source_guard_helpers::collect_rs_files(&root.join("src/commit"), &mut production_files);
+    common::source_guard_helpers::collect_rs_files(&root.join("src/branch"), &mut production_files);
+    common::source_guard_helpers::collect_rs_files(
+        &root.join("src/lifecycle"),
+        &mut production_files,
+    );
+
+    for file in production_files {
+        let display = file
+            .strip_prefix(&root)
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        let text = fs::read_to_string(&file).expect("read production source");
+        for (line_number, line) in text.lines().enumerate() {
+            if !line.contains("mark_deleting(") {
+                continue;
+            }
+            assert!(
+                mark_deleting_call_is_allowed(&display, &text, line_number),
+                "{}:{} calls mark_deleting outside the allowed call sites \
+                 (branch_registry definition or branch_lifecycle::delete_branch): {line}",
+                display,
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn mark_deleting_call_classifier_accepts_definition_and_delete_branch_body() {
+    let registry = "pub(crate) fn mark_deleting(&mut self, branch_id: BranchId) { }\n";
+    assert!(mark_deleting_call_is_allowed(
+        "src/commit/branch_registry.rs",
+        registry,
+        0,
+    ));
+
+    let in_delete_branch = "pub(crate) fn delete_branch(&mut self) -> Result<()> {\n    \
+                            self.registry.mark_deleting(branch_id)?;\n    \
+                            Ok(())\n}\n";
+    assert!(mark_deleting_call_is_allowed(
+        "src/lifecycle/branch_lifecycle.rs",
+        in_delete_branch,
+        1,
+    ));
+
+    let nested_brace = "pub(crate) fn delete_branch(&mut self) -> Result<()> {\n    \
+                        if condition {\n        \
+                            self.registry.mark_deleting(branch_id)?;\n    \
+                        }\n    \
+                        Ok(())\n}\n";
+    assert!(mark_deleting_call_is_allowed(
+        "src/lifecycle/branch_lifecycle.rs",
+        nested_brace,
+        2,
+    ));
+}
+
+#[test]
+fn mark_deleting_call_classifier_rejects_unrelated_callers() {
+    let other_function = "pub(crate) fn other_method(&mut self) -> Result<()> {\n    \
+                          self.registry.mark_deleting(branch_id)?;\n    \
+                          Ok(())\n}\n";
+    assert!(!mark_deleting_call_is_allowed(
+        "src/lifecycle/branch_lifecycle.rs",
+        other_function,
+        1,
+    ));
+
+    let outside_any_function = "static FOO: () = ();\nlet _ = obj.mark_deleting(branch);\n";
+    assert!(!mark_deleting_call_is_allowed(
+        "src/lifecycle/branch_lifecycle.rs",
+        outside_any_function,
+        1,
+    ));
+
+    let wrong_file_path = "pub(crate) fn delete_branch(&mut self) {\n    \
+                           self.registry.mark_deleting(branch_id)?;\n\
+                           }\n";
+    assert!(!mark_deleting_call_is_allowed(
+        "src/commit/cache.rs",
+        wrong_file_path,
+        1,
+    ));
+}
+
+fn mark_deleting_call_is_allowed(display_path: &str, source: &str, line_number: usize) -> bool {
+    if display_path.ends_with("src/commit/branch_registry.rs") {
+        return true;
+    }
+    if display_path.ends_with("src/lifecycle/branch_lifecycle.rs") {
+        let Some(body_range) = function_body_byte_range(source, "fn delete_branch(") else {
+            return false;
+        };
+        let byte_index = byte_index_of_line_start(source, line_number);
+        return body_range.contains(&byte_index);
+    }
+    false
+}
+
+fn function_body_byte_range(source: &str, signature: &str) -> Option<std::ops::Range<usize>> {
+    let sig_start = source.find(signature)?;
+    let body_start_relative = source[sig_start..].find('{')?;
+    let body_start = sig_start + body_start_relative;
+    let bytes = source.as_bytes();
+    let mut depth: i32 = 1;
+    let mut index = body_start + 1;
+    while index < bytes.len() && depth > 0 {
+        match bytes[index] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            _ => {}
+        }
+        index += 1;
+    }
+    if depth == 0 {
+        Some(body_start..index)
+    } else {
+        None
+    }
+}
+
+fn byte_index_of_line_start(source: &str, line_number: usize) -> usize {
+    source
+        .lines()
+        .take(line_number)
+        .map(|line| line.len() + 1)
+        .sum()
+}
+
+#[test]
 fn commit_runtime_stays_crate_private() {
     let root = common::crate_root();
     let lib = fs::read_to_string(root.join("src/lib.rs")).expect("read lib.rs");
