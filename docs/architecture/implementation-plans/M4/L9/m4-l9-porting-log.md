@@ -286,7 +286,7 @@ Status: implemented
 
 ## L9C - Reads And Timeline Resolution
 
-Status: planned
+Status: implemented
 
 ### Source Evidence To Read
 
@@ -299,23 +299,106 @@ Status: planned
 
 ### Shipped Files
 
-TBD.
+- `crates/storage-next/src/api/mod.rs`
+- `crates/storage-next/src/api/read.rs`
+- `crates/storage-next/src/api/runtime.rs`
+- `crates/storage-next/src/api/tests/mod.rs`
+- `crates/storage-next/src/api/tests/read.rs`
+- `crates/storage-next/src/branch/read.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/tests/api_properties.rs`
 
 ### Boundary Decisions
 
-TBD.
+- Read APIs are public byte-oriented storage APIs. They expose key, value,
+  commit version, commit timestamp, optional expiry, and tombstone facts without
+  exposing `StorageRow`, branch row sources, table identities, or timeline row
+  internals.
+- Point and scan reads route through L6 read views. L9 adds only mapping,
+  storage-space validation, public outcomes, and retained-history/timeline
+  error translation.
+- API storage spaces map to one engine-owned storage-space byte for this slice.
+  Multi-byte product namespaces stay above storage or in later boundary work.
+- The API physical-key space is a storage-boundary implementation detail and is
+  not exposed to callers.
+- Public point reads surface visible tombstone facts. L6's ordinary value-read
+  helpers still filter tombstones, so this slice adds a tombstone-preserving
+  scan selector for API boundary use.
+- Timestamp lookups rebuild the timeline view from L7 timeline rows and use the
+  L7 rule: newest commit at or before the requested timestamp, with greatest
+  commit version as the equal-timestamp tie-breaker.
+- Version lookups and version-bounded reads reject requests below the retained
+  timeline floor when a retained floor is known.
+- Cache and durable runtimes expose branch-specific read-view accessors. Unknown
+  branches map to the public branch-not-found error instead of a lower-layer
+  internal failure.
+- Test-only API helpers seed cache/durable runtimes through the real commit,
+  rotation, flush, fork, and branch mutation paths. They remain crate-private
+  and are not public API behavior.
 
 ### Tests Added
 
-TBD.
+- `read_latest_returns_newest_visible_value`
+- `read_latest_returns_none_for_absent_key`
+- `read_latest_returns_tombstone_fact_for_visible_delete`
+- `read_at_version_returns_exact_retained_value`
+- `read_at_version_uses_latest_at_or_before_version`
+- `read_at_version_rejects_unretained_history`
+- `read_at_timestamp_resolves_to_commit_version`
+- `read_at_timestamp_rejects_insufficient_history`
+- `read_after_close_rejects_closed_runtime`
+- `read_unknown_branch_rejects`
+- `history_returns_newest_first`
+- `history_limit_is_enforced`
+- `history_before_version_excludes_newer_versions`
+- `history_preserves_tombstone_entries`
+- `history_pruned_versions_return_retention_error`
+- `history_empty_key_returns_empty_history`
+- `prefix_scan_returns_sorted_keys`
+- `prefix_scan_applies_version_bound`
+- `prefix_scan_applies_timestamp_bound`
+- `prefix_scan_limit_is_stable`
+- `range_scan_respects_start_and_end`
+- `range_scan_empty_range_returns_empty`
+- `range_scan_tombstone_visibility_matches_point_read`
+- `scan_inherited_rows_match_point_reads`
+- `timestamp_lookup_returns_newest_commit_at_or_before_timestamp`
+- `timestamp_lookup_equal_timestamps_uses_greatest_version`
+- `timestamp_lookup_before_retained_range_rejects`
+- `version_lookup_returns_commit_timestamp`
+- `version_lookup_unretained_version_rejects`
+- `timeline_bounds_report_retained_range`
+- `timeline_corruption_maps_to_diagnostic_error`
+- `api_property_harness_checks_empty_runtime_reads_are_deterministic`
+- `api_property_harness_rejects_closed_runtime_reads`
 
 ### Sensitivity Probes
 
-TBD.
+- Converting timestamp-history misses to not-found is caught by
+  `read_at_timestamp_rejects_insufficient_history` and
+  `timestamp_lookup_before_retained_range_rejects`.
+- Reversing scan ordering is caught by `prefix_scan_returns_sorted_keys`,
+  `prefix_scan_limit_is_stable`, and `range_scan_respects_start_and_end`.
+- Dropping tombstone facts from point or scan results is caught by
+  `read_latest_returns_tombstone_fact_for_visible_delete`,
+  `history_preserves_tombstone_entries`, and
+  `range_scan_tombstone_visibility_matches_point_read`.
+- Using the smallest version for duplicate timestamps is caught by
+  `timestamp_lookup_equal_timestamps_uses_greatest_version`.
+- Dropping inherited rows from scans is caught by
+  `scan_inherited_rows_match_point_reads`.
+- Collapsing timeline corruption into not-found/history miss is caught by
+  `timeline_corruption_maps_to_diagnostic_error`.
 
 ### Verification
 
-TBD.
+- `cargo fmt --package strata-storage-next --check` passed.
+- `cargo test -p strata-storage-next --locked --lib api` passed.
+- `cargo test -p strata-storage-next --locked --test api_source_guard` passed.
+- `cargo test -p strata-storage-next --locked --test api_conformance` passed.
+- `cargo test -p strata-storage-next --features testkit --locked --test api_properties` passed.
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` passed.
 
 ## L9D - Commit API
 

@@ -467,6 +467,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &self.branch_catalog
     }
 
+    #[cfg(test)]
+    pub(crate) fn branch_catalog_mut_for_test(&mut self) -> &mut LifecycleBranchCatalog {
+        &mut self.branch_catalog
+    }
+
     /// Test-only mutable accessor; delegates to the catalog's
     /// `branch_state_mut` with the seeded branch's current generation.
     /// Each call advances the catalog's `state_revision` counter.
@@ -518,11 +523,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     }
 
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
+        self.read_view_for_branch(self.initial_branch_id)
+    }
+
+    pub(crate) fn read_view_for_branch(
+        &self,
+        branch_id: strata_core_next::BranchId,
+    ) -> LifecycleResult<BranchReadView> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
-        let branch = self
-            .branch_catalog
-            .branch_state(self.initial_branch_id)
-            .expect("seeded branch is always present in the catalog");
+        let branch = self.branch_catalog.branch_state(branch_id)?;
         branch.capture_read_view().map_err(branch_error)
     }
 

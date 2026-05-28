@@ -907,6 +907,22 @@ impl BranchReadView {
         self.scan(bounds, bound)
     }
 
+    pub(crate) fn scan_prefix_including_tombstones(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.scan_including_tombstones(bounds, bound)
+    }
+
+    pub(crate) fn scan_range_including_tombstones(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.scan_including_tombstones(bounds, bound)
+    }
+
     fn scan(
         &self,
         bounds: &BranchScanBounds,
@@ -921,6 +937,26 @@ impl BranchReadView {
         let mut visible = Vec::new();
         for candidates in grouped.into_values() {
             if let Some(row) = select_visible_row(candidates, effective_bound) {
+                visible.push(row);
+            }
+        }
+        Ok(visible)
+    }
+
+    fn scan_including_tombstones(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.require_matching_branch(bounds.branch_id())?;
+        let effective_bound = effective_own_read_bound(bound);
+        self.require_timestamp_coverage(bound)?;
+        let mut grouped: BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>> = BTreeMap::new();
+        self.collect_matching_scan_candidates(bounds, bound, &mut grouped)?;
+
+        let mut visible = Vec::new();
+        for candidates in grouped.into_values() {
+            if let Some(row) = select_visible_row_or_tombstone(candidates, effective_bound) {
                 visible.push(row);
             }
         }
@@ -1166,6 +1202,23 @@ fn select_visible_row(
                 .matches_effective_bound()
         })?
         .into_visible_row(effective_bound.max_commit_timestamp())
+}
+
+fn select_visible_row_or_tombstone(
+    mut candidates: Vec<CandidateRow>,
+    effective_bound: BranchEffectiveReadBound,
+) -> Option<BranchHistoryRow> {
+    sort_candidates_newest_first(&mut candidates);
+    let candidate = candidates.into_iter().find(|candidate| {
+        effective_bound
+            .matches_row(&candidate.row)
+            .matches_effective_bound()
+    })?;
+    if row_is_expired_at(&candidate.row, effective_bound.max_commit_timestamp()) {
+        None
+    } else {
+        Some(candidate.into_history_row())
+    }
 }
 
 fn row_is_expired_at(row: &StorageRow, read_timestamp: Option<Timestamp>) -> bool {

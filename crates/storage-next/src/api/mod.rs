@@ -33,7 +33,12 @@ pub use outcome::{
     CommitSummary, RecoveryHealthSummary, StorageCloseSummary, StorageOpenDisposition,
     StorageOpenOutcome, StorageOpenSummary, StorageRuntimeState,
 };
-pub use read::{PointReadRequest, ReadBound, ScanReadRequest};
+pub use read::{
+    HistoryReadOutcome, HistoryReadRequest, PointReadOutcome, PointReadRequest,
+    PrefixScanReadRequest, ReadBound, ScanReadOutcome, ScanReadRequest, StorageReadRow,
+    TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
+    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
+};
 pub use result::StorageApiResult;
 pub use runtime::{StorageCloseOptions, StorageRuntime};
 pub use strata_core_next::{BranchId, CommitVersion, Timestamp};

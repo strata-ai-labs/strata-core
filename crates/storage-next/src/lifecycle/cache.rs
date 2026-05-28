@@ -209,6 +209,11 @@ impl<S> LifecycleCacheRuntime<S> {
         &self.branch_catalog
     }
 
+    #[cfg(test)]
+    pub(crate) fn branch_catalog_mut_for_test(&mut self) -> &mut LifecycleBranchCatalog {
+        &mut self.branch_catalog
+    }
+
     pub(crate) const fn visible_version(&self) -> CommitVersion {
         self.visible.visible_version()
     }
@@ -218,11 +223,15 @@ impl<S> LifecycleCacheRuntime<S> {
     }
 
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
+        self.read_view_for_branch(self.initial_branch_id)
+    }
+
+    pub(crate) fn read_view_for_branch(
+        &self,
+        branch_id: strata_core_next::BranchId,
+    ) -> LifecycleResult<BranchReadView> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
-        let branch = self
-            .branch_catalog
-            .branch_state(self.initial_branch_id)
-            .expect("seeded branch is always present in the catalog");
+        let branch = self.branch_catalog.branch_state(branch_id)?;
         branch.capture_read_view().map_err(branch_error)
     }
 

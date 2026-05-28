@@ -1,0 +1,79 @@
+//! API boundary property harness.
+
+#![deny(unsafe_code)]
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn api_property_harness_checks_empty_runtime_reads_are_deterministic() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage_next::api::{
+        BranchId, PointReadRequest, ReadBound, StorageKey, StorageOpenOptions, StorageRuntime,
+        StorageSpaceId,
+    };
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/storage_api.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 1..=32), |bytes| {
+            let outcome = StorageRuntime::open(StorageOpenOptions::default())
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            let runtime = outcome.summary();
+            if !runtime.maintenance_ready() {
+                return Err(TestCaseError::fail(
+                    "opened cache runtime did not report maintenance readiness",
+                ));
+            }
+            let branch = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
+            let request = PointReadRequest::new(
+                branch,
+                StorageSpaceId::new(vec![0x20])
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?,
+                StorageKey::new(bytes).map_err(|error| TestCaseError::fail(error.to_string()))?,
+                ReadBound::Latest,
+            );
+            let read = outcome
+                .into_runtime()
+                .read_point(&request)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if read.row().is_some() {
+                return Err(TestCaseError::fail(
+                    "empty runtime returned a row for generated key",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated API read property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn api_property_harness_rejects_closed_runtime_reads() {
+    use strata_storage_next::api::{
+        BranchId, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
+        StorageOpenOptions, StorageRuntime, StorageSpaceId,
+    };
+
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::default())
+        .expect("open runtime")
+        .into_runtime();
+    runtime.close().expect("close runtime");
+    let branch = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
+    let error = runtime
+        .read_point(&PointReadRequest::new(
+            branch,
+            StorageSpaceId::new(vec![0x20]).expect("engine space"),
+            StorageKey::new(b"closed".to_vec()).expect("key"),
+            ReadBound::Latest,
+        ))
+        .expect_err("closed runtime must reject reads");
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+}
