@@ -9,7 +9,7 @@
 #[cfg(all(target_arch = "wasm32", feature = "localfs"))]
 compile_error!("the localfs feature is not supported on wasm32; use default-features = false");
 
-mod api;
+pub mod api;
 mod backend;
 mod branch;
 mod commit;
