@@ -200,7 +200,11 @@ Rules:
    generation.
 3. Not-supplied generation is allowed only for explicitly storage-internal
    bootstrapping paths that prove exclusivity.
-4. Deleted and deleting branches reject normal commit admission.
+4. Deleted lifecycle branches reject commit admission
+   (`LifecycleBranchStatus::Deleted`).
+5. `CommitBranchState::Deleting` is transient inside `delete_branch` and not
+   externally observable; no caller outside `delete_branch` may observe or set
+   this state.
 
 ## Conflict And Concurrency Hardening
 
@@ -228,10 +232,15 @@ Required users:
 1. checkpoint row capture;
 2. branch fork and fork-at-history;
 3. branch clear and delete;
-4. recovery bootstrap and replay;
-5. durable close;
-6. L9-bound maintenance and administrative operations that need a stable commit
+4. durable close;
+5. L9-bound maintenance and administrative operations that need a stable commit
    boundary.
+
+Recovery replay runs under exclusive open rather than quiesce: the runtime
+handle has not been returned to any caller during `complete_recovery`, and
+`LifecycleStateMachine::admit` rejects mutating commits while the runtime is
+in the `Recovering` state. Adding quiesce to bootstrap would be defense in
+depth but is not required for V1 correctness; see Open Questions §A.
 
 Rules:
 
@@ -262,22 +271,48 @@ Rules:
 
 The durable gate must classify every post-WAL failure.
 
-Two acceptable designs:
-
-1. serialize durable admission globally once a commit reaches the WAL append
-   phase; or
-2. support multiple unresolved durable facts keyed by branch id and commit
-   version.
+The durable gate ships as single-admission: `active_admission: bool` plus
+`Option<unresolved>` (`crates/storage-next/src/commit/durable_gate.rs:38-42`).
+Keyed multi-entry tracking is explicitly deferred — implementing it requires
+first removing the global serialization. L8Z does not change this design.
 
 Rules:
 
-1. The second cross-branch post-WAL failure must not return a generic
-   "different unresolved commit" error in place of its own phase classification.
+1. Cross-branch post-WAL admission is mutually exclusive under the
+   single-admission lock; a second cross-branch WAL append is structurally
+   unreachable (witnessed by `crates/storage-next/src/commit/tests/durable.rs:1290`,
+   `durable_active_global_admission_blocks_other_branch_before_wal_append`).
+   The verification target is a structural assertion that admission cannot
+   reach `record_unresolved` from a second branch while the first is unresolved.
+
+   The reachable mismatch path is the sequential same-branch
+   `record_unresolved` mismatch at
+   `crates/storage-next/src/commit/durable_gate.rs:266-268`; that path keeps
+   its generic error code because existing tests
+   (`crates/storage-next/src/commit/tests/durable_gate.rs:369-405`,
+   `unresolved_durable_gate_rejects_different_fact_and_exact_clear`) depend
+   on it.
 2. Idempotent duplicate replay must clear or preserve the matching gate
    deterministically.
 3. Durable-but-not-applied and applied-but-not-visible remain distinct.
 4. Not-durable, durability-uncertain, and durable states must not be conflated.
 5. The gate is closed before final lifecycle close reports clean durable state.
+
+The cross-branch admission lock is held from `admit_mutating_commit` through
+`record_unresolved` or successful resolution; cache-mode commits also acquire
+it (see Cache Mode Participation below).
+
+### Cache Mode Participation
+
+Cache-mode commits acquire the global admission lock via
+`crates/storage-next/src/commit/cache.rs:77` →
+`durable_gate.admit_mutating_commit()`. On visibility failure they record an
+`applied_not_visible` gate entry whose durability class is `NotDurable`; this
+is kept distinct from durable-mode `AppliedButNotVisible` (which carries
+durable facts).
+
+Phase 3 will add tests covering cache-mode admission-lock participation and
+the `NotDurable` gate class (working titles).
 
 ## Durability-Uncertain Handling
 
@@ -306,6 +341,12 @@ Rules:
 7. Branch A timeline rows must never satisfy Branch B as-of reads.
 
 ## Minimal Automatic Checkpoint And WAL-Growth Policy
+
+Status: shipped. The rules below describe the live policy; test plan §11 is the
+verification matrix. Implementation lives in `crates/storage-next/src/lifecycle/wal_growth.rs`
+(policy facts and threshold evaluation), `lifecycle/durable/maintenance.rs::evaluate_wal_growth_policy`
+(post-commit hook + maintenance enqueue), and `lifecycle/cache.rs::evaluate_wal_growth_policy`
+(cache-mode `NoDurableAction` return). No new implementation work is required for L8Z.
 
 V1 must not depend on a user or product layer to prevent unbounded local WAL
 growth. L8Z adds a minimal storage-owned policy over the existing checkpoint,
@@ -378,10 +419,11 @@ Before L9 wraps storage-next:
 8. Add durability-uncertain replay tests and any missing residual facts.
 9. Harden timeline lookup, bounds, and replay validation.
 10. Expand outcome validation for impossible durability/visibility facts.
-11. Add the minimal automatic checkpoint/WAL-growth trigger and pressure facts.
-12. Add generated/fault/fuzz assurance and sensitivity probes.
-13. Add Q-Z closeout source guards and command matrix records.
-14. Update the porting log with old-code behavior, deferrals, probes, and command
+11. Add generated/fault/fuzz assurance and sensitivity probes.
+    (was step 11: minimal automatic checkpoint / WAL-growth trigger — shipped;
+    see verification matrix in test plan §11.)
+12. Add Q-Z closeout source guards and command matrix records.
+13. Update the porting log with old-code behavior, deferrals, probes, and command
     outcomes.
 
 ## Deferred
@@ -397,6 +439,46 @@ Before L9 wraps storage-next:
 | Remote/hub commit sync | StrataHub integration workstream | Local commit runtime only returns raw facts. |
 | Rich/background checkpoint scheduler | Post-V1 or runtime policy work | L8Z only adds the minimal bounded-WAL trigger; background threads, adaptive intervals, and product policy remain outside V1. |
 | Physical format freeze and compatibility | L10 | Storage byte compatibility, golden vectors, migration/rejection policy, and post-freeze format evolution deserve a dedicated workstream. |
+
+## Open Questions
+
+### A. Recovery quiesce path
+
+Locked in L8Z Phase 1: **exclusive open**. Recovery replay relies on the
+exclusive-open contract (`complete_recovery` runs before the runtime handle
+is returned) plus `LifecycleStateMachine::admit` rejecting mutating commits
+during the `Recovering` state. Adding quiesce to
+`crates/storage-next/src/lifecycle/durable/bootstrap.rs` would be defense in
+depth but is not required for V1 correctness. Phase 4 does not wire quiesce
+into bootstrap.
+
+### B. Fork timeline inheritance
+
+Deferred to Phase 6 plan mode. Two candidate semantics:
+
+- transcribe parent timeline rows under the child branch id at fork time
+  (storage and encoder cost; clean read path);
+- have as-of reads consult the parent when `T < fork_version` (read-path
+  complexity; zero fork-time overhead).
+
+This decision impacts the `from_rows` filter contract (today it filters by
+`branch_id`, so a child branch has no parent timeline rows for
+`T < fork_version`). The §"Timeline Hardening" rule
+*"Branch A timeline rows must never satisfy Branch B as-of reads"*
+interacts with this and must not be relaxed in Phase 1.
+
+### C. Generation field in WAL record
+
+Deferred to Phase 5 plan mode. Two candidate approaches:
+
+- add `branch_generation` to `WalRecord` (format-version bump and
+  golden-vector regeneration; touches the M3-frozen format gate);
+- derive generation from the catalog at replay dispatch time (no format
+  change; relies on the catalog manifest replaying before WAL replay, which
+  is already true after L8Y B Phase 2).
+
+Default is catalog-derived. The format-change path requires reviewer approval
+under the M3 freeze rules.
 
 ## Exit Gate
 

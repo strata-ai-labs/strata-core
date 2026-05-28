@@ -3978,3 +3978,146 @@ cargo test -p strata-storage-next --locked --test lifecycle_source_guard
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 git diff --check
 ```
+
+## L8Z - Commit Hardening And Pre-L9 Readiness
+
+### Source Plans
+
+- `docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md`
+
+### Shipped Files
+
+- `crates/storage-next/src/lifecycle/config.rs`
+- `crates/storage-next/src/lifecycle/wal_growth.rs`
+- `crates/storage-next/src/lifecycle/durable/bootstrap.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/service/wal.rs`
+- `crates/storage-next/src/lifecycle/tests/commit_hardening.rs`
+- `crates/storage-next/src/lifecycle/tests/mod.rs`
+- `crates/storage-next/src/lifecycle/tests/checkpoint/shared.rs`
+
+### Preserved Storage Vocabulary
+
+- Commit version remains the only V1 durable ordering identity. The existing
+  transaction-id source guards continue to reject transaction-id fields,
+  allocators, and user-facing transaction wording in storage code.
+- Durable-local runtime now evaluates a deterministic WAL-growth policy after
+  successful durable commits. The policy emits raw storage facts:
+  retained WAL segments, retained WAL bytes, active segment id/size, dirty
+  bytes, dirty records, commits since checkpoint, trigger kind, enqueue fact,
+  and any deferred health/source error.
+- Cache mode reports `NoDurableAction` for WAL-growth policy evaluation. It
+  does not enqueue checkpoint, WAL retention, or durable maintenance work.
+- The automatic policy only enqueues checkpoint work through the existing
+  deterministic maintenance executor. It does not spawn background work and
+  does not truncate WAL unless existing checkpoint/table-manifest proof later
+  authorizes truncation.
+
+### Retired From V1
+
+- Public transaction sessions.
+- Durable transaction ids.
+- Distributed/global commit version allocation.
+- Cross-branch atomic product transactions.
+- Rich/background/adaptive checkpoint scheduling.
+- Physical format freeze and compatibility policy. That remains owned by L10.
+
+### Tests Added
+
+- `wal_growth_policy_triggers_on_each_threshold_deterministically`
+- `automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold`
+- `automatic_checkpoint_triggers_when_retained_segments_exceed_threshold`
+- `automatic_checkpoint_does_not_trigger_below_threshold`
+- `automatic_checkpoint_uses_existing_maintenance_executor`
+- `automatic_checkpoint_coalesces_existing_checkpoint_task`
+- `automatic_checkpoint_deferred_while_quiesce_active`
+- `automatic_checkpoint_deferred_while_close_in_progress`
+- `automatic_checkpoint_deferred_while_recovery_in_progress`
+- `automatic_checkpoint_failure_records_health_debt`
+- `automatic_checkpoint_cache_mode_reports_no_durable_action`
+- `automatic_checkpoint_disable_requires_explicit_config`
+- `automatic_checkpoint_does_not_truncate_wal_without_retention_proof`
+- `automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_proof`
+- `wal_growth_pressure_facts_are_visible_to_public_boundary`
+- `automatic_checkpoint_policy_is_deterministic_without_background_thread`
+- Config validation assertions for the default and invalid WAL-growth policy
+  thresholds.
+
+### Sensitivity Probes Recorded
+
+| Probe | Mutated file/line | Mutation | Expected failing test |
+|---|---|---|---|
+| Disable byte-pressure trigger | `crates/storage-next/src/lifecycle/wal_growth.rs` | Remove retained-byte comparison from `trigger_for` | `automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold` |
+| Disable segment-pressure trigger | `crates/storage-next/src/lifecycle/wal_growth.rs` | Remove retained-segment comparison from `trigger_for` | `automatic_checkpoint_triggers_when_retained_segments_exceed_threshold` |
+| Trigger below threshold | `crates/storage-next/src/lifecycle/wal_growth.rs` | Change comparison to `>=` or ignore thresholds | `automatic_checkpoint_does_not_trigger_below_threshold` |
+| Skip automatic post-commit evaluation | `crates/storage-next/src/lifecycle/durable/bootstrap.rs` | Remove policy evaluation after successful durable commit | `automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold` |
+| Bypass maintenance executor | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Run checkpoint directly instead of enqueueing a task | `automatic_checkpoint_uses_existing_maintenance_executor` / `automatic_checkpoint_coalesces_existing_checkpoint_task` |
+| Ignore quiesce admission | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Remove quiesce check before enqueue | `automatic_checkpoint_deferred_while_quiesce_active` |
+| Ignore close/recovery admission | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Remove lifecycle admission check before enqueue | `automatic_checkpoint_deferred_while_close_in_progress` / `automatic_checkpoint_deferred_while_recovery_in_progress` |
+| Drop policy failure health debt | `crates/storage-next/src/lifecycle/durable/maintenance.rs` | Return lower-layer errors instead of deferred outcome | `automatic_checkpoint_failure_records_health_debt` |
+| Mark ordinary deferral as health debt | `crates/storage-next/src/lifecycle/wal_growth.rs` | Attach recovery health to admission-only deferrals | `automatic_checkpoint_deferred_while_quiesce_active` / `automatic_checkpoint_deferred_while_close_in_progress` |
+| Truncate WAL from policy checkpoint | `crates/storage-next/src/lifecycle/wal_growth.rs` | Build checkpoint task with WAL truncation enabled | `automatic_checkpoint_does_not_truncate_wal_without_retention_proof` |
+| Lose proof-gated truncation path | `crates/storage-next/src/lifecycle/checkpoint.rs` | Ignore retention proof on explicit checkpoint/truncation request | `automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_proof` |
+| Claim durable action in cache mode | `crates/storage-next/src/lifecycle/cache.rs` | Return checkpoint/enqueue status from cache evaluation | `automatic_checkpoint_cache_mode_reports_no_durable_action` |
+| Allow zero enabled thresholds | `crates/storage-next/src/lifecycle/config.rs` | Remove enabled-policy threshold validation | `lifecycle_config_rejects_zero_limits` |
+
+### Verification
+
+Commands run for this implementation pass:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --package strata-storage-next` | PASS |
+| `cargo fmt --package strata-storage-next --check` | PASS |
+| `cargo test -p strata-storage-next --locked --lib lifecycle::tests::commit_hardening` | PASS, 16 tests |
+| `cargo test -p strata-storage-next --locked --lib lifecycle::tests` | PASS, 958 tests |
+| `cargo test -p strata-storage-next --locked --test lifecycle_source_guard` | PASS, 96 tests |
+| `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` | PASS |
+| `git diff --check` | PASS |
+
+### L8Z Phase 1 - Plan Corrections (docs only)
+
+Date: 2026-05-27. No code change. Audit findings from
+`docs/architecture/implementation-plans/M4/L8/l8z-audit-and-followup.md`
+applied to both L8Z planning docs and this porting log.
+
+| Edit | Target file | Section | Change |
+|---|---|---|---|
+| 1 | impl plan | §"Minimal Automatic Checkpoint And WAL-Growth Policy" | Added "Status: shipped" header sentence pointing at `wal_growth.rs`, `maintenance.rs::evaluate_wal_growth_policy`, `cache.rs::evaluate_wal_growth_policy`, and `lifecycle/tests/commit_hardening.rs`. |
+| 1 | impl plan | §"Implementation Steps" | Removed step 11 (WAL-growth trigger — already shipped). Renumbered 12-14 to 11-13 with a parenthetical at the renumber point. |
+| 1 | test plan | §11 | Prepended "Verifies shipped behavior; not gating new implementation work" header. |
+| 2 | impl plan | §"Durable Gate Hardening" | Replaced "Two acceptable designs" with the committed single-admission design. Rewrote rule 1 as a structural-property assertion citing `commit/tests/durable.rs:1290`. Added rule 1b documenting the load-bearing sequential same-branch mismatch path at `durable_gate.rs:266-268`. |
+| 3 | impl plan | §"Branch Generation Guard Coverage" rule 4 | Split single rule into two: "Deleted lifecycle branches reject" and "`CommitBranchState::Deleting` is transient inside `delete_branch`". Aligns with C Phase 1's removal of `LifecycleBranchStatus::Deleting`. |
+| 3 | test plan | §2 Assertions | Same two-clause split. |
+| 4 | test plan | §"Test Locations" item 15 | Corrected `src/testkit/lifecycle/commit_hardening.rs` to `src/lifecycle/tests/commit_hardening.rs`. |
+| 5 | test plan | §1 #5, §2 #1, §2 #4, §3 block, §7 #4 | Annotated each duplicate-name test with an italic "Existing: ..." pointer to its shipped counterpart. |
+| 6 | test plan | §5 #7 | Renamed `recovery_replay_runs_under_exclusive_open_or_quiesce` to `recovery_replay_runs_under_exclusive_open`. |
+| 6 | impl plan | §"Quiesce Integration" required users | Dropped item 4 ("recovery bootstrap and replay"). Renumbered. Added an exclusive-open rationale paragraph citing `LifecycleStateMachine::admit`. |
+| 7 | test plan | §11 #13 | Renamed `wal_growth_pressure_facts_are_visible_to_public_boundary` to `wal_growth_pressure_facts_have_stable_observation_api`. The live test in `commit_hardening.rs:375` keeps its current name; the test plan name is forward-looking. |
+| 8 | test plan | §11 Assertions | Added prose clarifying that tests #5, #6, and #7 verify state-machine-driven deferral via `LifecycleStateMachine::admit`, not concurrent execution. |
+| 9 | impl plan | §"Durable Gate Hardening" | Added "Cache Mode Participation" subclause documenting that cache-mode commits acquire the global admission lock via `commit/cache.rs:77`. |
+| 10 | impl plan | new §"Open Questions" between §"Deferred" and §"Exit Gate" | Added three entries: (A) recovery quiesce locked to exclusive-open; (B) fork timeline inheritance deferred to Phase 6; (C) WAL-record generation field deferred to Phase 5 with catalog-derived default. |
+
+Decision locks recorded in this pass:
+
+- Test plan §5 item 7 resolves to `recovery_replay_runs_under_exclusive_open`. Phase 4 does not wire quiesce into `lifecycle/durable/bootstrap.rs`.
+- The durable gate ships as single-admission; keyed multi-entry tracking is deferred.
+
+Phase 1 introduces no new tests and no code changes. The 11 edits cap with
+the verification matrix below.
+
+#### Verification
+
+| Check | Expected | Result |
+|---|---|---|
+| `grep -n "testkit/lifecycle/commit_hardening" docs/architecture/implementation-plans/M4/L8/l8z-*.md` | zero hits | PASS |
+| `grep -n "two acceptable designs" docs/architecture/implementation-plans/M4/L8/l8z-*.md` | zero hits | PASS |
+| `grep -n "Deleted and deleting branches" docs/architecture/implementation-plans/M4/L8/l8z-*.md` | zero hits | PASS |
+| `grep -n "recovery_replay_runs_under_exclusive_open_or_quiesce" docs/architecture/implementation-plans/M4/L8/l8z-*test-plan.md` | zero hits | PASS |
+| `grep -n "^## Open Questions" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md` | one hit | PASS |
+| `grep -n "Cache Mode Participation" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md` | one hit | PASS |
+| `grep -n "Status: shipped" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md` | one hit | PASS |
+| `grep -n "lifecycle/tests/commit_hardening" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md` | at least one hit | PASS |
+| `grep -n "recovery_replay_runs_under_exclusive_open\b" docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-test-plan.md` | one hit | PASS |

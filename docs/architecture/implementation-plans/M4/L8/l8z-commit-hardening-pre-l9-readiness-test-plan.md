@@ -101,7 +101,7 @@ Use:
 12. `crates/storage-next/src/lifecycle/tests/branch_lifecycle.rs`
 13. `crates/storage-next/src/lifecycle/tests/recovery.rs`
 14. `crates/storage-next/src/testkit/commit_runtime.rs`
-15. `crates/storage-next/src/testkit/lifecycle/commit_hardening.rs`
+15. `crates/storage-next/src/lifecycle/tests/commit_hardening.rs`
 16. `crates/storage-next/tests/commit_runtime_properties.rs`
 17. `crates/storage-next/tests/commit_runtime_faults.rs`
 18. `crates/storage-next/tests/lifecycle_closeout.rs`
@@ -120,7 +120,11 @@ Required tests:
 2. `wal_commit_payload_has_no_transaction_id_field`
 3. `replay_catches_up_commit_version_without_transaction_id`
 4. `bootstrap_catches_up_timestamp_without_transaction_id`
-5. `source_guard_blocks_transaction_id_reintroduction`
+5. `source_guard_blocks_transaction_id_reintroduction` —
+   *Existing: `crates/storage-next/tests/commit_runtime_source_guard.rs`
+   `commit_runtime_source_guard_catches_product_vocabulary`. Extend with an
+   assertion that the `TransactionId` / `TxnId` lifecycle-side ban scans
+   lifecycle source roots.*
 6. `deferred_map_records_transaction_id_policy`
 7. `commit_outcome_uses_commit_version_as_ordering_identity`
 8. `old_transaction_context_terms_do_not_appear_in_user_errors`
@@ -136,10 +140,17 @@ Assertions:
 
 Required tests:
 
-1. `cache_commit_rejects_stale_generation`
+1. `cache_commit_rejects_stale_generation` —
+   *Existing: `crates/storage-next/src/commit/tests/cache.rs:204`
+   `cache_commit_rejects_missing_deleted_and_stale_generation_before_allocation`.
+   Extend with a phase-classification assertion that the rejection happens before
+   `admit_mutating_commit` advances the gate or allocator.*
 2. `durable_commit_rejects_stale_generation_before_wal_append`
 3. `replay_rejects_stale_generation`
-4. `flush_rejects_stale_generation_before_table_build`
+4. `flush_rejects_stale_generation_before_table_build` —
+   *Existing: `crates/storage-next/src/lifecycle/tests/branch_lifecycle/clear_delete.rs:655`
+   `stale_flush_task_generation_rejects_after_recreate`. Extend with an
+   assertion that the rejection precedes table-object publication.*
 5. `compaction_rejects_stale_generation_before_output_publish`
 6. `materialization_rejects_stale_generation_before_handle_bind`
 7. `checkpoint_rejects_stale_generation_when_targeting_branch_state`
@@ -153,9 +164,22 @@ Assertions:
 
 1. stale generation rejects before durable side effects;
 2. every no-generation caller has an explicit exclusivity proof;
-3. deleted/deleting branches reject normal commit admission.
+3. deleted lifecycle branches reject commit admission
+   (`LifecycleBranchStatus::Deleted`);
+4. `CommitBranchState::Deleting` is transient inside `delete_branch` and not
+   externally observable.
 
 ### 3. Conflict Validation
+
+*Note: 9-10 of the tests below already exist in
+`crates/storage-next/src/commit/tests/conflict.rs` (lines 1-994) under
+different names (`branch_read_view_conflict_source_can_be_capped_at_visible_version`,
+`read_set_present_facts_match_or_report_storage_conflict`, and similar).
+Phase 5 plan mode will pair each L8Z-listed name with its existing counterpart
+and decide whether to rename, alias, or extend with new assertions. The new
+required-test items (`conflict_failure_does_not_advance_allocator`,
+`conflict_failure_does_not_change_visible_version`,
+`duplicate_conflict_facts_are_rejected_or_normalized`) remain net-new.*
 
 Required tests:
 
@@ -209,7 +233,7 @@ Required tests:
 4. `fork_uses_quiesce_before_source_capture`
 5. `clear_uses_quiesce_before_state_swap`
 6. `delete_uses_quiesce_before_release_facts`
-7. `recovery_replay_runs_under_exclusive_open_or_quiesce`
+7. `recovery_replay_runs_under_exclusive_open`
 8. `close_uses_quiesce_before_final_sync`
 9. `quiesce_guard_releases_on_checkpoint_failure`
 10. `quiesce_guard_releases_on_branch_lifecycle_failure`
@@ -249,7 +273,15 @@ Required tests:
 1. `durable_post_wal_apply_failure_records_durable_not_applied`
 2. `durable_post_apply_visible_failure_records_applied_not_visible`
 3. `cross_branch_two_post_wal_failures_preserve_both_classifications`
-4. `cross_branch_second_failure_does_not_return_generic_gate_error`
+4. `cross_branch_second_failure_does_not_return_generic_gate_error` —
+   *Structurally unreachable per impl plan §"Durable Gate Hardening" rule 1
+   (single-admission lock blocks the second branch from reaching
+   `record_unresolved`). Verification target moves to Phase 3's structural
+   test `cross_branch_second_admission_blocks_at_active_admission` (working
+   title); the existing
+   `crates/storage-next/src/commit/tests/durable.rs:1290`
+   `durable_active_global_admission_blocks_other_branch_before_wal_append`
+   witnesses the property today.*
 5. `same_branch_unresolved_gate_blocks_later_commit`
 6. `matching_replay_clears_unresolved_gate`
 7. `different_replay_preserves_unresolved_gate`
@@ -326,6 +358,12 @@ Assertions:
 
 ### 11. Minimal Checkpoint And WAL-Growth Policy
 
+Verifies shipped behavior in `crates/storage-next/src/lifecycle/wal_growth.rs`
+and `crates/storage-next/src/lifecycle/tests/commit_hardening.rs` (lines 20-554);
+not gating new implementation work. The 14 tests below already exist under
+their listed names; the §11 assertions verify the existing matrix continues to
+hold.
+
 Required tests:
 
 1. `automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold`
@@ -340,7 +378,13 @@ Required tests:
 10. `automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_proof`
 11. `automatic_checkpoint_cache_mode_reports_no_durable_action`
 12. `automatic_checkpoint_disable_requires_explicit_config`
-13. `wal_growth_pressure_facts_are_visible_to_l9_boundary`
+13. `wal_growth_pressure_facts_have_stable_observation_api` —
+    *Forward-looking name. The live test ships as
+    `wal_growth_pressure_facts_are_visible_to_public_boundary`
+    (`crates/storage-next/src/lifecycle/tests/commit_hardening.rs:375`); a
+    future slice may rename the code to match this aspirational name. The
+    "public boundary" wording in the live name predates the Pre-L9 rule
+    requiring `pub(crate)` defaults.*
 14. `automatic_checkpoint_policy_is_deterministic_without_background_thread`
 
 Assertions:
@@ -350,6 +394,13 @@ Assertions:
    checkpoint, or typed deferred/health fact;
 3. WAL truncation remains proof-gated;
 4. the minimal policy does not introduce background nondeterminism.
+
+Tests #5, #6, and #7 verify that policy evaluation defers when the lifecycle
+state machine refuses admission for quiesce, close, or recovery. The deferral
+comes from `LifecycleStateMachine::admit`, not from concurrent execution —
+recovery is a lifecycle state, not a thread. The policy never runs concurrently
+with quiesce, close, or recovery; it only checks the state machine before
+enqueuing a checkpoint task.
 
 ## Generated Model Tests
 
