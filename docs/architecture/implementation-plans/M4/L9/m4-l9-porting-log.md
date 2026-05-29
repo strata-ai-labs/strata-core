@@ -595,6 +595,9 @@ Status: implemented
 - `crates/storage-next/src/api/runtime.rs`
 - `crates/storage-next/src/api/tests/mod.rs`
 - `crates/storage-next/src/api/tests/branch.rs`
+- `crates/storage-next/src/testkit/api/branch.rs`
+- `crates/storage-next/src/testkit/api/mod.rs`
+- `crates/storage-next/tests/api_properties.rs`
 - `docs/architecture/implementation-plans/M4/L9/l9e-branch-lifecycle-api-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L9/l9e-branch-lifecycle-api-test-plan.md`
 
@@ -612,11 +615,18 @@ Status: implemented
   version fork path. This preserves storage-visible active/frozen rows at the
   API boundary without exposing lower unflushed-row restrictions from the
   lifecycle-only `fork_current` helper.
+- Fork-at-version accepts retained watermark versions between timeline entries
+  when the version is inside the retained `[floor, visible]` interval. This
+  matches the lower lifecycle fork contract and avoids rejecting valid
+  snapshot watermarks.
 - Fork-at-timestamp succeeds only when the timestamp resolves inside retained
   history. Timestamps before retained history, after latest retained history,
   or on an empty branch map to `history_unavailable` API errors.
-- All-zero branch ids are rejected at the API boundary for branch lifecycle
-  requests. Lower durable formats may still treat branch ids as opaque atoms.
+- All-zero branch ids are rejected at the API boundary for destination and
+  source branch identifiers in branch lifecycle requests. Lower durable formats
+  may still treat branch ids as opaque atoms.
+- Recreating a deleted branch reports the deleted generation as
+  `generation_before` and the recreated active generation as `generation_after`.
 - Clear/delete under pinned reachability do not reject the branch mutation.
   They surface protected table release counts in `BranchCleanupSummary`, which
   is the lower storage contract for pinned table safety.
@@ -636,11 +646,15 @@ Status: implemented
 - `branch_fork_current_copies_visible_frontier`
 - `branch_fork_current_preserves_inherited_visibility`
 - `branch_fork_at_retained_version_succeeds`
+- `branch_fork_at_retained_watermark_between_commits_succeeds`
 - `branch_fork_at_unretained_version_rejects`
+- `branch_fork_invalid_source_identifier_rejects`
 - `branch_fork_at_timestamp_resolves_timeline`
 - `branch_fork_at_unretained_timestamp_rejects`
 - `branch_fork_generation_mismatch_rejects`
 - `branch_fork_after_close_rejects`
+- `branch_recreate_deleted_reports_generation_transition`
+- `durable_branch_catalog_round_trips_after_reopen`
 - `branch_clear_removes_visible_rows`
 - `branch_clear_preserves_branch_identity`
 - `branch_clear_generation_mismatch_rejects`
@@ -656,6 +670,7 @@ Status: implemented
 - `branch_api_has_no_revert_method`
 - `branch_api_has_no_restore_method`
 - `branch_api_has_no_publish_review_method`
+- `api_property_harness_matches_generated_branch_model`
 
 ### Sensitivity Probes
 
@@ -669,8 +684,20 @@ Status: implemented
 - Letting fork-at-history use latest instead of the requested retained version
   is caught by `branch_fork_at_retained_version_succeeds` and
   `branch_fork_at_timestamp_resolves_timeline`.
+- Requiring an exact timeline entry for fork-at-version is caught by
+  `branch_fork_at_retained_watermark_between_commits_succeeds`.
+- Skipping source branch identifier validation is caught by
+  `branch_fork_invalid_source_identifier_rejects`.
+- Dropping recreate generation facts is caught by
+  `branch_recreate_deleted_reports_generation_transition`.
+- Losing durable branch catalog state across reopen is caught by
+  `durable_branch_catalog_round_trips_after_reopen`.
+- The generated branch model contract exercises create, describe, list,
+  fork-current, fork-at-version, fork-at-timestamp, clear, delete, recreate,
+  invalid-source rejection, and read-after-branch-operation routes.
 - Leaking product branch workflow vocabulary is caught by the merge,
-  cherry-pick, revert, restore, publish, and review absence tests.
+  cherry-pick, revert, restore, publish, and review absence tests, now scanning
+  the branch vocabulary and runtime implementation surfaces.
 
 ### Verification
 

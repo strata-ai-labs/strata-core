@@ -151,3 +151,44 @@ fn api_property_harness_matches_generated_commit_model() {
         })
         .expect("generated API commit model property");
 }
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn api_property_harness_matches_generated_branch_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestCaseError, TestRunner};
+    use strata_storage_next::testkit::check_storage_api_branch_model_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/storage_api_branch_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 1..=64), |script| {
+            let outcome = check_storage_api_branch_model_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.creates() == 0
+                || outcome.describes() == 0
+                || outcome.lists() == 0
+                || outcome.fork_current() == 0
+                || outcome.fork_at_version() == 0
+                || outcome.fork_at_timestamp() == 0
+                || outcome.clears() == 0
+                || outcome.deletes() == 0
+                || outcome.recreate_transitions() == 0
+                || outcome.invalid_source_rejections() == 0
+                || outcome.read_checks() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "generated branch script did not exercise every required route",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated API branch model property");
+}

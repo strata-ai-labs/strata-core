@@ -212,16 +212,19 @@ impl<'a> StorageRuntime<'a> {
             BranchAction::List => self.list_branch_request(),
             BranchAction::ForkCurrent { source } => {
                 require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+                require_valid_branch_identifier(source, "source_branch_id")?;
                 let version = self.current_branch_version(source)?;
                 self.fork_branch_at_version(request, source, version, None)
             }
             BranchAction::ForkAtVersion { source, version } => {
                 require_valid_branch_identifier(request.branch_id(), "branch_id")?;
-                self.require_exact_retained_version(source, version)?;
+                require_valid_branch_identifier(source, "source_branch_id")?;
+                self.require_retained_version_watermark(source, version)?;
                 self.fork_branch_at_version(request, source, version, None)
             }
             BranchAction::ForkAtTimestamp { source, timestamp } => {
                 require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+                require_valid_branch_identifier(source, "source_branch_id")?;
                 let timeline = self.timeline_view(source)?;
                 let lookup = timeline.version_at_or_before(timestamp);
                 let version = match lookup.miss() {
@@ -436,12 +439,13 @@ impl<'a> StorageRuntime<'a> {
         request: &BranchRequest,
     ) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+        let generation_before = self.recreate_generation_before(request.branch_id())?;
         let generation = branch_generation_or_default(request.expected_generation())?;
         let created_at = current_visible(self);
         let outcome = self.create_branch(request.branch_id(), generation, created_at)?;
         let branch = map_branch_descriptor(outcome.descriptor());
         Ok(BranchOutcome::new(BranchOperation::Created, vec![branch])
-            .with_generations(None, Some(branch.generation())))
+            .with_generations(generation_before, Some(branch.generation())))
     }
 
     fn describe_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
@@ -505,7 +509,7 @@ impl<'a> StorageRuntime<'a> {
         )
     }
 
-    fn require_exact_retained_version(
+    fn require_retained_version_watermark(
         &self,
         branch_id: BranchId,
         version: CommitVersion,
@@ -516,13 +520,37 @@ impl<'a> StorageRuntime<'a> {
                 reason: "commit version is outside retained branch history",
             });
         }
-        self.timeline_view(branch_id)?
-            .timestamp_for_version(version)
-            .map(|_| ())
-            .ok_or(StorageApiError::RetainedHistoryUnavailable {
+        let bounds = self.timeline_view(branch_id)?.bounds();
+        let Some(min_version) = bounds.min_version() else {
+            return Err(StorageApiError::RetainedHistoryUnavailable {
+                branch_id,
+                reason: "branch has no retained commit history",
+            });
+        };
+        let Some(max_version) = bounds.max_version() else {
+            return Err(StorageApiError::RetainedHistoryUnavailable {
+                branch_id,
+                reason: "branch has no retained commit history",
+            });
+        };
+        if version < min_version || version > max_version {
+            return Err(StorageApiError::RetainedHistoryUnavailable {
                 branch_id,
                 reason: "commit version is outside retained branch history",
-            })
+            });
+        }
+        Ok(())
+    }
+
+    fn recreate_generation_before(
+        &self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<Option<BranchGeneration>> {
+        match self.describe_branch(branch_id) {
+            Ok(branch) if branch.status() == BranchStatus::Deleted => Ok(Some(branch.generation())),
+            Ok(_) | Err(StorageApiError::BranchNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn fork_branch_at_version(

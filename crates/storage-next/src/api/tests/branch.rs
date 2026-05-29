@@ -37,7 +37,7 @@ fn put_batch_for(branch_id: BranchId, key: &[u8], value: &[u8]) -> CommitBatch {
 }
 
 fn put_at(
-    runtime: &mut StorageRuntime<'static>,
+    runtime: &mut StorageRuntime<'_>,
     branch_id: BranchId,
     key: &[u8],
     value: &[u8],
@@ -238,6 +238,35 @@ fn branch_fork_at_retained_version_succeeds() {
 }
 
 #[test]
+fn branch_fork_at_retained_watermark_between_commits_succeeds() {
+    let mut runtime = open_runtime();
+    put_at(&mut runtime, branch(), b"history-gap", b"one", 10);
+    let other = branch_with(0x55);
+    runtime
+        .branch(&create_request(other))
+        .expect("create other");
+    put_at(&mut runtime, other, b"other", b"two", 20);
+    put_at(&mut runtime, branch(), b"history-gap", b"three", 30);
+    let child = branch_with(0x56);
+
+    let outcome = runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkAtVersion {
+                source: branch(),
+                version: CommitVersion::new(2),
+            },
+        ))
+        .expect("fork at retained watermark");
+
+    assert_eq!(outcome.fork_version(), Some(CommitVersion::new(2)));
+    assert_eq!(
+        read_value(&runtime, child, b"history-gap"),
+        Some(b"one".to_vec())
+    );
+}
+
+#[test]
 fn branch_fork_at_unretained_version_rejects() {
     let mut runtime = open_runtime();
     put_at(&mut runtime, branch(), b"history", b"one", 10);
@@ -253,6 +282,22 @@ fn branch_fork_at_unretained_version_rejects() {
         .expect_err("unretained version rejected");
 
     assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+}
+
+#[test]
+fn branch_fork_invalid_source_identifier_rejects() {
+    let mut runtime = open_runtime();
+    let zero = BranchId::from_bytes([0; BranchId::BYTE_LEN]);
+
+    let error = runtime
+        .branch(&branch_request(
+            branch_with(0x57),
+            BranchAction::ForkCurrent { source: zero },
+        ))
+        .expect_err("zero source branch rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
 }
 
 #[test]
@@ -475,6 +520,79 @@ fn branch_delete_with_pinned_view_reports_protected_release() {
 }
 
 #[test]
+fn branch_recreate_deleted_reports_generation_transition() {
+    let mut runtime = open_runtime();
+    let child = branch_with(0x58);
+    runtime.branch(&create_request(child)).expect("create");
+    runtime
+        .branch(&branch_request(child, BranchAction::Delete))
+        .expect("delete");
+
+    let outcome = runtime
+        .branch(&BranchRequest::new(
+            child,
+            BranchAction::Create,
+            Some(BranchGeneration::new(2)),
+        ))
+        .expect("recreate deleted branch");
+    let summary = outcome.branch().expect("branch summary");
+
+    assert_eq!(outcome.operation(), BranchOperation::Created);
+    assert_eq!(outcome.generation_before(), Some(BranchGeneration::new(1)));
+    assert_eq!(outcome.generation_after(), Some(BranchGeneration::new(2)));
+    assert_eq!(summary.status(), BranchStatus::Active);
+    assert_eq!(summary.generation(), BranchGeneration::new(2));
+}
+
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_branch_catalog_round_trips_after_reopen() {
+    let root = temp_dir_for_api_test("branch-durable-roundtrip");
+    let backend = StorageBackend::local_fs(root.clone());
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    put_at(&mut runtime, branch(), b"durable-branch", b"parent", 10);
+    let child = branch_with(0x59);
+    runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent { source: branch() },
+        ))
+        .expect("fork durable branch");
+    runtime.close().expect("close durable runtime");
+    drop(runtime);
+
+    let backend = StorageBackend::local_fs(root);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable reopen")
+    .into_runtime();
+    let described = runtime
+        .branch(&describe_request(child))
+        .expect("describe recovered branch")
+        .branch()
+        .expect("branch summary");
+
+    assert_eq!(described.status(), BranchStatus::Active);
+    assert_eq!(
+        described
+            .parent()
+            .map(BranchParentSummary::source_branch_id),
+        Some(branch())
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"durable-branch"),
+        Some(b"parent".to_vec())
+    );
+}
+
+#[test]
 fn branch_delete_unknown_rejects() {
     let mut runtime = open_runtime();
 
@@ -513,37 +631,43 @@ fn branch_delete_last_required_branch_rejects() {
     assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
 }
 
+fn branch_api_source() -> String {
+    [include_str!("../branch.rs"), include_str!("../runtime.rs")]
+        .join("\n")
+        .to_ascii_lowercase()
+}
+
 #[test]
 fn branch_api_has_no_merge_method() {
-    let source = include_str!("../branch.rs").to_ascii_lowercase();
+    let source = branch_api_source();
 
     assert!(!source.contains("merge"));
 }
 
 #[test]
 fn branch_api_has_no_cherry_pick_method() {
-    let source = include_str!("../branch.rs").to_ascii_lowercase();
+    let source = branch_api_source();
 
     assert!(!source.contains("cherry"));
 }
 
 #[test]
 fn branch_api_has_no_revert_method() {
-    let source = include_str!("../branch.rs").to_ascii_lowercase();
+    let source = branch_api_source();
 
     assert!(!source.contains("revert"));
 }
 
 #[test]
 fn branch_api_has_no_restore_method() {
-    let source = include_str!("../branch.rs").to_ascii_lowercase();
+    let source = branch_api_source();
 
     assert!(!source.contains("restore"));
 }
 
 #[test]
 fn branch_api_has_no_publish_review_method() {
-    let source = include_str!("../branch.rs").to_ascii_lowercase();
+    let source = branch_api_source();
 
     assert!(!source.contains("publish"));
     assert!(!source.contains("review"));

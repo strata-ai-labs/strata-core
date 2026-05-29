@@ -4,7 +4,7 @@ use super::{
     branch_error, commit_error, require_admitted, LifecycleDurableLocalServices,
     LifecycleDurableLocalShell,
 };
-use crate::branch::{BranchLocalState, BranchReadView};
+use crate::branch::{BranchLocalState, BranchReadView, BranchRuntimeError};
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
     CommitDurabilityClass, CommitDurableRuntime, CommitFactAllocator, CommitManualTimestampSource,
@@ -22,6 +22,7 @@ use crate::lifecycle::{
     StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::service::WalGrowthFacts;
+use crate::table::TableRuntimeError;
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -311,6 +312,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             durability,
             checkpoint_watermark,
         )?;
+        rebuild_fork_snapshot_rows(&mut branch_catalog)?;
         Ok((
             report,
             branch_catalog,
@@ -1179,6 +1181,55 @@ fn install_non_seeded_checkpoint_rows(
         let branch_id = branch.branch_id();
         let descriptor = branch_catalog.lookup(branch_id)?;
         branch_catalog.replace_active_branch_state_with_descriptor(descriptor, branch)?;
+    }
+    Ok(())
+}
+
+fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> LifecycleResult<()> {
+    let descriptors = branch_catalog
+        .list_branches(false)
+        .into_iter()
+        .filter(|descriptor| descriptor.parent().is_some())
+        .collect::<Vec<_>>();
+    if descriptors.is_empty() {
+        return Ok(());
+    }
+
+    for _ in 0..descriptors.len() {
+        let mut appended_in_pass = 0;
+        for descriptor in &descriptors {
+            let Some(parent) = descriptor.parent() else {
+                continue;
+            };
+            let rows = branch_catalog
+                .branch_state(parent.source_branch_id())?
+                .fork_snapshot_rows(parent.fork_version(), descriptor.branch_id())
+                .map_err(branch_error)?;
+            if rows.is_empty() {
+                continue;
+            }
+
+            let mut staged = branch_catalog.branch_state(descriptor.branch_id())?.clone();
+            let mut appended_for_branch = 0;
+            for row in rows {
+                match staged.append_committed_row(row) {
+                    Ok(_) => appended_for_branch += 1,
+                    Err(BranchRuntimeError::TableRuntime {
+                        source: TableRuntimeError::DuplicateInternalKey { .. },
+                    }) => {}
+                    Err(error) => return Err(branch_error(error)),
+                }
+            }
+            if appended_for_branch > 0 {
+                let current_descriptor = branch_catalog.lookup(descriptor.branch_id())?;
+                branch_catalog
+                    .replace_active_branch_state_with_descriptor(current_descriptor, staged)?;
+                appended_in_pass += appended_for_branch;
+            }
+        }
+        if appended_in_pass == 0 {
+            return Ok(());
+        }
     }
     Ok(())
 }

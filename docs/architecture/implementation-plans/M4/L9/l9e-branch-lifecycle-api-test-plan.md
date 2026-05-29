@@ -33,11 +33,13 @@ branch workflows.
 1. `branch_fork_current_copies_visible_frontier`
 2. `branch_fork_current_preserves_inherited_visibility`
 3. `branch_fork_at_retained_version_succeeds`
-4. `branch_fork_at_unretained_version_rejects`
-5. `branch_fork_at_timestamp_resolves_timeline`
-6. `branch_fork_at_unretained_timestamp_rejects`
-7. `branch_fork_generation_mismatch_rejects`
-8. `branch_fork_after_close_rejects`
+4. `branch_fork_at_retained_watermark_between_commits_succeeds`
+5. `branch_fork_at_unretained_version_rejects`
+6. `branch_fork_invalid_source_identifier_rejects`
+7. `branch_fork_at_timestamp_resolves_timeline`
+8. `branch_fork_at_unretained_timestamp_rejects`
+9. `branch_fork_generation_mismatch_rejects`
+10. `branch_fork_after_close_rejects`
 
 ### Clear/Delete
 
@@ -50,6 +52,11 @@ branch workflows.
 7. `branch_delete_with_pinned_view_reports_protected_release`
 8. `branch_delete_unknown_rejects`
 9. `branch_delete_reports_cleanup_facts`
+10. `branch_recreate_deleted_reports_generation_transition`
+
+### Durable Round Trip
+
+1. `durable_branch_catalog_round_trips_after_reopen`
 
 ### Deferred Product Workflows
 
@@ -70,10 +77,16 @@ Generate scripts with:
 5. clear;
 6. delete;
 7. list;
-8. read after branch operation.
+8. read after branch operation;
+9. recreate deleted branch;
+10. invalid source branch rejection.
 
 The model should track branch generation and retained-history bounds
 independently.
+
+Required property:
+
+1. `api_property_harness_matches_generated_branch_model`
 
 ## Sensitivity Probes
 
@@ -81,6 +94,9 @@ independently.
 2. Drop protected cleanup facts for pinned reachability.
 3. Let fork-at-history use latest instead of requested version.
 4. Leak merge vocabulary into API.
+5. Require an exact timeline row instead of a retained fork watermark.
+6. Skip source-branch identifier validation.
+7. Drop deleted-generation facts during branch recreate.
 
 ## Verification
 

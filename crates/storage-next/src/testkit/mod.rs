@@ -25,9 +25,10 @@ mod service_fuzz;
 mod table_runtime;
 
 pub use api::{
-    check_storage_api_commit_fault_contract, check_storage_api_commit_model_contract,
-    check_storage_api_read_model_contract, StorageApiCommitFaultOutcome,
-    StorageApiCommitModelOutcome, StorageApiReadModelOutcome,
+    check_storage_api_branch_model_contract, check_storage_api_commit_fault_contract,
+    check_storage_api_commit_model_contract, check_storage_api_read_model_contract,
+    StorageApiBranchModelOutcome, StorageApiCommitFaultOutcome, StorageApiCommitModelOutcome,
+    StorageApiReadModelOutcome,
 };
 pub use branch_lsm::{
     check_branch_lsm_fault_window_contract, check_branch_lsm_inheritance_contract,
