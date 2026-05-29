@@ -7,6 +7,7 @@ use super::*;
 
 mod branch;
 mod commit;
+mod maintenance;
 mod read;
 
 fn assert_result_type<T>(result: StorageApiResult<T>) -> StorageApiResult<T> {
@@ -381,6 +382,7 @@ fn maintenance_request_kind_is_constructible() {
         MaintenanceTask::Compact,
         MaintenanceTask::Materialize,
         MaintenanceTask::Retain,
+        MaintenanceTask::SnapshotPruning,
         MaintenanceTask::Reclaim,
         MaintenanceTask::Quarantine,
         MaintenanceTask::Purge,

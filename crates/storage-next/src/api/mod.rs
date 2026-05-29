@@ -30,7 +30,11 @@ pub use commit::{
 };
 pub use diagnostics::{DiagnosticsRequest, DiagnosticsScope};
 pub use error::{StorageApiError, StorageApiErrorClass, StorageApiLowerLayer};
-pub use maintenance::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+pub use maintenance::{
+    MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass, MaintenanceRequest,
+    MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask,
+    MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
+};
 pub use options::{
     StorageBudgetPolicy, StorageDurabilityPolicy, StorageMode, StorageOpenOptions,
     StorageWalGrowthPolicy,

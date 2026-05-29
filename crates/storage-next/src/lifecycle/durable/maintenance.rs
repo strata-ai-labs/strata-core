@@ -249,6 +249,37 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     #[allow(
         dead_code,
+        reason = "explicit maintenance callers run checkpoints without queueing"
+    )]
+    pub(crate) fn checkpoint_for_explicit_maintenance(
+        &mut self,
+        branch_id: strata_core_next::BranchId,
+        truncate_wal_after_checkpoint: bool,
+    ) -> LifecycleResult<LifecycleCheckpointOutcome> {
+        let created_at = checkpoint_created_at(
+            self.allocator.timestamp_guard().last_allocated(),
+            self.recovered_checkpoint_timestamp_max,
+        );
+        let request = LifecycleCheckpointRequest::new(
+            branch_id,
+            self.next_checkpoint_snapshot_id,
+            created_at,
+        )?
+        .with_wal_truncation_after_checkpoint(truncate_wal_after_checkpoint);
+        let outcome = self.checkpoint(&request)?;
+        if let Some(snapshot_id) = outcome.snapshot_id() {
+            self.next_checkpoint_snapshot_id =
+                snapshot_id
+                    .checked_add(1)
+                    .ok_or(LifecycleError::CheckpointPublicationFailed {
+                        reason: "checkpoint snapshot id overflow",
+                    })?;
+        }
+        Ok(outcome)
+    }
+
+    #[allow(
+        dead_code,
         reason = "durable maintenance dispatch uses this concrete watermark hook"
     )]
     pub(crate) fn persist_flush_watermark(

@@ -10,15 +10,25 @@ use crate::commit::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
-    CloseOutcome, CloseOutcomeStatus, LifecycleBranchDescriptor, LifecycleBranchStatus,
-    LifecycleCacheOpenRequest, LifecycleCacheRuntime, LifecycleCodecId, LifecycleConfig,
-    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
-    LifecycleError, LifecycleRecoveryRuntime, LifecycleWalGrowthPolicy, RecoveryHealth,
-    RecoveryStrictness, StorageMode as LifecycleStorageMode,
-    StorageOpenOutcome as LifecycleStorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
+    CloseOutcome, CloseOutcomeStatus, FlushFrozenRequest, FlushTableIdentitySeed,
+    FlushTableObjectId, LifecycleBranchDescriptor, LifecycleBranchStatus,
+    LifecycleCacheOpenRequest, LifecycleCacheRuntime, LifecycleCheckpointOutcome, LifecycleCodecId,
+    LifecycleCompactionRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
+    LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
+    LifecycleMaterializationRequest, LifecycleRecoveryRuntime, LifecycleRetentionRequest,
+    LifecycleRetentionScope, LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy,
+    LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger, MaintenanceCheckpointOptions,
+    MaintenanceExecutorStatus, MaintenanceOutcome as LifecycleMaintenanceOutcome,
+    MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
+    MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
+    MaintenanceTaskKind as LifecycleMaintenanceTaskKind,
+    MaintenanceTaskPolicy as LifecycleMaintenanceTaskPolicy,
+    MaintenanceTaskPriority as LifecycleMaintenanceTaskPriority,
+    MaintenanceTaskRequest as LifecycleMaintenanceTaskRequest,
+    MaintenanceTaskScope as LifecycleMaintenanceTaskScope, RecoveryHealth, RecoveryStrictness,
+    StorageMode as LifecycleStorageMode, StorageOpenOutcome as LifecycleStorageOpenOutcome,
+    StorageOpenPlan, StorageRuntimeBudget,
 };
-#[cfg(test)]
-use crate::lifecycle::{FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 use crate::service::WalServiceConfig;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -27,14 +37,17 @@ use super::{
     BranchAction, BranchCleanupSummary, BranchGeneration, BranchOperation, BranchOutcome,
     BranchParentSummary, BranchRequest, BranchStatus, BranchSummary, CommitBatch, CommitDurability,
     CommitDurabilitySummary, CommitExpectedVersion, CommitSummary, HistoryReadOutcome,
-    HistoryReadRequest, PointReadOutcome, PointReadRequest, PrefixScanReadRequest, ReadBound,
-    ReadLimit, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiLowerLayer,
-    StorageApiResult, StorageBackend, StorageBudgetPolicy, StorageCloseSummary,
-    StorageDurabilityPolicy, StorageKey, StorageMode, StorageOpenDisposition, StorageOpenOptions,
-    StorageOpenOutcome, StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId,
-    StorageValue, StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest,
-    TimestampLookupMiss, TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome,
-    VersionLookupRequest,
+    HistoryReadRequest, MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass,
+    MaintenanceRequest, MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus,
+    MaintenanceTask, MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary,
+    MaintenanceWalGrowthTrigger, PointReadOutcome, PointReadRequest, PrefixScanReadRequest,
+    ReadBound, ReadLimit, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiErrorClass,
+    StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBudgetPolicy,
+    StorageCloseSummary, StorageDurabilityPolicy, StorageKey, StorageMode, StorageOpenDisposition,
+    StorageOpenOptions, StorageOpenOutcome, StorageOpenSummary, StorageReadRow,
+    StorageRuntimeState, StorageSpaceId, StorageValue, StorageWalGrowthPolicy,
+    TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
+    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
 use std::time::Duration;
@@ -254,6 +267,95 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
+    pub fn maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        self.require_open("maintenance requires an open runtime")?;
+        match request.task() {
+            MaintenanceTask::Checkpoint => self.checkpoint_maintenance(request),
+            MaintenanceTask::Flush => self.flush_maintenance(request),
+            MaintenanceTask::Compact => self.compaction_maintenance(request),
+            MaintenanceTask::Materialize => self.materialization_maintenance(request),
+            MaintenanceTask::Retain => self.retention_maintenance(request),
+            MaintenanceTask::SnapshotPruning => self.snapshot_pruning_maintenance(request),
+            MaintenanceTask::Reclaim => self.reclaim_maintenance(request),
+            MaintenanceTask::Quarantine => Ok(unsupported_maintenance_summary(
+                request,
+                "quarantine requires a concrete source object",
+            )),
+            MaintenanceTask::Purge => Ok(unsupported_maintenance_summary(
+                request,
+                "purge requires a current quarantine proof",
+            )),
+            MaintenanceTask::Repair => self.repair_maintenance(request),
+            MaintenanceTask::WalGrowth => self.wal_growth_maintenance(request),
+        }
+    }
+
+    pub fn maintenance_status(&self) -> StorageApiResult<MaintenanceQueueSummary> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "maintenance status requires an open runtime",
+            }),
+        }
+    }
+
+    pub fn enqueue_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceQueueSummary> {
+        self.require_open("maintenance enqueue requires an open runtime")?;
+        let task = map_maintenance_task_request(self, request)?;
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "maintenance enqueue requires an open runtime",
+            }),
+        }
+    }
+
+    pub fn run_next_maintenance(&mut self) -> StorageApiResult<Option<MaintenanceSummary>> {
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => run_next_cache_maintenance(runtime)?,
+            StorageRuntimeInner::Durable(runtime) => run_next_durable_maintenance(runtime)?,
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "maintenance run requires an open runtime",
+                });
+            }
+        };
+        Ok(outcome.map(|outcome| map_maintenance_summary(request_for_outcome(&outcome), &outcome)))
+    }
+
+    pub fn drain_maintenance(&mut self) -> StorageApiResult<MaintenanceDrainSummary> {
+        self.require_open("maintenance drain requires an open runtime")?;
+        let mut outcomes = Vec::new();
+        while let Some(outcome) = self.run_next_maintenance()? {
+            outcomes.push(outcome);
+        }
+        let queue = self.maintenance_status()?;
+        let drained_tasks = outcomes.len();
+        Ok(MaintenanceDrainSummary::new(drained_tasks, outcomes, queue))
+    }
+
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
         let view = self.read_view_for_branch(request.branch_id())?;
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
@@ -410,6 +512,250 @@ impl<'a> StorageRuntime<'a> {
             bounds.min_version(),
             bounds.max_version(),
         ))
+    }
+
+    fn checkpoint_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        let branch_id = self.branch_for_maintenance_scope(request.scope())?;
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(_) => Ok(unsupported_maintenance_summary(
+                request,
+                "cache runtime does not support durable checkpoint maintenance",
+            )),
+            StorageRuntimeInner::Durable(runtime) => {
+                let outcome = runtime
+                    .checkpoint_for_explicit_maintenance(branch_id, false)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_checkpoint_summary(request, &outcome))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "checkpoint maintenance requires an open runtime",
+            }),
+        }
+    }
+
+    fn flush_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        let branch_id = self.branch_for_maintenance_scope(request.scope())?;
+        let flush_request = flush_request_for_boundary(branch_id)?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime
+                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .map_err(map_lifecycle_error)?;
+                runtime.flush_frozen(&flush_request)
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime
+                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .map_err(map_lifecycle_error)?;
+                runtime.flush_frozen(&flush_request)
+            }
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "flush maintenance requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        Ok(
+            map_maintenance_summary(*request, &outcome.maintenance_outcome())
+                .with_rows_processed(outcome.rows_flushed()),
+        )
+    }
+
+    fn compaction_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        let branch_id = self.branch_for_maintenance_scope(request.scope())?;
+        let compaction = LifecycleCompactionRequest::new(
+            branch_id,
+            crate::branch::BranchCompactionKind::CompactL0ToLevelOne,
+            format!("storage-boundary-compaction-{branch_id}"),
+        )
+        .map_err(map_lifecycle_error)?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.compact_branch_tables(&compaction),
+            StorageRuntimeInner::Durable(runtime) => runtime.compact_branch_tables(&compaction),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "compaction maintenance requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        Ok(map_maintenance_summary(
+            *request,
+            &outcome.maintenance_outcome(),
+        ))
+    }
+
+    fn materialization_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        let branch_id = self.branch_for_maintenance_scope(request.scope())?;
+        let materialization = LifecycleMaterializationRequest::new(
+            branch_id,
+            0,
+            format!("storage-boundary-materialization-{branch_id}"),
+        )
+        .map_err(map_lifecycle_error)?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime.materialize_inherited_layer(&materialization)
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.materialize_inherited_layer(&materialization)
+            }
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "materialization maintenance requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        Ok(map_maintenance_summary(
+            *request,
+            &outcome.maintenance_outcome(),
+        ))
+    }
+
+    fn retention_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(_) => Ok(unsupported_maintenance_summary(
+                request,
+                "cache runtime does not support durable retention maintenance",
+            )),
+            StorageRuntimeInner::Durable(runtime) => {
+                let outcome = runtime
+                    .prove_retention(&LifecycleRetentionRequest::global(1))
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_summary(
+                    *request,
+                    &outcome.maintenance_outcome(),
+                ))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "retention maintenance requires an open runtime",
+            }),
+        }
+    }
+
+    fn snapshot_pruning_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(_) => Ok(unsupported_maintenance_summary(
+                request,
+                "cache runtime does not support durable snapshot pruning maintenance",
+            )),
+            StorageRuntimeInner::Durable(runtime) => {
+                let retention = LifecycleRetentionRequest::snapshot_pruning(1);
+                let outcome = runtime
+                    .prune_snapshots(&retention)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_summary(
+                    *request,
+                    &outcome.maintenance_outcome(),
+                ))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "snapshot pruning maintenance requires an open runtime",
+            }),
+        }
+    }
+
+    fn reclaim_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        let branch_id = self.branch_for_maintenance_scope(request.scope())?;
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(_) => Ok(unsupported_maintenance_summary(
+                request,
+                "cache runtime does not support durable reclaim maintenance",
+            )),
+            StorageRuntimeInner::Durable(runtime) => {
+                let retention = LifecycleRetentionRequest::new(
+                    LifecycleRetentionScope::TableObjects { branch_id },
+                    1,
+                );
+                let outcome = runtime
+                    .prove_retention(&retention)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_summary(
+                    *request,
+                    &outcome.maintenance_outcome(),
+                ))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "reclaim maintenance requires an open runtime",
+            }),
+        }
+    }
+
+    fn repair_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(_) => Ok(unsupported_maintenance_summary(
+                request,
+                "cache runtime does not support quarantine repair maintenance",
+            )),
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime
+                    .enqueue_maintenance(LifecycleMaintenanceTaskRequest::repair_quarantine_family())
+                    .map_err(map_lifecycle_error)?;
+                let outcome = runtime
+                    .run_next_quarantine_repair_maintenance()
+                    .map_err(map_lifecycle_error)?;
+                Ok(outcome.map_or_else(
+                    || unsupported_maintenance_summary(request, "repair maintenance was deferred"),
+                    |outcome| map_maintenance_summary(*request, &outcome),
+                ))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "repair maintenance requires an open runtime",
+            }),
+        }
+    }
+
+    fn wal_growth_maintenance(
+        &mut self,
+        request: &MaintenanceRequest,
+    ) -> StorageApiResult<MaintenanceSummary> {
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => Ok(runtime.evaluate_wal_growth_policy()),
+            StorageRuntimeInner::Durable(runtime) => runtime.evaluate_wal_growth_policy(),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "WAL growth maintenance requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        Ok(map_wal_growth_maintenance_summary(*request, &outcome))
+    }
+
+    fn branch_for_maintenance_scope(&self, scope: MaintenanceScope) -> StorageApiResult<BranchId> {
+        match scope {
+            MaintenanceScope::Global => Ok(DEFAULT_BRANCH_ID),
+            MaintenanceScope::Branch(branch_id) => {
+                require_valid_branch_identifier(branch_id, "branch_id")?;
+                self.describe_branch(branch_id).map(|_| branch_id)
+            }
+        }
     }
 
     fn create_branch(
@@ -955,7 +1301,7 @@ impl<'a> StorageRuntime<'a> {
                     .rotate_active_for_maintenance()
                     .map_err(map_lifecycle_error)?;
                 runtime
-                    .flush_frozen(&flush_request_for_test(branch_id)?)
+                    .flush_frozen(&flush_request_for_boundary(branch_id)?)
                     .map(|_| ())
                     .map_err(map_lifecycle_error)
             }
@@ -964,7 +1310,7 @@ impl<'a> StorageRuntime<'a> {
                     .rotate_active_for_maintenance()
                     .map_err(map_lifecycle_error)?;
                 runtime
-                    .flush_frozen(&flush_request_for_test(branch_id)?)
+                    .flush_frozen(&flush_request_for_boundary(branch_id)?)
                     .map(|_| ())
                     .map_err(map_lifecycle_error)
             }
@@ -1150,6 +1496,334 @@ fn map_close_effects(outcome: CloseOutcome) -> StorageCloseEffects {
         effects = effects.with_guards_released();
     }
     effects
+}
+
+fn map_maintenance_summary(
+    request: MaintenanceRequest,
+    outcome: &LifecycleMaintenanceOutcome,
+) -> MaintenanceSummary {
+    let (source_error_code, source_error_class) = outcome
+        .source_error()
+        .map_or((None, None), lifecycle_error_facts);
+    MaintenanceSummary::new(
+        request.task(),
+        request.scope(),
+        map_maintenance_status(outcome.status()),
+    )
+    .with_reason(
+        outcome.reason_class().map(map_maintenance_reason_class),
+        outcome.reason(),
+    )
+    .with_affected_objects(
+        outcome.affected_object_names().to_vec(),
+        outcome.affected_objects(),
+    )
+    .with_effects(
+        outcome.bytes_reclaimed(),
+        outcome.retryable(),
+        outcome.checkpoint_required(),
+        outcome.state_changes(),
+    )
+    .with_health(outcome.recovery_health().map(map_recovery_health))
+    .with_source_error(source_error_code, source_error_class)
+}
+
+fn map_checkpoint_summary(
+    request: &MaintenanceRequest,
+    outcome: &LifecycleCheckpointOutcome,
+) -> MaintenanceSummary {
+    let wal_truncated = outcome
+        .wal_truncation()
+        .is_some_and(|truncation| truncation.deleted_segments() > 0);
+    map_maintenance_summary(*request, &outcome.maintenance_outcome()).with_checkpoint_facts(
+        outcome.checkpoint_watermark(),
+        outcome.snapshot_id(),
+        outcome.row_count(),
+        wal_truncated,
+    )
+}
+
+fn map_wal_growth_maintenance_summary(
+    request: MaintenanceRequest,
+    outcome: &LifecycleWalGrowthOutcome,
+) -> MaintenanceSummary {
+    let growth = map_wal_growth_summary(outcome);
+    let status = match outcome.status() {
+        LifecycleWalGrowthStatus::Deferred => MaintenanceSummaryStatus::Deferred,
+        _ => MaintenanceSummaryStatus::Completed,
+    };
+    let (source_error_code, source_error_class) = outcome
+        .source_error()
+        .map_or((None, None), lifecycle_error_facts);
+    MaintenanceSummary::new(request.task(), request.scope(), status)
+        .with_health(outcome.recovery_health().map(map_recovery_health))
+        .with_source_error(source_error_code, source_error_class)
+        .with_wal_growth(growth)
+}
+
+fn map_wal_growth_summary(outcome: &LifecycleWalGrowthOutcome) -> MaintenanceWalGrowthSummary {
+    let facts = outcome.facts();
+    let (source_error_code, source_error_class) = outcome
+        .source_error()
+        .map_or((None, None), lifecycle_error_facts);
+    MaintenanceWalGrowthSummary::new(
+        map_wal_growth_status(outcome.status()),
+        facts.retained_bytes(),
+        u64::try_from(facts.retained_segments()).unwrap_or(u64::MAX),
+        outcome.commits_since_checkpoint(),
+        outcome.trigger().map(map_wal_growth_trigger),
+        outcome.enqueue().is_some(),
+        outcome.recovery_health().map(map_recovery_health),
+        source_error_code,
+        source_error_class,
+    )
+}
+
+const fn map_maintenance_status(
+    status: LifecycleMaintenanceOutcomeStatus,
+) -> MaintenanceSummaryStatus {
+    match status {
+        LifecycleMaintenanceOutcomeStatus::Completed => MaintenanceSummaryStatus::Completed,
+        LifecycleMaintenanceOutcomeStatus::Deferred => MaintenanceSummaryStatus::Deferred,
+        LifecycleMaintenanceOutcomeStatus::Failed => MaintenanceSummaryStatus::Failed,
+        LifecycleMaintenanceOutcomeStatus::Canceled => MaintenanceSummaryStatus::Canceled,
+    }
+}
+
+const fn map_maintenance_reason_class(
+    reason_class: LifecycleMaintenanceOutcomeReasonClass,
+) -> MaintenanceReasonClass {
+    match reason_class {
+        LifecycleMaintenanceOutcomeReasonClass::Deferred => MaintenanceReasonClass::Deferred,
+        LifecycleMaintenanceOutcomeReasonClass::Failed => MaintenanceReasonClass::Failed,
+        LifecycleMaintenanceOutcomeReasonClass::Canceled => MaintenanceReasonClass::Canceled,
+    }
+}
+
+const fn map_wal_growth_status(status: LifecycleWalGrowthStatus) -> MaintenanceWalGrowthStatus {
+    match status {
+        LifecycleWalGrowthStatus::Disabled => MaintenanceWalGrowthStatus::Disabled,
+        LifecycleWalGrowthStatus::BelowThreshold => MaintenanceWalGrowthStatus::BelowThreshold,
+        LifecycleWalGrowthStatus::CheckpointEnqueued => {
+            MaintenanceWalGrowthStatus::CheckpointEnqueued
+        }
+        LifecycleWalGrowthStatus::CheckpointCoalesced => {
+            MaintenanceWalGrowthStatus::CheckpointCoalesced
+        }
+        LifecycleWalGrowthStatus::Deferred => MaintenanceWalGrowthStatus::Deferred,
+        LifecycleWalGrowthStatus::NoDurableAction => MaintenanceWalGrowthStatus::NoDurableAction,
+    }
+}
+
+const fn map_wal_growth_trigger(trigger: LifecycleWalGrowthTrigger) -> MaintenanceWalGrowthTrigger {
+    match trigger {
+        LifecycleWalGrowthTrigger::RetainedBytes => MaintenanceWalGrowthTrigger::RetainedBytes,
+        LifecycleWalGrowthTrigger::RetainedSegments => {
+            MaintenanceWalGrowthTrigger::RetainedSegments
+        }
+        LifecycleWalGrowthTrigger::CommitsSinceCheckpoint => {
+            MaintenanceWalGrowthTrigger::CommitsSinceCheckpoint
+        }
+    }
+}
+
+fn map_maintenance_queue_summary(
+    executor_status: MaintenanceExecutorStatus,
+) -> MaintenanceQueueSummary {
+    let stats = executor_status.stats();
+    MaintenanceQueueSummary::new(
+        executor_status.pending_tasks(),
+        executor_status
+            .active_task()
+            .map(crate::lifecycle::MaintenanceTaskId::get),
+        stats.enqueued(),
+        stats.coalesced(),
+        stats.started(),
+        stats.completed(),
+        stats.deferred(),
+        stats.failed(),
+        stats.canceled(),
+        stats.drained(),
+        stats.queue_full(),
+    )
+}
+
+fn unsupported_maintenance_summary(
+    request: &MaintenanceRequest,
+    reason: &'static str,
+) -> MaintenanceSummary {
+    MaintenanceSummary::new(
+        request.task(),
+        request.scope(),
+        MaintenanceSummaryStatus::Deferred,
+    )
+    .with_reason(Some(MaintenanceReasonClass::Deferred), Some(reason))
+    .with_effects(0, false, false, 0)
+}
+
+fn lifecycle_error_facts(
+    error: &LifecycleError,
+) -> (Option<&'static str>, Option<StorageApiErrorClass>) {
+    let error = map_lifecycle_error(error.clone());
+    (Some(error.code()), Some(error.class()))
+}
+
+fn request_for_outcome(outcome: &LifecycleMaintenanceOutcome) -> MaintenanceRequest {
+    let task = match outcome.task_kind() {
+        LifecycleMaintenanceTaskKind::Checkpoint => MaintenanceTask::Checkpoint,
+        LifecycleMaintenanceTaskKind::Flush => MaintenanceTask::Flush,
+        LifecycleMaintenanceTaskKind::Compaction => MaintenanceTask::Compact,
+        LifecycleMaintenanceTaskKind::Materialization => MaintenanceTask::Materialize,
+        LifecycleMaintenanceTaskKind::SnapshotPruning => MaintenanceTask::SnapshotPruning,
+        LifecycleMaintenanceTaskKind::Retention => MaintenanceTask::Retain,
+        LifecycleMaintenanceTaskKind::Quarantine => MaintenanceTask::Quarantine,
+        LifecycleMaintenanceTaskKind::Purge => MaintenanceTask::Purge,
+        LifecycleMaintenanceTaskKind::Repair => MaintenanceTask::Repair,
+        LifecycleMaintenanceTaskKind::WalTruncation
+        | LifecycleMaintenanceTaskKind::FlushWatermark
+        | LifecycleMaintenanceTaskKind::HealthCollection => MaintenanceTask::WalGrowth,
+    };
+    let scope = match task {
+        MaintenanceTask::Flush
+        | MaintenanceTask::Compact
+        | MaintenanceTask::Materialize
+        | MaintenanceTask::Reclaim
+        | MaintenanceTask::Purge
+        | MaintenanceTask::Repair => MaintenanceScope::Branch(DEFAULT_BRANCH_ID),
+        MaintenanceTask::Checkpoint
+        | MaintenanceTask::Retain
+        | MaintenanceTask::SnapshotPruning
+        | MaintenanceTask::Quarantine
+        | MaintenanceTask::WalGrowth => MaintenanceScope::Global,
+    };
+    MaintenanceRequest::new(task, scope)
+}
+
+fn map_maintenance_task_request(
+    runtime: &StorageRuntime<'_>,
+    request: &MaintenanceRequest,
+) -> StorageApiResult<LifecycleMaintenanceTaskRequest> {
+    match request.task() {
+        MaintenanceTask::Checkpoint => {
+            Ok(LifecycleMaintenanceTaskRequest::checkpoint_with_options(
+                MaintenanceCheckpointOptions::new(None, false),
+            ))
+        }
+        MaintenanceTask::Flush => Ok(LifecycleMaintenanceTaskRequest::flush(
+            runtime.branch_for_maintenance_scope(request.scope())?,
+        )),
+        MaintenanceTask::Compact => Ok(LifecycleMaintenanceTaskRequest::compaction(
+            runtime.branch_for_maintenance_scope(request.scope())?,
+            0,
+        )),
+        MaintenanceTask::Materialize => Ok(LifecycleMaintenanceTaskRequest::materialization(
+            runtime.branch_for_maintenance_scope(request.scope())?,
+        )),
+        MaintenanceTask::Retain => Ok(LifecycleMaintenanceTaskRequest::retention(1)),
+        MaintenanceTask::SnapshotPruning => {
+            Ok(LifecycleMaintenanceTaskRequest::snapshot_pruning(1))
+        }
+        MaintenanceTask::Reclaim => {
+            let branch_id = runtime.branch_for_maintenance_scope(request.scope())?;
+            LifecycleMaintenanceTaskRequest::new(
+                LifecycleMaintenanceTaskKind::Retention,
+                LifecycleMaintenanceTaskPriority::Low,
+                LifecycleMaintenanceTaskScope::Branch(branch_id),
+                LifecycleMaintenanceTaskPolicy::coalescing(),
+            )
+            .map_err(map_lifecycle_error)
+        }
+        MaintenanceTask::Quarantine => Ok(LifecycleMaintenanceTaskRequest::quarantine()),
+        MaintenanceTask::Purge => Ok(LifecycleMaintenanceTaskRequest::purge_quarantine(
+            runtime.branch_for_maintenance_scope(request.scope())?,
+        )),
+        MaintenanceTask::Repair => Ok(LifecycleMaintenanceTaskRequest::repair_quarantine_family()),
+        MaintenanceTask::WalGrowth => Ok(LifecycleMaintenanceTaskRequest::checkpoint_with_options(
+            MaintenanceCheckpointOptions::new(None, false),
+        )),
+    }
+}
+
+fn run_next_cache_maintenance(
+    runtime: &mut LifecycleCacheRuntime<ApiTimestampSource>,
+) -> StorageApiResult<Option<LifecycleMaintenanceOutcome>> {
+    if let Some(outcome) = runtime
+        .run_next_flush_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_compaction_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    runtime
+        .run_next_materialization_maintenance()
+        .map_err(map_lifecycle_error)
+}
+
+fn run_next_durable_maintenance(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+) -> StorageApiResult<Option<LifecycleMaintenanceOutcome>> {
+    if let Some(outcome) = runtime
+        .run_next_flush_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_checkpoint_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_wal_truncation_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_flush_watermark_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_compaction_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_materialization_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_retention_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_purge_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_quarantine_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    runtime
+        .run_next_quarantine_repair_maintenance()
+        .map_err(map_lifecycle_error)
 }
 
 fn map_generation_guard(
@@ -1578,13 +2252,14 @@ fn map_expiry(
     Ok(crate::commit::CommitExpiry::At(expires_at))
 }
 
-#[cfg(test)]
-fn flush_request_for_test(branch_id: BranchId) -> StorageApiResult<FlushFrozenRequest> {
+fn flush_request_for_boundary(branch_id: BranchId) -> StorageApiResult<FlushFrozenRequest> {
     FlushFrozenRequest::new(
         branch_id,
         None,
-        FlushTableIdentitySeed::new("api-test-flush").map_err(map_lifecycle_error)?,
-        FlushTableObjectId::new("api-test-flush").map_err(map_lifecycle_error)?,
+        FlushTableIdentitySeed::new(format!("storage-boundary-flush-{branch_id}"))
+            .map_err(map_lifecycle_error)?,
+        FlushTableObjectId::new(format!("storage-boundary-flush-{branch_id}"))
+            .map_err(map_lifecycle_error)?,
     )
     .map_err(map_lifecycle_error)
 }
@@ -1743,6 +2418,15 @@ fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             capability: "backend",
             reason: "backend capabilities do not satisfy storage mode",
         },
+        LifecycleError::MaintenanceFailed { reason }
+        | LifecycleError::MaintenanceQueueFull { reason }
+        | LifecycleError::MaintenanceTaskFailed { reason }
+        | LifecycleError::RetentionBlocked { reason }
+        | LifecycleError::QuarantineProofBlocked { reason }
+        | LifecycleError::PurgeProofBlocked { reason }
+        | LifecycleError::WalRetentionProofIncomplete { reason } => {
+            StorageApiError::MaintenanceRejected { reason }
+        }
         LifecycleError::LowerLayer {
             layer: crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
             source: Some(source),

@@ -712,7 +712,7 @@ Status: implemented
 
 ## L9F - Maintenance API
 
-Status: planned
+Status: implemented
 
 ### Source Evidence To Read
 
@@ -728,23 +728,66 @@ Status: planned
 
 ### Shipped Files
 
-TBD.
+- `crates/storage-next/src/api/maintenance.rs`
+- `crates/storage-next/src/api/mod.rs`
+- `crates/storage-next/src/api/runtime.rs`
+- `crates/storage-next/src/api/tests/maintenance.rs`
+- `crates/storage-next/src/api/tests/mod.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/lifecycle/durable/maintenance.rs`
 
 ### Boundary Decisions
 
-TBD.
+- Public maintenance results use `MaintenanceSummary`,
+  `MaintenanceQueueSummary`, `MaintenanceDrainSummary`, and
+  `MaintenanceWalGrowthSummary`. L8 service handles, branch internals, table
+  refs, and lifecycle outcomes remain private.
+- Cache mode returns deferred/unsupported summaries for durable-only
+  maintenance requests instead of admitting tasks that cannot run.
+- Direct flush rotates the requested branch and returns row/publication facts,
+  but does not claim WAL truncation.
+- Direct checkpoint uses durable snapshot-id allocation and exposes watermark,
+  snapshot, row, and truncation facts. WAL truncation remains opt-in through
+  lower maintenance paths.
+- Retention and snapshot pruning run only on durable runtimes. Table-object
+  reclaim maps to branch-scoped table-object retention when durable reachability
+  proof is available.
+- Quarantine and purge remain fail-closed/deferred at this boundary because the
+  public request shape does not carry source-object names or current proof
+  tokens.
+- WAL growth is exposed as policy status plus trigger/enqueue facts; cache mode
+  reports `NoDurableAction`.
 
 ### Tests Added
 
-TBD.
+- `maintenance_request_snapshot_pruning_is_constructible`
+- `api_maintenance_status_reports_empty_queue`
+- `api_checkpoint_cache_mode_returns_deferred`
+- `api_flush_returns_publication_facts`
+- `api_wal_growth_policy_status_reports_no_durable_action_for_cache`
+- `api_maintenance_enqueue_and_drain_are_deterministic`
+- `api_maintenance_after_close_rejects`
+- `api_rewrite_unknown_branch_rejects`
 
 ### Sensitivity Probes
 
-TBD.
+- Cache checkpoint/retention/reclaim paths must not enqueue stranded durable
+  work.
+- Flush summaries must continue to report publication facts without implying
+  WAL truncation.
+- Queue drain summaries must report user-initiated drained tasks, not only
+  close-time drain counters.
+- Unknown branch rewrite maintenance must fail before touching lower rewrite
+  services.
 
 ### Verification
 
-TBD.
+- `cargo fmt --package strata-storage-next --check` passed.
+- `cargo test -p strata-storage-next --locked --lib api::tests::maintenance -- --nocapture` passed.
+- `cargo test -p strata-storage-next --locked --lib api -- --nocapture` passed.
+- `cargo test -p strata-storage-next --locked --test api_source_guard -- --nocapture` passed.
+- `cargo test -p strata-storage-next --locked --test api_conformance -- --nocapture` passed.
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` passed.
 
 ## L9G - Diagnostics, Health, And Observability
 

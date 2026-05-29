@@ -242,8 +242,14 @@ impl<S> LifecycleCacheRuntime<S> {
     pub(crate) fn rotate_active_for_maintenance(
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
+        self.rotate_active_for_branch_for_maintenance(self.initial_branch_id)
+    }
+
+    pub(crate) fn rotate_active_for_branch_for_maintenance(
+        &mut self,
+        branch_id: strata_core_next::BranchId,
+    ) -> LifecycleResult<BranchRotationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
         let generation = self
             .branch_catalog
             .registry()
@@ -375,7 +381,7 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &FlushFrozenRequest,
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
+        let branch_id = request.branch_id();
         let generation = self
             .branch_catalog
             .registry()
@@ -400,7 +406,7 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &LifecycleCompactionRequest,
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
+        let branch_id = request.branch_id();
         let generation = self
             .branch_catalog
             .registry()
@@ -425,7 +431,7 @@ impl<S> LifecycleCacheRuntime<S> {
         request: &LifecycleMaterializationRequest,
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let branch_id = self.initial_branch_id;
+        let branch_id = request.child_branch_id();
         let generation = self
             .branch_catalog
             .registry()
