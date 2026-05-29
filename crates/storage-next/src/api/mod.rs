@@ -43,6 +43,8 @@ pub use read::{
     TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
 };
 pub use result::StorageApiResult;
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) use runtime::map_commit_error_for_test;
 pub use runtime::{StorageCloseOptions, StorageRuntime};
 pub use strata_core_next::{BranchId, CommitVersion, Timestamp};
 

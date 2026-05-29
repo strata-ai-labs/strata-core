@@ -75,6 +75,7 @@ pub enum StorageApiError {
     },
     DurableUncertain {
         reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
     RecoveryDegraded {
         reason: &'static str,
@@ -140,6 +141,23 @@ impl StorageApiError {
             source: Some(Arc::new(source)),
         }
     }
+
+    pub const fn durable_uncertain(reason: &'static str) -> Self {
+        Self::DurableUncertain {
+            reason,
+            source: None,
+        }
+    }
+
+    pub fn durable_uncertain_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::DurableUncertain {
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
 }
 
 impl fmt::Display for StorageApiError {
@@ -186,7 +204,7 @@ impl fmt::Display for StorageApiError {
                     "branch {branch_id} timestamp history unavailable: {reason}"
                 )
             }
-            Self::DurableUncertain { reason } => {
+            Self::DurableUncertain { reason, .. } => {
                 write!(formatter, "storage durability is uncertain: {reason}")
             }
             Self::RecoveryDegraded { reason } => {
@@ -206,6 +224,10 @@ impl Error for StorageApiError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::LowerLayer {
+                source: Some(source),
+                ..
+            }
+            | Self::DurableUncertain {
                 source: Some(source),
                 ..
             } => Some(source.as_ref()),

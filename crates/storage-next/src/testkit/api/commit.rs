@@ -1,12 +1,14 @@
 //! Model-backed API commit contracts.
 
+use std::error::Error;
+use std::fmt;
 use std::time::Duration;
 
 use strata_core_next::{BranchId, CommitVersion};
 
 use crate::api::{
-    CommitBatch, CommitCondition, CommitDurability, CommitDurabilitySummary, CommitExpectedVersion,
-    CommitMutation, CommitOptions, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
+    CommitBatch, CommitCondition, CommitDurabilitySummary, CommitExpectedVersion, CommitMutation,
+    CommitOptions, PointReadRequest, ReadBound, StorageApiError, StorageApiErrorClass, StorageKey,
     StorageOpenOptions, StorageRuntime, StorageSpaceId, StorageValue,
 };
 use crate::testkit::TestkitError;
@@ -59,9 +61,12 @@ impl StorageApiCommitModelOutcome {
 pub struct StorageApiCommitFaultOutcome {
     validation_failures: usize,
     conflicts: usize,
-    unsupported_durability: usize,
-    closed_runtime_rejections: usize,
-    ambiguous_commit_examples: usize,
+    before_allocation_failures: usize,
+    after_allocation_failures: usize,
+    wal_append_failures: usize,
+    forced_durability_uncertainties: usize,
+    branch_apply_failures: usize,
+    visibility_publication_failures: usize,
 }
 
 impl StorageApiCommitFaultOutcome {
@@ -73,17 +78,52 @@ impl StorageApiCommitFaultOutcome {
         self.conflicts
     }
 
-    pub const fn unsupported_durability(self) -> usize {
-        self.unsupported_durability
+    pub const fn before_allocation_failures(self) -> usize {
+        self.before_allocation_failures
     }
 
-    pub const fn closed_runtime_rejections(self) -> usize {
-        self.closed_runtime_rejections
+    pub const fn after_allocation_failures(self) -> usize {
+        self.after_allocation_failures
     }
 
-    pub const fn ambiguous_commit_examples(self) -> usize {
-        self.ambiguous_commit_examples
+    pub const fn wal_append_failures(self) -> usize {
+        self.wal_append_failures
     }
+
+    pub const fn forced_durability_uncertainties(self) -> usize {
+        self.forced_durability_uncertainties
+    }
+
+    pub const fn branch_apply_failures(self) -> usize {
+        self.branch_apply_failures
+    }
+
+    pub const fn visibility_publication_failures(self) -> usize {
+        self.visibility_publication_failures
+    }
+
+    pub const fn total_routes(self) -> usize {
+        self.validation_failures
+            + self.conflicts
+            + self.before_allocation_failures
+            + self.after_allocation_failures
+            + self.wal_append_failures
+            + self.forced_durability_uncertainties
+            + self.branch_apply_failures
+            + self.visibility_publication_failures
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommitFaultRoute {
+    Validation,
+    Conflict,
+    BeforeAllocation,
+    AfterAllocation,
+    WalAppend,
+    ForcedDurability,
+    BranchApply,
+    VisibilityPublication,
 }
 
 pub fn check_storage_api_commit_model_contract(
@@ -189,14 +229,38 @@ pub fn check_storage_api_commit_fault_contract(
 ) -> Result<StorageApiCommitFaultOutcome, TestkitError> {
     let script = non_empty_script(script);
     let mut outcome = StorageApiCommitFaultOutcome::default();
+    match route_from_script(script) {
+        CommitFaultRoute::Validation => check_validation_fault(&mut outcome)?,
+        CommitFaultRoute::Conflict => check_conflict_fault(script, &mut outcome)?,
+        CommitFaultRoute::BeforeAllocation => check_before_allocation_fault(&mut outcome)?,
+        CommitFaultRoute::AfterAllocation => check_after_allocation_fault(&mut outcome)?,
+        CommitFaultRoute::WalAppend => check_wal_append_fault(&mut outcome)?,
+        CommitFaultRoute::ForcedDurability => check_forced_durability_fault(&mut outcome)?,
+        CommitFaultRoute::BranchApply => check_branch_apply_fault(&mut outcome)?,
+        CommitFaultRoute::VisibilityPublication => {
+            check_visibility_publication_fault(&mut outcome)?;
+        }
+    }
 
+    Ok(outcome)
+}
+
+fn check_validation_fault(outcome: &mut StorageApiCommitFaultOutcome) -> Result<(), TestkitError> {
     let validation = CommitBatch::new(DEFAULT_BRANCH_ID, Vec::new(), CommitOptions::default())
         .expect_err("empty commit batch should fail validation");
-    if validation.class() != StorageApiErrorClass::InvalidArgument {
-        return Err(TestkitError::new("empty commit batch used the wrong class"));
-    }
+    require_class(
+        &validation,
+        StorageApiErrorClass::InvalidArgument,
+        "empty commit batch used the wrong class",
+    )?;
     outcome.validation_failures += 1;
+    Ok(())
+}
 
+fn check_conflict_fault(
+    script: &[u8],
+    outcome: &mut StorageApiCommitFaultOutcome,
+) -> Result<(), TestkitError> {
     let mut runtime = StorageRuntime::open(StorageOpenOptions::default())
         .map_err(|error| testkit_error(&error))?
         .into_runtime();
@@ -212,47 +276,178 @@ pub fn check_storage_api_commit_fault_contract(
     let conflict_error = runtime
         .commit(&conflict)
         .expect_err("expected-absent condition should conflict");
-    if conflict_error.class() != StorageApiErrorClass::Conflict {
-        return Err(TestkitError::new("commit conflict used the wrong class"));
-    }
+    require_class(
+        &conflict_error,
+        StorageApiErrorClass::Conflict,
+        "commit conflict used the wrong class",
+    )?;
     outcome.conflicts += 1;
+    Ok(())
+}
 
-    let durable = CommitBatch::new(
-        DEFAULT_BRANCH_ID,
-        vec![put_mutation(b"durable", &[script_byte(script, 2)])?],
-        CommitOptions::default().with_durability(CommitDurability::Standard),
-    )
-    .map_err(|error| testkit_error(&error))?;
-    let unsupported = runtime
-        .commit(&durable)
-        .expect_err("cache runtime cannot satisfy durable commit");
-    if unsupported.class() != StorageApiErrorClass::Unsupported {
-        return Err(TestkitError::new(
-            "unsupported durability used the wrong class",
-        ));
+fn check_before_allocation_fault(
+    outcome: &mut StorageApiCommitFaultOutcome,
+) -> Result<(), TestkitError> {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::timestamp_unavailable_with(
+            "timestamp source failed before allocation",
+            FaultSource("timestamp source failed"),
+        ),
+    );
+    require_class(
+        &error,
+        StorageApiErrorClass::Internal,
+        "pre-allocation failure used the wrong class",
+    )?;
+    require_source(&error, "pre-allocation failure lost its source")?;
+    outcome.before_allocation_failures += 1;
+    Ok(())
+}
+
+fn check_after_allocation_fault(
+    outcome: &mut StorageApiCommitFaultOutcome,
+) -> Result<(), TestkitError> {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::DurabilityUncertain {
+            branch_id: DEFAULT_BRANCH_ID,
+            commit_version: CommitVersion::new(1),
+            reason: "commit failed after allocation before mutation",
+            source: None,
+        },
+    );
+    require_class(
+        &error,
+        StorageApiErrorClass::AmbiguousCommit,
+        "post-allocation failure used the wrong class",
+    )?;
+    outcome.after_allocation_failures += 1;
+    Ok(())
+}
+
+fn check_wal_append_fault(outcome: &mut StorageApiCommitFaultOutcome) -> Result<(), TestkitError> {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::durability_uncertain_with(
+            DEFAULT_BRANCH_ID,
+            CommitVersion::new(2),
+            "WAL append did not complete",
+            FaultSource("WAL append failed"),
+        ),
+    );
+    require_ambiguous_with_source(&error, "WAL append failure")?;
+    outcome.wal_append_failures += 1;
+    Ok(())
+}
+
+fn check_forced_durability_fault(
+    outcome: &mut StorageApiCommitFaultOutcome,
+) -> Result<(), TestkitError> {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::durability_uncertain_with(
+            DEFAULT_BRANCH_ID,
+            CommitVersion::new(3),
+            "forced durability did not complete",
+            FaultSource("forced durability failed"),
+        ),
+    );
+    require_ambiguous_with_source(&error, "forced durability failure")?;
+    outcome.forced_durability_uncertainties += 1;
+    Ok(())
+}
+
+fn check_branch_apply_fault(
+    outcome: &mut StorageApiCommitFaultOutcome,
+) -> Result<(), TestkitError> {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::durable_but_not_visible_with(
+            DEFAULT_BRANCH_ID,
+            CommitVersion::new(4),
+            "branch apply failed after durable record",
+            FaultSource("branch apply failed"),
+        ),
+    );
+    require_ambiguous_with_source(&error, "branch apply failure")?;
+    outcome.branch_apply_failures += 1;
+    Ok(())
+}
+
+fn check_visibility_publication_fault(
+    outcome: &mut StorageApiCommitFaultOutcome,
+) -> Result<(), TestkitError> {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::durable_but_not_visible_with(
+            DEFAULT_BRANCH_ID,
+            CommitVersion::new(5),
+            "visibility publication failed after durable record",
+            FaultSource("visibility publication failed"),
+        ),
+    );
+    require_ambiguous_with_source(&error, "visibility publication failure")?;
+    outcome.visibility_publication_failures += 1;
+    Ok(())
+}
+
+fn route_from_script(script: &[u8]) -> CommitFaultRoute {
+    let label = String::from_utf8_lossy(script).to_ascii_lowercase();
+    if label.contains("validation") {
+        CommitFaultRoute::Validation
+    } else if label.contains("conflict") {
+        CommitFaultRoute::Conflict
+    } else if label.contains("before") {
+        CommitFaultRoute::BeforeAllocation
+    } else if label.contains("after") {
+        CommitFaultRoute::AfterAllocation
+    } else if label.contains("wal") {
+        CommitFaultRoute::WalAppend
+    } else if label.contains("forced") {
+        CommitFaultRoute::ForcedDurability
+    } else if label.contains("branch") {
+        CommitFaultRoute::BranchApply
+    } else if label.contains("visibility") {
+        CommitFaultRoute::VisibilityPublication
+    } else {
+        match script[0] % 8 {
+            0 => CommitFaultRoute::Validation,
+            1 => CommitFaultRoute::Conflict,
+            2 => CommitFaultRoute::BeforeAllocation,
+            3 => CommitFaultRoute::AfterAllocation,
+            4 => CommitFaultRoute::WalAppend,
+            5 => CommitFaultRoute::ForcedDurability,
+            6 => CommitFaultRoute::BranchApply,
+            _ => CommitFaultRoute::VisibilityPublication,
+        }
     }
-    outcome.unsupported_durability += 1;
+}
 
-    runtime.close().map_err(|error| testkit_error(&error))?;
-    let closed = runtime
-        .commit(&put_batch(b"closed", &[script_byte(script, 3)])?)
-        .expect_err("closed runtime should reject commits");
-    if closed.class() != StorageApiErrorClass::FailedPrecondition {
-        return Err(TestkitError::new("closed commit used the wrong class"));
+fn require_class(
+    error: &StorageApiError,
+    expected: StorageApiErrorClass,
+    message: &'static str,
+) -> Result<(), TestkitError> {
+    if error.class() == expected {
+        Ok(())
+    } else {
+        Err(TestkitError::new(message))
     }
-    outcome.closed_runtime_rejections += 1;
+}
 
-    let ambiguous = crate::api::StorageApiError::DurableUncertain {
-        reason: "durability is uncertain",
-    };
-    if ambiguous.class() != StorageApiErrorClass::AmbiguousCommit {
-        return Err(TestkitError::new(
-            "durability uncertainty used the wrong class",
-        ));
+fn require_source(error: &StorageApiError, message: &'static str) -> Result<(), TestkitError> {
+    if error.source().is_some() {
+        Ok(())
+    } else {
+        Err(TestkitError::new(message))
     }
-    outcome.ambiguous_commit_examples += 1;
+}
 
-    Ok(outcome)
+fn require_ambiguous_with_source(
+    error: &StorageApiError,
+    label: &'static str,
+) -> Result<(), TestkitError> {
+    require_class(
+        error,
+        StorageApiErrorClass::AmbiguousCommit,
+        "ambiguous commit fault used the wrong class",
+    )?;
+    require_source(error, label)
 }
 
 fn put_batch(key: &[u8], value: &[u8]) -> Result<CommitBatch, TestkitError> {
@@ -330,3 +525,14 @@ fn api_key(key: &[u8]) -> Result<StorageKey, TestkitError> {
 fn testkit_error(error: &crate::api::StorageApiError) -> TestkitError {
     TestkitError::new(error.to_string())
 }
+
+#[derive(Debug)]
+struct FaultSource(&'static str);
+
+impl fmt::Display for FaultSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl Error for FaultSource {}

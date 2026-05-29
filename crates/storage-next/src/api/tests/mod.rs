@@ -214,9 +214,7 @@ fn storage_api_error_codes_are_stable() {
             "history_unavailable.storage_api.timestamp",
         ),
         (
-            StorageApiError::DurableUncertain {
-                reason: "sync uncertain",
-            },
+            StorageApiError::durable_uncertain("sync uncertain"),
             "ambiguous_commit.storage_api.durable_uncertain",
         ),
         (
@@ -299,9 +297,7 @@ fn storage_api_error_history_unavailable_is_distinct_from_not_found() {
 
 #[test]
 fn storage_api_error_durable_uncertain_is_distinct_from_lower_layer_failure() {
-    let uncertain = StorageApiError::DurableUncertain {
-        reason: "sync uncertain",
-    };
+    let uncertain = StorageApiError::durable_uncertain("sync uncertain");
     let lower = StorageApiError::lower_layer_with(
         StorageApiLowerLayer::Service,
         "service failed",
@@ -336,10 +332,7 @@ fn storage_api_error_classes_do_not_overclaim_corruption() {
         StorageApiErrorClass::FailedPrecondition
     );
     assert_eq!(
-        StorageApiError::DurableUncertain {
-            reason: "sync uncertain",
-        }
-        .class(),
+        StorageApiError::durable_uncertain("sync uncertain").class(),
         StorageApiErrorClass::AmbiguousCommit
     );
 }

@@ -6,7 +6,7 @@ use crate::branch::{
 };
 use crate::commit::{
     CommitBranchGeneration, CommitBranchGenerationGuard, CommitDurabilityClass,
-    CommitManualTimestampSource, CommitRuntimeConfig, CommitTimelineMiss, CommitTimelineView,
+    CommitRuntimeConfig, CommitTimelineMiss, CommitTimelineView, CommitTimestampSource,
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
@@ -35,6 +35,7 @@ use super::{
     TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
+use std::time::Duration;
 
 const DEFAULT_DATABASE_ID: [u8; 16] = [0x53; 16];
 const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
@@ -56,9 +57,28 @@ pub struct StorageRuntime<'a> {
 
 #[derive(Debug)]
 enum StorageRuntimeInner<'a> {
-    Cache(Box<LifecycleCacheRuntime>),
-    Durable(Box<LifecycleDurableLocalRuntime<'a>>),
+    Cache(Box<LifecycleCacheRuntime<ApiTimestampSource>>),
+    Durable(Box<LifecycleDurableLocalRuntime<'a, ApiTimestampSource>>),
     Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ApiTimestampSource {
+    next_timestamp: Timestamp,
+}
+
+impl ApiTimestampSource {
+    const fn new(next_timestamp: Timestamp) -> Self {
+        Self { next_timestamp }
+    }
+}
+
+impl CommitTimestampSource for ApiTimestampSource {
+    fn next_timestamp(&mut self) -> crate::commit::CommitRuntimeResult<Timestamp> {
+        let timestamp = self.next_timestamp;
+        self.next_timestamp = timestamp.saturating_add(Duration::from_micros(1));
+        Ok(timestamp)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -470,12 +490,8 @@ impl<'a> StorageRuntime<'a> {
         batch: &CommitBatch,
         explicit_timestamp: Option<Timestamp>,
     ) -> StorageApiResult<CommitSummary> {
-        let timestamp_base =
-            explicit_timestamp.unwrap_or_else(|| self.next_commit_timestamp_base());
-        let timestamp_policy = explicit_timestamp.map_or(
-            crate::commit::CommitTimestampPolicy::RuntimeGenerated,
-            crate::commit::CommitTimestampPolicy::Explicit,
-        );
+        let timestamp_base = explicit_timestamp.unwrap_or_else(|| self.next_commit_timestamp());
+        let timestamp_policy = crate::commit::CommitTimestampPolicy::Explicit(timestamp_base);
         let durability = self.resolve_commit_durability(batch.options().durability())?;
         let generation_guard = map_generation_guard(batch.options().expected_generation())?;
         let runtime_batch =
@@ -554,7 +570,7 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
-    fn next_commit_timestamp_base(&self) -> Timestamp {
+    fn next_commit_timestamp(&self) -> Timestamp {
         let last_allocated = match &self.inner {
             StorageRuntimeInner::Cache(runtime) => {
                 runtime.allocator().timestamp_guard().last_allocated()
@@ -564,9 +580,12 @@ impl<'a> StorageRuntime<'a> {
             }
             StorageRuntimeInner::Closed => None,
         };
-        last_allocated
-            .filter(|timestamp| *timestamp > DEFAULT_TIMESTAMP)
-            .unwrap_or(DEFAULT_TIMESTAMP)
+        match last_allocated {
+            Some(timestamp) if timestamp >= DEFAULT_TIMESTAMP => {
+                timestamp.saturating_add(Duration::from_micros(1))
+            }
+            Some(_) | None => DEFAULT_TIMESTAMP,
+        }
     }
 
     #[cfg(test)]
@@ -1257,11 +1276,13 @@ fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageApiError {
                 reason,
             }
         }
-        crate::commit::CommitRuntimeError::DurabilityUncertain { reason, .. }
-        | crate::commit::CommitRuntimeError::DurableButNotVisible { reason, .. }
-        | crate::commit::CommitRuntimeError::UnresolvedDurableCommit { reason, .. }
+        crate::commit::CommitRuntimeError::DurabilityUncertain { reason, source, .. }
+        | crate::commit::CommitRuntimeError::DurableButNotVisible { reason, source, .. } => {
+            StorageApiError::DurableUncertain { reason, source }
+        }
+        crate::commit::CommitRuntimeError::UnresolvedDurableCommit { reason, .. }
         | crate::commit::CommitRuntimeError::AppliedButNotVisible { reason, .. } => {
-            StorageApiError::DurableUncertain { reason }
+            StorageApiError::durable_uncertain(reason)
         }
         crate::commit::CommitRuntimeError::InvalidTimelineFact { .. }
         | crate::commit::CommitRuntimeError::TimelineConflict { .. } => {
@@ -1364,6 +1385,13 @@ fn default_branch_generation() -> StorageApiResult<CommitBranchGeneration> {
     })
 }
 
-const fn default_timestamp_source() -> CommitManualTimestampSource {
-    CommitManualTimestampSource::new(DEFAULT_TIMESTAMP)
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) fn map_commit_error_for_test(
+    error: crate::commit::CommitRuntimeError,
+) -> StorageApiError {
+    commit_error(error)
+}
+
+const fn default_timestamp_source() -> ApiTimestampSource {
+    ApiTimestampSource::new(DEFAULT_TIMESTAMP)
 }

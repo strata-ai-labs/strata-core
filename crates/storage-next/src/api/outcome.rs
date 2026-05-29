@@ -275,8 +275,9 @@ pub struct CommitSummary {
 }
 
 impl CommitSummary {
+    #[cfg(test)]
     #[must_use]
-    pub const fn new(
+    pub(crate) const fn new(
         branch_id: BranchId,
         commit_version: CommitVersion,
         commit_timestamp: Timestamp,
@@ -298,7 +299,7 @@ impl CommitSummary {
         reason = "summary constructor mirrors the flat public commit outcome vocabulary"
     )]
     #[must_use]
-    pub const fn with_commit_facts(
+    pub(crate) const fn with_commit_facts(
         branch_id: BranchId,
         commit_version: CommitVersion,
         commit_timestamp: Timestamp,

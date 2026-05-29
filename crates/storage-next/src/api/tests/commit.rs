@@ -334,6 +334,53 @@ fn commit_outcome_reports_timestamp_and_version() {
 }
 
 #[test]
+fn commit_outcome_timestamps_advance() {
+    let mut runtime = open_runtime();
+
+    let first = runtime
+        .commit(&put_batch(b"first-time", b"value"))
+        .expect("first commit");
+    let second = runtime
+        .commit(&put_batch(b"second-time", b"value"))
+        .expect("second commit");
+
+    assert!(second.commit_timestamp() > first.commit_timestamp());
+}
+
+#[test]
+fn commit_ttl_uses_actual_commit_timestamp_after_prior_commit() {
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"prior", b"value"))
+        .expect("prior commit");
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation_with_ttl(
+            b"ttl-after-prior",
+            b"value",
+            Duration::from_micros(7),
+        )],
+        CommitOptions::default(),
+    )
+    .expect("valid batch");
+
+    let summary = runtime.commit(&batch).expect("commit");
+    let row = read_latest(&runtime, b"ttl-after-prior")
+        .row()
+        .cloned()
+        .expect("row");
+
+    assert_eq!(
+        row.expires_at(),
+        Some(
+            summary
+                .commit_timestamp()
+                .saturating_add(Duration::from_micros(7))
+        )
+    );
+}
+
+#[test]
 fn commit_blind_write_succeeds_without_read_set() {
     let mut runtime = open_runtime();
     runtime
@@ -463,9 +510,7 @@ fn commit_conflict_error_has_structured_branch_and_key() {
 
 #[test]
 fn commit_wal_append_failure_maps_to_durable_not_acquired() {
-    let error = StorageApiError::DurableUncertain {
-        reason: "durable WAL append did not complete",
-    };
+    let error = StorageApiError::durable_uncertain("durable WAL append did not complete");
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);
     assert_eq!(
@@ -476,18 +521,14 @@ fn commit_wal_append_failure_maps_to_durable_not_acquired() {
 
 #[test]
 fn commit_durability_uncertain_survives_boundary() {
-    let error = StorageApiError::DurableUncertain {
-        reason: "durability is uncertain",
-    };
+    let error = StorageApiError::durable_uncertain("durability is uncertain");
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);
 }
 
 #[test]
 fn commit_applied_not_visible_survives_boundary() {
-    let error = StorageApiError::DurableUncertain {
-        reason: "commit was applied but not visible",
-    };
+    let error = StorageApiError::durable_uncertain("commit was applied but not visible");
 
     assert_eq!(
         error.code(),
@@ -497,11 +538,8 @@ fn commit_applied_not_visible_survives_boundary() {
 
 #[test]
 fn commit_visibility_publish_failure_preserves_source_chain() {
-    let error = StorageApiError::lower_layer_with(
-        StorageApiLowerLayer::Commit,
-        "visibility publication failed",
-        SourceError,
-    );
+    let error =
+        StorageApiError::durable_uncertain_with("visibility publication failed", SourceError);
 
     assert!(error.source().is_some());
 }
@@ -520,9 +558,9 @@ fn commit_after_close_rejects_closed_runtime() {
 
 #[test]
 fn commit_unresolved_durable_gate_rejects_followup() {
-    let error = StorageApiError::DurableUncertain {
-        reason: "unresolved durable commit must recover before follow-up commits",
-    };
+    let error = StorageApiError::durable_uncertain(
+        "unresolved durable commit must recover before follow-up commits",
+    );
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);
 }
