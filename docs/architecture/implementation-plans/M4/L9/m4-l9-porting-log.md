@@ -827,12 +827,34 @@ Status: implemented
 - Every optional fact family has an explicit `Known`, `Unknown`, or
   `Unsupported` state. Cache mode marks durable-only fact families unsupported;
   closed runtimes preserve the last opened mode and last recovery summary but
-  report live facts as unknown.
+  report live facts as unknown. A runtime constructed directly in the closed
+  state reports recovery as unknown rather than healthy.
 - Durable recovery diagnostics use live `current_recovery_health`, not the
   bootstrap snapshot. Checkpoint diagnostics load the current database manifest
-  and surface snapshot and flush watermarks without mutating runtime state.
+  and surface snapshot and flush watermarks without mutating runtime state. If
+  manifest facts cannot be loaded, only the checkpoint family becomes unknown;
+  the diagnostics request remains partial and successful. This intentionally
+  does not run re-recovery or add a new recovery fault.
+- Diagnostics mode falls back to the lifecycle open plan only if the API open
+  summary is absent. The normal open paths always populate the summary; the
+  fallback is defensive against future constructor paths.
+- Branch-scoped storage pressure is collected from the requested branch state.
+  If the requested branch is absent, pressure facts are `Unknown` rather than
+  falling back to another branch's pressure.
+- Retention diagnostics expose only counters backed by runtime facts. Pending
+  release count is known in durable mode; protected and reclaimed object counts
+  remain `None` until lower layers track them.
+- Failed recovery classification is derived from the failed recovery fault:
+  failed I/O and WAL-tail repair faults are reported as `Io`, not corruption.
+  Degraded recovery still trusts the lifecycle-supplied degradation class.
+- Branch generation min/max facts aggregate active branches only; deleted branch
+  tombstones are counted separately and do not skew active generation bounds.
 - Read activity counters are intentionally `Unknown` until the lazy read path
   has durable block-hit/miss counters. The API does not synthesize values.
+- Durable quarantine diagnostics remain `Unknown` until a dedicated
+  inventory-backed diagnostics read path lands. The generated diagnostics
+  property harness is cache-mode only; durable diagnostics are covered by
+  focused `localfs` unit tests.
 - The public type name for durable table state is
   `DiagnosticsTableReachabilityReport`, avoiding leakage of lower-layer table
   manifest concrete type names through the API boundary.
@@ -847,6 +869,8 @@ Status: implemented
 - `diagnostics_reports_live_degraded_recovery_from_runtime`
 - `diagnostics_reports_failed_recovery`
 - `diagnostics_preserves_recovery_fault_class`
+- `diagnostics_closed_runtime_without_open_reports_unknown_recovery`
+- `diagnostics_failed_io_recovery_is_not_classified_as_corruption`
 - `diagnostics_distinguishes_unknown_from_unsupported`
 - `diagnostics_after_close_reports_closed_state`
 - `diagnostics_after_close_preserves_recovery_summary`
@@ -855,13 +879,17 @@ Status: implemented
 - `diagnostics_reports_cache_budget_facts`
 - `diagnostics_reports_lazy_read_counters`
 - `diagnostics_reports_pressure_facts`
+- `diagnostics_branch_scope_reports_requested_branch_pressure`
+- `diagnostics_unknown_branch_scope_marks_pressure_unknown`
 - `diagnostics_cache_mode_marks_durable_facts_unsupported`
 - `diagnostics_reports_table_manifest_reachability`
 - `diagnostics_reports_table_object_retention_summary`
 - `diagnostics_reports_quarantine_summary`
 - `diagnostics_reports_wal_growth_policy`
 - `diagnostics_reports_checkpoint_watermark`
+- `diagnostics_manifest_read_failure_marks_checkpoint_unknown`
 - `diagnostics_reports_branch_count_and_generation_summary`
+- `diagnostics_branch_generation_summary_ignores_deleted_branches`
 - `diagnostics_do_not_contain_product_vocabulary`
 - `diagnostics_do_not_contain_primitive_vocabulary`
 - `diagnostics_do_not_contain_user_advice`
@@ -878,6 +906,19 @@ Status: implemented
   property harness.
 - Dropping live maintenance queue usage from budget diagnostics is caught by
   `diagnostics_reports_memory_budget_usage`.
+- Reporting default-branch pressure for a branch-scoped request is caught by
+  `diagnostics_branch_scope_reports_requested_branch_pressure`.
+- Treating an absent branch as pressure-free instead of unknown is caught by
+  `diagnostics_unknown_branch_scope_marks_pressure_unknown`.
+- Reporting unopened closed-runtime recovery as healthy is caught by
+  `diagnostics_closed_runtime_without_open_reports_unknown_recovery`.
+- Classifying failed I/O recovery as corruption is caught by
+  `diagnostics_failed_io_recovery_is_not_classified_as_corruption`.
+- Failing the whole diagnostics call when checkpoint manifest facts are
+  unavailable is caught by
+  `diagnostics_manifest_read_failure_marks_checkpoint_unknown`.
+- Including deleted branch tombstones in active generation bounds is caught by
+  `diagnostics_branch_generation_summary_ignores_deleted_branches`.
 - Leaking lower-layer concrete table manifest type names through public API
   signatures is caught by `api_public_signatures_do_not_expose_lower_layer_concrete_types`.
 - Adding product, primitive, user-advice, or engine telemetry vocabulary to

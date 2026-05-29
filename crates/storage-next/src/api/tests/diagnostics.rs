@@ -67,7 +67,11 @@ fn diagnostics_reports_healthy_recovery() {
 
     let report = diagnostics(&runtime);
 
-    assert_eq!(report.recovery().health(), RecoveryHealthSummary::Healthy);
+    assert_eq!(report.recovery().state(), DiagnosticsFactState::Known);
+    assert_eq!(
+        report.recovery().health(),
+        Some(RecoveryHealthSummary::Healthy)
+    );
     assert_eq!(report.recovery().faults(), &[]);
     assert_eq!(report.visible_version(), Some(commit.commit_version()));
     assert_eq!(
@@ -91,7 +95,8 @@ fn diagnostics_reports_degraded_recovery() {
 
     let report = StorageRuntime::diagnostics_recovery_report_for_test(&health);
 
-    assert_eq!(report.health(), RecoveryHealthSummary::Degraded);
+    assert_eq!(report.state(), DiagnosticsFactState::Known);
+    assert_eq!(report.health(), Some(RecoveryHealthSummary::Degraded));
     assert_eq!(report.class(), Some(DiagnosticsRecoveryClass::Corruption));
     assert_eq!(report.faults().len(), 1);
 }
@@ -116,7 +121,10 @@ fn diagnostics_reports_live_degraded_recovery_from_runtime() {
 
     let report = diagnostics(&runtime);
 
-    assert_eq!(report.recovery().health(), RecoveryHealthSummary::Degraded);
+    assert_eq!(
+        report.recovery().health(),
+        Some(RecoveryHealthSummary::Degraded)
+    );
     assert_eq!(
         report.recovery().class(),
         Some(DiagnosticsRecoveryClass::Corruption)
@@ -134,7 +142,7 @@ fn diagnostics_reports_failed_recovery() {
 
     let report = StorageRuntime::diagnostics_recovery_report_for_test(&health);
 
-    assert_eq!(report.health(), RecoveryHealthSummary::Failed);
+    assert_eq!(report.health(), Some(RecoveryHealthSummary::Failed));
     assert_eq!(
         report.faults()[0].kind(),
         DiagnosticsRecoveryFaultKind::CorruptManifest
@@ -159,7 +167,37 @@ fn diagnostics_after_close_preserves_recovery_summary() {
     let report = diagnostics(&runtime);
 
     assert_eq!(report.runtime_state(), StorageRuntimeState::Closed);
-    assert_eq!(report.recovery().health(), RecoveryHealthSummary::Failed);
+    assert_eq!(report.recovery().state(), DiagnosticsFactState::Known);
+    assert_eq!(
+        report.recovery().health(),
+        Some(RecoveryHealthSummary::Failed)
+    );
+}
+
+#[test]
+fn diagnostics_closed_runtime_without_open_reports_unknown_recovery() {
+    let runtime = StorageRuntime::closed();
+
+    let report = diagnostics(&runtime);
+
+    assert_eq!(report.runtime_state(), StorageRuntimeState::Closed);
+    assert_eq!(report.recovery().state(), DiagnosticsFactState::Unknown);
+    assert_eq!(report.recovery().health(), None);
+}
+
+#[test]
+fn diagnostics_failed_io_recovery_is_not_classified_as_corruption() {
+    let fault = crate::lifecycle::RecoveryFault::new(
+        crate::lifecycle::RecoveryFaultKind::IoFailure,
+        "read failed",
+    )
+    .expect("fault");
+    let health = crate::lifecycle::RecoveryHealth::failed(fault);
+
+    let report = StorageRuntime::diagnostics_recovery_report_for_test(&health);
+
+    assert_eq!(report.health(), Some(RecoveryHealthSummary::Failed));
+    assert_eq!(report.class(), Some(DiagnosticsRecoveryClass::Io));
 }
 
 #[test]
@@ -293,6 +331,40 @@ fn diagnostics_reports_pressure_facts() {
 }
 
 #[test]
+fn diagnostics_branch_scope_reports_requested_branch_pressure() {
+    let mut runtime = open_runtime();
+    let child = branch_id(0x45);
+    runtime
+        .branch(&BranchRequest::new(
+            child,
+            BranchAction::Create,
+            Some(BranchGeneration::new(2)),
+        ))
+        .expect("create branch");
+
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Branch(child)))
+        .expect("diagnostics");
+
+    assert_eq!(report.pressure().state(), DiagnosticsFactState::Known);
+    assert_eq!(report.pressure().branch_id(), Some(child));
+}
+
+#[test]
+fn diagnostics_unknown_branch_scope_marks_pressure_unknown() {
+    let runtime = open_runtime();
+
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Branch(
+            branch_id(0x46),
+        )))
+        .expect("diagnostics");
+
+    assert_eq!(report.pressure().state(), DiagnosticsFactState::Unknown);
+    assert_eq!(report.pressure().branch_id(), None);
+}
+
+#[test]
 fn diagnostics_cache_mode_marks_durable_facts_unsupported() {
     let runtime = open_runtime();
 
@@ -337,7 +409,9 @@ fn diagnostics_reports_table_object_retention_summary() {
     let report = diagnostics(&runtime);
 
     assert_eq!(report.retention().state(), DiagnosticsFactState::Known);
-    assert_eq!(report.retention().pending_releases(), 0);
+    assert_eq!(report.retention().protected_objects(), None);
+    assert_eq!(report.retention().pending_releases(), Some(0));
+    assert_eq!(report.retention().reclaimed_objects(), None);
 }
 
 #[cfg(feature = "localfs")]
@@ -378,6 +452,30 @@ fn diagnostics_reports_checkpoint_watermark() {
     assert_eq!(report.checkpoint().flush_watermark(), None);
 }
 
+#[cfg(feature = "localfs")]
+#[test]
+fn diagnostics_manifest_read_failure_marks_checkpoint_unknown() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("diagnostics-corrupt-manifest"));
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("open durable runtime")
+    .into_runtime();
+    let manifest = crate::layout::ObjectLayout::database_manifest().expect("manifest object");
+    backend
+        .as_backend()
+        .write_object(&manifest, b"not a database manifest")
+        .expect("corrupt manifest");
+
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("diagnostics remains partial");
+
+    assert_eq!(report.checkpoint().state(), DiagnosticsFactState::Unknown);
+    assert_eq!(report.table_manifest().state(), DiagnosticsFactState::Known);
+}
+
 #[test]
 fn diagnostics_reports_branch_count_and_generation_summary() {
     let mut runtime = open_runtime();
@@ -401,5 +499,46 @@ fn diagnostics_reports_branch_count_and_generation_summary() {
     assert_eq!(
         report.branch_catalog().max_generation(),
         Some(BranchGeneration::new(2))
+    );
+}
+
+#[test]
+fn diagnostics_branch_generation_summary_ignores_deleted_branches() {
+    let mut runtime = open_runtime();
+    let active = branch_id(0x47);
+    let deleted = branch_id(0x48);
+    runtime
+        .branch(&BranchRequest::new(
+            active,
+            BranchAction::Create,
+            Some(BranchGeneration::new(5)),
+        ))
+        .expect("create active branch");
+    runtime
+        .branch(&BranchRequest::new(
+            deleted,
+            BranchAction::Create,
+            Some(BranchGeneration::new(9)),
+        ))
+        .expect("create branch to delete");
+    runtime
+        .branch(&BranchRequest::new(
+            deleted,
+            BranchAction::Delete,
+            Some(BranchGeneration::new(9)),
+        ))
+        .expect("delete branch");
+
+    let report = diagnostics(&runtime);
+
+    assert_eq!(report.branch_catalog().active_branches(), 2);
+    assert_eq!(report.branch_catalog().deleted_branches(), 1);
+    assert_eq!(
+        report.branch_catalog().min_generation(),
+        Some(BranchGeneration::new(1))
+    );
+    assert_eq!(
+        report.branch_catalog().max_generation(),
+        Some(BranchGeneration::new(5))
     );
 }

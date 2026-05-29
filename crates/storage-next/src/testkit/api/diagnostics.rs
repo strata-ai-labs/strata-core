@@ -58,7 +58,7 @@ pub fn check_storage_api_diagnostics_model_contract(
     let global = runtime
         .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
         .map_err(testkit_error)?;
-    if global.recovery().health() == RecoveryHealthSummary::Healthy {
+    if global.recovery().health() == Some(RecoveryHealthSummary::Healthy) {
         outcome.health_reports += 1;
     }
     if global.budget().state() == DiagnosticsFactState::Known

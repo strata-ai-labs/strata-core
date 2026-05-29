@@ -31,6 +31,7 @@ pub enum DiagnosticsFactState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticsRecoveryClass {
     Corruption,
+    Io,
     Policy,
     Telemetry,
 }
@@ -61,7 +62,8 @@ pub struct DiagnosticsRecoveryFault {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticsRecoveryReport {
-    health: RecoveryHealthSummary,
+    state: DiagnosticsFactState,
+    health: Option<RecoveryHealthSummary>,
     class: Option<DiagnosticsRecoveryClass>,
     faults: Vec<DiagnosticsRecoveryFault>,
 }
@@ -157,9 +159,9 @@ pub struct DiagnosticsTableReachabilityReport {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiagnosticsRetentionReport {
     state: DiagnosticsFactState,
-    protected_objects: usize,
-    pending_releases: usize,
-    reclaimed_objects: usize,
+    protected_objects: Option<usize>,
+    pending_releases: Option<usize>,
+    reclaimed_objects: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,7 +278,8 @@ impl DiagnosticsRecoveryReport {
         faults: Vec<DiagnosticsRecoveryFault>,
     ) -> Self {
         Self {
-            health,
+            state: DiagnosticsFactState::Known,
+            health: Some(health),
             class,
             faults,
         }
@@ -288,7 +291,22 @@ impl DiagnosticsRecoveryReport {
     }
 
     #[must_use]
-    pub const fn health(&self) -> RecoveryHealthSummary {
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            health: None,
+            class: None,
+            faults: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn health(&self) -> Option<RecoveryHealthSummary> {
         self.health
     }
 
@@ -578,9 +596,9 @@ impl DiagnosticsTableReachabilityReport {
 impl DiagnosticsRetentionReport {
     #[must_use]
     pub const fn known(
-        protected_objects: usize,
-        pending_releases: usize,
-        reclaimed_objects: usize,
+        protected_objects: Option<usize>,
+        pending_releases: Option<usize>,
+        reclaimed_objects: Option<usize>,
     ) -> Self {
         Self {
             state: DiagnosticsFactState::Known,
@@ -594,9 +612,9 @@ impl DiagnosticsRetentionReport {
     pub const fn unsupported() -> Self {
         Self {
             state: DiagnosticsFactState::Unsupported,
-            protected_objects: 0,
-            pending_releases: 0,
-            reclaimed_objects: 0,
+            protected_objects: None,
+            pending_releases: None,
+            reclaimed_objects: None,
         }
     }
 
@@ -604,9 +622,9 @@ impl DiagnosticsRetentionReport {
     pub const fn unknown() -> Self {
         Self {
             state: DiagnosticsFactState::Unknown,
-            protected_objects: 0,
-            pending_releases: 0,
-            reclaimed_objects: 0,
+            protected_objects: None,
+            pending_releases: None,
+            reclaimed_objects: None,
         }
     }
 
@@ -616,17 +634,17 @@ impl DiagnosticsRetentionReport {
     }
 
     #[must_use]
-    pub const fn protected_objects(self) -> usize {
+    pub const fn protected_objects(self) -> Option<usize> {
         self.protected_objects
     }
 
     #[must_use]
-    pub const fn pending_releases(self) -> usize {
+    pub const fn pending_releases(self) -> Option<usize> {
         self.pending_releases
     }
 
     #[must_use]
-    pub const fn reclaimed_objects(self) -> usize {
+    pub const fn reclaimed_objects(self) -> Option<usize> {
         self.reclaimed_objects
     }
 }

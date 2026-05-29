@@ -1,6 +1,6 @@
 # L9G Test Plan: Diagnostics, Health, And Observability
 
-Status: draft test plan
+Status: implemented
 
 Parent plan:
 `docs/architecture/implementation-plans/M4/L9/l9g-diagnostics-health-observability-implementation-plan.md`
@@ -53,12 +53,41 @@ telemetry or user-facing advice.
 3. `diagnostics_do_not_contain_user_advice`
 4. `diagnostics_do_not_import_engine_telemetry`
 
+### Review Regression Tests
+
+1. `diagnostics_reports_live_degraded_recovery_from_runtime`
+2. `diagnostics_after_close_preserves_recovery_summary`
+3. `diagnostics_branch_scope_reports_requested_branch_pressure`
+4. `diagnostics_unknown_branch_scope_marks_pressure_unknown`
+5. `diagnostics_closed_runtime_without_open_reports_unknown_recovery`
+6. `diagnostics_failed_io_recovery_is_not_classified_as_corruption`
+7. `diagnostics_manifest_read_failure_marks_checkpoint_unknown`
+8. `diagnostics_branch_generation_summary_ignores_deleted_branches`
+9. `api_conformance_diagnostics_reports_boundary_facts`
+10. `api_property_harness_matches_generated_diagnostics_model`
+
 ## Sensitivity Probes
 
 1. Convert degraded recovery to healthy.
 2. Drop memory budget limit.
 3. Emit product recommendation text.
 4. Treat unsupported as zero.
+5. Report default-branch pressure for a branch-scoped request.
+6. Treat an absent branch as pressure-free instead of unknown.
+7. Report unopened closed-runtime recovery as healthy.
+8. Classify failed I/O recovery as corruption.
+9. Fail the whole diagnostics request when checkpoint manifest facts cannot be
+   loaded.
+10. Include deleted branches in active branch generation min/max facts.
+
+## Open Follow-Ups
+
+1. Durable quarantine diagnostics remain `Unknown`; inventory-backed counts
+   require a separate diagnostics read path.
+2. The generated diagnostics property harness exercises cache mode only.
+   Durable diagnostics are covered by focused `localfs` unit tests.
+3. The generated diagnostics harness `object_reports` counter currently guards
+   read-activity unknown semantics rather than table-object facts.
 
 ## Verification
 
