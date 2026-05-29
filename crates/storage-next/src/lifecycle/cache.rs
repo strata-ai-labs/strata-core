@@ -18,10 +18,10 @@ use super::{
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressure, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
     MaintenanceCancelOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
-    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryHealth, StorageBudgetLedger,
-    StorageBudgetSnapshot, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
-    StorageOpenPlan,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
+    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
@@ -499,24 +499,14 @@ impl<S> LifecycleCacheRuntime<S> {
         let budget = self.budget.clone();
         let maintenance_status = self.maintenance.status();
         let state = self.state;
-        let branch_id = self.initial_branch_id;
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
-        let outcome = {
+        {
             let maintenance = &mut self.maintenance;
-            let branch = self
-                .branch_catalog
-                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            let branch_catalog = &mut self.branch_catalog;
             maintenance.enqueue_with_binding(state, request, |request| {
                 require_maintenance_enqueue_budget(&budget, maintenance_status)?;
-                bind_materialization_task_for_enqueue(branch, request)
+                bind_materialization_request_in_catalog(branch_catalog, request)
             })
-        };
-        outcome
+        }
     }
 
     #[allow(
@@ -534,7 +524,14 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.initial_branch_id;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
+        else {
+            return Ok(None);
+        };
+        let task_id = task.id();
+        let branch_id = branch_id_from_branch_task(task)?;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
         // when the runner fetches branch state via the catalog.
@@ -553,9 +550,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 branch,
                 budget: &self.budget,
             };
-            maintenance.run_next_matching(state, &mut runner, |task| {
-                task.kind() == MaintenanceTaskKind::Flush
-            })
+            maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         outcome
     }
@@ -568,7 +563,14 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.initial_branch_id;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Compaction)
+        else {
+            return Ok(None);
+        };
+        let task_id = task.id();
+        let branch_id = branch_id_from_table_level_task(task)?;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
         // when the runner fetches branch state via the catalog.
@@ -584,9 +586,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             let mut runner = CacheCompactionMaintenanceRunner { branch };
-            maintenance.run_next_matching(state, &mut runner, |task| {
-                task.kind() == MaintenanceTaskKind::Compaction
-            })
+            maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         outcome
     }
@@ -598,8 +598,26 @@ impl<S> LifecycleCacheRuntime<S> {
     pub(crate) fn run_next_materialization_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Materialization)
+        else {
+            return Ok(None);
+        };
+        self.run_materialization_maintenance_task(task.id())
+    }
+
+    pub(crate) fn run_materialization_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.initial_branch_id;
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Materialization
+        }) else {
+            return Ok(None);
+        };
+        let branch_id = branch_id_from_inherited_layer_task(task)?;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
         // when the runner fetches branch state via the catalog.
@@ -615,9 +633,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             let mut runner = CacheMaterializationMaintenanceRunner { branch };
-            maintenance.run_next_matching(state, &mut runner, |task| {
-                task.kind() == MaintenanceTaskKind::Materialization
-            })
+            maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         outcome
     }
@@ -926,6 +942,64 @@ const fn cache_supports_maintenance_kind(kind: MaintenanceTaskKind) -> bool {
             | MaintenanceTaskKind::Materialization
             | MaintenanceTaskKind::HealthCollection
     )
+}
+
+fn bind_materialization_request_in_catalog(
+    branch_catalog: &mut LifecycleBranchCatalog,
+    request: MaintenanceTaskRequest,
+) -> LifecycleResult<MaintenanceTaskRequest> {
+    if request.kind() != MaintenanceTaskKind::Materialization
+        || request.materialization_handle().is_some()
+    {
+        return Ok(request);
+    }
+    let branch_id = branch_id_from_inherited_layer_request(request)?;
+    let generation = branch_catalog
+        .registry()
+        .lookup(branch_id)
+        .map_err(commit_error)?
+        .generation();
+    let branch = branch_catalog
+        .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+    bind_materialization_task_for_enqueue(branch, request)
+}
+
+const fn branch_id_from_branch_task(task: MaintenanceTask) -> LifecycleResult<BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::Branch(branch_id) => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "maintenance task must target a branch",
+        }),
+    }
+}
+
+const fn branch_id_from_table_level_task(task: MaintenanceTask) -> LifecycleResult<BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::TableLevel { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "compaction task must target a table level",
+        }),
+    }
+}
+
+const fn branch_id_from_inherited_layer_task(task: MaintenanceTask) -> LifecycleResult<BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "materialization task must target an inherited layer",
+        }),
+    }
+}
+
+const fn branch_id_from_inherited_layer_request(
+    request: MaintenanceTaskRequest,
+) -> LifecycleResult<BranchId> {
+    match request.scope() {
+        MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "materialization task must target an inherited layer",
+        }),
+    }
 }
 
 fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {

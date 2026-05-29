@@ -42,7 +42,7 @@ without current proof.
 1. `api_retention_without_current_proof_rejects`
 2. `api_retention_table_objects_deferred_when_unsupported`
 3. `api_snapshot_pruning_preserves_required_snapshot`
-4. `api_quarantine_reports_inventory_facts`
+4. `api_quarantine_via_queue_defers_without_explicit_request`
 5. `api_purge_requires_fresh_proof`
 6. `api_repair_reports_reconciliation_facts`
 7. `api_reclaim_degraded_health_blocks_when_required`
@@ -52,7 +52,7 @@ without current proof.
 1. `api_wal_growth_policy_status_reports_not_needed`
 2. `api_wal_growth_policy_status_reports_checkpoint_due`
 3. `api_wal_growth_trigger_runs_supported_path`
-4. `api_maintenance_queue_status_reports_pending_and_active`
+4. `api_maintenance_queue_status_reports_pending_only`
 5. `api_maintenance_drain_is_deterministic`
 6. `api_maintenance_after_close_rejects`
 

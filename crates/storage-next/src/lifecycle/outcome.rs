@@ -7,7 +7,7 @@ use super::{
     MaintenanceTaskKind, RecoveryHealth, StorageBudgetSnapshot, StorageMode,
 };
 use crate::backend::BackendCapabilities;
-use crate::lifecycle::maintenance::MaintenanceTaskId;
+use crate::lifecycle::maintenance::{MaintenanceTaskId, MaintenanceTaskScope};
 use strata_core_next::CommitVersion;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +40,7 @@ pub(crate) enum StorageOpenDisposition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MaintenanceOutcome {
     task_id: Option<MaintenanceTaskId>,
+    task_scope: Option<MaintenanceTaskScope>,
     task_kind: MaintenanceTaskKind,
     status: MaintenanceOutcomeStatus,
     recovery_health: Option<RecoveryHealth>,
@@ -256,6 +257,7 @@ impl MaintenanceOutcome {
     ) -> Self {
         Self {
             task_id: None,
+            task_scope: None,
             task_kind,
             status,
             recovery_health: None,
@@ -329,6 +331,11 @@ impl MaintenanceOutcome {
         self
     }
 
+    pub(crate) const fn with_task_scope(mut self, task_scope: MaintenanceTaskScope) -> Self {
+        self.task_scope = Some(task_scope);
+        self
+    }
+
     pub(crate) const fn with_stats(mut self, stats: LifecycleStats) -> Self {
         self.stats = stats;
         self
@@ -336,6 +343,10 @@ impl MaintenanceOutcome {
 
     pub(crate) const fn task_id(&self) -> Option<MaintenanceTaskId> {
         self.task_id
+    }
+
+    pub(crate) const fn task_scope(&self) -> Option<MaintenanceTaskScope> {
+        self.task_scope
     }
 
     pub(crate) const fn task_kind(&self) -> MaintenanceTaskKind {

@@ -192,3 +192,41 @@ fn api_property_harness_matches_generated_branch_model() {
         })
         .expect("generated API branch model property");
 }
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn api_property_harness_matches_generated_maintenance_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestCaseError, TestRunner};
+    use strata_storage_next::testkit::check_storage_api_maintenance_model_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/storage_api_maintenance_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 1..=64), |script| {
+            let outcome = check_storage_api_maintenance_model_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.checkpoints() == 0
+                || outcome.flushes() == 0
+                || outcome.rewrites() == 0
+                || outcome.retention() == 0
+                || outcome.quarantine() == 0
+                || outcome.wal_growth() == 0
+                || outcome.queue_drains() == 0
+                || outcome.scope_rejections() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "generated maintenance script did not exercise every required route",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated API maintenance model property");
+}

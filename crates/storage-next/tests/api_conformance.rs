@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use strata_storage_next::api::{
     BranchAction, BranchGeneration, BranchId, BranchOperation, BranchRequest, CommitBatch,
-    CommitMutation, CommitOptions, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
-    StorageMode, StorageOpenOptions, StorageRuntime, StorageRuntimeState, StorageSpaceId,
-    StorageValue,
+    CommitMutation, CommitOptions, MaintenanceRequest, MaintenanceScope, MaintenanceSummaryStatus,
+    MaintenanceTask, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey, StorageMode,
+    StorageOpenOptions, StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
 };
 
 #[cfg(feature = "localfs")]
@@ -233,6 +233,50 @@ fn api_conformance_branch_lifecycle_round_trip() {
         Some(BranchGeneration::new(1))
     );
     assert_eq!(recreated.generation_after(), Some(BranchGeneration::new(2)));
+}
+
+#[test]
+fn api_conformance_maintenance_flush_and_wal_growth_round_trip() {
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open")
+        .into_runtime();
+    let branch = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
+    let key = StorageKey::new(b"maintenance-conformance".to_vec()).expect("key");
+    runtime
+        .commit(
+            &CommitBatch::new(
+                branch,
+                vec![CommitMutation::Put {
+                    storage_space: space,
+                    key,
+                    value: StorageValue::new(b"value".to_vec()),
+                    ttl: None,
+                }],
+                CommitOptions::default(),
+            )
+            .expect("commit batch"),
+        )
+        .expect("commit");
+
+    let flush = runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch),
+        ))
+        .expect("flush maintenance");
+    assert_eq!(flush.status(), MaintenanceSummaryStatus::Completed);
+    assert!(flush.rows_processed() > 0);
+    assert!(!flush.wal_truncated());
+
+    let growth = runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::WalGrowth,
+            MaintenanceScope::Global,
+        ))
+        .expect("WAL growth maintenance");
+    assert_eq!(growth.status(), MaintenanceSummaryStatus::Completed);
+    assert!(growth.wal_growth().is_some());
 }
 
 fn read_conformance_value(

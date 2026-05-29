@@ -977,7 +977,7 @@ impl LifecycleMaintenanceExecutor {
             return Ok(None);
         };
         let outcome = match runner.run_task(&task) {
-            Ok(outcome) => attach_executor_facts(outcome, task.id())?,
+            Ok(outcome) => attach_executor_facts(outcome, task)?,
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
                 self.active = Some(task);
@@ -1029,6 +1029,14 @@ impl LifecycleMaintenanceExecutor {
         &self.queue
     }
 
+    pub(crate) fn next_matching_task(
+        &self,
+        predicate: impl Fn(&MaintenanceTask) -> bool,
+    ) -> Option<MaintenanceTask> {
+        self.next_task_index(predicate)
+            .map(|index| self.queue[index])
+    }
+
     #[cfg(test)]
     pub(crate) fn set_active_for_test(&mut self, task: MaintenanceTask) {
         self.active = Some(task);
@@ -1067,7 +1075,7 @@ impl LifecycleMaintenanceExecutor {
             return Err(error);
         }
         let outcome = match runner.run_task(&task) {
-            Ok(outcome) => attach_executor_facts(outcome, task.id())?,
+            Ok(outcome) => attach_executor_facts(outcome, task)?,
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
                 self.active = None;
@@ -1114,9 +1122,11 @@ impl LifecycleMaintenanceExecutor {
 
 fn attach_executor_facts(
     outcome: MaintenanceOutcome,
-    task_id: MaintenanceTaskId,
+    task: MaintenanceTask,
 ) -> LifecycleResult<MaintenanceOutcome> {
-    let mut outcome = outcome.with_task_id(task_id);
+    let mut outcome = outcome
+        .with_task_id(task.id())
+        .with_task_scope(task.scope());
     if outcome.status() == MaintenanceOutcomeStatus::Failed && outcome.reason().is_none() {
         outcome = outcome.with_reason("maintenance task failed");
     }

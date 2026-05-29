@@ -50,8 +50,9 @@ use crate::lifecycle::{
     LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest,
     LifecycleQuarantineRequest, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
     LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
-    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
@@ -496,24 +497,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let budget = self.budget.clone();
         let maintenance_status = self.maintenance.status();
         let state = self.state;
-        let branch_id = self.initial_branch_id;
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
-        let outcome = {
+        {
             let maintenance = &mut self.maintenance;
-            let branch = self
-                .branch_catalog
-                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            let branch_catalog = &mut self.branch_catalog;
             maintenance.enqueue_with_binding(state, request, |request| {
                 require_maintenance_enqueue_budget(&budget, maintenance_status)?;
-                bind_materialization_task_for_enqueue(branch, request)
+                bind_materialization_request_in_catalog(branch_catalog, request)
             })
-        };
-        outcome
+        }
     }
 
     #[allow(
@@ -625,7 +616,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.initial_branch_id;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
+        else {
+            return Ok(None);
+        };
+        let task_id = task.id();
+        let branch_id = branch_id_from_branch_task(task)?;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
         let generation = self
@@ -651,9 +649,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 table_catalog,
                 budget: &self.budget,
             };
-            maintenance.run_next_matching(state, &mut runner, |task| {
-                task.kind() == MaintenanceTaskKind::Flush
-            })
+            maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         self.record_optional_maintenance_health(&outcome);
         outcome
@@ -750,7 +746,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.initial_branch_id;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Compaction)
+        else {
+            return Ok(None);
+        };
+        let task_id = task.id();
+        let branch_id = branch_id_from_table_level_task(task)?;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
         let generation = self
@@ -777,9 +780,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 table_catalog,
                 budget,
             };
-            maintenance.run_next_matching(state, &mut runner, |task| {
-                task.kind() == MaintenanceTaskKind::Compaction
-            })
+            maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         outcome
     }
@@ -791,8 +792,26 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_materialization_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Materialization)
+        else {
+            return Ok(None);
+        };
+        self.run_materialization_maintenance_task(task.id())
+    }
+
+    pub(crate) fn run_materialization_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let branch_id = self.initial_branch_id;
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Materialization
+        }) else {
+            return Ok(None);
+        };
+        let branch_id = branch_id_from_inherited_layer_task(task)?;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
         let generation = self
@@ -819,9 +838,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 table_catalog,
                 budget,
             };
-            maintenance.run_next_matching(state, &mut runner, |task| {
-                task.kind() == MaintenanceTaskKind::Materialization
-            })
+            maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         outcome
     }
@@ -864,6 +881,19 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_purge_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Purge)
+        else {
+            return Ok(None);
+        };
+        self.run_purge_maintenance_task(task.id())
+    }
+
+    pub(crate) fn run_purge_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let quarantine = self.services.quarantine();
@@ -879,7 +909,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             default_branch_id,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
-            task.kind() == MaintenanceTaskKind::Purge
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Purge
         });
         self.record_optional_maintenance_health(&outcome);
         outcome
@@ -892,11 +922,24 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_quarantine_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Quarantine)
+        else {
+            return Ok(None);
+        };
+        self.run_quarantine_maintenance_task(task.id())
+    }
+
+    pub(crate) fn run_quarantine_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let mut runner = DurableQuarantineMaintenanceRunner;
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
-            task.kind() == MaintenanceTaskKind::Quarantine
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Quarantine
         });
         self.record_optional_maintenance_health(&outcome);
         outcome
@@ -909,6 +952,19 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_quarantine_repair_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Repair)
+        else {
+            return Ok(None);
+        };
+        self.run_quarantine_repair_maintenance_task(task.id())
+    }
+
+    pub(crate) fn run_quarantine_repair_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let quarantine = self.services.quarantine();
@@ -920,7 +976,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             codec_id,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
-            task.kind() == MaintenanceTaskKind::Repair
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Repair
         });
         self.record_optional_maintenance_health(&outcome);
         outcome
@@ -1766,6 +1822,70 @@ fn append_released_table_names(
         }
     }
     outcome.with_affected_object_names(names)
+}
+
+fn bind_materialization_request_in_catalog(
+    branch_catalog: &mut crate::lifecycle::LifecycleBranchCatalog,
+    request: MaintenanceTaskRequest,
+) -> LifecycleResult<MaintenanceTaskRequest> {
+    if request.kind() != MaintenanceTaskKind::Materialization
+        || request.materialization_handle().is_some()
+    {
+        return Ok(request);
+    }
+    let branch_id = branch_id_from_inherited_layer_request(request)?;
+    let generation = branch_catalog
+        .registry()
+        .lookup(branch_id)
+        .map_err(commit_error)?
+        .generation();
+    let branch = branch_catalog
+        .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+    bind_materialization_task_for_enqueue(branch, request)
+}
+
+const fn branch_id_from_branch_task(
+    task: MaintenanceTask,
+) -> LifecycleResult<strata_core_next::BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::Branch(branch_id) => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "maintenance task must target a branch",
+        }),
+    }
+}
+
+const fn branch_id_from_table_level_task(
+    task: MaintenanceTask,
+) -> LifecycleResult<strata_core_next::BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::TableLevel { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "compaction task must target a table level",
+        }),
+    }
+}
+
+const fn branch_id_from_inherited_layer_task(
+    task: MaintenanceTask,
+) -> LifecycleResult<strata_core_next::BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "materialization task must target an inherited layer",
+        }),
+    }
+}
+
+const fn branch_id_from_inherited_layer_request(
+    request: MaintenanceTaskRequest,
+) -> LifecycleResult<strata_core_next::BranchId> {
+    match request.scope() {
+        MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "materialization task must target an inherited layer",
+        }),
+    }
 }
 
 fn manifest_error(error: crate::service::ManifestServiceError) -> LifecycleError {

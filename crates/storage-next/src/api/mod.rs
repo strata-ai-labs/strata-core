@@ -51,7 +51,9 @@ pub use read::{
 };
 pub use result::StorageApiResult;
 #[cfg(any(test, feature = "testkit"))]
-pub(crate) use runtime::map_commit_error_for_test;
+pub(crate) use runtime::{
+    map_commit_error_for_test, map_lifecycle_error_for_test, map_maintenance_outcome_for_test,
+};
 pub use runtime::{StorageCloseOptions, StorageRuntime};
 pub use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
