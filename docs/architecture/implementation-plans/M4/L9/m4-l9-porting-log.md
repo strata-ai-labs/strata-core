@@ -503,6 +503,7 @@ Status: implemented
 - `commit_rejects_zero_expected_generation`
 - `commit_rejects_cross_branch_mutation`
 - `commit_rejects_unsupported_durability_for_cache`
+- `commit_rejected_request_does_not_allocate_version`
 - `commit_rejects_transaction_id_field_absence_by_type`
 - `cache_commit_returns_not_durable_outcome`
 - `standard_commit_returns_standard_outcome`
@@ -538,8 +539,9 @@ Status: implemented
 
 ### Sensitivity Probes
 
-- Moving allocation before API validation is caught by validation and CAS tests
-  that assert no successful outcome is returned for rejected batches.
+- Moving allocation before API validation is caught by
+  `commit_rejected_request_does_not_allocate_version`, which verifies a rejected
+  commit request does not consume the next commit version.
 - Dropping structured conflict mapping is caught by
   `commit_conflict_error_has_structured_branch_and_key`.
 - Collapsing durable uncertainty into a generic lower-layer failure is caught by

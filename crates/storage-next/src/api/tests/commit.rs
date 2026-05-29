@@ -334,6 +334,33 @@ fn commit_outcome_reports_timestamp_and_version() {
 }
 
 #[test]
+fn commit_rejected_request_does_not_allocate_version() {
+    let mut runtime = open_runtime();
+    let first = runtime
+        .commit(&put_batch(b"before-reject", b"value"))
+        .expect("first commit");
+    let rejected = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"rejected", b"value")],
+        CommitOptions::default().with_durability(CommitDurability::Standard),
+    )
+    .expect("valid shape");
+
+    let error = runtime
+        .commit(&rejected)
+        .expect_err("unsupported durability rejected");
+    let second = runtime
+        .commit(&put_batch(b"after-reject", b"value"))
+        .expect("second commit");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    assert_eq!(
+        second.commit_version(),
+        first.commit_version().checked_next().expect("next version")
+    );
+}
+
+#[test]
 fn commit_outcome_timestamps_advance() {
     let mut runtime = open_runtime();
 
