@@ -26,9 +26,10 @@ mod table_runtime;
 
 pub use api::{
     check_storage_api_branch_model_contract, check_storage_api_commit_fault_contract,
-    check_storage_api_commit_model_contract, check_storage_api_maintenance_fault_contract,
-    check_storage_api_maintenance_model_contract, check_storage_api_read_model_contract,
-    StorageApiBranchModelOutcome, StorageApiCommitFaultOutcome, StorageApiCommitModelOutcome,
+    check_storage_api_commit_model_contract, check_storage_api_diagnostics_model_contract,
+    check_storage_api_maintenance_fault_contract, check_storage_api_maintenance_model_contract,
+    check_storage_api_read_model_contract, StorageApiBranchModelOutcome,
+    StorageApiCommitFaultOutcome, StorageApiCommitModelOutcome, StorageApiDiagnosticsModelOutcome,
     StorageApiMaintenanceFaultOutcome, StorageApiMaintenanceModelOutcome,
     StorageApiReadModelOutcome,
 };

@@ -28,7 +28,16 @@ pub use commit::{
     CommitBatch, CommitCondition, CommitDurability, CommitDurabilitySummary, CommitExpectedVersion,
     CommitMutation, CommitOptions,
 };
-pub use diagnostics::{DiagnosticsRequest, DiagnosticsScope};
+pub use diagnostics::{
+    DiagnosticsBranchCatalogReport, DiagnosticsBudgetPool, DiagnosticsBudgetPressure,
+    DiagnosticsBudgetReport, DiagnosticsBudgetUsage, DiagnosticsCheckpointReport,
+    DiagnosticsFactState, DiagnosticsOutcome, DiagnosticsQuarantineReport,
+    DiagnosticsReadActivityReport, DiagnosticsRecoveryClass, DiagnosticsRecoveryFault,
+    DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport, DiagnosticsRequest,
+    DiagnosticsRetentionReport, DiagnosticsScope, DiagnosticsStoragePressureReason,
+    DiagnosticsStoragePressureReport, DiagnosticsStoragePressureSeverity,
+    DiagnosticsTableReachabilityReport, DiagnosticsTimelineReport, DiagnosticsWalGrowthReport,
+};
 pub use error::{StorageApiError, StorageApiErrorClass, StorageApiLowerLayer};
 pub use maintenance::{
     MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass, MaintenanceRequest,

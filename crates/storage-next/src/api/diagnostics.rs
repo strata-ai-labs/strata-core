@@ -1,6 +1,11 @@
-//! API diagnostics request shells.
+//! API diagnostics request and snapshot shells.
 
-use strata_core_next::BranchId;
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+use super::{
+    MaintenanceQueueSummary, MaintenanceWalGrowthSummary, RecoveryHealthSummary, StorageMode,
+    StorageRuntimeState,
+};
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,6 +19,213 @@ pub struct DiagnosticsRequest {
     scope: DiagnosticsScope,
 }
 
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsFactState {
+    Known,
+    Unknown,
+    Unsupported,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsRecoveryClass {
+    Corruption,
+    Policy,
+    Telemetry,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsRecoveryFaultKind {
+    CorruptManifest,
+    CorruptSnapshot,
+    CorruptWal,
+    MissingManifestObject,
+    MissingSnapshotObject,
+    MissingTableObject,
+    InheritedLayerLoss,
+    NoManifestFallback,
+    IoFailure,
+    QuarantineInventoryMismatch,
+    TimelineMismatch,
+    WalTailRepairFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticsRecoveryFault {
+    kind: DiagnosticsRecoveryFaultKind,
+    reason: &'static str,
+    affected_branch: Option<BranchId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticsRecoveryReport {
+    health: RecoveryHealthSummary,
+    class: Option<DiagnosticsRecoveryClass>,
+    faults: Vec<DiagnosticsRecoveryFault>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsBudgetPool {
+    BlockCache,
+    TableReader,
+    ActiveMutable,
+    FrozenMutable,
+    MaintenanceQueue,
+    GeneratedArtifact,
+    ManifestCatalog,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsBudgetPressure {
+    Normal,
+    Evicting,
+    DeferOptionalMaintenance,
+    RejectOptionalWork,
+    RejectMutatingAdmission,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsBudgetUsage {
+    pool: DiagnosticsBudgetPool,
+    used_bytes: u64,
+    limit_bytes: u64,
+    used_count: u64,
+    limit_count: Option<u64>,
+    pressure: DiagnosticsBudgetPressure,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticsBudgetReport {
+    state: DiagnosticsFactState,
+    total_limit_bytes: Option<u64>,
+    usages: Vec<DiagnosticsBudgetUsage>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsStoragePressureSeverity {
+    None,
+    Background,
+    Urgent,
+    BlockMutatingAdmission,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsStoragePressureReason {
+    None,
+    FrozenBacklog,
+    LevelZeroTableBacklog,
+    InheritedLayerBacklog,
+    MaintenanceQueueBacklog,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsStoragePressureReport {
+    state: DiagnosticsFactState,
+    branch_id: Option<BranchId>,
+    severity: DiagnosticsStoragePressureSeverity,
+    reason: DiagnosticsStoragePressureReason,
+    active_rows: usize,
+    frozen_tables: usize,
+    level_zero_tables: usize,
+    owned_tables: usize,
+    inherited_layers: usize,
+    pending_maintenance: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsReadActivityReport {
+    state: DiagnosticsFactState,
+    block_hits: Option<u64>,
+    block_misses: Option<u64>,
+    opened_readers: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsTableReachabilityReport {
+    state: DiagnosticsFactState,
+    table_count: usize,
+    object_count: usize,
+    next_manifest_sequence: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsRetentionReport {
+    state: DiagnosticsFactState,
+    protected_objects: usize,
+    pending_releases: usize,
+    reclaimed_objects: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsQuarantineReport {
+    state: DiagnosticsFactState,
+    quarantined_objects: Option<usize>,
+    quarantined_bytes: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsCheckpointReport {
+    state: DiagnosticsFactState,
+    snapshot_id: Option<u64>,
+    checkpoint_watermark: Option<CommitVersion>,
+    flush_watermark: Option<CommitVersion>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsWalGrowthReport {
+    state: DiagnosticsFactState,
+    policy_enabled: bool,
+    max_retained_wal_bytes: Option<u64>,
+    max_retained_wal_segments: Option<usize>,
+    max_commits_since_checkpoint: Option<u64>,
+    last_status: Option<MaintenanceWalGrowthSummary>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsBranchCatalogReport {
+    state: DiagnosticsFactState,
+    active_branches: usize,
+    deleted_branches: usize,
+    min_generation: Option<super::BranchGeneration>,
+    max_generation: Option<super::BranchGeneration>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsTimelineReport {
+    state: DiagnosticsFactState,
+    min_version: Option<CommitVersion>,
+    max_version: Option<CommitVersion>,
+    min_timestamp: Option<Timestamp>,
+    max_timestamp: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticsOutcome {
+    scope: DiagnosticsScope,
+    runtime_state: StorageRuntimeState,
+    mode: Option<StorageMode>,
+    visible_version: Option<CommitVersion>,
+    recovery: DiagnosticsRecoveryReport,
+    maintenance_state: DiagnosticsFactState,
+    maintenance: Option<MaintenanceQueueSummary>,
+    budget: DiagnosticsBudgetReport,
+    pressure: DiagnosticsStoragePressureReport,
+    read_activity: DiagnosticsReadActivityReport,
+    table_manifest: DiagnosticsTableReachabilityReport,
+    retention: DiagnosticsRetentionReport,
+    quarantine: DiagnosticsQuarantineReport,
+    checkpoint: DiagnosticsCheckpointReport,
+    wal_growth: DiagnosticsWalGrowthReport,
+    branch_catalog: DiagnosticsBranchCatalogReport,
+    timeline: DiagnosticsTimelineReport,
+}
+
 impl DiagnosticsRequest {
     #[must_use]
     pub const fn new(scope: DiagnosticsScope) -> Self {
@@ -23,5 +235,794 @@ impl DiagnosticsRequest {
     #[must_use]
     pub const fn scope(self) -> DiagnosticsScope {
         self.scope
+    }
+}
+
+impl DiagnosticsRecoveryFault {
+    #[must_use]
+    pub const fn new(
+        kind: DiagnosticsRecoveryFaultKind,
+        reason: &'static str,
+        affected_branch: Option<BranchId>,
+    ) -> Self {
+        Self {
+            kind,
+            reason,
+            affected_branch,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> DiagnosticsRecoveryFaultKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    #[must_use]
+    pub const fn affected_branch(&self) -> Option<BranchId> {
+        self.affected_branch
+    }
+}
+
+impl DiagnosticsRecoveryReport {
+    #[must_use]
+    pub(crate) fn new(
+        health: RecoveryHealthSummary,
+        class: Option<DiagnosticsRecoveryClass>,
+        faults: Vec<DiagnosticsRecoveryFault>,
+    ) -> Self {
+        Self {
+            health,
+            class,
+            faults,
+        }
+    }
+
+    #[must_use]
+    pub fn healthy() -> Self {
+        Self::new(RecoveryHealthSummary::Healthy, None, Vec::new())
+    }
+
+    #[must_use]
+    pub const fn health(&self) -> RecoveryHealthSummary {
+        self.health
+    }
+
+    #[must_use]
+    pub const fn class(&self) -> Option<DiagnosticsRecoveryClass> {
+        self.class
+    }
+
+    #[must_use]
+    pub fn faults(&self) -> &[DiagnosticsRecoveryFault] {
+        &self.faults
+    }
+}
+
+impl DiagnosticsBudgetUsage {
+    #[must_use]
+    pub(crate) const fn new(
+        pool: DiagnosticsBudgetPool,
+        used_bytes: u64,
+        limit_bytes: u64,
+        used_count: u64,
+        limit_count: Option<u64>,
+        pressure: DiagnosticsBudgetPressure,
+    ) -> Self {
+        Self {
+            pool,
+            used_bytes,
+            limit_bytes,
+            used_count,
+            limit_count,
+            pressure,
+        }
+    }
+
+    #[must_use]
+    pub const fn pool(self) -> DiagnosticsBudgetPool {
+        self.pool
+    }
+
+    #[must_use]
+    pub const fn used_bytes(self) -> u64 {
+        self.used_bytes
+    }
+
+    #[must_use]
+    pub const fn limit_bytes(self) -> u64 {
+        self.limit_bytes
+    }
+
+    #[must_use]
+    pub const fn used_count(self) -> u64 {
+        self.used_count
+    }
+
+    #[must_use]
+    pub const fn limit_count(self) -> Option<u64> {
+        self.limit_count
+    }
+
+    #[must_use]
+    pub const fn pressure(self) -> DiagnosticsBudgetPressure {
+        self.pressure
+    }
+}
+
+impl DiagnosticsBudgetReport {
+    #[must_use]
+    pub(crate) fn known(total_limit_bytes: u64, usages: Vec<DiagnosticsBudgetUsage>) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            total_limit_bytes: Some(total_limit_bytes),
+            usages,
+        }
+    }
+
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            total_limit_bytes: None,
+            usages: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn total_limit_bytes(&self) -> Option<u64> {
+        self.total_limit_bytes
+    }
+
+    #[must_use]
+    pub fn usages(&self) -> &[DiagnosticsBudgetUsage] {
+        &self.usages
+    }
+}
+
+impl DiagnosticsStoragePressureReport {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "pressure reports are flat storage counters"
+    )]
+    #[must_use]
+    pub(crate) const fn known(
+        branch_id: BranchId,
+        severity: DiagnosticsStoragePressureSeverity,
+        reason: DiagnosticsStoragePressureReason,
+        active_rows: usize,
+        frozen_tables: usize,
+        level_zero_tables: usize,
+        owned_tables: usize,
+        inherited_layers: usize,
+        pending_maintenance: usize,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            branch_id: Some(branch_id),
+            severity,
+            reason,
+            active_rows,
+            frozen_tables,
+            level_zero_tables,
+            owned_tables,
+            inherited_layers,
+            pending_maintenance,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            branch_id: None,
+            severity: DiagnosticsStoragePressureSeverity::None,
+            reason: DiagnosticsStoragePressureReason::None,
+            active_rows: 0,
+            frozen_tables: 0,
+            level_zero_tables: 0,
+            owned_tables: 0,
+            inherited_layers: 0,
+            pending_maintenance: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn branch_id(self) -> Option<BranchId> {
+        self.branch_id
+    }
+
+    #[must_use]
+    pub const fn severity(self) -> DiagnosticsStoragePressureSeverity {
+        self.severity
+    }
+
+    #[must_use]
+    pub const fn reason(self) -> DiagnosticsStoragePressureReason {
+        self.reason
+    }
+
+    #[must_use]
+    pub const fn active_rows(self) -> usize {
+        self.active_rows
+    }
+
+    #[must_use]
+    pub const fn frozen_tables(self) -> usize {
+        self.frozen_tables
+    }
+
+    #[must_use]
+    pub const fn level_zero_tables(self) -> usize {
+        self.level_zero_tables
+    }
+
+    #[must_use]
+    pub const fn owned_tables(self) -> usize {
+        self.owned_tables
+    }
+
+    #[must_use]
+    pub const fn inherited_layers(self) -> usize {
+        self.inherited_layers
+    }
+
+    #[must_use]
+    pub const fn pending_maintenance(self) -> usize {
+        self.pending_maintenance
+    }
+}
+
+impl DiagnosticsReadActivityReport {
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            block_hits: None,
+            block_misses: None,
+            opened_readers: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn block_hits(self) -> Option<u64> {
+        self.block_hits
+    }
+
+    #[must_use]
+    pub const fn block_misses(self) -> Option<u64> {
+        self.block_misses
+    }
+
+    #[must_use]
+    pub const fn opened_readers(self) -> Option<u64> {
+        self.opened_readers
+    }
+}
+
+impl DiagnosticsTableReachabilityReport {
+    #[must_use]
+    pub const fn known(
+        table_count: usize,
+        object_count: usize,
+        next_manifest_sequence: Option<u64>,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            table_count,
+            object_count,
+            next_manifest_sequence,
+        }
+    }
+
+    #[must_use]
+    pub const fn unsupported() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unsupported,
+            table_count: 0,
+            object_count: 0,
+            next_manifest_sequence: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            table_count: 0,
+            object_count: 0,
+            next_manifest_sequence: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn table_count(self) -> usize {
+        self.table_count
+    }
+
+    #[must_use]
+    pub const fn object_count(self) -> usize {
+        self.object_count
+    }
+
+    #[must_use]
+    pub const fn next_manifest_sequence(self) -> Option<u64> {
+        self.next_manifest_sequence
+    }
+}
+
+impl DiagnosticsRetentionReport {
+    #[must_use]
+    pub const fn known(
+        protected_objects: usize,
+        pending_releases: usize,
+        reclaimed_objects: usize,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            protected_objects,
+            pending_releases,
+            reclaimed_objects,
+        }
+    }
+
+    #[must_use]
+    pub const fn unsupported() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unsupported,
+            protected_objects: 0,
+            pending_releases: 0,
+            reclaimed_objects: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            protected_objects: 0,
+            pending_releases: 0,
+            reclaimed_objects: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn protected_objects(self) -> usize {
+        self.protected_objects
+    }
+
+    #[must_use]
+    pub const fn pending_releases(self) -> usize {
+        self.pending_releases
+    }
+
+    #[must_use]
+    pub const fn reclaimed_objects(self) -> usize {
+        self.reclaimed_objects
+    }
+}
+
+impl DiagnosticsQuarantineReport {
+    #[must_use]
+    pub const fn unsupported() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unsupported,
+            quarantined_objects: None,
+            quarantined_bytes: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            quarantined_objects: None,
+            quarantined_bytes: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn quarantined_objects(self) -> Option<usize> {
+        self.quarantined_objects
+    }
+
+    #[must_use]
+    pub const fn quarantined_bytes(self) -> Option<u64> {
+        self.quarantined_bytes
+    }
+}
+
+impl DiagnosticsCheckpointReport {
+    #[must_use]
+    pub const fn known(
+        snapshot_id: Option<u64>,
+        checkpoint_watermark: Option<CommitVersion>,
+        flush_watermark: Option<CommitVersion>,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            snapshot_id,
+            checkpoint_watermark,
+            flush_watermark,
+        }
+    }
+
+    #[must_use]
+    pub const fn unsupported() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unsupported,
+            snapshot_id: None,
+            checkpoint_watermark: None,
+            flush_watermark: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            snapshot_id: None,
+            checkpoint_watermark: None,
+            flush_watermark: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn snapshot_id(self) -> Option<u64> {
+        self.snapshot_id
+    }
+
+    #[must_use]
+    pub const fn checkpoint_watermark(self) -> Option<CommitVersion> {
+        self.checkpoint_watermark
+    }
+
+    #[must_use]
+    pub const fn flush_watermark(self) -> Option<CommitVersion> {
+        self.flush_watermark
+    }
+}
+
+impl DiagnosticsWalGrowthReport {
+    #[must_use]
+    pub const fn known(
+        policy_enabled: bool,
+        max_retained_wal_bytes: Option<u64>,
+        max_retained_wal_segments: Option<usize>,
+        max_commits_since_checkpoint: Option<u64>,
+        last_status: Option<MaintenanceWalGrowthSummary>,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            policy_enabled,
+            max_retained_wal_bytes,
+            max_retained_wal_segments,
+            max_commits_since_checkpoint,
+            last_status,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            policy_enabled: false,
+            max_retained_wal_bytes: None,
+            max_retained_wal_segments: None,
+            max_commits_since_checkpoint: None,
+            last_status: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn policy_enabled(self) -> bool {
+        self.policy_enabled
+    }
+
+    #[must_use]
+    pub const fn max_retained_wal_bytes(self) -> Option<u64> {
+        self.max_retained_wal_bytes
+    }
+
+    #[must_use]
+    pub const fn max_retained_wal_segments(self) -> Option<usize> {
+        self.max_retained_wal_segments
+    }
+
+    #[must_use]
+    pub const fn max_commits_since_checkpoint(self) -> Option<u64> {
+        self.max_commits_since_checkpoint
+    }
+
+    #[must_use]
+    pub const fn last_status(self) -> Option<MaintenanceWalGrowthSummary> {
+        self.last_status
+    }
+}
+
+impl DiagnosticsBranchCatalogReport {
+    #[must_use]
+    pub const fn known(
+        active_branches: usize,
+        deleted_branches: usize,
+        min_generation: Option<super::BranchGeneration>,
+        max_generation: Option<super::BranchGeneration>,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            active_branches,
+            deleted_branches,
+            min_generation,
+            max_generation,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            active_branches: 0,
+            deleted_branches: 0,
+            min_generation: None,
+            max_generation: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn active_branches(self) -> usize {
+        self.active_branches
+    }
+
+    #[must_use]
+    pub const fn deleted_branches(self) -> usize {
+        self.deleted_branches
+    }
+
+    #[must_use]
+    pub const fn min_generation(self) -> Option<super::BranchGeneration> {
+        self.min_generation
+    }
+
+    #[must_use]
+    pub const fn max_generation(self) -> Option<super::BranchGeneration> {
+        self.max_generation
+    }
+}
+
+impl DiagnosticsTimelineReport {
+    #[must_use]
+    pub const fn known(
+        min_version: Option<CommitVersion>,
+        max_version: Option<CommitVersion>,
+        min_timestamp: Option<Timestamp>,
+        max_timestamp: Option<Timestamp>,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            min_version,
+            max_version,
+            min_timestamp,
+            max_timestamp,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            min_version: None,
+            max_version: None,
+            min_timestamp: None,
+            max_timestamp: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn min_version(self) -> Option<CommitVersion> {
+        self.min_version
+    }
+
+    #[must_use]
+    pub const fn max_version(self) -> Option<CommitVersion> {
+        self.max_version
+    }
+
+    #[must_use]
+    pub const fn min_timestamp(self) -> Option<Timestamp> {
+        self.min_timestamp
+    }
+
+    #[must_use]
+    pub const fn max_timestamp(self) -> Option<Timestamp> {
+        self.max_timestamp
+    }
+}
+
+impl DiagnosticsOutcome {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "diagnostics outcome is a flat API snapshot"
+    )]
+    #[must_use]
+    pub(crate) fn new(
+        scope: DiagnosticsScope,
+        runtime_state: StorageRuntimeState,
+        mode: Option<StorageMode>,
+        visible_version: Option<CommitVersion>,
+        recovery: DiagnosticsRecoveryReport,
+        maintenance: Option<MaintenanceQueueSummary>,
+        budget: DiagnosticsBudgetReport,
+        pressure: DiagnosticsStoragePressureReport,
+        read_activity: DiagnosticsReadActivityReport,
+        table_manifest: DiagnosticsTableReachabilityReport,
+        retention: DiagnosticsRetentionReport,
+        quarantine: DiagnosticsQuarantineReport,
+        checkpoint: DiagnosticsCheckpointReport,
+        wal_growth: DiagnosticsWalGrowthReport,
+        branch_catalog: DiagnosticsBranchCatalogReport,
+        timeline: DiagnosticsTimelineReport,
+    ) -> Self {
+        Self {
+            scope,
+            runtime_state,
+            mode,
+            visible_version,
+            recovery,
+            maintenance_state: if maintenance.is_some() {
+                DiagnosticsFactState::Known
+            } else {
+                DiagnosticsFactState::Unknown
+            },
+            maintenance,
+            budget,
+            pressure,
+            read_activity,
+            table_manifest,
+            retention,
+            quarantine,
+            checkpoint,
+            wal_growth,
+            branch_catalog,
+            timeline,
+        }
+    }
+
+    #[must_use]
+    pub const fn scope(&self) -> DiagnosticsScope {
+        self.scope
+    }
+
+    #[must_use]
+    pub const fn runtime_state(&self) -> StorageRuntimeState {
+        self.runtime_state
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> Option<StorageMode> {
+        self.mode
+    }
+
+    #[must_use]
+    pub const fn visible_version(&self) -> Option<CommitVersion> {
+        self.visible_version
+    }
+
+    #[must_use]
+    pub const fn recovery(&self) -> &DiagnosticsRecoveryReport {
+        &self.recovery
+    }
+
+    #[must_use]
+    pub const fn maintenance_state(&self) -> DiagnosticsFactState {
+        self.maintenance_state
+    }
+
+    #[must_use]
+    pub const fn maintenance(&self) -> Option<MaintenanceQueueSummary> {
+        self.maintenance
+    }
+
+    #[must_use]
+    pub const fn budget(&self) -> &DiagnosticsBudgetReport {
+        &self.budget
+    }
+
+    #[must_use]
+    pub const fn pressure(&self) -> DiagnosticsStoragePressureReport {
+        self.pressure
+    }
+
+    #[must_use]
+    pub const fn read_activity(&self) -> DiagnosticsReadActivityReport {
+        self.read_activity
+    }
+
+    #[must_use]
+    pub const fn table_manifest(&self) -> DiagnosticsTableReachabilityReport {
+        self.table_manifest
+    }
+
+    #[must_use]
+    pub const fn retention(&self) -> DiagnosticsRetentionReport {
+        self.retention
+    }
+
+    #[must_use]
+    pub const fn quarantine(&self) -> DiagnosticsQuarantineReport {
+        self.quarantine
+    }
+
+    #[must_use]
+    pub const fn checkpoint(&self) -> DiagnosticsCheckpointReport {
+        self.checkpoint
+    }
+
+    #[must_use]
+    pub const fn wal_growth(&self) -> DiagnosticsWalGrowthReport {
+        self.wal_growth
+    }
+
+    #[must_use]
+    pub const fn branch_catalog(&self) -> DiagnosticsBranchCatalogReport {
+        self.branch_catalog
+    }
+
+    #[must_use]
+    pub const fn timeline(&self) -> DiagnosticsTimelineReport {
+        self.timeline
     }
 }

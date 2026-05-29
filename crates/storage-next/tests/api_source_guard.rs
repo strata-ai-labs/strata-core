@@ -247,6 +247,77 @@ fn api_branch_surface_excludes_product_workflow_terms() {
     }
 }
 
+#[test]
+fn diagnostics_do_not_contain_product_vocabulary() {
+    let root = common::crate_root();
+    let file = root.join("src/api/diagnostics.rs");
+    let text = fs::read_to_string(&file).expect("read diagnostics API source");
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !contains_forbidden_product_vocabulary(line),
+            "src/api/diagnostics.rs:{} uses forbidden product vocabulary: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
+fn diagnostics_do_not_contain_primitive_vocabulary() {
+    let root = common::crate_root();
+    let file = root.join("src/api/diagnostics.rs");
+    let text = fs::read_to_string(&file).expect("read diagnostics API source");
+    for (line_number, line) in text.lines().enumerate() {
+        assert!(
+            !compact_line(line).contains("primitive"),
+            "src/api/diagnostics.rs:{} uses primitive vocabulary: {line}",
+            line_number + 1
+        );
+    }
+}
+
+#[test]
+fn diagnostics_do_not_contain_user_advice() {
+    let root = common::crate_root();
+    let file = root.join("src/api/diagnostics.rs");
+    let text = fs::read_to_string(&file).expect("read diagnostics API source");
+    for (line_number, line) in text.lines().enumerate() {
+        let compact = compact_line(line);
+        for term in [
+            "recommend",
+            "advice",
+            "user",
+            "workspace",
+            "project",
+            "account",
+        ] {
+            assert!(
+                !compact.contains(term),
+                "src/api/diagnostics.rs:{} uses user-facing advice term {term}: {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn diagnostics_do_not_import_engine_telemetry() {
+    let root = common::crate_root();
+    let file = root.join("src/api/diagnostics.rs");
+    let text = fs::read_to_string(&file).expect("read diagnostics API source");
+    for (line_number, line) in text.lines().enumerate() {
+        let compact = compact_line(line);
+        if compact.starts_with("use") {
+            assert!(
+                !contains_forbidden_api_dependency(line)
+                    && !compact.contains("observability")
+                    && !compact.contains("telemetry::"),
+                "src/api/diagnostics.rs:{} imports engine telemetry: {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
 fn api_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     common::source_guard_helpers::collect_rs_files(&root.join("src/api"), &mut files);

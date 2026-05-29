@@ -16,6 +16,7 @@ use crate::lifecycle::{
     LifecycleCompactionRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
     LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
     LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
+    LifecycleStoragePressure, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
     LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus,
     LifecycleWalGrowthTrigger, MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
     MaintenanceOutcome as LifecycleMaintenanceOutcome,
@@ -25,9 +26,10 @@ use crate::lifecycle::{
     MaintenanceTaskPolicy as LifecycleMaintenanceTaskPolicy,
     MaintenanceTaskPriority as LifecycleMaintenanceTaskPriority,
     MaintenanceTaskRequest as LifecycleMaintenanceTaskRequest,
-    MaintenanceTaskScope as LifecycleMaintenanceTaskScope, RecoveryHealth, RecoveryStrictness,
-    StorageMode as LifecycleStorageMode, StorageOpenOutcome as LifecycleStorageOpenOutcome,
-    StorageOpenPlan, StorageRuntimeBudget,
+    MaintenanceTaskScope as LifecycleMaintenanceTaskScope, RecoveryDegradationClass,
+    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageBudgetPool,
+    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode as LifecycleStorageMode,
+    StorageOpenOutcome as LifecycleStorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 use crate::service::WalServiceConfig;
@@ -36,12 +38,20 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 use super::{
     BranchAction, BranchCleanupSummary, BranchGeneration, BranchOperation, BranchOutcome,
     BranchParentSummary, BranchRequest, BranchStatus, BranchSummary, CommitBatch, CommitDurability,
-    CommitDurabilitySummary, CommitExpectedVersion, CommitSummary, HistoryReadOutcome,
-    HistoryReadRequest, MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass,
-    MaintenanceRequest, MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus,
-    MaintenanceTask, MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary,
-    MaintenanceWalGrowthTrigger, PointReadOutcome, PointReadRequest, PrefixScanReadRequest,
-    ReadBound, ReadLimit, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiErrorClass,
+    CommitDurabilitySummary, CommitExpectedVersion, CommitSummary, DiagnosticsBranchCatalogReport,
+    DiagnosticsBudgetPool, DiagnosticsBudgetPressure, DiagnosticsBudgetReport,
+    DiagnosticsBudgetUsage, DiagnosticsCheckpointReport, DiagnosticsOutcome,
+    DiagnosticsQuarantineReport, DiagnosticsReadActivityReport, DiagnosticsRecoveryClass,
+    DiagnosticsRecoveryFault, DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport,
+    DiagnosticsRequest, DiagnosticsRetentionReport, DiagnosticsScope,
+    DiagnosticsStoragePressureReason, DiagnosticsStoragePressureReport,
+    DiagnosticsStoragePressureSeverity, DiagnosticsTableReachabilityReport,
+    DiagnosticsTimelineReport, DiagnosticsWalGrowthReport, HistoryReadOutcome, HistoryReadRequest,
+    MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass, MaintenanceRequest,
+    MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask,
+    MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
+    PointReadOutcome, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
+    RecoveryHealthSummary, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiErrorClass,
     StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBudgetPolicy,
     StorageCloseSummary, StorageDurabilityPolicy, StorageKey, StorageMode, StorageOpenDisposition,
     StorageOpenOptions, StorageOpenOutcome, StorageOpenSummary, StorageReadRow,
@@ -67,6 +77,8 @@ struct ResolvedReadBound {
 #[derive(Debug)]
 pub struct StorageRuntime<'a> {
     inner: StorageRuntimeInner<'a>,
+    open_summary: Option<StorageOpenSummary>,
+    last_recovery: Option<DiagnosticsRecoveryReport>,
     last_close: Option<StorageCloseSummary>,
 }
 
@@ -113,6 +125,8 @@ impl StorageRuntime<'static> {
     pub const fn closed() -> Self {
         Self {
             inner: StorageRuntimeInner::Closed,
+            open_summary: None,
+            last_recovery: None,
             last_close: None,
         }
     }
@@ -178,16 +192,20 @@ impl<'a> StorageRuntime<'a> {
     ) -> StorageApiResult<StorageCloseSummary> {
         match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
+                let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
                 let close = runtime.close().map_err(map_lifecycle_error)?;
                 let summary = map_close_summary(close, false);
                 self.inner = StorageRuntimeInner::Closed;
+                self.last_recovery = Some(recovery);
                 self.last_close = Some(summary);
                 Ok(summary)
             }
             StorageRuntimeInner::Durable(runtime) => {
+                let recovery = map_diagnostics_recovery(runtime.current_recovery_health());
                 let close = runtime.close().map_err(map_lifecycle_error)?;
                 let summary = map_close_summary(close, false);
                 self.inner = StorageRuntimeInner::Closed;
+                self.last_recovery = Some(recovery);
                 self.last_close = Some(summary);
                 Ok(summary)
             }
@@ -299,6 +317,91 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "maintenance status requires an open runtime",
             }),
+        }
+    }
+
+    pub fn diagnostics(&self, request: DiagnosticsRequest) -> StorageApiResult<DiagnosticsOutcome> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                let branch_id = branch_for_diagnostics_scope(request.scope());
+                let branches = self.list_branches(true)?;
+                let timeline = self.diagnostics_timeline(branch_id);
+                let wal_growth = runtime.evaluate_wal_growth_policy();
+                Ok(DiagnosticsOutcome::new(
+                    request.scope(),
+                    StorageRuntimeState::Open,
+                    Some(self.open_summary.expect("open runtime records mode").mode()),
+                    current_visible(self),
+                    map_diagnostics_recovery(runtime.open_outcome().recovery_health()),
+                    Some(map_maintenance_queue_summary(runtime.maintenance_status())),
+                    map_budget_report(&runtime.budget_snapshot()),
+                    map_storage_pressure_report(request.scope(), runtime.storage_pressure()),
+                    DiagnosticsReadActivityReport::unknown(),
+                    DiagnosticsTableReachabilityReport::unsupported(),
+                    DiagnosticsRetentionReport::unsupported(),
+                    DiagnosticsQuarantineReport::unsupported(),
+                    DiagnosticsCheckpointReport::unsupported(),
+                    map_wal_growth_report(
+                        runtime.open_plan().lifecycle_config().wal_growth_policy(),
+                        Some(map_wal_growth_summary(&wal_growth)),
+                    ),
+                    map_branch_catalog_report(&branches),
+                    timeline,
+                ))
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                let branch_id = branch_for_diagnostics_scope(request.scope());
+                let branches = self.list_branches(true)?;
+                let timeline = self.diagnostics_timeline(branch_id);
+                let table_catalog = runtime.table_catalog();
+                Ok(DiagnosticsOutcome::new(
+                    request.scope(),
+                    StorageRuntimeState::Open,
+                    Some(self.open_summary.expect("open runtime records mode").mode()),
+                    current_visible(self),
+                    map_diagnostics_recovery(runtime.current_recovery_health()),
+                    Some(map_maintenance_queue_summary(runtime.maintenance_status())),
+                    map_budget_report(&runtime.budget_snapshot()),
+                    map_storage_pressure_report(request.scope(), runtime.storage_pressure()),
+                    DiagnosticsReadActivityReport::unknown(),
+                    DiagnosticsTableReachabilityReport::known(
+                        table_catalog.entry_count(),
+                        table_catalog.object_count(),
+                        Some(table_catalog.next_manifest_sequence()),
+                    ),
+                    DiagnosticsRetentionReport::known(0, runtime.pending_releases().len(), 0),
+                    DiagnosticsQuarantineReport::unknown(),
+                    durable_checkpoint_report(runtime)?,
+                    map_wal_growth_report(
+                        runtime.open_plan().lifecycle_config().wal_growth_policy(),
+                        runtime
+                            .last_wal_growth_outcome()
+                            .map(map_wal_growth_summary),
+                    ),
+                    map_branch_catalog_report(&branches),
+                    timeline,
+                ))
+            }
+            StorageRuntimeInner::Closed => Ok(DiagnosticsOutcome::new(
+                request.scope(),
+                StorageRuntimeState::Closed,
+                self.open_summary.map(StorageOpenSummary::mode),
+                None,
+                self.last_recovery
+                    .clone()
+                    .unwrap_or_else(DiagnosticsRecoveryReport::healthy),
+                None,
+                DiagnosticsBudgetReport::unknown(),
+                DiagnosticsStoragePressureReport::unknown(),
+                DiagnosticsReadActivityReport::unknown(),
+                DiagnosticsTableReachabilityReport::unknown(),
+                DiagnosticsRetentionReport::unknown(),
+                DiagnosticsQuarantineReport::unknown(),
+                DiagnosticsCheckpointReport::unknown(),
+                DiagnosticsWalGrowthReport::unknown(),
+                DiagnosticsBranchCatalogReport::unknown(),
+                DiagnosticsTimelineReport::unknown(),
+            )),
         }
     }
 
@@ -1081,9 +1184,12 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(map_lifecycle_error)?;
         let summary = map_open_summary(runtime.open_outcome(), options.mode());
+        let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
         Ok(StorageOpenOutcome::new(
             Self {
                 inner: StorageRuntimeInner::Cache(Box::new(runtime)),
+                open_summary: Some(summary),
+                last_recovery: Some(recovery),
                 last_close: None,
             },
             summary,
@@ -1121,9 +1227,12 @@ impl<'a> StorageRuntime<'a> {
             .complete_recovery(&recovery)
             .map_err(map_lifecycle_error)?;
         let summary = map_open_summary(runtime.open_outcome(), options.mode());
+        let recovery_report = map_diagnostics_recovery(runtime.current_recovery_health());
         Ok(StorageOpenOutcome::new(
             Self {
                 inner: StorageRuntimeInner::Durable(Box::new(runtime)),
+                open_summary: Some(summary),
+                last_recovery: Some(recovery_report),
                 last_close: None,
             },
             summary,
@@ -1172,6 +1281,21 @@ impl<'a> StorageRuntime<'a> {
         .map_err(commit_error)
     }
 
+    fn diagnostics_timeline(&self, branch_id: BranchId) -> DiagnosticsTimelineReport {
+        match self.timeline_view(branch_id) {
+            Ok(timeline) => {
+                let bounds = timeline.bounds();
+                DiagnosticsTimelineReport::known(
+                    bounds.min_version(),
+                    bounds.max_version(),
+                    bounds.min_timestamp(),
+                    bounds.max_timestamp(),
+                )
+            }
+            Err(_) => DiagnosticsTimelineReport::unknown(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) const fn default_branch_id_for_test() -> BranchId {
         DEFAULT_BRANCH_ID
@@ -1184,6 +1308,32 @@ impl<'a> StorageRuntime<'a> {
         timestamp: Timestamp,
     ) -> StorageApiResult<CommitSummary> {
         self.execute_commit(batch, Some(timestamp))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostics_recovery_report_for_test(
+        health: &RecoveryHealth,
+    ) -> DiagnosticsRecoveryReport {
+        map_diagnostics_recovery(health)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_recovery_health_for_test(
+        &mut self,
+        health: &RecoveryHealth,
+    ) -> StorageApiResult<()> {
+        match &mut self.inner {
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.record_recovery_health_for_test(health);
+                self.last_recovery = Some(map_diagnostics_recovery(health));
+                Ok(())
+            }
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {
+                Err(StorageApiError::InvalidRuntimeState {
+                    reason: "durable recovery health test hook requires an open durable runtime",
+                })
+            }
+        }
     }
 
     fn execute_commit(
@@ -1990,6 +2140,242 @@ fn current_visible(runtime: &StorageRuntime<'_>) -> Option<CommitVersion> {
         StorageRuntimeInner::Closed => CommitVersion::ZERO,
     };
     (version != CommitVersion::ZERO).then_some(version)
+}
+
+fn branch_for_diagnostics_scope(scope: DiagnosticsScope) -> BranchId {
+    match scope {
+        DiagnosticsScope::Global => DEFAULT_BRANCH_ID,
+        DiagnosticsScope::Branch(branch_id) => branch_id,
+    }
+}
+
+fn durable_checkpoint_report<S>(
+    runtime: &LifecycleDurableLocalRuntime<'_, S>,
+) -> StorageApiResult<DiagnosticsCheckpointReport> {
+    let Some(manifest) = runtime
+        .services()
+        .manifest()
+        .load_current()
+        .map_err(|error| {
+            StorageApiError::lower_layer_with(
+                StorageApiLowerLayer::Service,
+                "manifest diagnostics failed",
+                error,
+            )
+        })?
+    else {
+        return Ok(DiagnosticsCheckpointReport::unknown());
+    };
+    Ok(DiagnosticsCheckpointReport::known(
+        manifest.snapshot_id(),
+        manifest.snapshot_watermark().map(CommitVersion::new),
+        manifest.flushed_through_commit_id(),
+    ))
+}
+
+fn map_diagnostics_recovery(health: &RecoveryHealth) -> DiagnosticsRecoveryReport {
+    match health {
+        RecoveryHealth::Healthy => DiagnosticsRecoveryReport::healthy(),
+        RecoveryHealth::Degraded { class, faults } => DiagnosticsRecoveryReport::new(
+            RecoveryHealthSummary::Degraded,
+            Some(map_diagnostics_recovery_class(*class)),
+            faults.iter().map(map_diagnostics_recovery_fault).collect(),
+        ),
+        RecoveryHealth::Failed { fault } => DiagnosticsRecoveryReport::new(
+            RecoveryHealthSummary::Failed,
+            Some(DiagnosticsRecoveryClass::Corruption),
+            vec![map_diagnostics_recovery_fault(fault)],
+        ),
+    }
+}
+
+const fn map_diagnostics_recovery_class(
+    class: RecoveryDegradationClass,
+) -> DiagnosticsRecoveryClass {
+    match class {
+        RecoveryDegradationClass::DataLoss => DiagnosticsRecoveryClass::Corruption,
+        RecoveryDegradationClass::PolicyDowngrade => DiagnosticsRecoveryClass::Policy,
+        RecoveryDegradationClass::Telemetry => DiagnosticsRecoveryClass::Telemetry,
+    }
+}
+
+fn map_diagnostics_recovery_fault(
+    fault: &crate::lifecycle::RecoveryFault,
+) -> DiagnosticsRecoveryFault {
+    DiagnosticsRecoveryFault::new(
+        map_diagnostics_recovery_fault_kind(fault.kind()),
+        fault.reason(),
+        fault.affected_branch(),
+    )
+}
+
+const fn map_diagnostics_recovery_fault_kind(
+    kind: RecoveryFaultKind,
+) -> DiagnosticsRecoveryFaultKind {
+    match kind {
+        RecoveryFaultKind::CorruptManifest => DiagnosticsRecoveryFaultKind::CorruptManifest,
+        RecoveryFaultKind::CorruptSnapshot => DiagnosticsRecoveryFaultKind::CorruptSnapshot,
+        RecoveryFaultKind::CorruptWal => DiagnosticsRecoveryFaultKind::CorruptWal,
+        RecoveryFaultKind::MissingManifestObject => {
+            DiagnosticsRecoveryFaultKind::MissingManifestObject
+        }
+        RecoveryFaultKind::MissingSnapshotObject => {
+            DiagnosticsRecoveryFaultKind::MissingSnapshotObject
+        }
+        RecoveryFaultKind::MissingTableObject => DiagnosticsRecoveryFaultKind::MissingTableObject,
+        RecoveryFaultKind::InheritedLayerLoss => DiagnosticsRecoveryFaultKind::InheritedLayerLoss,
+        RecoveryFaultKind::NoManifestFallback => DiagnosticsRecoveryFaultKind::NoManifestFallback,
+        RecoveryFaultKind::IoFailure => DiagnosticsRecoveryFaultKind::IoFailure,
+        RecoveryFaultKind::QuarantineInventoryMismatch => {
+            DiagnosticsRecoveryFaultKind::QuarantineInventoryMismatch
+        }
+        RecoveryFaultKind::TimelineMismatch => DiagnosticsRecoveryFaultKind::TimelineMismatch,
+        RecoveryFaultKind::WalTailRepairFailed => DiagnosticsRecoveryFaultKind::WalTailRepairFailed,
+    }
+}
+
+fn map_budget_report(snapshot: &StorageBudgetSnapshot) -> DiagnosticsBudgetReport {
+    let usages = snapshot
+        .usages()
+        .iter()
+        .map(|usage| {
+            let pressure = snapshot.pressure(usage.pool());
+            DiagnosticsBudgetUsage::new(
+                map_budget_pool(usage.pool()),
+                usage.used_bytes(),
+                usage.limit_bytes(),
+                usage.used_count(),
+                usage.limit_count(),
+                map_budget_pressure(pressure.severity()),
+            )
+        })
+        .collect();
+    DiagnosticsBudgetReport::known(snapshot.budget().total_bytes(), usages)
+}
+
+const fn map_budget_pool(pool: StorageBudgetPool) -> DiagnosticsBudgetPool {
+    match pool {
+        StorageBudgetPool::BlockCache => DiagnosticsBudgetPool::BlockCache,
+        StorageBudgetPool::TableReader => DiagnosticsBudgetPool::TableReader,
+        StorageBudgetPool::ActiveMutable => DiagnosticsBudgetPool::ActiveMutable,
+        StorageBudgetPool::FrozenMutable => DiagnosticsBudgetPool::FrozenMutable,
+        StorageBudgetPool::MaintenanceQueue => DiagnosticsBudgetPool::MaintenanceQueue,
+        StorageBudgetPool::GeneratedArtifact => DiagnosticsBudgetPool::GeneratedArtifact,
+        StorageBudgetPool::ManifestCatalog => DiagnosticsBudgetPool::ManifestCatalog,
+    }
+}
+
+const fn map_budget_pressure(severity: StorageBudgetPressureSeverity) -> DiagnosticsBudgetPressure {
+    match severity {
+        StorageBudgetPressureSeverity::Normal => DiagnosticsBudgetPressure::Normal,
+        StorageBudgetPressureSeverity::Evicting => DiagnosticsBudgetPressure::Evicting,
+        StorageBudgetPressureSeverity::DeferOptionalMaintenance => {
+            DiagnosticsBudgetPressure::DeferOptionalMaintenance
+        }
+        StorageBudgetPressureSeverity::RejectOptionalWork => {
+            DiagnosticsBudgetPressure::RejectOptionalWork
+        }
+        StorageBudgetPressureSeverity::RejectMutatingAdmission => {
+            DiagnosticsBudgetPressure::RejectMutatingAdmission
+        }
+    }
+}
+
+fn map_storage_pressure_report(
+    scope: DiagnosticsScope,
+    pressure: LifecycleStoragePressure,
+) -> DiagnosticsStoragePressureReport {
+    if matches!(scope, DiagnosticsScope::Branch(branch_id) if branch_id != pressure.branch_id()) {
+        return DiagnosticsStoragePressureReport::unknown();
+    }
+    DiagnosticsStoragePressureReport::known(
+        pressure.branch_id(),
+        map_storage_pressure_severity(pressure.severity()),
+        map_storage_pressure_reason(pressure.reason()),
+        pressure.active_rows(),
+        pressure.frozen_tables(),
+        pressure.level_zero_tables(),
+        pressure.owned_tables(),
+        pressure.inherited_layers(),
+        pressure.pending_maintenance(),
+    )
+}
+
+const fn map_storage_pressure_severity(
+    severity: LifecycleStoragePressureSeverity,
+) -> DiagnosticsStoragePressureSeverity {
+    match severity {
+        LifecycleStoragePressureSeverity::None => DiagnosticsStoragePressureSeverity::None,
+        LifecycleStoragePressureSeverity::Background => {
+            DiagnosticsStoragePressureSeverity::Background
+        }
+        LifecycleStoragePressureSeverity::Urgent => DiagnosticsStoragePressureSeverity::Urgent,
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission => {
+            DiagnosticsStoragePressureSeverity::BlockMutatingAdmission
+        }
+    }
+}
+
+const fn map_storage_pressure_reason(
+    reason: LifecycleStoragePressureReason,
+) -> DiagnosticsStoragePressureReason {
+    match reason {
+        LifecycleStoragePressureReason::None => DiagnosticsStoragePressureReason::None,
+        LifecycleStoragePressureReason::FrozenBacklog => {
+            DiagnosticsStoragePressureReason::FrozenBacklog
+        }
+        LifecycleStoragePressureReason::LevelZeroTableBacklog => {
+            DiagnosticsStoragePressureReason::LevelZeroTableBacklog
+        }
+        LifecycleStoragePressureReason::InheritedLayerBacklog => {
+            DiagnosticsStoragePressureReason::InheritedLayerBacklog
+        }
+        LifecycleStoragePressureReason::MaintenanceQueueBacklog => {
+            DiagnosticsStoragePressureReason::MaintenanceQueueBacklog
+        }
+    }
+}
+
+fn map_wal_growth_report(
+    policy: LifecycleWalGrowthPolicy,
+    last_status: Option<MaintenanceWalGrowthSummary>,
+) -> DiagnosticsWalGrowthReport {
+    DiagnosticsWalGrowthReport::known(
+        policy.enabled(),
+        Some(policy.max_retained_wal_bytes()),
+        Some(policy.max_retained_wal_segments()),
+        Some(policy.max_commits_since_checkpoint()),
+        last_status,
+    )
+}
+
+fn map_branch_catalog_report(branches: &[BranchSummary]) -> DiagnosticsBranchCatalogReport {
+    let mut active_branches = 0;
+    let mut deleted_branches = 0;
+    let mut min_generation = None;
+    let mut max_generation = None;
+    for branch in branches {
+        match branch.status() {
+            BranchStatus::Active => active_branches += 1,
+            BranchStatus::Deleted => deleted_branches += 1,
+        }
+        min_generation = Some(
+            min_generation.map_or(branch.generation(), |generation: BranchGeneration| {
+                generation.min(branch.generation())
+            }),
+        );
+        max_generation = Some(
+            max_generation.map_or(branch.generation(), |generation: BranchGeneration| {
+                generation.max(branch.generation())
+            }),
+        );
+    }
+    DiagnosticsBranchCatalogReport::known(
+        active_branches,
+        deleted_branches,
+        min_generation,
+        max_generation,
+    )
 }
 
 fn map_branch_descriptor(descriptor: LifecycleBranchDescriptor) -> BranchSummary {

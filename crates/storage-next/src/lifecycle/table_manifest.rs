@@ -174,6 +174,14 @@ impl LifecycleDurableTableCatalog {
         self.next_manifest_sequence
     }
 
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+
     fn entry_for(
         &self,
         identity: &TableIdentity,

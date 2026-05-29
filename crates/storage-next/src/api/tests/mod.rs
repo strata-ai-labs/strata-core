@@ -7,6 +7,7 @@ use super::*;
 
 mod branch;
 mod commit;
+mod diagnostics;
 mod maintenance;
 mod read;
 

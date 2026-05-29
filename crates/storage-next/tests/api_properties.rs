@@ -230,3 +230,40 @@ fn api_property_harness_matches_generated_maintenance_model() {
         })
         .expect("generated API maintenance model property");
 }
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn api_property_harness_matches_generated_diagnostics_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestCaseError, TestRunner};
+    use strata_storage_next::testkit::check_storage_api_diagnostics_model_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/storage_api_diagnostics_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 1..=64), |script| {
+            let outcome = check_storage_api_diagnostics_model_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if outcome.health_reports() == 0
+                || outcome.resource_reports() == 0
+                || outcome.object_reports() == 0
+                || outcome.branch_reports() == 0
+                || outcome.timeline_reports() == 0
+                || outcome.unsupported_durable_reports() == 0
+                || outcome.closed_reports() == 0
+            {
+                return Err(TestCaseError::fail(
+                    "generated diagnostics script did not exercise every required route",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated API diagnostics model property");
+}

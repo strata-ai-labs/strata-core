@@ -791,7 +791,7 @@ Status: implemented
 
 ## L9G - Diagnostics, Health, And Observability
 
-Status: planned
+Status: implemented
 
 ### Source Evidence To Read
 
@@ -805,23 +805,98 @@ Status: planned
 
 ### Shipped Files
 
-TBD.
+- `crates/storage-next/src/api/diagnostics.rs`
+- `crates/storage-next/src/api/mod.rs`
+- `crates/storage-next/src/api/runtime.rs`
+- `crates/storage-next/src/api/tests/diagnostics.rs`
+- `crates/storage-next/src/lifecycle/table_manifest.rs`
+- `crates/storage-next/src/testkit/api/diagnostics.rs`
+- `crates/storage-next/src/testkit/api/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/api_conformance.rs`
+- `crates/storage-next/tests/api_properties.rs`
+- `crates/storage-next/tests/api_source_guard.rs`
 
 ### Boundary Decisions
 
-TBD.
+- Diagnostics are a synchronous snapshot on `StorageRuntime::diagnostics`.
+- Public diagnostics expose only API-owned storage facts: runtime state, mode,
+  recovery health, maintenance queue, budget usage, storage pressure, read
+  activity availability, table reachability, retention, quarantine, checkpoint
+  watermarks, WAL-growth policy, branch catalog counts, and timeline bounds.
+- Every optional fact family has an explicit `Known`, `Unknown`, or
+  `Unsupported` state. Cache mode marks durable-only fact families unsupported;
+  closed runtimes preserve the last opened mode and last recovery summary but
+  report live facts as unknown.
+- Durable recovery diagnostics use live `current_recovery_health`, not the
+  bootstrap snapshot. Checkpoint diagnostics load the current database manifest
+  and surface snapshot and flush watermarks without mutating runtime state.
+- Read activity counters are intentionally `Unknown` until the lazy read path
+  has durable block-hit/miss counters. The API does not synthesize values.
+- The public type name for durable table state is
+  `DiagnosticsTableReachabilityReport`, avoiding leakage of lower-layer table
+  manifest concrete type names through the API boundary.
+- Diagnostics remain product-neutral. Source guards reject product vocabulary,
+  primitive wording, user-advice wording, and engine telemetry imports in
+  production API diagnostics source.
 
 ### Tests Added
 
-TBD.
+- `diagnostics_reports_healthy_recovery`
+- `diagnostics_reports_degraded_recovery`
+- `diagnostics_reports_live_degraded_recovery_from_runtime`
+- `diagnostics_reports_failed_recovery`
+- `diagnostics_preserves_recovery_fault_class`
+- `diagnostics_distinguishes_unknown_from_unsupported`
+- `diagnostics_after_close_reports_closed_state`
+- `diagnostics_after_close_preserves_recovery_summary`
+- `diagnostics_reports_memory_budget_limits`
+- `diagnostics_reports_memory_budget_usage`
+- `diagnostics_reports_cache_budget_facts`
+- `diagnostics_reports_lazy_read_counters`
+- `diagnostics_reports_pressure_facts`
+- `diagnostics_cache_mode_marks_durable_facts_unsupported`
+- `diagnostics_reports_table_manifest_reachability`
+- `diagnostics_reports_table_object_retention_summary`
+- `diagnostics_reports_quarantine_summary`
+- `diagnostics_reports_wal_growth_policy`
+- `diagnostics_reports_checkpoint_watermark`
+- `diagnostics_reports_branch_count_and_generation_summary`
+- `diagnostics_do_not_contain_product_vocabulary`
+- `diagnostics_do_not_contain_primitive_vocabulary`
+- `diagnostics_do_not_contain_user_advice`
+- `diagnostics_do_not_import_engine_telemetry`
+- `api_conformance_diagnostics_reports_boundary_facts`
+- `api_property_harness_matches_generated_diagnostics_model`
 
 ### Sensitivity Probes
 
-TBD.
+- Changing cache durable-only facts from `Unsupported` to `Known` is caught by
+  `diagnostics_cache_mode_marks_durable_facts_unsupported`.
+- Collapsing unknown read activity counters into zero values is caught by
+  `diagnostics_reports_lazy_read_counters` and the generated diagnostics
+  property harness.
+- Dropping live maintenance queue usage from budget diagnostics is caught by
+  `diagnostics_reports_memory_budget_usage`.
+- Leaking lower-layer concrete table manifest type names through public API
+  signatures is caught by `api_public_signatures_do_not_expose_lower_layer_concrete_types`.
+- Adding product, primitive, user-advice, or engine telemetry vocabulary to
+  diagnostics source is caught by the dedicated diagnostics source guards.
 
 ### Verification
 
-TBD.
+- `cargo fmt --package strata-storage-next --check` passed.
+- `cargo test -p strata-storage-next --locked --lib api` passed.
+- `cargo test -p strata-storage-next --locked --lib api --features localfs`
+  passed.
+- `cargo test -p strata-storage-next --locked --test api_conformance` passed.
+- `cargo test -p strata-storage-next --locked --test api_source_guard` passed.
+- `cargo test -p strata-storage-next --locked --test api_properties --features testkit`
+  passed.
+- `cargo test -p strata-storage-next --locked --test api_properties --features testkit,localfs`
+  passed.
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings`
+  passed.
 
 ## L9H - Engine Testkit And Closeout
 
