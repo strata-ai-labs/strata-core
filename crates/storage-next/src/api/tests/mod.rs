@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::*;
 
+mod commit;
 mod read;
 
 fn assert_result_type<T>(result: StorageApiResult<T>) -> StorageApiResult<T> {

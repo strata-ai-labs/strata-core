@@ -267,6 +267,11 @@ pub struct CommitSummary {
     branch_id: BranchId,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
+    durability: crate::api::CommitDurabilitySummary,
+    put_count: usize,
+    delete_count: usize,
+    timeline_row_count: usize,
+    visible: bool,
 }
 
 impl CommitSummary {
@@ -280,6 +285,38 @@ impl CommitSummary {
             branch_id,
             commit_version,
             commit_timestamp,
+            durability: crate::api::CommitDurabilitySummary::NotDurable,
+            put_count: 0,
+            delete_count: 0,
+            timeline_row_count: 0,
+            visible: true,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "summary constructor mirrors the flat public commit outcome vocabulary"
+    )]
+    #[must_use]
+    pub const fn with_commit_facts(
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+        commit_timestamp: Timestamp,
+        durability: crate::api::CommitDurabilitySummary,
+        put_count: usize,
+        delete_count: usize,
+        timeline_row_count: usize,
+        visible: bool,
+    ) -> Self {
+        Self {
+            branch_id,
+            commit_version,
+            commit_timestamp,
+            durability,
+            put_count,
+            delete_count,
+            timeline_row_count,
+            visible,
         }
     }
 
@@ -296,5 +333,35 @@ impl CommitSummary {
     #[must_use]
     pub const fn commit_timestamp(self) -> Timestamp {
         self.commit_timestamp
+    }
+
+    #[must_use]
+    pub const fn durability(self) -> crate::api::CommitDurabilitySummary {
+        self.durability
+    }
+
+    #[must_use]
+    pub const fn put_count(self) -> usize {
+        self.put_count
+    }
+
+    #[must_use]
+    pub const fn delete_count(self) -> usize {
+        self.delete_count
+    }
+
+    #[must_use]
+    pub const fn timeline_row_count(self) -> usize {
+        self.timeline_row_count
+    }
+
+    #[must_use]
+    pub const fn mutation_count(self) -> usize {
+        self.put_count.saturating_add(self.delete_count)
+    }
+
+    #[must_use]
+    pub const fn visible(self) -> bool {
+        self.visible
     }
 }

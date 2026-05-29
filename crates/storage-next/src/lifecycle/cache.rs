@@ -183,6 +183,10 @@ impl<S> LifecycleCacheRuntime<S> {
         &self.open_outcome
     }
 
+    pub(crate) const fn allocator(&self) -> &CommitFactAllocator<S> {
+        &self.allocator
+    }
+
     pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
         let branch = self
             .branch_catalog

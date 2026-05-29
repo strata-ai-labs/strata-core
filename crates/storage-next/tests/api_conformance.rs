@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use strata_storage_next::api::{
-    StorageApiErrorClass, StorageMode, StorageOpenOptions, StorageRuntime, StorageRuntimeState,
+    CommitBatch, CommitMutation, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
+    StorageMode, StorageOpenOptions, StorageRuntime, StorageRuntimeState, StorageSpaceId,
+    StorageValue,
 };
 
 #[cfg(feature = "localfs")]
@@ -96,6 +98,42 @@ fn api_conformance_closed_runtime_rejects_operations() {
         .require_open("commit requires an open storage runtime")
         .expect_err("closed runtime rejects operation");
     assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+fn api_conformance_commit_then_read_round_trip() {
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open")
+        .into_runtime();
+    let branch = strata_storage_next::api::BranchId::from_bytes([0x01; 16]);
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
+    let key = StorageKey::new(b"conformance".to_vec()).expect("key");
+    let batch = CommitBatch::new(
+        branch,
+        vec![CommitMutation::Put {
+            storage_space: space.clone(),
+            key: key.clone(),
+            value: StorageValue::new(b"value".to_vec()),
+            ttl: None,
+        }],
+        strata_storage_next::api::CommitOptions::default(),
+    )
+    .expect("commit batch");
+
+    let commit = runtime.commit(&batch).expect("commit");
+    let read = runtime
+        .read_point(&PointReadRequest::new(
+            branch,
+            space,
+            key,
+            ReadBound::Latest,
+        ))
+        .expect("read");
+
+    assert_eq!(
+        read.row().expect("row").commit_version(),
+        commit.commit_version()
+    );
 }
 
 #[cfg(feature = "localfs")]

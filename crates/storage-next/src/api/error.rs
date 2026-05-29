@@ -60,6 +60,9 @@ pub enum StorageApiError {
     },
     Conflict {
         branch_id: BranchId,
+        storage_space: Option<u8>,
+        key_fingerprint: Option<u64>,
+        user_key_len: Option<usize>,
         reason: &'static str,
     },
     RetainedHistoryUnavailable {
@@ -166,7 +169,9 @@ impl fmt::Display for StorageApiError {
                 formatter,
                 "branch {branch_id} generation mismatch: expected {expected}, actual {actual}"
             ),
-            Self::Conflict { branch_id, reason } => {
+            Self::Conflict {
+                branch_id, reason, ..
+            } => {
                 write!(formatter, "branch {branch_id} commit conflict: {reason}")
             }
             Self::RetainedHistoryUnavailable { branch_id, reason } => {

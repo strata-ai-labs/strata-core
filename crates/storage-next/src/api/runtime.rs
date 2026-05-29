@@ -4,11 +4,10 @@ use crate::branch::{
     BranchHistoryOptions, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
     BranchUserKeyBound,
 };
-#[cfg(any(test, feature = "testkit"))]
-use crate::commit::CommitBranchGenerationGuard;
 use crate::commit::{
-    CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig, CommitTimelineMiss,
-    CommitTimelineView, COMMIT_TIMELINE_SPACE,
+    CommitBranchGeneration, CommitBranchGenerationGuard, CommitDurabilityClass,
+    CommitManualTimestampSource, CommitRuntimeConfig, CommitTimelineMiss, CommitTimelineView,
+    COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
     CloseOutcome, CloseOutcomeStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
@@ -25,6 +24,7 @@ use crate::service::WalServiceConfig;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::{
+    CommitBatch, CommitDurability, CommitDurabilitySummary, CommitExpectedVersion, CommitSummary,
     HistoryReadOutcome, HistoryReadRequest, PointReadOutcome, PointReadRequest,
     PrefixScanReadRequest, ReadBound, ReadLimit, ScanReadOutcome, ScanReadRequest, StorageApiError,
     StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBudgetPolicy,
@@ -177,6 +177,10 @@ impl<'a> StorageRuntime<'a> {
         } else {
             Err(StorageApiError::InvalidRuntimeState { reason: operation })
         }
+    }
+
+    pub fn commit(&mut self, batch: &CommitBatch) -> StorageApiResult<CommitSummary> {
+        self.execute_commit(batch, None)
     }
 
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
@@ -455,47 +459,114 @@ impl<'a> StorageRuntime<'a> {
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn commit_for_test(
         &mut self,
-        batch: &super::CommitBatch,
+        batch: &CommitBatch,
         timestamp: Timestamp,
-    ) -> StorageApiResult<super::CommitSummary> {
-        let durability = match &self.inner {
-            StorageRuntimeInner::Cache(_) => crate::commit::CommitDurabilityMode::Cache,
-            StorageRuntimeInner::Durable(_) => crate::commit::CommitDurabilityMode::Standard,
+    ) -> StorageApiResult<CommitSummary> {
+        self.execute_commit(batch, Some(timestamp))
+    }
+
+    fn execute_commit(
+        &mut self,
+        batch: &CommitBatch,
+        explicit_timestamp: Option<Timestamp>,
+    ) -> StorageApiResult<CommitSummary> {
+        let timestamp_base =
+            explicit_timestamp.unwrap_or_else(|| self.next_commit_timestamp_base());
+        let timestamp_policy = explicit_timestamp.map_or(
+            crate::commit::CommitTimestampPolicy::RuntimeGenerated,
+            crate::commit::CommitTimestampPolicy::Explicit,
+        );
+        let durability = self.resolve_commit_durability(batch.options().durability())?;
+        let generation_guard = map_generation_guard(batch.options().expected_generation())?;
+        let runtime_batch =
+            map_api_commit_batch(batch, timestamp_base, timestamp_policy, durability)?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime.execute_cache_commit(runtime_batch, generation_guard)
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.execute_durable_commit(runtime_batch, generation_guard)
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "commit requires an open runtime",
                 });
             }
-        };
-        let runtime_batch = map_api_commit_batch(batch, timestamp, durability)?;
-        let guard = CommitBranchGenerationGuard::exact(default_branch_generation()?);
-        let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
-                runtime.execute_cache_commit(runtime_batch, guard)
-            }
-            StorageRuntimeInner::Durable(runtime) => {
-                runtime.execute_durable_commit(runtime_batch, guard)
-            }
-            StorageRuntimeInner::Closed => unreachable!("closed runtime returned above"),
         }
         .map_err(map_lifecycle_error)?;
-        let commit_version =
-            outcome
-                .commit_version()
-                .ok_or(StorageApiError::InvalidRuntimeState {
-                    reason: "test commit did not allocate a commit version",
-                })?;
-        let commit_timestamp =
-            outcome
-                .commit_timestamp()
-                .ok_or(StorageApiError::InvalidRuntimeState {
-                    reason: "test commit did not allocate a commit timestamp",
-                })?;
-        Ok(super::CommitSummary::new(
-            outcome.branch_id(),
-            commit_version,
-            commit_timestamp,
-        ))
+        map_commit_summary(&outcome)
+    }
+
+    fn resolve_commit_durability(
+        &self,
+        requested: CommitDurability,
+    ) -> StorageApiResult<crate::commit::CommitDurabilityMode> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) => match requested {
+                CommitDurability::RuntimeDefault | CommitDurability::NotDurable => {
+                    Ok(crate::commit::CommitDurabilityMode::Cache)
+                }
+                CommitDurability::Standard | CommitDurability::Always => {
+                    Err(StorageApiError::UnsupportedCapability {
+                        capability: "commit_durability",
+                        reason: "cache runtime cannot satisfy durable commit requests",
+                    })
+                }
+            },
+            StorageRuntimeInner::Durable(runtime) => {
+                match (runtime.open_plan().storage_mode(), requested) {
+                    (
+                        LifecycleStorageMode::DurableLocalStandard,
+                        CommitDurability::RuntimeDefault | CommitDurability::Standard,
+                    ) => Ok(crate::commit::CommitDurabilityMode::Standard),
+                    (
+                        LifecycleStorageMode::DurableLocalAlways,
+                        CommitDurability::RuntimeDefault | CommitDurability::Always,
+                    ) => Ok(crate::commit::CommitDurabilityMode::Always),
+                    (_, CommitDurability::NotDurable) => {
+                        Err(StorageApiError::UnsupportedCapability {
+                            capability: "commit_durability",
+                            reason: "durable runtime cannot accept cache-only commit requests",
+                        })
+                    }
+                    (LifecycleStorageMode::DurableLocalStandard, CommitDurability::Always) => {
+                        Err(StorageApiError::UnsupportedCapability {
+                            capability: "commit_durability",
+                            reason: "always commit durability requires an always-durable runtime",
+                        })
+                    }
+                    (LifecycleStorageMode::DurableLocalAlways, CommitDurability::Standard) => {
+                        Err(StorageApiError::UnsupportedCapability {
+                            capability: "commit_durability",
+                            reason:
+                                "standard commit durability cannot weaken an always-durable runtime",
+                        })
+                    }
+                    _ => Err(StorageApiError::UnsupportedCapability {
+                        capability: "commit_durability",
+                        reason: "commit durability is unsupported for this runtime mode",
+                    }),
+                }
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "commit requires an open runtime",
+            }),
+        }
+    }
+
+    fn next_commit_timestamp_base(&self) -> Timestamp {
+        let last_allocated = match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime.allocator().timestamp_guard().last_allocated()
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.allocator().timestamp_guard().last_allocated()
+            }
+            StorageRuntimeInner::Closed => None,
+        };
+        last_allocated
+            .filter(|timestamp| *timestamp > DEFAULT_TIMESTAMP)
+            .unwrap_or(DEFAULT_TIMESTAMP)
     }
 
     #[cfg(test)]
@@ -745,6 +816,57 @@ fn map_close_effects(outcome: CloseOutcome) -> StorageCloseEffects {
     effects
 }
 
+fn map_generation_guard(
+    generation: Option<super::BranchGeneration>,
+) -> StorageApiResult<CommitBranchGenerationGuard> {
+    match generation {
+        Some(generation) if generation == super::BranchGeneration::ZERO => {
+            Err(StorageApiError::InvalidArgument {
+                field: "branch_generation",
+                reason: "expected branch generation must be nonzero",
+            })
+        }
+        Some(generation) => CommitBranchGeneration::new(generation.as_u64())
+            .map(CommitBranchGenerationGuard::exact)
+            .map_err(commit_error),
+        None => Ok(CommitBranchGenerationGuard::not_supplied()),
+    }
+}
+
+fn map_commit_summary(outcome: &crate::commit::CommitOutcome) -> StorageApiResult<CommitSummary> {
+    let commit_version = outcome
+        .commit_version()
+        .ok_or(StorageApiError::InvalidRuntimeState {
+            reason: "commit did not allocate a commit version",
+        })?;
+    let commit_timestamp =
+        outcome
+            .commit_timestamp()
+            .ok_or(StorageApiError::InvalidRuntimeState {
+                reason: "commit did not allocate a commit timestamp",
+            })?;
+    let counts = outcome.mutation_counts();
+    Ok(CommitSummary::with_commit_facts(
+        outcome.branch_id(),
+        commit_version,
+        commit_timestamp,
+        map_commit_durability(outcome.durability()),
+        counts.puts(),
+        counts.deletes(),
+        counts.timeline_rows(),
+        matches!(outcome.kind(), crate::commit::CommitOutcomeKind::Visible),
+    ))
+}
+
+const fn map_commit_durability(durability: CommitDurabilityClass) -> CommitDurabilitySummary {
+    match durability {
+        CommitDurabilityClass::NotDurable => CommitDurabilitySummary::NotDurable,
+        CommitDurabilityClass::Standard => CommitDurabilitySummary::Standard,
+        CommitDurabilityClass::Always => CommitDurabilitySummary::Always,
+        CommitDurabilityClass::Uncertain => CommitDurabilitySummary::Uncertain,
+    }
+}
+
 fn physical_key(
     branch_id: BranchId,
     storage_space: &StorageSpaceId,
@@ -957,16 +1079,16 @@ fn timeline_view_from_read_view(view: &BranchReadView) -> StorageApiResult<Commi
     .map_err(commit_error)
 }
 
-#[cfg(any(test, feature = "testkit"))]
 fn map_api_commit_batch(
-    batch: &super::CommitBatch,
-    timestamp: Timestamp,
+    batch: &CommitBatch,
+    timestamp_base: Timestamp,
+    timestamp_policy: crate::commit::CommitTimestampPolicy,
     durability: crate::commit::CommitDurabilityMode,
 ) -> StorageApiResult<crate::commit::CommitBatch> {
     let mut mutations = Vec::with_capacity(batch.mutations().len());
     for mutation in batch.mutations() {
         match mutation {
-            super::CommitMutation::Put {
+            crate::api::CommitMutation::Put {
                 storage_space,
                 key,
                 value,
@@ -974,10 +1096,10 @@ fn map_api_commit_batch(
             } => mutations.push(crate::commit::CommitMutation::put(
                 physical_key(batch.branch_id(), storage_space, key)?,
                 value.as_bytes().to_vec(),
-                map_expiry(timestamp, *ttl)?,
+                map_expiry(timestamp_base, *ttl)?,
                 crate::commit::CommitRetentionHint::Append,
             )),
-            super::CommitMutation::Delete { storage_space, key } => {
+            crate::api::CommitMutation::Delete { storage_space, key } => {
                 mutations.push(crate::commit::CommitMutation::delete(physical_key(
                     batch.branch_id(),
                     storage_space,
@@ -987,27 +1109,45 @@ fn map_api_commit_batch(
         }
     }
 
-    let conflict_validation = if batch.options().conflict_check_required() {
-        crate::commit::CommitConflictValidationMode::Validate
-    } else {
-        crate::commit::CommitConflictValidationMode::Skip
-    };
+    let mut cas_set = Vec::with_capacity(batch.conditions().len());
+    for condition in batch.conditions() {
+        let expected = match condition.expected() {
+            CommitExpectedVersion::Absent => crate::commit::CommitObservedVersion::Missing,
+            CommitExpectedVersion::Present(version) => {
+                crate::commit::CommitObservedVersion::Present(version)
+            }
+        };
+        cas_set.push(crate::commit::CommitCasFact::new(
+            physical_key(
+                batch.branch_id(),
+                condition.storage_space(),
+                condition.key(),
+            )?,
+            expected,
+        ));
+    }
+
+    let conflict_validation =
+        if batch.options().conflict_check_required() || !batch.conditions().is_empty() {
+            crate::commit::CommitConflictValidationMode::Validate
+        } else {
+            crate::commit::CommitConflictValidationMode::Skip
+        };
     let options = crate::commit::CommitBatchOptions::new(
         durability,
         conflict_validation,
         crate::commit::CommitDuplicateKeyPolicy::Reject,
-        crate::commit::CommitTimestampPolicy::Explicit(timestamp),
+        timestamp_policy,
         crate::commit::CommitOrigin::StorageRuntime,
     );
     Ok(crate::commit::CommitBatch::mutating(
         batch.branch_id(),
         mutations,
-        crate::commit::CommitValidationFacts::empty(),
+        crate::commit::CommitValidationFacts::new(Vec::new(), cas_set),
         options,
     ))
 }
 
-#[cfg(any(test, feature = "testkit"))]
 fn map_expiry(
     timestamp: Timestamp,
     ttl: Option<std::time::Duration>,
@@ -1060,6 +1200,27 @@ fn branch_error(error: crate::branch::BranchRuntimeError) -> StorageApiError {
 
 fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageApiError {
     match error {
+        crate::commit::CommitRuntimeError::InvalidBatch { reason }
+        | crate::commit::CommitRuntimeError::InvalidMutation { reason }
+        | crate::commit::CommitRuntimeError::InvalidValidationFacts { reason }
+        | crate::commit::CommitRuntimeError::InvalidTimestampPolicy { reason } => {
+            StorageApiError::InvalidArgument {
+                field: "commit",
+                reason,
+            }
+        }
+        crate::commit::CommitRuntimeError::DuplicateMutationKey { .. } => {
+            StorageApiError::InvalidArgument {
+                field: "mutations",
+                reason: "commit batch must not contain duplicate keys",
+            }
+        }
+        crate::commit::CommitRuntimeError::StorageOwnedMutationSpace { .. } => {
+            StorageApiError::InvalidArgument {
+                field: "storage_space",
+                reason: "storage-owned commit spaces are not accepted by the API",
+            }
+        }
         crate::commit::CommitRuntimeError::BranchNotFound { branch_id } => {
             StorageApiError::BranchNotFound { branch_id }
         }
@@ -1075,6 +1236,33 @@ fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageApiError {
             expected,
             actual,
         },
+        crate::commit::CommitRuntimeError::BranchNotWritable { reason, .. }
+        | crate::commit::CommitRuntimeError::BranchGuardUnavailable { reason, .. }
+        | crate::commit::CommitRuntimeError::CommitQuiesceUnavailable { reason }
+        | crate::commit::CommitRuntimeError::BranchUnavailable { reason } => {
+            StorageApiError::InvalidRuntimeState { reason }
+        }
+        crate::commit::CommitRuntimeError::CommitConflict { conflict } => {
+            StorageApiError::Conflict {
+                branch_id: conflict.branch_id(),
+                storage_space: Some(conflict.storage_space_id().raw()),
+                key_fingerprint: Some(conflict.key_fingerprint()),
+                user_key_len: Some(conflict.user_key_len()),
+                reason: "commit condition was not satisfied",
+            }
+        }
+        crate::commit::CommitRuntimeError::DurabilityUnavailable { reason } => {
+            StorageApiError::UnsupportedCapability {
+                capability: "commit_durability",
+                reason,
+            }
+        }
+        crate::commit::CommitRuntimeError::DurabilityUncertain { reason, .. }
+        | crate::commit::CommitRuntimeError::DurableButNotVisible { reason, .. }
+        | crate::commit::CommitRuntimeError::UnresolvedDurableCommit { reason, .. }
+        | crate::commit::CommitRuntimeError::AppliedButNotVisible { reason, .. } => {
+            StorageApiError::DurableUncertain { reason }
+        }
         crate::commit::CommitRuntimeError::InvalidTimelineFact { .. }
         | crate::commit::CommitRuntimeError::TimelineConflict { .. } => {
             StorageApiError::lower_layer_with(
@@ -1136,6 +1324,28 @@ fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             capability: "backend",
             reason: "backend capabilities do not satisfy storage mode",
         },
+        LifecycleError::LowerLayer {
+            layer: crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
+            source: Some(source),
+            ..
+        } => source
+            .as_ref()
+            .downcast_ref::<crate::commit::CommitRuntimeError>()
+            .cloned()
+            .map_or_else(
+                || {
+                    StorageApiError::lower_layer_with(
+                        StorageApiLowerLayer::Lifecycle,
+                        "lifecycle commit runtime failed",
+                        LifecycleError::LowerLayer {
+                            layer: crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
+                            reason: "commit runtime failed",
+                            source: Some(source),
+                        },
+                    )
+                },
+                commit_error,
+            ),
         other => StorageApiError::lower_layer_with(
             StorageApiLowerLayer::Lifecycle,
             "lifecycle runtime failed",

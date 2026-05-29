@@ -21,7 +21,10 @@ mod runtime;
 pub use atoms::{BranchGeneration, ReadLimit, ScanRange, StorageKey, StorageSpaceId, StorageValue};
 pub use backend::StorageBackend;
 pub use branch::{BranchAction, BranchRequest};
-pub use commit::{CommitBatch, CommitMutation, CommitOptions};
+pub use commit::{
+    CommitBatch, CommitCondition, CommitDurability, CommitDurabilitySummary, CommitExpectedVersion,
+    CommitMutation, CommitOptions,
+};
 pub use diagnostics::{DiagnosticsRequest, DiagnosticsScope};
 pub use error::{StorageApiError, StorageApiErrorClass, StorageApiLowerLayer};
 pub use maintenance::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};

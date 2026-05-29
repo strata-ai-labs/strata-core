@@ -438,7 +438,7 @@ Status: implemented
 
 ## L9D - Commit API
 
-Status: planned
+Status: implemented
 
 ### Source Evidence To Read
 
@@ -452,23 +452,113 @@ Status: planned
 
 ### Shipped Files
 
-TBD.
+- `crates/storage-next/src/api/commit.rs`
+- `crates/storage-next/src/api/error.rs`
+- `crates/storage-next/src/api/mod.rs`
+- `crates/storage-next/src/api/outcome.rs`
+- `crates/storage-next/src/api/runtime.rs`
+- `crates/storage-next/src/api/tests/commit.rs`
+- `crates/storage-next/src/api/tests/mod.rs`
+- `crates/storage-next/src/lifecycle/cache.rs`
+- `crates/storage-next/src/testkit/api/commit.rs`
+- `crates/storage-next/src/testkit/api/mod.rs`
+- `crates/storage-next/src/testkit/mod.rs`
+- `crates/storage-next/tests/api_conformance.rs`
+- `crates/storage-next/tests/api_faults.rs`
+- `crates/storage-next/tests/api_properties.rs`
 
 ### Boundary Decisions
 
-TBD.
+- Public commits accept storage-space/key/value mutations plus optional
+  compare-and-set conditions. They do not expose transaction sessions,
+  transaction ids, serializable-isolation claims, or cross-branch atomic
+  request shapes.
+- The API commit bridge routes through the lifecycle runtime, not directly to
+  lower commit runtimes. Cache commits map to non-durable commits; durable
+  standard and durable always runtimes keep their configured durability policy.
+- `CommitDurability::RuntimeDefault` means "use the runtime's configured
+  policy." Explicit durability requests that contradict the runtime mode fail at
+  the storage API boundary as unsupported capability errors.
+- Branch generation is a boundary precondition. A missing generation means no
+  generation guard; a supplied zero generation is rejected before lower commit
+  mapping.
+- Commit outcomes expose only API-shaped facts: branch, commit version,
+  timestamp, durability summary, mutation counts, timeline-row count, and
+  visibility. Lower commit outcome and lifecycle types stay private.
+- Conflict errors carry structured storage-space/key diagnostics without
+  exposing lower read-set types. The key fingerprint is diagnostic only.
+- Durable uncertainty and applied-not-visible outcomes remain distinct from
+  generic lower-layer failure through the `ambiguous_commit` error class.
+- Public commit timestamps are allocated by the lower commit runtime through the
+  runtime-owned timestamp source. Equal commit timestamps remain valid because
+  timeline ordering uses commit-version tiebreaking.
 
 ### Tests Added
 
-TBD.
+- `commit_rejects_empty_batch`
+- `commit_rejects_duplicate_keys`
+- `commit_rejects_malformed_key`
+- `commit_rejects_unknown_branch`
+- `commit_rejects_generation_mismatch`
+- `commit_rejects_zero_expected_generation`
+- `commit_rejects_cross_branch_mutation`
+- `commit_rejects_unsupported_durability_for_cache`
+- `commit_rejects_transaction_id_field_absence_by_type`
+- `cache_commit_returns_not_durable_outcome`
+- `standard_commit_returns_standard_outcome`
+- `always_commit_returns_always_outcome`
+- `commit_put_then_read_latest_observes_value`
+- `commit_delete_then_read_latest_observes_tombstone`
+- `commit_ttl_metadata_roundtrips_to_read_facts`
+- `commit_outcome_reports_mutation_counts`
+- `commit_outcome_reports_timestamp_and_version`
+- `commit_blind_write_succeeds_without_read_set`
+- `commit_expected_version_match_succeeds`
+- `commit_expected_version_mismatch_conflicts`
+- `commit_expected_absent_match_succeeds`
+- `commit_expected_absent_mismatch_conflicts`
+- `commit_conflict_error_has_structured_branch_and_key`
+- `commit_wal_append_failure_maps_to_durable_not_acquired`
+- `commit_durability_uncertain_survives_boundary`
+- `commit_applied_not_visible_survives_boundary`
+- `commit_visibility_publish_failure_preserves_source_chain`
+- `commit_after_close_rejects_closed_runtime`
+- `commit_unresolved_durable_gate_rejects_followup`
+- `commit_api_has_no_public_transaction_session_type`
+- `commit_api_has_no_durable_transaction_id_type`
+- `commit_api_does_not_claim_serializable_isolation`
+- `commit_api_rejects_cross_branch_atomic_request`
+- `api_conformance_commit_then_read_round_trip`
+- `api_property_harness_matches_generated_commit_model`
+- `api_fault_validation_failure_maps_to_invalid_argument`
+- `api_fault_conflict_maps_to_conflict`
+- `api_fault_durability_request_maps_to_unsupported_capability`
+- `api_fault_closed_runtime_maps_to_invalid_runtime_state`
+- `api_fault_uncertain_commit_maps_to_ambiguous_commit`
 
 ### Sensitivity Probes
 
-TBD.
+- Moving allocation before API validation is caught by validation and CAS tests
+  that assert no successful outcome is returned for rejected batches.
+- Dropping structured conflict mapping is caught by
+  `commit_conflict_error_has_structured_branch_and_key`.
+- Collapsing durable uncertainty into a generic lower-layer failure is caught by
+  `commit_durability_uncertain_survives_boundary` and the fault wrapper.
+- Allowing cross-branch atomic request shapes is caught by
+  `commit_rejects_cross_branch_mutation` and
+  `commit_api_rejects_cross_branch_atomic_request`.
+- Adding public transaction-session or durable transaction-id vocabulary is
+  caught by the absence tests over the public commit API source.
 
 ### Verification
 
-TBD.
+- `cargo fmt --package strata-storage-next --check` passed.
+- `cargo test -p strata-storage-next --locked --lib api` passed.
+- `cargo test -p strata-storage-next --locked --test api_source_guard` passed.
+- `cargo test -p strata-storage-next --locked --test api_conformance` passed.
+- `cargo test -p strata-storage-next --features testkit --locked --test api_properties` passed.
+- `cargo test -p strata-storage-next --features fault-injection,testkit --locked --test api_faults` passed.
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` passed.
 
 ## L9E - Branch Lifecycle API
 

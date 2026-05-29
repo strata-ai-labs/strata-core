@@ -3,9 +3,11 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use strata_core_next::BranchId;
+use strata_core_next::{BranchId, CommitVersion};
 
-use super::{StorageApiError, StorageApiResult, StorageKey, StorageSpaceId, StorageValue};
+use super::{
+    BranchGeneration, StorageApiError, StorageApiResult, StorageKey, StorageSpaceId, StorageValue,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitMutation {
@@ -37,9 +39,88 @@ impl CommitMutation {
     }
 }
 
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CommitDurability {
+    #[default]
+    RuntimeDefault,
+    NotDurable,
+    Standard,
+    Always,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitDurabilitySummary {
+    NotDurable,
+    Standard,
+    Always,
+    Uncertain,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitExpectedVersion {
+    Absent,
+    Present(CommitVersion),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitCondition {
+    storage_space: StorageSpaceId,
+    key: StorageKey,
+    expected: CommitExpectedVersion,
+}
+
+impl CommitCondition {
+    #[must_use]
+    pub const fn new(
+        storage_space: StorageSpaceId,
+        key: StorageKey,
+        expected: CommitExpectedVersion,
+    ) -> Self {
+        Self {
+            storage_space,
+            key,
+            expected,
+        }
+    }
+
+    #[must_use]
+    pub const fn expected_absent(storage_space: StorageSpaceId, key: StorageKey) -> Self {
+        Self::new(storage_space, key, CommitExpectedVersion::Absent)
+    }
+
+    #[must_use]
+    pub const fn expected_present(
+        storage_space: StorageSpaceId,
+        key: StorageKey,
+        version: CommitVersion,
+    ) -> Self {
+        Self::new(storage_space, key, CommitExpectedVersion::Present(version))
+    }
+
+    #[must_use]
+    pub const fn storage_space(&self) -> &StorageSpaceId {
+        &self.storage_space
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> &StorageKey {
+        &self.key
+    }
+
+    #[must_use]
+    pub const fn expected(&self) -> CommitExpectedVersion {
+        self.expected
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommitOptions {
     require_conflict_check: bool,
+    durability: CommitDurability,
+    expected_generation: Option<BranchGeneration>,
 }
 
 impl CommitOptions {
@@ -50,8 +131,30 @@ impl CommitOptions {
     }
 
     #[must_use]
+    pub const fn with_durability(mut self, durability: CommitDurability) -> Self {
+        self.durability = durability;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_expected_generation(mut self, generation: BranchGeneration) -> Self {
+        self.expected_generation = Some(generation);
+        self
+    }
+
+    #[must_use]
     pub const fn conflict_check_required(self) -> bool {
         self.require_conflict_check
+    }
+
+    #[must_use]
+    pub const fn durability(self) -> CommitDurability {
+        self.durability
+    }
+
+    #[must_use]
+    pub const fn expected_generation(self) -> Option<BranchGeneration> {
+        self.expected_generation
     }
 }
 
@@ -59,6 +162,7 @@ impl CommitOptions {
 pub struct CommitBatch {
     branch_id: BranchId,
     mutations: Vec<CommitMutation>,
+    conditions: Vec<CommitCondition>,
     options: CommitOptions,
 }
 
@@ -89,8 +193,15 @@ impl CommitBatch {
         Ok(Self {
             branch_id,
             mutations,
+            conditions: Vec::new(),
             options,
         })
+    }
+
+    pub fn with_conditions(mut self, conditions: Vec<CommitCondition>) -> StorageApiResult<Self> {
+        validate_unique_conditions(&conditions)?;
+        self.conditions = conditions;
+        Ok(self)
     }
 
     #[must_use]
@@ -104,7 +215,35 @@ impl CommitBatch {
     }
 
     #[must_use]
+    pub fn conditions(&self) -> &[CommitCondition] {
+        &self.conditions
+    }
+
+    #[must_use]
     pub const fn options(&self) -> CommitOptions {
         self.options
     }
+}
+
+fn validate_unique_conditions(conditions: &[CommitCondition]) -> StorageApiResult<()> {
+    let mut seen = BTreeSet::new();
+    for condition in conditions {
+        let identity = (condition.storage_space(), condition.key());
+        if !seen.insert(identity) {
+            return Err(StorageApiError::InvalidArgument {
+                field: "conditions",
+                reason: "commit conditions must not contain duplicate keys",
+            });
+        }
+        if matches!(
+            condition.expected(),
+            CommitExpectedVersion::Present(version) if version == CommitVersion::ZERO
+        ) {
+            return Err(StorageApiError::InvalidArgument {
+                field: "conditions",
+                reason: "expected present version must be nonzero",
+            });
+        }
+    }
+    Ok(())
 }
