@@ -285,6 +285,20 @@ fn branch_fork_at_unretained_version_rejects() {
 }
 
 #[test]
+fn branch_fork_from_empty_source_rejects() {
+    let mut runtime = open_runtime();
+
+    let error = runtime
+        .branch(&branch_request(
+            branch_with(0x5a),
+            BranchAction::ForkCurrent { source: branch() },
+        ))
+        .expect_err("empty source history rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+}
+
+#[test]
 fn branch_fork_invalid_source_identifier_rejects() {
     let mut runtime = open_runtime();
     let zero = BranchId::from_bytes([0; BranchId::BYTE_LEN]);
@@ -601,6 +615,23 @@ fn branch_delete_unknown_rejects() {
         .expect_err("unknown branch rejected");
 
     assert_eq!(error.class(), StorageApiErrorClass::NotFound);
+}
+
+#[test]
+fn branch_delete_already_deleted_rejects() {
+    let mut runtime = open_runtime();
+    let child = branch_with(0x5b);
+    runtime.branch(&create_request(child)).expect("create");
+    runtime
+        .branch(&branch_request(child, BranchAction::Delete))
+        .expect("delete");
+
+    let error = runtime
+        .branch(&branch_request(child, BranchAction::Delete))
+        .expect_err("deleted branch rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
 }
 
 #[test]

@@ -29,6 +29,8 @@ pub enum BranchAction {
 pub struct BranchRequest {
     branch_id: BranchId,
     action: BranchAction,
+    /// For create and fork actions this is the destination generation to assign.
+    /// For clear and delete actions this is the current generation guard.
     expected_generation: Option<BranchGeneration>,
 }
 

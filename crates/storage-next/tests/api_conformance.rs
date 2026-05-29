@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use strata_storage_next::api::{
-    CommitBatch, CommitMutation, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
+    BranchAction, BranchGeneration, BranchId, BranchOperation, BranchRequest, CommitBatch,
+    CommitMutation, CommitOptions, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
     StorageMode, StorageOpenOptions, StorageRuntime, StorageRuntimeState, StorageSpaceId,
     StorageValue,
 };
@@ -105,7 +106,7 @@ fn api_conformance_commit_then_read_round_trip() {
     let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open")
         .into_runtime();
-    let branch = strata_storage_next::api::BranchId::from_bytes([0x01; 16]);
+    let branch = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
     let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
     let key = StorageKey::new(b"conformance".to_vec()).expect("key");
     let batch = CommitBatch::new(
@@ -134,6 +135,122 @@ fn api_conformance_commit_then_read_round_trip() {
         read.row().expect("row").commit_version(),
         commit.commit_version()
     );
+}
+
+#[test]
+fn api_conformance_branch_lifecycle_round_trip() {
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open")
+        .into_runtime();
+    let parent = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
+    let branch = BranchId::from_bytes([0x31; BranchId::BYTE_LEN]);
+    let sibling = BranchId::from_bytes([0x32; BranchId::BYTE_LEN]);
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
+    let key = StorageKey::new(b"branch-conformance".to_vec()).expect("key");
+    let value = StorageValue::new(b"parent-value".to_vec());
+
+    let created = runtime
+        .branch(&BranchRequest::new(
+            sibling,
+            BranchAction::Create,
+            Some(BranchGeneration::new(1)),
+        ))
+        .expect("create branch");
+    assert_eq!(created.operation(), BranchOperation::Created);
+    assert_eq!(
+        created.branch().expect("created branch").generation(),
+        BranchGeneration::new(1)
+    );
+
+    runtime
+        .commit(
+            &CommitBatch::new(
+                parent,
+                vec![CommitMutation::Put {
+                    storage_space: space.clone(),
+                    key: key.clone(),
+                    value,
+                    ttl: None,
+                }],
+                CommitOptions::default(),
+            )
+            .expect("commit batch"),
+        )
+        .expect("commit parent");
+
+    let forked = runtime
+        .branch(&BranchRequest::new(
+            branch,
+            BranchAction::ForkCurrent { source: parent },
+            Some(BranchGeneration::new(1)),
+        ))
+        .expect("fork branch");
+    assert_eq!(forked.operation(), BranchOperation::Forked);
+    assert_eq!(
+        read_conformance_value(&runtime, branch, space.clone(), key.clone()),
+        Some(b"parent-value".to_vec())
+    );
+
+    let cleared = runtime
+        .branch(&BranchRequest::new(
+            branch,
+            BranchAction::Clear,
+            Some(BranchGeneration::new(1)),
+        ))
+        .expect("clear branch");
+    assert_eq!(cleared.operation(), BranchOperation::Cleared);
+    assert_eq!(
+        read_conformance_value(&runtime, branch, space.clone(), key.clone()),
+        None
+    );
+
+    let deleted = runtime
+        .branch(&BranchRequest::new(
+            branch,
+            BranchAction::Delete,
+            Some(BranchGeneration::new(1)),
+        ))
+        .expect("delete branch");
+    assert_eq!(deleted.operation(), BranchOperation::Deleted);
+    let listed = runtime
+        .branch(&BranchRequest::new(parent, BranchAction::List, None))
+        .expect("list branches");
+    assert!(!listed
+        .branches()
+        .iter()
+        .any(|summary| summary.branch_id() == branch));
+
+    let recreated = runtime
+        .branch(&BranchRequest::new(
+            branch,
+            BranchAction::Create,
+            Some(BranchGeneration::new(2)),
+        ))
+        .expect("recreate branch");
+    assert_eq!(recreated.operation(), BranchOperation::Created);
+    assert_eq!(
+        recreated.generation_before(),
+        Some(BranchGeneration::new(1))
+    );
+    assert_eq!(recreated.generation_after(), Some(BranchGeneration::new(2)));
+}
+
+fn read_conformance_value(
+    runtime: &StorageRuntime<'_>,
+    branch: BranchId,
+    space: StorageSpaceId,
+    key: StorageKey,
+) -> Option<Vec<u8>> {
+    runtime
+        .read_point(&PointReadRequest::new(
+            branch,
+            space,
+            key,
+            ReadBound::Latest,
+        ))
+        .expect("read branch")
+        .row()
+        .and_then(|row| row.value().map(|value| value.as_bytes().to_vec()))
 }
 
 #[cfg(feature = "localfs")]

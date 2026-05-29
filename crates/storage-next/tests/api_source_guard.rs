@@ -230,6 +230,23 @@ fn api_implementation_avoids_architecture_labels() {
     }
 }
 
+#[test]
+fn api_branch_surface_excludes_product_workflow_terms() {
+    let root = common::crate_root();
+    for relative in ["src/api/branch.rs", "src/api/runtime.rs"] {
+        let file = root.join(relative);
+        let text = fs::read_to_string(&file)
+            .expect("read branch API source")
+            .to_ascii_lowercase();
+        for term in ["merge", "cherry", "revert", "restore", "publish", "review"] {
+            assert!(
+                !text.contains(term),
+                "{relative} exposes deferred branch workflow term {term}"
+            );
+        }
+    }
+}
+
 fn api_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     common::source_guard_helpers::collect_rs_files(&root.join("src/api"), &mut files);
