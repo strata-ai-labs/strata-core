@@ -20,6 +20,10 @@ fn engine_space() -> StorageSpaceId {
     StorageSpaceId::new(vec![0x20]).expect("engine storage space")
 }
 
+fn multi_byte_space() -> StorageSpaceId {
+    StorageSpaceId::new(vec![0x20, 0x21]).expect("valid opaque storage space")
+}
+
 fn api_key(bytes: &[u8]) -> StorageKey {
     StorageKey::new(bytes.to_vec()).expect("valid key")
 }
@@ -103,6 +107,19 @@ fn commit_rejects_duplicate_keys() {
 fn commit_rejects_malformed_key() {
     let error = StorageKey::new(Vec::new()).expect_err("empty key rejected");
 
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+}
+
+#[test]
+fn commit_rejects_zero_ttl() {
+    let error = CommitBatch::new(
+        branch(),
+        vec![put_mutation_with_ttl(b"zero-ttl", b"value", Duration::ZERO)],
+        CommitOptions::default(),
+    )
+    .expect_err("zero TTL rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
     assert_eq!(error.code(), "invalid_argument.storage_api.argument");
 }
 
@@ -192,6 +209,81 @@ fn commit_rejects_unsupported_durability_for_cache() {
 }
 
 #[test]
+#[cfg(feature = "localfs")]
+fn commit_rejects_always_request_on_standard_runtime() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-always-on-standard"));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"always-on-standard", b"value")],
+        CommitOptions::default().with_durability(CommitDurability::Always),
+    )
+    .expect("valid shape");
+
+    let error = runtime
+        .commit(&batch)
+        .expect_err("always request rejected by standard runtime");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    assert_eq!(error.code(), "unsupported.storage_api.capability");
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn commit_rejects_standard_request_on_always_runtime() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-standard-on-always"));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"standard-on-always", b"value")],
+        CommitOptions::default().with_durability(CommitDurability::Standard),
+    )
+    .expect("valid shape");
+
+    let error = runtime
+        .commit(&batch)
+        .expect_err("standard request rejected by always runtime");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    assert_eq!(error.code(), "unsupported.storage_api.capability");
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn commit_rejects_not_durable_request_on_durable_runtime() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-not-durable-on-durable"));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"not-durable-on-durable", b"value")],
+        CommitOptions::default().with_durability(CommitDurability::NotDurable),
+    )
+    .expect("valid shape");
+
+    let error = runtime
+        .commit(&batch)
+        .expect_err("not-durable request rejected by durable runtime");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    assert_eq!(error.code(), "unsupported.storage_api.capability");
+}
+
+#[test]
 fn commit_rejects_transaction_id_field_absence_by_type() {
     let source = include_str!("../commit.rs").to_ascii_lowercase();
 
@@ -245,6 +337,53 @@ fn always_commit_returns_always_outcome() {
         .expect("commit");
 
     assert_eq!(summary.durability(), CommitDurabilitySummary::Always);
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn durable_runtime_default_uses_configured_policy() {
+    let standard_backend =
+        StorageBackend::local_fs(temp_dir_for_api_test("commit-runtime-default-standard"));
+    let mut standard_runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &standard_backend,
+    )
+    .expect("standard durable open")
+    .into_runtime();
+    let standard_summary = standard_runtime
+        .commit(
+            &CommitBatch::new(
+                branch(),
+                vec![put_mutation(b"runtime-default-standard", b"value")],
+                CommitOptions::default().with_durability(CommitDurability::RuntimeDefault),
+            )
+            .expect("valid batch"),
+        )
+        .expect("standard commit");
+    assert_eq!(
+        standard_summary.durability(),
+        CommitDurabilitySummary::Standard
+    );
+
+    let always_backend =
+        StorageBackend::local_fs(temp_dir_for_api_test("commit-runtime-default-always"));
+    let mut always_runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &always_backend,
+    )
+    .expect("always durable open")
+    .into_runtime();
+    let always_summary = always_runtime
+        .commit(
+            &CommitBatch::new(
+                branch(),
+                vec![put_mutation(b"runtime-default-always", b"value")],
+                CommitOptions::default().with_durability(CommitDurability::RuntimeDefault),
+            )
+            .expect("valid batch"),
+        )
+        .expect("always commit");
+    assert_eq!(always_summary.durability(), CommitDurabilitySummary::Always);
 }
 
 #[test]
@@ -358,6 +497,48 @@ fn commit_rejected_request_does_not_allocate_version() {
         second.commit_version(),
         first.commit_version().checked_next().expect("next version")
     );
+}
+
+#[test]
+fn commit_rejects_ttl_duration_too_large() {
+    let mut runtime = open_runtime();
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation_with_ttl(
+            b"ttl-too-large",
+            b"value",
+            Duration::MAX,
+        )],
+        CommitOptions::default(),
+    )
+    .expect("valid shape");
+
+    let error = runtime.commit(&batch).expect_err("TTL overflow rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+}
+
+#[test]
+fn commit_rejects_ttl_expiration_overflow() {
+    let mut runtime = open_runtime();
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation_with_ttl(
+            b"ttl-expiration-overflow",
+            b"value",
+            Duration::from_micros(1),
+        )],
+        CommitOptions::default(),
+    )
+    .expect("valid shape");
+
+    let error = runtime
+        .commit_for_test(&batch, Timestamp::from_micros(u64::MAX))
+        .expect_err("expiration overflow rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
 }
 
 #[test]
@@ -537,25 +718,46 @@ fn commit_conflict_error_has_structured_branch_and_key() {
 
 #[test]
 fn commit_wal_append_failure_maps_to_durable_not_acquired() {
-    let error = StorageApiError::durable_uncertain("durable WAL append did not complete");
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::durability_uncertain_with(
+            branch(),
+            CommitVersion::new(2),
+            "durable WAL append did not complete",
+            SourceError,
+        ),
+    );
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);
     assert_eq!(
         error.code(),
         "ambiguous_commit.storage_api.durable_uncertain"
     );
+    assert!(error.source().is_some());
 }
 
 #[test]
 fn commit_durability_uncertain_survives_boundary() {
-    let error = StorageApiError::durable_uncertain("durability is uncertain");
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::DurabilityUncertain {
+            branch_id: branch(),
+            commit_version: CommitVersion::new(3),
+            reason: "durability is uncertain",
+            source: None,
+        },
+    );
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);
 }
 
 #[test]
 fn commit_applied_not_visible_survives_boundary() {
-    let error = StorageApiError::durable_uncertain("commit was applied but not visible");
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::AppliedButNotVisible {
+            branch_id: branch(),
+            commit_version: CommitVersion::new(4),
+            reason: "commit was applied but not visible",
+        },
+    );
 
     assert_eq!(
         error.code(),
@@ -565,10 +767,39 @@ fn commit_applied_not_visible_survives_boundary() {
 
 #[test]
 fn commit_visibility_publish_failure_preserves_source_chain() {
-    let error =
-        StorageApiError::durable_uncertain_with("visibility publication failed", SourceError);
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::durable_but_not_visible_with(
+            branch(),
+            CommitVersion::new(5),
+            "visibility publication failed",
+            SourceError,
+        ),
+    );
 
     assert!(error.source().is_some());
+}
+
+#[test]
+fn commit_rejects_condition_with_multi_byte_storage_space() {
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"condition-space", b"value")],
+        CommitOptions::default(),
+    )
+    .expect("valid batch")
+    .with_conditions(vec![CommitCondition::expected_absent(
+        multi_byte_space(),
+        api_key(b"condition-space"),
+    )])
+    .expect("condition shape accepted");
+    let mut runtime = open_runtime();
+
+    let error = runtime
+        .commit(&batch)
+        .expect_err("condition storage space rejected");
+
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
 }
 
 #[test]
@@ -585,8 +816,12 @@ fn commit_after_close_rejects_closed_runtime() {
 
 #[test]
 fn commit_unresolved_durable_gate_rejects_followup() {
-    let error = StorageApiError::durable_uncertain(
-        "unresolved durable commit must recover before follow-up commits",
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: branch(),
+            commit_version: CommitVersion::new(6),
+            reason: "unresolved durable commit must recover before follow-up commits",
+        },
     );
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);

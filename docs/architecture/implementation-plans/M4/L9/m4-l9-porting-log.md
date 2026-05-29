@@ -492,33 +492,47 @@ Status: implemented
 - Public commit timestamps are allocated by the lower commit runtime through the
   runtime-owned timestamp source. Equal commit timestamps remain valid because
   timeline ordering uses commit-version tiebreaking.
+- Public commits use an explicit internal timestamp policy after the API selects
+  the next monotonic timestamp. This keeps commit stamping and TTL expiry facts
+  on the same frontier while leaving caller-supplied timestamps out of the V1
+  public surface.
+- Zero TTL is rejected at batch construction so a row cannot be visible at
+  latest while already expired at its own commit-version read frontier.
 
 ### Tests Added
 
 - `commit_rejects_empty_batch`
 - `commit_rejects_duplicate_keys`
 - `commit_rejects_malformed_key`
+- `commit_rejects_zero_ttl`
 - `commit_rejects_unknown_branch`
 - `commit_rejects_generation_mismatch`
 - `commit_rejects_zero_expected_generation`
 - `commit_rejects_cross_branch_mutation`
 - `commit_rejects_unsupported_durability_for_cache`
+- `commit_rejects_always_request_on_standard_runtime`
+- `commit_rejects_standard_request_on_always_runtime`
+- `commit_rejects_not_durable_request_on_durable_runtime`
 - `commit_rejected_request_does_not_allocate_version`
 - `commit_rejects_transaction_id_field_absence_by_type`
 - `cache_commit_returns_not_durable_outcome`
 - `standard_commit_returns_standard_outcome`
 - `always_commit_returns_always_outcome`
+- `durable_runtime_default_uses_configured_policy`
 - `commit_put_then_read_latest_observes_value`
 - `commit_delete_then_read_latest_observes_tombstone`
 - `commit_ttl_metadata_roundtrips_to_read_facts`
 - `commit_outcome_reports_mutation_counts`
 - `commit_outcome_reports_timestamp_and_version`
+- `commit_rejects_ttl_duration_too_large`
+- `commit_rejects_ttl_expiration_overflow`
 - `commit_blind_write_succeeds_without_read_set`
 - `commit_expected_version_match_succeeds`
 - `commit_expected_version_mismatch_conflicts`
 - `commit_expected_absent_match_succeeds`
 - `commit_expected_absent_mismatch_conflicts`
 - `commit_conflict_error_has_structured_branch_and_key`
+- `commit_rejects_condition_with_multi_byte_storage_space`
 - `commit_wal_append_failure_maps_to_durable_not_acquired`
 - `commit_durability_uncertain_survives_boundary`
 - `commit_applied_not_visible_survives_boundary`

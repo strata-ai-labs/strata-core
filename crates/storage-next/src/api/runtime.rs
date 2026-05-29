@@ -491,6 +491,8 @@ impl<'a> StorageRuntime<'a> {
         explicit_timestamp: Option<Timestamp>,
     ) -> StorageApiResult<CommitSummary> {
         let timestamp_base = explicit_timestamp.unwrap_or_else(|| self.next_commit_timestamp());
+        // The API computes the timestamp before mapping TTL so lower commit
+        // stamping and expiry facts use the same monotonic frontier.
         let timestamp_policy = crate::commit::CommitTimestampPolicy::Explicit(timestamp_base);
         let durability = self.resolve_commit_durability(batch.options().durability())?;
         let generation_guard = map_generation_guard(batch.options().expected_generation())?;
@@ -1174,6 +1176,12 @@ fn map_expiry(
     let Some(ttl) = ttl else {
         return Ok(crate::commit::CommitExpiry::None);
     };
+    if ttl.is_zero() {
+        return Err(StorageApiError::InvalidArgument {
+            field: "ttl",
+            reason: "ttl duration must be greater than zero",
+        });
+    }
     let ttl_micros =
         u64::try_from(ttl.as_micros()).map_err(|_| StorageApiError::InvalidArgument {
             field: "ttl",

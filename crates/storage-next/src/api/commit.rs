@@ -181,6 +181,17 @@ impl CommitBatch {
 
         let mut seen = BTreeSet::new();
         for mutation in &mutations {
+            if matches!(
+                mutation,
+                CommitMutation::Put {
+                    ttl: Some(ttl), ..
+                } if ttl.is_zero()
+            ) {
+                return Err(StorageApiError::InvalidArgument {
+                    field: "ttl",
+                    reason: "ttl duration must be greater than zero",
+                });
+            }
             let identity = (mutation.storage_space(), mutation.key());
             if !seen.insert(identity) {
                 return Err(StorageApiError::InvalidArgument {
@@ -198,6 +209,7 @@ impl CommitBatch {
         })
     }
 
+    /// Replaces the condition set for this batch.
     pub fn with_conditions(mut self, conditions: Vec<CommitCondition>) -> StorageApiResult<Self> {
         validate_unique_conditions(&conditions)?;
         self.conditions = conditions;
