@@ -1,8 +1,8 @@
 //! API runtime handle.
 
 use crate::branch::{
-    BranchHistoryOptions, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
-    BranchUserKeyBound,
+    BranchHistoryOptions, BranchReadBound, BranchReadView, BranchReleasePlan, BranchRuntimeConfig,
+    BranchScanBounds, BranchUserKeyBound,
 };
 use crate::commit::{
     CommitBranchGeneration, CommitBranchGenerationGuard, CommitDurabilityClass,
@@ -10,12 +10,12 @@ use crate::commit::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
-    CloseOutcome, CloseOutcomeStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
-    LifecycleCodecId, LifecycleConfig, LifecycleDurableLocalOpenRequest,
-    LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
-    LifecycleRecoveryRuntime, LifecycleWalGrowthPolicy, RecoveryHealth, RecoveryStrictness,
-    StorageMode as LifecycleStorageMode, StorageOpenOutcome as LifecycleStorageOpenOutcome,
-    StorageOpenPlan, StorageRuntimeBudget,
+    CloseOutcome, CloseOutcomeStatus, LifecycleBranchDescriptor, LifecycleBranchStatus,
+    LifecycleCacheOpenRequest, LifecycleCacheRuntime, LifecycleCodecId, LifecycleConfig,
+    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
+    LifecycleError, LifecycleRecoveryRuntime, LifecycleWalGrowthPolicy, RecoveryHealth,
+    RecoveryStrictness, StorageMode as LifecycleStorageMode,
+    StorageOpenOutcome as LifecycleStorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
 };
 #[cfg(test)]
 use crate::lifecycle::{FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId};
@@ -24,15 +24,17 @@ use crate::service::WalServiceConfig;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::{
-    CommitBatch, CommitDurability, CommitDurabilitySummary, CommitExpectedVersion, CommitSummary,
-    HistoryReadOutcome, HistoryReadRequest, PointReadOutcome, PointReadRequest,
-    PrefixScanReadRequest, ReadBound, ReadLimit, ScanReadOutcome, ScanReadRequest, StorageApiError,
-    StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBudgetPolicy,
-    StorageCloseSummary, StorageDurabilityPolicy, StorageKey, StorageMode, StorageOpenDisposition,
-    StorageOpenOptions, StorageOpenOutcome, StorageOpenSummary, StorageReadRow,
-    StorageRuntimeState, StorageSpaceId, StorageValue, StorageWalGrowthPolicy,
-    TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
-    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
+    BranchAction, BranchCleanupSummary, BranchGeneration, BranchOperation, BranchOutcome,
+    BranchParentSummary, BranchRequest, BranchStatus, BranchSummary, CommitBatch, CommitDurability,
+    CommitDurabilitySummary, CommitExpectedVersion, CommitSummary, HistoryReadOutcome,
+    HistoryReadRequest, PointReadOutcome, PointReadRequest, PrefixScanReadRequest, ReadBound,
+    ReadLimit, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiLowerLayer,
+    StorageApiResult, StorageBackend, StorageBudgetPolicy, StorageCloseSummary,
+    StorageDurabilityPolicy, StorageKey, StorageMode, StorageOpenDisposition, StorageOpenOptions,
+    StorageOpenOutcome, StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId,
+    StorageValue, StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest,
+    TimestampLookupMiss, TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome,
+    VersionLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
 use std::time::Duration;
@@ -203,6 +205,52 @@ impl<'a> StorageRuntime<'a> {
         self.execute_commit(batch, None)
     }
 
+    pub fn branch(&mut self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+        match request.action() {
+            BranchAction::Create => self.create_branch_request(request),
+            BranchAction::Describe => self.describe_branch_request(request),
+            BranchAction::List => self.list_branch_request(),
+            BranchAction::ForkCurrent { source } => {
+                require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+                let version = self.current_branch_version(source)?;
+                self.fork_branch_at_version(request, source, version, None)
+            }
+            BranchAction::ForkAtVersion { source, version } => {
+                require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+                self.require_exact_retained_version(source, version)?;
+                self.fork_branch_at_version(request, source, version, None)
+            }
+            BranchAction::ForkAtTimestamp { source, timestamp } => {
+                require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+                let timeline = self.timeline_view(source)?;
+                let lookup = timeline.version_at_or_before(timestamp);
+                let version = match lookup.miss() {
+                    CommitTimelineMiss::Matched => lookup.matched_version().ok_or(
+                        StorageApiError::RetainedHistoryUnavailable {
+                            branch_id: source,
+                            reason: "timestamp lookup did not return a retained version",
+                        },
+                    )?,
+                    CommitTimelineMiss::BeforeRetainedHistory | CommitTimelineMiss::Empty => {
+                        return Err(StorageApiError::TimestampHistoryUnavailable {
+                            branch_id: source,
+                            reason: "timestamp is outside retained timeline history",
+                        });
+                    }
+                    CommitTimelineMiss::AfterLatestRetained => {
+                        return Err(StorageApiError::TimestampHistoryUnavailable {
+                            branch_id: source,
+                            reason: "timestamp is newer than retained timeline history",
+                        });
+                    }
+                };
+                self.fork_branch_at_version(request, source, version, Some(timestamp))
+            }
+            BranchAction::Clear => self.clear_branch_request(request),
+            BranchAction::Delete => self.delete_branch_request(request),
+        }
+    }
+
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
         let view = self.read_view_for_branch(request.branch_id())?;
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
@@ -359,6 +407,218 @@ impl<'a> StorageRuntime<'a> {
             bounds.min_version(),
             bounds.max_version(),
         ))
+    }
+
+    fn create_branch(
+        &mut self,
+        branch_id: BranchId,
+        generation: CommitBranchGeneration,
+        created_at: Option<CommitVersion>,
+    ) -> StorageApiResult<crate::lifecycle::LifecycleBranchCreateOutcome> {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime.create_branch(branch_id, generation, created_at)
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.create_branch(branch_id, generation, created_at)
+            }
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "branch operation requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)
+    }
+
+    fn create_branch_request(
+        &mut self,
+        request: &BranchRequest,
+    ) -> StorageApiResult<BranchOutcome> {
+        require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+        let generation = branch_generation_or_default(request.expected_generation())?;
+        let created_at = current_visible(self);
+        let outcome = self.create_branch(request.branch_id(), generation, created_at)?;
+        let branch = map_branch_descriptor(outcome.descriptor());
+        Ok(BranchOutcome::new(BranchOperation::Created, vec![branch])
+            .with_generations(None, Some(branch.generation())))
+    }
+
+    fn describe_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+        require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+        let branch = self.describe_branch(request.branch_id())?;
+        Ok(BranchOutcome::new(BranchOperation::Described, vec![branch])
+            .with_generations(Some(branch.generation()), Some(branch.generation())))
+    }
+
+    fn list_branch_request(&self) -> StorageApiResult<BranchOutcome> {
+        let branches = self.list_branches(false)?;
+        Ok(BranchOutcome::new(BranchOperation::Listed, branches))
+    }
+
+    fn list_branches(&self, include_deleted: bool) -> StorageApiResult<Vec<BranchSummary>> {
+        let descriptors = match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.list_branches(include_deleted),
+            StorageRuntimeInner::Durable(runtime) => runtime.list_branches(include_deleted),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "branch operation requires an open runtime",
+                });
+            }
+        };
+        Ok(descriptors.into_iter().map(map_branch_descriptor).collect())
+    }
+
+    fn describe_branch(&self, branch_id: BranchId) -> StorageApiResult<BranchSummary> {
+        let descriptor = match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.branch_catalog().lookup(branch_id),
+            StorageRuntimeInner::Durable(runtime) => runtime.branch_catalog().lookup(branch_id),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "branch operation requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        Ok(map_branch_descriptor(descriptor))
+    }
+
+    fn active_branch_count(&self) -> StorageApiResult<usize> {
+        Ok(self.list_branches(false)?.len())
+    }
+
+    fn retained_floor(&self, branch_id: BranchId) -> StorageApiResult<CommitVersion> {
+        self.timeline_view(branch_id)?.bounds().min_version().ok_or(
+            StorageApiError::RetainedHistoryUnavailable {
+                branch_id,
+                reason: "branch has no retained commit history",
+            },
+        )
+    }
+
+    fn current_branch_version(&self, branch_id: BranchId) -> StorageApiResult<CommitVersion> {
+        self.timeline_view(branch_id)?.bounds().max_version().ok_or(
+            StorageApiError::RetainedHistoryUnavailable {
+                branch_id,
+                reason: "branch has no retained commit history",
+            },
+        )
+    }
+
+    fn require_exact_retained_version(
+        &self,
+        branch_id: BranchId,
+        version: CommitVersion,
+    ) -> StorageApiResult<()> {
+        if version == CommitVersion::ZERO {
+            return Err(StorageApiError::RetainedHistoryUnavailable {
+                branch_id,
+                reason: "commit version is outside retained branch history",
+            });
+        }
+        self.timeline_view(branch_id)?
+            .timestamp_for_version(version)
+            .map(|_| ())
+            .ok_or(StorageApiError::RetainedHistoryUnavailable {
+                branch_id,
+                reason: "commit version is outside retained branch history",
+            })
+    }
+
+    fn fork_branch_at_version(
+        &mut self,
+        request: &BranchRequest,
+        source: BranchId,
+        version: CommitVersion,
+        timestamp: Option<Timestamp>,
+    ) -> StorageApiResult<BranchOutcome> {
+        let generation = branch_generation_or_default(request.expected_generation())?;
+        let retained_floor = self.retained_floor(source)?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.fork_at_retained_version(
+                source,
+                request.branch_id(),
+                generation,
+                version,
+                retained_floor,
+            ),
+            StorageRuntimeInner::Durable(runtime) => runtime.fork_at_retained_version(
+                source,
+                request.branch_id(),
+                generation,
+                version,
+                retained_floor,
+            ),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "branch operation requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        let branch = map_branch_descriptor(outcome.descriptor());
+        Ok(BranchOutcome::new(BranchOperation::Forked, vec![branch])
+            .with_generations(None, Some(branch.generation()))
+            .with_fork_facts(
+                outcome.source_branch_id(),
+                outcome.fork_version(),
+                timestamp,
+            ))
+    }
+
+    fn clear_branch_request(&mut self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+        require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+        let before = self.describe_branch(request.branch_id())?;
+        let guard = map_generation_guard(request.expected_generation())?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.clear_branch(request.branch_id(), guard),
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.clear_branch(request.branch_id(), guard)
+            }
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "branch operation requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        let branch = map_branch_descriptor(outcome.descriptor());
+        Ok(BranchOutcome::new(BranchOperation::Cleared, vec![branch])
+            .with_generations(Some(before.generation()), Some(branch.generation()))
+            .with_cleanup(map_branch_cleanup(outcome.release_plan())))
+    }
+
+    fn delete_branch_request(
+        &mut self,
+        request: &BranchRequest,
+    ) -> StorageApiResult<BranchOutcome> {
+        require_valid_branch_identifier(request.branch_id(), "branch_id")?;
+        let before = self.describe_branch(request.branch_id())?;
+        if before.status() == BranchStatus::Active && self.active_branch_count()? <= 1 {
+            return Err(StorageApiError::InvalidRuntimeState {
+                reason: "delete would remove the last active branch",
+            });
+        }
+        let guard = map_generation_guard(request.expected_generation())?;
+        let deleted_at = current_visible(self);
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime.delete_branch(request.branch_id(), guard, deleted_at)
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.delete_branch(request.branch_id(), guard, deleted_at)
+            }
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "branch operation requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        let branch = map_branch_descriptor(outcome.descriptor());
+        Ok(BranchOutcome::new(BranchOperation::Deleted, vec![branch])
+            .with_generations(Some(before.generation()), Some(branch.generation()))
+            .with_cleanup(map_branch_cleanup(outcome.release_plan())))
     }
 
     fn open_cache_with_backend(
@@ -656,13 +916,18 @@ impl<'a> StorageRuntime<'a> {
 
     #[cfg(test)]
     pub(crate) fn flush_default_branch_for_test(&mut self) -> StorageApiResult<()> {
+        self.flush_branch_for_test(DEFAULT_BRANCH_ID)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_branch_for_test(&mut self, branch_id: BranchId) -> StorageApiResult<()> {
         match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
                 runtime
                     .rotate_active_for_maintenance()
                     .map_err(map_lifecycle_error)?;
                 runtime
-                    .flush_frozen(&flush_request_for_test(DEFAULT_BRANCH_ID)?)
+                    .flush_frozen(&flush_request_for_test(branch_id)?)
                     .map(|_| ())
                     .map_err(map_lifecycle_error)
             }
@@ -671,12 +936,34 @@ impl<'a> StorageRuntime<'a> {
                     .rotate_active_for_maintenance()
                     .map_err(map_lifecycle_error)?;
                 runtime
-                    .flush_frozen(&flush_request_for_test(DEFAULT_BRANCH_ID)?)
+                    .flush_frozen(&flush_request_for_test(branch_id)?)
                     .map(|_| ())
                     .map_err(map_lifecycle_error)
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "flush requires an open runtime",
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin_branch_reachability_for_test(
+        &mut self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<()> {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime
+                .branch_catalog_mut_for_test()
+                .pin_reachability(branch_id)
+                .map(|_| ())
+                .map_err(map_lifecycle_error),
+            StorageRuntimeInner::Durable(runtime) => runtime
+                .branch_catalog_mut_for_test()
+                .pin_reachability(branch_id)
+                .map(|_| ())
+                .map_err(map_lifecycle_error),
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "pin requires an open runtime",
             }),
         }
     }
@@ -838,10 +1125,10 @@ fn map_close_effects(outcome: CloseOutcome) -> StorageCloseEffects {
 }
 
 fn map_generation_guard(
-    generation: Option<super::BranchGeneration>,
+    generation: Option<BranchGeneration>,
 ) -> StorageApiResult<CommitBranchGenerationGuard> {
     match generation {
-        Some(generation) if generation == super::BranchGeneration::ZERO => {
+        Some(generation) if generation == BranchGeneration::ZERO => {
             Err(StorageApiError::InvalidArgument {
                 field: "branch_generation",
                 reason: "expected branch generation must be nonzero",
@@ -852,6 +1139,71 @@ fn map_generation_guard(
             .map_err(commit_error),
         None => Ok(CommitBranchGenerationGuard::not_supplied()),
     }
+}
+
+fn branch_generation_or_default(
+    generation: Option<BranchGeneration>,
+) -> StorageApiResult<CommitBranchGeneration> {
+    match generation {
+        Some(generation) if generation == BranchGeneration::ZERO => {
+            Err(StorageApiError::InvalidArgument {
+                field: "branch_generation",
+                reason: "branch generation must be nonzero",
+            })
+        }
+        Some(generation) => CommitBranchGeneration::new(generation.as_u64()).map_err(commit_error),
+        None => default_branch_generation(),
+    }
+}
+
+fn require_valid_branch_identifier(
+    branch_id: BranchId,
+    field: &'static str,
+) -> StorageApiResult<()> {
+    if branch_id.as_bytes().iter().all(|byte| *byte == 0) {
+        Err(StorageApiError::InvalidArgument {
+            field,
+            reason: "branch id must not be all zero",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn current_visible(runtime: &StorageRuntime<'_>) -> Option<CommitVersion> {
+    let version = match &runtime.inner {
+        StorageRuntimeInner::Cache(runtime) => runtime.visible_version(),
+        StorageRuntimeInner::Durable(runtime) => runtime.visible_version(),
+        StorageRuntimeInner::Closed => CommitVersion::ZERO,
+    };
+    (version != CommitVersion::ZERO).then_some(version)
+}
+
+fn map_branch_descriptor(descriptor: LifecycleBranchDescriptor) -> BranchSummary {
+    let status = match descriptor.status() {
+        LifecycleBranchStatus::Active => BranchStatus::Active,
+        LifecycleBranchStatus::Deleted => BranchStatus::Deleted,
+    };
+    let parent = descriptor
+        .parent()
+        .map(|parent| BranchParentSummary::new(parent.source_branch_id(), parent.fork_version()));
+    BranchSummary::new(
+        descriptor.branch_id(),
+        BranchGeneration::new(descriptor.generation().get()),
+        status,
+        parent,
+        descriptor.created_at(),
+        descriptor.deleted_at(),
+        descriptor.state_revision(),
+    )
+}
+
+fn map_branch_cleanup(release_plan: &BranchReleasePlan) -> BranchCleanupSummary {
+    BranchCleanupSummary::new(
+        release_plan.removed_refs().len(),
+        release_plan.releasable_tables().len(),
+        release_plan.protected_tables().len(),
+    )
 }
 
 fn map_commit_summary(outcome: &crate::commit::CommitOutcome) -> StorageApiResult<CommitSummary> {
@@ -1325,7 +1677,8 @@ fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             field: "open_options",
             reason,
         },
-        LifecycleError::InvalidLifecycleState { reason } => {
+        LifecycleError::InvalidLifecycleState { reason }
+        | LifecycleError::PinnedViewReleaseBlocked { reason, .. } => {
             StorageApiError::InvalidRuntimeState { reason }
         }
         LifecycleError::BranchNotFound { branch_id } => {
@@ -1343,12 +1696,21 @@ fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             expected,
             actual,
         },
+        LifecycleError::BranchNotWritable { state, .. } => {
+            StorageApiError::InvalidRuntimeState { reason: state }
+        }
+        LifecycleError::BranchGenerationExhausted { .. } => StorageApiError::InvalidRuntimeState {
+            reason: "branch generation is exhausted",
+        },
         LifecycleError::BranchHistoryUnavailable { branch_id, reason } => {
             StorageApiError::RetainedHistoryUnavailable { branch_id, reason }
         }
         LifecycleError::InsufficientTimestampHistory { branch_id, reason } => {
             StorageApiError::TimestampHistoryUnavailable { branch_id, reason }
         }
+        LifecycleError::SourceHasUnflushedRows { .. } => StorageApiError::InvalidRuntimeState {
+            reason: "source branch has unflushed rows",
+        },
         LifecycleError::CapabilityMismatch { .. } => StorageApiError::UnsupportedCapability {
             capability: "backend",
             reason: "backend capabilities do not satisfy storage mode",

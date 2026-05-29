@@ -44,10 +44,10 @@ branch workflows.
 1. `branch_clear_removes_visible_rows`
 2. `branch_clear_preserves_branch_identity`
 3. `branch_clear_generation_mismatch_rejects`
-4. `branch_clear_with_pinned_view_rejects`
+4. `branch_clear_with_pinned_view_reports_protected_release`
 5. `branch_delete_removes_from_list`
 6. `branch_delete_generation_mismatch_rejects`
-7. `branch_delete_with_pinned_view_rejects`
+7. `branch_delete_with_pinned_view_reports_protected_release`
 8. `branch_delete_unknown_rejects`
 9. `branch_delete_reports_cleanup_facts`
 
@@ -78,7 +78,7 @@ independently.
 ## Sensitivity Probes
 
 1. Ignore generation mismatch.
-2. Allow delete with pinned view.
+2. Drop protected cleanup facts for pinned reachability.
 3. Let fork-at-history use latest instead of requested version.
 4. Leak merge vocabulary into API.
 

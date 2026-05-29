@@ -20,7 +20,10 @@ mod runtime;
 
 pub use atoms::{BranchGeneration, ReadLimit, ScanRange, StorageKey, StorageSpaceId, StorageValue};
 pub use backend::StorageBackend;
-pub use branch::{BranchAction, BranchRequest};
+pub use branch::{
+    BranchAction, BranchCleanupSummary, BranchOperation, BranchOutcome, BranchParentSummary,
+    BranchRequest, BranchStatus, BranchSummary,
+};
 pub use commit::{
     CommitBatch, CommitCondition, CommitDurability, CommitDurabilitySummary, CommitExpectedVersion,
     CommitMutation, CommitOptions,

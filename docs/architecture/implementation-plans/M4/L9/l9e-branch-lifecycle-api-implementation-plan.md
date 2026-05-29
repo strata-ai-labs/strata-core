@@ -40,7 +40,7 @@ L9E implements:
 7. clear branch;
 8. delete branch;
 9. generation guards;
-10. pinned-view safety error mapping;
+10. pinned-reachability cleanup protection mapping;
 11. branch cleanup outcome mapping.
 
 L9E does not implement:
@@ -76,7 +76,7 @@ Branch outcomes should expose:
 3. source branch where relevant;
 4. fork version and timestamp where relevant;
 5. cleanup/reachability facts for delete/clear;
-6. pinned-view blockers;
+6. pinned-reachability protected release counts;
 7. recovery/maintenance debt if the operation requires follow-up.
 
 ## Validation
@@ -88,7 +88,8 @@ Reject:
 3. generation mismatch;
 4. fork from unretained version;
 5. fork from timestamp outside retained history;
-6. clear/delete while pinned views prevent safety;
+6. clear/delete attempts that would drop protected cleanup facts for pinned
+   reachability;
 7. deleting the last required branch if storage policy requires one;
 8. operation after runtime close.
 

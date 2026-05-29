@@ -578,7 +578,7 @@ Status: implemented
 
 ## L9E - Branch Lifecycle API
 
-Status: planned
+Status: implemented
 
 ### Source Evidence To Read
 
@@ -590,23 +590,98 @@ Status: planned
 
 ### Shipped Files
 
-TBD.
+- `crates/storage-next/src/api/branch.rs`
+- `crates/storage-next/src/api/mod.rs`
+- `crates/storage-next/src/api/runtime.rs`
+- `crates/storage-next/src/api/tests/mod.rs`
+- `crates/storage-next/src/api/tests/branch.rs`
+- `docs/architecture/implementation-plans/M4/L9/l9e-branch-lifecycle-api-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4/L9/l9e-branch-lifecycle-api-test-plan.md`
 
 ### Boundary Decisions
 
-TBD.
+- Branch lifecycle operations route through the existing lifecycle branch
+  catalog surfaces. The public API does not expose branch-local state,
+  inherited layers, table refs, materialization handles, or lifecycle runtime
+  concrete types.
+- `BranchAction::List` keeps using the scaffold `BranchRequest` shape from
+  L9A. The request branch id is ignored for list operations; L9G can split
+  list into a dedicated request if the final public shape needs that polish.
+- The public `ForkCurrent` operation resolves the source branch's current
+  retained commit version through the timeline and then uses the retained
+  version fork path. This preserves storage-visible active/frozen rows at the
+  API boundary without exposing lower unflushed-row restrictions from the
+  lifecycle-only `fork_current` helper.
+- Fork-at-timestamp succeeds only when the timestamp resolves inside retained
+  history. Timestamps before retained history, after latest retained history,
+  or on an empty branch map to `history_unavailable` API errors.
+- All-zero branch ids are rejected at the API boundary for branch lifecycle
+  requests. Lower durable formats may still treat branch ids as opaque atoms.
+- Clear/delete under pinned reachability do not reject the branch mutation.
+  They surface protected table release counts in `BranchCleanupSummary`, which
+  is the lower storage contract for pinned table safety.
+- Delete checks branch existence before enforcing the last-active-branch guard
+  so unknown branch ids map to `not_found`, not a policy failure.
+- Product branch workflows remain absent: merge, cherry-pick, revert, restore,
+  publish, and review do not appear in the public branch API source.
 
 ### Tests Added
 
-TBD.
+- `branch_create_returns_generation`
+- `branch_create_duplicate_rejects`
+- `branch_create_invalid_identifier_rejects`
+- `branch_list_is_deterministic`
+- `branch_describe_reports_generation`
+- `branch_describe_unknown_rejects`
+- `branch_fork_current_copies_visible_frontier`
+- `branch_fork_current_preserves_inherited_visibility`
+- `branch_fork_at_retained_version_succeeds`
+- `branch_fork_at_unretained_version_rejects`
+- `branch_fork_at_timestamp_resolves_timeline`
+- `branch_fork_at_unretained_timestamp_rejects`
+- `branch_fork_generation_mismatch_rejects`
+- `branch_fork_after_close_rejects`
+- `branch_clear_removes_visible_rows`
+- `branch_clear_preserves_branch_identity`
+- `branch_clear_generation_mismatch_rejects`
+- `branch_clear_with_pinned_view_reports_protected_release`
+- `branch_delete_removes_from_list`
+- `branch_delete_generation_mismatch_rejects`
+- `branch_delete_with_pinned_view_reports_protected_release`
+- `branch_delete_unknown_rejects`
+- `branch_delete_reports_cleanup_facts`
+- `branch_delete_last_required_branch_rejects`
+- `branch_api_has_no_merge_method`
+- `branch_api_has_no_cherry_pick_method`
+- `branch_api_has_no_revert_method`
+- `branch_api_has_no_restore_method`
+- `branch_api_has_no_publish_review_method`
 
 ### Sensitivity Probes
 
-TBD.
+- Ignoring branch generation mismatch is caught by
+  `branch_clear_generation_mismatch_rejects`,
+  `branch_delete_generation_mismatch_rejects`, and
+  `branch_fork_generation_mismatch_rejects`.
+- Dropping pinned-reachability cleanup protection is caught by
+  `branch_clear_with_pinned_view_reports_protected_release` and
+  `branch_delete_with_pinned_view_reports_protected_release`.
+- Letting fork-at-history use latest instead of the requested retained version
+  is caught by `branch_fork_at_retained_version_succeeds` and
+  `branch_fork_at_timestamp_resolves_timeline`.
+- Leaking product branch workflow vocabulary is caught by the merge,
+  cherry-pick, revert, restore, publish, and review absence tests.
 
 ### Verification
 
-TBD.
+- `cargo fmt --package strata-storage-next --check` passed.
+- `cargo test -p strata-storage-next --locked --lib api::tests::branch` passed.
+- `cargo test -p strata-storage-next --locked --lib api` passed.
+- `cargo test -p strata-storage-next --locked --test api_source_guard` passed.
+- `cargo test -p strata-storage-next --locked --test api_conformance` passed.
+- `cargo test -p strata-storage-next --features testkit --locked --test api_properties` passed.
+- `cargo clippy -p strata-storage-next --lib --all-features --locked -- -D warnings` passed.
+- `cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings` passed.
 
 ## L9F - Maintenance API
 

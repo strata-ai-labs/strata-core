@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::*;
 
+mod branch;
 mod commit;
 mod read;
 
