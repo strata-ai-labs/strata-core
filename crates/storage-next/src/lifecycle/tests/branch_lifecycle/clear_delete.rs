@@ -920,10 +920,12 @@ fn clear_branch_release_facts_name_owned_and_inherited_tables() {
         .removed_refs()
         .iter()
         .map(|r| match r.reference_kind() {
-            crate::branch::BranchTableReferenceKind::Owned => "owned",
-            crate::branch::BranchTableReferenceKind::Inherited { .. } => "inherited",
-            crate::branch::BranchTableReferenceKind::Replacement { .. } => "replacement",
-            crate::branch::BranchTableReferenceKind::MaterializingSource { .. } => "materializing",
+            crate::branch::facts::BranchTableReferenceKind::Owned => "owned",
+            crate::branch::facts::BranchTableReferenceKind::Inherited { .. } => "inherited",
+            crate::branch::facts::BranchTableReferenceKind::Replacement { .. } => "replacement",
+            crate::branch::facts::BranchTableReferenceKind::MaterializingSource { .. } => {
+                "materializing"
+            }
         })
         .collect();
     assert!(removed_kinds.contains("inherited"));

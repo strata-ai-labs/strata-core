@@ -8,7 +8,7 @@ use crate::backend::{
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::BranchRuntimeConfig;
+use crate::branch::config::BranchRuntimeConfig;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{encode_manifest, DatabaseManifest};

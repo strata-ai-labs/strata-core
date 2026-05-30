@@ -2,7 +2,7 @@
 
 use super::bootstrap::LifecycleDurableLocalRuntime;
 use super::{branch_error, commit_error, require_admitted};
-use crate::branch::{BranchLocalState, BranchRotationOutcome};
+use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
 };
@@ -1271,7 +1271,7 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
     branch_id: strata_core_next::BranchId,
     health: crate::lifecycle::RecoveryHealth,
-    pending_releases: &'a mut Vec<crate::branch::BranchReleasePlan>,
+    pending_releases: &'a mut Vec<crate::branch::facts::BranchReleasePlan>,
     pending_releases_sequence: &'a mut u64,
 }
 
@@ -1284,7 +1284,7 @@ impl DurableRetentionMaintenanceRunner<'_, '_> {
     fn drain_pending_releases(
         &mut self,
         scope: LifecycleRetentionScope,
-    ) -> Vec<crate::branch::BranchReleasePlan> {
+    ) -> Vec<crate::branch::facts::BranchReleasePlan> {
         let drain_all = matches!(scope, LifecycleRetentionScope::Global);
         let scoped_branch = match scope {
             LifecycleRetentionScope::TableObjects { branch_id } => Some(branch_id),
@@ -1341,7 +1341,7 @@ impl DurableRetentionMaintenanceRunner<'_, '_> {
 }
 
 fn pending_releases_to_durable_entries(
-    plans: &[crate::branch::BranchReleasePlan],
+    plans: &[crate::branch::facts::BranchReleasePlan],
 ) -> Result<Vec<crate::format::PendingReleasesEntry>, crate::format::FormatError> {
     use std::collections::BTreeMap;
     let mut grouped: BTreeMap<[u8; 16], Vec<String>> = BTreeMap::new();
@@ -1810,7 +1810,7 @@ fn truncate_hash_to_u64(digest: &[u8]) -> u64 {
 /// the buffer surfaced.
 fn append_released_table_names(
     outcome: MaintenanceOutcome,
-    drained: &[crate::branch::BranchReleasePlan],
+    drained: &[crate::branch::facts::BranchReleasePlan],
 ) -> MaintenanceOutcome {
     if drained.is_empty() {
         return outcome;

@@ -6,7 +6,7 @@ use crate::backend::{
     BackendMetadata, BackendRange, BackendResult, PublishDurability, PublishError,
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
 };
-use crate::branch::BranchLocalState;
+use crate::branch::state::BranchLocalState;
 use crate::lifecycle::{
     flush_cache_branch, flush_durable_branch, FlushFrozenRequest, FlushFrozenStatus,
     FlushTableIdentitySeed, FlushTableObjectId,

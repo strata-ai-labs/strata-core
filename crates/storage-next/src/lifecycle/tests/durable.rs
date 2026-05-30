@@ -5,7 +5,7 @@ use crate::backend::{
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::BranchRuntimeConfig;
+use crate::branch::config::BranchRuntimeConfig;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,

@@ -1,8 +1,9 @@
 //! API runtime handle.
 
-use crate::branch::{
-    BranchHistoryOptions, BranchReadBound, BranchReadView, BranchReleasePlan, BranchRuntimeConfig,
-    BranchScanBounds, BranchUserKeyBound,
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::BranchReleasePlan;
+use crate::branch::read::{
+    BranchHistoryOptions, BranchReadBound, BranchReadView, BranchScanBounds, BranchUserKeyBound,
 };
 use crate::commit::{
     CommitBranchGeneration, CommitBranchGenerationGuard, CommitDurabilityClass,
@@ -535,7 +536,7 @@ impl<'a> StorageRuntime<'a> {
             .scan_prefix_including_tombstones(&bounds, resolved.branch_bound)
             .map_err(branch_error)?;
         map_scan_rows(
-            rows.iter().map(crate::branch::BranchHistoryRow::row),
+            rows.iter().map(crate::branch::read::BranchHistoryRow::row),
             request.limit(),
             resolved.selected_timestamp,
         )
@@ -567,7 +568,7 @@ impl<'a> StorageRuntime<'a> {
             .scan_range_including_tombstones(&bounds, resolved.branch_bound)
             .map_err(branch_error)?;
         map_scan_rows(
-            rows.iter().map(crate::branch::BranchHistoryRow::row),
+            rows.iter().map(crate::branch::read::BranchHistoryRow::row),
             request.limit(),
             resolved.selected_timestamp,
         )
@@ -698,7 +699,7 @@ impl<'a> StorageRuntime<'a> {
         let branch_id = self.branch_for_maintenance_scope(request.scope())?;
         let compaction = LifecycleCompactionRequest::new(
             branch_id,
-            crate::branch::BranchCompactionKind::CompactL0ToLevelOne,
+            crate::branch::state::BranchCompactionKind::CompactL0ToLevelOne,
             format!("storage-boundary-compaction-{branch_id}"),
         )
         .map_err(map_lifecycle_error)?;
@@ -1300,7 +1301,7 @@ impl<'a> StorageRuntime<'a> {
             branch_id,
             timeline_rows
                 .iter()
-                .map(crate::branch::BranchHistoryRow::row),
+                .map(crate::branch::read::BranchHistoryRow::row),
         )
         .map_err(commit_error)
     }
@@ -1469,7 +1470,7 @@ impl<'a> StorageRuntime<'a> {
     pub(crate) fn set_timestamp_coverage_for_test(
         &mut self,
         branch_id: BranchId,
-        coverage: crate::branch::BranchTimestampCoverage,
+        coverage: crate::branch::read::BranchTimestampCoverage,
     ) -> StorageApiResult<()> {
         match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
@@ -2706,7 +2707,7 @@ fn timeline_view_from_read_view(view: &BranchReadView) -> StorageApiResult<Commi
         view.branch_id(),
         timeline_rows
             .iter()
-            .map(crate::branch::BranchHistoryRow::row),
+            .map(crate::branch::read::BranchHistoryRow::row),
     )
     .map_err(commit_error)
 }
@@ -2821,14 +2822,15 @@ fn flush_request_for_boundary(branch_id: BranchId) -> StorageApiResult<FlushFroz
     .map_err(map_lifecycle_error)
 }
 
-fn branch_error(error: crate::branch::BranchRuntimeError) -> StorageApiError {
+fn branch_error(error: crate::branch::error::BranchRuntimeError) -> StorageApiError {
     match error {
-        crate::branch::BranchRuntimeError::InsufficientTimestampHistory { branch_id, .. } => {
-            StorageApiError::TimestampHistoryUnavailable {
-                branch_id,
-                reason: "timestamp is outside retained branch history",
-            }
-        }
+        crate::branch::error::BranchRuntimeError::InsufficientTimestampHistory {
+            branch_id,
+            ..
+        } => StorageApiError::TimestampHistoryUnavailable {
+            branch_id,
+            reason: "timestamp is outside retained branch history",
+        },
         other => StorageApiError::lower_layer_with(
             StorageApiLowerLayer::Branch,
             "branch read failed",

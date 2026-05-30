@@ -1,5 +1,7 @@
 use super::*;
-use crate::branch::{BranchLocalState, BranchReadBound, BranchRuntimeConfig, BranchScanBounds};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::{BranchReadBound, BranchScanBounds};
+use crate::branch::state::BranchLocalState;
 use crate::row::StorageRow;
 use std::error::Error as _;
 
@@ -1408,7 +1410,7 @@ impl CommitBranchApplyTarget for FailingReplayReadTarget {
         None
     }
 
-    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::BranchReadView> {
+    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::read::BranchReadView> {
         Err(CommitRuntimeError::lower_layer_with(
             CommitLowerLayer::BranchRuntime,
             "injected replay read-view failure",
@@ -1458,7 +1460,7 @@ impl CommitBranchApplyTarget for FailingReplayApplyTarget {
         self.state.max_commit_version()
     }
 
-    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::BranchReadView> {
+    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::read::BranchReadView> {
         self.state.capture_read_view().map_err(|source| {
             CommitRuntimeError::lower_layer_with(
                 CommitLowerLayer::BranchRuntime,
@@ -1508,7 +1510,10 @@ fn replay_record(
     WalRecord::new(version, branch, timestamp, payload).expect("record")
 }
 
-fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> CommitTimelineView {
+fn timeline_view(
+    view: &crate::branch::read::BranchReadView,
+    branch: BranchId,
+) -> CommitTimelineView {
     let bounds = BranchScanBounds::unbounded(
         branch,
         COMMIT_TIMELINE_SPACE,
@@ -1520,7 +1525,7 @@ fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> Comm
         .expect("timeline scan");
     CommitTimelineView::from_rows(
         branch,
-        rows.iter().map(crate::branch::BranchVisibleRow::row),
+        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
     )
     .expect("timeline view")
 }

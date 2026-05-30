@@ -7,7 +7,7 @@ use super::{
     CommitTimelineRowKind, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
     CommitVisibilityFacts, CommitVisiblePublisher,
 };
-use crate::branch::{BranchHistoryOptions, BranchReadView, BranchRowSource};
+use crate::branch::read::{BranchHistoryOptions, BranchReadView, BranchRowSource};
 use crate::format::WalRecord;
 use crate::row::{StorageRow, StorageSpaceId};
 

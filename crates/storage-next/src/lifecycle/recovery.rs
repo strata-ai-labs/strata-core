@@ -8,7 +8,7 @@ use super::{
     LifecycleTableManifestRecoveryStage, RecoveryDegradationClass, RecoveryFault,
     RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageBudgetLedger, StorageOpenPlan,
 };
-use crate::branch::{
+use crate::branch::state::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
 };
 use crate::format::{
@@ -661,7 +661,7 @@ impl LifecycleRecoveredCheckpoint {
             outcome
                 .branch_outcomes()
                 .iter()
-                .filter_map(crate::branch::BranchSnapshotInstallBranchOutcome::timestamp_max)
+                .filter_map(crate::branch::state::BranchSnapshotInstallBranchOutcome::timestamp_max)
                 .max()
         })
     }
@@ -865,13 +865,13 @@ fn decode_checkpoint_row_payload(payload: &[u8]) -> LifecycleResult<Vec<StorageR
 }
 
 struct CheckpointInstall {
-    recovered_branch: Option<crate::branch::BranchLocalState>,
+    recovered_branch: Option<crate::branch::state::BranchLocalState>,
     outcome: BranchSnapshotInstallOutcome,
 }
 
 struct CheckpointRecovery {
     checkpoint: LifecycleRecoveredCheckpoint,
-    recovered_branch: Option<crate::branch::BranchLocalState>,
+    recovered_branch: Option<crate::branch::state::BranchLocalState>,
 }
 
 impl CheckpointRecovery {
@@ -891,7 +891,7 @@ impl CheckpointRecovery {
 }
 
 fn install_checkpoint_rows(
-    current_branch: crate::branch::BranchLocalState,
+    current_branch: crate::branch::state::BranchLocalState,
     identity_seed: &TableIdentity,
     rows: Vec<StorageRow>,
 ) -> LifecycleResult<CheckpointInstall> {
@@ -925,7 +925,7 @@ fn validate_flush_watermark_is_recoverable(
     flush_watermark: Option<CommitVersion>,
     checkpoint: &LifecycleRecoveredCheckpoint,
     tables: &LifecycleRecoveredTables,
-    staged_table_manifest_branch: Option<&crate::branch::BranchLocalState>,
+    staged_table_manifest_branch: Option<&crate::branch::state::BranchLocalState>,
     strictness: RecoveryStrictness,
     faults: &mut Vec<RecoveryFault>,
     max_faults: usize,
@@ -973,7 +973,7 @@ fn table_manifest_covers_flush_watermark(
     flush_watermark: CommitVersion,
     checkpoint_watermark: Option<CommitVersion>,
     tables: &LifecycleRecoveredTables,
-    staged_branch: Option<&crate::branch::BranchLocalState>,
+    staged_branch: Option<&crate::branch::state::BranchLocalState>,
 ) -> bool {
     let Some(checkpoint_watermark) = checkpoint_watermark else {
         return false;
@@ -981,7 +981,7 @@ fn table_manifest_covers_flush_watermark(
     if tables
         .table_manifest()
         .install_outcome()
-        .and_then(crate::branch::BranchTableManifestRecoveryOutcome::max_commit_version)
+        .and_then(crate::branch::state::BranchTableManifestRecoveryOutcome::max_commit_version)
         .is_none_or(|max_commit_version| max_commit_version < flush_watermark)
     {
         return false;
@@ -1204,7 +1204,7 @@ fn quarantine_error(source: QuarantineServiceError) -> LifecycleError {
     )
 }
 
-fn branch_error(source: crate::branch::BranchRuntimeError) -> LifecycleError {
+fn branch_error(source: crate::branch::error::BranchRuntimeError) -> LifecycleError {
     LifecycleError::lower_layer_with(
         LifecycleLowerLayer::BranchRuntime,
         "checkpoint install failed",

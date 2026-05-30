@@ -1,8 +1,12 @@
 use super::*;
-use crate::branch::{
-    install_snapshot_rows_into_branches, BranchHistoryOptions, BranchLocalState,
-    BranchMaterializationRequest, BranchReadBound, BranchRuntimeConfig, BranchScanBounds,
-    BranchSnapshotInstallRequest, BranchTableReferenceKind, BranchTimestampCoverage,
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::BranchTableReferenceKind;
+use crate::branch::read::{
+    BranchHistoryOptions, BranchReadBound, BranchScanBounds, BranchTimestampCoverage,
+};
+use crate::branch::state::{
+    install_snapshot_rows_into_branches, BranchLocalState, BranchMaterializationRequest,
+    BranchSnapshotInstallRequest,
 };
 use crate::commit::{CommitBranchGeneration, CommitBranchGenerationGuard};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};

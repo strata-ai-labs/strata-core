@@ -11,11 +11,13 @@ use super::{
     StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
-use crate::branch::{
-    BranchCompactionPreparedOutput, BranchLevel, BranchLocalState, BranchMaterializationHandle,
+use crate::branch::error::BranchRuntimeError;
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
+use crate::branch::state::{
+    BranchCompactionPreparedOutput, BranchLocalState, BranchMaterializationHandle,
     BranchMaterializationIntent, BranchMaterializationPreparedOutput,
-    BranchMaterializationRecovery, BranchMaterializationRequest, BranchMaterializationSource,
-    BranchOwnedTable, BranchRuntimeError, BranchTableDescriptor,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
 };
 use crate::format::TableManifestTableProvenance;
 use crate::service::{
@@ -214,7 +216,7 @@ fn finish_materialization_after_install(
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleMaterializationRequest,
     intent: BranchMaterializationIntent,
-    branch_outcome: crate::branch::BranchMaterializationOutcome,
+    branch_outcome: crate::branch::state::BranchMaterializationOutcome,
     output_objects: Vec<crate::object::ObjectName>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleMaterializationOutcome {

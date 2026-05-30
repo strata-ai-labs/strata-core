@@ -7,10 +7,10 @@ use crate::backend::{
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::{
-    BranchCompactionKind, BranchCompactionRequest, BranchLevel, BranchLocalState, BranchOwnedTable,
-    BranchRuntimeConfig, BranchTableDescriptor,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::read::BranchOwnedTable;
+use crate::branch::state::{BranchCompactionKind, BranchCompactionRequest, BranchLocalState};
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::lifecycle::{
     collect_storage_pressure, compact_cache_branch, compact_durable_branch,
@@ -340,7 +340,7 @@ fn check_manifest_backed_durable_compaction(
             .map_err(rewrite_error)?
             .history(
                 &physical_key(branch, b"shared")?,
-                crate::branch::BranchHistoryOptions::all(),
+                crate::branch::read::BranchHistoryOptions::all(),
             )
             .map_err(rewrite_error)?
             .len()

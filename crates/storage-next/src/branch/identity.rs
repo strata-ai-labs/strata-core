@@ -1,6 +1,6 @@
 //! Branch-local row identity and branch-id rewrite helpers.
 
-use super::{BranchRuntimeError, BranchRuntimeResult};
+use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::row::{PhysicalKey, StorageRow};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 

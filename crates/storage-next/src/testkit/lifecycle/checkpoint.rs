@@ -2,7 +2,7 @@
 
 use super::recovery::{branch_id, put_row, testkit_error};
 use super::{ensure, script_byte};
-use crate::branch::BranchLocalState;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitTimelineEntry, CommitTimelineRows};
 use crate::lifecycle::{
     flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,

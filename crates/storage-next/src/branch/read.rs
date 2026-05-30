@@ -1,10 +1,11 @@
 //! Branch read-bound, selected-row, and own-branch read-view vocabulary.
 
-use super::{
-    rewrite_physical_key_branch, rewrite_row_branch, BranchLevel, BranchRuntimeError,
-    BranchRuntimeResult, BranchStateFacts, BranchTableDescriptor, BranchTimestampHistorySource,
-    InheritedLayerDescriptor, InheritedLayerStatus,
+use super::error::{BranchRuntimeError, BranchRuntimeResult, BranchTimestampHistorySource};
+use super::facts::{
+    BranchLevel, BranchStateFacts, BranchTableDescriptor, InheritedLayerDescriptor,
+    InheritedLayerStatus,
 };
+use super::identity::{rewrite_physical_key_branch, rewrite_row_branch};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     FrozenTable, ImmutableTableReader, MutableTable, TableInternalKeyBytes, TablePhysicalKeyBytes,
@@ -77,9 +78,7 @@ impl BranchEffectiveReadBound {
     ///   view at `fork_version`; the child's own (post-fork) commits
     ///   are read via `for_own_branch`, not this helper.
     ///
-    /// This implements L8Z Open Question §B as Option C
-    /// ("implicit via inherited-layer reads + per-row timestamps"):
-    /// the catalog does not transcribe parent timeline rows under the
+    /// The catalog does not transcribe parent timeline rows under the
     /// child's `branch_id` at fork, and the read path does not consult
     /// the parent's timeline metadata. Three pinning tests in
     /// `lifecycle/tests/branch_lifecycle/fork.rs` verify the contract:

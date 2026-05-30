@@ -4,7 +4,9 @@ use super::{
     branch_error, commit_error, require_admitted, LifecycleDurableLocalServices,
     LifecycleDurableLocalShell,
 };
-use crate::branch::{BranchLocalState, BranchReadView, BranchRuntimeError};
+use crate::branch::error::BranchRuntimeError;
+use crate::branch::read::BranchReadView;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
     CommitDurabilityClass, CommitDurableRuntime, CommitFactAllocator, CommitManualTimestampSource,
@@ -50,7 +52,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     // here until the next retention pass drains them. In-memory only —
     // restart loses the buffer; durable persistence of release tombstones
     // is tracked in the closeout doc as a separate workstream.
-    pub(super) pending_releases: Vec<crate::branch::BranchReleasePlan>,
+    pub(super) pending_releases: Vec<crate::branch::facts::BranchReleasePlan>,
     // Branch catalog publish sequence counter. Increments on each
     // BranchCatalogManifest publication. Loaded from the manifest on
     // recovery so monotonicity holds across restarts.
@@ -192,7 +194,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         LifecycleBranchCatalog,
         u64,
         u64,
-        Vec<crate::branch::BranchReleasePlan>,
+        Vec<crate::branch::facts::BranchReleasePlan>,
         BranchId,
     )> {
         require_admitted(self.state, LifecycleOperationKind::RecoveryStep)?;
@@ -268,10 +270,12 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                             })
                         })
                         .collect::<LifecycleResult<Vec<_>>>()?;
-                    plans.push(crate::branch::BranchReleasePlan::from_releasable_tables(
-                        entry.branch_id(),
-                        identities,
-                    ));
+                    plans.push(
+                        crate::branch::facts::BranchReleasePlan::from_releasable_tables(
+                            entry.branch_id(),
+                            identities,
+                        ),
+                    );
                 }
                 (plans, manifest.manifest_sequence())
             }
@@ -428,7 +432,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         dead_code,
         reason = "exposed for runtime tests; first non-test caller lands with the public storage api"
     )]
-    pub(crate) fn pending_releases(&self) -> &[crate::branch::BranchReleasePlan] {
+    pub(crate) fn pending_releases(&self) -> &[crate::branch::facts::BranchReleasePlan] {
         &self.pending_releases
     }
 
@@ -734,7 +738,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 }
 
 fn pending_releases_to_durable_entries(
-    plans: &[crate::branch::BranchReleasePlan],
+    plans: &[crate::branch::facts::BranchReleasePlan],
 ) -> Result<Vec<crate::format::PendingReleasesEntry>, crate::format::FormatError> {
     // Group by branch_id; multiple plans for the same branch (multiple
     // clear/delete operations between drains) merge their releasable
@@ -1170,12 +1174,12 @@ fn install_non_seeded_checkpoint_rows(
         .iter()
         .map(|id| branch_catalog.branch_state(*id).cloned())
         .collect::<LifecycleResult<Vec<_>>>()?;
-    let request = crate::branch::BranchSnapshotInstallRequest::from_rows(
+    let request = crate::branch::state::BranchSnapshotInstallRequest::from_rows(
         identity_seed.as_str(),
         rows.to_vec(),
     )
     .map_err(branch_error)?;
-    crate::branch::install_snapshot_rows_into_branches(&mut staged, &request)
+    crate::branch::state::install_snapshot_rows_into_branches(&mut staged, &request)
         .map_err(branch_error)?;
     for branch in staged {
         let branch_id = branch.branch_id();

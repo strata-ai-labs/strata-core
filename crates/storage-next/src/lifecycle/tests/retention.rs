@@ -1338,7 +1338,7 @@ fn cache_runtime_rejects_durable_retention_tasks_before_backend_access() {
         )
         .expect("request"),
         &backend,
-        crate::branch::BranchRuntimeConfig::default(),
+        crate::branch::config::BranchRuntimeConfig::default(),
         crate::commit::CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(strata_core_next::Timestamp::from_micros(
             10,
@@ -1420,7 +1420,7 @@ fn cache_retention_unsupported_uses_storage_error_code() {
         )
         .expect("request"),
         &backend,
-        crate::branch::BranchRuntimeConfig::default(),
+        crate::branch::config::BranchRuntimeConfig::default(),
         crate::commit::CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(strata_core_next::Timestamp::from_micros(
             10,

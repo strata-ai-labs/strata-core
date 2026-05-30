@@ -1,5 +1,5 @@
 use super::{ByteReader, FormatError};
-use crate::branch::BranchLevel;
+use crate::branch::facts::BranchLevel;
 use crate::object::{ObjectName, MAX_OBJECT_NAME_BYTES};
 use crate::table::TableIdentity;
 use std::collections::BTreeSet;

@@ -1506,7 +1506,7 @@ fn cache_runtime(branch_id: BranchId) -> LifecycleCacheRuntime {
         )
         .expect("request"),
         &backend,
-        crate::branch::BranchRuntimeConfig::default(),
+        crate::branch::config::BranchRuntimeConfig::default(),
         crate::commit::CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(strata_core_next::Timestamp::from_micros(
             10,

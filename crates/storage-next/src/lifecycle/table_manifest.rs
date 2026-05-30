@@ -6,10 +6,12 @@ use super::{
     MaintenanceOutcomeStatus, StorageBudgetLedger,
 };
 use crate::backend::{BackendErrorKind, PublishError, PublishFailureKind};
-use crate::branch::{
-    BranchInheritedLayer, BranchLevel, BranchLocalState, BranchMaterializationSource,
-    BranchOwnedTable, BranchTableDescriptor, BranchTableManifestRecoveryOutcome,
-    BranchTableManifestRecoveryRequest, InheritedLayerDescriptor, InheritedLayerStatus,
+use crate::branch::facts::{
+    BranchLevel, BranchTableDescriptor, InheritedLayerDescriptor, InheritedLayerStatus,
+};
+use crate::branch::read::{BranchInheritedLayer, BranchMaterializationSource, BranchOwnedTable};
+use crate::branch::state::{
+    BranchLocalState, BranchTableManifestRecoveryOutcome, BranchTableManifestRecoveryRequest,
 };
 use crate::format::{
     encode_table_manifest, FormatError, TableManifest, TableManifestInheritedLayer,

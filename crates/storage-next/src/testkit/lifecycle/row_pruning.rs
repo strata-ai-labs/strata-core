@@ -1,12 +1,17 @@
 //! Generated lifecycle row-pruning contract helpers.
 
 use super::{ensure, script_byte};
-use crate::branch::{
-    BranchCompactionKind, BranchCompactionPruningProof, BranchCompactionRequest,
-    BranchCompactionRetentionPolicy, BranchInheritancePruningProof, BranchLevel, BranchLocalState,
-    BranchOwnedTable, BranchRecoveryHealthAttestation, BranchRuntimeConfig, BranchRuntimeError,
-    BranchSharedTableSafety, BranchTableDescriptor, BranchTimestampCoverage,
-    BranchTombstoneElisionProof, BranchTtlElisionProof,
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::error::BranchRuntimeError;
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::pruning::{
+    BranchCompactionPruningProof, BranchInheritancePruningProof, BranchRecoveryHealthAttestation,
+    BranchSharedTableSafety, BranchTombstoneElisionProof, BranchTtlElisionProof,
+};
+use crate::branch::read::{BranchOwnedTable, BranchTimestampCoverage};
+use crate::branch::state::{
+    BranchCompactionKind, BranchCompactionRequest, BranchCompactionRetentionPolicy,
+    BranchLocalState,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
@@ -145,7 +150,7 @@ fn check_old_versions(
                 .map_err(pruning_error)?
                 .read_point(
                     &physical_key(branch, b"key")?,
-                    crate::branch::BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
+                    crate::branch::read::BranchReadBound::at_timestamp(Timestamp::from_micros(40)),
                 ),
             Err(BranchRuntimeError::InsufficientTimestampHistory { .. })
         ),
@@ -577,7 +582,7 @@ fn history_for(
     Ok(view
         .history(
             &physical_key(branch, key)?,
-            crate::branch::BranchHistoryOptions::all(),
+            crate::branch::read::BranchHistoryOptions::all(),
         )
         .map_err(pruning_error)?
         .iter()

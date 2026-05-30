@@ -5,9 +5,10 @@ use crate::backend::{
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::{
-    BranchLocalState, BranchOwnedTable, BranchRowSource, BranchRuntimeConfig, BranchTableDescriptor,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::BranchTableDescriptor;
+use crate::branch::read::{BranchOwnedTable, BranchRowSource};
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,
@@ -65,7 +66,7 @@ fn flush_request_validates_components_and_target_level() {
             None,
             seed,
             object_id,
-            crate::branch::BranchLevel::new(1),
+            crate::branch::facts::BranchLevel::new(1),
         ),
         Err(LifecycleError::MaintenanceTaskFailed {
             reason: "flush target level must be zero",
@@ -149,7 +150,7 @@ fn cache_flush_replaces_oldest_frozen_table_and_preserves_reads() {
     assert_eq!(
         older_visible.source(),
         BranchRowSource::OwnedTable {
-            level: crate::branch::BranchLevel::ZERO,
+            level: crate::branch::facts::BranchLevel::ZERO,
             table_index: 0,
         }
     );
@@ -186,7 +187,7 @@ fn cache_flush_replaces_named_table_and_keeps_other_frozen_order() {
             .expect("second visible")
             .source(),
         BranchRowSource::OwnedTable {
-            level: crate::branch::BranchLevel::ZERO,
+            level: crate::branch::facts::BranchLevel::ZERO,
             table_index: 0,
         }
     );
@@ -696,7 +697,7 @@ fn durable_flush_publishes_table_manifest_after_table_install() {
     assert_eq!(manifest.levels().len(), 1);
     assert_eq!(
         manifest.levels()[0].level(),
-        crate::branch::BranchLevel::ZERO
+        crate::branch::facts::BranchLevel::ZERO
     );
     assert_eq!(manifest.levels()[0].tables().len(), 1);
     let table = &manifest.levels()[0].tables()[0];
@@ -1122,7 +1123,7 @@ fn durable_install_failure_reports_orphaned_object_fact() {
         put_row(branch, b"collision", 14, 14_000, b"value"),
     );
     state
-        .install_owned_table_at_level(crate::branch::BranchLevel::ZERO, collision)
+        .install_owned_table_at_level(crate::branch::facts::BranchLevel::ZERO, collision)
         .expect("collision table");
     let before = state.clone();
     let backend = FlushBackend::new();
@@ -1506,7 +1507,7 @@ fn owned_table_for_row(
     let descriptor = BranchTableDescriptor::new(
         identity,
         reader.facts().clone(),
-        crate::branch::BranchLevel::ZERO,
+        crate::branch::facts::BranchLevel::ZERO,
     )
     .expect("descriptor");
     BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")

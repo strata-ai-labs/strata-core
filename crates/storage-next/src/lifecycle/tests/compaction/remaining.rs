@@ -1,9 +1,10 @@
 use super::shared::*;
 use super::*;
-use crate::branch::{
-    BranchCompactionKind, BranchCompactionRequest, BranchHistoryOptions, BranchLocalState,
-    BranchMaterializationRecovery, BranchReadBound, BranchRuntimeError, BranchScanBounds,
-    BranchTableReferenceKind, InheritedLayerStatus,
+use crate::branch::error::BranchRuntimeError;
+use crate::branch::facts::{BranchTableReferenceKind, InheritedLayerStatus};
+use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
+use crate::branch::state::{
+    BranchCompactionKind, BranchCompactionRequest, BranchLocalState, BranchMaterializationRecovery,
 };
 use crate::lifecycle::tests::checkpoint::shared::{
     open_runtime, CheckpointBackendEvent, CheckpointTestBackend,
@@ -194,7 +195,7 @@ fn materialization_handle_binds_source_identity_and_reports_intent_facts() {
         .mark_inherited_layer_materializing(0)
         .expect("intent");
     let handle = intent.handle();
-    let mismatched = crate::branch::BranchMaterializationHandle::new(
+    let mismatched = crate::branch::state::BranchMaterializationHandle::new(
         child,
         wrong_source,
         handle.fork_version(),
@@ -238,8 +239,12 @@ fn materialization_handle_marks_active_layer_before_materializing() {
     let (mut child_state, fork) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let handle =
-        crate::branch::BranchMaterializationHandle::new(child, parent, fork.fork_version(), 0);
+    let handle = crate::branch::state::BranchMaterializationHandle::new(
+        child,
+        parent,
+        fork.fork_version(),
+        0,
+    );
     let request =
         LifecycleMaterializationRequest::from_handle(handle, "handle-active").expect("request");
 
@@ -621,13 +626,15 @@ fn branch_pruning_policies_remain_below_lifecycle_until_retention_proof_exists()
         vec![put_row(branch, b"key", 2, 2_000, b"new")],
     );
 
-    let request = crate::branch::BranchCompactionRequest::new(
+    let request = crate::branch::state::BranchCompactionRequest::new(
         branch,
         BranchCompactionKind::CompactL0,
         "prune-rewrite",
     )
     .expect("request")
-    .with_retention_policy(crate::branch::BranchCompactionRetentionPolicy::DropOlderVersions);
+    .with_retention_policy(
+        crate::branch::state::BranchCompactionRetentionPolicy::DropOlderVersions,
+    );
     let error = state
         .compact_branch_owned_tables(&request)
         .expect_err("retention proof required");

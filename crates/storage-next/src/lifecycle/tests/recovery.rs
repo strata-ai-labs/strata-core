@@ -4,7 +4,7 @@ use crate::backend::{
     BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError, PublishMode,
     PublishOutcome, PublishResult, DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::BranchRuntimeConfig;
+use crate::branch::config::BranchRuntimeConfig;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
@@ -1946,7 +1946,7 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         None,
         4,
         vec![TableManifestLevel::new(
-            crate::branch::BranchLevel::ZERO,
+            crate::branch::facts::BranchLevel::ZERO,
             vec![initial_table.clone()],
         )
         .expect("initial level")],
@@ -1958,10 +1958,11 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         extra,
         None,
         5,
-        vec![
-            TableManifestLevel::new(crate::branch::BranchLevel::ZERO, vec![extra_table.clone()])
-                .expect("extra level"),
-        ],
+        vec![TableManifestLevel::new(
+            crate::branch::facts::BranchLevel::ZERO,
+            vec![extra_table.clone()],
+        )
+        .expect("extra level")],
         Vec::new(),
         Vec::new(),
     )

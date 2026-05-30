@@ -1,8 +1,9 @@
 use super::*;
 use crate::backend::Backend;
-use crate::branch::{
-    BranchLevel, BranchLocalState, BranchOwnedTable, BranchRuntimeConfig, BranchTableDescriptor,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::read::BranchOwnedTable;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig, CommitTimelineEntry,
     CommitTimelineRows,

@@ -59,7 +59,7 @@ fn prefix_scan_branch_a_does_not_emit_branch_b_rows() {
     let rows = catalog
         .capture_read_view(branch_a)
         .expect("view a")
-        .scan_prefix(&bounds, crate::branch::BranchReadBound::latest())
+        .scan_prefix(&bounds, crate::branch::read::BranchReadBound::latest())
         .expect("scan a");
 
     assert_eq!(rows.len(), 1);

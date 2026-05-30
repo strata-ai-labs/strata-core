@@ -1,9 +1,8 @@
 //! Model-vs-runtime execution for generated commit-runtime scripts.
 
-use crate::branch::{
-    BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
-    BranchVisibleRow,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::{BranchReadBound, BranchReadView, BranchScanBounds, BranchVisibleRow};
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     execute_read_only_diagnostic, CommitBatch, CommitBatchOptions, CommitBranchApplyTarget,
     CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuard, CommitBranchGuardSet,

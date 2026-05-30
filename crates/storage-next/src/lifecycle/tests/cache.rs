@@ -5,7 +5,7 @@ use crate::backend::{
     BackendMetadata, BackendRange, BackendResult, BackendWriterGuard, PublishError, PublishMode,
     PublishOutcome, PublishResult, CACHE_MODE_REQUIREMENTS,
 };
-use crate::branch::BranchRuntimeConfig;
+use crate::branch::config::BranchRuntimeConfig;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation,

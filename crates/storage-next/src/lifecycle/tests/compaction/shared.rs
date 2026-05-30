@@ -1,7 +1,8 @@
 use super::*;
-use crate::branch::{
-    BranchLevel, BranchLocalState, BranchOwnedTable, BranchRuntimeConfig, BranchTableDescriptor,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::read::BranchOwnedTable;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
@@ -183,13 +184,13 @@ pub(super) fn physical_key(branch: BranchId, user_key: &[u8]) -> PhysicalKey {
     .expect("physical key")
 }
 
-pub(super) fn history_versions(rows: &[crate::branch::BranchHistoryRow]) -> Vec<u64> {
+pub(super) fn history_versions(rows: &[crate::branch::read::BranchHistoryRow]) -> Vec<u64> {
     rows.iter()
         .map(|row| row.row().commit_version().as_u64())
         .collect()
 }
 
-pub(super) fn scan_user_keys(rows: &[crate::branch::BranchVisibleRow]) -> Vec<Vec<u8>> {
+pub(super) fn scan_user_keys(rows: &[crate::branch::read::BranchVisibleRow]) -> Vec<Vec<u8>> {
     rows.iter()
         .map(|row| row.row().physical_key().user_key().to_vec())
         .collect()

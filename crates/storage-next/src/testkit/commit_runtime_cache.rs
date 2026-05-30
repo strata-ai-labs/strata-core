@@ -1,6 +1,8 @@
 //! Generated cache/no-WAL commit contract helpers.
 
-use crate::branch::{BranchLocalState, BranchReadBound, BranchRuntimeConfig, BranchScanBounds};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::{BranchReadBound, BranchScanBounds};
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitBranchGuardSet, CommitBranchRegistry, CommitCacheRuntime, CommitConflictKind,
@@ -757,7 +759,7 @@ fn delete_batch(branch: BranchId, key: PhysicalKey) -> CommitBatch {
 }
 
 fn timeline_view(
-    view: &crate::branch::BranchReadView,
+    view: &crate::branch::read::BranchReadView,
     branch: BranchId,
 ) -> Result<CommitTimelineView, TestkitError> {
     let bounds = BranchScanBounds::unbounded(
@@ -771,7 +773,7 @@ fn timeline_view(
         .map_err(testkit_error)?;
     CommitTimelineView::from_rows(
         branch,
-        rows.iter().map(crate::branch::BranchVisibleRow::row),
+        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
     )
     .map_err(testkit_error)
 }

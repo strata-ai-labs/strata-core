@@ -5,12 +5,14 @@ use super::{
     MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskScope, RecoveryHealth,
 };
-use crate::branch::{
-    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan,
-    BranchCompactionPruningProof, BranchCompactionRecovery, BranchCompactionRequest,
-    BranchCompactionRetentionPolicy, BranchLevel, BranchLocalState, BranchMaterializationHandle,
-    BranchMaterializationIntent, BranchMaterializationOutcome, BranchMaterializationRecovery,
-    BranchMaterializationRequest, BranchRuntimeError,
+use crate::branch::error::BranchRuntimeError;
+use crate::branch::facts::BranchLevel;
+use crate::branch::pruning::BranchCompactionPruningProof;
+use crate::branch::state::{
+    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRecovery,
+    BranchCompactionRequest, BranchCompactionRetentionPolicy, BranchLocalState,
+    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
 };
 use crate::object::ObjectName;
 use strata_core_next::BranchId;

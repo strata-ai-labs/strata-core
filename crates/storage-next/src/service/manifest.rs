@@ -1007,7 +1007,7 @@ mod tests {
         BackendErrorKind, BackendMetadata, BackendRange, BackendResult, PublishDurability,
         PublishError, PublishFailureKind, PublishMode, PublishOutcome,
     };
-    use crate::branch::BranchLevel;
+    use crate::branch::facts::BranchLevel;
     use crate::format::{
         encode_manifest, encode_table_manifest, encode_wal_segment_header, DatabaseManifest,
         FormatError, TableManifest, TableManifestLevel, TableManifestTableBounds,

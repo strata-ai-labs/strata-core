@@ -19,7 +19,7 @@
 //! `preserve_on_rewrite` is set so subsequent rewrites carry the floor
 //! forward until something explicitly overrides it.
 
-use crate::branch::BranchTimestampCoverage;
+use crate::branch::read::BranchTimestampCoverage;
 use crate::format::{FormatError, TableManifestExtensionSection};
 use strata_core_next::{CommitVersion, Timestamp};
 

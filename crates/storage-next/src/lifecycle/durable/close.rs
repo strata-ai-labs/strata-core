@@ -1,7 +1,7 @@
 //! Durable-local close orchestration.
 
 use super::{commit_error, manifest_error, require_admitted, wal_error};
-use crate::branch::BranchLocalState;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGuardSet, CommitRuntimeError, VisibleVersionTracker};
 use crate::lifecycle::checkpoint::{
     checkpoint_durable_branch_with_budget,

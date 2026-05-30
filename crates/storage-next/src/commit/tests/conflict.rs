@@ -1,5 +1,5 @@
 use super::*;
-use crate::branch::BranchLocalState;
+use crate::branch::state::BranchLocalState;
 use crate::row::StorageRow;
 use std::cell::{Cell, RefCell};
 
@@ -766,7 +766,7 @@ fn conflict_diagnostics_distinguish_same_length_keys_without_leaking_bytes() {
     assert!(!display.contains("bb"));
 }
 
-fn read_view(branch: BranchId, rows: Vec<StorageRow>) -> crate::branch::BranchReadView {
+fn read_view(branch: BranchId, rows: Vec<StorageRow>) -> crate::branch::read::BranchReadView {
     let mut state = BranchLocalState::empty(branch);
     for row in rows {
         state.append_committed_row(row).expect("append row");

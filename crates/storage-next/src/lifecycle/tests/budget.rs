@@ -1,6 +1,7 @@
 use super::*;
 use crate::backend::memory::MemoryBackend;
-use crate::branch::{BranchLocalState, BranchRuntimeConfig};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,

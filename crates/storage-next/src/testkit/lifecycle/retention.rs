@@ -5,7 +5,7 @@ use crate::backend::{
     Backend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata, BackendRange,
     BackendResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
-use crate::branch::BranchLevel;
+use crate::branch::facts::BranchLevel;
 use crate::format::{
     DatabaseManifest, TableManifest, TableManifestInheritedLayer,
     TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,

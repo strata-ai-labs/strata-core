@@ -1,8 +1,8 @@
 //! Generated durable/WAL commit contract helpers.
 
-use crate::branch::{
-    BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::{BranchReadBound, BranchReadView, BranchScanBounds};
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     execute_read_only_diagnostic, CommitBatch, CommitBatchOptions, CommitBranchApplyTarget,
     CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
@@ -1329,7 +1329,7 @@ fn single_record(fixture: &DurableContractFixture) -> Result<&WalRecord, Testkit
 }
 
 fn timeline_view(
-    view: &crate::branch::BranchReadView,
+    view: &crate::branch::read::BranchReadView,
     branch: BranchId,
 ) -> Result<CommitTimelineView, TestkitError> {
     let bounds = BranchScanBounds::unbounded(
@@ -1343,7 +1343,7 @@ fn timeline_view(
         .map_err(testkit_error)?;
     CommitTimelineView::from_rows(
         branch,
-        rows.iter().map(crate::branch::BranchVisibleRow::row),
+        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
     )
     .map_err(testkit_error)
 }

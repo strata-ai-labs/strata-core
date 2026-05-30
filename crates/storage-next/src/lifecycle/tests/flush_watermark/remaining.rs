@@ -696,7 +696,7 @@ fn recovery_ignores_duplicate_record_at_table_manifest_flush_watermark() {
         .expect("read view")
         .history(
             manifest_row.physical_key(),
-            crate::branch::BranchHistoryOptions::all(),
+            crate::branch::read::BranchHistoryOptions::all(),
         )
         .expect("history");
     assert_eq!(history.len(), 1);
@@ -737,7 +737,7 @@ fn recovery_after_truncation_restores_history_reads_within_retained_bounds() {
         .branch_state()
         .capture_read_view()
         .expect("read view")
-        .history(&key, crate::branch::BranchHistoryOptions::all())
+        .history(&key, crate::branch::read::BranchHistoryOptions::all())
         .expect("history");
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].row().value(), b"new");

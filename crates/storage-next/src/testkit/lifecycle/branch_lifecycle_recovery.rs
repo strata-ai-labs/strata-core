@@ -212,6 +212,6 @@ fn testkit_error<E: std::fmt::Display>(error: E) -> TestkitError {
     TestkitError::new(error.to_string())
 }
 
-fn testkit_error_branch(error: &crate::branch::BranchRuntimeError) -> TestkitError {
+fn testkit_error_branch(error: &crate::branch::error::BranchRuntimeError) -> TestkitError {
     TestkitError::new(error.to_string())
 }

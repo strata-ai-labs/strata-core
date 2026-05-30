@@ -486,7 +486,7 @@ fn table_manifest_owned_levels() -> TableManifest {
         5,
         vec![
             TableManifestLevel::new(
-                crate::branch::BranchLevel::ZERO,
+                crate::branch::facts::BranchLevel::ZERO,
                 vec![
                     table_manifest_ref(
                         branch,
@@ -510,7 +510,7 @@ fn table_manifest_owned_levels() -> TableManifest {
             )
             .expect("l0"),
             TableManifestLevel::new(
-                crate::branch::BranchLevel::new(1),
+                crate::branch::facts::BranchLevel::new(1),
                 vec![
                     table_manifest_ref(
                         branch,
@@ -552,7 +552,7 @@ fn table_manifest_inherited_layers() -> TableManifest {
         TableManifestInheritedLayerStatus::Active,
         vec![
             TableManifestLevel::new(
-                crate::branch::BranchLevel::ZERO,
+                crate::branch::facts::BranchLevel::ZERO,
                 vec![table_manifest_ref(
                     first_source,
                     0,
@@ -565,7 +565,7 @@ fn table_manifest_inherited_layers() -> TableManifest {
             )
             .expect("ancestor l0"),
             TableManifestLevel::new(
-                crate::branch::BranchLevel::new(1),
+                crate::branch::facts::BranchLevel::new(1),
                 vec![table_manifest_ref(
                     first_source,
                     1,
@@ -587,7 +587,7 @@ fn table_manifest_inherited_layers() -> TableManifest {
         CommitVersion::new(20),
         TableManifestInheritedLayerStatus::Materializing,
         vec![TableManifestLevel::new(
-            crate::branch::BranchLevel::ZERO,
+            crate::branch::facts::BranchLevel::ZERO,
             vec![table_manifest_ref(
                 second_source,
                 0,
@@ -616,7 +616,7 @@ fn table_manifest_materialization_provenance() -> TableManifest {
         None,
         1,
         vec![TableManifestLevel::new(
-            crate::branch::BranchLevel::ZERO,
+            crate::branch::facts::BranchLevel::ZERO,
             vec![table_manifest_ref(
                 branch,
                 0,

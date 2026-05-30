@@ -1,22 +1,30 @@
 //! Generated branch-LSM scaffold contract helpers.
 
 use super::TestkitError;
-use crate::branch::{
-    install_snapshot_rows_into_branches, require_row_branch, rewrite_physical_key_branch,
-    rewrite_row_branch, row_matches_branch, BranchCompactionKind, BranchCompactionNoopReason,
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::error::{BranchRuntimeError, BranchTimestampHistorySource};
+use crate::branch::facts::{
+    BranchLevel, BranchProtectionReason, BranchReachabilityAggregate, BranchReachabilityFacts,
+    BranchReachabilitySnapshot, BranchReleasePlan, BranchRuntimeStats, BranchStateFacts,
+    BranchTableDescriptor, BranchTableRef, BranchTableReferenceKind, InheritedLayerDescriptor,
+    InheritedLayerStatus, SharedTableRegistry,
+};
+use crate::branch::identity::{
+    require_row_branch, rewrite_physical_key_branch, rewrite_row_branch, row_matches_branch,
+};
+use crate::branch::read::{
+    BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
+    BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowCandidateFacts, BranchRowSource,
+    BranchScanBounds, BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
+};
+use crate::branch::state::{
+    install_snapshot_rows_into_branches, BranchCompactionKind, BranchCompactionNoopReason,
     BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchEffectiveReadBound, BranchForkOutcome, BranchHistoryOptions, BranchHistoryRow,
-    BranchImmutableInstallOutcome, BranchInheritedLayer, BranchLevel, BranchLocalState,
+    BranchForkOutcome, BranchImmutableInstallOutcome, BranchLocalState,
     BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
-    BranchOwnedTable, BranchProtectionReason, BranchReachabilityAggregate, BranchReachabilityFacts,
-    BranchReachabilitySnapshot, BranchReadBound, BranchReadView, BranchReleasePlan,
-    BranchRotationOutcome, BranchRotationSkipReason, BranchRowCandidateFacts, BranchRowSource,
-    BranchRuntimeConfig, BranchRuntimeError, BranchRuntimeStats, BranchScanBounds,
-    BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest,
-    BranchSnapshotMissingBranchPolicy, BranchStateDescriptor, BranchStateFacts,
-    BranchTableDescriptor, BranchTableRef, BranchTableReferenceKind, BranchTimestampCoverage,
-    BranchTimestampHistorySource, BranchUserKeyBound, BranchViewDescriptor, BranchVisibleRow,
-    InheritedLayerDescriptor, InheritedLayerStatus, SharedTableRegistry,
+    BranchRotationOutcome, BranchRotationSkipReason, BranchSnapshotInstallGroup,
+    BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
+    BranchStateDescriptor, BranchViewDescriptor,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{

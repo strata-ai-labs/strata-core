@@ -1,7 +1,7 @@
 use super::*;
-use crate::branch::{
-    BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig, BranchScanBounds,
-};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::{BranchReadBound, BranchReadView, BranchScanBounds};
+use crate::branch::state::BranchLocalState;
 use crate::row::{PhysicalKey, StorageRow};
 use std::error::Error as _;
 
@@ -1646,7 +1646,10 @@ fn assert_unallocated_unattempted(fixture: &DurableFixture) {
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
 }
 
-fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> CommitTimelineView {
+fn timeline_view(
+    view: &crate::branch::read::BranchReadView,
+    branch: BranchId,
+) -> CommitTimelineView {
     let bounds = BranchScanBounds::unbounded(
         branch,
         COMMIT_TIMELINE_SPACE,
@@ -1658,7 +1661,7 @@ fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> Comm
         .expect("timeline scan");
     CommitTimelineView::from_rows(
         branch,
-        rows.iter().map(crate::branch::BranchVisibleRow::row),
+        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
     )
     .expect("timeline view")
 }

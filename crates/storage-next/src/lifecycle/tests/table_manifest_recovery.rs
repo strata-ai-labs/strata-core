@@ -4,7 +4,8 @@ use crate::backend::{
     BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError, PublishMode,
     PublishOutcome, PublishResult, DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::{BranchLevel, BranchRuntimeConfig};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::BranchLevel;
 use crate::commit::{
     CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig, CommitStamp,
     CommitTimelineEntry, CommitTimelineRows,
@@ -409,7 +410,7 @@ fn recovery_preserves_materializing_layer_status() {
 
     assert_eq!(
         shell.branch_state().inherited_layers()[0].status(),
-        crate::branch::InheritedLayerStatus::Materializing
+        crate::branch::facts::InheritedLayerStatus::Materializing
     );
 }
 

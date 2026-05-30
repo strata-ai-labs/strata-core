@@ -1,10 +1,12 @@
 use super::shared::*;
 use super::*;
-use crate::branch::{
-    BranchCompactionKind, BranchCompactionPruningProof, BranchCompactionRetentionPolicy,
-    BranchHistoryOptions, BranchInheritancePruningProof, BranchRecoveryHealthAttestation,
-    BranchRuntimeResult, BranchSharedTableSafety, BranchTimestampCoverage,
+use crate::branch::error::BranchRuntimeResult;
+use crate::branch::pruning::{
+    BranchCompactionPruningProof, BranchInheritancePruningProof, BranchRecoveryHealthAttestation,
+    BranchSharedTableSafety,
 };
+use crate::branch::read::{BranchHistoryOptions, BranchTimestampCoverage};
+use crate::branch::state::{BranchCompactionKind, BranchCompactionRetentionPolicy};
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitConflictValidationMode, CommitDuplicateKeyPolicy,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,

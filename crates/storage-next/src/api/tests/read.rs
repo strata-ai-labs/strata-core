@@ -2,7 +2,7 @@ use super::*;
 
 use std::time::Duration;
 
-use crate::branch::BranchTimestampCoverage;
+use crate::branch::read::BranchTimestampCoverage;
 use crate::commit::COMMIT_TIMELINE_SPACE;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 

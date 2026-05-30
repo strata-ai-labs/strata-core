@@ -510,7 +510,7 @@ fn timestamp_scan_fixture(
 
 fn check_timestamp_basic_scans(
     branch: BranchId,
-    view: &crate::branch::BranchReadView,
+    view: &crate::branch::read::BranchReadView,
     fixture: &TimestampScanFixture,
     outcome: &mut TimestampOutcome,
 ) -> Result<(), TestkitError> {
@@ -548,7 +548,7 @@ fn check_timestamp_basic_scans(
 
 fn check_timestamp_scan_edges(
     branch: BranchId,
-    view: &crate::branch::BranchReadView,
+    view: &crate::branch::read::BranchReadView,
     outcome: &mut TimestampOutcome,
 ) -> Result<(), TestkitError> {
     let prefix = BranchScanBounds::prefix(&physical_key(branch, b"generated-ts-scan-".to_vec())?);
@@ -590,7 +590,7 @@ fn check_timestamp_scan_edges(
 
 fn check_timestamp_scan_space_isolation(
     branch: BranchId,
-    view: &crate::branch::BranchReadView,
+    view: &crate::branch::read::BranchReadView,
     fixture: &TimestampScanFixture,
     outcome: &mut TimestampOutcome,
 ) -> Result<(), TestkitError> {

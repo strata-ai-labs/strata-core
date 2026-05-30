@@ -3,7 +3,7 @@ use super::checkpoint::shared::{
 };
 use super::*;
 use crate::backend::memory::MemoryBackend;
-use crate::branch::BranchRuntimeConfig;
+use crate::branch::config::BranchRuntimeConfig;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitConflictValidationMode,
     CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource,

@@ -9,7 +9,8 @@ use super::{
     CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
     CommitVisibilityFacts, ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker,
 };
-use crate::branch::{BranchLocalState, BranchReadView};
+use crate::branch::read::BranchReadView;
+use crate::branch::state::BranchLocalState;
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{WalCommitPayload, WalRecord};
 use crate::row::StorageRow;

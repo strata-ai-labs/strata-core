@@ -4,7 +4,7 @@ use super::{
     CommitBatchKind, CommitConflictValidationMode, CommitLowerLayer, CommitObservedVersion,
     CommitRuntimeError, CommitRuntimeResult, ValidatedCommitBatch,
 };
-use crate::branch::{BranchReadBound, BranchReadView};
+use crate::branch::read::{BranchReadBound, BranchReadView};
 use crate::row::{PhysicalKey, StorageSpaceId};
 use strata_core_next::BranchId;
 

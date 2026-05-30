@@ -5,7 +5,8 @@ use crate::backend::{
     PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::{BranchLocalState, BranchMaterializationRequest, BranchRuntimeConfig};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::state::{BranchLocalState, BranchMaterializationRequest};
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry,
@@ -617,7 +618,7 @@ fn checkpoint_recovery_restores_tombstone_and_timeline_rows() {
     let history = reopened
         .read_view()
         .expect("read view")
-        .history(&key, crate::branch::BranchHistoryOptions::all())
+        .history(&key, crate::branch::read::BranchHistoryOptions::all())
         .expect("history");
 
     assert!(history.first().is_some_and(|row| row.row().is_tombstone()));

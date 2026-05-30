@@ -4,108 +4,17 @@
     not(test),
     expect(
         dead_code,
-        reason = "branch runtime scaffolding is consumed by later branch-layer work"
+        reason = "branch facade reexports are removed before operation-family cleanup removes remaining branch-local scaffolding"
     )
 )]
 
-mod config;
-mod error;
-mod facts;
-mod identity;
-mod pruning;
-mod read;
-mod state;
-
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
-)]
-pub(crate) use config::BranchRuntimeConfig;
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
-)]
-pub(crate) use error::{
-    BranchCompactionInvalidity, BranchRuntimeError, BranchRuntimeResult,
-    BranchTimestampHistorySource,
-};
-#[allow(
-    unused_imports,
-    reason = "branch scaffold exports define the local surface for later slices"
-)]
-pub(crate) use facts::{
-    BranchLevel, BranchProtectedTable, BranchProtectionReason, BranchReachabilityAggregate,
-    BranchReachabilityFacts, BranchReachabilitySnapshot, BranchReleasePlan, BranchRuntimeStats,
-    BranchStateFacts, BranchTableDescriptor, BranchTableProtection, BranchTableRef,
-    BranchTableReferenceKind, InheritedLayerDescriptor, InheritedLayerStatus, SharedTableRegistry,
-};
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
-)]
-pub(crate) use identity::{
-    require_physical_key_branch, require_row_branch, rewrite_physical_key_branch,
-    rewrite_row_branch, row_matches_branch, BranchRowIdentity,
-};
-#[allow(
-    unused_imports,
-    reason = "branch row-pruning proof exports define the local surface for lifecycle maintenance"
-)]
-pub(crate) use pruning::{
-    branch_pruning_fingerprint, BranchCompactionPruningPolicy, BranchCompactionPruningProof,
-    BranchInheritancePruningProof, BranchRecoveryHealthAttestation, BranchSharedTableSafety,
-    BranchTombstoneElisionProof, BranchTtlElisionProof,
-};
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
-)]
-pub(crate) use read::{
-    BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
-    BranchMaterializationSource, BranchOwnedTable, BranchReadBound, BranchReadView,
-    BranchRowBoundMatch, BranchRowCandidateFacts, BranchRowSource, BranchScanBounds,
-    BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
-};
-#[allow(
-    unused_imports,
-    reason = "branch scaffold exports define the local surface for later slices"
-)]
-pub(crate) use state::{
-    install_snapshot_rows_into_branches, BranchAppendOutcome, BranchCompactionCandidate,
-    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionOutcome,
-    BranchCompactionPlan, BranchCompactionPreparedOutput, BranchCompactionRecovery,
-    BranchCompactionRequest, BranchCompactionRetentionPolicy, BranchForkOutcome,
-    BranchImmutableInstallOutcome, BranchMaterializationHandle, BranchMaterializationIntent,
-    BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
-    BranchMaterializationRecovery, BranchMaterializationRequest,
-    BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
-    BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
-    BranchSnapshotTargetStatePolicy, BranchTableManifestRecoveryOutcome,
-    BranchTableManifestRecoveryRequest,
-};
-#[cfg_attr(
-    all(not(test), not(feature = "testkit")),
-    allow(
-        unused_imports,
-        reason = "branch scaffold exports define the local surface for later slices"
-    )
-)]
-pub(crate) use state::{
-    BranchLocalState, BranchRotationOutcome, BranchRotationSkipReason, BranchStateDescriptor,
-    BranchViewDescriptor,
-};
+pub(crate) mod config;
+pub(crate) mod error;
+pub(crate) mod facts;
+pub(crate) mod identity;
+pub(crate) mod pruning;
+pub(crate) mod read;
+pub(crate) mod state;
 
 #[cfg(test)]
 mod tests;

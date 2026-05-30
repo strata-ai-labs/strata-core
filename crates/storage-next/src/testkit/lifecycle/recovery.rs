@@ -7,7 +7,8 @@ use crate::backend::{
     BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError, PublishMode,
     PublishOutcome, PublishResult, DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
-use crate::branch::{BranchLevel, BranchRuntimeConfig};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::BranchLevel;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::format::{
     encode_manifest, DatabaseManifest, TableManifest, TableManifestLevel, TableManifestTableBounds,

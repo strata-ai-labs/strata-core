@@ -36,7 +36,7 @@
 //! under multi-threaded admission.
 
 use super::{LifecycleError, LifecycleResult, MaintenanceExecutorStatus};
-use crate::branch::BranchLocalState;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBranchApplyTarget, CommitLowerLayer, CommitRuntimeError, CommitRuntimeResult,
 };
@@ -600,7 +600,7 @@ impl CommitBranchApplyTarget for BudgetedCommitBranch<'_> {
         self.branch.max_commit_version()
     }
 
-    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::BranchReadView> {
+    fn capture_read_view(&self) -> CommitRuntimeResult<crate::branch::read::BranchReadView> {
         self.branch.capture_read_view().map_err(|source| {
             CommitRuntimeError::lower_layer_with(
                 CommitLowerLayer::BranchRuntime,

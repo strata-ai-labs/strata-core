@@ -540,7 +540,7 @@ fn materialized_layer_replacement_preserves_pruned_history_boundary() {
         .expect("view")
         .read_point(
             &physical_key(child, b"history".to_vec()),
-            crate::branch::BranchReadBound::at_timestamp(Timestamp::from_micros(15)),
+            crate::branch::read::BranchReadBound::at_timestamp(Timestamp::from_micros(15)),
         )
         .expect_err("below timestamp floor must reject");
     assert!(matches!(
@@ -763,11 +763,11 @@ fn shared_table_identity_reachability_blocks_pruning() {
 
     let snapshot = state.reachability_snapshot().expect("snapshot");
     let other_branch = branch_id(0xeb);
-    let foreign_refs: Vec<crate::branch::BranchTableRef> = snapshot
+    let foreign_refs: Vec<crate::branch::facts::BranchTableRef> = snapshot
         .table_refs()
         .iter()
         .map(|table_ref| {
-            crate::branch::BranchTableRef::owned(
+            crate::branch::facts::BranchTableRef::owned(
                 other_branch,
                 table_ref.level(),
                 table_ref.table_index(),
@@ -777,9 +777,9 @@ fn shared_table_identity_reachability_blocks_pruning() {
         })
         .collect();
     let foreign_snapshot =
-        crate::branch::BranchReachabilitySnapshot::new(other_branch, foreign_refs)
+        crate::branch::facts::BranchReachabilitySnapshot::new(other_branch, foreign_refs)
             .expect("foreign snapshot");
-    let registry = crate::branch::SharedTableRegistry::rebuild_from_snapshots(&[
+    let registry = crate::branch::facts::SharedTableRegistry::rebuild_from_snapshots(&[
         snapshot.clone(),
         foreign_snapshot,
     ])
@@ -790,8 +790,9 @@ fn shared_table_identity_reachability_blocks_pruning() {
 
     // The inverse: a registry that only tracks THIS branch's snapshot
     // must derive `NotShared`.
-    let solo_registry = crate::branch::SharedTableRegistry::rebuild_from_snapshots(&[snapshot])
-        .expect("solo registry");
+    let solo_registry =
+        crate::branch::facts::SharedTableRegistry::rebuild_from_snapshots(&[snapshot])
+            .expect("solo registry");
     let solo_derived =
         BranchCompactionPruningProof::derive_shared_table_safety(candidate, &solo_registry);
     assert_eq!(solo_derived, BranchSharedTableSafety::NotShared);

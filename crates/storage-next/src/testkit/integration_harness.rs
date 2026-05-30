@@ -316,7 +316,7 @@ pub fn run_localfs_lifecycle_retention_runner_harness(
     root: &std::path::Path,
 ) -> Result<LifecycleRetentionRunnerHarnessOutcome, TestkitError> {
     use crate::backend::local_fs::LocalFsBackend;
-    use crate::branch::BranchRuntimeConfig;
+    use crate::branch::config::BranchRuntimeConfig;
     use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
     use crate::lifecycle::{
         LifecycleCodecId, LifecycleConfig, LifecycleDurableLocalOpenRequest,

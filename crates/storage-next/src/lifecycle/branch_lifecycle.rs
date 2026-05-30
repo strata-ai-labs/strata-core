@@ -1,11 +1,14 @@
 //! Storage-internal branch lifecycle catalog.
 
 use super::{LifecycleError, LifecycleLowerLayer, LifecycleResult};
-use crate::branch::{
-    install_snapshot_rows_into_branches, BranchLocalState, BranchReachabilityAggregate,
-    BranchReachabilitySnapshot, BranchReadView, BranchReleasePlan, BranchRuntimeConfig,
-    BranchSnapshotInstallRequest, BranchTableRef, BranchTableReferenceKind,
-    BranchTimestampCoverage,
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::{
+    BranchReachabilityAggregate, BranchReachabilitySnapshot, BranchReleasePlan, BranchTableRef,
+    BranchTableReferenceKind,
+};
+use crate::branch::read::{BranchReadView, BranchTimestampCoverage};
+use crate::branch::state::{
+    install_snapshot_rows_into_branches, BranchLocalState, BranchSnapshotInstallRequest,
 };
 use crate::commit::{
     CommitBranchDescriptor, CommitBranchGeneration, CommitBranchGenerationGuard,

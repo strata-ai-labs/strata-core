@@ -6,7 +6,7 @@ use super::{
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskScope,
     RecoveryDegradationClass, RecoveryHealth, StorageBudgetLedger,
 };
-use crate::branch::BranchLocalState;
+use crate::branch::state::BranchLocalState;
 use crate::commit::CommitBranchGuardSet;
 use crate::format::{
     SnapshotSection, TableManifest, TableManifestInheritedLayer, TableManifestLevel,

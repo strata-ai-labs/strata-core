@@ -189,7 +189,7 @@ fn checkpoint_rows_require_inherited_layers_to_be_materialized() {
 
     assert_eq!(
         error,
-        crate::branch::BranchRuntimeError::InvalidBranchState {
+        crate::branch::error::BranchRuntimeError::InvalidBranchState {
             reason: "checkpoint requires inherited layers to be materialized first",
         }
     );
@@ -485,7 +485,7 @@ fn checkpoint_recovery_ignores_duplicate_record_at_checkpoint_watermark() {
     let history = reopened
         .read_view()
         .expect("read view")
-        .history(&key, crate::branch::BranchHistoryOptions::all())
+        .history(&key, crate::branch::read::BranchHistoryOptions::all())
         .expect("history");
 
     assert_eq!(history.len(), 1);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::branch::BranchLevel;
+use crate::branch::facts::BranchLevel;
 use crate::format::{
     TableManifest, TableManifestInheritedLayer, TableManifestInheritedLayerStatus,
     TableManifestLevel, TableManifestTableBounds, TableManifestTableFacts,

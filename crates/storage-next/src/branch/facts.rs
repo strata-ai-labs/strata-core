@@ -1,6 +1,6 @@
 //! Branch facts and descriptor shells.
 
-use super::{BranchRuntimeError, BranchRuntimeResult};
+use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::table::{TableIdentity, TableRuntimeFacts};
 use std::collections::{BTreeMap, BTreeSet};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};

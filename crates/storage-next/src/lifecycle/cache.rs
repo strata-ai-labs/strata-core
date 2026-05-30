@@ -24,7 +24,9 @@ use super::{
     StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
-use crate::branch::{BranchLocalState, BranchReadView, BranchRotationOutcome, BranchRuntimeConfig};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::BranchReadView;
+use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
     CommitCacheRuntime, CommitFactAllocator, CommitManualTimestampSource, CommitOutcome,

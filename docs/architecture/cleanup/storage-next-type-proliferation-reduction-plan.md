@@ -19,6 +19,18 @@ The review unit is:
 3. one behavior-preserving commit when possible;
 4. a before/after type and re-export count.
 
+Use the dedicated cleanup prefix `CLN-T*` for this work. PRs should keep the
+normal engineering limit of 1,500 net LOC per slice. If an extraction would
+exceed that budget, split the extraction by operation and land multiple
+`CLN-T*` slices rather than opening a single large file-move PR.
+
+Interlock with
+`docs/architecture/cleanup/storage-next-file-comment-rollout-plan.md`: for a
+directory that is about to be split or type-reduced, do the type-reduction split
+first, then add or update file comments on the post-split files. Comments may
+be the final step of a split slice; do not write detailed comments for files
+that are scheduled to be split immediately.
+
 ## Goal
 
 Reduce unnecessary struct/enum proliferation in `crates/storage-next` without
@@ -97,6 +109,28 @@ If a pass needs semantic changes, stop and write a normal implementation plan
 for that behavior change. This cleanup plan is for type and ownership reduction,
 not for changing storage semantics.
 
+Every PR should run the narrow tests for the touched operation plus this common
+verification floor unless the PR description records a narrower rationale:
+
+```sh
+cargo test -p strata-storage-next
+cargo test -p strata-storage-next --test format_golden
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+## Non-Goals
+
+This cleanup must not include:
+
+1. physical format changes;
+2. public API removals or behavior changes;
+3. error-code changes except to fix a documented contradiction;
+4. test additions or removals beyond import-path edits and cleanup inventory
+   guards;
+5. executor, engine, or product behavior changes;
+6. broad rewrites that combine type cleanup with semantic work.
+
 ## Type Classification
 
 Every type touched by this cleanup should be classified before editing.
@@ -147,240 +181,47 @@ Inline types when they are:
 4. not preserving recovery facts;
 5. not named in tests as part of a behavior contract.
 
-## Cleanup Passes
-
-### Pass 0: Inventory And Budget
-
-Add a repeatable inventory command or script under `tools/` or
-`scripts/architecture/` that reports:
-
-1. total structs and enums;
-2. structs/enums per module;
-3. parent-module re-export counts;
-4. one-call-site type candidates;
-5. files over size thresholds;
-6. types with `Request`, `Plan`, `Outcome`, `Recovery`, `Candidate`,
-   `PreparedOutput`, `Proof`, `Attestation`, or `Safety` suffixes.
-
-Initial closeout targets:
-
-1. `branch/mod.rs` re-exports fewer than 35 names.
-2. `branch/state.rs` is split below 1,500 LOC per file.
-3. No `allow(unused_imports)` exists only to preserve speculative scaffolding.
-4. Operation families have no more than the boundary types they actually need.
-5. Total type count trends down after each pass; no cleanup pass may increase
-   net type count without an explicit justification.
-
-The inventory should report both total crate counts and crate-private counts.
-Public API and durable-format types should be tracked separately so the cleanup
-does not create pressure to delete useful boundary vocabulary.
-
-### Pass 1: Branch Facade And File Split
-
-Scope:
-
-1. `crates/storage-next/src/branch/mod.rs`;
-2. `crates/storage-next/src/branch/state.rs`.
-
-Actions:
-
-1. Split `state.rs` by operation:
-   - `append`;
-   - `rotation`;
-   - `fork`;
-   - `materialization`;
-   - `compaction`;
-   - `snapshot_install`;
-   - `manifest_recovery`;
-   - `local_state`.
-2. Keep behavior unchanged.
-3. Remove broad re-exports that are only consumed by tests or one sibling
-   module.
-4. Replace parent-module imports with explicit submodule imports where that
-   makes ownership clearer.
-
-Exit gate:
-
-1. No behavior tests change except import paths.
-2. `branch/mod.rs` only re-exports real branch-layer boundary types.
-
-This pass is allowed to move code but should not try to collapse compaction,
-materialization, or snapshot-install types yet. Those are separate operation
-families.
-
-### Pass 2: Branch Compaction Family
-
-Current smell:
-
-Branch compaction has a broad family of types for one operation:
-`Request`, `Plan`, `Outcome`, `Recovery`, `Candidate`, `PreparedOutput`,
-`Kind`, `NoopReason`, `Invalidity`, `PruningPolicy`, `PruningProof`,
-`RetentionPolicy`.
-
-Actions:
-
-1. Keep the external request/outcome only if lifecycle callers need them.
-2. Inline candidate and prepared-output structs if they are consumed in one
-   path.
-3. Collapse no-op and invalidity enums when one error enum or outcome reason is
-   enough.
-4. Replace multiple pruning/proof parameters with one aggregate proof if the
-   operation always consumes them together.
-
-Exit gate:
-
-1. Compaction behavior tests pass unchanged.
-2. Unsafe pruning remains proof-gated.
-3. Fewer compaction-specific types are exported from `branch`.
-
-### Pass 3: Branch Materialization And Snapshot Install
-
-Scope:
-
-1. materialization request/intent/handle/outcome/recovery/prepared-output;
-2. snapshot install request/group/outcome/recovery/policy types.
-
-Actions:
-
-1. Keep stable handles if they protect against layer-index drift.
-2. Merge request and intent if both exist only to stage one executor call.
-3. Merge branch-level and group-level snapshot outcomes unless callers need
-   both.
-4. Localize staging structs inside operation modules.
-
-Exit gate:
-
-1. Handle-based materialization safety remains tested.
-2. Snapshot recovery tests still distinguish missing, corrupt, and policy
-   outcomes.
-
-### Pass 4: Branch Facts, Read, And Pruning Proofs
-
-Scope:
-
-1. `branch/facts.rs`;
-2. `branch/read.rs`;
-3. `branch/pruning.rs`.
-
-Actions:
-
-1. Keep read-bound and visible-row types that cross API/lifecycle boundaries.
-2. Localize sort keys, observed facts, and candidate row helpers.
-3. Merge proof micro-types when they are always consumed as one pruning
-   capability bundle.
-4. Remove parent re-exports for facts that only support one lifecycle module.
-
-Exit gate:
-
-1. Branch read and history tests pass.
-2. Public API/L9 does not import branch internals directly.
-
-### Pass 5: Lifecycle Maintenance, Checkpoint, And Flush
-
-Scope:
-
-1. `lifecycle/maintenance.rs`;
-2. `lifecycle/checkpoint.rs`;
-3. `lifecycle/flush.rs`;
-4. durable maintenance adapters.
-
-Actions:
-
-1. Keep task request/outcome types at the executor boundary.
-2. Inline private runner-specific status wrappers where they only map one
-   lower-layer outcome.
-3. Merge health-debt and source-error fields into shared outcome helpers rather
-   than unique outcome structs per operation.
-4. Remove dead task/fault/status variants that were created for future slices
-   but are now superseded.
-
-Exit gate:
-
-1. Maintenance queue semantics remain deterministic.
-2. Checkpoint success and WAL-truncation debt remain distinguishable.
-3. Flush orphan and uncertainty facts remain typed.
-
-### Pass 6: Lifecycle Retention, Quarantine, Rewrite, And Budget
-
-Scope:
-
-1. retention proof and pruning surfaces;
-2. quarantine/purge/repair operation families;
-3. rewrite publication outputs;
-4. memory/budget facts.
-
-Actions:
-
-1. Keep proof tokens that bind inventory generations or prevent unsafe
-   reclamation.
-2. Merge duplicate proof/context/report structs when they carry the same
-   object names and epochs.
-3. Inline private policy structs that are only constant knobs.
-4. Preserve recovery-health and source-error fidelity.
-
-Exit gate:
-
-1. Table-object retention still fails closed.
-2. Quarantine inventory mismatch still blocks unsafe purge/reclaim.
-3. Budget admission tests still prove bounded allocation.
-
-### Pass 7: Service Layer
-
-Scope:
-
-1. manifest services;
-2. table services;
-3. WAL services;
-4. quarantine services;
-5. snapshot services.
-
-Actions:
-
-1. Keep service errors and persisted format wrappers.
-2. Merge write/load wrappers that exist only to expose metadata already
-   available from backend outcomes.
-3. Localize mutation/reconcile private stage structs.
-4. Avoid leaking service-specific helper types into lifecycle module facades.
-
-Exit gate:
-
-1. Durable publication fault-window tests pass.
-2. Format golden vectors remain unchanged.
-
-### Pass 8: API And Testkit Surface
-
-Scope:
-
-1. `api/*`;
-2. `testkit/*`.
-
-Actions:
-
-1. Keep public API shells even if numerous; they are the L9 boundary.
-2. Remove internal-only public-looking constructors or reports that are not
-   consumed by engine-next.
-3. Collapse testkit result counters when they do not represent distinct
-   behavior.
-4. Keep source guards for no lower-layer type leakage.
-
-Exit gate:
-
-1. Public API conformance tests pass.
-2. Source guards still reject lower-layer type leaks.
-
-Public API type count is not automatically bad. The cleanup target here is
-internal duplication, misleading constructors, and testkit counter inflation,
-not shrinking a stable consumer-facing vocabulary just to improve a metric.
-
-### Pass 9: Closeout Guards
-
-Add cleanup guards that prevent re-growth:
-
-1. parent-module re-export count guard for high-risk modules;
-2. max operation-family suffix count per module;
-3. no new `allow(unused_imports)` for speculative scaffold exports;
-4. no new `FooArgs` / `FooInput` / `FooResult` type names unless justified;
-5. type inventory snapshot recorded in this cleanup directory.
+## Roadmap
+
+This is the single roadmap for the cleanup. Each row is a PR-sized or
+sub-PR-sized unit; if the measured diff would exceed 1,500 net LOC, split the
+row further before opening the PR.
+
+The inventory baseline should be committed before `CLN-T1` starts and re-run
+at every PR boundary. The current rough count is about 660 production
+structs/enums, depending on the counting script. The first numeric target is a
+crate-private production type count of 450 or lower, excluding public API and
+durable-format types that the ledger marks as intentionally retained.
+
+| Code | Unit | Primary files | Primary action | Expected result |
+|---|---|---|---|---|
+| `CLN-T0` | Inventory baseline | `crates/storage-next/src/**` | Add a repeatable script that counts structs/enums, suffix families, parent re-exports, files over threshold, one-call-site candidates, and existing `allow(unused_imports)` / `expect(dead_code)` scaffold blocks | Committed baseline with totals and per-module counts |
+| `CLN-T1` | Branch facade | `branch/mod.rs` | Remove broad re-exports, delete existing speculative `allow(unused_imports)` blocks as exports disappear, and update call sites to explicit submodule imports | Smaller branch public-in-crate surface |
+| `CLN-T2A` | Branch state extraction: append/rotation | `branch/state.rs` | Move append and active/frozen rotation code into owned modules without semantic changes | First file-size reduction under budget |
+| `CLN-T2B` | Branch state extraction: fork/read hooks | `branch/state.rs` | Move fork and read-facing helper code into owned modules without semantic changes | Branch state ownership gets clearer |
+| `CLN-T2C` | Branch state extraction: materialization | `branch/state.rs` | Move materialization code into an owned module without collapsing types yet | Handle-based safety remains isolated |
+| `CLN-T2D` | Branch state extraction: compaction | `branch/state.rs` | Move compaction code into an owned module without collapsing types yet | Compaction can be reduced separately |
+| `CLN-T2E` | Branch state extraction: snapshot/recovery | `branch/state.rs` | Move snapshot install and table-manifest recovery code into owned modules without semantic changes | No single branch-state file remains above threshold |
+| `CLN-T3` | Branch compaction family | `branch/state/*`, `branch/pruning.rs` | Collapse private candidate/prepared/recovery scaffolding after caller analysis | Fewer compaction-only types |
+| `CLN-T4` | Branch materialization family | `branch/state/*` | Keep stable handles, merge private request/intent wrappers only where they do not protect layer-index drift | No materialization safety regression |
+| `CLN-T5` | Snapshot install/recovery family | `branch/state/*` | Merge local group/outcome/recovery wrappers where callers do not need all layers | Smaller snapshot recovery family |
+| `CLN-T6A` | Branch tombstone/TTL proof review | `branch/pruning.rs`, `branch/facts.rs` | Review and, if safe, merge only tombstone/TTL proof types in a proof-only PR | Combined invariant restated and pinned by tests |
+| `CLN-T6B` | Branch inheritance/shared-table proof review | `branch/pruning.rs`, `branch/facts.rs` | Review and, if safe, merge inheritance/shared-table proof types in a proof-only PR | Unsafe deletion remains proof-gated |
+| `CLN-T6C` | Branch read/facts localization | `branch/read.rs`, `branch/facts.rs` | Localize sort keys, observed facts, and helpers that do not cross a boundary | Fewer parent re-exports |
+| `CLN-T7A` | Maintenance executor | `lifecycle/maintenance.rs` | Keep task boundary, merge runner-only status wrappers | Less executor-family duplication |
+| `CLN-T7B` | Checkpoint outcomes | `lifecycle/checkpoint.rs` | Reduce private checkpoint staging types while preserving success/debt distinctions | Checkpoint and WAL debt remain distinct |
+| `CLN-T7C` | Flush outcomes | `lifecycle/flush.rs` | Reduce private flush staging types while preserving orphan versus uncertainty facts | Flush fact surface remains stable |
+| `CLN-T8A` | Retention | `lifecycle/retention.rs` | Reduce private retention report/proof scaffolding without weakening fail-closed behavior | Table-object retention remains conservative |
+| `CLN-T8B` | Quarantine/purge/repair | `lifecycle/quarantine.rs` | Merge duplicate context/report structs only after inventory-generation proof review | Unsafe purge/reclaim remains blocked |
+| `CLN-T8C` | Rewrite publication | `lifecycle/rewrite.rs`, `lifecycle/compaction.rs` | Localize rewrite publication staging types | Rewrite object facts remain visible |
+| `CLN-T8D` | Budget facts | `lifecycle/budget.rs` | Inline constant policy wrappers and localize private counters | Budget admission tests still prove bounded allocation |
+| `CLN-T9A` | Manifest service | `service/manifest.rs` | Localize private load/write stage structs | Durable manifest format unchanged |
+| `CLN-T9B` | Table service | `service/table.rs` | Merge wrappers that duplicate backend publish facts | Table publication facts unchanged |
+| `CLN-T9C` | WAL service | `service/wal.rs` | Localize mutation/replay stage structs | WAL fault-window tests unchanged |
+| `CLN-T9D` | Quarantine service | `service/quarantine/*` | Reduce reconcile helper proliferation | Inventory mismatch behavior unchanged |
+| `CLN-T9E` | Snapshot service | `service/snapshot.rs` | Localize snapshot publication helper types | Snapshot golden/fault tests unchanged |
+| `CLN-T10` | API/testkit reports | `api/*`, `testkit/*` | Keep public API types; reduce duplicate testkit counters and dead shells | Clearer diagnostics and conformance surface |
+| `CLN-T11` | Closeout guards | source guards and inventory script | Add re-export count, suffix-family count, scaffold-allowance, and inventory-diff guards | Re-growth trips CI or review |
 
 ## Execution Rules
 
@@ -391,44 +232,18 @@ Add cleanup guards that prevent re-growth:
 5. No behavior changes hidden inside file splits.
 6. Every removed type must be either inlined, merged, or localized.
 7. Every kept proof type must state the invariant it protects.
-8. Every kept request/plan/outcome type must identify the layer boundary it
+8. Every merged proof type must restate the combined invariant it now protects
+   and link to the unchanged existing test that pins that invariant. If no such
+   test exists, defer the merge to a separate behavior-test plan. Proof merges
+   must land in proof-only PRs, not bundled with unrelated type reductions.
+9. Every kept request/plan/outcome type must identify the layer boundary it
    crosses.
-
-## Recommended Order
-
-1. Inventory and type-budget script.
-2. Branch file split and facade reduction.
-3. Branch compaction family reduction.
-4. Branch materialization and snapshot-install reduction.
-5. Branch facts/read/pruning proof reduction.
-6. Lifecycle maintenance/checkpoint/flush reduction.
-7. Lifecycle retention/quarantine/rewrite/budget reduction.
-8. Service layer reduction.
-9. API/testkit cleanup.
-10. Source guards and closeout.
-
-This order starts where the proliferation is most visible while keeping each
-pass small enough to review. It also avoids the highest-risk mistake: moving
-hundreds of types by directory without proving that any of them were actually
-unnecessary.
-
-## First Backlog
-
-These are the first concrete cleanup units. They are intentionally smaller than
-the full passes above.
-
-| Order | Unit | Primary files | Primary action | Expected result |
-|---|---|---|---|---|
-| 1 | Inventory tool | `crates/storage-next/src/**` | Count types, suffix families, re-exports, one-call-site candidates | Baseline before cleanup |
-| 2 | Branch facade | `branch/mod.rs` | Remove broad re-exports and update imports | Smaller branch public-in-crate surface |
-| 3 | Branch state split | `branch/state.rs` | Move operation groups into owned files without semantic changes | Reviewable ownership boundaries |
-| 4 | Branch compaction | `branch/state/*`, `branch/pruning.rs` | Collapse private candidate/prepared/recovery scaffolding | Fewer compaction-only types |
-| 5 | Branch materialization | `branch/state/*` | Keep handles, merge private request/intent wrappers where safe | No layer-index safety regression |
-| 6 | Snapshot install/recovery | `branch/state/*` | Merge local group/outcome/recovery wrappers where callers do not need all layers | Smaller recovery family |
-| 7 | Branch proof bundle | `branch/pruning.rs`, `branch/facts.rs` | Consolidate micro-proofs consumed together | Fewer proof/attestation types |
-| 8 | Maintenance executor | `lifecycle/maintenance.rs` | Keep task boundary, merge runner-only status wrappers | Less operation-family duplication |
-| 9 | Retention/quarantine/rewrite | `lifecycle/retention.rs`, `lifecycle/quarantine.rs`, `lifecycle/rewrite.rs` | Bind real proof tokens, merge duplicate reports | Less duplicated health/object fact plumbing |
-| 10 | API/testkit reports | `api/*`, `testkit/*` | Keep public types, reduce duplicate counters and dead shells | Clearer API diagnostics surface |
+10. Outcome shape changes must preserve the same error code, source-error
+    chain, affected object names, health facts, and state-change facts that
+    callers observed before. Tests for these changes should keep bodies
+    unchanged where possible; import-path edits are fine.
+11. Existing speculative `allow(unused_imports)` and `expect(dead_code)` blocks
+    must be removed as their dead exports or types disappear.
 
 ## Per-Operation Checklist
 
@@ -441,8 +256,14 @@ message or cleanup ledger:
 4. Which proof types prevent unsafe deletion, pruning, publication, or
    visibility changes?
 5. Which re-exports are still necessary after call sites use explicit modules?
-6. Did total type count, operation-family type count, and parent re-export
+6. Which callers use the type outside its owning module? If the only external
+   caller is one lifecycle or API file, document why that is a real boundary;
+   if no external caller exists, treat it as private scaffolding unless it
+   guards a proof or durable fact.
+7. Did total type count, operation-family type count, and parent re-export
    count go down?
+8. Did the committed inventory diff prove the change, including any
+   intentionally retained public API or durable-format types?
 
 ## Keep/Remove Examples
 

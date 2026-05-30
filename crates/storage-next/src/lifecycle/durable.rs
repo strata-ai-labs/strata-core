@@ -8,7 +8,8 @@ use super::{
     StorageMode, StorageOpenDisposition, StorageOpenPlan,
 };
 use crate::backend::{Backend, BackendError, BackendWriterGuard, PublishFailureKind};
-use crate::branch::{BranchLocalState, BranchRuntimeConfig};
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBranchGeneration, CommitBranchGuardSet, CommitBranchRegistry, CommitFactAllocator,
     CommitManualTimestampSource, CommitRuntimeConfig, CommitRuntimeError, CommitTimestampGuard,

@@ -1,10 +1,9 @@
 //! Proof-bound row pruning for branch compaction.
 
-use super::{
-    BranchCompactionCandidate, BranchCompactionInvalidity, BranchCompactionRetentionPolicy,
-    BranchInheritedLayer, BranchLocalState, BranchRuntimeError, BranchRuntimeResult,
-    BranchTimestampCoverage, SharedTableRegistry,
-};
+use super::error::{BranchCompactionInvalidity, BranchRuntimeError, BranchRuntimeResult};
+use super::facts::SharedTableRegistry;
+use super::read::{BranchInheritedLayer, BranchOwnedTable, BranchTimestampCoverage};
+use super::state::{BranchCompactionCandidate, BranchCompactionRetentionPolicy, BranchLocalState};
 use crate::row::PhysicalKey;
 use crate::table::{
     TableCompactionDecision, TableCompactionDropReason, TableCompactionPolicy,
@@ -717,7 +716,7 @@ fn row_is_expired_by_proof(row: &TableRow, proof: BranchTtlElisionProof) -> bool
     }
 }
 
-fn hash_owned_levels(hash: &mut u64, levels: &[Vec<super::BranchOwnedTable>]) {
+fn hash_owned_levels(hash: &mut u64, levels: &[Vec<BranchOwnedTable>]) {
     hash_u64(hash, levels.len() as u64);
     for (level_index, level) in levels.iter().enumerate() {
         hash_u64(hash, level_index as u64);

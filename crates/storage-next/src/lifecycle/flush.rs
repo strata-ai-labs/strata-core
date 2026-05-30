@@ -7,10 +7,9 @@ use super::{
     StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
-use crate::branch::{
-    BranchImmutableInstallOutcome, BranchLevel, BranchLocalState, BranchOwnedTable,
-    BranchTableDescriptor,
-};
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::read::BranchOwnedTable;
+use crate::branch::state::{BranchImmutableInstallOutcome, BranchLocalState};
 use crate::object::ObjectName;
 use crate::service::{
     TableObjectFacts, TableObjectReadError, TableObjectReaderService, TableObjectService,

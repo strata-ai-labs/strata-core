@@ -1,10 +1,13 @@
 use super::shared::*;
 use super::*;
 use crate::backend::Backend;
-use crate::branch::{
+use crate::branch::facts::BranchLevel;
+use crate::branch::read::{
+    BranchHistoryOptions, BranchReadBound, BranchScanBounds, BranchUserKeyBound,
+};
+use crate::branch::state::{
     BranchCompactionKind, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchHistoryOptions, BranchLevel, BranchLocalState, BranchReadBound, BranchScanBounds,
-    BranchUserKeyBound,
+    BranchLocalState,
 };
 use crate::commit::CommitManualTimestampSource;
 use crate::lifecycle::tests::checkpoint::shared::{
@@ -98,7 +101,7 @@ fn durable_rewrite_rejects_pruning_policy_without_retention_proof() {
 
     assert!(matches!(
         error,
-        crate::branch::BranchRuntimeError::InvalidCompaction { .. }
+        crate::branch::error::BranchRuntimeError::InvalidCompaction { .. }
     ));
     assert_eq!(state.owned_table_count(), 2);
 }
@@ -1405,7 +1408,10 @@ fn install_many_inputs(
 
 fn compact_read_parity(
     branch: strata_core_next::BranchId,
-) -> (crate::branch::BranchReadView, crate::branch::BranchReadView) {
+) -> (
+    crate::branch::read::BranchReadView,
+    crate::branch::read::BranchReadView,
+) {
     let backend = CheckpointTestBackend::new();
     let mut runtime = open_runtime(branch, &backend);
     *runtime.branch_state_mut() = read_shape_state(branch);
@@ -1420,7 +1426,10 @@ fn compact_read_parity(
 fn materialization_read_parity(
     parent: strata_core_next::BranchId,
     child: strata_core_next::BranchId,
-) -> (crate::branch::BranchReadView, crate::branch::BranchReadView) {
+) -> (
+    crate::branch::read::BranchReadView,
+    crate::branch::read::BranchReadView,
+) {
     let backend = CheckpointTestBackend::new();
     let mut runtime = open_runtime(child, &backend);
     *runtime.branch_state_mut() = materialization_read_state(parent, child);
@@ -1433,7 +1442,7 @@ fn materialization_read_parity(
 }
 
 fn latest_value(
-    view: &crate::branch::BranchReadView,
+    view: &crate::branch::read::BranchReadView,
     branch: strata_core_next::BranchId,
     key: &[u8],
 ) -> Option<Vec<u8>> {
@@ -1475,7 +1484,7 @@ fn publish_output_then_stale_install(
     runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
     branch: strata_core_next::BranchId,
     seed: &str,
-) -> crate::branch::BranchRuntimeResult<crate::branch::BranchCompactionOutcome> {
+) -> crate::branch::error::BranchRuntimeResult<crate::branch::state::BranchCompactionOutcome> {
     let branch_request =
         BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, seed)
             .expect("branch request");

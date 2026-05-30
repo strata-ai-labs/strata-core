@@ -5,10 +5,11 @@ mod shared;
 
 use self::shared::*;
 use super::*;
-use crate::branch::{
-    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRecovery,
-    BranchHistoryOptions, BranchLevel, BranchLocalState, BranchMaterializationRecovery,
-    BranchReadBound, BranchScanBounds,
+use crate::branch::facts::BranchLevel;
+use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
+use crate::branch::state::{
+    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRecovery, BranchLocalState,
+    BranchMaterializationRecovery,
 };
 use strata_core_next::Timestamp;
 

@@ -1,8 +1,9 @@
 use super::*;
-use crate::branch::{
-    BranchHistoryOptions, BranchLocalState, BranchReadBound, BranchReadView, BranchRuntimeConfig,
-    BranchScanBounds,
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::read::{
+    BranchHistoryOptions, BranchReadBound, BranchReadView, BranchScanBounds,
 };
+use crate::branch::state::BranchLocalState;
 use crate::row::StorageRow;
 
 #[test]
@@ -1167,7 +1168,7 @@ fn branch_atomic_append_rejects_partial_duplicate_batch_without_mutating_state()
 
     assert!(matches!(
         state.append_committed_rows_atomically(vec![row.clone(), row]),
-        Err(crate::branch::BranchRuntimeError::TableRuntime { .. })
+        Err(crate::branch::error::BranchRuntimeError::TableRuntime { .. })
     ));
     assert_eq!(state.active_row_count(), 0);
     assert_eq!(state.max_commit_version(), None);
@@ -1434,7 +1435,10 @@ fn mutating_batch(
     CommitBatch::mutating(branch, mutations, validation, options)
 }
 
-fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> CommitTimelineView {
+fn timeline_view(
+    view: &crate::branch::read::BranchReadView,
+    branch: BranchId,
+) -> CommitTimelineView {
     let bounds = BranchScanBounds::unbounded(
         branch,
         COMMIT_TIMELINE_SPACE,
@@ -1446,7 +1450,7 @@ fn timeline_view(view: &crate::branch::BranchReadView, branch: BranchId) -> Comm
         .expect("timeline scan");
     CommitTimelineView::from_rows(
         branch,
-        rows.iter().map(crate::branch::BranchVisibleRow::row),
+        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
     )
     .expect("timeline view")
 }

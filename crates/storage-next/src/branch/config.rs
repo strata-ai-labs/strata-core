@@ -1,6 +1,6 @@
 //! Branch-runtime configuration shell.
 
-use super::{BranchRuntimeError, BranchRuntimeResult};
+use super::error::{BranchRuntimeError, BranchRuntimeResult};
 
 const DEFAULT_MAX_LEVEL_COUNT: usize = 7;
 const DEFAULT_MAX_INHERITED_LAYERS: usize = 64;
