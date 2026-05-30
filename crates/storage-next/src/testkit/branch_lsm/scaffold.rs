@@ -18,8 +18,8 @@ use crate::branch::read::{
     BranchScanBounds, BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
 use crate::branch::state::compaction::{
-    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRecovery,
-    BranchCompactionRequest, BranchCompactionRetentionPolicy,
+    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRequest,
+    BranchCompactionRetentionPolicy,
 };
 use crate::branch::state::fork::BranchForkOutcome;
 use crate::branch::state::materialization::{

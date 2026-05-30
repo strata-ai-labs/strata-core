@@ -25,10 +25,7 @@ fn check_compaction_noops_and_invalid_requests(
     let no_candidate = state
         .compact_branch_owned_tables(&request)
         .map_err(|err| TestkitError::new(format!("empty compaction failed: {err}")))?;
-    if no_candidate.recovery()
-        != (BranchCompactionRecovery::NoCandidate {
-            reason: BranchCompactionNoopReason::EmptyInputLevel,
-        })
+    if no_candidate.noop_reason() != Some(BranchCompactionNoopReason::EmptyInputLevel)
         || !no_candidate.output_refs().is_empty()
         || !no_candidate.removed_refs().is_empty()
     {
@@ -232,7 +229,7 @@ fn check_l0_keep_all_compaction_parity_and_release(
     let compaction = state
         .install_branch_compaction_plan(&request, &plan)
         .map_err(|err| TestkitError::new(format!("L0 compaction install failed: {err}")))?;
-    if compaction.recovery() != BranchCompactionRecovery::InstalledReplacementTables
+    if !compaction.installed_replacement_tables()
         || compaction.output_refs().is_empty()
         || compaction.removed_refs().len() != 2
     {

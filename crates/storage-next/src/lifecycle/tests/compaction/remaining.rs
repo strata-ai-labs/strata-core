@@ -792,12 +792,12 @@ fn durable_compaction_rejects_existing_output_with_conflicting_bytes() {
         .branch_state()
         .plan_branch_compaction(&branch_request)
         .expect("plan");
-    let prepared = runtime
+    let (artifacts, _) = runtime
         .branch_state()
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .expect("prepare")
         .expect("candidate");
-    let artifact = &prepared.artifacts()[0];
+    let artifact = &artifacts[0];
     let identity = artifact.facts().identity().clone();
     let mut wrong_rows = vec![
         TableRow::new(put_row(branch, b"xxxx", 1, 1_000, b"left")),
@@ -817,7 +817,7 @@ fn durable_compaction_rejects_existing_output_with_conflicting_bytes() {
         .table_object()
         .publish_create(
             &branch.to_string(),
-            u32::from(prepared.output_level().raw()),
+            u32::from(plan.output_level().expect("output level").raw()),
             identity.as_str(),
             &wrong_bytes,
         )

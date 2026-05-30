@@ -14,7 +14,6 @@ use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
-use crate::branch::state::compaction::BranchCompactionPreparedOutput;
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
     BranchMaterializationPreparedOutput, BranchMaterializationRecovery,
@@ -45,7 +44,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     let plan = branch
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
-    let Some(prepared) = branch
+    let Some((artifacts, report)) = branch
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .map_err(branch_error)?
     else {
@@ -58,11 +57,19 @@ pub(crate) fn compact_durable_branch_manifest_backed(
             branch_outcome,
         ));
     };
+    let Some(output_level) = plan.output_level() else {
+        return Err(LifecycleError::RewritePublicationFailed {
+            reason: "prepared compaction output requires a candidate plan",
+            source: None,
+        });
+    };
     let published = publish_compaction_outputs(
         branch.branch_id(),
+        output_level,
+        plan.materialization_source(),
         table_service,
         reader_service,
-        &prepared,
+        &artifacts,
         budget,
     )?;
     let mut next_catalog = catalog.clone();
@@ -78,12 +85,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         .map(|output| output.table.clone())
         .collect::<Vec<_>>();
     let branch_outcome = branch
-        .install_branch_compaction_prepared_plan(
-            &branch_request,
-            &plan,
-            output_tables,
-            prepared.report().clone(),
-        )
+        .install_branch_compaction_prepared_plan(&branch_request, &plan, output_tables, report)
         .map_err(|source| {
             LifecycleError::rewrite_publication_orphaned_with(
                 published_object_names(&published),
@@ -245,20 +247,22 @@ struct PublishedRewriteTable {
 
 fn publish_compaction_outputs(
     branch_id: BranchId,
+    output_level: BranchLevel,
+    materialization_source: Option<BranchMaterializationSource>,
     table_service: &TableObjectService<'_>,
     reader_service: &TableObjectReaderService<'_>,
-    prepared: &BranchCompactionPreparedOutput,
+    artifacts: &[BuiltTableArtifact],
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
     let mut published = Vec::new();
-    for artifact in prepared.artifacts() {
+    for artifact in artifacts {
         match publish_rewrite_artifact(
             branch_id,
-            prepared.output_level(),
+            output_level,
             table_service,
             reader_service,
             artifact,
-            prepared.materialization_source(),
+            materialization_source,
             budget,
         ) {
             Ok(output) => published.push(output),

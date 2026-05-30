@@ -489,13 +489,12 @@ fn check_install_failure_after_publish(
         .branch_state()
         .plan_branch_compaction(&branch_request)
         .map_err(rewrite_error)?;
-    let prepared = runtime
+    let (artifacts, _) = runtime
         .branch_state()
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .map_err(rewrite_error)?
         .ok_or_else(|| TestkitError::new("expected prepared compaction output"))?;
-    let predicted_identity = prepared
-        .artifacts()
+    let predicted_identity = artifacts
         .first()
         .ok_or_else(|| TestkitError::new("expected table artifact"))?
         .facts()

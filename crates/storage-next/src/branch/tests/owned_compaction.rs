@@ -828,10 +828,7 @@ fn branch_compaction_l0_keep_all_installs_replacement_and_preserves_pinned_view(
         .compact_branch_owned_tables(&request)
         .expect("compact l0");
     assert_eq!(outcome.branch_id(), branch);
-    assert_eq!(
-        outcome.recovery(),
-        BranchCompactionRecovery::InstalledReplacementTables
-    );
+    assert!(outcome.installed_replacement_tables());
     assert!(outcome.candidate().is_some());
     assert_eq!(outcome.removed_refs().len(), 2);
     assert_eq!(outcome.output_refs().len(), 1);
@@ -1140,10 +1137,8 @@ fn branch_compaction_noop_plans_are_explicit() {
         state
             .compact_branch_owned_tables(&empty_l0)
             .expect("single noop")
-            .recovery(),
-        BranchCompactionRecovery::NoCandidate {
-            reason: BranchCompactionNoopReason::NotEnoughInputTables,
-        }
+            .noop_reason(),
+        Some(BranchCompactionNoopReason::NotEnoughInputTables)
     );
 
     let last_level = BranchCompactionRequest::new(

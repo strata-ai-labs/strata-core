@@ -7,9 +7,7 @@ use self::shared::*;
 use super::*;
 use crate::branch::facts::BranchLevel;
 use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
-use crate::branch::state::compaction::{
-    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRecovery,
-};
+use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionNoopReason};
 use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::BranchLocalState;
 use strata_core_next::Timestamp;
@@ -93,10 +91,7 @@ fn cache_compaction_defers_without_a_candidate() {
     );
     assert_eq!(outcome.branch_id(), branch);
     assert!(outcome.plan().candidate().is_none());
-    assert!(matches!(
-        outcome.branch_outcome().recovery(),
-        BranchCompactionRecovery::NoCandidate { .. }
-    ));
+    assert!(outcome.branch_outcome().noop_reason().is_some());
     assert!(!outcome.checkpoint_required());
     assert!(outcome.recovery_health().is_none());
     assert_eq!(

@@ -1472,12 +1472,12 @@ fn predicted_compaction_output_identity(
         .branch_state()
         .plan_branch_compaction(&branch_request)
         .expect("plan");
-    let prepared = runtime
+    let (artifacts, _) = runtime
         .branch_state()
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .expect("prepare")
         .expect("prepared output");
-    prepared.artifacts()[0].facts().identity().clone()
+    artifacts[0].facts().identity().clone()
 }
 
 fn publish_output_then_stale_install(
@@ -1494,12 +1494,12 @@ fn publish_output_then_stale_install(
         .branch_state()
         .plan_branch_compaction(&branch_request)
         .expect("plan");
-    let prepared = runtime
+    let (artifacts, _) = runtime
         .branch_state()
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .expect("prepare")
         .expect("prepared output");
-    let artifact = prepared.artifacts()[0].clone();
+    let artifact = artifacts[0].clone();
     runtime
         .services()
         .table_object()

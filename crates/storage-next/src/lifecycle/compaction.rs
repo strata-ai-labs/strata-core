@@ -9,8 +9,8 @@ use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::BranchLevel;
 use crate::branch::pruning::BranchCompactionPruningProof;
 use crate::branch::state::compaction::{
-    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRecovery,
-    BranchCompactionRequest, BranchCompactionRetentionPolicy,
+    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
+    BranchCompactionRetentionPolicy,
 };
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
@@ -233,10 +233,7 @@ impl LifecycleCompactionOutcome {
         plan: BranchCompactionPlan,
         branch_outcome: BranchCompactionOutcome,
     ) -> Self {
-        let no_candidate = matches!(
-            branch_outcome.recovery(),
-            BranchCompactionRecovery::NoCandidate { .. }
-        );
+        let no_candidate = branch_outcome.noop_reason().is_some();
         let checkpoint_required = !no_candidate
             && request.durability()
                 == LifecycleTableRewriteDurability::CheckpointRequiredAfterRewrite;

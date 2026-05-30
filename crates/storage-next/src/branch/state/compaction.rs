@@ -130,12 +130,6 @@ pub(crate) enum BranchCompactionNoopReason {
     LastLevel,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchCompactionRecovery {
-    NoCandidate { reason: BranchCompactionNoopReason },
-    InstalledReplacementTables,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchCompactionCandidate {
     branch_id: BranchId,
@@ -211,15 +205,6 @@ pub(crate) struct BranchCompactionPlan {
     noop_reason: Option<BranchCompactionNoopReason>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchCompactionPreparedOutput {
-    branch_id: BranchId,
-    output_level: BranchLevel,
-    artifacts: Vec<BuiltTableArtifact>,
-    report: TableCompactionReport,
-    materialization_source: Option<BranchMaterializationSource>,
-}
-
 impl BranchCompactionPlan {
     fn with_candidate(
         branch_id: BranchId,
@@ -262,30 +247,24 @@ impl BranchCompactionPlan {
     pub(crate) const fn noop_reason(&self) -> Option<BranchCompactionNoopReason> {
         self.noop_reason
     }
-}
 
-impl BranchCompactionPreparedOutput {
-    pub(crate) const fn output_level(&self) -> BranchLevel {
-        self.output_level
+    pub(crate) fn output_level(&self) -> Option<BranchLevel> {
+        self.candidate
+            .as_ref()
+            .map(BranchCompactionCandidate::output_level)
     }
 
-    pub(crate) fn artifacts(&self) -> &[BuiltTableArtifact] {
-        &self.artifacts
-    }
-
-    pub(crate) const fn report(&self) -> &TableCompactionReport {
-        &self.report
-    }
-
-    pub(crate) const fn materialization_source(&self) -> Option<BranchMaterializationSource> {
-        self.materialization_source
+    pub(crate) fn materialization_source(&self) -> Option<BranchMaterializationSource> {
+        self.candidate
+            .as_ref()
+            .and_then(BranchLocalState::compaction_output_materialization_source)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchCompactionOutcome {
     branch_id: BranchId,
-    recovery: BranchCompactionRecovery,
+    noop_reason: Option<BranchCompactionNoopReason>,
     candidate: Option<BranchCompactionCandidate>,
     output_refs: Vec<BranchTableRef>,
     removed_refs: Vec<BranchTableRef>,
@@ -301,7 +280,7 @@ impl BranchCompactionOutcome {
     ) -> Self {
         Self {
             branch_id,
-            recovery: BranchCompactionRecovery::NoCandidate { reason },
+            noop_reason: Some(reason),
             candidate: None,
             output_refs: Vec::new(),
             removed_refs: Vec::new(),
@@ -321,7 +300,7 @@ impl BranchCompactionOutcome {
     ) -> Self {
         Self {
             branch_id,
-            recovery: BranchCompactionRecovery::InstalledReplacementTables,
+            noop_reason: None,
             candidate: Some(candidate),
             output_refs,
             removed_refs,
@@ -334,8 +313,12 @@ impl BranchCompactionOutcome {
         self.branch_id
     }
 
-    pub(crate) const fn recovery(&self) -> BranchCompactionRecovery {
-        self.recovery
+    pub(crate) const fn noop_reason(&self) -> Option<BranchCompactionNoopReason> {
+        self.noop_reason
+    }
+
+    pub(crate) const fn installed_replacement_tables(&self) -> bool {
+        self.noop_reason.is_none()
     }
 
     pub(crate) const fn candidate(&self) -> Option<&BranchCompactionCandidate> {
@@ -388,7 +371,7 @@ impl BranchLocalState {
         &self,
         request: &BranchCompactionRequest,
         plan: &BranchCompactionPlan,
-    ) -> BranchRuntimeResult<Option<BranchCompactionPreparedOutput>> {
+    ) -> BranchRuntimeResult<Option<(Vec<BuiltTableArtifact>, TableCompactionReport)>> {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
@@ -432,13 +415,7 @@ impl BranchLocalState {
             }
         };
         let (artifacts, report) = output.into_parts();
-        Ok(Some(BranchCompactionPreparedOutput {
-            branch_id: self.branch_id,
-            output_level: candidate.output_level(),
-            artifacts,
-            report,
-            materialization_source: Self::compaction_output_materialization_source(candidate),
-        }))
+        Ok(Some((artifacts, report)))
     }
 
     pub(crate) fn install_branch_compaction_plan(
@@ -462,7 +439,7 @@ impl BranchLocalState {
                 self.owned_table_count(),
             ));
         };
-        let prepared = self.prepare_branch_compaction_plan(request, plan)?.ok_or(
+        let (artifacts, report) = self.prepare_branch_compaction_plan(request, plan)?.ok_or(
             BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "compaction candidate must produce prepared output",
@@ -471,10 +448,10 @@ impl BranchLocalState {
         )?;
         let output_tables = self.compaction_output_tables(
             candidate.output_level(),
-            prepared.artifacts,
-            prepared.materialization_source,
+            artifacts,
+            Self::compaction_output_materialization_source(candidate),
         )?;
-        self.install_branch_compaction_prepared_plan(request, plan, output_tables, prepared.report)
+        self.install_branch_compaction_prepared_plan(request, plan, output_tables, report)
     }
 
     pub(crate) fn install_branch_compaction_prepared_plan(
