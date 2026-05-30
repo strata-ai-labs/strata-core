@@ -1174,12 +1174,12 @@ fn install_non_seeded_checkpoint_rows(
         .iter()
         .map(|id| branch_catalog.branch_state(*id).cloned())
         .collect::<LifecycleResult<Vec<_>>>()?;
-    let request = crate::branch::state::BranchSnapshotInstallRequest::from_rows(
+    let request = crate::branch::state::snapshot::BranchSnapshotInstallRequest::from_rows(
         identity_seed.as_str(),
         rows.to_vec(),
     )
     .map_err(branch_error)?;
-    crate::branch::state::install_snapshot_rows_into_branches(&mut staged, &request)
+    crate::branch::state::snapshot::install_snapshot_rows_into_branches(&mut staged, &request)
         .map_err(branch_error)?;
     for branch in staged {
         let branch_id = branch.branch_id();

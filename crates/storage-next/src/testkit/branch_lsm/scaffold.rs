@@ -27,10 +27,12 @@ use crate::branch::state::materialization::{
 };
 use crate::branch::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
 use crate::branch::state::rotation::BranchRotationSkipReason;
-use crate::branch::state::{
-    install_snapshot_rows_into_branches, BranchImmutableInstallOutcome, BranchLocalState,
-    BranchRotationOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery,
+use crate::branch::state::snapshot::{
+    install_snapshot_rows_into_branches, BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery,
     BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
+};
+use crate::branch::state::{
+    BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{

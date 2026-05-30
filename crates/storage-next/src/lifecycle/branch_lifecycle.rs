@@ -7,9 +7,10 @@ use crate::branch::facts::{
     BranchTableReferenceKind,
 };
 use crate::branch::read::{BranchReadView, BranchTimestampCoverage};
-use crate::branch::state::{
-    install_snapshot_rows_into_branches, BranchLocalState, BranchSnapshotInstallRequest,
+use crate::branch::state::snapshot::{
+    install_snapshot_rows_into_branches, BranchSnapshotInstallRequest,
 };
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBranchDescriptor, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitBranchRegistry, CommitBranchState, CommitRuntimeError,

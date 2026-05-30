@@ -5,9 +5,10 @@ use crate::branch::read::{
     BranchHistoryOptions, BranchReadBound, BranchScanBounds, BranchTimestampCoverage,
 };
 use crate::branch::state::materialization::BranchMaterializationRequest;
-use crate::branch::state::{
-    install_snapshot_rows_into_branches, BranchLocalState, BranchSnapshotInstallRequest,
+use crate::branch::state::snapshot::{
+    install_snapshot_rows_into_branches, BranchSnapshotInstallRequest,
 };
+use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGeneration, CommitBranchGenerationGuard};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use strata_core_next::{BranchId, Timestamp};

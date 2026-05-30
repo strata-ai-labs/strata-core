@@ -8,7 +8,7 @@ use super::{
     LifecycleTableManifestRecoveryStage, RecoveryDegradationClass, RecoveryFault,
     RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageBudgetLedger, StorageOpenPlan,
 };
-use crate::branch::state::{
+use crate::branch::state::snapshot::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
 };
 use crate::format::{
@@ -661,7 +661,7 @@ impl LifecycleRecoveredCheckpoint {
             outcome
                 .branch_outcomes()
                 .iter()
-                .filter_map(crate::branch::state::BranchSnapshotInstallBranchOutcome::timestamp_max)
+                .filter_map(crate::branch::state::snapshot::BranchSnapshotInstallBranchOutcome::timestamp_max)
                 .max()
         })
     }
@@ -981,7 +981,7 @@ fn table_manifest_covers_flush_watermark(
     if tables
         .table_manifest()
         .install_outcome()
-        .and_then(crate::branch::state::BranchTableManifestRecoveryOutcome::max_commit_version)
+        .and_then(crate::branch::state::manifest_recovery::BranchTableManifestRecoveryOutcome::max_commit_version)
         .is_none_or(|max_commit_version| max_commit_version < flush_watermark)
     {
         return false;

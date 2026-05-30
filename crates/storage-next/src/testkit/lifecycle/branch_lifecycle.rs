@@ -2,9 +2,10 @@
 
 use super::{ensure, script_byte};
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::state::{
-    install_snapshot_rows_into_branches, BranchLocalState, BranchSnapshotInstallRequest,
+use crate::branch::state::snapshot::{
+    install_snapshot_rows_into_branches, BranchSnapshotInstallRequest,
 };
+use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGeneration, CommitBranchGenerationGuard};
 use crate::lifecycle::{LifecycleBranchCatalog, LifecycleBranchStatus};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};

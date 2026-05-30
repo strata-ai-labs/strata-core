@@ -10,9 +10,10 @@ use crate::branch::facts::{
     BranchLevel, BranchTableDescriptor, InheritedLayerDescriptor, InheritedLayerStatus,
 };
 use crate::branch::read::{BranchInheritedLayer, BranchMaterializationSource, BranchOwnedTable};
-use crate::branch::state::{
-    BranchLocalState, BranchTableManifestRecoveryOutcome, BranchTableManifestRecoveryRequest,
+use crate::branch::state::manifest_recovery::{
+    BranchTableManifestRecoveryOutcome, BranchTableManifestRecoveryRequest,
 };
+use crate::branch::state::BranchLocalState;
 use crate::format::{
     encode_table_manifest, FormatError, TableManifest, TableManifestInheritedLayer,
     TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,

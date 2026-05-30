@@ -35,12 +35,13 @@ use super::state::materialization::{
 };
 use super::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
 use super::state::rotation::BranchRotationSkipReason;
-use super::state::{
-    install_snapshot_rows_into_branches, BranchImmutableInstallOutcome, BranchLocalState,
-    BranchRotationOutcome, BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup,
-    BranchSnapshotInstallOutcome, BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest,
-    BranchSnapshotMissingBranchPolicy, BranchSnapshotTargetStatePolicy,
+use super::state::snapshot::{
+    install_snapshot_rows_into_branches, BranchSnapshotInstallBranchOutcome,
+    BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome, BranchSnapshotInstallRecovery,
+    BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
+    BranchSnapshotTargetStatePolicy,
 };
+use super::state::{BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader,
