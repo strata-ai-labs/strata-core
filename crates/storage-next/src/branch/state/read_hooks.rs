@@ -1,0 +1,226 @@
+//! Read-facing facts, descriptors, and view capture for branch-local state.
+
+use super::BranchLocalState;
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
+use crate::branch::facts::BranchStateFacts;
+use crate::branch::read::{
+    inherited_table_count, BranchInheritedLayer, BranchOwnedTable, BranchReadView,
+    BranchTimestampCoverage,
+};
+use crate::table::{FrozenTable, MutableTable};
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchStateDescriptor {
+    branch_id: BranchId,
+    facts: BranchStateFacts,
+}
+
+impl BranchStateDescriptor {
+    pub(crate) fn new(branch_id: BranchId, facts: BranchStateFacts) -> BranchRuntimeResult<Self> {
+        if branch_id != facts.branch_id() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "state descriptor branch id must match branch facts",
+            });
+        }
+        Ok(Self { branch_id, facts })
+    }
+
+    pub(crate) const fn branch_id(self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn facts(self) -> BranchStateFacts {
+        self.facts
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchViewDescriptor {
+    branch_id: BranchId,
+    facts: BranchStateFacts,
+}
+
+impl BranchViewDescriptor {
+    pub(crate) fn new(branch_id: BranchId, facts: BranchStateFacts) -> BranchRuntimeResult<Self> {
+        if branch_id != facts.branch_id() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "view descriptor branch id must match branch facts",
+            });
+        }
+        Ok(Self { branch_id, facts })
+    }
+
+    pub(crate) const fn branch_id(self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn facts(self) -> BranchStateFacts {
+        self.facts
+    }
+}
+
+impl BranchLocalState {
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn config(&self) -> BranchRuntimeConfig {
+        self.config
+    }
+
+    pub(crate) const fn active(&self) -> &MutableTable {
+        &self.active
+    }
+
+    pub(crate) fn frozen(&self) -> &[FrozenTable] {
+        &self.frozen
+    }
+
+    pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
+        &self.owned_levels
+    }
+
+    pub(crate) fn inherited_layers(&self) -> &[BranchInheritedLayer] {
+        &self.inherited_layers
+    }
+
+    pub(crate) fn active_row_count(&self) -> usize {
+        self.active.len()
+    }
+
+    pub(crate) fn frozen_table_count(&self) -> usize {
+        self.frozen.len()
+    }
+
+    pub(crate) fn owned_table_count(&self) -> usize {
+        self.owned_levels.iter().map(Vec::len).sum()
+    }
+
+    pub(crate) fn inherited_layer_count(&self) -> usize {
+        self.inherited_layers.len()
+    }
+
+    pub(crate) fn inherited_table_count(&self) -> usize {
+        inherited_table_count(&self.inherited_layers)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.active.is_empty()
+            && self.frozen.is_empty()
+            && self.owned_table_count() == 0
+            && self.inherited_layers.is_empty()
+    }
+
+    pub(crate) const fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.max_commit_version
+    }
+
+    /// Map a wall-clock timestamp to the highest commit version whose row was
+    /// stamped at or before `timestamp`. Walks active, frozen, owned, and
+    /// inherited rows (inherited rows are bounded by their layer's fork
+    /// version). Returns `None` when no row qualifies.
+    ///
+    /// Tiebreaker: among rows with identical timestamps, the largest commit
+    /// version wins - consistent with the rest of the storage-next timeline
+    /// rule.
+    pub(crate) fn resolve_timestamp_to_commit_version(
+        &self,
+        timestamp: Timestamp,
+    ) -> Option<CommitVersion> {
+        let mut best: Option<CommitVersion> = None;
+        let mut consider = |version: CommitVersion| {
+            best = match best {
+                Some(current) if current.as_u64() >= version.as_u64() => Some(current),
+                _ => Some(version),
+            };
+        };
+        for row in self.active.iter() {
+            if row.row().commit_timestamp() <= timestamp {
+                consider(row.row().commit_version());
+            }
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                if row.row().commit_timestamp() <= timestamp {
+                    consider(row.row().commit_version());
+                }
+            }
+        }
+        for tables in &self.owned_levels {
+            for table in tables {
+                for row in table.rows() {
+                    if row.row().commit_timestamp() <= timestamp {
+                        consider(row.row().commit_version());
+                    }
+                }
+            }
+        }
+        for layer in &self.inherited_layers {
+            let fork_version = layer.fork_version();
+            for tables in layer.owned_levels() {
+                for table in tables {
+                    for row in table.rows() {
+                        if row.row().commit_timestamp() <= timestamp
+                            && row.row().commit_version().as_u64() <= fork_version.as_u64()
+                        {
+                            consider(row.row().commit_version());
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
+        self.timestamp_min
+    }
+
+    pub(crate) const fn timestamp_max(&self) -> Option<Timestamp> {
+        self.timestamp_max
+    }
+
+    pub(crate) const fn timestamp_coverage(&self) -> BranchTimestampCoverage {
+        self.timestamp_coverage
+    }
+
+    pub(crate) fn set_timestamp_coverage(&mut self, coverage: BranchTimestampCoverage) {
+        self.timestamp_coverage = coverage;
+    }
+
+    pub(crate) const fn put_rows(&self) -> u64 {
+        self.put_rows
+    }
+
+    pub(crate) const fn tombstone_rows(&self) -> u64 {
+        self.tombstone_rows
+    }
+
+    pub(crate) fn facts(&self) -> BranchRuntimeResult<BranchStateFacts> {
+        let observed = self.observe_rows();
+        BranchStateFacts::new(
+            self.branch_id,
+            u64::try_from(self.active.len()).expect("active row count fits in u64"),
+            self.frozen.len(),
+            self.owned_table_count(),
+            self.inherited_layers.len(),
+            observed.max_commit_version,
+            observed.timestamp_min,
+            observed.timestamp_max,
+        )
+    }
+
+    pub(crate) fn capture_read_view(&self) -> BranchRuntimeResult<BranchReadView> {
+        BranchReadView::new_with_inherited(
+            self.branch_id,
+            self.active.clone(),
+            self.frozen.clone(),
+            self.owned_levels.clone(),
+            self.inherited_layers.clone(),
+            self.facts()?,
+        )
+        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
+    }
+}

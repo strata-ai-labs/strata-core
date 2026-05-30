@@ -3,15 +3,14 @@
 use super::config::BranchRuntimeConfig;
 use super::error::{BranchCompactionInvalidity, BranchRuntimeError, BranchRuntimeResult};
 use super::facts::{
-    BranchLevel, BranchReachabilitySnapshot, BranchStateFacts, BranchTableDescriptor,
-    BranchTableRef, BranchTableReferenceKind, InheritedLayerDescriptor, InheritedLayerStatus,
+    BranchLevel, BranchReachabilitySnapshot, BranchTableDescriptor, BranchTableRef,
+    BranchTableReferenceKind, InheritedLayerStatus,
 };
 use super::identity::{require_row_branch, rewrite_row_branch};
 use super::pruning::{BranchCompactionPruningPolicy, BranchCompactionPruningProof};
 use super::read::{
-    inherited_table_count, require_table_physical_first_key, table_physical_ranges_overlap,
-    BranchInheritedLayer, BranchMaterializationSource, BranchOwnedTable, BranchReadView,
-    BranchTimestampCoverage,
+    require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
+    BranchMaterializationSource, BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::row::StorageRow;
 use crate::table::{
@@ -27,145 +26,17 @@ use std::{
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
+pub(crate) mod append;
+pub(crate) mod fork;
+pub(crate) mod read_hooks;
+pub(crate) mod rotation;
+
+pub(crate) use rotation::BranchRotationOutcome;
+
 const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
 const _: () = assert!(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE > 0);
 const SNAPSHOT_INSTALL_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
 const _: () = assert!(SNAPSHOT_INSTALL_ROWS_PER_OUTPUT_TABLE > 0);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BranchStateDescriptor {
-    branch_id: BranchId,
-    facts: BranchStateFacts,
-}
-
-impl BranchStateDescriptor {
-    pub(crate) fn new(branch_id: BranchId, facts: BranchStateFacts) -> BranchRuntimeResult<Self> {
-        if branch_id != facts.branch_id() {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "state descriptor branch id must match branch facts",
-            });
-        }
-        Ok(Self { branch_id, facts })
-    }
-
-    pub(crate) const fn branch_id(self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn facts(self) -> BranchStateFacts {
-        self.facts
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BranchViewDescriptor {
-    branch_id: BranchId,
-    facts: BranchStateFacts,
-}
-
-impl BranchViewDescriptor {
-    pub(crate) fn new(branch_id: BranchId, facts: BranchStateFacts) -> BranchRuntimeResult<Self> {
-        if branch_id != facts.branch_id() {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "view descriptor branch id must match branch facts",
-            });
-        }
-        Ok(Self { branch_id, facts })
-    }
-
-    pub(crate) const fn branch_id(self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn facts(self) -> BranchStateFacts {
-        self.facts
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BranchAppendOutcome {
-    branch_id: BranchId,
-    commit_version: CommitVersion,
-    commit_timestamp: Timestamp,
-    is_tombstone: bool,
-    active_rows: usize,
-    approximate_active_bytes: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BranchAppendBatchOutcome {
-    branch_id: BranchId,
-    appended_rows: usize,
-    active_rows: usize,
-    approximate_active_bytes: usize,
-    max_commit_version: Option<CommitVersion>,
-}
-
-impl BranchAppendOutcome {
-    pub(crate) const fn branch_id(self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn commit_version(self) -> CommitVersion {
-        self.commit_version
-    }
-
-    pub(crate) const fn commit_timestamp(self) -> Timestamp {
-        self.commit_timestamp
-    }
-
-    pub(crate) const fn is_tombstone(self) -> bool {
-        self.is_tombstone
-    }
-
-    pub(crate) const fn active_rows(self) -> usize {
-        self.active_rows
-    }
-
-    pub(crate) const fn approximate_active_bytes(self) -> usize {
-        self.approximate_active_bytes
-    }
-}
-
-impl BranchAppendBatchOutcome {
-    pub(crate) const fn branch_id(self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn appended_rows(self) -> usize {
-        self.appended_rows
-    }
-
-    pub(crate) const fn active_rows(self) -> usize {
-        self.active_rows
-    }
-
-    pub(crate) const fn approximate_active_bytes(self) -> usize {
-        self.approximate_active_bytes
-    }
-
-    pub(crate) const fn max_commit_version(self) -> Option<CommitVersion> {
-        self.max_commit_version
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchRotationSkipReason {
-    EmptyActive,
-    FrozenLimitReached,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchRotationOutcome {
-    Rotated {
-        frozen_index: usize,
-        frozen_rows: usize,
-        frozen_tables: usize,
-    },
-    Skipped {
-        reason: BranchRotationSkipReason,
-    },
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BranchImmutableInstallOutcome {
@@ -200,37 +71,6 @@ impl BranchImmutableInstallOutcome {
 
     pub(crate) const fn replaced_frozen_index(self) -> Option<usize> {
         self.replaced_frozen_index
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BranchForkOutcome {
-    source_branch_id: BranchId,
-    destination_branch_id: BranchId,
-    fork_version: CommitVersion,
-    inherited_layer_count: usize,
-    inherited_table_count: usize,
-}
-
-impl BranchForkOutcome {
-    pub(crate) const fn source_branch_id(self) -> BranchId {
-        self.source_branch_id
-    }
-
-    pub(crate) const fn destination_branch_id(self) -> BranchId {
-        self.destination_branch_id
-    }
-
-    pub(crate) const fn fork_version(self) -> CommitVersion {
-        self.fork_version
-    }
-
-    pub(crate) const fn inherited_layer_count(self) -> usize {
-        self.inherited_layer_count
-    }
-
-    pub(crate) const fn inherited_table_count(self) -> usize {
-        self.inherited_table_count
     }
 }
 
@@ -1333,168 +1173,6 @@ impl BranchLocalState {
             .expect("default branch-local state configuration is valid")
     }
 
-    pub(crate) const fn branch_id(&self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn config(&self) -> BranchRuntimeConfig {
-        self.config
-    }
-
-    pub(crate) const fn active(&self) -> &MutableTable {
-        &self.active
-    }
-
-    pub(crate) fn frozen(&self) -> &[FrozenTable] {
-        &self.frozen
-    }
-
-    pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
-        &self.owned_levels
-    }
-
-    pub(crate) fn inherited_layers(&self) -> &[BranchInheritedLayer] {
-        &self.inherited_layers
-    }
-
-    pub(crate) fn active_row_count(&self) -> usize {
-        self.active.len()
-    }
-
-    pub(crate) fn frozen_table_count(&self) -> usize {
-        self.frozen.len()
-    }
-
-    pub(crate) fn owned_table_count(&self) -> usize {
-        self.owned_levels.iter().map(Vec::len).sum()
-    }
-
-    pub(crate) fn inherited_layer_count(&self) -> usize {
-        self.inherited_layers.len()
-    }
-
-    pub(crate) fn inherited_table_count(&self) -> usize {
-        inherited_table_count(&self.inherited_layers)
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.active.is_empty()
-            && self.frozen.is_empty()
-            && self.owned_table_count() == 0
-            && self.inherited_layers.is_empty()
-    }
-
-    pub(crate) const fn max_commit_version(&self) -> Option<CommitVersion> {
-        self.max_commit_version
-    }
-
-    /// Map a wall-clock timestamp to the highest commit version whose row was
-    /// stamped at or before `timestamp`. Walks active, frozen, owned, and
-    /// inherited rows (inherited rows are bounded by their layer's fork
-    /// version). Returns `None` when no row qualifies.
-    ///
-    /// Tiebreaker: among rows with identical timestamps, the largest commit
-    /// version wins — consistent with the rest of the storage-next timeline
-    /// rule.
-    pub(crate) fn resolve_timestamp_to_commit_version(
-        &self,
-        timestamp: Timestamp,
-    ) -> Option<CommitVersion> {
-        let mut best: Option<CommitVersion> = None;
-        let mut consider = |version: CommitVersion| {
-            best = match best {
-                Some(current) if current.as_u64() >= version.as_u64() => Some(current),
-                _ => Some(version),
-            };
-        };
-        for row in self.active.iter() {
-            if row.row().commit_timestamp() <= timestamp {
-                consider(row.row().commit_version());
-            }
-        }
-        for table in &self.frozen {
-            for row in table.iter() {
-                if row.row().commit_timestamp() <= timestamp {
-                    consider(row.row().commit_version());
-                }
-            }
-        }
-        for tables in &self.owned_levels {
-            for table in tables {
-                for row in table.rows() {
-                    if row.row().commit_timestamp() <= timestamp {
-                        consider(row.row().commit_version());
-                    }
-                }
-            }
-        }
-        for layer in &self.inherited_layers {
-            let fork_version = layer.fork_version();
-            for tables in layer.owned_levels() {
-                for table in tables {
-                    for row in table.rows() {
-                        if row.row().commit_timestamp() <= timestamp
-                            && row.row().commit_version().as_u64() <= fork_version.as_u64()
-                        {
-                            consider(row.row().commit_version());
-                        }
-                    }
-                }
-            }
-        }
-        best
-    }
-
-    pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
-        self.timestamp_min
-    }
-
-    pub(crate) const fn timestamp_max(&self) -> Option<Timestamp> {
-        self.timestamp_max
-    }
-
-    pub(crate) const fn timestamp_coverage(&self) -> BranchTimestampCoverage {
-        self.timestamp_coverage
-    }
-
-    pub(crate) fn set_timestamp_coverage(&mut self, coverage: BranchTimestampCoverage) {
-        self.timestamp_coverage = coverage;
-    }
-
-    pub(crate) const fn put_rows(&self) -> u64 {
-        self.put_rows
-    }
-
-    pub(crate) const fn tombstone_rows(&self) -> u64 {
-        self.tombstone_rows
-    }
-
-    pub(crate) fn facts(&self) -> BranchRuntimeResult<BranchStateFacts> {
-        let observed = self.observe_rows();
-        BranchStateFacts::new(
-            self.branch_id,
-            u64::try_from(self.active.len()).expect("active row count fits in u64"),
-            self.frozen.len(),
-            self.owned_table_count(),
-            self.inherited_layers.len(),
-            observed.max_commit_version,
-            observed.timestamp_min,
-            observed.timestamp_max,
-        )
-    }
-
-    pub(crate) fn capture_read_view(&self) -> BranchRuntimeResult<BranchReadView> {
-        BranchReadView::new_with_inherited(
-            self.branch_id,
-            self.active.clone(),
-            self.frozen.clone(),
-            self.owned_levels.clone(),
-            self.inherited_layers.clone(),
-            self.facts()?,
-        )
-        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
-    }
-
     pub(crate) fn checkpoint_rows(
         &self,
         watermark: CommitVersion,
@@ -1665,86 +1343,6 @@ impl BranchLocalState {
         BranchReachabilitySnapshot::new(self.branch_id, table_refs)
     }
 
-    pub(crate) fn append_committed_row(
-        &mut self,
-        row: StorageRow,
-    ) -> BranchRuntimeResult<BranchAppendOutcome> {
-        let identity = require_row_branch(self.branch_id, &row)?;
-        let key = TableInternalKeyBytes::from_row(&row);
-        self.require_absent_internal_key(&key)?;
-
-        let commit_version = identity.commit_version();
-        let commit_timestamp = identity.commit_timestamp();
-        let is_tombstone = row.is_tombstone();
-        self.active
-            .insert_row(row)
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        self.track_committed_row(commit_version, commit_timestamp, is_tombstone);
-
-        Ok(BranchAppendOutcome {
-            branch_id: self.branch_id,
-            commit_version,
-            commit_timestamp,
-            is_tombstone,
-            active_rows: self.active.len(),
-            approximate_active_bytes: self.active.approximate_size_bytes(),
-        })
-    }
-
-    pub(crate) fn append_committed_rows_atomically(
-        &mut self,
-        rows: impl IntoIterator<Item = StorageRow>,
-    ) -> BranchRuntimeResult<BranchAppendBatchOutcome> {
-        let rows = rows.into_iter().collect::<Vec<_>>();
-        if rows.is_empty() {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "committed row batch must not be empty",
-            });
-        }
-
-        let mut staged = self.clone();
-        for row in rows {
-            staged.append_committed_row(row)?;
-        }
-
-        let outcome = BranchAppendBatchOutcome {
-            branch_id: staged.branch_id,
-            appended_rows: staged.active.len().checked_sub(self.active.len()).ok_or(
-                BranchRuntimeError::InvalidBranchState {
-                    reason: "staged active row count regressed",
-                },
-            )?,
-            active_rows: staged.active.len(),
-            approximate_active_bytes: staged.active.approximate_size_bytes(),
-            max_commit_version: staged.max_commit_version,
-        };
-        *self = staged;
-        Ok(outcome)
-    }
-
-    pub(crate) fn rotate_active(&mut self) -> BranchRotationOutcome {
-        if self.active.is_empty() {
-            return BranchRotationOutcome::Skipped {
-                reason: BranchRotationSkipReason::EmptyActive,
-            };
-        }
-
-        if self.frozen.len() >= self.config.max_frozen_tables() {
-            return BranchRotationOutcome::Skipped {
-                reason: BranchRotationSkipReason::FrozenLimitReached,
-            };
-        }
-
-        let active = std::mem::replace(&mut self.active, MutableTable::new());
-        let frozen_rows = active.len();
-        self.frozen.insert(0, active.freeze());
-        BranchRotationOutcome::Rotated {
-            frozen_index: 0,
-            frozen_rows,
-            frozen_tables: self.frozen.len(),
-        }
-    }
-
     pub(crate) fn install_l0_table(
         &mut self,
         table: BranchOwnedTable,
@@ -1795,30 +1393,6 @@ impl BranchLocalState {
         Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(frozen_index)))
     }
 
-    pub(crate) fn attach_inherited_layers(
-        &mut self,
-        layers: Vec<BranchInheritedLayer>,
-    ) -> BranchRuntimeResult<BranchForkOutcome> {
-        self.validate_inherited_attach(&layers)?;
-        let inherited_layer_count = layers.len();
-        let inherited_table_count = inherited_table_count(&layers);
-        self.inherited_layers = layers;
-        self.refresh_observed_row_facts();
-        Ok(BranchForkOutcome {
-            source_branch_id: self
-                .inherited_layers
-                .first()
-                .map_or(self.branch_id, BranchInheritedLayer::source_branch_id),
-            destination_branch_id: self.branch_id,
-            fork_version: self
-                .inherited_layers
-                .first()
-                .map_or(CommitVersion::ZERO, BranchInheritedLayer::fork_version),
-            inherited_layer_count,
-            inherited_table_count,
-        })
-    }
-
     pub(crate) fn install_table_manifest_recovery(
         &mut self,
         request: BranchTableManifestRecoveryRequest,
@@ -1862,58 +1436,6 @@ impl BranchLocalState {
         };
         *self = staged;
         Ok(outcome)
-    }
-
-    pub(crate) fn fork_into_empty_child(
-        &self,
-        destination_branch_id: BranchId,
-    ) -> BranchRuntimeResult<(Self, BranchForkOutcome)> {
-        if destination_branch_id == self.branch_id {
-            return Err(BranchRuntimeError::InvalidInheritedLayer {
-                reason: "fork source and destination branches must differ",
-            });
-        }
-        if !self.active.is_empty() || !self.frozen.is_empty() {
-            return Err(BranchRuntimeError::InvalidInheritedLayer {
-                reason: "fork source must flush active and frozen rows before inheritance capture",
-            });
-        }
-        let observed_rows = self.observe_rows();
-        if observed_rows.max_commit_version.is_none() {
-            return Err(BranchRuntimeError::InvalidInheritedLayer {
-                reason: "fork source must contain at least one retained row",
-            });
-        }
-
-        let fork_version = observed_rows
-            .max_commit_version
-            .expect("fork source retained-row precondition checked");
-        let mut layers = Vec::with_capacity(self.inherited_layers.len() + 1);
-        layers.push(BranchInheritedLayer::new(
-            InheritedLayerDescriptor::new(
-                self.branch_id,
-                fork_version,
-                InheritedLayerStatus::Active,
-                self.owned_table_count(),
-            ),
-            self.owned_levels.clone(),
-        )?);
-        for layer in &self.inherited_layers {
-            if let Some(layer) = layer.clone_active_for_fork()? {
-                layers.push(layer);
-            }
-        }
-
-        let mut child = Self::new(destination_branch_id, self.config)?;
-        let attach_outcome = child.attach_inherited_layers(layers)?;
-        let outcome = BranchForkOutcome {
-            source_branch_id: self.branch_id,
-            destination_branch_id,
-            fork_version,
-            inherited_layer_count: attach_outcome.inherited_layer_count(),
-            inherited_table_count: attach_outcome.inherited_table_count(),
-        };
-        Ok((child, outcome))
     }
 
     pub(crate) fn mark_inherited_layer_materializing(
@@ -3165,60 +2687,6 @@ impl BranchLocalState {
             )?);
         }
         Ok(tables)
-    }
-
-    fn validate_inherited_attach(
-        &self,
-        layers: &[BranchInheritedLayer],
-    ) -> BranchRuntimeResult<()> {
-        if !self.inherited_layers.is_empty() {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "branch already has inherited layers",
-            });
-        }
-        if !self.active.is_empty() || !self.frozen.is_empty() || self.owned_table_count() != 0 {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "inherited layers can only attach to an empty own branch state",
-            });
-        }
-        if layers.is_empty() {
-            return Err(BranchRuntimeError::InvalidInheritedLayer {
-                reason: "inherited layer attach must include at least one layer",
-            });
-        }
-        if layers.len() > self.config.max_inherited_layers() {
-            return Err(BranchRuntimeError::InvalidInheritedLayer {
-                reason: "inherited layer count exceeds branch runtime configuration",
-            });
-        }
-        let mut previous_fork_version = None::<CommitVersion>;
-        let mut source_branches = BTreeSet::<[u8; BranchId::BYTE_LEN]>::new();
-        for layer in layers {
-            if layer.source_branch_id() == self.branch_id {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited layer source branch must differ from child branch",
-                });
-            }
-            if !source_branches.insert(*layer.source_branch_id().as_bytes()) {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited layer source branches must be unique",
-                });
-            }
-            if previous_fork_version
-                .is_some_and(|previous| layer.fork_version().as_u64() > previous.as_u64())
-            {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited layers must be ordered nearest-first by fork version",
-                });
-            }
-            previous_fork_version = Some(layer.fork_version());
-            if layer.status() == InheritedLayerStatus::Unavailable {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "unavailable inherited layers cannot attach",
-                });
-            }
-        }
-        Ok(())
     }
 
     fn require_absent_internal_key_except_frozen(

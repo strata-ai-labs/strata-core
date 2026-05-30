@@ -17,14 +17,16 @@ use crate::branch::read::{
     BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowCandidateFacts, BranchRowSource,
     BranchScanBounds, BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
+use crate::branch::state::fork::BranchForkOutcome;
+use crate::branch::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
+use crate::branch::state::rotation::BranchRotationSkipReason;
 use crate::branch::state::{
     install_snapshot_rows_into_branches, BranchCompactionKind, BranchCompactionNoopReason,
     BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchForkOutcome, BranchImmutableInstallOutcome, BranchLocalState,
-    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
-    BranchRotationOutcome, BranchRotationSkipReason, BranchSnapshotInstallGroup,
-    BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
-    BranchStateDescriptor, BranchViewDescriptor,
+    BranchImmutableInstallOutcome, BranchLocalState, BranchMaterializationOutcome,
+    BranchMaterializationRecovery, BranchMaterializationRequest, BranchRotationOutcome,
+    BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest,
+    BranchSnapshotMissingBranchPolicy,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{

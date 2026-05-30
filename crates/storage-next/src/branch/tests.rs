@@ -24,16 +24,18 @@ use super::read::{
     BranchRowBoundMatch, BranchRowCandidateFacts, BranchRowSource, BranchScanBounds,
     BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
+use super::state::fork::BranchForkOutcome;
+use super::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
+use super::state::rotation::BranchRotationSkipReason;
 use super::state::{
-    install_snapshot_rows_into_branches, BranchAppendOutcome, BranchCompactionCandidate,
-    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionOutcome,
-    BranchCompactionPlan, BranchCompactionRecovery, BranchCompactionRequest,
-    BranchCompactionRetentionPolicy, BranchForkOutcome, BranchImmutableInstallOutcome,
-    BranchLocalState, BranchMaterializationOutcome, BranchMaterializationRecovery,
-    BranchMaterializationRequest, BranchRotationOutcome, BranchRotationSkipReason,
+    install_snapshot_rows_into_branches, BranchCompactionCandidate, BranchCompactionKind,
+    BranchCompactionNoopReason, BranchCompactionOutcome, BranchCompactionPlan,
+    BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
+    BranchImmutableInstallOutcome, BranchLocalState, BranchMaterializationOutcome,
+    BranchMaterializationRecovery, BranchMaterializationRequest, BranchRotationOutcome,
     BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
     BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
-    BranchSnapshotTargetStatePolicy, BranchStateDescriptor, BranchViewDescriptor,
+    BranchSnapshotTargetStatePolicy,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{

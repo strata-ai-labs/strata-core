@@ -724,7 +724,7 @@ fn branch_local_state_appends_puts_tombstones_and_preserves_row_facts() {
     );
     let tombstone = tombstone_row(branch, b"deleted".to_vec(), 9, 30);
 
-    let put_outcome: BranchAppendOutcome = state
+    let put_outcome = state
         .append_committed_row(put.clone())
         .expect("append put row");
     assert_eq!(put_outcome.branch_id(), branch);
