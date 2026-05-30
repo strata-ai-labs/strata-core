@@ -25,14 +25,16 @@ use super::read::{
     BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
 use super::state::fork::BranchForkOutcome;
+use super::state::materialization::{
+    BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
+};
 use super::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
 use super::state::rotation::BranchRotationSkipReason;
 use super::state::{
     install_snapshot_rows_into_branches, BranchCompactionCandidate, BranchCompactionKind,
     BranchCompactionNoopReason, BranchCompactionOutcome, BranchCompactionPlan,
     BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchImmutableInstallOutcome, BranchLocalState, BranchMaterializationOutcome,
-    BranchMaterializationRecovery, BranchMaterializationRequest, BranchRotationOutcome,
+    BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome,
     BranchSnapshotInstallBranchOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
     BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
     BranchSnapshotTargetStatePolicy,

@@ -7,9 +7,9 @@ use self::shared::*;
 use super::*;
 use crate::branch::facts::BranchLevel;
 use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
+use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::{
     BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRecovery, BranchLocalState,
-    BranchMaterializationRecovery,
 };
 use strata_core_next::Timestamp;
 

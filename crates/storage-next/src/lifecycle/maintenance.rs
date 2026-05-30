@@ -11,7 +11,7 @@ use super::{
     MaintenanceOutcomeStatus, MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault,
     RecoveryFaultKind, RecoveryHealth,
 };
-use crate::branch::state::BranchMaterializationHandle;
+use crate::branch::state::materialization::BranchMaterializationHandle;
 use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

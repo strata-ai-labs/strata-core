@@ -6,7 +6,8 @@ use crate::backend::{
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::state::{BranchLocalState, BranchMaterializationRequest};
+use crate::branch::state::materialization::BranchMaterializationRequest;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry,

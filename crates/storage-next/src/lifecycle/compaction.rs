@@ -8,11 +8,13 @@ use super::{
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::BranchLevel;
 use crate::branch::pruning::BranchCompactionPruningProof;
+use crate::branch::state::materialization::{
+    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
+};
 use crate::branch::state::{
     BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRecovery,
     BranchCompactionRequest, BranchCompactionRetentionPolicy, BranchLocalState,
-    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
-    BranchMaterializationRecovery, BranchMaterializationRequest,
 };
 use crate::object::ObjectName;
 use strata_core_next::BranchId;

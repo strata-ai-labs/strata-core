@@ -4,9 +4,9 @@ use crate::branch::facts::BranchTableReferenceKind;
 use crate::branch::read::{
     BranchHistoryOptions, BranchReadBound, BranchScanBounds, BranchTimestampCoverage,
 };
+use crate::branch::state::materialization::BranchMaterializationRequest;
 use crate::branch::state::{
-    install_snapshot_rows_into_branches, BranchLocalState, BranchMaterializationRequest,
-    BranchSnapshotInstallRequest,
+    install_snapshot_rows_into_branches, BranchLocalState, BranchSnapshotInstallRequest,
 };
 use crate::commit::{CommitBranchGeneration, CommitBranchGenerationGuard};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};

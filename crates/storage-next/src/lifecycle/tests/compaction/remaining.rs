@@ -3,9 +3,10 @@ use super::*;
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchTableReferenceKind, InheritedLayerStatus};
 use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
-use crate::branch::state::{
-    BranchCompactionKind, BranchCompactionRequest, BranchLocalState, BranchMaterializationRecovery,
+use crate::branch::state::materialization::{
+    BranchMaterializationHandle, BranchMaterializationRecovery,
 };
+use crate::branch::state::{BranchCompactionKind, BranchCompactionRequest, BranchLocalState};
 use crate::lifecycle::tests::checkpoint::shared::{
     open_runtime, CheckpointBackendEvent, CheckpointTestBackend,
 };
@@ -195,7 +196,7 @@ fn materialization_handle_binds_source_identity_and_reports_intent_facts() {
         .mark_inherited_layer_materializing(0)
         .expect("intent");
     let handle = intent.handle();
-    let mismatched = crate::branch::state::BranchMaterializationHandle::new(
+    let mismatched = BranchMaterializationHandle::new(
         child,
         wrong_source,
         handle.fork_version(),
@@ -239,12 +240,7 @@ fn materialization_handle_marks_active_layer_before_materializing() {
     let (mut child_state, fork) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let handle = crate::branch::state::BranchMaterializationHandle::new(
-        child,
-        parent,
-        fork.fork_version(),
-        0,
-    );
+    let handle = BranchMaterializationHandle::new(child, parent, fork.fork_version(), 0);
     let request =
         LifecycleMaterializationRequest::from_handle(handle, "handle-active").expect("request");
 
