@@ -3,7 +3,8 @@
 use super::error::{BranchCompactionInvalidity, BranchRuntimeError, BranchRuntimeResult};
 use super::facts::SharedTableRegistry;
 use super::read::{BranchInheritedLayer, BranchOwnedTable, BranchTimestampCoverage};
-use super::state::{BranchCompactionCandidate, BranchCompactionRetentionPolicy, BranchLocalState};
+use super::state::compaction::{BranchCompactionCandidate, BranchCompactionRetentionPolicy};
+use super::state::BranchLocalState;
 use crate::row::PhysicalKey;
 use crate::table::{
     TableCompactionDecision, TableCompactionDropReason, TableCompactionPolicy,

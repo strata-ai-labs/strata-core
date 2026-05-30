@@ -10,7 +10,8 @@ use crate::backend::{
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
-use crate::branch::state::{BranchCompactionKind, BranchCompactionRequest, BranchLocalState};
+use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionRequest};
+use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::lifecycle::{
     collect_storage_pressure, compact_cache_branch, compact_durable_branch,

@@ -5,10 +5,10 @@ use crate::branch::facts::BranchLevel;
 use crate::branch::read::{
     BranchHistoryOptions, BranchReadBound, BranchScanBounds, BranchUserKeyBound,
 };
-use crate::branch::state::{
+use crate::branch::state::compaction::{
     BranchCompactionKind, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchLocalState,
 };
+use crate::branch::state::BranchLocalState;
 use crate::commit::CommitManualTimestampSource;
 use crate::lifecycle::tests::checkpoint::shared::{
     assemble_shell, durable_batch, generation_guard, open_runtime,
@@ -1484,7 +1484,9 @@ fn publish_output_then_stale_install(
     runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
     branch: strata_core_next::BranchId,
     seed: &str,
-) -> crate::branch::error::BranchRuntimeResult<crate::branch::state::BranchCompactionOutcome> {
+) -> crate::branch::error::BranchRuntimeResult<
+    crate::branch::state::compaction::BranchCompactionOutcome,
+> {
     let branch_request =
         BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, seed)
             .expect("branch request");

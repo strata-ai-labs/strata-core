@@ -9,10 +9,10 @@ use crate::branch::pruning::{
     BranchSharedTableSafety, BranchTombstoneElisionProof, BranchTtlElisionProof,
 };
 use crate::branch::read::{BranchOwnedTable, BranchTimestampCoverage};
-use crate::branch::state::{
+use crate::branch::state::compaction::{
     BranchCompactionKind, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchLocalState,
 };
+use crate::branch::state::BranchLocalState;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,

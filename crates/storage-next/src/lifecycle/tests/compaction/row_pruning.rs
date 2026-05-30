@@ -6,7 +6,7 @@ use crate::branch::pruning::{
     BranchSharedTableSafety,
 };
 use crate::branch::read::{BranchHistoryOptions, BranchTimestampCoverage};
-use crate::branch::state::{BranchCompactionKind, BranchCompactionRetentionPolicy};
+use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionRetentionPolicy};
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitConflictValidationMode, CommitDuplicateKeyPolicy,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,

@@ -14,12 +14,13 @@ use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
+use crate::branch::state::compaction::BranchCompactionPreparedOutput;
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
     BranchMaterializationPreparedOutput, BranchMaterializationRecovery,
     BranchMaterializationRequest,
 };
-use crate::branch::state::{BranchCompactionPreparedOutput, BranchLocalState};
+use crate::branch::state::BranchLocalState;
 use crate::format::TableManifestTableProvenance;
 use crate::service::{
     TableManifestService, TableObjectFacts, TableObjectReadError, TableObjectReaderService,

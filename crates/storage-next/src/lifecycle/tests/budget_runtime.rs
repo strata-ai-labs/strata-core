@@ -3,7 +3,8 @@ use crate::backend::memory::MemoryBackend;
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
-use crate::branch::state::{BranchCompactionKind, BranchLocalState};
+use crate::branch::state::compaction::BranchCompactionKind;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,

@@ -699,7 +699,7 @@ impl<'a> StorageRuntime<'a> {
         let branch_id = self.branch_for_maintenance_scope(request.scope())?;
         let compaction = LifecycleCompactionRequest::new(
             branch_id,
-            crate::branch::state::BranchCompactionKind::CompactL0ToLevelOne,
+            crate::branch::state::compaction::BranchCompactionKind::CompactL0ToLevelOne,
             format!("storage-boundary-compaction-{branch_id}"),
         )
         .map_err(map_lifecycle_error)?;

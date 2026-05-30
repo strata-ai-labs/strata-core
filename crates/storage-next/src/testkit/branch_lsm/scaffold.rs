@@ -17,6 +17,10 @@ use crate::branch::read::{
     BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowCandidateFacts, BranchRowSource,
     BranchScanBounds, BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
+use crate::branch::state::compaction::{
+    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRecovery,
+    BranchCompactionRequest, BranchCompactionRetentionPolicy,
+};
 use crate::branch::state::fork::BranchForkOutcome;
 use crate::branch::state::materialization::{
     BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
@@ -24,11 +28,9 @@ use crate::branch::state::materialization::{
 use crate::branch::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
 use crate::branch::state::rotation::BranchRotationSkipReason;
 use crate::branch::state::{
-    install_snapshot_rows_into_branches, BranchCompactionKind, BranchCompactionNoopReason,
-    BranchCompactionRecovery, BranchCompactionRequest, BranchCompactionRetentionPolicy,
-    BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome,
-    BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery, BranchSnapshotInstallRequest,
-    BranchSnapshotMissingBranchPolicy,
+    install_snapshot_rows_into_branches, BranchImmutableInstallOutcome, BranchLocalState,
+    BranchRotationOutcome, BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery,
+    BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{

@@ -3,10 +3,11 @@ use super::*;
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchTableReferenceKind, InheritedLayerStatus};
 use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
+use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionRequest};
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationRecovery,
 };
-use crate::branch::state::{BranchCompactionKind, BranchCompactionRequest, BranchLocalState};
+use crate::branch::state::BranchLocalState;
 use crate::lifecycle::tests::checkpoint::shared::{
     open_runtime, CheckpointBackendEvent, CheckpointTestBackend,
 };
@@ -622,14 +623,14 @@ fn branch_pruning_policies_remain_below_lifecycle_until_retention_proof_exists()
         vec![put_row(branch, b"key", 2, 2_000, b"new")],
     );
 
-    let request = crate::branch::state::BranchCompactionRequest::new(
+    let request = BranchCompactionRequest::new(
         branch,
         BranchCompactionKind::CompactL0,
         "prune-rewrite",
     )
     .expect("request")
     .with_retention_policy(
-        crate::branch::state::BranchCompactionRetentionPolicy::DropOlderVersions,
+        crate::branch::state::compaction::BranchCompactionRetentionPolicy::DropOlderVersions,
     );
     let error = state
         .compact_branch_owned_tables(&request)
