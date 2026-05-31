@@ -6,15 +6,15 @@ use super::{
     MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskScope, RecoveryHealth,
 };
 use crate::branch::error::BranchRuntimeError;
-use crate::branch::facts::BranchLevel;
+use crate::branch::facts::{BranchLevel, BranchReachabilitySnapshot};
 use crate::branch::pruning::BranchCompactionPruningProof;
 use crate::branch::state::compaction::{
     BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
     BranchCompactionRetentionPolicy,
 };
 use crate::branch::state::materialization::{
-    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
-    BranchMaterializationRecovery, BranchMaterializationRequest,
+    BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationRecovery,
+    BranchMaterializationRequest,
 };
 use crate::branch::state::BranchLocalState;
 use crate::object::ObjectName;
@@ -81,7 +81,8 @@ pub(crate) struct LifecycleMaterializationOutcome {
     status: LifecycleMaterializationStatus,
     child_branch_id: BranchId,
     layer_index: usize,
-    intent: Option<BranchMaterializationIntent>,
+    materialization_handle: Option<BranchMaterializationHandle>,
+    reachability_snapshot: Option<BranchReachabilitySnapshot>,
     branch_outcome: Option<BranchMaterializationOutcome>,
     checkpoint_required: bool,
     recovery_health: Option<RecoveryHealth>,
@@ -454,7 +455,8 @@ impl LifecycleMaterializationOutcome {
             status: LifecycleMaterializationStatus::DeferredNoLayer,
             child_branch_id: request.child_branch_id(),
             layer_index: request.layer_index(),
-            intent: None,
+            materialization_handle: None,
+            reachability_snapshot: None,
             branch_outcome: None,
             checkpoint_required: false,
             recovery_health: None,
@@ -465,7 +467,8 @@ impl LifecycleMaterializationOutcome {
 
     pub(super) fn completed(
         request: &LifecycleMaterializationRequest,
-        intent: BranchMaterializationIntent,
+        materialization_handle: BranchMaterializationHandle,
+        reachability_snapshot: BranchReachabilitySnapshot,
         branch_outcome: BranchMaterializationOutcome,
     ) -> Self {
         let checkpoint_required = request.durability()
@@ -491,7 +494,8 @@ impl LifecycleMaterializationOutcome {
             status,
             child_branch_id: branch_outcome.child_branch_id(),
             layer_index: branch_outcome.layer_index(),
-            intent: Some(intent),
+            materialization_handle: Some(materialization_handle),
+            reachability_snapshot: Some(reachability_snapshot),
             branch_outcome: Some(branch_outcome),
             checkpoint_required,
             recovery_health: None,
@@ -501,7 +505,8 @@ impl LifecycleMaterializationOutcome {
     }
 
     pub(super) fn completed_durable(
-        intent: BranchMaterializationIntent,
+        materialization_handle: BranchMaterializationHandle,
+        reachability_snapshot: BranchReachabilitySnapshot,
         branch_outcome: BranchMaterializationOutcome,
         durable_output_objects: Vec<ObjectName>,
     ) -> Self {
@@ -509,7 +514,8 @@ impl LifecycleMaterializationOutcome {
             status: LifecycleMaterializationStatus::CompletedDurable,
             child_branch_id: branch_outcome.child_branch_id(),
             layer_index: branch_outcome.layer_index(),
-            intent: Some(intent),
+            materialization_handle: Some(materialization_handle),
+            reachability_snapshot: Some(reachability_snapshot),
             branch_outcome: Some(branch_outcome),
             checkpoint_required: false,
             recovery_health: None,
@@ -538,8 +544,12 @@ impl LifecycleMaterializationOutcome {
         self.layer_index
     }
 
-    pub(crate) const fn intent(&self) -> Option<&BranchMaterializationIntent> {
-        self.intent.as_ref()
+    pub(crate) const fn materialization_handle(&self) -> Option<BranchMaterializationHandle> {
+        self.materialization_handle
+    }
+
+    pub(crate) const fn reachability_snapshot(&self) -> Option<&BranchReachabilitySnapshot> {
+        self.reachability_snapshot.as_ref()
     }
 
     pub(crate) const fn branch_outcome(&self) -> Option<&BranchMaterializationOutcome> {
@@ -771,10 +781,10 @@ pub(crate) fn bind_materialization_task_for_enqueue(
     if branch.inherited_layers().get(layer_index).is_none() {
         return Ok(request);
     }
-    let intent = branch
+    let (handle, _) = branch
         .mark_inherited_layer_materializing(layer_index)
         .map_err(branch_error)?;
-    request.with_materialization_handle(intent.handle())
+    request.with_materialization_handle(handle)
 }
 
 pub(crate) fn collect_storage_pressure(
@@ -897,49 +907,48 @@ fn materialize_branch(
     {
         return Ok(LifecycleMaterializationOutcome::deferred(request));
     }
-    let (intent, branch_request) = if let Some(handle) = request.handle() {
-        if let Some(layer_index) = materialization_layer_index_for_handle(branch, handle) {
-            let intent = branch
-                .mark_inherited_layer_materializing(layer_index)
+    let (materialization_handle, reachability_snapshot, branch_request) =
+        if let Some(handle) = request.handle() {
+            if let Some(layer_index) = materialization_layer_index_for_handle(branch, handle) {
+                let (bound_handle, snapshot) = branch
+                    .mark_inherited_layer_materializing(layer_index)
+                    .map_err(branch_error)?;
+                if bound_handle.child_branch_id() != handle.child_branch_id()
+                    || bound_handle.source_branch_id() != handle.source_branch_id()
+                    || bound_handle.fork_version() != handle.fork_version()
+                {
+                    return Err(branch_error(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "materialization handle must match target layer",
+                    }));
+                }
+                let branch_request = BranchMaterializationRequest::from_handle(
+                    bound_handle,
+                    request.output_identity_prefix().to_owned(),
+                )
                 .map_err(branch_error)?;
-            if intent.handle().child_branch_id() != handle.child_branch_id()
-                || intent.handle().source_branch_id() != handle.source_branch_id()
-                || intent.handle().fork_version() != handle.fork_version()
-            {
-                return Err(branch_error(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "materialization handle must match target layer",
-                }));
+                (bound_handle, snapshot, branch_request)
+            } else {
+                let snapshot = branch.reachability_snapshot().map_err(branch_error)?;
+                (handle, snapshot, request.branch_request()?)
             }
+        } else {
+            let (handle, snapshot) = branch
+                .mark_inherited_layer_materializing(request.layer_index())
+                .map_err(branch_error)?;
             let branch_request = BranchMaterializationRequest::from_handle(
-                intent.handle(),
+                handle,
                 request.output_identity_prefix().to_owned(),
             )
             .map_err(branch_error)?;
-            (intent, branch_request)
-        } else {
-            let snapshot = branch.reachability_snapshot().map_err(branch_error)?;
-            (
-                BranchMaterializationIntent::new(handle, snapshot),
-                request.branch_request()?,
-            )
-        }
-    } else {
-        let intent = branch
-            .mark_inherited_layer_materializing(request.layer_index())
-            .map_err(branch_error)?;
-        let branch_request = BranchMaterializationRequest::from_handle(
-            intent.handle(),
-            request.output_identity_prefix().to_owned(),
-        )
-        .map_err(branch_error)?;
-        (intent, branch_request)
-    };
+            (handle, snapshot, branch_request)
+        };
     let branch_outcome = branch
         .materialize_inherited_layer(&branch_request)
         .map_err(branch_error)?;
     Ok(LifecycleMaterializationOutcome::completed(
         request,
-        intent,
+        materialization_handle,
+        reachability_snapshot,
         branch_outcome,
     ))
 }

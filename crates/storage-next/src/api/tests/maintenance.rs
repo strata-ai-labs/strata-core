@@ -330,7 +330,7 @@ fn api_materialization_returns_rewrite_facts() {
 }
 
 #[test]
-fn api_materialization_uses_stable_intent() {
+fn api_materialization_uses_stable_handle() {
     let mut runtime = open_runtime();
     runtime
         .commit(&put_batch(b"stable", b"value"))

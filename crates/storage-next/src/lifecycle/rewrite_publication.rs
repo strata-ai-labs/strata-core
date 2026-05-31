@@ -15,9 +15,8 @@ use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
 use crate::branch::state::materialization::{
-    BranchMaterializationHandle, BranchMaterializationIntent, BranchMaterializationOutcome,
-    BranchMaterializationPreparedOutput, BranchMaterializationRecovery,
-    BranchMaterializationRequest,
+    BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::TableManifestTableProvenance;
@@ -135,7 +134,8 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     {
         return Ok(LifecycleMaterializationOutcome::deferred(&request));
     }
-    let (intent, branch_request) = materialization_intent_and_request(branch, &request)?;
+    let (materialization_handle, reachability_snapshot, branch_request) =
+        materialization_binding_and_request(branch, &request)?;
     let Some(prepared) = branch
         .prepare_materialization_output(&branch_request)
         .map_err(branch_error)?
@@ -148,7 +148,8 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
             manifest_service,
             catalog,
             &request,
-            intent,
+            materialization_handle,
+            reachability_snapshot,
             branch_outcome,
             Vec::new(),
             budget,
@@ -163,7 +164,8 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
             manifest_service,
             catalog,
             &request,
-            intent,
+            materialization_handle,
+            reachability_snapshot,
             branch_outcome,
             Vec::new(),
             budget,
@@ -207,7 +209,8 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
         manifest_service,
         catalog,
         &request,
-        intent,
+        materialization_handle,
+        reachability_snapshot,
         branch_outcome,
         output_objects,
         budget,
@@ -219,7 +222,8 @@ fn finish_materialization_after_install(
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleMaterializationRequest,
-    intent: BranchMaterializationIntent,
+    materialization_handle: BranchMaterializationHandle,
+    reachability_snapshot: crate::branch::facts::BranchReachabilitySnapshot,
     branch_outcome: BranchMaterializationOutcome,
     output_objects: Vec<crate::object::ObjectName>,
     budget: Option<&StorageBudgetLedger>,
@@ -228,9 +232,19 @@ fn finish_materialization_after_install(
         branch_outcome.recovery(),
         BranchMaterializationRecovery::LayerAlreadyMaterialized,
     ) {
-        LifecycleMaterializationOutcome::completed(request, intent, branch_outcome)
+        LifecycleMaterializationOutcome::completed(
+            request,
+            materialization_handle,
+            reachability_snapshot,
+            branch_outcome,
+        )
     } else {
-        LifecycleMaterializationOutcome::completed_durable(intent, branch_outcome, output_objects)
+        LifecycleMaterializationOutcome::completed_durable(
+            materialization_handle,
+            reachability_snapshot,
+            branch_outcome,
+            output_objects,
+        )
     };
     match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
         Ok(_) => outcome,
@@ -500,10 +514,14 @@ fn orphaned_published_object_error(
     )
 }
 
-fn materialization_intent_and_request(
+fn materialization_binding_and_request(
     branch: &mut BranchLocalState,
     request: &LifecycleMaterializationRequest,
-) -> LifecycleResult<(BranchMaterializationIntent, BranchMaterializationRequest)> {
+) -> LifecycleResult<(
+    BranchMaterializationHandle,
+    crate::branch::facts::BranchReachabilitySnapshot,
+    BranchMaterializationRequest,
+)> {
     if branch.branch_id() != request.child_branch_id() {
         return Err(branch_error(BranchRuntimeError::InvalidBranchState {
             reason: "materialization request branch id must match branch state",
@@ -511,32 +529,29 @@ fn materialization_intent_and_request(
     }
     if let Some(handle) = request.handle() {
         if let Some(layer_index) = materialization_layer_index_for_handle(branch, handle) {
-            let intent = branch
+            let (bound_handle, snapshot) = branch
                 .mark_inherited_layer_materializing(layer_index)
                 .map_err(branch_error)?;
             let branch_request = BranchMaterializationRequest::from_handle(
-                intent.handle(),
+                bound_handle,
                 request.output_identity_prefix().to_owned(),
             )
             .map_err(branch_error)?;
-            Ok((intent, branch_request))
+            Ok((bound_handle, snapshot, branch_request))
         } else {
             let snapshot = branch.reachability_snapshot().map_err(branch_error)?;
-            Ok((
-                BranchMaterializationIntent::new(handle, snapshot),
-                request.branch_request()?,
-            ))
+            Ok((handle, snapshot, request.branch_request()?))
         }
     } else {
-        let intent = branch
+        let (handle, snapshot) = branch
             .mark_inherited_layer_materializing(request.layer_index())
             .map_err(branch_error)?;
         let branch_request = BranchMaterializationRequest::from_handle(
-            intent.handle(),
+            handle,
             request.output_identity_prefix().to_owned(),
         )
         .map_err(branch_error)?;
-        Ok((intent, branch_request))
+        Ok((handle, snapshot, branch_request))
     }
 }
 

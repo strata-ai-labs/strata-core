@@ -415,7 +415,8 @@ fn materialization_defers_when_no_inherited_layer_exists() {
     );
     assert_eq!(outcome.child_branch_id(), branch);
     assert_eq!(outcome.layer_index(), 0);
-    assert!(outcome.intent().is_none());
+    assert!(outcome.materialization_handle().is_none());
+    assert!(outcome.reachability_snapshot().is_none());
     assert!(outcome.branch_outcome().is_none());
     assert!(!outcome.checkpoint_required());
     assert!(outcome.recovery_health().is_none());
@@ -454,7 +455,8 @@ fn cache_materialization_removes_layer_and_preserves_child_precedence() {
 
     assert_eq!(outcome.status(), LifecycleMaterializationStatus::Completed);
     assert!(!outcome.checkpoint_required());
-    assert!(outcome.intent().is_some());
+    assert!(outcome.materialization_handle().is_some());
+    assert!(outcome.reachability_snapshot().is_some());
     let branch_outcome = outcome.branch_outcome().expect("branch outcome");
     assert_eq!(
         branch_outcome.recovery(),
@@ -498,7 +500,9 @@ fn materialization_retry_with_source_identity_reports_already_materialized() {
     let request =
         LifecycleMaterializationRequest::new(child, 0, "retry-materialize").expect("request");
     let completed = materialize_cache_branch(&mut child_state, &request).expect("first");
-    let handle = completed.intent().expect("intent").handle();
+    let handle = completed
+        .materialization_handle()
+        .expect("materialization handle");
     assert_eq!(child_state.inherited_layer_count(), 0);
 
     let retry =

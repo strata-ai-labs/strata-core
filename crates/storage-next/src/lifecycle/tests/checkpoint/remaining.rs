@@ -150,12 +150,11 @@ fn checkpoint_rows_include_materialized_replacement_rows() {
     let (mut child_state, fork) = source_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let intent = child_state
+    let (handle, _) = child_state
         .mark_inherited_layer_materializing(0)
-        .expect("materialization intent");
-    let request =
-        BranchMaterializationRequest::from_handle(intent.handle(), "checkpoint-replacement")
-            .expect("materialization request");
+        .expect("materialization handle");
+    let request = BranchMaterializationRequest::from_handle(handle, "checkpoint-replacement")
+        .expect("materialization request");
 
     child_state
         .materialize_inherited_layer(&request)

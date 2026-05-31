@@ -466,12 +466,12 @@ fn branch_materialization_accepts_materializing_layer_status() {
 }
 
 #[test]
-fn branch_materialization_intent_marks_source_reachability_before_replacement() {
+fn branch_materialization_handle_marks_source_reachability_before_replacement() {
     let source = branch_id(103);
     let child = branch_id(104);
     let row = storage_row_with(
         source,
-        b"materialization-intent".to_vec(),
+        b"materialization-handle".to_vec(),
         5,
         50,
         Timestamp::EPOCH,
@@ -484,7 +484,7 @@ fn branch_materialization_intent_marks_source_reachability_before_replacement() 
         vec![vec![branch_owned_table(
             source,
             BranchLevel::ZERO,
-            "materialization-intent-source",
+            "materialization-handle-source",
             vec![row],
         )]],
     );
@@ -493,15 +493,13 @@ fn branch_materialization_intent_marks_source_reachability_before_replacement() 
         .attach_inherited_layers(vec![layer])
         .expect("attach active inherited layer");
 
-    let intent = child_state
+    let (handle, snapshot) = child_state
         .mark_inherited_layer_materializing(0)
         .expect("mark materializing");
-    let handle = intent.handle();
     assert_eq!(handle.child_branch_id(), child);
     assert_eq!(handle.source_branch_id(), source);
     assert_eq!(handle.fork_version(), CommitVersion::new(5));
     assert_eq!(handle.layer_index(), 0);
-    let snapshot = intent.reachability_snapshot();
     assert_eq!(
         child_state.inherited_layers()[0].status(),
         InheritedLayerStatus::Materializing,
@@ -521,8 +519,8 @@ fn branch_materialization_intent_marks_source_reachability_before_replacement() 
     let retry = child_state
         .mark_inherited_layer_materializing(0)
         .expect("materializing retry");
-    assert_eq!(retry, intent);
-    let request = BranchMaterializationRequest::from_handle(handle, "materialization-intent")
+    assert_eq!(retry, (handle, snapshot.clone()));
+    let request = BranchMaterializationRequest::from_handle(handle, "materialization-handle")
         .expect("request from handle");
     assert_eq!(request.child_branch_id(), child);
     assert_eq!(request.layer_index(), 0);
@@ -604,4 +602,3 @@ fn branch_materialization_rejects_unavailable_same_source_and_invalid_descriptor
         Err(BranchRuntimeError::InvalidInheritedLayer { .. }),
     ));
 }
-

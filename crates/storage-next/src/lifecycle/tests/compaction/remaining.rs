@@ -179,7 +179,7 @@ fn compaction_preserves_branch_timestamp_and_value_facts() {
 }
 
 #[test]
-fn materialization_handle_binds_source_identity_and_reports_intent_facts() {
+fn materialization_handle_binds_source_identity_and_reports_snapshot_facts() {
     let parent = branch_id(0x78);
     let child = branch_id(0x79);
     let wrong_source = branch_id(0x7a);
@@ -193,10 +193,9 @@ fn materialization_handle_binds_source_identity_and_reports_intent_facts() {
     let (mut child_state, _) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let intent = child_state
+    let (handle, _) = child_state
         .mark_inherited_layer_materializing(0)
-        .expect("intent");
-    let handle = intent.handle();
+        .expect("materialization handle");
     let mismatched = BranchMaterializationHandle::new(
         child,
         wrong_source,
@@ -214,7 +213,12 @@ fn materialization_handle_binds_source_identity_and_reports_intent_facts() {
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.branch_runtime");
     let branch_outcome = outcome.branch_outcome().expect("branch outcome");
-    assert_eq!(outcome.intent().expect("intent").handle(), handle);
+    assert_eq!(
+        outcome
+            .materialization_handle()
+            .expect("materialization handle"),
+        handle
+    );
     assert_eq!(branch_outcome.source_branch_id(), parent);
     assert_eq!(branch_outcome.fork_version(), handle.fork_version());
     assert_eq!(
@@ -248,9 +252,8 @@ fn materialization_handle_marks_active_layer_before_materializing() {
     let outcome = materialize_cache_branch(&mut child_state, &request).expect("materialized");
 
     assert!(outcome
-        .intent()
-        .expect("intent")
         .reachability_snapshot()
+        .expect("reachability snapshot")
         .table_refs()
         .iter()
         .all(|table_ref| matches!(
@@ -918,7 +921,9 @@ fn durable_materialization_retry_after_manifest_debt_publishes_manifest() {
     let first = runtime
         .materialize_inherited_layer(&request)
         .expect("first materialization");
-    let handle = first.intent().expect("intent").handle();
+    let handle = first
+        .materialization_handle()
+        .expect("materialization handle");
     assert_eq!(
         first.status(),
         LifecycleMaterializationStatus::CompletedManifestDebt

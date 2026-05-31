@@ -66,32 +66,6 @@ impl BranchMaterializationHandle {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchMaterializationIntent {
-    handle: BranchMaterializationHandle,
-    reachability_snapshot: BranchReachabilitySnapshot,
-}
-
-impl BranchMaterializationIntent {
-    pub(crate) const fn new(
-        handle: BranchMaterializationHandle,
-        reachability_snapshot: BranchReachabilitySnapshot,
-    ) -> Self {
-        Self {
-            handle,
-            reachability_snapshot,
-        }
-    }
-
-    pub(crate) const fn handle(&self) -> BranchMaterializationHandle {
-        self.handle
-    }
-
-    pub(crate) const fn reachability_snapshot(&self) -> &BranchReachabilitySnapshot {
-        &self.reachability_snapshot
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchMaterializationRequest {
     child_branch_id: BranchId,
     layer_index: usize,
@@ -295,7 +269,7 @@ impl BranchLocalState {
     pub(crate) fn mark_inherited_layer_materializing(
         &mut self,
         layer_index: usize,
-    ) -> BranchRuntimeResult<BranchMaterializationIntent> {
+    ) -> BranchRuntimeResult<(BranchMaterializationHandle, BranchReachabilitySnapshot)> {
         let layer = self.inherited_layers.get(layer_index).ok_or(
             BranchRuntimeError::InvalidInheritedLayer {
                 reason: "materialization layer index must exist",
@@ -311,10 +285,10 @@ impl BranchLocalState {
             InheritedLayerStatus::Active => {
                 self.inherited_layers[layer_index] =
                     layer.with_status(InheritedLayerStatus::Materializing)?;
-                self.materialization_intent(handle)
+                self.materialization_binding(handle)
             }
             InheritedLayerStatus::Materializing | InheritedLayerStatus::Materialized => {
-                self.materialization_intent(handle)
+                self.materialization_binding(handle)
             }
             InheritedLayerStatus::Unavailable => Err(BranchRuntimeError::InvalidInheritedLayer {
                 reason: "unavailable inherited layers cannot be materialized",
@@ -578,14 +552,11 @@ impl BranchLocalState {
         }))
     }
 
-    fn materialization_intent(
+    fn materialization_binding(
         &self,
         handle: BranchMaterializationHandle,
-    ) -> BranchRuntimeResult<BranchMaterializationIntent> {
-        Ok(BranchMaterializationIntent::new(
-            handle,
-            self.reachability_snapshot()?,
-        ))
+    ) -> BranchRuntimeResult<(BranchMaterializationHandle, BranchReachabilitySnapshot)> {
+        Ok((handle, self.reachability_snapshot()?))
     }
 
     fn materialized_layer_noop_outcome(

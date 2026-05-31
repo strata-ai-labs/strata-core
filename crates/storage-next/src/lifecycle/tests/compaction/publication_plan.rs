@@ -328,7 +328,8 @@ fn durable_materialization_binds_handle_before_output_publish() {
         .materialize_inherited_layer(&materialization_request(child, "handle-before-publish"))
         .expect("materialization");
 
-    assert!(outcome.intent().is_some());
+    assert!(outcome.materialization_handle().is_some());
+    assert!(outcome.reachability_snapshot().is_some());
     assert_eq!(backend.table_object_create_calls(), 1);
 }
 
@@ -461,7 +462,9 @@ fn durable_materialization_retry_after_removed_layer_uses_source_identity() {
     let first = runtime
         .materialize_inherited_layer(&materialization_request(child, "source-retry"))
         .expect("first materialization");
-    let handle = first.intent().expect("intent").handle();
+    let handle = first
+        .materialization_handle()
+        .expect("materialization handle");
 
     let retry = runtime
         .materialize_inherited_layer(
@@ -872,7 +875,9 @@ fn rewrite_retry_after_manifest_failure_reuses_catalog_entries() {
     let first = runtime
         .materialize_inherited_layer(&materialization_request(child, "manifest-retry"))
         .expect("first");
-    let handle = first.intent().expect("intent").handle();
+    let handle = first
+        .materialization_handle()
+        .expect("materialization handle");
     let first_objects = backend.table_object_names();
 
     let retry = runtime
