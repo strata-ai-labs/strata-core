@@ -17,10 +17,10 @@ fn check_snapshot_empty_install(outcome: &mut SnapshotInstallOutcome) -> Result<
             .map_err(|err| TestkitError::new(format!("empty snapshot request failed: {err}")))?;
     let install = install_snapshot_rows_into_branches(&mut branches, &request)
         .map_err(|err| TestkitError::new(format!("empty snapshot install failed: {err}")))?;
-    if install.recovery() != BranchSnapshotInstallRecovery::EmptyPlanNoop
+    if !install.is_empty_plan_noop()
         || install.rows_installed() != 0
         || install.tables_created() != 0
-        || !install.branch_outcomes().is_empty()
+        || !install.table_identities().is_empty()
         || branches != before
     {
         return Err(TestkitError::new("empty snapshot install facts drifted"));
@@ -172,7 +172,7 @@ fn check_snapshot_single_branch_install(
     let install = install_snapshot_rows_into_branches(&mut branches, &request)
         .map_err(|err| TestkitError::new(format!("single snapshot install failed: {err}")))?;
     let installed = branch_state_by_id(&branches, branch)?;
-    if install.recovery() != BranchSnapshotInstallRecovery::Installed
+    if install.is_empty_plan_noop()
         || install.rows_installed() != 13
         || install.tables_created() != 5
         || install.branches_replaced() != 1
@@ -358,7 +358,7 @@ fn check_snapshot_multi_branch_install(
     ];
     let install = install_snapshot_rows_into_branches(&mut branches, &request)
         .map_err(|err| TestkitError::new(format!("multi snapshot install failed: {err}")))?;
-    if install.recovery() != BranchSnapshotInstallRecovery::Installed
+    if install.is_empty_plan_noop()
         || install.rows_installed() != 2
         || install.tables_created() != 2
         || install.branches_replaced() != 1
@@ -627,7 +627,7 @@ fn check_snapshot_invalid_requests(
     let mut dry_run = Vec::new();
     let dry_run_outcome = install_snapshot_rows_into_branches(&mut dry_run, &collision_request)
         .map_err(|err| TestkitError::new(format!("collision dry run failed: {err}")))?;
-    let collision_identity = dry_run_outcome.branch_outcomes()[0].table_identities()[0].clone();
+    let collision_identity = dry_run_outcome.table_identities()[0].clone();
     let mut collision_branches = vec![
         BranchLocalState::empty(collision_existing),
         BranchLocalState::empty(collision_target),
@@ -723,4 +723,3 @@ fn check_snapshot_table_build_failure(
     outcome.snapshot_table_build_failure_atomicity_cases += 1;
     Ok(())
 }
-

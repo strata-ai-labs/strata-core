@@ -36,10 +36,8 @@ use super::state::materialization::{
 use super::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
 use super::state::rotation::BranchRotationSkipReason;
 use super::state::snapshot::{
-    install_snapshot_rows_into_branches, BranchSnapshotInstallBranchOutcome,
-    BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome, BranchSnapshotInstallRecovery,
+    install_snapshot_rows_into_branches, BranchSnapshotInstallGroup, BranchSnapshotInstallOutcome,
     BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
-    BranchSnapshotTargetStatePolicy,
 };
 use super::state::{BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};

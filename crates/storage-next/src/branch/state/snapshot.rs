@@ -26,11 +26,6 @@ pub(crate) enum BranchSnapshotMissingBranchPolicy {
     Create { config: BranchRuntimeConfig },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchSnapshotTargetStatePolicy {
-    RequireEmpty,
-}
-
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct BranchSnapshotInstallGroup {
     branch_id: BranchId,
@@ -65,7 +60,6 @@ impl fmt::Debug for BranchSnapshotInstallGroup {
 pub(crate) struct BranchSnapshotInstallRequest {
     output_identity_seed: TableIdentity,
     missing_branch_policy: BranchSnapshotMissingBranchPolicy,
-    target_state_policy: BranchSnapshotTargetStatePolicy,
     table_builder_config: TableBuilderConfig,
     max_rows_per_table: usize,
     groups: Vec<BranchSnapshotInstallGroup>,
@@ -81,7 +75,6 @@ impl BranchSnapshotInstallRequest {
         Ok(Self {
             output_identity_seed,
             missing_branch_policy: BranchSnapshotMissingBranchPolicy::Reject,
-            target_state_policy: BranchSnapshotTargetStatePolicy::RequireEmpty,
             table_builder_config: TableBuilderConfig::default(),
             max_rows_per_table: SNAPSHOT_INSTALL_ROWS_PER_OUTPUT_TABLE,
             groups,
@@ -114,10 +107,6 @@ impl BranchSnapshotInstallRequest {
 
     pub(crate) const fn missing_branch_policy(&self) -> BranchSnapshotMissingBranchPolicy {
         self.missing_branch_policy
-    }
-
-    pub(crate) const fn target_state_policy(&self) -> BranchSnapshotTargetStatePolicy {
-        self.target_state_policy
     }
 
     pub(crate) const fn table_builder_config(&self) -> TableBuilderConfig {
@@ -168,7 +157,6 @@ impl fmt::Debug for BranchSnapshotInstallRequest {
             .debug_struct("BranchSnapshotInstallRequest")
             .field("output_identity_seed", &self.output_identity_seed)
             .field("missing_branch_policy", &self.missing_branch_policy)
-            .field("target_state_policy", &self.target_state_policy)
             .field("table_builder_config", &self.table_builder_config)
             .field("max_rows_per_table", &self.max_rows_per_table)
             .field("groups", &self.groups)
@@ -176,110 +164,56 @@ impl fmt::Debug for BranchSnapshotInstallRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchSnapshotInstallRecovery {
-    EmptyPlanNoop,
-    Installed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchSnapshotInstallBranchOutcome {
-    branch_id: BranchId,
-    branch_created: bool,
-    rows_installed: u64,
-    tables_created: usize,
-    max_commit_version: Option<CommitVersion>,
-    timestamp_min: Option<Timestamp>,
-    timestamp_max: Option<Timestamp>,
-    table_identities: Vec<TableIdentity>,
-}
-
-impl BranchSnapshotInstallBranchOutcome {
-    pub(crate) const fn branch_id(&self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn branch_created(&self) -> bool {
-        self.branch_created
-    }
-
-    pub(crate) const fn rows_installed(&self) -> u64 {
-        self.rows_installed
-    }
-
-    pub(crate) const fn tables_created(&self) -> usize {
-        self.tables_created
-    }
-
-    pub(crate) const fn max_commit_version(&self) -> Option<CommitVersion> {
-        self.max_commit_version
-    }
-
-    pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
-        self.timestamp_min
-    }
-
-    pub(crate) const fn timestamp_max(&self) -> Option<Timestamp> {
-        self.timestamp_max
-    }
-
-    pub(crate) fn table_identities(&self) -> &[TableIdentity] {
-        &self.table_identities
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchSnapshotInstallOutcome {
-    recovery: BranchSnapshotInstallRecovery,
-    branch_outcomes: Vec<BranchSnapshotInstallBranchOutcome>,
     rows_installed: u64,
     tables_created: usize,
     branches_created: usize,
     branches_replaced: usize,
+    timestamp_max: Option<Timestamp>,
+    table_identities: Vec<TableIdentity>,
 }
 
 impl BranchSnapshotInstallOutcome {
     fn empty() -> Self {
         Self {
-            recovery: BranchSnapshotInstallRecovery::EmptyPlanNoop,
-            branch_outcomes: Vec::new(),
             rows_installed: 0,
             tables_created: 0,
             branches_created: 0,
             branches_replaced: 0,
+            timestamp_max: None,
+            table_identities: Vec::new(),
         }
     }
 
-    fn installed(branch_outcomes: Vec<BranchSnapshotInstallBranchOutcome>) -> Self {
-        let rows_installed = branch_outcomes
+    fn installed(staged: &[StagedSnapshotBranch]) -> Self {
+        let rows_installed = staged.iter().map(|branch| branch.rows_installed).sum();
+        let tables_created = staged.iter().map(|branch| branch.tables_created).sum();
+        let branches_created = staged.iter().filter(|branch| branch.branch_created).count();
+        let branches_replaced = staged.len().saturating_sub(branches_created);
+        let timestamp_max = staged
             .iter()
-            .map(BranchSnapshotInstallBranchOutcome::rows_installed)
-            .sum();
-        let tables_created = branch_outcomes
+            .filter_map(|branch| branch.timestamp_max)
+            .max();
+        let table_identities = staged
             .iter()
-            .map(BranchSnapshotInstallBranchOutcome::tables_created)
-            .sum();
-        let branches_created = branch_outcomes
-            .iter()
-            .filter(|outcome| outcome.branch_created())
-            .count();
-        let branches_replaced = branch_outcomes.len().saturating_sub(branches_created);
+            .flat_map(|branch| branch.table_identities.iter().cloned())
+            .collect();
         Self {
-            recovery: BranchSnapshotInstallRecovery::Installed,
-            branch_outcomes,
             rows_installed,
             tables_created,
             branches_created,
             branches_replaced,
+            timestamp_max,
+            table_identities,
         }
     }
 
-    pub(crate) const fn recovery(&self) -> BranchSnapshotInstallRecovery {
-        self.recovery
-    }
-
-    pub(crate) fn branch_outcomes(&self) -> &[BranchSnapshotInstallBranchOutcome] {
-        &self.branch_outcomes
+    pub(crate) const fn is_empty_plan_noop(&self) -> bool {
+        self.rows_installed == 0
+            && self.tables_created == 0
+            && self.branches_created == 0
+            && self.branches_replaced == 0
     }
 
     pub(crate) const fn rows_installed(&self) -> u64 {
@@ -297,13 +231,25 @@ impl BranchSnapshotInstallOutcome {
     pub(crate) const fn branches_replaced(&self) -> usize {
         self.branches_replaced
     }
+
+    pub(crate) const fn timestamp_max(&self) -> Option<Timestamp> {
+        self.timestamp_max
+    }
+
+    pub(crate) fn table_identities(&self) -> &[TableIdentity] {
+        &self.table_identities
+    }
 }
 
 #[derive(Clone)]
 struct StagedSnapshotBranch {
     branch_id: BranchId,
     state: BranchLocalState,
-    outcome: BranchSnapshotInstallBranchOutcome,
+    branch_created: bool,
+    rows_installed: u64,
+    tables_created: usize,
+    timestamp_max: Option<Timestamp>,
+    table_identities: Vec<TableIdentity>,
 }
 
 pub(crate) fn install_snapshot_rows_into_branches(
@@ -317,12 +263,7 @@ pub(crate) fn install_snapshot_rows_into_branches(
     }
 
     let staged = stage_snapshot_install_branches(branches, request)?;
-    let outcome = BranchSnapshotInstallOutcome::installed(
-        staged
-            .iter()
-            .map(|branch| branch.outcome.clone())
-            .collect::<Vec<_>>(),
-    );
+    let outcome = BranchSnapshotInstallOutcome::installed(&staged);
 
     let mut replacement = branches.clone();
     for staged_branch in staged {
@@ -635,16 +576,11 @@ fn stage_snapshot_install_branches(
         staged.push(StagedSnapshotBranch {
             branch_id: group.branch_id(),
             state,
-            outcome: BranchSnapshotInstallBranchOutcome {
-                branch_id: group.branch_id(),
-                branch_created,
-                rows_installed,
-                tables_created: table_identities.len(),
-                max_commit_version: facts.max_commit_version(),
-                timestamp_min: facts.timestamp_min(),
-                timestamp_max: facts.timestamp_max(),
-                table_identities,
-            },
+            branch_created,
+            rows_installed,
+            tables_created: table_identities.len(),
+            timestamp_max: facts.timestamp_max(),
+            table_identities,
         });
     }
     Ok(staged)
@@ -657,9 +593,7 @@ fn snapshot_target_state(
 ) -> BranchRuntimeResult<(BranchLocalState, bool)> {
     match branches.iter().find(|state| state.branch_id() == branch_id) {
         Some(existing) => {
-            if request.target_state_policy() == BranchSnapshotTargetStatePolicy::RequireEmpty
-                && !existing.is_empty()
-            {
+            if !existing.is_empty() {
                 return Err(BranchRuntimeError::InvalidSnapshotInstall {
                     reason: "snapshot install target branch must be empty",
                 });

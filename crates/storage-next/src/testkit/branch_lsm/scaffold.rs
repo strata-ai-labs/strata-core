@@ -28,8 +28,8 @@ use crate::branch::state::materialization::{
 use crate::branch::state::read_hooks::{BranchStateDescriptor, BranchViewDescriptor};
 use crate::branch::state::rotation::BranchRotationSkipReason;
 use crate::branch::state::snapshot::{
-    install_snapshot_rows_into_branches, BranchSnapshotInstallGroup, BranchSnapshotInstallRecovery,
-    BranchSnapshotInstallRequest, BranchSnapshotMissingBranchPolicy,
+    install_snapshot_rows_into_branches, BranchSnapshotInstallGroup, BranchSnapshotInstallRequest,
+    BranchSnapshotMissingBranchPolicy,
 };
 use crate::branch::state::{
     BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome,

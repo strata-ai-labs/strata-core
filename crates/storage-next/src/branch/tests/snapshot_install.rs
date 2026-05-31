@@ -58,10 +58,6 @@ fn branch_snapshot_install_builds_l0_tables_and_preserves_reads() {
         }
     );
     assert_eq!(
-        request.target_state_policy(),
-        BranchSnapshotTargetStatePolicy::RequireEmpty
-    );
-    assert_eq!(
         request.table_builder_config(),
         TableBuilderConfig::default()
     );
@@ -73,33 +69,14 @@ fn branch_snapshot_install_builds_l0_tables_and_preserves_reads() {
     ];
     let outcome: BranchSnapshotInstallOutcome =
         install_snapshot_rows_into_branches(&mut branches, &request).expect("snapshot install");
-    let first_branch_outcome: &BranchSnapshotInstallBranchOutcome = &outcome.branch_outcomes()[0];
 
-    assert_eq!(outcome.recovery(), BranchSnapshotInstallRecovery::Installed);
+    assert!(!outcome.is_empty_plan_noop());
     assert_eq!(outcome.rows_installed(), 3);
     assert_eq!(outcome.tables_created(), 3);
     assert_eq!(outcome.branches_created(), 1);
     assert_eq!(outcome.branches_replaced(), 1);
-    assert_eq!(outcome.branch_outcomes().len(), 2);
-    assert_eq!(first_branch_outcome.branch_id(), branch_a);
-    assert!(!first_branch_outcome.branch_created());
-    assert_eq!(first_branch_outcome.rows_installed(), 2);
-    assert_eq!(first_branch_outcome.tables_created(), 2);
-    assert_eq!(
-        first_branch_outcome.max_commit_version(),
-        Some(CommitVersion::new(2))
-    );
-    assert_eq!(
-        first_branch_outcome.timestamp_min(),
-        Some(Timestamp::from_micros(10))
-    );
-    assert_eq!(
-        first_branch_outcome.timestamp_max(),
-        Some(Timestamp::from_micros(20))
-    );
-    assert_eq!(first_branch_outcome.table_identities().len(), 2);
-    assert_eq!(outcome.branch_outcomes()[1].branch_id(), branch_b);
-    assert!(outcome.branch_outcomes()[1].branch_created());
+    assert_eq!(outcome.table_identities().len(), 3);
+    assert_eq!(outcome.timestamp_max(), Some(Timestamp::from_micros(30)));
     assert_eq!(
         branches
             .iter()
@@ -182,10 +159,7 @@ fn branch_snapshot_install_empty_plan_is_noop() {
     let outcome =
         install_snapshot_rows_into_branches(&mut branches, &request).expect("empty install");
 
-    assert_eq!(
-        outcome.recovery(),
-        BranchSnapshotInstallRecovery::EmptyPlanNoop
-    );
+    assert!(outcome.is_empty_plan_noop());
     assert_eq!(outcome.rows_installed(), 0);
     assert_eq!(outcome.tables_created(), 0);
     assert_eq!(branches, before);
@@ -442,7 +416,7 @@ fn branch_snapshot_install_rejects_output_identity_collisions_without_mutation()
     let mut dry_run = Vec::new();
     let dry_run_outcome =
         install_snapshot_rows_into_branches(&mut dry_run, &target_request).expect("dry run");
-    let collision_identity = dry_run_outcome.branch_outcomes()[0].table_identities()[0].clone();
+    let collision_identity = dry_run_outcome.table_identities()[0].clone();
 
     let mut branches = vec![
         BranchLocalState::empty(existing),

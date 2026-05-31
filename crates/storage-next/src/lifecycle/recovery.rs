@@ -657,13 +657,8 @@ impl LifecycleRecoveredCheckpoint {
     }
 
     pub(crate) fn timestamp_max(&self) -> Option<Timestamp> {
-        self.install_outcome().and_then(|outcome| {
-            outcome
-                .branch_outcomes()
-                .iter()
-                .filter_map(crate::branch::state::snapshot::BranchSnapshotInstallBranchOutcome::timestamp_max)
-                .max()
-        })
+        self.install_outcome()
+            .and_then(BranchSnapshotInstallOutcome::timestamp_max)
     }
 }
 
