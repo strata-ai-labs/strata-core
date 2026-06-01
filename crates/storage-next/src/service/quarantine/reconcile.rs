@@ -118,16 +118,25 @@ impl QuarantineCorruptInventory {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct QuarantineListedObject {
+const QUARANTINE_OBJECT_LISTED: u8 = 0;
+const QUARANTINE_OBJECT_MISSING: u8 = 1;
+const QUARANTINE_OBJECT_UNLISTED: u8 = 2;
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct QuarantineInventoryObject<const KIND: u8> {
     object_id: String,
     object: ObjectName,
-    source_object: ObjectName,
+    source_object: Option<ObjectName>,
     byte_count: u64,
 }
 
-impl QuarantineListedObject {
-    fn new(
+pub(crate) type QuarantineListedObject = QuarantineInventoryObject<{ QUARANTINE_OBJECT_LISTED }>;
+pub(crate) type QuarantineMissingObject = QuarantineInventoryObject<{ QUARANTINE_OBJECT_MISSING }>;
+pub(crate) type QuarantineUnlistedObject =
+    QuarantineInventoryObject<{ QUARANTINE_OBJECT_UNLISTED }>;
+
+impl<const KIND: u8> QuarantineInventoryObject<KIND> {
+    fn with_source(
         object_id: String,
         object: ObjectName,
         source_object: ObjectName,
@@ -136,9 +145,24 @@ impl QuarantineListedObject {
         Self {
             object_id,
             object,
-            source_object,
+            source_object: Some(source_object),
             byte_count,
         }
+    }
+
+    fn without_source(object_id: String, object: ObjectName) -> Self {
+        Self {
+            object_id,
+            object,
+            source_object: None,
+            byte_count: 0,
+        }
+    }
+
+    fn source_object_ref(&self) -> &ObjectName {
+        self.source_object
+            .as_ref()
+            .expect("quarantine listed/missing object always carries a source object")
     }
 
     pub(crate) fn object_id(&self) -> &str {
@@ -148,9 +172,53 @@ impl QuarantineListedObject {
     pub(crate) const fn object(&self) -> &ObjectName {
         &self.object
     }
+}
 
-    pub(crate) const fn source_object(&self) -> &ObjectName {
-        &self.source_object
+impl std::fmt::Debug for QuarantineInventoryObject<{ QUARANTINE_OBJECT_LISTED }> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QuarantineListedObject")
+            .field("object_id", &self.object_id)
+            .field("object", &self.object)
+            .field("source_object", self.source_object_ref())
+            .field("byte_count", &self.byte_count)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for QuarantineInventoryObject<{ QUARANTINE_OBJECT_MISSING }> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QuarantineMissingObject")
+            .field("object_id", &self.object_id)
+            .field("object", &self.object)
+            .field("source_object", self.source_object_ref())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for QuarantineInventoryObject<{ QUARANTINE_OBJECT_UNLISTED }> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QuarantineUnlistedObject")
+            .field("object_id", &self.object_id)
+            .field("object", &self.object)
+            .finish()
+    }
+}
+
+impl QuarantineInventoryObject<{ QUARANTINE_OBJECT_LISTED }> {
+    fn new(
+        object_id: String,
+        object: ObjectName,
+        source_object: ObjectName,
+        byte_count: u64,
+    ) -> Self {
+        Self::with_source(object_id, object, source_object, byte_count)
+    }
+
+    pub(crate) fn source_object(&self) -> &ObjectName {
+        self.source_object_ref()
     }
 
     pub(crate) const fn byte_count(&self) -> u64 {
@@ -158,52 +226,19 @@ impl QuarantineListedObject {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct QuarantineMissingObject {
-    object_id: String,
-    object: ObjectName,
-    source_object: ObjectName,
-}
-
-impl QuarantineMissingObject {
+impl QuarantineInventoryObject<{ QUARANTINE_OBJECT_MISSING }> {
     fn new(object_id: String, object: ObjectName, source_object: ObjectName) -> Self {
-        Self {
-            object_id,
-            object,
-            source_object,
-        }
+        Self::with_source(object_id, object, source_object, 0)
     }
 
-    pub(crate) fn object_id(&self) -> &str {
-        &self.object_id
-    }
-
-    pub(crate) const fn object(&self) -> &ObjectName {
-        &self.object
-    }
-
-    pub(crate) const fn source_object(&self) -> &ObjectName {
-        &self.source_object
+    pub(crate) fn source_object(&self) -> &ObjectName {
+        self.source_object_ref()
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct QuarantineUnlistedObject {
-    object_id: String,
-    object: ObjectName,
-}
-
-impl QuarantineUnlistedObject {
+impl QuarantineInventoryObject<{ QUARANTINE_OBJECT_UNLISTED }> {
     fn new(object_id: String, object: ObjectName) -> Self {
-        Self { object_id, object }
-    }
-
-    pub(crate) fn object_id(&self) -> &str {
-        &self.object_id
-    }
-
-    pub(crate) const fn object(&self) -> &ObjectName {
-        &self.object
+        Self::without_source(object_id, object)
     }
 }
 
