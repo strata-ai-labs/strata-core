@@ -1,10 +1,7 @@
 use super::shared::*;
 use super::*;
 use crate::branch::error::BranchRuntimeResult;
-use crate::branch::pruning::{
-    BranchCompactionPruningProof, BranchInheritancePruningProof, BranchRecoveryHealthAttestation,
-    BranchSharedTableSafety,
-};
+use crate::branch::pruning::{BranchCompactionPruningProof, BranchRecoveryHealthAttestation};
 use crate::branch::read::{BranchHistoryOptions, BranchTimestampCoverage};
 use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionRetentionPolicy};
 use crate::commit::{
@@ -309,8 +306,8 @@ fn pruning_request(
 ) -> BranchRuntimeResult<LifecycleCompactionRequest> {
     let proof = BranchCompactionPruningProof::from_branch_state(state, CommitVersion::new(3))?
         .with_retained_timestamp_floor(Timestamp::from_micros(9_001))?
-        .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)?
-        .with_shared_table_safety(BranchSharedTableSafety::NotShared)?
+        .with_no_readable_inherited_layers()?
+        .with_candidate_tables_not_shared()?
         .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)?;
     Ok(
         LifecycleCompactionRequest::new(branch, BranchCompactionKind::CompactL0, seed)

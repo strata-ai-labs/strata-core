@@ -14,8 +14,7 @@ use super::identity::{
     rewrite_row_branch, row_matches_branch, BranchRowIdentity,
 };
 use super::pruning::{
-    branch_pruning_fingerprint, BranchCompactionPruningProof, BranchInheritancePruningProof,
-    BranchRecoveryHealthAttestation, BranchSharedTableSafety,
+    branch_pruning_fingerprint, BranchCompactionPruningProof, BranchRecoveryHealthAttestation,
 };
 use super::read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,

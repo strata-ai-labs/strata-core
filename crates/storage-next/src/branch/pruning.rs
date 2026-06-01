@@ -33,26 +33,12 @@ pub(crate) struct BranchCompactionPruningProof {
     tombstone_elision_safe: bool,
     ttl_expired_at_or_before: Option<Timestamp>,
     max_versions_per_key: Option<usize>,
-    inherited_safety: BranchInheritancePruningProof,
-    shared_table_safety: BranchSharedTableSafety,
+    // These gates are intentionally parent-proof fields: row pruning can only
+    // delete below-floor rows after the same fresh proof has established both
+    // inherited-layer absence and candidate-table non-sharing.
+    no_readable_inherited_layers: bool,
+    candidate_tables_not_shared: bool,
     recovery_health: BranchRecoveryHealthAttestation,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchInheritancePruningProof {
-    Unknown,
-    NoReadableInheritedLayers,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchSharedTableSafety {
-    /// Caller has not consulted the cross-branch shared-table registry.
-    /// The proof rejects until this is established.
-    Unknown,
-    /// Caller has verified — against a fresh `SharedTableRegistry`
-    /// snapshot — that the candidate's input/overlap tables are not
-    /// runtime-referenced by any other branch. Pruning may proceed.
-    NotShared,
 }
 
 /// Attestation that the caller has consulted live recovery health and
@@ -111,8 +97,8 @@ impl BranchCompactionPruningProof {
             tombstone_elision_safe: false,
             ttl_expired_at_or_before: None,
             max_versions_per_key: None,
-            inherited_safety: BranchInheritancePruningProof::Unknown,
-            shared_table_safety: BranchSharedTableSafety::Unknown,
+            no_readable_inherited_layers: false,
+            candidate_tables_not_shared: false,
             recovery_health: BranchRecoveryHealthAttestation::Unknown,
         };
         proof.validate_static()?;
@@ -169,12 +155,12 @@ impl BranchCompactionPruningProof {
         self.ttl_expired_at_or_before
     }
 
-    pub(crate) const fn inherited_safety(self) -> BranchInheritancePruningProof {
-        self.inherited_safety
+    pub(crate) const fn no_readable_inherited_layers(self) -> bool {
+        self.no_readable_inherited_layers
     }
 
-    pub(crate) const fn shared_table_safety(self) -> BranchSharedTableSafety {
-        self.shared_table_safety
+    pub(crate) const fn candidate_tables_not_shared(self) -> bool {
+        self.candidate_tables_not_shared
     }
 
     pub(crate) const fn recovery_health(self) -> BranchRecoveryHealthAttestation {
@@ -232,20 +218,14 @@ impl BranchCompactionPruningProof {
         Ok(self)
     }
 
-    pub(crate) fn with_inherited_safety(
-        mut self,
-        proof: BranchInheritancePruningProof,
-    ) -> BranchRuntimeResult<Self> {
-        self.inherited_safety = proof;
+    pub(crate) fn with_no_readable_inherited_layers(mut self) -> BranchRuntimeResult<Self> {
+        self.no_readable_inherited_layers = true;
         self.validate_static()?;
         Ok(self)
     }
 
-    pub(crate) fn with_shared_table_safety(
-        mut self,
-        proof: BranchSharedTableSafety,
-    ) -> BranchRuntimeResult<Self> {
-        self.shared_table_safety = proof;
+    pub(crate) fn with_candidate_tables_not_shared(mut self) -> BranchRuntimeResult<Self> {
+        self.candidate_tables_not_shared = true;
         self.validate_static()?;
         Ok(self)
     }
@@ -259,14 +239,13 @@ impl BranchCompactionPruningProof {
         Ok(self)
     }
 
-    /// Derive a `BranchSharedTableSafety` attestation by consulting the
-    /// global `SharedTableRegistry` for the candidate's input/overlap
-    /// table identities. Returns `NotShared` only when no candidate
-    /// table identity is referenced by more than one branch's snapshot.
-    pub(crate) fn derive_shared_table_safety(
+    /// Return true only when a fresh `SharedTableRegistry` shows that no
+    /// candidate input/overlap table identity is referenced by more than one
+    /// branch snapshot.
+    pub(crate) fn derive_candidate_tables_not_shared(
         candidate: &BranchCompactionCandidate,
         registry: &SharedTableRegistry,
-    ) -> BranchSharedTableSafety {
+    ) -> bool {
         for table_ref in candidate
             .input_refs()
             .iter()
@@ -276,10 +255,10 @@ impl BranchCompactionPruningProof {
                 // The candidate table is referenced from more than just
                 // this branch's own snapshot — pruning may affect another
                 // branch's reads.
-                return BranchSharedTableSafety::Unknown;
+                return false;
             }
         }
-        BranchSharedTableSafety::NotShared
+        true
     }
 
     fn validate_static(self) -> BranchRuntimeResult<()> {
@@ -367,8 +346,8 @@ impl BranchCompactionPruningProof {
             });
         }
         validate_timestamp_floor(branch.timestamp_coverage(), self.retained_timestamp_floor)?;
-        validate_inheritance_safety(branch.inherited_layers(), self.inherited_safety)?;
-        validate_shared_table_safety(self.shared_table_safety)?;
+        validate_inheritance_safety(branch.inherited_layers(), self.no_readable_inherited_layers)?;
+        validate_shared_table_safety(self.candidate_tables_not_shared)?;
         validate_recovery_health(self.recovery_health)?;
         validate_policy_specific_safety(branch, candidate, retention_policy, self)?;
         Ok(())
@@ -536,28 +515,28 @@ fn validate_timestamp_floor(
 
 fn validate_inheritance_safety(
     layers: &[BranchInheritedLayer],
-    proof: BranchInheritancePruningProof,
+    no_readable_inherited_layers: bool,
 ) -> BranchRuntimeResult<()> {
-    match proof {
-        BranchInheritancePruningProof::NoReadableInheritedLayers if layers.is_empty() => Ok(()),
-        BranchInheritancePruningProof::NoReadableInheritedLayers => {
-            Err(BranchRuntimeError::InvalidCompaction {
-                reason: BranchCompactionInvalidity::InheritedLayerUnsafe,
-            })
-        }
-        BranchInheritancePruningProof::Unknown => Err(BranchRuntimeError::InvalidCompaction {
+    if !no_readable_inherited_layers {
+        return Err(BranchRuntimeError::InvalidCompaction {
             reason: BranchCompactionInvalidity::InheritedLayerUnknown,
-        }),
+        });
     }
+    if !layers.is_empty() {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::InheritedLayerUnsafe,
+        });
+    }
+    Ok(())
 }
 
-fn validate_shared_table_safety(proof: BranchSharedTableSafety) -> BranchRuntimeResult<()> {
-    match proof {
-        BranchSharedTableSafety::NotShared => Ok(()),
-        BranchSharedTableSafety::Unknown => Err(BranchRuntimeError::InvalidCompaction {
+fn validate_shared_table_safety(candidate_tables_not_shared: bool) -> BranchRuntimeResult<()> {
+    if !candidate_tables_not_shared {
+        return Err(BranchRuntimeError::InvalidCompaction {
             reason: BranchCompactionInvalidity::SharedTableSafetyUnknown,
-        }),
+        });
     }
+    Ok(())
 }
 
 fn validate_recovery_health(

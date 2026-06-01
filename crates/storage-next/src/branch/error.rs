@@ -102,16 +102,15 @@ pub(crate) enum BranchCompactionInvalidity {
     /// A pinned read view sits below the retained version floor, so
     /// pruning would invalidate it.
     PinnedViewBelowFloor,
-    /// `BranchInheritancePruningProof` was `Unknown`.
+    /// The proof has no explicit no-readable-inherited-layers gate.
     InheritedLayerUnknown,
-    /// `BranchInheritancePruningProof::NoReadableInheritedLayers` was
-    /// asserted while the branch still has inherited layers attached.
+    /// The no-readable-inherited-layers gate was asserted while the branch
+    /// still has inherited layers attached.
     InheritedLayerUnsafe,
-    /// `BranchSharedTableSafety` was `Unknown` — the caller has not
-    /// confirmed that no other branch references the candidate tables.
+    /// The caller has not confirmed that no other branch references the
+    /// candidate tables.
     SharedTableSafetyUnknown,
-    /// Tombstone elision requested without a `BottommostOwnedAndInheritedSafe`
-    /// attestation.
+    /// Tombstone elision requested without the parent proof's tombstone gate.
     TombstoneElisionMissing,
     /// Tombstone elision requested but the compaction is not at the
     /// bottommost level.

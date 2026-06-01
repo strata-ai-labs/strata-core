@@ -242,9 +242,9 @@ fn materialized_replacement_tombstone_safety_is_checked() {
             .expect("proof")
             .with_retained_timestamp_floor(Timestamp::from_micros(90))
             .expect("timestamp proof")
-            .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+            .with_no_readable_inherited_layers()
             .expect("inheritance proof")
-            .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+            .with_candidate_tables_not_shared()
             .expect("shared-table proof")
             .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
             .expect("recovery health proof")
@@ -507,9 +507,9 @@ fn materialized_layer_replacement_preserves_pruned_history_boundary() {
             .expect("proof")
             .with_retained_timestamp_floor(Timestamp::from_micros(40))
             .expect("timestamp proof")
-            .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+            .with_no_readable_inherited_layers()
             .expect("inheritance proof")
-            .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+            .with_candidate_tables_not_shared()
             .expect("shared-table proof")
             .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
             .expect("recovery health proof");
@@ -668,9 +668,9 @@ fn materialization_with_pruning_preserves_child_local_precedence() {
             .expect("proof")
             .with_retained_timestamp_floor(Timestamp::from_micros(40))
             .expect("timestamp proof")
-            .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+            .with_no_readable_inherited_layers()
             .expect("inheritance proof")
-            .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+            .with_candidate_tables_not_shared()
             .expect("shared-table proof")
             .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
             .expect("recovery health proof");
@@ -718,9 +718,9 @@ fn forked_child_with_lower_fork_version_blocks_parent_floor() {
 
 #[test]
 fn shared_table_identity_reachability_blocks_pruning() {
-    // The proof must carry an explicit `BranchSharedTableSafety::NotShared`
-    // attestation. A proof without one (regardless of whether the candidate
-    // tables are actually shared) is rejected before any pruning runs.
+    // The proof must carry an explicit candidate-tables-not-shared gate. A
+    // proof without one (regardless of whether the candidate tables are
+    // actually shared) is rejected before any pruning runs.
     let branch = branch_id(0xea);
     let mut state = version_chain_state(branch, "shared-table-unknown", &[4, 2]);
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
@@ -729,7 +729,7 @@ fn shared_table_identity_reachability_blocks_pruning() {
             .expect("proof")
             .with_retained_timestamp_floor(Timestamp::from_micros(30))
             .expect("timestamp proof")
-            .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+            .with_no_readable_inherited_layers()
             .expect("inheritance proof");
     let error = state
         .compact_branch_owned_tables(&drop_older_request(
@@ -743,9 +743,8 @@ fn shared_table_identity_reachability_blocks_pruning() {
     // Now exercise the registry-based derivation: build a
     // SharedTableRegistry that sees this branch's tables as referenced
     // from a sibling branch (as if a clone artifact had attached the
-    // same identities to two branches). `derive_shared_table_safety`
-    // must return `Unknown`, matching the "shared identity reachable
-    // from another branch" case.
+    // same identities to two branches). The registry predicate must return
+    // false, matching the "shared identity reachable from another branch" case.
     let plan = state
         .plan_branch_compaction(&drop_older_request(
             branch,
@@ -781,17 +780,18 @@ fn shared_table_identity_reachability_blocks_pruning() {
     ])
     .expect("registry");
 
-    let derived = BranchCompactionPruningProof::derive_shared_table_safety(candidate, &registry);
-    assert_eq!(derived, BranchSharedTableSafety::Unknown);
+    let derived =
+        BranchCompactionPruningProof::derive_candidate_tables_not_shared(candidate, &registry);
+    assert!(!derived);
 
     // The inverse: a registry that only tracks THIS branch's snapshot
-    // must derive `NotShared`.
+    // must derive a true candidate-tables-not-shared gate.
     let solo_registry =
         crate::branch::facts::SharedTableRegistry::rebuild_from_snapshots(&[snapshot])
             .expect("solo registry");
     let solo_derived =
-        BranchCompactionPruningProof::derive_shared_table_safety(candidate, &solo_registry);
-    assert_eq!(solo_derived, BranchSharedTableSafety::NotShared);
+        BranchCompactionPruningProof::derive_candidate_tables_not_shared(candidate, &solo_registry);
+    assert!(solo_derived);
 }
 
 #[test]
@@ -877,9 +877,9 @@ fn pruning_after_materialization_uses_source_identity_not_layer_index() {
     .expect("stale proof")
     .with_retained_timestamp_floor(Timestamp::from_micros(40))
     .expect("timestamp proof")
-    .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+    .with_no_readable_inherited_layers()
     .expect("inheritance proof")
-    .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+    .with_candidate_tables_not_shared()
     .expect("shared-table proof")
     .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
     .expect("recovery health proof");
@@ -901,9 +901,9 @@ fn pruning_after_materialization_uses_source_identity_not_layer_index() {
             .expect("fresh proof")
             .with_retained_timestamp_floor(Timestamp::from_micros(40))
             .expect("timestamp proof")
-            .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+            .with_no_readable_inherited_layers()
             .expect("inheritance proof")
-            .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+            .with_candidate_tables_not_shared()
             .expect("shared-table proof")
             .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
             .expect("recovery health proof");

@@ -4,10 +4,7 @@ use super::{ensure, script_byte};
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
-use crate::branch::pruning::{
-    BranchCompactionPruningProof, BranchInheritancePruningProof, BranchRecoveryHealthAttestation,
-    BranchSharedTableSafety,
-};
+use crate::branch::pruning::{BranchCompactionPruningProof, BranchRecoveryHealthAttestation};
 use crate::branch::read::{BranchOwnedTable, BranchTimestampCoverage};
 use crate::branch::state::compaction::{
     BranchCompactionKind, BranchCompactionRequest, BranchCompactionRetentionPolicy,
@@ -403,9 +400,9 @@ fn proof_for(
         .map_err(pruning_error)?
         .with_retained_timestamp_floor(Timestamp::from_micros(retained_timestamp_floor))
         .map_err(pruning_error)?
-        .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+        .with_no_readable_inherited_layers()
         .map_err(pruning_error)?
-        .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+        .with_candidate_tables_not_shared()
         .map_err(pruning_error)?
         .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
         .map_err(pruning_error)
