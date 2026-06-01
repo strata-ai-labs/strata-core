@@ -200,7 +200,6 @@ pub(crate) use retention::{
     LifecycleRetentionObjectFamily, LifecycleRetentionOutcome, LifecycleRetentionProof,
     LifecycleRetentionProofStatus, LifecycleRetentionRequest, LifecycleRetentionScope,
     LifecycleRetentionStatus, LifecycleSnapshotPruningOutcome, LifecycleSnapshotPruningRequest,
-    LifecycleSnapshotPruningStatus,
 };
 #[allow(
     unused_imports,

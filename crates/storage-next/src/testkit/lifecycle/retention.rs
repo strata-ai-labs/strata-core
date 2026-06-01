@@ -16,10 +16,9 @@ use crate::lifecycle::{
     build_retention_proof, prune_snapshots_with_proof, retention_outcome_for_delegated_families,
     table_object_retention_outcome, table_quarantine_candidate, LifecycleRetentionDecisionReason,
     LifecycleRetentionOutcome, LifecycleRetentionProofStatus, LifecycleRetentionRequest,
-    LifecycleRetentionStatus, LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
-    LifecycleTableObjectInventoryEntry, LifecycleTableObjectProofEpochs,
-    LifecycleTableObjectRetentionRequest, RecoveryDegradationClass, RecoveryFault,
-    RecoveryFaultKind, RecoveryHealth, RetentionDecision,
+    LifecycleRetentionStatus, LifecycleSnapshotPruningRequest, LifecycleTableObjectInventoryEntry,
+    LifecycleTableObjectProofEpochs, LifecycleTableObjectRetentionRequest,
+    RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth, RetentionDecision,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::SnapshotService;
@@ -198,14 +197,7 @@ fn check_snapshot_pruning(
     let pruned = prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning)
         .map_err(retention_error)?;
 
-    ensure(
-        matches!(
-            pruned.status(),
-            LifecycleSnapshotPruningStatus::Completed
-                | LifecycleSnapshotPruningStatus::CompletedNoop
-        ),
-        "snapshot pruning did not complete",
-    )?;
+    ensure(pruned.completed(), "snapshot pruning did not complete")?;
     ensure(
         pruned
             .protected()
@@ -225,7 +217,7 @@ fn check_snapshot_pruning(
     let partial = prune_snapshots_with_proof(&SnapshotService::new(&failing), &pruning)
         .map_err(retention_error)?;
     ensure(
-        partial.status() == LifecycleSnapshotPruningStatus::CompletedWithHealthDebt,
+        partial.completed_with_health_debt(),
         "snapshot delete failure did not become health debt",
     )?;
     outcome.snapshot_delete_failures += partial.failed().len();

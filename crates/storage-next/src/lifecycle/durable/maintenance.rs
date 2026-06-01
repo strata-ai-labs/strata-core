@@ -27,7 +27,7 @@ use crate::lifecycle::retention::{
     retention_outcome_for_delegated_families, retention_outcome_for_scope,
     retention_request_from_maintenance_task, LifecycleRetentionOutcome, LifecycleRetentionRequest,
     LifecycleRetentionScope, LifecycleRetentionStatus, LifecycleSnapshotPruningOutcome,
-    LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
+    LifecycleSnapshotPruningRequest,
 };
 use crate::lifecycle::table_manifest::{
     publish_table_manifest_for_branch_with_budget, table_manifest_debt_outcome,
@@ -1593,21 +1593,19 @@ fn global_retention_maintenance_outcome(
     retention_outcome: &LifecycleRetentionOutcome,
     table_retention_outcome: &LifecycleRetentionOutcome,
 ) -> MaintenanceOutcome {
-    let status = if matches!(
-        snapshot_outcome.status(),
-        LifecycleSnapshotPruningStatus::DeferredIncompleteProof
-            | LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth
-    ) || matches!(
-        retention_outcome.status(),
-        LifecycleRetentionStatus::DeferredIncompleteProof
-            | LifecycleRetentionStatus::DeferredUnsupportedScope
-            | LifecycleRetentionStatus::BlockedByRecoveryHealth
-    ) || matches!(
-        table_retention_outcome.status(),
-        LifecycleRetentionStatus::DeferredIncompleteProof
-            | LifecycleRetentionStatus::DeferredUnsupportedScope
-            | LifecycleRetentionStatus::BlockedByRecoveryHealth
-    ) {
+    let status = if !snapshot_outcome.completed()
+        || matches!(
+            retention_outcome.status(),
+            LifecycleRetentionStatus::DeferredIncompleteProof
+                | LifecycleRetentionStatus::DeferredUnsupportedScope
+                | LifecycleRetentionStatus::BlockedByRecoveryHealth
+        )
+        || matches!(
+            table_retention_outcome.status(),
+            LifecycleRetentionStatus::DeferredIncompleteProof
+                | LifecycleRetentionStatus::DeferredUnsupportedScope
+                | LifecycleRetentionStatus::BlockedByRecoveryHealth
+        ) {
         MaintenanceOutcomeStatus::Deferred
     } else {
         MaintenanceOutcomeStatus::Completed

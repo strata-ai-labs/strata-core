@@ -388,10 +388,7 @@ fn incomplete_snapshot_pruning_proof_defers_before_backend_access() {
     let outcome =
         prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleSnapshotPruningStatus::DeferredIncompleteProof
-    );
+    assert!(outcome.deferred_incomplete_proof());
     assert_eq!(backend.list_calls(), 0);
     assert_eq!(backend.delete_calls(), 0);
     assert!(outcome.recovery_health().is_some());
@@ -415,10 +412,7 @@ fn retention_proof_blocks_data_loss_before_backend_access() {
     let outcome =
         prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth
-    );
+    assert!(outcome.blocked_by_recovery_health());
     assert_eq!(backend.list_calls(), 0);
     assert_eq!(backend.delete_calls(), 0);
 }
@@ -434,7 +428,7 @@ fn snapshot_pruning_retains_live_snapshot_outside_newest_window() {
     let outcome =
         prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
 
-    assert_eq!(outcome.status(), LifecycleSnapshotPruningStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(snapshot_ids(outcome.deleted()), [2, 3]);
     assert_eq!(snapshot_ids(outcome.protected()), [1, 4]);
     assert_eq!(backend.remaining_snapshot_ids(), [1, 4]);
@@ -464,7 +458,7 @@ fn snapshot_pruning_deletes_old_non_live_snapshots() {
     let backend = RetentionBackend::with_snapshots([1, 2, 3]);
     let outcome = snapshot_pruning(&backend, 3, 1);
 
-    assert_eq!(outcome.status(), LifecycleSnapshotPruningStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
     assert_eq!(backend.delete_calls(), 2);
 }
@@ -474,10 +468,7 @@ fn snapshot_pruning_noops_when_under_retain_count() {
     let backend = RetentionBackend::with_snapshots([1, 2]);
     let outcome = snapshot_pruning(&backend, 2, 3);
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleSnapshotPruningStatus::CompletedNoop
-    );
+    assert!(outcome.completed_noop());
     assert_eq!(outcome.deleted(), []);
     assert_eq!(snapshot_ids(outcome.protected()), [1, 2]);
     assert_eq!(backend.delete_calls(), 0);
@@ -490,10 +481,7 @@ fn snapshot_pruning_is_idempotent_after_success() {
     let second = snapshot_pruning(&backend, 3, 1);
 
     assert_eq!(snapshot_ids(first.deleted()), [1, 2]);
-    assert_eq!(
-        second.status(),
-        LifecycleSnapshotPruningStatus::CompletedNoop
-    );
+    assert!(second.completed_noop());
     assert_eq!(second.deleted(), []);
     assert_eq!(backend.remaining_snapshot_ids(), [3]);
 }
@@ -545,7 +533,7 @@ fn snapshot_pruning_does_not_mutate_manifest_snapshot_facts() {
     let outcome =
         prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
 
-    assert_eq!(outcome.status(), LifecycleSnapshotPruningStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(pruning.proof(), &proof);
     assert_eq!(pruning.live_snapshot_id(), Some(3));
 }
@@ -591,10 +579,7 @@ fn snapshot_pruning_delete_failure_records_health_debt_and_continues() {
     let outcome =
         prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleSnapshotPruningStatus::CompletedWithHealthDebt
-    );
+    assert!(outcome.completed_with_health_debt());
     assert_eq!(snapshot_ids(outcome.deleted()), [2]);
     assert_eq!(snapshot_ids(outcome.protected()), [3]);
     assert_eq!(outcome.failed().len(), 1);
@@ -620,10 +605,7 @@ fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
     let outcome =
         prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleSnapshotPruningStatus::CompletedWithHealthDebt
-    );
+    assert!(outcome.completed_with_health_debt());
     assert_eq!(snapshot_ids(outcome.deleted()), [3]);
     assert_eq!(snapshot_ids(outcome.protected()), [5]);
     assert_eq!(outcome.failed().len(), 2);

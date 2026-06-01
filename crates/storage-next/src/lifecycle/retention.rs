@@ -120,21 +120,11 @@ pub(crate) struct LifecycleSnapshotPruningRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleSnapshotPruningOutcome {
-    status: LifecycleSnapshotPruningStatus,
+    proof_status: LifecycleRetentionProofStatus,
     deleted: Vec<SnapshotObject>,
     protected: Vec<SnapshotObject>,
     failed: Vec<SnapshotDeleteFailure>,
     recovery_health: Option<RecoveryHealth>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum LifecycleSnapshotPruningStatus {
-    Completed,
-    CompletedNoop,
-    CompletedWithHealthDebt,
-    DeferredIncompleteProof,
-    BlockedByRecoveryHealth,
 }
 
 impl LifecycleRetentionRequest {
@@ -493,18 +483,11 @@ impl LifecycleSnapshotPruningRequest {
 }
 
 impl LifecycleSnapshotPruningOutcome {
-    fn completed(
+    fn from_completed_report(
         deleted: Vec<SnapshotObject>,
         protected: Vec<SnapshotObject>,
         failed: Vec<SnapshotDeleteFailure>,
     ) -> LifecycleResult<Self> {
-        let status = if !failed.is_empty() {
-            LifecycleSnapshotPruningStatus::CompletedWithHealthDebt
-        } else if deleted.is_empty() {
-            LifecycleSnapshotPruningStatus::CompletedNoop
-        } else {
-            LifecycleSnapshotPruningStatus::Completed
-        };
         let recovery_health = if failed.is_empty() {
             None
         } else {
@@ -529,7 +512,7 @@ impl LifecycleSnapshotPruningOutcome {
             )?)
         };
         Ok(Self {
-            status,
+            proof_status: LifecycleRetentionProofStatus::Complete,
             deleted,
             protected,
             failed,
@@ -538,11 +521,11 @@ impl LifecycleSnapshotPruningOutcome {
     }
 
     fn deferred(
-        status: LifecycleSnapshotPruningStatus,
+        proof_status: LifecycleRetentionProofStatus,
         recovery_health: Option<RecoveryHealth>,
     ) -> Self {
         Self {
-            status,
+            proof_status,
             deleted: Vec::new(),
             protected: Vec::new(),
             failed: Vec::new(),
@@ -550,8 +533,27 @@ impl LifecycleSnapshotPruningOutcome {
         }
     }
 
-    pub(crate) const fn status(&self) -> LifecycleSnapshotPruningStatus {
-        self.status
+    pub(crate) const fn completed(&self) -> bool {
+        matches!(self.proof_status, LifecycleRetentionProofStatus::Complete)
+    }
+
+    pub(crate) const fn completed_noop(&self) -> bool {
+        self.completed() && self.deleted.is_empty() && self.failed.is_empty()
+    }
+
+    pub(crate) const fn completed_with_health_debt(&self) -> bool {
+        self.completed() && !self.failed.is_empty()
+    }
+
+    pub(crate) const fn deferred_incomplete_proof(&self) -> bool {
+        matches!(self.proof_status, LifecycleRetentionProofStatus::Incomplete)
+    }
+
+    pub(crate) const fn blocked_by_recovery_health(&self) -> bool {
+        matches!(
+            self.proof_status,
+            LifecycleRetentionProofStatus::BlockedByRecoveryHealth
+        )
     }
 
     pub(crate) fn deleted(&self) -> &[SnapshotObject] {
@@ -571,16 +573,10 @@ impl LifecycleSnapshotPruningOutcome {
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
-        let status = match self.status {
-            LifecycleSnapshotPruningStatus::Completed
-            | LifecycleSnapshotPruningStatus::CompletedNoop
-            | LifecycleSnapshotPruningStatus::CompletedWithHealthDebt => {
-                MaintenanceOutcomeStatus::Completed
-            }
-            LifecycleSnapshotPruningStatus::DeferredIncompleteProof
-            | LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth => {
-                MaintenanceOutcomeStatus::Deferred
-            }
+        let status = if self.completed() {
+            MaintenanceOutcomeStatus::Completed
+        } else {
+            MaintenanceOutcomeStatus::Deferred
         };
         let names = snapshot_object_names(&self.deleted, &self.protected, &self.failed);
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::SnapshotPruning, status)
@@ -593,26 +589,20 @@ impl LifecycleSnapshotPruningOutcome {
                     .as_ref()
                     .map_or(0, RecoveryHealth::fault_count),
                 1,
-                usize::from(matches!(
-                    self.status,
-                    LifecycleSnapshotPruningStatus::DeferredIncompleteProof
-                        | LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth
-                )),
+                usize::from(!self.completed()),
                 0,
             ));
         if let Some(health) = self.recovery_health.clone() {
             outcome = outcome.with_recovery_health(health);
         }
-        match self.status {
-            LifecycleSnapshotPruningStatus::DeferredIncompleteProof => {
+        match self.proof_status {
+            LifecycleRetentionProofStatus::Incomplete => {
                 outcome.with_reason("retention proof is incomplete")
             }
-            LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth => {
+            LifecycleRetentionProofStatus::BlockedByRecoveryHealth => {
                 outcome.with_reason("recovery health blocks retention")
             }
-            LifecycleSnapshotPruningStatus::Completed
-            | LifecycleSnapshotPruningStatus::CompletedNoop
-            | LifecycleSnapshotPruningStatus::CompletedWithHealthDebt => outcome,
+            LifecycleRetentionProofStatus::Complete => outcome,
         }
     }
 }
@@ -744,13 +734,13 @@ pub(crate) fn prune_snapshots_with_proof(
         LifecycleRetentionProofStatus::Complete => {}
         LifecycleRetentionProofStatus::Incomplete => {
             return Ok(LifecycleSnapshotPruningOutcome::deferred(
-                LifecycleSnapshotPruningStatus::DeferredIncompleteProof,
+                LifecycleRetentionProofStatus::Incomplete,
                 Some(telemetry_health_debt("retention proof is incomplete")?),
             ));
         }
         LifecycleRetentionProofStatus::BlockedByRecoveryHealth => {
             return Ok(LifecycleSnapshotPruningOutcome::deferred(
-                LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth,
+                LifecycleRetentionProofStatus::BlockedByRecoveryHealth,
                 Some(request.proof().recovery_health().clone()),
             ));
         }
@@ -761,7 +751,7 @@ pub(crate) fn prune_snapshots_with_proof(
             request.effective_retain_newest(),
         )
         .map_err(snapshot_error)?;
-    LifecycleSnapshotPruningOutcome::completed(
+    LifecycleSnapshotPruningOutcome::from_completed_report(
         report.deleted().to_vec(),
         report.protected().to_vec(),
         report.failed().to_vec(),

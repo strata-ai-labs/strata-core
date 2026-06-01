@@ -22,7 +22,7 @@ use crate::lifecycle::retention::{
     build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
     retention_outcome_for_delegated_families, retention_outcome_for_scope,
     retention_request_from_maintenance_task, LifecycleRetentionRequest, LifecycleRetentionScope,
-    LifecycleRetentionStatus, LifecycleSnapshotPruningRequest, LifecycleSnapshotPruningStatus,
+    LifecycleRetentionStatus, LifecycleSnapshotPruningRequest,
 };
 use crate::lifecycle::{
     purge_quarantine as purge_lifecycle_quarantine, purge_request_from_maintenance_task,
@@ -556,16 +556,13 @@ fn global_retention_maintenance_outcome(
     snapshot_outcome: &crate::lifecycle::LifecycleSnapshotPruningOutcome,
     retention_outcome: &crate::lifecycle::LifecycleRetentionOutcome,
 ) -> MaintenanceOutcome {
-    let status = if matches!(
-        snapshot_outcome.status(),
-        LifecycleSnapshotPruningStatus::DeferredIncompleteProof
-            | LifecycleSnapshotPruningStatus::BlockedByRecoveryHealth
-    ) || matches!(
-        retention_outcome.status(),
-        LifecycleRetentionStatus::DeferredIncompleteProof
-            | LifecycleRetentionStatus::DeferredUnsupportedScope
-            | LifecycleRetentionStatus::BlockedByRecoveryHealth
-    ) {
+    let status = if !snapshot_outcome.completed()
+        || matches!(
+            retention_outcome.status(),
+            LifecycleRetentionStatus::DeferredIncompleteProof
+                | LifecycleRetentionStatus::DeferredUnsupportedScope
+                | LifecycleRetentionStatus::BlockedByRecoveryHealth
+        ) {
         MaintenanceOutcomeStatus::Deferred
     } else {
         MaintenanceOutcomeStatus::Completed
