@@ -184,41 +184,22 @@ impl std::error::Error for ManifestServiceError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DatabaseManifestWrite {
-    manifest: DatabaseManifest,
+pub(crate) struct ManifestWrite<M> {
+    manifest: M,
     outcome: PublishOutcome,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TableManifestWrite {
-    manifest: TableManifest,
-    outcome: PublishOutcome,
-}
+pub(crate) type DatabaseManifestWrite = ManifestWrite<DatabaseManifest>;
+pub(crate) type TableManifestWrite = ManifestWrite<TableManifest>;
+pub(crate) type BranchCatalogManifestWrite = ManifestWrite<BranchCatalogManifest>;
+pub(crate) type PendingReleasesManifestWrite = ManifestWrite<PendingReleasesManifest>;
 
-impl TableManifestWrite {
-    fn new(manifest: TableManifest, outcome: PublishOutcome) -> Self {
+impl<M> ManifestWrite<M> {
+    fn new(manifest: M, outcome: PublishOutcome) -> Self {
         Self { manifest, outcome }
     }
 
-    pub(crate) const fn manifest(&self) -> &TableManifest {
-        &self.manifest
-    }
-
-    #[allow(
-        dead_code,
-        reason = "table-manifest publish metadata is asserted by service tests"
-    )]
-    pub(crate) const fn outcome(&self) -> &PublishOutcome {
-        &self.outcome
-    }
-}
-
-impl DatabaseManifestWrite {
-    fn new(manifest: DatabaseManifest, outcome: PublishOutcome) -> Self {
-        Self { manifest, outcome }
-    }
-
-    pub(crate) const fn manifest(&self) -> &DatabaseManifest {
+    pub(crate) const fn manifest(&self) -> &M {
         &self.manifest
     }
 
@@ -450,34 +431,6 @@ impl<'a> BranchCatalogManifestService<'a> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchCatalogManifestWrite {
-    manifest: BranchCatalogManifest,
-    outcome: PublishOutcome,
-}
-
-impl BranchCatalogManifestWrite {
-    const fn new(manifest: BranchCatalogManifest, outcome: PublishOutcome) -> Self {
-        Self { manifest, outcome }
-    }
-
-    #[allow(
-        dead_code,
-        reason = "exposed for tests; first non-test caller lands with the public storage api"
-    )]
-    pub(crate) fn manifest(&self) -> &BranchCatalogManifest {
-        &self.manifest
-    }
-
-    #[allow(
-        dead_code,
-        reason = "exposed for tests; first non-test caller lands with the public storage api"
-    )]
-    pub(crate) const fn outcome(&self) -> &PublishOutcome {
-        &self.outcome
-    }
-}
-
 pub(crate) struct PendingReleasesManifestService<'a> {
     backend: &'a dyn Backend,
 }
@@ -500,34 +453,6 @@ impl<'a> PendingReleasesManifestService<'a> {
     ) -> ManifestServiceResult<PendingReleasesManifestWrite> {
         let object = pending_releases_manifest_object()?;
         publish_pending_releases(self.backend, &object, manifest, PublishIntent::Replace)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PendingReleasesManifestWrite {
-    manifest: PendingReleasesManifest,
-    outcome: PublishOutcome,
-}
-
-impl PendingReleasesManifestWrite {
-    const fn new(manifest: PendingReleasesManifest, outcome: PublishOutcome) -> Self {
-        Self { manifest, outcome }
-    }
-
-    #[allow(
-        dead_code,
-        reason = "exposed for tests; first non-test caller lands with the public storage api"
-    )]
-    pub(crate) fn manifest(&self) -> &PendingReleasesManifest {
-        &self.manifest
-    }
-
-    #[allow(
-        dead_code,
-        reason = "exposed for tests; first non-test caller lands with the public storage api"
-    )]
-    pub(crate) const fn outcome(&self) -> &PublishOutcome {
-        &self.outcome
     }
 }
 
