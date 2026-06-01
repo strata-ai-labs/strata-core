@@ -72,7 +72,7 @@ pub(crate) use snapshot::{
 )]
 pub(crate) use table::{
     TableObjectByteSource, TableObjectFacts, TableObjectInventoryObject, TableObjectReadError,
-    TableObjectReaderService, TableObjectService, TableObjectServiceError, TableObjectWrite,
+    TableObjectReaderService, TableObjectService, TableObjectServiceError,
 };
 
 #[expect(

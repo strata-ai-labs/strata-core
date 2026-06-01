@@ -10,7 +10,6 @@
 
 use crate::backend::{
     Backend, BackendCapability, BackendError, BackendRange, PublishError, PublishFailureKind,
-    PublishOutcome,
 };
 use crate::format::{decode_immutable_table, FormatError, ImmutableTable, TableManifestTableRef};
 use crate::layout::{LayoutError, ObjectLayout};
@@ -280,26 +279,6 @@ impl TableObjectFacts {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TableObjectWrite {
-    facts: TableObjectFacts,
-    outcome: PublishOutcome,
-}
-
-impl TableObjectWrite {
-    fn new(facts: TableObjectFacts, outcome: PublishOutcome) -> Self {
-        Self { facts, outcome }
-    }
-
-    pub(crate) const fn facts(&self) -> &TableObjectFacts {
-        &self.facts
-    }
-
-    pub(crate) const fn outcome(&self) -> &PublishOutcome {
-        &self.outcome
-    }
-}
-
 pub(crate) struct TableObjectByteSource<'a> {
     backend: &'a dyn Backend,
     object: ObjectName,
@@ -453,7 +432,7 @@ impl<'a> TableObjectService<'a> {
         level: u32,
         table_id: &str,
         bytes: &[u8],
-    ) -> TableObjectServiceResult<TableObjectWrite> {
+    ) -> TableObjectServiceResult<TableObjectFacts> {
         let object = table_object(branch_id, level, table_id)?;
         // Keep capability preflight ahead of table decode. ObjectPublisher also
         // checks before backend mutation; this earlier check preserves the
@@ -478,7 +457,7 @@ impl<'a> TableObjectService<'a> {
                 field: mismatch.field(),
             }
         })?;
-        Ok(TableObjectWrite::new(facts, outcome))
+        Ok(facts)
     }
 
     pub(crate) fn facts_for_table(
@@ -964,18 +943,16 @@ mod tests {
         let branch = branch_id().to_string();
         let object = ObjectLayout::table_object(&branch, 2, "table0001").expect("table object");
 
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 2, "table0001", &bytes)
             .expect("publish table object");
 
-        assert_eq!(write.facts().object(), &object);
-        assert_eq!(write.facts().byte_count(), bytes.len() as u64);
-        assert_eq!(write.facts().row_count(), 2);
-        assert_eq!(write.facts().data_block_count(), 1);
-        assert_eq!(write.facts().commit_min(), CommitVersion::new(7));
-        assert_eq!(write.facts().commit_max(), CommitVersion::new(9));
-        assert_eq!(write.outcome().object(), &object);
-        assert_eq!(write.outcome().durability(), PublishDurability::Durable);
+        assert_eq!(facts.object(), &object);
+        assert_eq!(facts.byte_count(), bytes.len() as u64);
+        assert_eq!(facts.row_count(), 2);
+        assert_eq!(facts.data_block_count(), 1);
+        assert_eq!(facts.commit_min(), CommitVersion::new(7));
+        assert_eq!(facts.commit_max(), CommitVersion::new(9));
         assert_eq!(backend.read_stored(&object), bytes);
         assert_eq!(backend.operations(), vec![(object, PublishMode::Create)]);
     }
@@ -1146,17 +1123,13 @@ mod tests {
         let backend = RecordingBackend::durable();
         let bytes = valid_table_bytes();
         let branch = branch_id().to_string();
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 2, "table0001", &bytes)
             .expect("publish table object");
         let identity = TableIdentity::new("published-table").expect("identity");
 
         let object_reader = TableObjectReaderService::new(&backend)
-            .open_reader(
-                identity.clone(),
-                write.facts(),
-                TableReaderConfig::default(),
-            )
+            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
             .expect("open object-backed reader");
         let byte_reader =
             ImmutableTableReader::open_bytes(identity, bytes.clone(), TableReaderConfig::default())
@@ -1165,13 +1138,13 @@ mod tests {
         assert_reader_matches(&object_reader, &byte_reader);
         assert_range_open_avoids_full_object_read(
             &backend.range_reads(),
-            write.facts().object(),
+            facts.object(),
             bytes.len() as u64,
         );
         assert_eq!(backend.metadata_calls(), 1);
         assert_eq!(
             backend.operations(),
-            vec![(write.facts().object().clone(), PublishMode::Create)]
+            vec![(facts.object().clone(), PublishMode::Create)]
         );
         assert_eq!(backend.list_calls(), 0);
         assert_eq!(backend.write_calls(), 0);
@@ -1189,13 +1162,13 @@ mod tests {
             TableCompression::Uncompressed,
         );
         let branch = branch_id().to_string();
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 2, "table0005", &bytes)
             .expect("publish range accounting table");
         let identity = TableIdentity::new("object-range-accounting-reader").expect("identity");
 
         let reader = TableObjectReaderService::new(&backend)
-            .open_reader(identity, write.facts(), TableReaderConfig::default())
+            .open_reader(identity, &facts, TableReaderConfig::default())
             .expect("open range accounting reader");
 
         assert_eq!(reader.rows().len(), rows.len());
@@ -1210,7 +1183,7 @@ mod tests {
         );
         assert_range_open_avoids_full_object_read(
             &backend.range_reads(),
-            write.facts().object(),
+            facts.object(),
             bytes.len() as u64,
         );
     }
@@ -1591,17 +1564,13 @@ mod tests {
         );
         let backend = RecordingBackend::durable();
         let branch = branch_id().to_string();
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 0, "table0001", &bytes)
             .expect("publish query table");
         let identity = TableIdentity::new("object-query-reader").expect("identity");
 
         let object_reader = TableObjectReaderService::new(&backend)
-            .open_reader(
-                identity.clone(),
-                write.facts(),
-                TableReaderConfig::default(),
-            )
+            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
             .expect("open object-backed query reader");
         let byte_reader =
             ImmutableTableReader::open_bytes(identity, bytes, TableReaderConfig::default())
@@ -1625,7 +1594,7 @@ mod tests {
             built_table_bytes("object-zstd-source", &rows, 1, TableCompression::Zstd);
         let backend = RecordingBackend::durable();
         let branch = branch_id().to_string();
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 1, "table0002", &bytes)
             .expect("publish zstd table");
         let prefix_key = table_rows
@@ -1640,7 +1609,7 @@ mod tests {
         ] {
             let identity = TableIdentity::new(identity_text).expect("identity");
             let object_reader = TableObjectReaderService::new(&backend)
-                .open_reader(identity.clone(), write.facts(), config)
+                .open_reader(identity.clone(), &facts, config)
                 .expect("open object-backed zstd reader");
             let byte_reader = ImmutableTableReader::open_bytes(identity, bytes.clone(), config)
                 .expect("open byte zstd reader");
@@ -1666,23 +1635,19 @@ mod tests {
         );
         let backend = RecordingBackend::durable();
         let branch = branch_id().to_string();
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 2, "table0003", &bytes)
             .expect("publish identity table");
 
         let first_identity = TableIdentity::new("opaque-reader-a").expect("identity a");
         let second_identity = TableIdentity::new("opaque-reader-b").expect("identity b");
         let first_reader = TableObjectReaderService::new(&backend)
-            .open_reader(
-                first_identity.clone(),
-                write.facts(),
-                TableReaderConfig::default(),
-            )
+            .open_reader(first_identity.clone(), &facts, TableReaderConfig::default())
             .expect("open first identity reader");
         let second_reader = TableObjectReaderService::new(&backend)
             .open_reader(
                 second_identity.clone(),
-                write.facts(),
+                &facts,
                 TableReaderConfig::default(),
             )
             .expect("open second identity reader");
@@ -1896,14 +1861,12 @@ mod tests {
         let branch = branch_id().to_string();
         let object = ObjectLayout::table_object(&branch, 1, "table0001").expect("table object");
 
-        let write = TableObjectService::new(&backend)
+        let facts = TableObjectService::new(&backend)
             .publish_create(&branch, 1, "table0001", &bytes)
             .expect("publish table object on localfs");
 
-        assert_eq!(write.facts().object(), &object);
-        assert_eq!(write.facts().byte_count(), bytes.len() as u64);
-        assert_eq!(write.outcome().object(), &object);
-        assert_eq!(write.outcome().durability(), PublishDurability::Durable);
+        assert_eq!(facts.object(), &object);
+        assert_eq!(facts.byte_count(), bytes.len() as u64);
         assert_eq!(
             backend.read_object(&object).expect("read table object"),
             bytes.clone()
@@ -1911,11 +1874,7 @@ mod tests {
 
         let identity = TableIdentity::new("localfs-table").expect("identity");
         let object_reader = TableObjectReaderService::new(&backend)
-            .open_reader(
-                identity.clone(),
-                write.facts(),
-                TableReaderConfig::default(),
-            )
+            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
             .expect("open localfs object-backed reader");
         let byte_reader =
             ImmutableTableReader::open_bytes(identity, bytes, TableReaderConfig::default())

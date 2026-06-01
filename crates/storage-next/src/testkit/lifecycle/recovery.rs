@@ -936,7 +936,7 @@ fn publish_table_object_for_manifest(
 ) -> Result<TableManifestTableRef, TestkitError> {
     let identity = TableIdentity::new(identity).map_err(testkit_error)?;
     let bytes = table_bytes(identity.clone(), rows)?;
-    let write = TableObjectService::new(backend)
+    let facts = TableObjectService::new(backend)
         .publish_create(
             &branch.to_string(),
             u32::from(level.raw()),
@@ -949,7 +949,7 @@ fn publish_table_object_for_manifest(
             .map_err(testkit_error)?;
     TableManifestTableRef::new(
         identity,
-        write.facts().object().clone(),
+        facts.object().clone(),
         order,
         table_manifest_facts(&reader)?,
         table_manifest_bounds(reader.rows())?,

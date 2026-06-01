@@ -426,7 +426,7 @@ fn publish_or_load_rewrite_output(
     table_facts: &crate::table::TableRuntimeFacts,
 ) -> LifecycleResult<TableObjectFacts> {
     match table_service.publish_create(branch_component, level, object_id, bytes) {
-        Ok(write) => Ok(write.facts().clone()),
+        Ok(facts) => Ok(facts),
         Err(TableObjectServiceError::Publish { source, .. })
             if source.kind() == PublishFailureKind::PreconditionFailed =>
         {

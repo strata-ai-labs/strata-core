@@ -1593,7 +1593,7 @@ fn publish_manifest_table(
 ) -> PublishedManifestTable {
     let identity = TableIdentity::new(identity).expect("table identity");
     let bytes = table_bytes(identity.clone(), rows);
-    let write = TableObjectService::new(backend)
+    let facts = TableObjectService::new(backend)
         .publish_create(
             &branch.to_string(),
             u32::from(level.raw()),
@@ -1606,7 +1606,7 @@ fn publish_manifest_table(
             .expect("table reader");
     let reference = TableManifestTableRef::new(
         identity,
-        write.facts().object().clone(),
+        facts.object().clone(),
         0,
         table_manifest_facts(&reader),
         table_manifest_bounds(reader.rows()),

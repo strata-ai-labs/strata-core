@@ -999,7 +999,7 @@ fn recovery_rejects_ad_hoc_table_object_references() {
         table_identity.clone(),
         std::slice::from_ref(&put_row(branch, 2, b"table-row", b"value")),
     );
-    let write = TableObjectService::new(&backend)
+    let facts = TableObjectService::new(&backend)
         .publish_create("branch", 0, "table0002", &table_bytes)
         .expect("publish table");
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
@@ -1008,7 +1008,7 @@ fn recovery_rejects_ad_hoc_table_object_references() {
         .expect("recovery request")
         .with_table_objects(vec![LifecycleRecoveryTableObject::new(
             table_identity.clone(),
-            write.facts().clone(),
+            facts.clone(),
         )]);
 
     assert_eq!(
@@ -1029,11 +1029,11 @@ fn recovery_rejects_missing_referenced_table_object() {
         table_identity.clone(),
         std::slice::from_ref(&put_row(branch, 2, b"table-row", b"value")),
     );
-    let write = TableObjectService::new(&backend)
+    let facts = TableObjectService::new(&backend)
         .publish_create("branch", 0, "table0001", &table_bytes)
         .expect("publish table");
     backend
-        .delete_object(write.facts().object())
+        .delete_object(facts.object())
         .expect("remove referenced table");
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
         .expect("durable shell");
@@ -1041,7 +1041,7 @@ fn recovery_rejects_missing_referenced_table_object() {
         .expect("recovery request")
         .with_table_objects(vec![LifecycleRecoveryTableObject::new(
             table_identity,
-            write.facts().clone(),
+            facts.clone(),
         )]);
 
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -1066,11 +1066,11 @@ fn recovery_validates_tables_before_wal_tail_repair() {
         table_identity.clone(),
         std::slice::from_ref(&put_row(branch, 2, b"table-row", b"value")),
     );
-    let write = TableObjectService::new(&backend)
+    let facts = TableObjectService::new(&backend)
         .publish_create("branch", 0, "table0003", &table_bytes)
         .expect("publish table");
     backend
-        .delete_object(write.facts().object())
+        .delete_object(facts.object())
         .expect("remove referenced table");
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
         .expect("durable shell");
@@ -1087,7 +1087,7 @@ fn recovery_validates_tables_before_wal_tail_repair() {
         .expect("recovery request")
         .with_table_objects(vec![LifecycleRecoveryTableObject::new(
             table_identity,
-            write.facts().clone(),
+            facts.clone(),
         )]);
 
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -2309,7 +2309,7 @@ fn publish_table_for_recovery(
     use crate::table::{ImmutableTableReader, TablePhysicalKeyBytes, TableReaderConfig};
     let identity = TableIdentity::new(identity).expect("table identity");
     let bytes = table_bytes(identity.clone(), rows);
-    let write = TableObjectService::new(backend)
+    let object_facts = TableObjectService::new(backend)
         .publish_create(
             &branch.to_string(),
             u32::from(level),
@@ -2373,7 +2373,7 @@ fn publish_table_for_recovery(
     };
     TableManifestTableRef::new(
         identity,
-        write.facts().object().clone(),
+        object_facts.object().clone(),
         0,
         facts,
         bounds,
