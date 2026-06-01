@@ -42,7 +42,7 @@ pub(super) fn tombstone_pruning_rejects_resurrection_risk() {
         .expect("shared-table proof")
         .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
         .expect("recovery health proof")
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .expect("tombstone proof");
     let request =
         BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "tombstone-risk")
@@ -123,9 +123,7 @@ pub(super) fn expired_row_pruning_uses_supplied_cutoff() {
         .expect("shared-table proof")
         .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
         .expect("recovery health proof")
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .expect("ttl proof");
     let request = BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "ttl-out")
         .expect("request")
@@ -179,6 +177,69 @@ fn tombstone_pruning_rejects_without_elision_proof() {
 }
 
 #[test]
+fn row_elision_gates_remain_bound_to_parent_proof_safety() {
+    let tombstone_branch = branch_id(0xc1);
+    let mut tombstone_state = tombstone_only_state(
+        tombstone_branch,
+        "merged-tombstone-proof",
+        BranchRuntimeConfig::new(1, 8, 8).expect("config"),
+    );
+    tombstone_state.set_timestamp_coverage(BranchTimestampCoverage::complete());
+    let tombstone_proof =
+        BranchCompactionPruningProof::from_branch_state(&tombstone_state, CommitVersion::new(7))
+            .expect("proof")
+            .with_retained_timestamp_floor(Timestamp::from_micros(70))
+            .expect("timestamp proof")
+            .with_shared_table_safety(BranchSharedTableSafety::NotShared)
+            .expect("shared-table proof")
+            .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
+            .expect("recovery health proof")
+            .with_tombstone_elision()
+            .expect("tombstone gate");
+    let before_tombstone = tombstone_state.clone();
+
+    let tombstone_error = tombstone_state
+        .compact_branch_owned_tables(&tombstone_request(
+            tombstone_branch,
+            "merged-tombstone-proof-out",
+            tombstone_proof,
+        ))
+        .expect_err("tombstone gate cannot bypass inherited-layer safety");
+
+    assert_invalid_compaction_code(
+        &tombstone_error,
+        BranchCompactionInvalidity::InheritedLayerUnknown,
+    );
+    assert_eq!(tombstone_state, before_tombstone);
+
+    let ttl_branch = branch_id(0xc2);
+    let mut ttl_state = ttl_state(ttl_branch, "merged-ttl-proof", 4, 40, 45);
+    ttl_state.set_timestamp_coverage(BranchTimestampCoverage::complete());
+    let ttl_proof =
+        BranchCompactionPruningProof::from_branch_state(&ttl_state, CommitVersion::new(5))
+            .expect("proof")
+            .with_retained_timestamp_floor(Timestamp::from_micros(50))
+            .expect("timestamp proof")
+            .with_inherited_safety(BranchInheritancePruningProof::NoReadableInheritedLayers)
+            .expect("inheritance proof")
+            .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
+            .expect("recovery health proof")
+            .with_ttl_elision(Timestamp::from_micros(50))
+            .expect("ttl gate");
+    let before_ttl = ttl_state.clone();
+
+    let ttl_error = ttl_state
+        .compact_branch_owned_tables(&ttl_request(ttl_branch, "merged-ttl-proof-out", ttl_proof))
+        .expect_err("ttl gate cannot bypass shared-table safety");
+
+    assert_invalid_compaction_code(
+        &ttl_error,
+        BranchCompactionInvalidity::SharedTableSafetyUnknown,
+    );
+    assert_eq!(ttl_state, before_ttl);
+}
+
+#[test]
 pub(super) fn bottommost_tombstone_below_floor_can_be_elided() {
     let branch = branch_id(0xb8);
     let mut state = tombstone_only_state(
@@ -188,7 +249,7 @@ pub(super) fn bottommost_tombstone_below_floor_can_be_elided() {
     );
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 7, 70)
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .expect("tombstone proof");
 
     let outcome = state
@@ -209,7 +270,7 @@ fn non_bottommost_tombstone_below_floor_is_kept() {
     let mut state = tombstone_only_state(branch, "non-bottommost", BranchRuntimeConfig::default());
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 7, 70)
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .expect("tombstone proof");
 
     let error = state
@@ -230,7 +291,7 @@ fn tombstone_above_floor_is_kept() {
     );
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 5, 50)
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .expect("tombstone proof");
 
     let outcome = state
@@ -300,7 +361,7 @@ pub(super) fn tombstone_needed_to_shadow_inherited_value_is_kept() {
             .expect("shared-table proof")
             .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
             .expect("recovery health proof")
-            .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+            .with_tombstone_elision()
             .expect("tombstone proof");
 
     let error = child_state
@@ -330,9 +391,7 @@ fn expired_ttl_above_version_floor_is_kept() {
     let mut state = ttl_state(branch, "ttl-above-version", 6, 40, 45);
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 5, 50)
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .expect("ttl proof");
 
     let outcome = state
@@ -359,9 +418,7 @@ fn expired_ttl_needed_by_as_of_timestamp_rejects_cutoff() {
         .expect("shared-table proof")
         .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
         .expect("recovery health proof")
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(80),
-        })
+        .with_ttl_elision(Timestamp::from_micros(80))
         .expect_err("ttl cutoff beyond retained timestamp floor rejects");
 
     assert_invalid_compaction(&error);
@@ -373,9 +430,7 @@ fn non_expired_ttl_row_is_kept() {
     let mut state = ttl_state(branch, "ttl-live", 4, 40, 90);
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 5, 50)
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .expect("ttl proof");
 
     let outcome = state
@@ -438,9 +493,7 @@ pub(super) fn ttl_pruning_across_inherited_parent_child_keeps_required_parent_ro
     .expect("install child right");
     child_state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&child_state, 5, 50)
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .expect("ttl proof");
 
     let error = child_state

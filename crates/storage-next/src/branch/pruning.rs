@@ -26,24 +26,16 @@ pub(crate) struct BranchCompactionPruningProof {
     visible_version: CommitVersion,
     pinned_view_floor: Option<CommitVersion>,
     table_manifest_coverage_floor: CommitVersion,
-    tombstone_elision: BranchTombstoneElisionProof,
-    ttl_elision: BranchTtlElisionProof,
+    // Row-elision gates are merged onto the parent proof so tombstone and
+    // TTL deletion cannot be detached from branch freshness, recovery health,
+    // inherited-layer safety, and shared-table safety. Pinned by
+    // branch::tests::row_pruning::tombstone_ttl.
+    tombstone_elision_safe: bool,
+    ttl_expired_at_or_before: Option<Timestamp>,
     max_versions_per_key: Option<usize>,
     inherited_safety: BranchInheritancePruningProof,
     shared_table_safety: BranchSharedTableSafety,
     recovery_health: BranchRecoveryHealthAttestation,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchTombstoneElisionProof {
-    Disabled,
-    BottommostOwnedAndInheritedSafe,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BranchTtlElisionProof {
-    Disabled,
-    ExpiredAtOrBefore { timestamp: Timestamp },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,8 +108,8 @@ impl BranchCompactionPruningProof {
             visible_version,
             pinned_view_floor: None,
             table_manifest_coverage_floor: retained_version_floor,
-            tombstone_elision: BranchTombstoneElisionProof::Disabled,
-            ttl_elision: BranchTtlElisionProof::Disabled,
+            tombstone_elision_safe: false,
+            ttl_expired_at_or_before: None,
             max_versions_per_key: None,
             inherited_safety: BranchInheritancePruningProof::Unknown,
             shared_table_safety: BranchSharedTableSafety::Unknown,
@@ -169,12 +161,12 @@ impl BranchCompactionPruningProof {
         self.max_versions_per_key
     }
 
-    pub(crate) const fn tombstone_elision(self) -> BranchTombstoneElisionProof {
-        self.tombstone_elision
+    pub(crate) const fn tombstone_elision_safe(self) -> bool {
+        self.tombstone_elision_safe
     }
 
-    pub(crate) const fn ttl_elision(self) -> BranchTtlElisionProof {
-        self.ttl_elision
+    pub(crate) const fn ttl_expired_at_or_before(self) -> Option<Timestamp> {
+        self.ttl_expired_at_or_before
     }
 
     pub(crate) const fn inherited_safety(self) -> BranchInheritancePruningProof {
@@ -216,20 +208,17 @@ impl BranchCompactionPruningProof {
         Ok(self)
     }
 
-    pub(crate) fn with_tombstone_elision(
-        mut self,
-        proof: BranchTombstoneElisionProof,
-    ) -> BranchRuntimeResult<Self> {
-        self.tombstone_elision = proof;
+    pub(crate) fn with_tombstone_elision(mut self) -> BranchRuntimeResult<Self> {
+        self.tombstone_elision_safe = true;
         self.validate_static()?;
         Ok(self)
     }
 
     pub(crate) fn with_ttl_elision(
         mut self,
-        proof: BranchTtlElisionProof,
+        expired_at_or_before: Timestamp,
     ) -> BranchRuntimeResult<Self> {
-        self.ttl_elision = proof;
+        self.ttl_expired_at_or_before = Some(expired_at_or_before);
         self.validate_static()?;
         Ok(self)
     }
@@ -327,10 +316,8 @@ impl BranchCompactionPruningProof {
                 reason: BranchCompactionInvalidity::TableManifestCoverageBeyondFloor,
             });
         }
-        if let (
-            Some(retained_timestamp_floor),
-            BranchTtlElisionProof::ExpiredAtOrBefore { timestamp },
-        ) = (self.retained_timestamp_floor, self.ttl_elision)
+        if let (Some(retained_timestamp_floor), Some(timestamp)) =
+            (self.retained_timestamp_floor, self.ttl_expired_at_or_before)
         {
             if timestamp > retained_timestamp_floor {
                 return Err(BranchRuntimeError::InvalidCompaction {
@@ -445,7 +432,7 @@ impl BranchCompactionPruningPolicy {
     }
 
     fn decide_expired_value(&mut self, row: &TableRow) -> TableCompactionDecision {
-        if !row_is_expired_by_proof(row, self.proof.ttl_elision) {
+        if !row_is_expired_by_proof(row, self.proof.ttl_expired_at_or_before) {
             return TableCompactionDecision::Keep;
         }
         if self.kept_value_versions_for_key == 0 && !self.kept_below_floor_survivor_for_key {
@@ -594,9 +581,7 @@ fn validate_policy_specific_safety(
         BranchCompactionRetentionPolicy::KeepAll
         | BranchCompactionRetentionPolicy::DropOlderVersions => Ok(()),
         BranchCompactionRetentionPolicy::DropTombstones => {
-            if proof.tombstone_elision
-                != BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe
-            {
+            if !proof.tombstone_elision_safe {
                 return Err(BranchRuntimeError::InvalidCompaction {
                     reason: BranchCompactionInvalidity::TombstoneElisionMissing,
                 });
@@ -616,7 +601,7 @@ fn validate_policy_specific_safety(
             Ok(())
         }
         BranchCompactionRetentionPolicy::DropExpired => {
-            if matches!(proof.ttl_elision, BranchTtlElisionProof::Disabled) {
+            if proof.ttl_expired_at_or_before.is_none() {
                 return Err(BranchRuntimeError::InvalidCompaction {
                     reason: BranchCompactionInvalidity::TtlElisionMissing,
                 });
@@ -703,18 +688,13 @@ fn row_below_floors(row: &TableRow, proof: BranchCompactionPruningProof) -> bool
 }
 
 fn row_would_drop_as_expired(row: &TableRow, proof: BranchCompactionPruningProof) -> bool {
-    row_below_floors(row, proof) && row_is_expired_by_proof(row, proof.ttl_elision)
+    row_below_floors(row, proof) && row_is_expired_by_proof(row, proof.ttl_expired_at_or_before)
 }
 
-fn row_is_expired_by_proof(row: &TableRow, proof: BranchTtlElisionProof) -> bool {
-    match proof {
-        BranchTtlElisionProof::Disabled => false,
-        BranchTtlElisionProof::ExpiredAtOrBefore { timestamp } => {
-            !row.is_tombstone()
-                && row.expires_at() != Timestamp::EPOCH
-                && row.expires_at() <= timestamp
-        }
-    }
+fn row_is_expired_by_proof(row: &TableRow, expired_at_or_before: Option<Timestamp>) -> bool {
+    expired_at_or_before.is_some_and(|timestamp| {
+        !row.is_tombstone() && row.expires_at() != Timestamp::EPOCH && row.expires_at() <= timestamp
+    })
 }
 
 fn hash_owned_levels(hash: &mut u64, levels: &[Vec<BranchOwnedTable>]) {

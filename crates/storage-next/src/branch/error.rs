@@ -119,7 +119,7 @@ pub(crate) enum BranchCompactionInvalidity {
     /// Tombstone elision would resurrect a value still present in the
     /// rewrite inputs.
     TombstoneResurrectionRisk,
-    /// `DropExpired` requested without a `BranchTtlElisionProof::ExpiredAtOrBefore`.
+    /// `DropExpired` requested without a TTL cutoff bound on the pruning proof.
     TtlElisionMissing,
     /// `DropExpired` requested but the compaction is not bottommost.
     TtlElisionNotBottommost,

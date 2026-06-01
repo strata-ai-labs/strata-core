@@ -6,7 +6,7 @@ use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::pruning::{
     BranchCompactionPruningProof, BranchInheritancePruningProof, BranchRecoveryHealthAttestation,
-    BranchSharedTableSafety, BranchTombstoneElisionProof, BranchTtlElisionProof,
+    BranchSharedTableSafety,
 };
 use crate::branch::read::{BranchOwnedTable, BranchTimestampCoverage};
 use crate::branch::state::compaction::{
@@ -186,7 +186,7 @@ fn check_tombstone_drop(
     )?;
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 7, 70)?
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .map_err(pruning_error)?;
 
     let compaction = state
@@ -231,7 +231,7 @@ fn check_tombstone_shadowing(
     )?;
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 7, 70)?
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .map_err(pruning_error)?;
 
     let error = state
@@ -270,9 +270,7 @@ fn check_expired_rows(
     )?;
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 5, 50)?
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .map_err(pruning_error)?;
 
     let compaction = state
@@ -313,9 +311,7 @@ fn check_expired_row_needed_by_timestamp(
     )?;
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 5, 50)?
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .map_err(pruning_error)?;
 
     let compaction = state

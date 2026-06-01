@@ -248,7 +248,7 @@ fn materialized_replacement_tombstone_safety_is_checked() {
             .expect("shared-table proof")
             .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
             .expect("recovery health proof")
-            .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+            .with_tombstone_elision()
             .expect("tombstone proof");
 
     let error = child_state
@@ -272,7 +272,7 @@ fn tombstone_elision_does_not_resurrect_deleted_key() {
     let key = physical_key(branch, b"deleted".to_vec());
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 7, 70)
-        .with_tombstone_elision(BranchTombstoneElisionProof::BottommostOwnedAndInheritedSafe)
+        .with_tombstone_elision()
         .expect("tombstone proof");
 
     state
@@ -307,9 +307,7 @@ fn expired_ttl_needed_by_as_of_timestamp_is_kept() {
     let mut state = ttl_state(branch, "ttl-needed-as-of", 4, 60, 45);
     state.set_timestamp_coverage(BranchTimestampCoverage::complete());
     let proof = proof_for(&state, 5, 50)
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(50),
-        })
+        .with_ttl_elision(Timestamp::from_micros(50))
         .expect("ttl proof");
 
     state
@@ -383,9 +381,7 @@ fn ttl_pruning_preserves_child_newer_override() {
     child_state.set_timestamp_coverage(BranchTimestampCoverage::complete());
 
     let proof = proof_for(&child_state, 7, 70)
-        .with_ttl_elision(BranchTtlElisionProof::ExpiredAtOrBefore {
-            timestamp: Timestamp::from_micros(70),
-        })
+        .with_ttl_elision(Timestamp::from_micros(70))
         .expect("ttl proof");
     let error = child_state
         .compact_branch_owned_tables(&ttl_request(child, "ttl-override-out", proof))

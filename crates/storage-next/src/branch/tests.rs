@@ -15,8 +15,7 @@ use super::identity::{
 };
 use super::pruning::{
     branch_pruning_fingerprint, BranchCompactionPruningProof, BranchInheritancePruningProof,
-    BranchRecoveryHealthAttestation, BranchSharedTableSafety, BranchTombstoneElisionProof,
-    BranchTtlElisionProof,
+    BranchRecoveryHealthAttestation, BranchSharedTableSafety,
 };
 use super::read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
