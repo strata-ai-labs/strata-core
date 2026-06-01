@@ -320,25 +320,25 @@ fn branch_effective_read_bounds_apply_inclusive_own_and_inherited_caps() {
     let latest = BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest());
     assert_eq!(latest.max_commit_version(), None);
     assert_eq!(latest.max_commit_timestamp(), None);
-    assert!(latest.matches_row(&row).matches_effective_bound());
+    assert!(latest.matches_row(&row));
 
     let exact_version = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(
         CommitVersion::new(50),
     ));
-    assert!(exact_version.matches_row(&row).matches_effective_bound());
+    assert!(exact_version.matches_row(&row));
     let before_version = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(
         CommitVersion::new(49),
     ));
-    assert!(!before_version.matches_row(&row).version_in_bound());
+    assert!(!before_version.row_version_in_bound(&row));
 
     let exact_timestamp = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
         Timestamp::from_micros(500),
     ));
-    assert!(exact_timestamp.matches_row(&row).matches_effective_bound());
+    assert!(exact_timestamp.matches_row(&row));
     let before_timestamp = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
         Timestamp::from_micros(499),
     ));
-    assert!(!before_timestamp.matches_row(&row).timestamp_in_bound());
+    assert!(!before_timestamp.row_timestamp_in_bound(&row));
 
     let inherited_latest = BranchEffectiveReadBound::for_inherited_layer(
         BranchReadBound::latest(),
@@ -348,13 +348,12 @@ fn branch_effective_read_bounds_apply_inclusive_own_and_inherited_caps() {
         inherited_latest.max_commit_version(),
         Some(CommitVersion::new(50))
     );
-    assert!(inherited_latest.matches_row(&row).matches_effective_bound());
+    assert!(inherited_latest.matches_row(&row));
 
     let inherited_timestamp = BranchEffectiveReadBound::for_inherited_layer(
         BranchReadBound::at_timestamp(Timestamp::from_micros(500)),
         CommitVersion::new(49),
     );
-    let inherited_match: BranchRowBoundMatch = inherited_timestamp.matches_row(&row);
     assert_eq!(
         inherited_timestamp.max_commit_version(),
         Some(CommitVersion::new(49))
@@ -363,9 +362,9 @@ fn branch_effective_read_bounds_apply_inclusive_own_and_inherited_caps() {
         inherited_timestamp.max_commit_timestamp(),
         Some(Timestamp::from_micros(500))
     );
-    assert!(!inherited_match.version_in_bound());
-    assert!(inherited_match.timestamp_in_bound());
-    assert!(!inherited_match.matches_effective_bound());
+    assert!(!inherited_timestamp.row_version_in_bound(&row));
+    assert!(inherited_timestamp.row_timestamp_in_bound(&row));
+    assert!(!inherited_timestamp.matches_row(&row));
 
     let inherited_version = BranchEffectiveReadBound::for_inherited_layer(
         BranchReadBound::at_version(CommitVersion::new(70)),
@@ -398,23 +397,21 @@ fn branch_own_bounds_cover_zero_epoch_and_below_equal_above_edges() {
     );
 
     let latest = BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest());
-    assert!(latest.matches_row(&zero_row).matches_effective_bound());
-    assert!(latest.matches_row(&later_row).matches_effective_bound());
+    assert!(latest.matches_row(&zero_row));
+    assert!(latest.matches_row(&later_row));
 
     let version_zero =
         BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(CommitVersion::ZERO));
     assert_eq!(version_zero.max_commit_version(), Some(CommitVersion::ZERO));
     assert_eq!(version_zero.max_commit_timestamp(), None);
-    assert!(version_zero
-        .matches_row(&zero_row)
-        .matches_effective_bound());
-    assert!(!version_zero.matches_row(&later_row).version_in_bound());
+    assert!(version_zero.matches_row(&zero_row));
+    assert!(!version_zero.row_version_in_bound(&later_row));
 
     let version_one = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(
         CommitVersion::new(1),
     ));
-    assert!(version_one.matches_row(&zero_row).version_in_bound());
-    assert!(version_one.matches_row(&later_row).version_in_bound());
+    assert!(version_one.row_version_in_bound(&zero_row));
+    assert!(version_one.row_version_in_bound(&later_row));
 
     let timestamp_epoch =
         BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(Timestamp::EPOCH));
@@ -423,16 +420,14 @@ fn branch_own_bounds_cover_zero_epoch_and_below_equal_above_edges() {
         timestamp_epoch.max_commit_timestamp(),
         Some(Timestamp::EPOCH)
     );
-    assert!(timestamp_epoch
-        .matches_row(&zero_row)
-        .matches_effective_bound());
-    assert!(!timestamp_epoch.matches_row(&later_row).timestamp_in_bound());
+    assert!(timestamp_epoch.matches_row(&zero_row));
+    assert!(!timestamp_epoch.row_timestamp_in_bound(&later_row));
 
     let timestamp_one = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
         Timestamp::from_micros(1),
     ));
-    assert!(timestamp_one.matches_row(&zero_row).timestamp_in_bound());
-    assert!(timestamp_one.matches_row(&later_row).timestamp_in_bound());
+    assert!(timestamp_one.row_timestamp_in_bound(&zero_row));
+    assert!(timestamp_one.row_timestamp_in_bound(&later_row));
 }
 
 #[test]
@@ -467,8 +462,8 @@ fn branch_inherited_bounds_cover_fork_edges_and_combined_timestamp_match() {
     let latest =
         BranchEffectiveReadBound::for_inherited_layer(BranchReadBound::latest(), fork_version);
     assert_eq!(latest.max_commit_version(), Some(fork_version));
-    assert!(latest.matches_row(&row_at_fork).matches_effective_bound());
-    assert!(!latest.matches_row(&row_after_fork).version_in_bound());
+    assert!(latest.matches_row(&row_at_fork));
+    assert!(!latest.row_version_in_bound(&row_after_fork));
 
     for (requested, expected) in [
         (CommitVersion::new(3), CommitVersion::new(3)),
@@ -492,19 +487,15 @@ fn branch_inherited_bounds_cover_fork_edges_and_combined_timestamp_match() {
         timestamp_bound.max_commit_timestamp(),
         Some(Timestamp::from_micros(40))
     );
-    assert!(timestamp_bound
-        .matches_row(&row_at_fork)
-        .matches_effective_bound());
+    assert!(timestamp_bound.matches_row(&row_at_fork));
 
-    let after_fork_match = timestamp_bound.matches_row(&row_after_fork);
-    assert!(!after_fork_match.version_in_bound());
-    assert!(after_fork_match.timestamp_in_bound());
-    assert!(!after_fork_match.matches_effective_bound());
+    assert!(!timestamp_bound.row_version_in_bound(&row_after_fork));
+    assert!(timestamp_bound.row_timestamp_in_bound(&row_after_fork));
+    assert!(!timestamp_bound.matches_row(&row_after_fork));
 
-    let after_timestamp_match = timestamp_bound.matches_row(&row_after_timestamp);
-    assert!(after_timestamp_match.version_in_bound());
-    assert!(!after_timestamp_match.timestamp_in_bound());
-    assert!(!after_timestamp_match.matches_effective_bound());
+    assert!(timestamp_bound.row_version_in_bound(&row_after_timestamp));
+    assert!(!timestamp_bound.row_timestamp_in_bound(&row_after_timestamp));
+    assert!(!timestamp_bound.matches_row(&row_after_timestamp));
 }
 
 #[test]
@@ -563,7 +554,7 @@ fn branch_effective_bounds_filter_row_chains_without_collapsing_versions() {
         .map(|row| {
             BranchRowCandidateFacts::from_row(row.row(), BranchRowSource::Active, combined_bound)
         })
-        .filter(|candidate| candidate.bound_match().matches_effective_bound())
+        .filter(BranchRowCandidateFacts::matches_effective_bound)
         .collect::<Vec<_>>();
     assert!(candidates.iter().any(BranchRowCandidateFacts::is_tombstone));
     assert!(candidates
@@ -598,7 +589,7 @@ fn branch_candidate_facts_preserve_tombstone_and_expiry_without_visibility_polic
     assert_eq!(facts.commit_timestamp(), Timestamp::from_micros(100));
     assert_eq!(facts.expires_at(), Timestamp::from_micros(90));
     assert!(!facts.is_tombstone());
-    assert!(facts.bound_match().matches_effective_bound());
+    assert!(facts.matches_effective_bound());
 
     let tombstone = tombstone_row(branch, b"deleted".to_vec(), 11, 100);
     let tombstone_facts =
@@ -608,11 +599,11 @@ fn branch_candidate_facts_preserve_tombstone_and_expiry_without_visibility_polic
         BranchRowSource::Frozen { index: 0 }
     );
     assert!(tombstone_facts.is_tombstone());
-    assert!(tombstone_facts.bound_match().matches_effective_bound());
+    assert!(tombstone_facts.matches_effective_bound());
 }
 
 #[test]
-fn branch_candidate_bound_match_records_each_axis_independently() {
+fn branch_candidate_bound_facts_record_each_axis_independently() {
     let row = storage_row_with(
         branch_id(26),
         b"axis".to_vec(),
@@ -630,9 +621,9 @@ fn branch_candidate_bound_match_records_each_axis_independently() {
             Some(Timestamp::from_micros(50)),
         ),
     );
-    assert!(!version_miss.bound_match().version_in_bound());
-    assert!(version_miss.bound_match().timestamp_in_bound());
-    assert!(!version_miss.bound_match().matches_effective_bound());
+    assert!(!version_miss.version_in_bound());
+    assert!(version_miss.timestamp_in_bound());
+    assert!(!version_miss.matches_effective_bound());
 
     let timestamp_miss = BranchRowCandidateFacts::from_row(
         &row,
@@ -642,9 +633,9 @@ fn branch_candidate_bound_match_records_each_axis_independently() {
             Some(Timestamp::from_micros(49)),
         ),
     );
-    assert!(timestamp_miss.bound_match().version_in_bound());
-    assert!(!timestamp_miss.bound_match().timestamp_in_bound());
-    assert!(!timestamp_miss.bound_match().matches_effective_bound());
+    assert!(timestamp_miss.version_in_bound());
+    assert!(!timestamp_miss.timestamp_in_bound());
+    assert!(!timestamp_miss.matches_effective_bound());
 
     let both_miss = BranchRowCandidateFacts::from_row(
         &row,
@@ -654,16 +645,16 @@ fn branch_candidate_bound_match_records_each_axis_independently() {
             Some(Timestamp::from_micros(49)),
         ),
     );
-    assert!(!both_miss.bound_match().version_in_bound());
-    assert!(!both_miss.bound_match().timestamp_in_bound());
-    assert!(!both_miss.bound_match().matches_effective_bound());
+    assert!(!both_miss.version_in_bound());
+    assert!(!both_miss.timestamp_in_bound());
+    assert!(!both_miss.matches_effective_bound());
 
     let latest = BranchRowCandidateFacts::from_row(
         &row,
         BranchRowSource::Active,
         BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest()),
     );
-    assert!(latest.bound_match().matches_effective_bound());
+    assert!(latest.matches_effective_bound());
 }
 
 #[test]

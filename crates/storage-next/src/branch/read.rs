@@ -113,16 +113,22 @@ impl BranchEffectiveReadBound {
         self.max_commit_timestamp
     }
 
-    pub(crate) const fn matches_row(self, row: &StorageRow) -> BranchRowBoundMatch {
-        let version_in_bound = match self.max_commit_version {
+    pub(crate) const fn row_version_in_bound(self, row: &StorageRow) -> bool {
+        match self.max_commit_version {
             Some(version) => row.commit_version().as_u64() <= version.as_u64(),
             None => true,
-        };
-        let timestamp_in_bound = match self.max_commit_timestamp {
+        }
+    }
+
+    pub(crate) const fn row_timestamp_in_bound(self, row: &StorageRow) -> bool {
+        match self.max_commit_timestamp {
             Some(timestamp) => row.commit_timestamp().as_micros() <= timestamp.as_micros(),
             None => true,
-        };
-        BranchRowBoundMatch::new(version_in_bound, timestamp_in_bound)
+        }
+    }
+
+    pub(crate) const fn matches_row(self, row: &StorageRow) -> bool {
+        self.row_version_in_bound(row) && self.row_timestamp_in_bound(row)
     }
 }
 
@@ -185,33 +191,6 @@ pub(crate) enum BranchRowSource {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BranchRowBoundMatch {
-    version_in_bound: bool,
-    timestamp_in_bound: bool,
-}
-
-impl BranchRowBoundMatch {
-    pub(crate) const fn new(version_in_bound: bool, timestamp_in_bound: bool) -> Self {
-        Self {
-            version_in_bound,
-            timestamp_in_bound,
-        }
-    }
-
-    pub(crate) const fn version_in_bound(self) -> bool {
-        self.version_in_bound
-    }
-
-    pub(crate) const fn timestamp_in_bound(self) -> bool {
-        self.timestamp_in_bound
-    }
-
-    pub(crate) const fn matches_effective_bound(self) -> bool {
-        self.version_in_bound && self.timestamp_in_bound
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchRowCandidateFacts {
     source: BranchRowSource,
@@ -220,7 +199,8 @@ pub(crate) struct BranchRowCandidateFacts {
     commit_timestamp: Timestamp,
     expires_at: Timestamp,
     is_tombstone: bool,
-    bound_match: BranchRowBoundMatch,
+    version_in_bound: bool,
+    timestamp_in_bound: bool,
 }
 
 impl BranchRowCandidateFacts {
@@ -236,7 +216,8 @@ impl BranchRowCandidateFacts {
             commit_timestamp: row.commit_timestamp(),
             expires_at: row.expires_at(),
             is_tombstone: row.is_tombstone(),
-            bound_match: effective_bound.matches_row(row),
+            version_in_bound: effective_bound.row_version_in_bound(row),
+            timestamp_in_bound: effective_bound.row_timestamp_in_bound(row),
         }
     }
 
@@ -264,8 +245,16 @@ impl BranchRowCandidateFacts {
         self.is_tombstone
     }
 
-    pub(crate) const fn bound_match(&self) -> BranchRowBoundMatch {
-        self.bound_match
+    pub(crate) const fn version_in_bound(&self) -> bool {
+        self.version_in_bound
+    }
+
+    pub(crate) const fn timestamp_in_bound(&self) -> bool {
+        self.timestamp_in_bound
+    }
+
+    pub(crate) const fn matches_effective_bound(&self) -> bool {
+        self.version_in_bound && self.timestamp_in_bound
     }
 }
 
@@ -1076,10 +1065,7 @@ impl BranchReadView {
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
                 for row in table.rows().iter().filter(|row| {
-                    row.physical_key() == &source_key
-                        && inherited_bound
-                            .matches_row(row.row())
-                            .matches_effective_bound()
+                    row.physical_key() == &source_key && inherited_bound.matches_row(row.row())
                 }) {
                     rows.push(CandidateRow::new(
                         rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
@@ -1110,11 +1096,11 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
-                for row in table.rows().iter().filter(|row| {
-                    inherited_bound
-                        .matches_row(row.row())
-                        .matches_effective_bound()
-                }) {
+                for row in table
+                    .rows()
+                    .iter()
+                    .filter(|row| inherited_bound.matches_row(row.row()))
+                {
                     let rewritten =
                         rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
                             .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
@@ -1195,11 +1181,7 @@ fn select_visible_row(
     sort_candidates_newest_first(&mut candidates);
     candidates
         .into_iter()
-        .find(|candidate| {
-            effective_bound
-                .matches_row(&candidate.row)
-                .matches_effective_bound()
-        })?
+        .find(|candidate| effective_bound.matches_row(&candidate.row))?
         .into_visible_row(effective_bound.max_commit_timestamp())
 }
 
@@ -1208,11 +1190,9 @@ fn select_visible_row_or_tombstone(
     effective_bound: BranchEffectiveReadBound,
 ) -> Option<BranchHistoryRow> {
     sort_candidates_newest_first(&mut candidates);
-    let candidate = candidates.into_iter().find(|candidate| {
-        effective_bound
-            .matches_row(&candidate.row)
-            .matches_effective_bound()
-    })?;
+    let candidate = candidates
+        .into_iter()
+        .find(|candidate| effective_bound.matches_row(&candidate.row))?;
     if row_is_expired_at(&candidate.row, effective_bound.max_commit_timestamp()) {
         None
     } else {

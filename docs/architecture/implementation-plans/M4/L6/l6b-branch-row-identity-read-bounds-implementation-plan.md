@@ -69,9 +69,9 @@ L6B implements:
    caps, or both;
 6. helpers that derive own-branch and inherited-layer effective bounds from
    `BranchReadBound` and a fork version;
-7. row bound-match facts for `commit_version <= max_version` and
+7. row bound-axis facts for `commit_version <= max_version` and
    `commit_timestamp <= max_timestamp`;
-8. row candidate facts that preserve source, tombstone, expiry, and bound-match
+8. row candidate facts that preserve source, tombstone, expiry, and bound-axis
    decisions;
 9. direct tests, generated tests, and source-guard updates;
 10. M4-L6 porting-log entries for branch identity and read-bound mechanics.
@@ -230,17 +230,7 @@ Rules:
 
 This avoids losing the fork-version gate for timestamp-bounded inherited reads.
 
-### Bound-Match And Candidate Facts
-
-Add a pure helper equivalent to:
-
-```text
-BranchRowBoundMatch {
-    version_in_bound: bool,
-    timestamp_in_bound: bool,
-    matches_effective_bound: bool,
-}
-```
+### Bound And Candidate Facts
 
 Add row candidate facts equivalent to:
 
@@ -252,7 +242,9 @@ BranchRowCandidateFacts {
     commit_timestamp: Timestamp,
     expires_at: Timestamp,
     is_tombstone: bool,
-    bound_match: BranchRowBoundMatch,
+    version_in_bound: bool,
+    timestamp_in_bound: bool,
+    matches_effective_bound: bool,
 }
 ```
 
@@ -334,7 +326,7 @@ constraints.
 
 ### L6B-F: Candidate Facts
 
-1. Add row bound-match facts.
+1. Add row bound-axis facts.
 2. Add candidate fact construction from row, source, and effective bound.
 3. Keep candidate facts separate from final `BranchVisibleRow` selection.
 4. Add tests proving tombstone and expiry facts are preserved, not interpreted.
@@ -416,7 +408,7 @@ L6B is complete when:
 2. row and physical-key branch rewrites are implemented and tested;
 3. own and inherited effective read bounds are represented without losing
    combined version/timestamp caps;
-4. row bound-match/candidate facts preserve all row metadata;
+4. row bound-axis/candidate facts preserve all row metadata;
 5. generated testkit coverage exercises all L6B helper categories;
 6. source guards still enforce L6 boundaries;
 7. no branch state, table IO, backend IO, lifecycle, commit runtime, or product

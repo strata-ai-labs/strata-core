@@ -19,8 +19,8 @@ use super::pruning::{
 use super::read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
     BranchMaterializationSource, BranchOwnedTable, BranchReadBound, BranchReadView,
-    BranchRowBoundMatch, BranchRowCandidateFacts, BranchRowSource, BranchScanBounds,
-    BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
+    BranchRowCandidateFacts, BranchRowSource, BranchScanBounds, BranchTimestampCoverage,
+    BranchUserKeyBound, BranchVisibleRow,
 };
 use super::state::compaction::{
     BranchCompactionCandidate, BranchCompactionKind, BranchCompactionNoopReason,
@@ -198,7 +198,7 @@ fn row_versions(rows: &[TableRow]) -> Vec<u64> {
 
 fn matching_versions(rows: &[TableRow], bound: BranchEffectiveReadBound) -> Vec<u64> {
     rows.iter()
-        .filter(|row| bound.matches_row(row.row()).matches_effective_bound())
+        .filter(|row| bound.matches_row(row.row()))
         .map(|row| row.commit_version().as_u64())
         .collect()
 }

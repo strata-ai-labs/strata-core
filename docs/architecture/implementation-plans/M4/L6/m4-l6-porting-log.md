@@ -261,8 +261,7 @@ deferred, and what old code became eligible for retirement.
   physical-key validation, row identity construction, and lossless branch-id
   rewrite helpers.
 - Extended `crates/storage-next/src/branch/read.rs` with
-  `BranchEffectiveReadBound`, `BranchRowBoundMatch`, and
-  `BranchRowCandidateFacts`.
+  `BranchEffectiveReadBound` and `BranchRowCandidateFacts`.
 - Extended `crates/storage-next/src/branch/tests.rs` with direct tests for
   matching/wrong-branch rows, put/tombstone rewrite preservation, inclusive
   own and inherited bounds, combined timestamp plus fork caps, and candidate
@@ -273,7 +272,7 @@ deferred, and what old code became eligible for retirement.
   `branch_rewrite_preserves_empty_put_values_and_storage_owned_keys`,
   `branch_own_bounds_cover_zero_epoch_and_below_equal_above_edges`,
   `branch_inherited_bounds_cover_fork_edges_and_combined_timestamp_match`,
-  and `branch_candidate_bound_match_records_each_axis_independently`.
+  and `branch_candidate_bound_facts_record_each_axis_independently`.
 - Added direct row-chain and encoded-grouping coverage:
   `branch_effective_bounds_filter_row_chains_without_collapsing_versions`
   verifies version/timestamp intersection without selecting one visible row,
@@ -317,9 +316,9 @@ deferred, and what old code became eligible for retirement.
 - `branch_candidate_facts_preserve_tombstone_and_expiry_without_visibility_policy`
   verifies L6B candidate classification does not hide tombstones or
   expired-looking rows.
-- `branch_candidate_bound_match_records_each_axis_independently` verifies
+- `branch_candidate_bound_facts_record_each_axis_independently` verifies
   version and timestamp miss facts are recorded independently before final
-  bound-match conjunction.
+  bound conjunction.
 - `branch_rewrite_groups_inherited_rows_with_child_local_encoded_keys`
   verifies inherited row rewrite preserves the logical physical key after
   projection into the child branch and sorts newest-first within that group.

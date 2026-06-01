@@ -726,7 +726,7 @@ fn row_versions(rows: &[TableRow]) -> Vec<u64> {
 
 fn matching_versions(rows: &[TableRow], bound: BranchEffectiveReadBound) -> Vec<u64> {
     rows.iter()
-        .filter(|row| bound.matches_row(row.row()).matches_effective_bound())
+        .filter(|row| bound.matches_row(row.row()))
         .map(|row| row.commit_version().as_u64())
         .collect()
 }

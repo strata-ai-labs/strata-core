@@ -315,18 +315,18 @@ fn check_effective_bounds_and_candidates(script: &[u8]) -> Result<BoundsOutcome,
     let own_latest = BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest());
     if own_latest.max_commit_version().is_some()
         || own_latest.max_commit_timestamp().is_some()
-        || !own_latest.matches_row(&row).matches_effective_bound()
+        || !own_latest.matches_row(&row)
     {
         return Err(TestkitError::new("own latest bound drifted"));
     }
     let own_version =
         BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_version(version));
-    if !own_version.matches_row(&row).matches_effective_bound() {
+    if !own_version.matches_row(&row) {
         return Err(TestkitError::new("own version bound is not inclusive"));
     }
     let own_timestamp =
         BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(timestamp));
-    if !own_timestamp.matches_row(&row).matches_effective_bound() {
+    if !own_timestamp.matches_row(&row) {
         return Err(TestkitError::new("own timestamp bound is not inclusive"));
     }
 
@@ -347,11 +347,10 @@ fn check_effective_bounds_and_candidates(script: &[u8]) -> Result<BoundsOutcome,
         BranchReadBound::at_timestamp(timestamp),
         fork_version,
     );
-    let inherited_match = inherited_timestamp.matches_row(&row);
     if inherited_timestamp.max_commit_version() != Some(fork_version)
         || inherited_timestamp.max_commit_timestamp() != Some(timestamp)
-        || inherited_match.matches_effective_bound()
-        || !inherited_match.timestamp_in_bound()
+        || inherited_timestamp.matches_row(&row)
+        || !inherited_timestamp.row_timestamp_in_bound(&row)
     {
         return Err(TestkitError::new(
             "inherited timestamp bound did not combine timestamp and fork caps",
@@ -362,7 +361,7 @@ fn check_effective_bounds_and_candidates(script: &[u8]) -> Result<BoundsOutcome,
         BranchRowCandidateFacts::from_row(&row, BranchRowSource::Active, own_timestamp);
     if put_candidate.is_tombstone()
         || put_candidate.expires_at() != row.expires_at()
-        || !put_candidate.bound_match().matches_effective_bound()
+        || !put_candidate.matches_effective_bound()
     {
         return Err(TestkitError::new("put candidate facts drifted"));
     }
@@ -373,7 +372,7 @@ fn check_effective_bounds_and_candidates(script: &[u8]) -> Result<BoundsOutcome,
     );
     if !tombstone_candidate.is_tombstone()
         || tombstone_candidate.source() != (BranchRowSource::Frozen { index: 0 })
-        || !tombstone_candidate.bound_match().matches_effective_bound()
+        || !tombstone_candidate.matches_effective_bound()
     {
         return Err(TestkitError::new("tombstone candidate facts drifted"));
     }
@@ -532,7 +531,7 @@ fn check_row_chains_and_fork_edges(script: &[u8]) -> Result<ChainOutcome, Testki
         .map(|row| {
             BranchRowCandidateFacts::from_row(row.row(), BranchRowSource::Active, combined_bound)
         })
-        .filter(|candidate| candidate.bound_match().matches_effective_bound())
+        .filter(BranchRowCandidateFacts::matches_effective_bound)
         .collect::<Vec<_>>();
     if candidates.len() != 2
         || !candidates.iter().any(BranchRowCandidateFacts::is_tombstone)
