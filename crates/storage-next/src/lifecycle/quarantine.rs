@@ -163,18 +163,9 @@ pub(crate) enum LifecycleQuarantineRepairScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleQuarantineRepairOutcome {
-    status: LifecycleQuarantineRepairStatus,
     reports: Vec<LifecycleQuarantineRepairReport>,
     recovery_health: Option<RecoveryHealth>,
     source_error: Option<LifecycleError>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum LifecycleQuarantineRepairStatus {
-    CompletedClean,
-    CompletedWithHealthDebt,
-    BackendUnavailable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1061,10 +1052,8 @@ impl LifecycleQuarantineRepairOutcome {
     fn from_branch_report(report: &QuarantineReconciliationReport) -> LifecycleResult<Self> {
         let recovery_health =
             health_for_reconciliation_class(report.recovery_class(), Some(report.branch_id()))?;
-        let status = repair_status_from_class(report.recovery_class());
         let source_error = repair_report_error(report);
         Ok(Self {
-            status,
             reports: vec![LifecycleQuarantineRepairReport::from_branch_report(report)],
             recovery_health,
             source_error,
@@ -1076,14 +1065,12 @@ impl LifecycleQuarantineRepairOutcome {
         // single branch owns the resulting health so the fault stays
         // unscoped.
         let recovery_health = health_for_reconciliation_class(report.recovery_class(), None)?;
-        let status = repair_status_from_class(report.recovery_class());
         let reports = report
             .branch_reports()
             .iter()
             .map(LifecycleQuarantineRepairReport::from_branch_report)
             .collect();
         Ok(Self {
-            status,
             reports,
             recovery_health,
             source_error: report
@@ -1100,7 +1087,6 @@ impl LifecycleQuarantineRepairOutcome {
 
     fn failed_from_service(source: QuarantineServiceError) -> Self {
         Self {
-            status: LifecycleQuarantineRepairStatus::BackendUnavailable,
             reports: Vec::new(),
             recovery_health: Some(RecoveryHealth::failed(
                 RecoveryFault::new(
@@ -1113,8 +1099,16 @@ impl LifecycleQuarantineRepairOutcome {
         }
     }
 
-    pub(crate) const fn status(&self) -> LifecycleQuarantineRepairStatus {
-        self.status
+    pub(crate) const fn completed_clean(&self) -> bool {
+        self.recovery_health.is_none()
+    }
+
+    pub(crate) const fn completed_with_health_debt(&self) -> bool {
+        matches!(self.recovery_health, Some(RecoveryHealth::Degraded { .. }))
+    }
+
+    pub(crate) const fn backend_unavailable(&self) -> bool {
+        matches!(self.recovery_health, Some(RecoveryHealth::Failed { .. }))
     }
 
     pub(crate) fn reports(&self) -> &[LifecycleQuarantineRepairReport] {
@@ -1130,12 +1124,10 @@ impl LifecycleQuarantineRepairOutcome {
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
-        let status = match self.status {
-            LifecycleQuarantineRepairStatus::CompletedClean
-            | LifecycleQuarantineRepairStatus::CompletedWithHealthDebt => {
-                MaintenanceOutcomeStatus::Completed
-            }
-            LifecycleQuarantineRepairStatus::BackendUnavailable => MaintenanceOutcomeStatus::Failed,
+        let status = if self.backend_unavailable() {
+            MaintenanceOutcomeStatus::Failed
+        } else {
+            MaintenanceOutcomeStatus::Completed
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Repair, status)
             .with_effects(self.reports.len(), 0, self.retryable())
@@ -1162,21 +1154,16 @@ impl LifecycleQuarantineRepairOutcome {
     }
 
     const fn retryable(&self) -> bool {
-        matches!(
-            self.status,
-            LifecycleQuarantineRepairStatus::BackendUnavailable
-        )
+        self.backend_unavailable()
     }
 
     const fn reason(&self) -> Option<&'static str> {
-        match self.status {
-            LifecycleQuarantineRepairStatus::CompletedClean => None,
-            LifecycleQuarantineRepairStatus::CompletedWithHealthDebt => {
-                Some("quarantine reconciliation reported health debt")
-            }
-            LifecycleQuarantineRepairStatus::BackendUnavailable => {
-                Some("quarantine reconciliation backend unavailable")
-            }
+        if self.backend_unavailable() {
+            Some("quarantine reconciliation backend unavailable")
+        } else if self.completed_with_health_debt() {
+            Some("quarantine reconciliation reported health debt")
+        } else {
+            None
         }
     }
 }
@@ -1589,18 +1576,6 @@ fn health_for_reconciliation_class(
             }
             Ok(Some(RecoveryHealth::failed(fault)))
         }
-    }
-}
-
-const fn repair_status_from_class(
-    class: QuarantineRecoveryClass,
-) -> LifecycleQuarantineRepairStatus {
-    match class {
-        QuarantineRecoveryClass::Healthy => LifecycleQuarantineRepairStatus::CompletedClean,
-        QuarantineRecoveryClass::PolicyDowngraded => {
-            LifecycleQuarantineRepairStatus::CompletedWithHealthDebt
-        }
-        QuarantineRecoveryClass::Unavailable => LifecycleQuarantineRepairStatus::BackendUnavailable,
     }
 }
 

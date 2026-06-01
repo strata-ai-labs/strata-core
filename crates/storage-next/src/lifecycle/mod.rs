@@ -170,8 +170,8 @@ pub(crate) use quarantine::{
     LifecyclePurgeProofStatus, LifecyclePurgeRequest, LifecyclePurgeStatus,
     LifecycleQuarantineOutcome, LifecycleQuarantineProof, LifecycleQuarantineProofStatus,
     LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairReport,
-    LifecycleQuarantineRepairRequest, LifecycleQuarantineRepairScope,
-    LifecycleQuarantineRepairStatus, LifecycleQuarantineRequest, LifecycleQuarantineStatus,
+    LifecycleQuarantineRepairRequest, LifecycleQuarantineRepairScope, LifecycleQuarantineRequest,
+    LifecycleQuarantineStatus,
 };
 #[allow(
     unused_imports,

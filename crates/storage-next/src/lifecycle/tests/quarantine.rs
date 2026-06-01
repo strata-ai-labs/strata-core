@@ -617,10 +617,7 @@ fn repair_reports_unlisted_quarantine_object_as_health_debt() {
 
     let outcome = repair_quarantine(&QuarantineService::new(&backend), &request).expect("repair");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleQuarantineRepairStatus::CompletedWithHealthDebt
-    );
+    assert!(outcome.completed_with_health_debt());
     assert_eq!(outcome.reports()[0].unlisted_objects(), 1);
     assert!(outcome.recovery_health().is_some());
     assert_eq!(
@@ -664,10 +661,7 @@ fn repair_backend_unavailable_preserves_source_chain() {
 
     let outcome = repair_quarantine(&QuarantineService::new(&backend), &request).expect("repair");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleQuarantineRepairStatus::BackendUnavailable
-    );
+    assert!(outcome.backend_unavailable());
     assert!(outcome.source_error().is_some());
     assert!(outcome.maintenance_outcome().source_error().is_some());
 }

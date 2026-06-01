@@ -11,9 +11,9 @@ use crate::lifecycle::{
     purge_quarantine, quarantine_object, repair_quarantine, unsupported_quarantine_maintenance,
     LifecycleCodecId, LifecyclePurgeProof, LifecyclePurgeRequest, LifecyclePurgeStatus,
     LifecycleQuarantineProof, LifecycleQuarantineProofStatus, LifecycleQuarantineRepairReport,
-    LifecycleQuarantineRepairRequest, LifecycleQuarantineRepairStatus, LifecycleQuarantineStatus,
-    MaintenanceOutcomeStatus, MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault,
-    RecoveryFaultKind, RecoveryHealth, RetentionDecision,
+    LifecycleQuarantineRepairRequest, LifecycleQuarantineStatus, MaintenanceOutcomeStatus,
+    MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind,
+    RecoveryHealth, RetentionDecision,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::QuarantineService;
@@ -400,7 +400,7 @@ fn check_repair(
     )
     .map_err(quarantine_error)?;
     ensure(
-        corrupt_report.status() == LifecycleQuarantineRepairStatus::CompletedWithHealthDebt,
+        corrupt_report.completed_with_health_debt(),
         "corrupt quarantine inventory did not produce repair health debt",
     )?;
     ensure(
@@ -429,7 +429,7 @@ fn check_repair(
     )
     .map_err(quarantine_error)?;
     ensure(
-        unlisted_report.status() == LifecycleQuarantineRepairStatus::CompletedWithHealthDebt,
+        unlisted_report.completed_with_health_debt(),
         "unlisted quarantine object did not produce repair health debt",
     )?;
     ensure(
@@ -615,26 +615,23 @@ fn input_repair_route(
         .map_err(quarantine_error)?,
     )
     .map_err(quarantine_error)?;
-    match repair.status() {
-        LifecycleQuarantineRepairStatus::CompletedWithHealthDebt => {
-            if repair
-                .reports()
-                .iter()
-                .any(LifecycleQuarantineRepairReport::inventory_present)
-            {
-                outcome.corrupt_inventory_repairs += 1;
-            }
-            if repair
-                .reports()
-                .iter()
-                .any(|report| report.unlisted_objects() > 0)
-            {
-                outcome.unlisted_object_repairs += 1;
-            }
+    if repair.backend_unavailable() {
+        return Err(TestkitError::new("input repair route backend failed"));
+    }
+    if repair.completed_with_health_debt() {
+        if repair
+            .reports()
+            .iter()
+            .any(LifecycleQuarantineRepairReport::inventory_present)
+        {
+            outcome.corrupt_inventory_repairs += 1;
         }
-        LifecycleQuarantineRepairStatus::CompletedClean => {}
-        LifecycleQuarantineRepairStatus::BackendUnavailable => {
-            return Err(TestkitError::new("input repair route backend failed"));
+        if repair
+            .reports()
+            .iter()
+            .any(|report| report.unlisted_objects() > 0)
+        {
+            outcome.unlisted_object_repairs += 1;
         }
     }
     Ok(())
