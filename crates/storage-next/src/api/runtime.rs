@@ -2296,14 +2296,13 @@ fn map_budget_report(snapshot: &StorageBudgetSnapshot) -> DiagnosticsBudgetRepor
         .usages()
         .iter()
         .map(|usage| {
-            let pressure = snapshot.pressure(usage.pool());
             DiagnosticsBudgetUsage::new(
                 map_budget_pool(usage.pool()),
                 usage.used_bytes(),
                 usage.limit_bytes(),
                 usage.used_count(),
                 usage.limit_count(),
-                map_budget_pressure(pressure.severity()),
+                map_budget_pressure(snapshot.pressure(usage.pool())),
             )
         })
         .collect();

@@ -51,8 +51,8 @@ pub(crate) use budget::{
     require_generated_artifact_budget, require_maintenance_enqueue_budget,
     require_manifest_catalog_budget, require_rotate_budget, require_table_reader_budget,
     snapshot_with_runtime_usage, BudgetedCommitBranch, StorageBudgetLedger, StorageBudgetPool,
-    StorageBudgetPressure, StorageBudgetPressureSeverity, StorageBudgetReservation,
-    StorageBudgetSnapshot, StorageBudgetUsage, StorageRuntimeBudget, StorageRuntimeBudgetParts,
+    StorageBudgetPressureSeverity, StorageBudgetReservation, StorageBudgetSnapshot,
+    StorageBudgetUsage, StorageRuntimeBudget, StorageRuntimeBudgetParts,
 };
 #[allow(
     unused_imports,

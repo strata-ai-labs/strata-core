@@ -519,14 +519,13 @@ fn maintenance_budget_pressure_added_to_outcome() {
         .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
         .expect("enqueue");
 
-    let pressure = runtime
-        .budget_snapshot()
-        .pressure(StorageBudgetPool::MaintenanceQueue);
+    let snapshot = runtime.budget_snapshot();
+    let usage = snapshot.usage(StorageBudgetPool::MaintenanceQueue);
 
-    assert_eq!(pressure.usage().used_count(), 1);
-    assert_eq!(pressure.usage().limit_count(), Some(1));
+    assert_eq!(usage.used_count(), 1);
+    assert_eq!(usage.limit_count(), Some(1));
     assert_eq!(
-        pressure.severity(),
+        snapshot.pressure(StorageBudgetPool::MaintenanceQueue),
         StorageBudgetPressureSeverity::DeferOptionalMaintenance
     );
 }
@@ -602,8 +601,7 @@ fn maintenance_optional_task_deferred_under_pressure() {
     assert_eq!(
         runtime
             .budget_snapshot()
-            .pressure(StorageBudgetPool::MaintenanceQueue)
-            .severity(),
+            .pressure(StorageBudgetPool::MaintenanceQueue),
         StorageBudgetPressureSeverity::Normal
     );
 }
@@ -718,8 +716,7 @@ fn retention_graph_over_budget_defers_optional_reclaim() {
         ledger
             .snapshot()
             .with_usage(StorageBudgetPool::ManifestCatalog, 9, 1)
-            .pressure(StorageBudgetPool::ManifestCatalog)
-            .severity(),
+            .pressure(StorageBudgetPool::ManifestCatalog),
         StorageBudgetPressureSeverity::RejectOptionalWork
     );
 }
@@ -736,9 +733,7 @@ fn metadata_pressure_blocks_optional_maintenance_first() {
         .with_usage(StorageBudgetPool::ManifestCatalog, over_limit, 1);
 
     assert_eq!(
-        snapshot
-            .pressure(StorageBudgetPool::ManifestCatalog)
-            .severity(),
+        snapshot.pressure(StorageBudgetPool::ManifestCatalog),
         StorageBudgetPressureSeverity::RejectOptionalWork
     );
 }
@@ -889,15 +884,19 @@ fn low_memory_profile_reports_pressure_without_product_policy() {
         )
         .expect("reserve generated");
 
-    let pressure = ledger
-        .snapshot()
-        .pressure(StorageBudgetPool::GeneratedArtifact);
+    let snapshot = ledger.snapshot();
 
     assert_eq!(
-        pressure.severity(),
+        snapshot.pressure(StorageBudgetPool::GeneratedArtifact),
         StorageBudgetPressureSeverity::DeferOptionalMaintenance
     );
-    assert_eq!(pressure.usage().pool().name(), "generated_artifact");
+    assert_eq!(
+        snapshot
+            .usage(StorageBudgetPool::GeneratedArtifact)
+            .pool()
+            .name(),
+        "generated_artifact"
+    );
 }
 
 #[test]

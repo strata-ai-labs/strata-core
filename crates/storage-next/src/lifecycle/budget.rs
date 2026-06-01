@@ -119,12 +119,6 @@ pub(crate) struct StorageBudgetUsage {
     limit_count: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct StorageBudgetPressure {
-    usage: StorageBudgetUsage,
-    severity: StorageBudgetPressureSeverity,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StorageBudgetSnapshot {
     budget: StorageRuntimeBudget,
@@ -134,14 +128,10 @@ pub(crate) struct StorageBudgetSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct StorageBudgetLedger {
     budget: StorageRuntimeBudget,
-    state: Arc<Mutex<StorageBudgetState>>,
+    state: Arc<Mutex<StorageBudgetCounters>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct StorageBudgetState {
-    used_bytes: [u64; POOL_COUNT],
-    used_count: [u64; POOL_COUNT],
-}
+type StorageBudgetCounters = ([u64; POOL_COUNT], [u64; POOL_COUNT]);
 
 #[derive(Debug)]
 pub(crate) struct StorageBudgetReservation {
@@ -405,25 +395,10 @@ impl StorageBudgetUsage {
     }
 }
 
-impl StorageBudgetPressure {
-    pub(crate) const fn usage(self) -> StorageBudgetUsage {
-        self.usage
-    }
-
-    pub(crate) const fn severity(self) -> StorageBudgetPressureSeverity {
-        self.severity
-    }
-}
-
 impl StorageBudgetSnapshot {
-    fn from_state(budget: StorageRuntimeBudget, state: StorageBudgetState) -> Self {
+    fn from_state(budget: StorageRuntimeBudget, state: StorageBudgetCounters) -> Self {
         let usages = StorageBudgetPool::ALL.map(|pool| {
-            StorageBudgetUsage::new(
-                budget,
-                pool,
-                state.used_bytes[pool.index()],
-                state.used_count[pool.index()],
-            )
+            StorageBudgetUsage::new(budget, pool, state.0[pool.index()], state.1[pool.index()])
         });
         Self { budget, usages }
     }
@@ -440,12 +415,8 @@ impl StorageBudgetSnapshot {
         &self.usages
     }
 
-    pub(crate) fn pressure(&self, pool: StorageBudgetPool) -> StorageBudgetPressure {
-        let usage = self.usage(pool);
-        StorageBudgetPressure {
-            usage,
-            severity: pressure_severity(usage),
-        }
+    pub(crate) fn pressure(&self, pool: StorageBudgetPool) -> StorageBudgetPressureSeverity {
+        pressure_severity(self.usage(pool))
     }
 
     pub(crate) fn with_usage(
@@ -465,7 +436,7 @@ impl StorageBudgetLedger {
         budget.validate()?;
         Ok(Self {
             budget,
-            state: Arc::new(Mutex::new(StorageBudgetState::default())),
+            state: Arc::new(Mutex::new(empty_budget_counters())),
         })
     }
 
@@ -483,30 +454,32 @@ impl StorageBudgetLedger {
         let mut state = self.lock_state()?;
         check_available(self.budget, *state, pool, bytes, count, reason)?;
         let index = pool.index();
-        state.used_bytes[index] = state.used_bytes[index].checked_add(bytes).ok_or(
-            LifecycleError::StorageBudgetExceeded {
-                pool,
-                requested_bytes: bytes,
-                used_bytes: state.used_bytes[index],
-                limit_bytes: self.budget.pool_limit_bytes(pool),
-                requested_count: count,
-                used_count: state.used_count[index],
-                limit_count: self.budget.pool_limit_count(pool),
-                reason: "budget byte accounting overflow",
-            },
-        )?;
-        state.used_count[index] = state.used_count[index].checked_add(count).ok_or(
-            LifecycleError::StorageBudgetExceeded {
-                pool,
-                requested_bytes: bytes,
-                used_bytes: state.used_bytes[index],
-                limit_bytes: self.budget.pool_limit_bytes(pool),
-                requested_count: count,
-                used_count: state.used_count[index],
-                limit_count: self.budget.pool_limit_count(pool),
-                reason: "budget count accounting overflow",
-            },
-        )?;
+        state.0[index] =
+            state.0[index]
+                .checked_add(bytes)
+                .ok_or(LifecycleError::StorageBudgetExceeded {
+                    pool,
+                    requested_bytes: bytes,
+                    used_bytes: state.0[index],
+                    limit_bytes: self.budget.pool_limit_bytes(pool),
+                    requested_count: count,
+                    used_count: state.1[index],
+                    limit_count: self.budget.pool_limit_count(pool),
+                    reason: "budget byte accounting overflow",
+                })?;
+        state.1[index] =
+            state.1[index]
+                .checked_add(count)
+                .ok_or(LifecycleError::StorageBudgetExceeded {
+                    pool,
+                    requested_bytes: bytes,
+                    used_bytes: state.0[index],
+                    limit_bytes: self.budget.pool_limit_bytes(pool),
+                    requested_count: count,
+                    used_count: state.1[index],
+                    limit_count: self.budget.pool_limit_count(pool),
+                    reason: "budget count accounting overflow",
+                })?;
         Ok(StorageBudgetReservation {
             ledger: self.clone(),
             pool,
@@ -541,11 +514,11 @@ impl StorageBudgetLedger {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let index = pool.index();
-        state.used_bytes[index] = state.used_bytes[index].saturating_sub(bytes);
-        state.used_count[index] = state.used_count[index].saturating_sub(count);
+        state.0[index] = state.0[index].saturating_sub(bytes);
+        state.1[index] = state.1[index].saturating_sub(count);
     }
 
-    fn lock_state(&self) -> LifecycleResult<MutexGuard<'_, StorageBudgetState>> {
+    fn lock_state(&self) -> LifecycleResult<MutexGuard<'_, StorageBudgetCounters>> {
         self.state
             .lock()
             .map_err(|_| LifecycleError::MaintenanceFailed {
@@ -814,24 +787,24 @@ fn state_with_usage(
     pool: StorageBudgetPool,
     used_bytes: u64,
     used_count: u64,
-) -> StorageBudgetState {
-    let mut state = StorageBudgetState::default();
-    state.used_bytes[pool.index()] = used_bytes;
-    state.used_count[pool.index()] = used_count;
+) -> StorageBudgetCounters {
+    let mut state = empty_budget_counters();
+    state.0[pool.index()] = used_bytes;
+    state.1[pool.index()] = used_count;
     state
 }
 
 fn check_available(
     budget: StorageRuntimeBudget,
-    state: StorageBudgetState,
+    state: StorageBudgetCounters,
     pool: StorageBudgetPool,
     requested_bytes: u64,
     requested_count: u64,
     reason: &'static str,
 ) -> LifecycleResult<()> {
     let index = pool.index();
-    let used_bytes = state.used_bytes[index];
-    let used_count = state.used_count[index];
+    let used_bytes = state.0[index];
+    let used_count = state.1[index];
     let limit_bytes = budget.pool_limit_bytes(pool);
     let limit_count = budget.pool_limit_count(pool);
     let projected_bytes =
@@ -875,6 +848,10 @@ fn check_available(
         });
     }
     Ok(())
+}
+
+const fn empty_budget_counters() -> StorageBudgetCounters {
+    ([0; POOL_COUNT], [0; POOL_COUNT])
 }
 
 fn pressure_severity(usage: StorageBudgetUsage) -> StorageBudgetPressureSeverity {

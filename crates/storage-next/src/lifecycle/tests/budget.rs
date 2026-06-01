@@ -267,8 +267,7 @@ fn budget_pressure_reports_pool_usage_and_limit() {
         .reserve(StorageBudgetPool::MaintenanceQueue, 900, 1, "queue task")
         .expect("reserve high-water queue");
     let snapshot = ledger.snapshot();
-    let pressure = snapshot.pressure(StorageBudgetPool::MaintenanceQueue);
-    let usage = pressure.usage();
+    let usage = snapshot.usage(StorageBudgetPool::MaintenanceQueue);
 
     assert_eq!(snapshot.usages().len(), StorageBudgetPool::ALL.len());
     assert_eq!(usage.pool(), StorageBudgetPool::MaintenanceQueue);
@@ -277,7 +276,7 @@ fn budget_pressure_reports_pool_usage_and_limit() {
     assert_eq!(usage.used_count(), 1);
     assert_eq!(usage.limit_count(), Some(4));
     assert_eq!(
-        pressure.severity(),
+        snapshot.pressure(StorageBudgetPool::MaintenanceQueue),
         StorageBudgetPressureSeverity::DeferOptionalMaintenance
     );
     assert_eq!(budget.max_frozen_tables(), 4);
