@@ -63,7 +63,7 @@ pub(crate) use sidecar::{
 )]
 pub(crate) use snapshot::{
     SnapshotDeleteFailure, SnapshotDeleteReport, SnapshotObject, SnapshotPublishRequest,
-    SnapshotService, SnapshotServiceError, SnapshotWrite,
+    SnapshotService, SnapshotServiceError,
 };
 
 #[expect(

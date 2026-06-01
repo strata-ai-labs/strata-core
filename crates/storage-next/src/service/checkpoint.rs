@@ -349,16 +349,17 @@ fn validate_request(request: &CheckpointRequest) -> CheckpointServiceResult<()> 
     Ok(())
 }
 
-fn checkpoint_snapshot_from_write(write: &crate::service::SnapshotWrite) -> CheckpointSnapshot {
-    let header = write.container().header();
+fn checkpoint_snapshot_from_write(write: &super::snapshot::SnapshotWrite) -> CheckpointSnapshot {
+    let (container, outcome) = write;
+    let header = container.header();
     CheckpointSnapshot::new(
         header.snapshot_id(),
         header.watermark_commit_version(),
         header.created_at(),
-        write.outcome().object().clone(),
-        write.container().sections().len(),
-        write.outcome().metadata().size_bytes(),
-        write.outcome().clone(),
+        outcome.object().clone(),
+        container.sections().len(),
+        outcome.metadata().size_bytes(),
+        outcome.clone(),
     )
 }
 

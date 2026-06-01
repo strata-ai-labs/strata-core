@@ -372,23 +372,21 @@ fn snapshot_publish_returns_layout_metadata_and_round_trippable_sections() {
     let loaded = service
         .load_required_for_codec(SNAPSHOT_ID, DATABASE_ID, CODEC_ID)
         .expect("load snapshot");
+    let (container, outcome) = &write;
 
-    assert_eq!(write.container(), &loaded);
-    assert_eq!(write.outcome().object(), &expected_object);
+    assert_eq!(container, &loaded);
+    assert_eq!(outcome.object(), &expected_object);
+    assert_eq!(outcome.metadata().size_bytes(), stored_bytes.len() as u64);
+    assert_eq!(outcome.durability(), PublishDurability::Durable);
+    assert_eq!(container.header().snapshot_id(), SNAPSHOT_ID);
     assert_eq!(
-        write.outcome().metadata().size_bytes(),
-        stored_bytes.len() as u64
-    );
-    assert_eq!(write.outcome().durability(), PublishDurability::Durable);
-    assert_eq!(write.container().header().snapshot_id(), SNAPSHOT_ID);
-    assert_eq!(
-        write.container().header().watermark_commit_version(),
+        container.header().watermark_commit_version(),
         SNAPSHOT_WATERMARK
     );
-    assert_eq!(write.container().header().created_at(), SNAPSHOT_CREATED_AT);
-    assert_eq!(write.container().sections().len(), 2);
-    assert_eq!(write.container().sections()[0].payload(), b"rows");
-    assert_eq!(write.container().sections()[1].payload(), b"\x00opaque\xff");
+    assert_eq!(container.header().created_at(), SNAPSHOT_CREATED_AT);
+    assert_eq!(container.sections().len(), 2);
+    assert_eq!(container.sections()[0].payload(), b"rows");
+    assert_eq!(container.sections()[1].payload(), b"\x00opaque\xff");
     assert_eq!(backend.stored_object_names(), vec![expected_object]);
     assert_eq!(backend.publish_calls(), 1);
 }

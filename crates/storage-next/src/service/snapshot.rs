@@ -246,25 +246,7 @@ impl SnapshotPublishRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SnapshotWrite {
-    container: SnapshotContainer,
-    outcome: PublishOutcome,
-}
-
-impl SnapshotWrite {
-    fn new(container: SnapshotContainer, outcome: PublishOutcome) -> Self {
-        Self { container, outcome }
-    }
-
-    pub(crate) const fn container(&self) -> &SnapshotContainer {
-        &self.container
-    }
-
-    pub(crate) const fn outcome(&self) -> &PublishOutcome {
-        &self.outcome
-    }
-}
+pub(crate) type SnapshotWrite = (SnapshotContainer, PublishOutcome);
 
 pub(crate) struct SnapshotService<'a> {
     backend: &'a dyn Backend,
@@ -531,7 +513,7 @@ fn publish_snapshot_container(
             field: mismatch.field(),
         }
     })?;
-    Ok(SnapshotWrite::new(decoded, outcome))
+    Ok((decoded, outcome))
 }
 
 fn validate_snapshot_identity(
@@ -968,11 +950,12 @@ mod tests {
             .load_required_for_codec(SNAPSHOT_ID, DATABASE_ID, CODEC_ID)
             .expect("load snapshot");
         let stored = backend.read_object(&object).expect("read stored snapshot");
+        let (container, outcome) = &write;
 
-        assert_eq!(write.container(), &loaded);
-        assert_eq!(write.outcome().object(), &object);
-        assert_eq!(write.outcome().durability(), PublishDurability::Durable);
-        assert_eq!(write.outcome().metadata().size_bytes(), stored.len() as u64);
+        assert_eq!(container, &loaded);
+        assert_eq!(outcome.object(), &object);
+        assert_eq!(outcome.durability(), PublishDurability::Durable);
+        assert_eq!(outcome.metadata().size_bytes(), stored.len() as u64);
         assert_eq!(
             encode_snapshot_container(&loaded).expect("encode loaded snapshot"),
             stored
@@ -1053,7 +1036,7 @@ mod tests {
             old_bytes
         );
         assert_eq!(
-            encode_snapshot_container(first.container()).expect("encode first"),
+            encode_snapshot_container(&first.0).expect("encode first"),
             old_bytes
         );
     }
@@ -1327,12 +1310,13 @@ mod tests {
         let write = service
             .publish_create(request(SNAPSHOT_ID))
             .expect("publish snapshot");
+        let (container, outcome) = &write;
 
-        assert_eq!(write.container(), &expected);
+        assert_eq!(container, &expected);
         assert_eq!(
-            encode_snapshot_container(write.container()).expect("encode write"),
+            encode_snapshot_container(container).expect("encode write"),
             backend
-                .read_object(write.outcome().object())
+                .read_object(outcome.object())
                 .expect("read stored snapshot")
         );
     }
