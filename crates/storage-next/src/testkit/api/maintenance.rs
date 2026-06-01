@@ -46,18 +46,15 @@ pub struct StorageApiMaintenanceFaultOutcome {
     repair_failures: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MaintenanceFaultRoute {
-    SnapshotPublish,
-    ManifestPublish,
-    TablePublish,
-    Compaction,
-    Materialization,
-    RetentionProof,
-    QuarantineInventory,
-    PurgePublish,
-    Repair,
-}
+const MAINTENANCE_FAULT_SNAPSHOT_PUBLISH: u8 = 0;
+const MAINTENANCE_FAULT_MANIFEST_PUBLISH: u8 = 1;
+const MAINTENANCE_FAULT_TABLE_PUBLISH: u8 = 2;
+const MAINTENANCE_FAULT_COMPACTION: u8 = 3;
+const MAINTENANCE_FAULT_MATERIALIZATION: u8 = 4;
+const MAINTENANCE_FAULT_RETENTION_PROOF: u8 = 5;
+const MAINTENANCE_FAULT_QUARANTINE_INVENTORY: u8 = 6;
+const MAINTENANCE_FAULT_PURGE_PUBLISH: u8 = 7;
+const MAINTENANCE_FAULT_REPAIR: u8 = 8;
 
 pub fn check_storage_api_maintenance_model_contract(
     script: &[u8],
@@ -89,23 +86,24 @@ pub fn check_storage_api_maintenance_fault_contract(
     let script = non_empty_script(script);
     let mut outcome = StorageApiMaintenanceFaultOutcome::default();
     match route_from_script(script) {
-        MaintenanceFaultRoute::SnapshotPublish => {
+        MAINTENANCE_FAULT_SNAPSHOT_PUBLISH => {
             check_snapshot_publish_fault(&mut outcome)?;
         }
-        MaintenanceFaultRoute::ManifestPublish => {
+        MAINTENANCE_FAULT_MANIFEST_PUBLISH => {
             check_manifest_publish_fault(&mut outcome)?;
         }
-        MaintenanceFaultRoute::TablePublish => check_table_publish_fault(&mut outcome)?,
-        MaintenanceFaultRoute::Compaction => check_compaction_fault(&mut outcome)?,
-        MaintenanceFaultRoute::Materialization => {
+        MAINTENANCE_FAULT_TABLE_PUBLISH => check_table_publish_fault(&mut outcome)?,
+        MAINTENANCE_FAULT_COMPACTION => check_compaction_fault(&mut outcome)?,
+        MAINTENANCE_FAULT_MATERIALIZATION => {
             check_materialization_fault(&mut outcome)?;
         }
-        MaintenanceFaultRoute::RetentionProof => check_retention_proof_fault(&mut outcome)?,
-        MaintenanceFaultRoute::QuarantineInventory => {
+        MAINTENANCE_FAULT_RETENTION_PROOF => check_retention_proof_fault(&mut outcome)?,
+        MAINTENANCE_FAULT_QUARANTINE_INVENTORY => {
             check_quarantine_inventory_fault(&mut outcome)?;
         }
-        MaintenanceFaultRoute::PurgePublish => check_purge_publish_fault(&mut outcome)?,
-        MaintenanceFaultRoute::Repair => check_repair_fault(&mut outcome)?,
+        MAINTENANCE_FAULT_PURGE_PUBLISH => check_purge_publish_fault(&mut outcome)?,
+        MAINTENANCE_FAULT_REPAIR => check_repair_fault(&mut outcome)?,
+        _ => unreachable!("maintenance fault route is normalized by route_from_script"),
     }
     Ok(outcome)
 }
@@ -550,38 +548,28 @@ fn require_source(error: &StorageApiError) -> Result<(), TestkitError> {
     Ok(())
 }
 
-fn route_from_script(script: &[u8]) -> MaintenanceFaultRoute {
+fn route_from_script(script: &[u8]) -> u8 {
     let label = String::from_utf8_lossy(script).to_ascii_lowercase();
     if label.contains("snapshot") {
-        MaintenanceFaultRoute::SnapshotPublish
+        MAINTENANCE_FAULT_SNAPSHOT_PUBLISH
     } else if label.contains("manifest") {
-        MaintenanceFaultRoute::ManifestPublish
+        MAINTENANCE_FAULT_MANIFEST_PUBLISH
     } else if label.contains("table") {
-        MaintenanceFaultRoute::TablePublish
+        MAINTENANCE_FAULT_TABLE_PUBLISH
     } else if label.contains("compaction") {
-        MaintenanceFaultRoute::Compaction
+        MAINTENANCE_FAULT_COMPACTION
     } else if label.contains("material") {
-        MaintenanceFaultRoute::Materialization
+        MAINTENANCE_FAULT_MATERIALIZATION
     } else if label.contains("retention") {
-        MaintenanceFaultRoute::RetentionProof
+        MAINTENANCE_FAULT_RETENTION_PROOF
     } else if label.contains("inventory") {
-        MaintenanceFaultRoute::QuarantineInventory
+        MAINTENANCE_FAULT_QUARANTINE_INVENTORY
     } else if label.contains("purge") {
-        MaintenanceFaultRoute::PurgePublish
+        MAINTENANCE_FAULT_PURGE_PUBLISH
     } else if label.contains("repair") {
-        MaintenanceFaultRoute::Repair
+        MAINTENANCE_FAULT_REPAIR
     } else {
-        match script[0] % 9 {
-            0 => MaintenanceFaultRoute::SnapshotPublish,
-            1 => MaintenanceFaultRoute::ManifestPublish,
-            2 => MaintenanceFaultRoute::TablePublish,
-            3 => MaintenanceFaultRoute::Compaction,
-            4 => MaintenanceFaultRoute::Materialization,
-            5 => MaintenanceFaultRoute::RetentionProof,
-            6 => MaintenanceFaultRoute::QuarantineInventory,
-            7 => MaintenanceFaultRoute::PurgePublish,
-            _ => MaintenanceFaultRoute::Repair,
-        }
+        script[0] % 9
     }
 }
 

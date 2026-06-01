@@ -66,13 +66,7 @@ impl StorageApiReadModelOutcome {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ModelRow {
-    key: Vec<u8>,
-    value: Option<Vec<u8>>,
-    commit_version: CommitVersion,
-    commit_timestamp: Timestamp,
-}
+type ModelRow = (Vec<u8>, Option<Vec<u8>>, CommitVersion, Timestamp);
 
 pub fn check_storage_api_read_model_contract(
     script: &[u8],
@@ -158,12 +152,12 @@ fn commit_model_row(
             .commit_for_test(&delete_batch(&key)?, commit_timestamp)
             .map_err(testkit_error)?
     };
-    model.entry(key.clone()).or_default().push(ModelRow {
+    model.entry(key.clone()).or_default().push((
         key,
         value,
-        commit_version: summary.commit_version(),
-        commit_timestamp: summary.commit_timestamp(),
-    });
+        summary.commit_version(),
+        summary.commit_timestamp(),
+    ));
     Ok(summary)
 }
 
@@ -396,8 +390,8 @@ fn assert_scan_matches_model(
 fn model_visible_row(rows: Option<&Vec<ModelRow>>, bound: ReadBound) -> Option<&ModelRow> {
     rows?.iter().rev().find(|row| match bound {
         ReadBound::Latest => true,
-        ReadBound::AtVersion(version) => row.commit_version <= version,
-        ReadBound::AtTimestamp(timestamp) => row.commit_timestamp <= timestamp,
+        ReadBound::AtVersion(version) => model_row_version(row) <= version,
+        ReadBound::AtTimestamp(timestamp) => model_row_timestamp(row) <= timestamp,
     })
 }
 
@@ -416,15 +410,31 @@ fn assert_storage_row_matches_model(
     actual: &StorageReadRow,
     expected: &ModelRow,
 ) -> Result<(), TestkitError> {
-    if actual.key().as_bytes() != expected.key
-        || actual.commit_version() != expected.commit_version
-        || actual.commit_timestamp() != expected.commit_timestamp
-        || actual.value().map(StorageValue::as_bytes) != expected.value.as_deref()
-        || actual.is_tombstone() != expected.value.is_none()
+    if actual.key().as_bytes() != model_row_key(expected)
+        || actual.commit_version() != model_row_version(expected)
+        || actual.commit_timestamp() != model_row_timestamp(expected)
+        || actual.value().map(StorageValue::as_bytes) != model_row_value(expected)
+        || actual.is_tombstone() != model_row_value(expected).is_none()
     {
         return Err(TestkitError::new("row facts disagree with model"));
     }
     Ok(())
+}
+
+fn model_row_key(row: &ModelRow) -> &[u8] {
+    &row.0
+}
+
+fn model_row_value(row: &ModelRow) -> Option<&[u8]> {
+    row.1.as_deref()
+}
+
+fn model_row_version(row: &ModelRow) -> CommitVersion {
+    row.2
+}
+
+fn model_row_timestamp(row: &ModelRow) -> Timestamp {
+    row.3
 }
 
 fn engine_space() -> Result<StorageSpaceId, TestkitError> {

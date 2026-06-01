@@ -114,17 +114,14 @@ impl StorageApiCommitFaultOutcome {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CommitFaultRoute {
-    Validation,
-    Conflict,
-    BeforeAllocation,
-    AfterAllocation,
-    WalAppend,
-    ForcedDurability,
-    BranchApply,
-    VisibilityPublication,
-}
+const COMMIT_FAULT_VALIDATION: u8 = 0;
+const COMMIT_FAULT_CONFLICT: u8 = 1;
+const COMMIT_FAULT_BEFORE_ALLOCATION: u8 = 2;
+const COMMIT_FAULT_AFTER_ALLOCATION: u8 = 3;
+const COMMIT_FAULT_WAL_APPEND: u8 = 4;
+const COMMIT_FAULT_FORCED_DURABILITY: u8 = 5;
+const COMMIT_FAULT_BRANCH_APPLY: u8 = 6;
+const COMMIT_FAULT_VISIBILITY_PUBLICATION: u8 = 7;
 
 pub fn check_storage_api_commit_model_contract(
     script: &[u8],
@@ -230,16 +227,17 @@ pub fn check_storage_api_commit_fault_contract(
     let script = non_empty_script(script);
     let mut outcome = StorageApiCommitFaultOutcome::default();
     match route_from_script(script) {
-        CommitFaultRoute::Validation => check_validation_fault(&mut outcome)?,
-        CommitFaultRoute::Conflict => check_conflict_fault(script, &mut outcome)?,
-        CommitFaultRoute::BeforeAllocation => check_before_allocation_fault(&mut outcome)?,
-        CommitFaultRoute::AfterAllocation => check_after_allocation_fault(&mut outcome)?,
-        CommitFaultRoute::WalAppend => check_wal_append_fault(&mut outcome)?,
-        CommitFaultRoute::ForcedDurability => check_forced_durability_fault(&mut outcome)?,
-        CommitFaultRoute::BranchApply => check_branch_apply_fault(&mut outcome)?,
-        CommitFaultRoute::VisibilityPublication => {
+        COMMIT_FAULT_VALIDATION => check_validation_fault(&mut outcome)?,
+        COMMIT_FAULT_CONFLICT => check_conflict_fault(script, &mut outcome)?,
+        COMMIT_FAULT_BEFORE_ALLOCATION => check_before_allocation_fault(&mut outcome)?,
+        COMMIT_FAULT_AFTER_ALLOCATION => check_after_allocation_fault(&mut outcome)?,
+        COMMIT_FAULT_WAL_APPEND => check_wal_append_fault(&mut outcome)?,
+        COMMIT_FAULT_FORCED_DURABILITY => check_forced_durability_fault(&mut outcome)?,
+        COMMIT_FAULT_BRANCH_APPLY => check_branch_apply_fault(&mut outcome)?,
+        COMMIT_FAULT_VISIBILITY_PUBLICATION => {
             check_visibility_publication_fault(&mut outcome)?;
         }
+        _ => unreachable!("commit fault route is normalized by route_from_script"),
     }
 
     Ok(outcome)
@@ -386,35 +384,26 @@ fn check_visibility_publication_fault(
     Ok(())
 }
 
-fn route_from_script(script: &[u8]) -> CommitFaultRoute {
+fn route_from_script(script: &[u8]) -> u8 {
     let label = String::from_utf8_lossy(script).to_ascii_lowercase();
     if label.contains("validation") {
-        CommitFaultRoute::Validation
+        COMMIT_FAULT_VALIDATION
     } else if label.contains("conflict") {
-        CommitFaultRoute::Conflict
+        COMMIT_FAULT_CONFLICT
     } else if label.contains("before") {
-        CommitFaultRoute::BeforeAllocation
+        COMMIT_FAULT_BEFORE_ALLOCATION
     } else if label.contains("after") {
-        CommitFaultRoute::AfterAllocation
+        COMMIT_FAULT_AFTER_ALLOCATION
     } else if label.contains("wal") {
-        CommitFaultRoute::WalAppend
+        COMMIT_FAULT_WAL_APPEND
     } else if label.contains("forced") {
-        CommitFaultRoute::ForcedDurability
+        COMMIT_FAULT_FORCED_DURABILITY
     } else if label.contains("branch") {
-        CommitFaultRoute::BranchApply
+        COMMIT_FAULT_BRANCH_APPLY
     } else if label.contains("visibility") {
-        CommitFaultRoute::VisibilityPublication
+        COMMIT_FAULT_VISIBILITY_PUBLICATION
     } else {
-        match script[0] % 8 {
-            0 => CommitFaultRoute::Validation,
-            1 => CommitFaultRoute::Conflict,
-            2 => CommitFaultRoute::BeforeAllocation,
-            3 => CommitFaultRoute::AfterAllocation,
-            4 => CommitFaultRoute::WalAppend,
-            5 => CommitFaultRoute::ForcedDurability,
-            6 => CommitFaultRoute::BranchApply,
-            _ => CommitFaultRoute::VisibilityPublication,
-        }
+        script[0] % 8
     }
 }
 
