@@ -81,7 +81,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     })?;
     let output_tables = published
         .iter()
-        .map(|output| output.table.clone())
+        .map(|output| published_table(output).clone())
         .collect::<Vec<_>>();
     let branch_outcome = branch
         .install_branch_compaction_prepared_plan(&branch_request, &plan, output_tables, report)
@@ -100,7 +100,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         .collect::<Vec<_>>();
     let output_objects = published
         .iter()
-        .map(|output| output.object_facts.object().clone())
+        .map(|output| published_object_facts(output).object().clone())
         .collect::<Vec<_>>();
     let outcome = LifecycleCompactionOutcome::completed_durable(
         plan,
@@ -188,7 +188,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     })?;
     let output_tables = published
         .iter()
-        .map(|output| output.table.clone())
+        .map(|output| published_table(output).clone())
         .collect::<Vec<_>>();
     let branch_outcome = branch
         .install_materialization_prepared_output(&branch_request, &prepared, output_tables)
@@ -202,7 +202,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     *catalog = next_catalog;
     let output_objects = published
         .iter()
-        .map(|output| output.object_facts.object().clone())
+        .map(|output| published_object_facts(output).object().clone())
         .collect::<Vec<_>>();
     Ok(finish_materialization_after_install(
         branch,
@@ -252,12 +252,11 @@ fn finish_materialization_after_install(
     }
 }
 
-#[derive(Clone, Debug)]
-struct PublishedRewriteTable {
-    table: BranchOwnedTable,
-    object_facts: TableObjectFacts,
-    provenance: TableManifestTableProvenance,
-}
+type PublishedRewriteTable = (
+    BranchOwnedTable,
+    TableObjectFacts,
+    TableManifestTableProvenance,
+);
 
 fn publish_compaction_outputs(
     branch_id: BranchId,
@@ -390,11 +389,7 @@ fn publish_rewrite_artifact(
             TableManifestTableProvenance::Compaction,
         )
     };
-    Ok(PublishedRewriteTable {
-        table,
-        object_facts,
-        provenance,
-    })
+    Ok((table, object_facts, provenance))
 }
 
 fn require_optional_rewrite_generated_budget(
@@ -454,7 +449,7 @@ fn publish_or_load_rewrite_output(
 fn published_object_names(published: &[PublishedRewriteTable]) -> Vec<String> {
     published
         .iter()
-        .map(|output| output.object_facts.object().as_str().to_owned())
+        .map(|output| published_object_facts(output).object().as_str().to_owned())
         .collect()
 }
 
@@ -464,12 +459,24 @@ fn record_published_outputs(
 ) -> LifecycleResult<()> {
     for output in published {
         catalog.record_table_with_provenance(
-            output.table.descriptor().identity().clone(),
-            output.object_facts.clone(),
-            output.provenance.clone(),
+            published_table(output).descriptor().identity().clone(),
+            published_object_facts(output).clone(),
+            published_provenance(output).clone(),
         )?;
     }
     Ok(())
+}
+
+fn published_table(output: &PublishedRewriteTable) -> &BranchOwnedTable {
+    &output.0
+}
+
+fn published_object_facts(output: &PublishedRewriteTable) -> &TableObjectFacts {
+    &output.1
+}
+
+fn published_provenance(output: &PublishedRewriteTable) -> &TableManifestTableProvenance {
+    &output.2
 }
 
 fn partial_publish_error(
