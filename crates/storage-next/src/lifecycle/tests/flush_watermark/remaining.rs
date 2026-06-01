@@ -323,10 +323,7 @@ fn flush_watermark_equal_to_current_is_noop() {
     )
     .expect("noop");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleFlushWatermarkStatus::AlreadyPersisted
-    );
+    assert!(outcome.was_already_persisted());
 }
 
 #[test]
@@ -1301,7 +1298,7 @@ fn end_to_end_publish_persist_truncate_recover() {
     let persist = runtime
         .persist_table_manifest_flush_watermark(CommitVersion::new(2))
         .expect("persist table-manifest flush watermark");
-    assert_eq!(persist.status(), LifecycleFlushWatermarkStatus::Persisted);
+    assert!(persist.was_persisted());
     assert_eq!(persist.persisted_watermark(), Some(CommitVersion::new(2)));
 
     // Phase 4: the WAL truncation maintenance task picks the typed

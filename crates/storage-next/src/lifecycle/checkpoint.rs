@@ -135,16 +135,9 @@ const COVERAGE_COMPLETE: u8 = COVERAGE_USER_ROWS
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleFlushWatermarkOutcome {
-    status: LifecycleFlushWatermarkStatus,
     candidate: CommitVersion,
     persisted: Option<CommitVersion>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum LifecycleFlushWatermarkStatus {
-    Persisted,
-    AlreadyPersisted,
+    already_persisted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,19 +147,11 @@ pub(crate) struct LifecycleWalTruncationRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleWalTruncationOutcome {
-    status: LifecycleWalTruncationStatus,
     covered_through: CommitVersion,
     deleted_segments: usize,
     protected_segments: usize,
     failed_segments: usize,
     recovery_health: Option<super::RecoveryHealth>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum LifecycleWalTruncationStatus {
-    Completed,
-    CompletedWithHealthDebt,
 }
 
 impl LifecycleCheckpointRequest {
@@ -326,10 +311,7 @@ impl LifecycleCheckpointOutcome {
     }
 
     fn with_wal_truncation(mut self, outcome: LifecycleWalTruncationOutcome) -> Self {
-        if matches!(
-            outcome.status(),
-            LifecycleWalTruncationStatus::CompletedWithHealthDebt
-        ) {
+        if outcome.completed_with_health_debt() {
             self.recovery_health = outcome.recovery_health().cloned();
         }
         self.wal_truncation = Some(outcome);
@@ -1213,22 +1195,26 @@ fn recovery_health_epoch(health: &RecoveryHealth) -> LifecycleResult<u64> {
 impl LifecycleFlushWatermarkOutcome {
     fn persisted(candidate: CommitVersion) -> Self {
         Self {
-            status: LifecycleFlushWatermarkStatus::Persisted,
             candidate,
             persisted: Some(candidate),
+            already_persisted: false,
         }
     }
 
     fn already_persisted(candidate: CommitVersion) -> Self {
         Self {
-            status: LifecycleFlushWatermarkStatus::AlreadyPersisted,
             candidate,
             persisted: Some(candidate),
+            already_persisted: true,
         }
     }
 
-    pub(crate) const fn status(&self) -> LifecycleFlushWatermarkStatus {
-        self.status
+    pub(crate) const fn was_persisted(&self) -> bool {
+        !self.already_persisted
+    }
+
+    pub(crate) const fn was_already_persisted(&self) -> bool {
+        self.already_persisted
     }
 
     pub(crate) const fn candidate(&self) -> CommitVersion {
@@ -1240,10 +1226,7 @@ impl LifecycleFlushWatermarkOutcome {
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
-        let state_changes = usize::from(matches!(
-            self.status,
-            LifecycleFlushWatermarkStatus::Persisted
-        ));
+        let state_changes = usize::from(self.was_persisted());
         MaintenanceOutcome::new(
             MaintenanceTaskKind::FlushWatermark,
             MaintenanceOutcomeStatus::Completed,
@@ -1283,11 +1266,6 @@ impl LifecycleWalTruncationOutcome {
             )?)
         };
         Ok(Self {
-            status: if failed_segments == 0 {
-                LifecycleWalTruncationStatus::Completed
-            } else {
-                LifecycleWalTruncationStatus::CompletedWithHealthDebt
-            },
             covered_through: proof.covered_through(),
             deleted_segments: report.deleted_segments().len(),
             protected_segments: report.protected_segments().len(),
@@ -1296,8 +1274,12 @@ impl LifecycleWalTruncationOutcome {
         })
     }
 
-    pub(crate) const fn status(&self) -> LifecycleWalTruncationStatus {
-        self.status
+    pub(crate) const fn completed_cleanly(&self) -> bool {
+        self.recovery_health.is_none()
+    }
+
+    pub(crate) const fn completed_with_health_debt(&self) -> bool {
+        self.recovery_health.is_some()
     }
 
     pub(crate) const fn covered_through(&self) -> CommitVersion {
@@ -1321,11 +1303,10 @@ impl LifecycleWalTruncationOutcome {
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
-        let status = match self.status {
-            LifecycleWalTruncationStatus::Completed => MaintenanceOutcomeStatus::Completed,
-            LifecycleWalTruncationStatus::CompletedWithHealthDebt => {
-                MaintenanceOutcomeStatus::Failed
-            }
+        let status = if self.completed_cleanly() {
+            MaintenanceOutcomeStatus::Completed
+        } else {
+            MaintenanceOutcomeStatus::Failed
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::WalTruncation, status)
             .with_effects(self.deleted_segments, 0, self.failed_segments > 0)

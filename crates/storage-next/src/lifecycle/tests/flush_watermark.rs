@@ -407,7 +407,7 @@ fn flush_watermark_persists_from_table_manifest_coverage() {
     )
     .expect("persist watermark");
 
-    assert_eq!(outcome.status(), LifecycleFlushWatermarkStatus::Persisted);
+    assert!(outcome.was_persisted());
     let database = DatabaseManifestService::new(&backend)
         .load_required()
         .expect("database manifest");
@@ -556,7 +556,7 @@ fn durable_runtime_persists_table_manifest_flush_watermark_after_flush() {
         .persist_table_manifest_flush_watermark(CommitVersion::new(1))
         .expect("persist table-backed watermark");
 
-    assert_eq!(outcome.status(), LifecycleFlushWatermarkStatus::Persisted);
+    assert!(outcome.was_persisted());
     assert_eq!(
         DatabaseManifestService::new(&backend)
             .load_required()

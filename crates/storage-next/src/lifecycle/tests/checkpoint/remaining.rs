@@ -284,7 +284,7 @@ fn wal_truncation_no_segments_is_completed_noop() {
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert_eq!(outcome.deleted_segments(), 0);
     assert_eq!(outcome.failed_segments(), 0);
     assert_eq!(outcome.protected_segments(), 1);
@@ -324,7 +324,7 @@ fn wal_truncation_deletes_covered_segments_and_keeps_active_segment() {
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
     assert!(active > 1, "test setup must rotate segments");
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert!(outcome.deleted_segments() > 0);
     assert!(outcome.protected_segments() >= 1);
     assert_eq!(outcome.failed_segments(), 0);
@@ -345,7 +345,7 @@ fn wal_truncation_from_table_manifest_flush_watermark_deletes_covered_segments()
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
     assert!(active > 1, "test setup must rotate segments");
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert!(outcome.deleted_segments() > 0);
     assert!(outcome.protected_segments() >= 1);
     assert_eq!(outcome.failed_segments(), 0);
@@ -365,10 +365,7 @@ fn wal_truncation_delete_failure_records_health_debt() {
 
     let outcome = runtime.truncate_wal(request).expect("truncation report");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleWalTruncationStatus::CompletedWithHealthDebt
-    );
+    assert!(outcome.completed_with_health_debt());
     assert_eq!(outcome.deleted_segments(), 0);
     assert!(outcome.failed_segments() > 0);
     assert!(outcome.recovery_health().is_some());
@@ -567,7 +564,7 @@ fn wal_truncation_keeps_segment_with_record_above_watermark() {
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert_eq!(outcome.deleted_segments(), 0);
     assert!(outcome.protected_segments() > 1);
 }
@@ -585,7 +582,7 @@ fn wal_truncation_keeps_segment_with_record_above_table_manifest_watermark() {
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert_eq!(outcome.deleted_segments(), 0);
     assert!(outcome.protected_segments() > 1);
 }
@@ -605,7 +602,7 @@ fn wal_truncation_keeps_active_segment_under_table_manifest_watermark() {
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
     assert!(active > 1, "test setup must rotate segments");
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert!(outcome.protected_segments() >= 1);
 }
 
@@ -636,7 +633,7 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
 
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert_eq!(outcome.deleted_segments(), 0);
     assert_eq!(outcome.protected_segments(), 2);
 }
@@ -668,7 +665,7 @@ fn wal_truncation_keeps_newer_than_active_segment() {
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
 
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert_eq!(outcome.deleted_segments(), 0);
     assert_eq!(outcome.protected_segments(), 2);
 }
@@ -700,7 +697,7 @@ fn wal_truncation_handles_empty_segment_through_service_report() {
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
 
-    assert_eq!(outcome.status(), LifecycleWalTruncationStatus::Completed);
+    assert!(outcome.completed_cleanly());
     assert_eq!(outcome.deleted_segments(), 1);
     assert_eq!(outcome.protected_segments(), 1);
 }
@@ -741,10 +738,7 @@ fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
 
     let outcome = truncate_wal(&active, request).expect("truncation");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleWalTruncationStatus::CompletedWithHealthDebt
-    );
+    assert!(outcome.completed_with_health_debt());
     assert_eq!(outcome.deleted_segments(), 1);
     assert_eq!(outcome.failed_segments(), 1);
     assert_eq!(outcome.protected_segments(), 1);
@@ -787,10 +781,7 @@ fn wal_truncation_partial_delete_report_preserves_source_chain() {
 
     let outcome = truncate_wal(&active, request).expect("truncation");
 
-    assert_eq!(
-        outcome.status(),
-        LifecycleWalTruncationStatus::CompletedWithHealthDebt
-    );
+    assert!(outcome.completed_with_health_debt());
     assert_eq!(outcome.deleted_segments(), 1);
     assert_eq!(outcome.failed_segments(), 1);
     assert_eq!(outcome.protected_segments(), 1);

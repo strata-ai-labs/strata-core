@@ -318,10 +318,10 @@ fn checkpoint_publishes_snapshot_and_flush_watermark_after_commit() {
     assert_eq!(outcome.snapshot_id(), Some(1));
     assert_eq!(outcome.row_count(), 3);
     assert!(outcome.snapshot_object().is_some());
-    assert_eq!(
-        outcome.flush_watermark().expect("flush outcome").status(),
-        LifecycleFlushWatermarkStatus::Persisted
-    );
+    assert!(outcome
+        .flush_watermark()
+        .expect("flush outcome")
+        .was_persisted());
     let manifest = DatabaseManifestService::new(&backend)
         .load_required()
         .expect("current database record");
@@ -667,7 +667,7 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
         &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect("persisted");
-    assert_eq!(persisted.status(), LifecycleFlushWatermarkStatus::Persisted);
+    assert!(persisted.was_persisted());
     assert_eq!(persisted.persisted_watermark(), Some(CommitVersion::new(5)));
 
     let already = persist_flush_watermark(
@@ -681,10 +681,7 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
         &LifecycleFlushWatermarkValidationContext::none(),
     )
     .expect("already persisted");
-    assert_eq!(
-        already.status(),
-        LifecycleFlushWatermarkStatus::AlreadyPersisted
-    );
+    assert!(already.was_already_persisted());
     assert_eq!(already.candidate(), CommitVersion::new(5));
 }
 

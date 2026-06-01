@@ -75,10 +75,10 @@ pub(crate) use checkpoint::{
     checkpoint_durable_branch, checkpoint_request_from_maintenance_task, persist_flush_watermark,
     truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleCheckpointStatus, LifecycleFlushWatermarkOutcome,
-    LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest, LifecycleFlushWatermarkStatus,
+    LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest,
     LifecycleFlushWatermarkValidationContext, LifecycleTableManifestBranchCoverage,
     LifecycleTableManifestCoverageFamilies, LifecycleTableManifestFlushCoverageProof,
-    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest, LifecycleWalTruncationStatus,
+    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
 };
 #[allow(
     unused_imports,
