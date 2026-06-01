@@ -749,7 +749,17 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
                 "usecrate::branch::{BranchHistoryOptions,BranchReadView,BranchRowSource};",
                 "",
             )
+            .replace(
+                "usecrate::branch::read::{BranchHistoryOptions,BranchReadView,BranchRowSource};",
+                "",
+            )
             .replace("usecrate::branch::{BranchLocalState,BranchReadView};", "")
+            .replace(
+                "usecrate::branch::read::{BranchReadBound,BranchReadView};",
+                "",
+            )
+            .replace("usecrate::branch::read::BranchReadView;", "")
+            .replace("usecrate::branch::state::BranchLocalState;", "")
             .replace("usecrate::branch::BranchReadView;", "")
             .replace("crate::branch::BranchReadBound", "")
             .replace("crate::branch::BranchHistoryOptions", "")
@@ -819,6 +829,7 @@ fn is_allowed_branch_runtime_line(file: &Path, line: &str) -> bool {
             trimmed,
             "use crate::branch::BranchReadView;"
                 | "use crate::branch::{BranchReadBound, BranchReadView};"
+                | "use crate::branch::read::{BranchReadBound, BranchReadView};"
         );
     }
 
@@ -838,6 +849,8 @@ fn is_allowed_commit_runtime_boundary_line(file: &Path, line: &str) -> bool {
             trimmed,
             "use crate::branch::BranchLocalState;"
                 | "use crate::branch::{BranchLocalState, BranchReadView};"
+                | "use crate::branch::read::BranchReadView;"
+                | "use crate::branch::state::BranchLocalState;"
                 | "use crate::format::{WalCommitPayload, WalRecord};"
                 | "use crate::service::{WalAppend, WalService, WalServiceError};"
         )
@@ -845,6 +858,7 @@ fn is_allowed_commit_runtime_boundary_line(file: &Path, line: &str) -> bool {
             && matches!(
                 trimmed,
                 "use crate::branch::{BranchHistoryOptions, BranchReadView, BranchRowSource};"
+                    | "use crate::branch::read::{BranchHistoryOptions, BranchReadView, BranchRowSource};"
                     | "use crate::format::WalRecord;"
             )
 }

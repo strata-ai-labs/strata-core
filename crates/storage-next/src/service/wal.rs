@@ -479,18 +479,21 @@ impl WalGrowthFacts {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct WalTruncation {
+pub(crate) struct WalTailBoundary<const REPAIR: bool> {
     segment_id: u64,
     valid_end_offset: u64,
-    object_size: u64,
+    extent_bytes: u64,
 }
 
-impl WalTruncation {
-    const fn new(segment_id: u64, valid_end_offset: u64, object_size: u64) -> Self {
+pub(crate) type WalTruncation = WalTailBoundary<false>;
+pub(crate) type WalRepair = WalTailBoundary<true>;
+
+impl<const REPAIR: bool> WalTailBoundary<REPAIR> {
+    const fn from_extent(segment_id: u64, valid_end_offset: u64, extent_bytes: u64) -> Self {
         Self {
             segment_id,
             valid_end_offset,
-            object_size,
+            extent_bytes,
         }
     }
 
@@ -501,9 +504,15 @@ impl WalTruncation {
     pub(crate) const fn valid_end_offset(&self) -> u64 {
         self.valid_end_offset
     }
+}
+
+impl WalTailBoundary<false> {
+    const fn new(segment_id: u64, valid_end_offset: u64, object_size: u64) -> Self {
+        Self::from_extent(segment_id, valid_end_offset, object_size)
+    }
 
     pub(crate) const fn object_size(&self) -> u64 {
-        self.object_size
+        self.extent_bytes
     }
 }
 
@@ -530,32 +539,13 @@ impl WalRead {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct WalRepair {
-    segment_id: u64,
-    valid_end_offset: u64,
-    removed_bytes: u64,
-}
-
-impl WalRepair {
+impl WalTailBoundary<true> {
     const fn new(segment_id: u64, valid_end_offset: u64, removed_bytes: u64) -> Self {
-        Self {
-            segment_id,
-            valid_end_offset,
-            removed_bytes,
-        }
-    }
-
-    pub(crate) const fn segment_id(&self) -> u64 {
-        self.segment_id
-    }
-
-    pub(crate) const fn valid_end_offset(&self) -> u64 {
-        self.valid_end_offset
+        Self::from_extent(segment_id, valid_end_offset, removed_bytes)
     }
 
     pub(crate) const fn removed_bytes(&self) -> u64 {
-        self.removed_bytes
+        self.extent_bytes
     }
 }
 
@@ -789,17 +779,17 @@ impl<'a> WalService<'a> {
 
     pub(crate) fn read_all(&self) -> WalServiceResult<WalRead> {
         let segments = list_segments(self.backend)?;
-        let latest_segment_id = segments.last().map(|segment| segment.segment_id);
+        let latest_segment_id = segments.last().map(|(segment_id, _)| *segment_id);
         let mut records = Vec::new();
         let mut truncation = None;
 
-        for segment in segments {
-            let is_latest = latest_segment_id == Some(segment.segment_id);
+        for (segment_id, object) in segments {
+            let is_latest = latest_segment_id == Some(segment_id);
             let read = read_segment(
                 self.backend,
                 self.database_id,
-                segment.segment_id,
-                &segment.object,
+                segment_id,
+                &object,
                 is_latest,
                 self.codec_id,
             )?;
@@ -829,18 +819,17 @@ impl<'a> WalService<'a> {
     pub(crate) fn growth_facts(&self) -> WalServiceResult<WalGrowthFacts> {
         let segments = list_segments(self.backend)?;
         let mut retained_bytes = 0_u64;
-        for segment in &segments {
-            let metadata = self
-                .backend
-                .object_metadata(&segment.object)
-                .map_err(|source| WalServiceError::Backend {
+        for (_, object) in &segments {
+            let metadata = self.backend.object_metadata(object).map_err(|source| {
+                WalServiceError::Backend {
                     operation: WalOperation::List,
-                    object: segment.object.clone(),
+                    object: object.clone(),
                     source,
-                })?;
+                }
+            })?;
             retained_bytes = retained_bytes.checked_add(metadata.size_bytes()).ok_or(
                 WalServiceError::UnexpectedObjectSize {
-                    object: segment.object.clone(),
+                    object: object.clone(),
                     expected: retained_bytes,
                     actual: metadata.size_bytes(),
                 },
@@ -947,17 +936,17 @@ impl<'a> WalService<'a> {
         let mut report = WalDeleteReport::new();
         let covered_through = retention_proof.covered_through();
 
-        for segment in list_segments(self.backend)? {
-            if segment.segment_id >= self.active_segment_id {
-                report.protected.push(segment.segment_id);
+        for (segment_id, object) in list_segments(self.backend)? {
+            if segment_id >= self.active_segment_id {
+                report.protected.push(segment_id);
                 continue;
             }
 
             let read = read_segment(
                 self.backend,
                 self.database_id,
-                segment.segment_id,
-                &segment.object,
+                segment_id,
+                &object,
                 false,
                 self.codec_id,
             )?;
@@ -966,19 +955,19 @@ impl<'a> WalService<'a> {
                 .iter()
                 .all(|record| record.commit_version() <= covered_through)
             {
-                match self.backend.delete_object(&segment.object) {
+                match self.backend.delete_object(&object) {
                     Ok(()) => {
-                        report.deleted.push(segment.segment_id);
-                        self.delete_segment_sidecar_best_effort(segment.segment_id);
+                        report.deleted.push(segment_id);
+                        self.delete_segment_sidecar_best_effort(segment_id);
                     }
                     Err(source) if source.kind() == BackendErrorKind::NotFound => {
-                        report.deleted.push(segment.segment_id);
-                        self.delete_segment_sidecar_best_effort(segment.segment_id);
+                        report.deleted.push(segment_id);
+                        self.delete_segment_sidecar_best_effort(segment_id);
                     }
-                    Err(_) => report.failed.push(segment.segment_id),
+                    Err(_) => report.failed.push(segment_id),
                 }
             } else {
-                report.protected.push(segment.segment_id);
+                report.protected.push(segment_id);
             }
         }
 
@@ -1059,12 +1048,6 @@ const WAL_REQUIRED_CAPABILITIES: &[BackendCapability] = &[
     BackendCapability::DurablePublish,
     BackendCapability::DurableSync,
 ];
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct WalSegmentObject {
-    segment_id: u64,
-    object: ObjectName,
-}
 
 fn validate_segment_id(segment_id: u64) -> WalServiceResult<()> {
     if segment_id == 0 {
@@ -1210,6 +1193,8 @@ fn decode_wal_codec_bytes<'a>(codec_id: &str, bytes: &'a [u8]) -> WalServiceResu
     }
 }
 
+type WalSegmentObject = (u64, ObjectName);
+
 fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject>> {
     let prefix = ObjectLayout::wal_prefix().map_err(|source| WalServiceError::Layout { source })?;
     let mut segments = backend
@@ -1220,7 +1205,7 @@ fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject
         .collect::<WalServiceResult<Vec<_>>>()?;
     // Valid segment names are fixed-width hex, but sorting by parsed id keeps
     // ordering correct even if a backend returns objects in arbitrary order.
-    segments.sort_by_key(|segment| segment.segment_id);
+    segments.sort_by_key(|(segment_id, _)| *segment_id);
     Ok(segments)
 }
 
@@ -1281,7 +1266,7 @@ fn parse_segment_object(object: ObjectName) -> WalServiceResult<WalSegmentObject
             ),
         });
     }
-    Ok(WalSegmentObject { segment_id, object })
+    Ok((segment_id, object))
 }
 
 fn read_segment(
