@@ -1053,10 +1053,7 @@ fn publish_table_manifest_after_flush(
     budget: Option<&crate::lifecycle::StorageBudgetLedger>,
     outcome: &FlushFrozenOutcome,
 ) -> Option<LifecycleError> {
-    if !matches!(
-        outcome.status(),
-        crate::lifecycle::FlushFrozenStatus::Completed
-    ) {
+    if !outcome.completed() {
         return None;
     }
     let (Some(identity), Some(object_facts)) = (outcome.table_identity(), outcome.object_facts())

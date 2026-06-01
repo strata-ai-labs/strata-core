@@ -2166,9 +2166,8 @@ fn recovery_rebuilds_inherited_layers() {
         let parent_outcome = runtime
             .flush_frozen(&parent_flush)
             .expect("parent flush succeeds");
-        assert_eq!(
-            parent_outcome.status(),
-            crate::lifecycle::FlushFrozenStatus::Completed,
+        assert!(
+            parent_outcome.completed(),
             "parent flush must publish the manifest",
         );
 
@@ -2209,9 +2208,8 @@ fn recovery_rebuilds_inherited_layers() {
         let child_outcome = runtime
             .flush_frozen(&child_flush)
             .expect("child flush succeeds");
-        assert_eq!(
-            child_outcome.status(),
-            crate::lifecycle::FlushFrozenStatus::Completed,
+        assert!(
+            child_outcome.completed(),
             "child flush must publish the manifest",
         );
     }

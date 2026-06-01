@@ -1033,7 +1033,7 @@ fn durable_close_after_flush_does_not_advance_flush_watermark_unless_checkpointe
     let flush = runtime
         .flush_frozen(&flush_request(branch, "close-flush"))
         .expect("flush frozen");
-    assert_eq!(flush.status(), FlushFrozenStatus::Completed);
+    assert!(flush.completed());
     let operations_before_close = backend.operations().len();
 
     runtime.close().expect("durable close");

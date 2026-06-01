@@ -8,8 +8,8 @@ use crate::backend::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::lifecycle::{
-    flush_cache_branch, flush_durable_branch, FlushFrozenRequest, FlushFrozenStatus,
-    FlushTableIdentitySeed, FlushTableObjectId,
+    flush_cache_branch, flush_durable_branch, FlushFrozenRequest, FlushTableIdentitySeed,
+    FlushTableObjectId,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
@@ -92,10 +92,7 @@ fn check_cache_success(
         .map_err(|error| testkit_error(&error))?;
     let after = latest_value(&state, &key)?;
 
-    ensure(
-        flush.status() == FlushFrozenStatus::Completed,
-        "cache flush did not complete",
-    )?;
+    ensure(flush.completed(), "cache flush did not complete")?;
     ensure(before == after, "cache flush changed latest read result")?;
     ensure(
         state.frozen_table_count() == 0 && state.owned_table_count() == 1,
@@ -133,10 +130,7 @@ fn check_durable_success_and_retry(
     )
     .map_err(|error| testkit_error(&error))?;
 
-    ensure(
-        first_outcome.status() == FlushFrozenStatus::Completed,
-        "durable flush did not complete",
-    )?;
+    ensure(first_outcome.completed(), "durable flush did not complete")?;
     ensure(
         backend.object_count() == 1,
         "durable flush did not publish exactly one object",
@@ -155,7 +149,7 @@ fn check_durable_success_and_retry(
     )
     .map_err(|error| testkit_error(&error))?;
     ensure(
-        retry_outcome.status() == FlushFrozenStatus::Completed,
+        retry_outcome.completed(),
         "matching durable retry did not complete",
     )?;
     ensure(
@@ -177,7 +171,7 @@ fn check_deferred(
     let flush = flush_cache_branch(&mut state, &request(branch, script, 7))
         .map_err(|error| testkit_error(&error))?;
     ensure(
-        flush.status() == FlushFrozenStatus::DeferredNoFrozenState,
+        flush.deferred_no_frozen_state(),
         "empty flush did not defer",
     )?;
     ensure(state.is_empty(), "empty flush mutated branch state")?;
@@ -241,7 +235,7 @@ fn check_reopen_failure(
     .map_err(|error| testkit_error(&error))?;
 
     ensure(
-        flush.status() == FlushFrozenStatus::PublishedNotInstalled,
+        flush.published_not_installed(),
         "reopen failure did not report partial publication",
     )?;
     ensure(

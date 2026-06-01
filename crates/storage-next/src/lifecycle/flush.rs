@@ -39,7 +39,6 @@ pub(crate) struct FlushTableObjectId(String);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FlushFrozenOutcome {
-    status: FlushFrozenStatus,
     branch_id: BranchId,
     frozen_index: Option<usize>,
     rows_flushed: u64,
@@ -49,20 +48,6 @@ pub(crate) struct FlushFrozenOutcome {
     object_facts: Option<TableObjectFacts>,
     install_outcome: Option<BranchImmutableInstallOutcome>,
     failure: Option<LifecycleError>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-#[allow(
-    dead_code,
-    reason = "flush status vocabulary includes unsupported-mode outcomes for executor adapters"
-)]
-pub(crate) enum FlushFrozenStatus {
-    Completed,
-    DeferredNoFrozenState,
-    DeferredUnsupportedMode,
-    Failed,
-    PublishedNotInstalled,
 }
 
 impl FlushFrozenRequest {
@@ -150,7 +135,6 @@ impl FlushTableObjectId {
 impl FlushFrozenOutcome {
     fn deferred(request: &FlushFrozenRequest) -> Self {
         Self {
-            status: FlushFrozenStatus::DeferredNoFrozenState,
             branch_id: request.branch_id(),
             frozen_index: None,
             rows_flushed: 0,
@@ -163,7 +147,7 @@ impl FlushFrozenOutcome {
         }
     }
 
-    fn completed(
+    fn completed_outcome(
         request: &FlushFrozenRequest,
         frozen_index: usize,
         table_facts: TableRuntimeFacts,
@@ -173,7 +157,6 @@ impl FlushFrozenOutcome {
         let table_identity = table_facts.identity().clone();
         let table_object = object_facts.as_ref().map(|facts| facts.object().clone());
         Self {
-            status: FlushFrozenStatus::Completed,
             branch_id: request.branch_id(),
             frozen_index: Some(frozen_index),
             rows_flushed: table_facts.row_count(),
@@ -186,7 +169,7 @@ impl FlushFrozenOutcome {
         }
     }
 
-    fn published_not_installed(
+    fn published_not_installed_outcome(
         request: &FlushFrozenRequest,
         frozen_index: usize,
         table_facts: TableRuntimeFacts,
@@ -201,7 +184,6 @@ impl FlushFrozenOutcome {
             failure,
         );
         Self {
-            status: FlushFrozenStatus::PublishedNotInstalled,
             branch_id: request.branch_id(),
             frozen_index: Some(frozen_index),
             rows_flushed: table_facts.row_count(),
@@ -220,7 +202,6 @@ impl FlushFrozenOutcome {
         failure: LifecycleError,
     ) -> Self {
         Self {
-            status: FlushFrozenStatus::Failed,
             branch_id: request.branch_id(),
             frozen_index,
             rows_flushed: 0,
@@ -233,8 +214,23 @@ impl FlushFrozenOutcome {
         }
     }
 
-    pub(crate) const fn status(&self) -> FlushFrozenStatus {
-        self.status
+    pub(crate) const fn completed(&self) -> bool {
+        self.install_outcome.is_some()
+    }
+
+    pub(crate) fn deferred_no_frozen_state(&self) -> bool {
+        self.install_outcome.is_none()
+            && self.failure.is_none()
+            && self.table_identity.is_none()
+            && self.table_object.is_none()
+    }
+
+    pub(crate) fn failed_before_publication(&self) -> bool {
+        self.failure.is_some() && self.table_object.is_none()
+    }
+
+    pub(crate) fn published_not_installed(&self) -> bool {
+        self.failure.is_some() && self.table_object.is_some() && self.install_outcome.is_none()
     }
 
     pub(crate) const fn branch_id(&self) -> BranchId {
@@ -274,23 +270,25 @@ impl FlushFrozenOutcome {
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
-        let status = match self.status {
-            FlushFrozenStatus::Completed => MaintenanceOutcomeStatus::Completed,
-            FlushFrozenStatus::DeferredNoFrozenState
-            | FlushFrozenStatus::DeferredUnsupportedMode => MaintenanceOutcomeStatus::Deferred,
-            FlushFrozenStatus::Failed | FlushFrozenStatus::PublishedNotInstalled => {
-                MaintenanceOutcomeStatus::Failed
-            }
+        let status = if self.completed() {
+            MaintenanceOutcomeStatus::Completed
+        } else if self.deferred_no_frozen_state() {
+            MaintenanceOutcomeStatus::Deferred
+        } else {
+            MaintenanceOutcomeStatus::Failed
         };
         let affected_objects = usize::from(self.table_object.is_some());
-        let retryable = matches!(self.status, FlushFrozenStatus::PublishedNotInstalled)
+        let retryable = self.published_not_installed()
             && self
                 .failure
                 .as_ref()
                 .is_some_and(published_not_installed_retryable);
-        let bytes_reclaimed = match (self.status, &self.table_facts) {
-            (FlushFrozenStatus::Completed, Some(facts)) => facts.byte_count(),
-            _ => 0,
+        let bytes_reclaimed = if self.completed() {
+            self.table_facts
+                .as_ref()
+                .map_or(0, TableRuntimeFacts::byte_count)
+        } else {
+            0
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Flush, status)
             .with_effects(affected_objects, bytes_reclaimed, retryable)
@@ -299,16 +297,13 @@ impl FlushFrozenOutcome {
         if let Some(object) = &self.table_object {
             outcome = outcome.with_affected_object_names(vec![object.as_str().to_owned()]);
         }
-        if matches!(self.status, FlushFrozenStatus::DeferredNoFrozenState) {
+        if self.deferred_no_frozen_state() {
             outcome = outcome.with_reason("flush has no frozen state to publish");
         }
-        if matches!(self.status, FlushFrozenStatus::PublishedNotInstalled) {
+        if self.published_not_installed() {
             outcome = outcome.with_reason("flush published table object before install failed");
         }
-        if matches!(self.status, FlushFrozenStatus::DeferredUnsupportedMode) {
-            outcome = outcome.with_reason("flush is unsupported for this storage mode");
-        }
-        if matches!(self.status, FlushFrozenStatus::Failed) {
+        if self.failed_before_publication() {
             outcome = outcome.with_reason("flush failed before table object publication");
         }
         if let Some(error) = &self.failure {
@@ -363,7 +358,7 @@ pub(crate) fn flush_cache_branch_with_budget(
             ));
         }
     };
-    Ok(FlushFrozenOutcome::completed(
+    Ok(FlushFrozenOutcome::completed_outcome(
         request,
         frozen_index,
         table_facts,
@@ -421,7 +416,7 @@ pub(crate) fn flush_durable_branch_with_budget(
     ) {
         Ok(reader) => reader,
         Err(error) => {
-            return Ok(FlushFrozenOutcome::published_not_installed(
+            return Ok(FlushFrozenOutcome::published_not_installed_outcome(
                 request,
                 frozen_index,
                 table_facts,
@@ -433,7 +428,7 @@ pub(crate) fn flush_durable_branch_with_budget(
     let table = match branch_owned_table(branch.branch_id(), identity, reader) {
         Ok(table) => table,
         Err(error) => {
-            return Ok(FlushFrozenOutcome::published_not_installed(
+            return Ok(FlushFrozenOutcome::published_not_installed_outcome(
                 request,
                 frozen_index,
                 table_facts,
@@ -445,7 +440,7 @@ pub(crate) fn flush_durable_branch_with_budget(
     let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
         Ok(outcome) => outcome,
         Err(error) => {
-            return Ok(FlushFrozenOutcome::published_not_installed(
+            return Ok(FlushFrozenOutcome::published_not_installed_outcome(
                 request,
                 frozen_index,
                 table_facts,
@@ -454,7 +449,7 @@ pub(crate) fn flush_durable_branch_with_budget(
             ));
         }
     };
-    Ok(FlushFrozenOutcome::completed(
+    Ok(FlushFrozenOutcome::completed_outcome(
         request,
         frozen_index,
         table_facts,

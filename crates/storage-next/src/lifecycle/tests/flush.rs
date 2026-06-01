@@ -98,7 +98,7 @@ fn flush_without_frozen_state_is_deferred() {
 
     let outcome = flush_cache_branch(&mut state, &request).expect("flush outcome");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::DeferredNoFrozenState);
+    assert!(outcome.deferred_no_frozen_state());
     assert_eq!(outcome.branch_id(), branch);
     assert_eq!(outcome.frozen_index(), None);
     assert_eq!(outcome.rows_flushed(), 0);
@@ -132,7 +132,7 @@ fn cache_flush_replaces_oldest_frozen_table_and_preserves_reads() {
 
     let outcome = flush_cache_branch(&mut state, &flush_request(branch, None)).expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(outcome.frozen_index(), Some(1));
     assert_eq!(outcome.rows_flushed(), 1);
     assert_eq!(outcome.table_facts().expect("table facts").row_count(), 1);
@@ -176,7 +176,7 @@ fn cache_flush_replaces_named_table_and_keeps_other_frozen_order() {
 
     let outcome = flush_cache_branch(&mut state, &flush_request(branch, Some(1))).expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(outcome.frozen_index(), Some(1));
     assert_eq!(state.frozen_table_count(), 2);
     assert_eq!(state.owned_table_count(), 1);
@@ -223,7 +223,7 @@ fn cache_flush_preserves_tombstones_and_commit_timestamps() {
 
     let outcome = flush_cache_branch(&mut state, &flush_request(branch, Some(0))).expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(
         outcome.table_facts().expect("facts").commit_range().max(),
         CommitVersion::new(2)
@@ -269,7 +269,7 @@ fn cache_flush_install_failure_leaves_frozen_state_unchanged() {
 
     let outcome = flush_cache_branch(&mut state, &request).expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Failed);
+    assert!(outcome.failed_before_publication());
     assert!(outcome.failure().is_some());
     assert_eq!(
         outcome.maintenance_outcome().status(),
@@ -295,8 +295,8 @@ fn repeated_default_flush_after_success_is_deferred() {
     let completed = flush_cache_branch(&mut state, &request).expect("first flush");
     let deferred = flush_cache_branch(&mut state, &request).expect("second flush");
 
-    assert_eq!(completed.status(), FlushFrozenStatus::Completed);
-    assert_eq!(deferred.status(), FlushFrozenStatus::DeferredNoFrozenState);
+    assert!(completed.completed());
+    assert!(deferred.deferred_no_frozen_state());
     assert_eq!(state.frozen_table_count(), 0);
     assert_eq!(state.owned_table_count(), 1);
 }
@@ -325,7 +325,7 @@ fn cache_runtime_flushes_explicitly_rotated_state_only() {
     let deferred = runtime
         .flush_frozen(&flush_request(branch, None))
         .expect("deferred flush");
-    assert_eq!(deferred.status(), FlushFrozenStatus::DeferredNoFrozenState);
+    assert!(deferred.deferred_no_frozen_state());
     assert_eq!(runtime.branch_state().active_row_count(), 3);
     assert_eq!(runtime.branch_state().frozen_table_count(), 0);
 
@@ -335,7 +335,7 @@ fn cache_runtime_flushes_explicitly_rotated_state_only() {
     let flushed = runtime
         .flush_frozen(&flush_request(branch, None))
         .expect("flush");
-    assert_eq!(flushed.status(), FlushFrozenStatus::Completed);
+    assert!(flushed.completed());
     assert_eq!(runtime.branch_state().active_row_count(), 0);
     assert_eq!(runtime.branch_state().frozen_table_count(), 0);
     assert_eq!(runtime.branch_state().owned_table_count(), 1);
@@ -522,7 +522,7 @@ fn durable_flush_publishes_reopens_and_installs_table() {
     )
     .expect("durable flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(outcome.rows_flushed(), 1);
     assert!(outcome.table_object().is_some());
     assert!(outcome.object_facts().is_some());
@@ -658,7 +658,7 @@ fn durable_flush_does_not_persist_watermark_or_truncate_log() {
         .flush_frozen(&flush_request(branch, None))
         .expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(
         outcome.table_facts().expect("facts").commit_range().max(),
         CommitVersion::new(1)
@@ -689,7 +689,7 @@ fn durable_flush_publishes_table_manifest_after_table_install() {
         .flush_frozen(&flush_request(branch, None))
         .expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(runtime.branch_state().owned_table_count(), 1);
     let manifest = TableManifestService::new(&backend)
         .load_required(branch)
@@ -767,7 +767,7 @@ fn durable_flush_manifest_publish_failure_keeps_rows_visible_and_records_debt() 
         .flush_frozen(&flush_request(branch, None))
         .expect("flush remains visible despite manifest debt");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(
         runtime
             .read_view()
@@ -834,7 +834,7 @@ fn cache_flush_does_not_publish_table_manifest() {
 
     let outcome = flush_cache_branch(&mut state, &flush_request(branch, None)).expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert!(TableManifestService::new(&backend)
         .load_current(branch)
         .expect("load table manifest")
@@ -872,7 +872,7 @@ fn wal_retention_proof_is_not_constructed_by_flush() {
         .flush_frozen(&flush_request(branch, None))
         .expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert!(!outcome.maintenance_outcome().checkpoint_required());
     let manifest = DatabaseManifestService::new(&backend)
         .load_required()
@@ -895,7 +895,7 @@ fn successful_flush_reports_candidate_commit_max() {
 
     let outcome = flush_cache_branch(&mut state, &flush_request(branch, None)).expect("flush");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::Completed);
+    assert!(outcome.completed());
     assert_eq!(
         outcome.table_facts().expect("facts").commit_range().max(),
         CommitVersion::new(7)
@@ -1006,7 +1006,7 @@ fn durable_reopen_failure_reports_published_not_installed() {
     )
     .expect("partial outcome");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::PublishedNotInstalled);
+    assert!(outcome.published_not_installed());
     assert_eq!(outcome.rows_flushed(), 1);
     assert!(outcome.table_object().is_some());
     assert!(outcome.object_facts().is_some());
@@ -1097,7 +1097,7 @@ fn durable_reopen_wrong_branch_table_reports_partial_publication() {
     )
     .expect("partial outcome");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::PublishedNotInstalled);
+    assert!(outcome.published_not_installed());
     assert!(outcome.failure().is_some());
     assert_eq!(
         outcome.maintenance_outcome().status(),
@@ -1136,7 +1136,7 @@ fn durable_install_failure_reports_orphaned_object_fact() {
     )
     .expect("partial outcome");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::PublishedNotInstalled);
+    assert!(outcome.published_not_installed());
     assert!(outcome.object_facts().is_some());
     assert!(outcome.table_object().is_some());
     let failure = outcome.failure().expect("orphan failure");
@@ -1181,7 +1181,7 @@ fn existing_conflicting_object_fails_closed_without_removing_frozen_rows() {
     )
     .expect("conflict outcome");
 
-    assert_eq!(outcome.status(), FlushFrozenStatus::PublishedNotInstalled);
+    assert!(outcome.published_not_installed());
     assert!(outcome.failure().is_some());
     assert!(!outcome.maintenance_outcome().retryable());
     assert_eq!(retry, before_retry);
@@ -1213,7 +1213,7 @@ fn durable_flush_retries_existing_matching_object() {
     )
     .expect("retry flush");
 
-    assert_eq!(retry_outcome.status(), FlushFrozenStatus::Completed);
+    assert!(retry_outcome.completed());
     assert_eq!(retry_outcome.table_object(), Some(&first_object));
     assert_eq!(second.frozen_table_count(), 0);
     assert_eq!(second.owned_table_count(), 1);

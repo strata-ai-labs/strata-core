@@ -128,7 +128,7 @@ pub(crate) use facts::{
 )]
 pub(crate) use flush::{
     flush_cache_branch, flush_durable_branch, FlushFrozenOutcome, FlushFrozenRequest,
-    FlushFrozenStatus, FlushTableIdentitySeed, FlushTableObjectId,
+    FlushTableIdentitySeed, FlushTableObjectId,
 };
 #[allow(
     unused_imports,
