@@ -512,7 +512,7 @@ fn maintenance_coalescing_happens_before_budget_reservation() {
         .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
         .expect("coalesced enqueue");
 
-    assert_eq!(outcome.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(outcome.was_coalesced());
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
 }
 

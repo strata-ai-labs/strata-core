@@ -198,7 +198,7 @@ fn automatic_checkpoint_uses_existing_maintenance_executor() {
         .copied()
         .expect("checkpoint enqueue");
 
-    assert_eq!(enqueue.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(enqueue.was_enqueued());
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
     assert!(backend.snapshot_objects().is_empty());
 

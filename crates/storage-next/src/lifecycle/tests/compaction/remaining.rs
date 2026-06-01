@@ -77,7 +77,7 @@ fn table_rewrite_tasks_coalesce_by_exact_storage_scope() {
         .expect("duplicate materialization");
 
     assert_eq!(duplicate.task_id(), first.task_id());
-    assert_eq!(duplicate.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(duplicate.was_coalesced());
     assert_ne!(other_level.task_id(), first.task_id());
     assert_ne!(other_branch.task_id(), first.task_id());
     assert_eq!(

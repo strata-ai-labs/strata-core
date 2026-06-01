@@ -2833,7 +2833,8 @@ Status: implemented
 
 ### Raw Health And Fact Vocabulary
 
-- `MaintenanceTaskId` and `MaintenanceTaskSequence` are deterministic counters.
+- `MaintenanceTaskId` is a deterministic counter; task sequence ordering uses
+  the executor's monotonic raw sequence value.
 - `MaintenanceTaskPriority` records critical/high/normal/low ordering.
 - `MaintenanceTaskScope` records global, branch, WAL, checkpoint, quarantine,
   retention, table-level, and inherited-layer scopes without product DTOs.

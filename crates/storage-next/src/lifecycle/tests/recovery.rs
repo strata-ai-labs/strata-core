@@ -136,7 +136,7 @@ fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
     let enqueue = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
         .expect("enqueue health collection");
-    assert_eq!(enqueue.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(enqueue.was_enqueued());
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
 
     let mut runner = MaintenanceTestRunner;

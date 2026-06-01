@@ -1040,9 +1040,9 @@ fn maintenance_task_coalesces_table_manifest_flush_watermark_by_candidate() {
         ))
         .expect("third enqueue");
 
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
-    assert_eq!(third.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(first.was_enqueued());
+    assert!(second.was_coalesced());
+    assert!(third.was_enqueued());
     assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
 }
 

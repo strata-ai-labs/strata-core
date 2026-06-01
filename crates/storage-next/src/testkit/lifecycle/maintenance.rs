@@ -3,10 +3,10 @@
 use super::{ensure, script_byte, testkit_error};
 use crate::lifecycle::{
     LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleTransitionTrigger, MaintenanceEnqueueStatus,
-    MaintenanceFaultHook, MaintenanceFaultPoint, MaintenanceOutcome, MaintenanceOutcomeStatus,
-    MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskPolicy, MaintenanceTaskPriority,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    LifecycleStateMachine, LifecycleTransitionTrigger, MaintenanceFaultHook, MaintenanceFaultPoint,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind,
+    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope,
 };
 use crate::testkit::TestkitError;
 use strata_core_next::BranchId;
@@ -99,11 +99,11 @@ fn check_input_enqueue_and_coalesce(
         .enqueue(open, request)
         .map_err(|error| testkit_error(&error))?;
     ensure(
-        first.status() == MaintenanceEnqueueStatus::Enqueued,
+        first.was_enqueued(),
         "maintenance enqueue did not enqueue first task",
     )?;
     ensure(
-        second.status() == MaintenanceEnqueueStatus::Coalesced,
+        second.was_coalesced(),
         "maintenance enqueue did not coalesce duplicate task",
     )?;
     ensure(

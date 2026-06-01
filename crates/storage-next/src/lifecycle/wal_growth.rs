@@ -3,7 +3,7 @@
 use super::{
     telemetry_health_debt, LifecycleError, LifecycleOperationKind, LifecycleResult,
     LifecycleStateMachine, LifecycleWalGrowthPolicy, MaintenanceCheckpointOptions,
-    MaintenanceEnqueueOutcome, MaintenanceEnqueueStatus, MaintenanceTaskRequest, RecoveryHealth,
+    MaintenanceEnqueueOutcome, MaintenanceTaskRequest, RecoveryHealth,
 };
 use crate::service::WalGrowthFacts;
 use strata_core_next::CommitVersion;
@@ -89,9 +89,10 @@ impl LifecycleWalGrowthOutcome {
         trigger: LifecycleWalGrowthTrigger,
         enqueue: MaintenanceEnqueueOutcome,
     ) -> Self {
-        let status = match enqueue.status() {
-            MaintenanceEnqueueStatus::Enqueued => LifecycleWalGrowthStatus::CheckpointEnqueued,
-            MaintenanceEnqueueStatus::Coalesced => LifecycleWalGrowthStatus::CheckpointCoalesced,
+        let status = if enqueue.was_coalesced() {
+            LifecycleWalGrowthStatus::CheckpointCoalesced
+        } else {
+            LifecycleWalGrowthStatus::CheckpointEnqueued
         };
         Self::new(status, facts, commits_since_checkpoint, Some(trigger)).with_enqueue(enqueue)
     }

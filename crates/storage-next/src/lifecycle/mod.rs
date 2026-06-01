@@ -145,10 +145,10 @@ pub(crate) use maintenance::{
     maintenance_ready_for_recovery_health, telemetry_health_debt, LifecycleMaintenanceExecutor,
     LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
     MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceDrainOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceEnqueueStatus, MaintenanceExecutorStatus,
-    MaintenanceFaultHook, MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask,
-    MaintenanceTaskId, MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest,
-    MaintenanceTaskRunner, MaintenanceTaskScope, NoopMaintenanceFaultHook,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceFaultHook,
+    MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, NoopMaintenanceFaultHook,
 };
 #[allow(
     unused_imports,

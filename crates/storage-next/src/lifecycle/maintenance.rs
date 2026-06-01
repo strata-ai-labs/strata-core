@@ -17,9 +17,6 @@ use strata_core_next::{BranchId, CommitVersion};
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct MaintenanceTaskId(u64);
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct MaintenanceTaskSequence(u64);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub(crate) enum MaintenanceTaskPriority {
@@ -88,7 +85,7 @@ pub(crate) struct MaintenanceRetentionOptions {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MaintenanceTask {
     id: MaintenanceTaskId,
-    sequence: MaintenanceTaskSequence,
+    sequence: u64,
     request: MaintenanceTaskRequest,
 }
 
@@ -102,16 +99,9 @@ pub(crate) struct MaintenanceCoalesceKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum MaintenanceEnqueueStatus {
-    Enqueued,
-    Coalesced,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MaintenanceEnqueueOutcome {
     task_id: MaintenanceTaskId,
-    status: MaintenanceEnqueueStatus,
+    coalesced: bool,
     pending_tasks: usize,
     stats: LifecycleMaintenanceStats,
 }
@@ -192,16 +182,6 @@ impl MaintenanceTaskId {
             });
         }
         Ok(Self(value))
-    }
-
-    pub(crate) const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl MaintenanceTaskSequence {
-    const fn new(value: u64) -> Self {
-        Self(value)
     }
 
     pub(crate) const fn get(self) -> u64 {
@@ -598,11 +578,7 @@ impl MaintenanceRetentionOptions {
 }
 
 impl MaintenanceTask {
-    const fn new(
-        id: MaintenanceTaskId,
-        sequence: MaintenanceTaskSequence,
-        request: MaintenanceTaskRequest,
-    ) -> Self {
+    const fn new(id: MaintenanceTaskId, sequence: u64, request: MaintenanceTaskRequest) -> Self {
         Self {
             id,
             sequence,
@@ -617,14 +593,10 @@ impl MaintenanceTask {
     #[cfg(test)]
     pub(crate) fn new_for_test(id: u64, request: MaintenanceTaskRequest) -> LifecycleResult<Self> {
         let id = MaintenanceTaskId::new(id)?;
-        Ok(Self::new(
-            id,
-            MaintenanceTaskSequence::new(id.get()),
-            request,
-        ))
+        Ok(Self::new(id, id.get(), request))
     }
 
-    pub(crate) const fn sequence(self) -> MaintenanceTaskSequence {
+    pub(crate) const fn sequence(self) -> u64 {
         self.sequence
     }
 
@@ -666,15 +638,27 @@ impl MaintenanceTask {
 }
 
 impl MaintenanceEnqueueOutcome {
-    const fn new(
+    const fn enqueued(
         task_id: MaintenanceTaskId,
-        enqueue_status: MaintenanceEnqueueStatus,
         pending_tasks: usize,
         stats: LifecycleMaintenanceStats,
     ) -> Self {
         Self {
             task_id,
-            status: enqueue_status,
+            coalesced: false,
+            pending_tasks,
+            stats,
+        }
+    }
+
+    const fn coalesced(
+        task_id: MaintenanceTaskId,
+        pending_tasks: usize,
+        stats: LifecycleMaintenanceStats,
+    ) -> Self {
+        Self {
+            task_id,
+            coalesced: true,
             pending_tasks,
             stats,
         }
@@ -684,8 +668,12 @@ impl MaintenanceEnqueueOutcome {
         self.task_id
     }
 
-    pub(crate) const fn status(self) -> MaintenanceEnqueueStatus {
-        self.status
+    pub(crate) const fn was_enqueued(self) -> bool {
+        !self.coalesced
+    }
+
+    pub(crate) const fn was_coalesced(self) -> bool {
+        self.coalesced
     }
 
     pub(crate) const fn pending_tasks(self) -> usize {
@@ -875,9 +863,8 @@ impl LifecycleMaintenanceExecutor {
                 .find(|task| task.coalesce_key() == Some(key))
             {
                 self.stats.coalesced = self.stats.coalesced.saturating_add(1);
-                return Ok(MaintenanceEnqueueOutcome::new(
+                return Ok(MaintenanceEnqueueOutcome::coalesced(
                     existing.id(),
-                    MaintenanceEnqueueStatus::Coalesced,
                     self.queue.len(),
                     self.stats,
                 ));
@@ -891,15 +878,14 @@ impl LifecycleMaintenanceExecutor {
         }
         let request = bind(request)?;
         let id = MaintenanceTaskId::new(self.next_id)?;
-        let sequence = MaintenanceTaskSequence::new(self.next_id);
+        let sequence = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let task = MaintenanceTask::new(id, sequence, request);
         self.queue.push(task);
         self.stats.enqueued = self.stats.enqueued.saturating_add(1);
         fault.check(MaintenanceFaultPoint::AfterEnqueue, Some(&task))?;
-        Ok(MaintenanceEnqueueOutcome::new(
+        Ok(MaintenanceEnqueueOutcome::enqueued(
             id,
-            MaintenanceEnqueueStatus::Enqueued,
             self.queue.len(),
             self.stats,
         ))
@@ -1051,7 +1037,7 @@ impl LifecycleMaintenanceExecutor {
             .iter()
             .enumerate()
             .filter(|(_, task)| predicate(task))
-            .min_by_key(|(_, task)| (task.priority().rank(), task.sequence().get()))
+            .min_by_key(|(_, task)| (task.priority().rank(), task.sequence()))
             .map(|(index, _)| index)
     }
 

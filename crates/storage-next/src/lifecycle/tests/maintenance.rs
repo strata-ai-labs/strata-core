@@ -61,8 +61,8 @@ fn maintenance_task_ids_and_sequences_are_monotonic() {
 
     assert_eq!(first.task_id().get(), 1);
     assert_eq!(second.task_id().get(), 2);
-    assert_eq!(executor.pending_tasks()[0].sequence().get(), 1);
-    assert_eq!(executor.pending_tasks()[1].sequence().get(), 2);
+    assert_eq!(executor.pending_tasks()[0].sequence(), 1);
+    assert_eq!(executor.pending_tasks()[1].sequence(), 2);
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn maintenance_enqueue_requires_open_and_enforces_capacity() {
 
     let open = open_state();
     let first = executor.enqueue(open, request).expect("first enqueue");
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(first.was_enqueued());
     assert_eq!(first.pending_tasks(), 1);
 
     let error = executor
@@ -410,7 +410,7 @@ fn maintenance_executor_coalesces_pending_tasks_by_key() {
     let first = executor.enqueue(open, request).expect("first");
     let second = executor.enqueue(open, request).expect("coalesced");
 
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(second.was_coalesced());
     assert_eq!(second.task_id(), first.task_id());
     assert_eq!(executor.status().pending_tasks(), 1);
     assert_eq!(executor.stats().coalesced(), 1);
@@ -459,7 +459,7 @@ fn maintenance_executor_coalesces_each_coalescing_scope_independently() {
     ] {
         let first = executor.enqueue(open, request).expect("first");
         let duplicate = executor.enqueue(open, request).expect("duplicate");
-        assert_eq!(duplicate.status(), MaintenanceEnqueueStatus::Coalesced);
+        assert!(duplicate.was_coalesced());
         assert_eq!(duplicate.task_id(), first.task_id());
     }
 
@@ -469,7 +469,7 @@ fn maintenance_executor_coalesces_each_coalescing_scope_independently() {
             MaintenanceTaskRequest::materialization_layer(branch_id(13), 1),
         )
         .expect("second layer");
-    assert_eq!(second_layer.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(second_layer.was_enqueued());
     assert_eq!(executor.status().pending_tasks(), 5);
     assert_eq!(executor.stats().coalesced(), 4);
 }
@@ -490,7 +490,7 @@ fn checkpoint_tasks_coalesce_across_global_and_checkpoint_scope() {
     let first = executor.enqueue(open, checkpoint_scoped).expect("first");
     let second = executor.enqueue(open, global_scoped).expect("second");
 
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(second.was_coalesced());
     assert_eq!(second.task_id(), first.task_id());
     assert_eq!(executor.status().pending_tasks(), 1);
 }
@@ -512,10 +512,10 @@ fn checkpoint_tasks_do_not_coalesce_across_different_options() {
         .enqueue(open, explicit)
         .expect("duplicate explicit");
 
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(first.was_enqueued());
+    assert!(second.was_enqueued());
     assert_ne!(second.task_id(), first.task_id());
-    assert_eq!(third.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(third.was_coalesced());
     assert_eq!(third.task_id(), second.task_id());
     assert_eq!(executor.status().pending_tasks(), 2);
     assert_eq!(executor.stats().coalesced(), 1);
@@ -569,8 +569,8 @@ fn maintenance_executor_does_not_coalesce_non_coalescing_requests() {
     ] {
         let first = executor.enqueue(open, request).expect("first");
         let second = executor.enqueue(open, request).expect("second");
-        assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-        assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
+        assert!(first.was_enqueued());
+        assert!(second.was_enqueued());
         assert_ne!(first.task_id(), second.task_id());
     }
 
@@ -598,7 +598,7 @@ fn maintenance_executor_does_not_coalesce_active_task() {
         .is_err());
 
     let second = executor.enqueue(open, request).expect("new pending task");
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
+    assert!(second.was_enqueued());
     assert_eq!(second.task_id().get(), 2);
 }
 

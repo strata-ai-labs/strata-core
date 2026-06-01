@@ -422,8 +422,8 @@ fn duplicate_flush_task_coalesces_by_branch() {
         .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
         .expect("second flush task");
 
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(first.was_enqueued());
+    assert!(second.was_coalesced());
     assert_eq!(second.task_id(), first.task_id());
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
 }

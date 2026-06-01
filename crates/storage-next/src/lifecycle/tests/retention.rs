@@ -1193,9 +1193,9 @@ fn snapshot_pruning_tasks_coalesce_by_retain_policy() {
         .enqueue(state, MaintenanceTaskRequest::snapshot_pruning(1))
         .expect("third");
 
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(third.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(first.was_enqueued());
+    assert!(second.was_enqueued());
+    assert!(third.was_coalesced());
     assert_eq!(executor.status().pending_tasks(), 2);
 }
 
@@ -1256,7 +1256,7 @@ fn retention_task_coalesces_by_scope() {
         .enqueue(state, MaintenanceTaskRequest::retention(2))
         .expect("second");
 
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(second.was_coalesced());
     assert_eq!(second.task_id(), first.task_id());
     assert_eq!(executor.status().pending_tasks(), 1);
 }

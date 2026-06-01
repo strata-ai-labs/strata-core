@@ -888,8 +888,8 @@ fn duplicate_checkpoint_tasks_coalesce_by_checkpoint_scope() {
         .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
         .expect("second enqueue");
 
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(first.was_enqueued());
+    assert!(second.was_coalesced());
     assert_eq!(runtime.maintenance_status().stats().coalesced(), 1);
 }
 
@@ -993,8 +993,8 @@ fn duplicate_wal_truncation_tasks_coalesce_by_retention_scope() {
         .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
         .expect("second enqueue");
 
-    assert_eq!(first.status(), MaintenanceEnqueueStatus::Enqueued);
-    assert_eq!(second.status(), MaintenanceEnqueueStatus::Coalesced);
+    assert!(first.was_enqueued());
+    assert!(second.was_coalesced());
     assert_eq!(runtime.maintenance_status().stats().coalesced(), 1);
 }
 
