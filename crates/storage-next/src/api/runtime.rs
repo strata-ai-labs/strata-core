@@ -132,6 +132,16 @@ impl StorageRuntime<'static> {
         }
     }
 
+    /// Open an explicit volatile runtime backed by in-memory cache storage.
+    pub fn open_ephemeral() -> StorageApiResult<StorageOpenOutcome<'static>> {
+        Self::open_cache()
+    }
+
+    /// Open a cache-mode runtime for cache-specific tests and previews.
+    pub fn open_cache() -> StorageApiResult<StorageOpenOutcome<'static>> {
+        Self::open(StorageOpenOptions::cache())
+    }
+
     pub fn open(options: StorageOpenOptions) -> StorageApiResult<StorageOpenOutcome<'static>> {
         options.validate()?;
         match options.mode() {
@@ -151,6 +161,17 @@ impl StorageRuntime<'static> {
 }
 
 impl<'a> StorageRuntime<'a> {
+    /// Open durable local storage with an explicit backend handle.
+    ///
+    /// The returned runtime borrows `backend`; keep the backend alive for at
+    /// least as long as the runtime.
+    pub fn open_durable_local_with_backend(
+        policy: StorageDurabilityPolicy,
+        backend: &'a StorageBackend,
+    ) -> StorageApiResult<StorageOpenOutcome<'a>> {
+        Self::open_with_backend(StorageOpenOptions::durable_local(policy), backend)
+    }
+
     pub fn open_with_backend(
         options: StorageOpenOptions,
         backend: &'a StorageBackend,

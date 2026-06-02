@@ -12,8 +12,15 @@ pub enum StorageDurabilityPolicy {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageMode {
+    /// Volatile in-memory storage for tests, previews, and explicit
+    /// ephemeral sessions. This mode does not persist data across process
+    /// lifetime.
     Cache,
-    DurableLocal { policy: StorageDurabilityPolicy },
+    /// Directory-backed local durable storage. Callers must provide an
+    /// explicit durable backend handle when opening this mode.
+    DurableLocal {
+        policy: StorageDurabilityPolicy,
+    },
     ObjectDurableCandidate,
     DistributedCandidate,
 }
@@ -46,6 +53,10 @@ pub struct StorageOpenOptions {
 }
 
 impl StorageOpenOptions {
+    /// Open volatile cache storage.
+    ///
+    /// Cache mode is intentionally non-durable. Use this for tests, previews,
+    /// and explicitly ephemeral sessions rather than normal database opens.
     #[must_use]
     pub const fn cache() -> Self {
         Self {
@@ -56,6 +67,15 @@ impl StorageOpenOptions {
         }
     }
 
+    /// Open explicitly ephemeral storage.
+    ///
+    /// This is an intent-revealing alias for [`Self::cache`].
+    #[must_use]
+    pub const fn ephemeral() -> Self {
+        Self::cache()
+    }
+
+    /// Open durable local storage through a caller-provided backend handle.
     #[must_use]
     pub const fn durable_local(policy: StorageDurabilityPolicy) -> Self {
         Self {

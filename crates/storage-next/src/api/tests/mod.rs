@@ -411,6 +411,7 @@ fn diagnostics_request_kind_is_constructible() {
 #[test]
 fn open_options_reject_unsupported_modes() {
     assert!(StorageOpenOptions::cache().validate().is_ok());
+    assert!(StorageOpenOptions::ephemeral().validate().is_ok());
     assert!(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .validate()
@@ -431,6 +432,15 @@ fn open_options_reject_unsupported_modes() {
             .code(),
         "unsupported.storage_api.capability"
     );
+}
+
+#[test]
+fn open_options_ephemeral_is_explicit_cache_mode() {
+    let options = StorageOpenOptions::ephemeral();
+
+    assert_eq!(options.mode(), StorageMode::Cache);
+    assert!(!options.requires_backend());
+    assert!(options.validate().is_ok());
 }
 
 #[test]
@@ -568,6 +578,30 @@ fn open_cache_returns_open_runtime_and_cache_summary() {
     assert!(summary.maintenance_ready());
     assert!(!summary.has_durable_recovery_facts());
     assert!(summary.backend_capabilities_used());
+}
+
+#[test]
+fn open_ephemeral_returns_open_runtime_and_cache_summary() {
+    let outcome = StorageRuntime::open_ephemeral().expect("ephemeral open");
+    let summary = outcome.summary();
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert_eq!(summary.mode(), StorageMode::Cache);
+    assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
+    assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Healthy);
+    assert!(!summary.has_durable_recovery_facts());
+}
+
+#[test]
+fn open_cache_helper_returns_open_runtime_and_cache_summary() {
+    let outcome = StorageRuntime::open_cache().expect("cache helper open");
+    let summary = outcome.summary();
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert_eq!(summary.mode(), StorageMode::Cache);
+    assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
 }
 
 #[test]
@@ -748,6 +782,29 @@ fn open_durable_modes_return_open_runtime() {
         assert_eq!(close.state(), StorageRuntimeState::Closed);
         assert!(close.durable_synced());
     }
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_local_with_backend_returns_open_runtime() {
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("durable-helper"));
+    let outcome = StorageRuntime::open_durable_local_with_backend(
+        StorageDurabilityPolicy::Standard,
+        &backend,
+    )
+    .expect("durable helper open should succeed");
+    let summary = outcome.summary();
+    let runtime = outcome.into_runtime();
+
+    assert_eq!(
+        summary.mode(),
+        StorageMode::DurableLocal {
+            policy: StorageDurabilityPolicy::Standard
+        }
+    );
+    assert!(summary.has_durable_recovery_facts());
+    assert!(summary.backend_capabilities_used());
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
 }
 
 #[test]
