@@ -18,7 +18,7 @@ use crate::service::{
     QuarantineDeleteOutcome, QuarantineFamilyReconciliation, QuarantineGate,
     QuarantineInventoryToken, QuarantineObjectReport, QuarantineObjectRequest,
     QuarantineObjectStatus, QuarantinePurgeReport, QuarantinePurgeRequest,
-    QuarantineReconciliationReport, QuarantineRecoveryClass, QuarantineService,
+    QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineService,
     QuarantineServiceError,
 };
 use sha2::{Digest, Sha256};
@@ -924,7 +924,7 @@ impl LifecyclePurgeOutcome {
 impl LifecycleQuarantineRepairOutcome {
     fn from_branch_report(report: &QuarantineReconciliationReport) -> LifecycleResult<Self> {
         let recovery_health =
-            health_for_reconciliation_class(report.recovery_class(), Some(report.branch_id()))?;
+            health_for_reconciliation_kind(report.kind(), Some(report.branch_id()))?;
         let source_error = repair_report_error(report);
         Ok(Self {
             report_count: 1,
@@ -943,7 +943,7 @@ impl LifecycleQuarantineRepairOutcome {
         // Family-level reconciliation aggregates multiple branches; no
         // single branch owns the resulting health so the fault stays
         // unscoped.
-        let recovery_health = health_for_reconciliation_class(report.recovery_class(), None)?;
+        let recovery_health = health_for_reconciliation_kind(report.kind(), None)?;
         let branch_reports = report.branch_reports();
         Ok(Self {
             report_count: branch_reports.len(),
@@ -1484,13 +1484,18 @@ fn health_for_quarantine_status(
     }
 }
 
-fn health_for_reconciliation_class(
-    class: QuarantineRecoveryClass,
+fn health_for_reconciliation_kind(
+    kind: QuarantineReconciliationKind,
     branch_id: Option<BranchId>,
 ) -> LifecycleResult<Option<RecoveryHealth>> {
-    match class {
-        QuarantineRecoveryClass::Healthy => Ok(None),
-        QuarantineRecoveryClass::PolicyDowngraded => {
+    match kind {
+        QuarantineReconciliationKind::CleanEmpty | QuarantineReconciliationKind::CleanInventory => {
+            Ok(None)
+        }
+        QuarantineReconciliationKind::CorruptInventory
+        | QuarantineReconciliationKind::UnlistedQuarantineObject
+        | QuarantineReconciliationKind::MissingQuarantineObject
+        | QuarantineReconciliationKind::MalformedListedObject => {
             let mut fault = RecoveryFault::new(
                 RecoveryFaultKind::QuarantineInventoryMismatch,
                 "quarantine inventory mismatch",
@@ -1503,7 +1508,7 @@ fn health_for_reconciliation_class(
                 vec![fault],
             )?))
         }
-        QuarantineRecoveryClass::Unavailable => {
+        QuarantineReconciliationKind::BackendUnavailable => {
             let mut fault = RecoveryFault::new(
                 RecoveryFaultKind::QuarantineInventoryMismatch,
                 "quarantine backend unavailable",

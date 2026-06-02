@@ -234,7 +234,6 @@ fn reconcile_absent_inventory_and_no_objects_is_clean_empty() {
         .expect("reconcile branch");
 
     assert_eq!(report.kind(), QuarantineReconciliationKind::CleanEmpty);
-    assert_eq!(report.recovery_class(), QuarantineRecoveryClass::Healthy);
     assert_eq!(report.branch_id(), branch_id);
     assert_eq!(report.inventory_object(), &inventory_object(branch_id));
     assert!(!report.inventory_present());
@@ -312,10 +311,6 @@ fn reconcile_corrupt_inventory_is_policy_downgrade_with_source_fact() {
     assert_eq!(
         report.kind(),
         QuarantineReconciliationKind::CorruptInventory
-    );
-    assert_eq!(
-        report.recovery_class(),
-        QuarantineRecoveryClass::PolicyDowngraded
     );
     let corrupt = report.corrupt_inventory().expect("corrupt inventory");
     assert_eq!(corrupt.object(), &object);
@@ -521,10 +516,7 @@ fn reconcile_malformed_object_id_is_policy_downgrade() {
     assert_eq!(report.malformed_objects().len(), 1);
     assert_eq!(report.malformed_objects()[0].object(), &object);
     assert_eq!(report.malformed_objects()[0].object_id(), Some("table0001"));
-    assert_eq!(
-        report.malformed_objects()[0].reason(),
-        MalformedQuarantineObjectReason::ObjectId
-    );
+    assert_eq!(report.malformed_objects()[0].reason(), "object_id");
     assert_read_only(&backend);
 }
 
@@ -542,17 +534,10 @@ fn family_reconcile_reports_malformed_branch_ids() {
         family.kind(),
         QuarantineReconciliationKind::MalformedListedObject
     );
-    assert_eq!(
-        family.recovery_class(),
-        QuarantineRecoveryClass::PolicyDowngraded
-    );
     assert!(family.branch_reports().is_empty());
     assert_eq!(family.malformed_objects().len(), 1);
     assert_eq!(family.malformed_objects()[0].object(), &object);
-    assert_eq!(
-        family.malformed_objects()[0].reason(),
-        MalformedQuarantineObjectReason::Branch
-    );
+    assert_eq!(family.malformed_objects()[0].reason(), "branch");
     assert_read_only(&backend);
 }
 
@@ -649,17 +634,10 @@ fn family_reconcile_list_failure_is_unavailable() {
         family.kind(),
         QuarantineReconciliationKind::BackendUnavailable
     );
-    assert_eq!(
-        family.recovery_class(),
-        QuarantineRecoveryClass::Unavailable
-    );
     assert!(family.branch_reports().is_empty());
     assert!(family.malformed_objects().is_empty());
     let unavailable = family.unavailable().expect("unavailable fact");
-    assert_eq!(
-        unavailable.operation(),
-        QuarantineBackendOperation::ListFamily
-    );
+    assert_eq!(unavailable.operation(), "list_family");
     assert!(unavailable.object().is_none());
     assert_eq!(unavailable.source().kind(), BackendErrorKind::Unavailable);
     assert_read_only(&backend);
@@ -680,15 +658,8 @@ fn reconcile_backend_list_failure_is_unavailable_without_mutation() {
         report.kind(),
         QuarantineReconciliationKind::BackendUnavailable
     );
-    assert_eq!(
-        report.recovery_class(),
-        QuarantineRecoveryClass::Unavailable
-    );
     let unavailable = report.unavailable().expect("unavailable fact");
-    assert_eq!(
-        unavailable.operation(),
-        QuarantineBackendOperation::ListBranch
-    );
+    assert_eq!(unavailable.operation(), "list_branch");
     assert!(unavailable.object().is_none());
     assert_eq!(unavailable.source().kind(), BackendErrorKind::Unavailable);
     assert_read_only(&backend);
@@ -711,10 +682,7 @@ fn reconcile_inventory_read_failure_is_unavailable_but_not_found_is_absent() {
         QuarantineReconciliationKind::BackendUnavailable
     );
     let unavailable = report.unavailable().expect("unavailable fact");
-    assert_eq!(
-        unavailable.operation(),
-        QuarantineBackendOperation::ReadInventory
-    );
+    assert_eq!(unavailable.operation(), "read_inventory");
     assert_eq!(unavailable.object(), Some(&object));
     assert_eq!(unavailable.source().kind(), BackendErrorKind::Unavailable);
     assert_read_only(&backend);

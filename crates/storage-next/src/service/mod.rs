@@ -36,14 +36,13 @@ pub(crate) use publish::{validate_publish_outcome, ObjectPublisher};
     reason = "quarantine service is consumed by lifecycle and recovery services added later"
 )]
 pub(crate) use quarantine::{
-    MalformedQuarantineObjectReason, QuarantineBackendOperation, QuarantineBackendUnavailable,
-    QuarantineCorruptInventory, QuarantineDeleteOutcome, QuarantineFamilyReconciliation,
-    QuarantineGate, QuarantineInventoryCorruption, QuarantineInventoryLoad,
-    QuarantineInventoryToken, QuarantineInventoryWrite, QuarantineListedObject,
-    QuarantineMalformedObject, QuarantineMissingObject, QuarantineObjectReport,
-    QuarantineObjectRequest, QuarantineObjectStatus, QuarantinePublishFailure,
-    QuarantinePurgeReport, QuarantinePurgeRequest, QuarantineReconciliationKind,
-    QuarantineReconciliationReport, QuarantineRecoveryClass, QuarantineService,
+    QuarantineBackendUnavailable, QuarantineCorruptInventory, QuarantineDeleteOutcome,
+    QuarantineFamilyReconciliation, QuarantineGate, QuarantineInventoryCorruption,
+    QuarantineInventoryLoad, QuarantineInventoryToken, QuarantineInventoryWrite,
+    QuarantineListedObject, QuarantineMalformedObject, QuarantineMissingObject,
+    QuarantineObjectReport, QuarantineObjectRequest, QuarantineObjectStatus,
+    QuarantinePublishFailure, QuarantinePurgeReport, QuarantinePurgeRequest,
+    QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineService,
     QuarantineServiceError, QuarantineUnlistedObject,
 };
 

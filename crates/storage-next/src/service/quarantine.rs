@@ -33,10 +33,9 @@ pub(crate) use mutation::{
     QuarantinePurgeRequest,
 };
 pub(crate) use reconcile::{
-    MalformedQuarantineObjectReason, QuarantineBackendOperation, QuarantineBackendUnavailable,
-    QuarantineCorruptInventory, QuarantineFamilyReconciliation, QuarantineInventoryCorruption,
-    QuarantineListedObject, QuarantineMalformedObject, QuarantineMissingObject,
-    QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineRecoveryClass,
+    QuarantineBackendUnavailable, QuarantineCorruptInventory, QuarantineFamilyReconciliation,
+    QuarantineInventoryCorruption, QuarantineListedObject, QuarantineMalformedObject,
+    QuarantineMissingObject, QuarantineReconciliationKind, QuarantineReconciliationReport,
     QuarantineUnlistedObject,
 };
 

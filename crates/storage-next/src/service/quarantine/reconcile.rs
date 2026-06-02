@@ -11,13 +11,6 @@ use std::collections::BTreeMap;
 use strata_core_next::BranchId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum QuarantineRecoveryClass {
-    Healthy,
-    PolicyDowngraded,
-    Unavailable,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum QuarantineReconciliationKind {
     CleanEmpty,
     CleanInventory,
@@ -29,38 +22,34 @@ pub(crate) enum QuarantineReconciliationKind {
 }
 
 impl QuarantineReconciliationKind {
-    const fn recovery_class(self) -> QuarantineRecoveryClass {
+    const fn is_unavailable(self) -> bool {
+        matches!(self, Self::BackendUnavailable)
+    }
+
+    const fn is_policy_downgraded(self) -> bool {
         match self {
-            Self::CleanEmpty | Self::CleanInventory => QuarantineRecoveryClass::Healthy,
             Self::CorruptInventory
             | Self::UnlistedQuarantineObject
             | Self::MissingQuarantineObject
-            | Self::MalformedListedObject => QuarantineRecoveryClass::PolicyDowngraded,
-            Self::BackendUnavailable => QuarantineRecoveryClass::Unavailable,
+            | Self::MalformedListedObject => true,
+            Self::CleanEmpty | Self::CleanInventory | Self::BackendUnavailable => false,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum QuarantineBackendOperation {
-    ReadInventory,
-    ListBranch,
-    ListFamily,
-}
+const QUARANTINE_BACKEND_READ_INVENTORY: &str = "read_inventory";
+const QUARANTINE_BACKEND_LIST_BRANCH: &str = "list_branch";
+const QUARANTINE_BACKEND_LIST_FAMILY: &str = "list_family";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct QuarantineBackendUnavailable {
-    operation: QuarantineBackendOperation,
+    operation: &'static str,
     object: Option<ObjectName>,
     source: BackendError,
 }
 
 impl QuarantineBackendUnavailable {
-    fn new(
-        operation: QuarantineBackendOperation,
-        object: Option<ObjectName>,
-        source: BackendError,
-    ) -> Self {
+    fn new(operation: &'static str, object: Option<ObjectName>, source: BackendError) -> Self {
         Self {
             operation,
             object,
@@ -68,7 +57,7 @@ impl QuarantineBackendUnavailable {
         }
     }
 
-    pub(crate) const fn operation(&self) -> QuarantineBackendOperation {
+    pub(crate) const fn operation(&self) -> &'static str {
         self.operation
     }
 
@@ -242,19 +231,16 @@ impl QuarantineInventoryObject<{ QUARANTINE_OBJECT_UNLISTED }> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MalformedQuarantineObjectReason {
-    Branch,
-    ObjectId,
-    Shape,
-}
+const MALFORMED_QUARANTINE_BRANCH: &str = "branch";
+const MALFORMED_QUARANTINE_OBJECT_ID: &str = "object_id";
+const MALFORMED_QUARANTINE_SHAPE: &str = "shape";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct QuarantineMalformedObject {
     object: ObjectName,
     branch_id: Option<BranchId>,
     object_id: Option<String>,
-    reason: MalformedQuarantineObjectReason,
+    reason: &'static str,
 }
 
 impl QuarantineMalformedObject {
@@ -262,7 +248,7 @@ impl QuarantineMalformedObject {
         object: ObjectName,
         branch_id: Option<BranchId>,
         object_id: Option<String>,
-        reason: MalformedQuarantineObjectReason,
+        reason: &'static str,
     ) -> Self {
         Self {
             object,
@@ -284,7 +270,7 @@ impl QuarantineMalformedObject {
         self.object_id.as_deref()
     }
 
-    pub(crate) const fn reason(&self) -> MalformedQuarantineObjectReason {
+    pub(crate) const fn reason(&self) -> &'static str {
         self.reason
     }
 }
@@ -338,10 +324,6 @@ impl QuarantineReconciliationReport {
 
     pub(crate) const fn kind(&self) -> QuarantineReconciliationKind {
         self.kind
-    }
-
-    pub(crate) const fn recovery_class(&self) -> QuarantineRecoveryClass {
-        self.kind.recovery_class()
     }
 
     pub(crate) fn listed_objects(&self) -> &[QuarantineListedObject] {
@@ -406,7 +388,7 @@ impl QuarantineFamilyReconciliation {
             || self
                 .branch_reports
                 .iter()
-                .any(|report| report.recovery_class() == QuarantineRecoveryClass::Unavailable)
+                .any(|report| report.kind().is_unavailable())
         {
             return QuarantineReconciliationKind::BackendUnavailable;
         }
@@ -432,10 +414,6 @@ impl QuarantineFamilyReconciliation {
             QuarantineReconciliationKind::CleanInventory
         })
     }
-
-    pub(crate) fn recovery_class(&self) -> QuarantineRecoveryClass {
-        self.kind().recovery_class()
-    }
 }
 
 impl QuarantineService<'_> {
@@ -458,14 +436,15 @@ impl QuarantineService<'_> {
             Ok(listing) => listing,
             Err(source) => {
                 report.unavailable = Some(QuarantineBackendUnavailable::new(
-                    QuarantineBackendOperation::ListBranch,
+                    QUARANTINE_BACKEND_LIST_BRANCH,
                     None,
                     source,
                 ));
                 return Ok(report.finish());
             }
         };
-        report.malformed_objects = listing.malformed_objects;
+        let (listing_objects, malformed_objects) = listing;
+        report.malformed_objects = malformed_objects;
 
         let Some(inventory) = (match load_reconciliation_inventory(
             self.backend,
@@ -486,8 +465,7 @@ impl QuarantineService<'_> {
                 // lose orphaned bytes just because the inventory cannot decode.
                 report.inventory_present = true;
                 report.corrupt_inventory = Some(corrupt);
-                report.unlisted_objects = listing
-                    .objects
+                report.unlisted_objects = listing_objects
                     .into_iter()
                     .map(|(object_id, object)| QuarantineUnlistedObject::new(object_id, object))
                     .collect();
@@ -498,15 +476,14 @@ impl QuarantineService<'_> {
                 return Ok(report.finish());
             }
         }) else {
-            report.unlisted_objects = listing
-                .objects
+            report.unlisted_objects = listing_objects
                 .into_iter()
                 .map(|(object_id, object)| QuarantineUnlistedObject::new(object_id, object))
                 .collect();
             return Ok(report.finish());
         };
 
-        let mut remaining_objects = listing.objects;
+        let mut remaining_objects = listing_objects;
         for entry in inventory.entries() {
             let object = quarantine_object_name(branch_id, entry.object_id())?;
             if remaining_objects.remove(entry.object_id()).is_some() {
@@ -548,7 +525,7 @@ impl QuarantineService<'_> {
                     Vec::new(),
                     Vec::new(),
                     Some(QuarantineBackendUnavailable::new(
-                        QuarantineBackendOperation::ListFamily,
+                        QUARANTINE_BACKEND_LIST_FAMILY,
                         None,
                         source,
                     )),
@@ -560,18 +537,17 @@ impl QuarantineService<'_> {
         let mut malformed_objects = Vec::new();
         for object in objects {
             match parse_quarantine_object(object) {
-                ParsedQuarantineObject::Ignored => {}
-                ParsedQuarantineObject::Inventory { branch_id }
-                | ParsedQuarantineObject::Object { branch_id, .. } => {
+                Ok(None) => {}
+                Ok(Some((branch_id, _, _))) => {
                     branch_ids.insert(branch_id.to_string(), branch_id);
                 }
-                ParsedQuarantineObject::Malformed(malformed) => {
+                Err(malformed) => {
                     // Malformed object ids with a valid branch can be
                     // classified by the branch-local report. Family-level
                     // malformed facts are reserved for names a branch-local
                     // prefix cannot discover, such as invalid branch text.
                     match (malformed.branch_id(), malformed.reason()) {
-                        (Some(branch_id), MalformedQuarantineObjectReason::ObjectId) => {
+                        (Some(branch_id), MALFORMED_QUARANTINE_OBJECT_ID) => {
                             branch_ids.insert(branch_id.to_string(), branch_id);
                         }
                         _ => malformed_objects.push(malformed),
@@ -596,12 +572,6 @@ impl QuarantineService<'_> {
     }
 }
 
-#[derive(Debug)]
-struct BranchQuarantineListing {
-    objects: BTreeMap<String, ObjectName>,
-    malformed_objects: Vec<QuarantineMalformedObject>,
-}
-
 enum InventoryReconciliationLoad {
     Present(QuarantineInventory),
     Absent,
@@ -609,23 +579,10 @@ enum InventoryReconciliationLoad {
     Unavailable(QuarantineBackendUnavailable),
 }
 
-enum ParsedQuarantineObject {
-    Inventory {
-        branch_id: BranchId,
-    },
-    Object {
-        branch_id: BranchId,
-        object_id: String,
-        object: ObjectName,
-    },
-    Malformed(QuarantineMalformedObject),
-    Ignored,
-}
-
 fn list_branch_quarantine_objects(
     backend: &dyn Backend,
     branch_id: BranchId,
-) -> Result<BranchQuarantineListing, BackendError> {
+) -> Result<(BTreeMap<String, ObjectName>, Vec<QuarantineMalformedObject>), BackendError> {
     let prefix = ObjectLayout::branch_quarantine_prefix(&branch_id.to_string())
         .map_err(|_| BackendError::new(BackendErrorKind::InvalidObjectName, "invalid prefix"))?;
     let mut objects = BTreeMap::new();
@@ -633,29 +590,20 @@ fn list_branch_quarantine_objects(
 
     for object in backend.list_prefix(&prefix)? {
         match parse_quarantine_object(object) {
-            ParsedQuarantineObject::Object {
-                branch_id: listed_branch_id,
-                object_id,
-                object,
-            } if listed_branch_id == branch_id => {
+            Ok(Some((listed_branch_id, Some(object_id), object)))
+                if listed_branch_id == branch_id =>
+            {
                 objects.insert(object_id, object);
             }
-            ParsedQuarantineObject::Inventory {
-                branch_id: listed_branch_id,
-            } if listed_branch_id == branch_id => {}
-            ParsedQuarantineObject::Malformed(malformed)
-                if malformed.branch_id() == Some(branch_id) =>
-            {
+            Ok(Some((listed_branch_id, None, _))) if listed_branch_id == branch_id => {}
+            Err(malformed) if malformed.branch_id() == Some(branch_id) => {
                 malformed_objects.push(malformed);
             }
             _ => {}
         }
     }
 
-    Ok(BranchQuarantineListing {
-        objects,
-        malformed_objects,
-    })
+    Ok((objects, malformed_objects))
 }
 
 fn load_reconciliation_inventory(
@@ -673,7 +621,7 @@ fn load_reconciliation_inventory(
         Err(source) => {
             return Ok(InventoryReconciliationLoad::Unavailable(
                 QuarantineBackendUnavailable::new(
-                    QuarantineBackendOperation::ReadInventory,
+                    QUARANTINE_BACKEND_READ_INVENTORY,
                     Some(object.clone()),
                     source,
                 ),
@@ -766,7 +714,7 @@ where
 {
     candidates
         .into_iter()
-        .filter(|kind| kind.recovery_class() == QuarantineRecoveryClass::PolicyDowngraded)
+        .filter(|kind| kind.is_policy_downgraded())
         .fold(initial, |current, candidate| match current {
             Some(existing) if policy_rank(existing) <= policy_rank(candidate) => Some(existing),
             _ => Some(candidate),
@@ -785,78 +733,76 @@ fn policy_rank(kind: QuarantineReconciliationKind) -> u8 {
     }
 }
 
-fn parse_quarantine_object(object: ObjectName) -> ParsedQuarantineObject {
+fn parse_quarantine_object(
+    object: ObjectName,
+) -> Result<Option<(BranchId, Option<String>, ObjectName)>, QuarantineMalformedObject> {
     let raw = object.as_str().to_owned();
     let mut parts = raw.split('/');
     let Some(family) = parts.next() else {
-        return ParsedQuarantineObject::Ignored;
+        return Ok(None);
     };
     if family != ObjectFamily::Quarantine.as_str() {
-        return ParsedQuarantineObject::Ignored;
+        return Ok(None);
     }
 
     let Some(branch_text) = parts.next() else {
-        return ParsedQuarantineObject::Malformed(QuarantineMalformedObject::new(
+        return Err(QuarantineMalformedObject::new(
             object,
             None,
             None,
-            MalformedQuarantineObjectReason::Shape,
+            MALFORMED_QUARANTINE_SHAPE,
         ));
     };
     let branch_id = match BranchId::parse_str(branch_text) {
         Ok(branch_id) if branch_id.to_string() == branch_text => branch_id,
         _ => {
-            return ParsedQuarantineObject::Malformed(QuarantineMalformedObject::new(
+            return Err(QuarantineMalformedObject::new(
                 object,
                 None,
                 None,
-                MalformedQuarantineObjectReason::Branch,
+                MALFORMED_QUARANTINE_BRANCH,
             ));
         }
     };
 
     let Some(component) = parts.next() else {
-        return ParsedQuarantineObject::Malformed(QuarantineMalformedObject::new(
+        return Err(QuarantineMalformedObject::new(
             object,
             Some(branch_id),
             None,
-            MalformedQuarantineObjectReason::Shape,
+            MALFORMED_QUARANTINE_SHAPE,
         ));
     };
 
     if parts.next().is_some() {
-        return ParsedQuarantineObject::Malformed(QuarantineMalformedObject::new(
+        return Err(QuarantineMalformedObject::new(
             object,
             Some(branch_id),
             Some(component.to_owned()),
-            MalformedQuarantineObjectReason::ObjectId,
+            MALFORMED_QUARANTINE_OBJECT_ID,
         ));
     }
 
     let Some(inventory_id) = reserved_inventory_object_id(branch_id) else {
-        return ParsedQuarantineObject::Malformed(QuarantineMalformedObject::new(
+        return Err(QuarantineMalformedObject::new(
             object,
             Some(branch_id),
             None,
-            MalformedQuarantineObjectReason::Shape,
+            MALFORMED_QUARANTINE_SHAPE,
         ));
     };
     if component == inventory_id {
-        return ParsedQuarantineObject::Inventory { branch_id };
+        return Ok(Some((branch_id, None, object)));
     }
 
     let object_id = component.to_owned();
     match quarantine_object_name(branch_id, &object_id) {
-        Ok(expected) if expected == object => ParsedQuarantineObject::Object {
-            branch_id,
-            object_id,
-            object,
-        },
-        _ => ParsedQuarantineObject::Malformed(QuarantineMalformedObject::new(
+        Ok(expected) if expected == object => Ok(Some((branch_id, Some(object_id), object))),
+        _ => Err(QuarantineMalformedObject::new(
             object,
             Some(branch_id),
             Some(object_id),
-            MalformedQuarantineObjectReason::ObjectId,
+            MALFORMED_QUARANTINE_OBJECT_ID,
         )),
     }
 }

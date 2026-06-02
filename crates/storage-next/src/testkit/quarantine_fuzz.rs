@@ -14,7 +14,7 @@ use backend::{BackendAccess, QuarantineScriptBackend};
 use facts::{
     actual_inventory_entries, actual_listed_objects, actual_missing_objects,
     actual_unlisted_objects, expected_inventory_entries, expected_kind,
-    expected_reconciliation_facts, expected_recovery_class,
+    expected_reconciliation_facts,
 };
 use operation::{QuarantineFault, QuarantineOperation};
 use std::collections::{BTreeMap, BTreeSet};
@@ -652,10 +652,6 @@ fn assert_reconcile_matches_model(
     require(
         report.kind() == expected,
         "quarantine reconcile kind did not match model",
-    )?;
-    require(
-        report.recovery_class() == expected_recovery_class(expected),
-        "quarantine recovery class did not match kind",
     )?;
     match expected {
         QuarantineReconciliationKind::CleanEmpty => {

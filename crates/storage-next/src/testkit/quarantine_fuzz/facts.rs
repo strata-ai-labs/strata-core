@@ -3,7 +3,6 @@ use super::{
 };
 use crate::format::quarantine::QuarantineInventory;
 use crate::object::ObjectName;
-use crate::service::QuarantineRecoveryClass;
 use crate::service::{QuarantineReconciliationKind, QuarantineReconciliationReport};
 use strata_core_next::{BranchId, Timestamp};
 
@@ -129,23 +128,6 @@ pub(super) fn expected_kind(
         return QuarantineReconciliationKind::UnlistedQuarantineObject;
     }
     QuarantineReconciliationKind::CleanInventory
-}
-
-pub(super) fn expected_recovery_class(
-    kind: QuarantineReconciliationKind,
-) -> QuarantineRecoveryClass {
-    match kind {
-        QuarantineReconciliationKind::CleanEmpty | QuarantineReconciliationKind::CleanInventory => {
-            QuarantineRecoveryClass::Healthy
-        }
-        QuarantineReconciliationKind::CorruptInventory
-        | QuarantineReconciliationKind::UnlistedQuarantineObject
-        | QuarantineReconciliationKind::MissingQuarantineObject
-        | QuarantineReconciliationKind::MalformedListedObject => {
-            QuarantineRecoveryClass::PolicyDowngraded
-        }
-        QuarantineReconciliationKind::BackendUnavailable => QuarantineRecoveryClass::Unavailable,
-    }
 }
 
 fn empty_inventory_kind(
