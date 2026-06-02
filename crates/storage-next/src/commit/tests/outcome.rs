@@ -84,7 +84,7 @@ fn mutation_counts_cover_read_only_and_delete_only_batches_without_stamping() {
     let rows = delete_only
         .stamp_user_rows(stamp(branch, 91))
         .expect("stamp rows");
-    assert_eq!(rows.rows().len(), 1);
+    assert_eq!(rows.len(), 1);
     assert_eq!(delete_counts.timeline_rows(), 0);
 }
 

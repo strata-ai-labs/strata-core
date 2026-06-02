@@ -31,7 +31,6 @@ fn table_runtime_closeout_generated_harness_exposes_every_counter() {
         "table_bloom_filter_cases",
         "table_compaction_cases",
         "error_source_cases",
-        "stats_cases",
     ];
     assert_contains_all(
         "src/testkit/table_runtime module",

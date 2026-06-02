@@ -5,8 +5,8 @@ use crate::commit::{
     CommitDuplicateKeyPolicy, CommitDurabilityClass, CommitDurabilityMode, CommitExpiry,
     CommitLowerLayer, CommitMutation, CommitObservedVersion, CommitOrigin, CommitPhase,
     CommitReadFact, CommitReadOnlyDiagnostics, CommitRetentionHint, CommitRuntimeConfig,
-    CommitRuntimeError, CommitRuntimeStats, CommitStamp, CommitTimestampPolicy,
-    CommitValidationFacts, CommitVisibilityFacts,
+    CommitRuntimeError, CommitStamp, CommitTimestampPolicy, CommitValidationFacts,
+    CommitVisibilityFacts,
 };
 use crate::row::{PhysicalKey, StorageSpaceId};
 use std::error::Error;
@@ -32,7 +32,6 @@ pub struct CommitRuntimeScaffoldOutcome {
     invalid_visibility_facts: usize,
     error_displays: usize,
     error_sources: usize,
-    stats: usize,
     source_guard_fixtures: usize,
     valid_batches: usize,
     invalid_batches: usize,
@@ -190,11 +189,6 @@ impl CommitRuntimeScaffoldOutcome {
     /// Number of error source-chain cases exercised.
     pub const fn error_source_cases(self) -> usize {
         self.error_sources
-    }
-
-    /// Number of stats construction cases exercised.
-    pub const fn stats_cases(self) -> usize {
-        self.stats
     }
 
     /// Number of source-guard fixture cases exercised.
@@ -825,9 +819,6 @@ pub fn check_commit_runtime_scaffold_contract(
     check_error_source()?;
     outcome.error_sources += 1;
 
-    check_stats(script)?;
-    outcome.stats += 1;
-
     check_source_guard_fixtures()?;
     outcome.source_guard_fixtures += 1;
 
@@ -1195,25 +1186,6 @@ fn check_error_source() -> Result<(), TestkitError> {
     }
 }
 
-fn check_stats(script: &[u8]) -> Result<(), TestkitError> {
-    let stats = CommitRuntimeStats::new(
-        u64::from(script_byte(script, 7)),
-        u64::from(script_byte(script, 8)),
-        u64::from(script_byte(script, 9)),
-        u64::from(script_byte(script, 10)),
-        u64::from(script_byte(script, 11)),
-    );
-    if stats.committed_batches() != u64::from(script_byte(script, 7))
-        || stats.read_only_batches() != u64::from(script_byte(script, 8))
-        || stats.rejected_batches() != u64::from(script_byte(script, 9))
-        || stats.replayed_batches() != u64::from(script_byte(script, 10))
-        || stats.durable_but_not_visible() != u64::from(script_byte(script, 11))
-    {
-        return Err(TestkitError::new("commit stats did not preserve counters"));
-    }
-    Ok(())
-}
-
 fn check_source_guard_fixtures() -> Result<(), TestkitError> {
     let allowed = [
         "pub(crate) struct CommitRuntime;",
@@ -1529,13 +1501,18 @@ fn check_stamping(script: &[u8]) -> Result<(), TestkitError> {
         )
         .map_err(|err| TestkitError::new(format!("row stamping rejected: {err}")))?;
 
-    if stamped.rows().len() != 2
-        || stamped.rows()[0].value() != value.as_slice()
-        || stamped.rows()[0].commit_version() != commit_version
-        || !stamped.rows()[1].is_tombstone()
-        || stamped.rows()[1].commit_timestamp() != commit_timestamp
-        || stamped.retention_hints()
-            != [Some(CommitRetentionHint::KeepLastNonZero(keep_last)), None].as_slice()
+    let retention_hints = batch
+        .batch()
+        .mutations()
+        .iter()
+        .map(CommitMutation::retention)
+        .collect::<Vec<_>>();
+    if stamped.len() != 2
+        || stamped[0].value() != value.as_slice()
+        || stamped[0].commit_version() != commit_version
+        || !stamped[1].is_tombstone()
+        || stamped[1].commit_timestamp() != commit_timestamp
+        || retention_hints != [Some(CommitRetentionHint::KeepLastNonZero(keep_last)), None]
     {
         return Err(TestkitError::new("stamped rows did not preserve facts"));
     }

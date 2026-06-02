@@ -121,15 +121,6 @@ pub(crate) struct ValidatedCommitBatch {
     batch: CommitBatch,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct StampedCommitRows {
-    branch_id: BranchId,
-    commit_version: CommitVersion,
-    commit_timestamp: Timestamp,
-    rows: Vec<StorageRow>,
-    retention_hints: Vec<Option<CommitRetentionHint>>,
-}
-
 impl CommitBatch {
     pub(crate) fn mutating(
         branch_id: BranchId,
@@ -430,7 +421,7 @@ impl ValidatedCommitBatch {
     pub(crate) fn stamp_user_rows(
         &self,
         stamp: CommitStamp,
-    ) -> CommitRuntimeResult<StampedCommitRows> {
+    ) -> CommitRuntimeResult<Vec<StorageRow>> {
         if self.batch.kind != CommitBatchKind::Mutating {
             return Err(CommitRuntimeError::InvalidBatch {
                 reason: "read-only diagnostic batch cannot stamp rows",
@@ -444,41 +435,11 @@ impl ValidatedCommitBatch {
         }
 
         let mut rows = Vec::with_capacity(self.batch.mutations.len());
-        let mut retention_hints = Vec::with_capacity(self.batch.mutations.len());
         for mutation in &self.batch.mutations {
             rows.push(stamp_mutation(mutation, stamp)?);
-            retention_hints.push(mutation.retention());
         }
 
-        Ok(StampedCommitRows {
-            branch_id: stamp.branch_id(),
-            commit_version: stamp.commit_version(),
-            commit_timestamp: stamp.commit_timestamp(),
-            rows,
-            retention_hints,
-        })
-    }
-}
-
-impl StampedCommitRows {
-    pub(crate) const fn branch_id(&self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn commit_version(&self) -> CommitVersion {
-        self.commit_version
-    }
-
-    pub(crate) const fn commit_timestamp(&self) -> Timestamp {
-        self.commit_timestamp
-    }
-
-    pub(crate) fn rows(&self) -> &[StorageRow] {
-        &self.rows
-    }
-
-    pub(crate) fn retention_hints(&self) -> &[Option<CommitRetentionHint>] {
-        &self.retention_hints
+        Ok(rows)
     }
 }
 

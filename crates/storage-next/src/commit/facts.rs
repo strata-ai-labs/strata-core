@@ -126,53 +126,6 @@ impl CommitVisibilityFacts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct CommitRuntimeStats {
-    committed_batches: u64,
-    read_only_batches: u64,
-    rejected_batches: u64,
-    replayed_batches: u64,
-    durable_but_not_visible: u64,
-}
-
-impl CommitRuntimeStats {
-    pub(crate) const fn new(
-        committed_batches: u64,
-        read_only_batches: u64,
-        rejected_batches: u64,
-        replayed_batches: u64,
-        durable_but_not_visible: u64,
-    ) -> Self {
-        Self {
-            committed_batches,
-            read_only_batches,
-            rejected_batches,
-            replayed_batches,
-            durable_but_not_visible,
-        }
-    }
-
-    pub(crate) const fn committed_batches(self) -> u64 {
-        self.committed_batches
-    }
-
-    pub(crate) const fn read_only_batches(self) -> u64 {
-        self.read_only_batches
-    }
-
-    pub(crate) const fn rejected_batches(self) -> u64 {
-        self.rejected_batches
-    }
-
-    pub(crate) const fn replayed_batches(self) -> u64 {
-        self.replayed_batches
-    }
-
-    pub(crate) const fn durable_but_not_visible(self) -> u64 {
-        self.durable_but_not_visible
-    }
-}
-
 fn require_not_after(
     lower: Option<CommitVersion>,
     upper: Option<CommitVersion>,

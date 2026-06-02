@@ -32,7 +32,6 @@ mod tests {
         assert_eq!(outcome.table_bloom_filter_cases(), 1);
         assert_eq!(outcome.table_compaction_cases(), 1);
         assert_eq!(outcome.error_source_cases(), 1);
-        assert_eq!(outcome.stats_cases(), 1);
     }
 
     #[test]

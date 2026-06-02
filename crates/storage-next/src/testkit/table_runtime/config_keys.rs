@@ -162,26 +162,6 @@ fn check_error_source_chain() -> Result<(), TestkitError> {
     Ok(())
 }
 
-fn check_stats(script: &[u8]) -> Result<(), TestkitError> {
-    let rows = u64::from(script_byte(script, 16));
-    let bytes = u64::from(script_byte(script, 17));
-    let hits = u64::from(script_byte(script, 18));
-    let misses = u64::from(script_byte(script, 19));
-    let input = u64::from(script_byte(script, 20));
-    let output = u64::from(script_byte(script, 21));
-    let stats = TableRuntimeStats::new(rows, bytes, hits, misses, input, output);
-    if stats.rows_read() != rows
-        || stats.bytes_read() != bytes
-        || stats.cache_hits() != hits
-        || stats.cache_misses() != misses
-        || stats.compaction_input_rows() != input
-        || stats.compaction_output_rows() != output
-    {
-        return Err(TestkitError::new("table runtime stats drifted"));
-    }
-    Ok(())
-}
-
 fn check_row_key_adapters(script: &[u8]) -> Result<(), TestkitError> {
     let physical_key = generated_physical_key(script, 32, generated_user_key(script, 36))?;
     let row = StorageRow::put(

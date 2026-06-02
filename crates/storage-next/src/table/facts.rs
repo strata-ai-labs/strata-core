@@ -155,60 +155,6 @@ impl TableRuntimeFacts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TableRuntimeStats {
-    rows_read: u64,
-    bytes_read: u64,
-    cache_hits: u64,
-    cache_misses: u64,
-    compaction_input_rows: u64,
-    compaction_output_rows: u64,
-}
-
-impl TableRuntimeStats {
-    pub(crate) const fn new(
-        rows_read: u64,
-        bytes_read: u64,
-        cache_hits: u64,
-        cache_misses: u64,
-        compaction_input_rows: u64,
-        compaction_output_rows: u64,
-    ) -> Self {
-        Self {
-            rows_read,
-            bytes_read,
-            cache_hits,
-            cache_misses,
-            compaction_input_rows,
-            compaction_output_rows,
-        }
-    }
-
-    pub(crate) const fn rows_read(self) -> u64 {
-        self.rows_read
-    }
-
-    pub(crate) const fn bytes_read(self) -> u64 {
-        self.bytes_read
-    }
-
-    pub(crate) const fn cache_hits(self) -> u64 {
-        self.cache_hits
-    }
-
-    pub(crate) const fn cache_misses(self) -> u64 {
-        self.cache_misses
-    }
-
-    pub(crate) const fn compaction_input_rows(self) -> u64 {
-        self.compaction_input_rows
-    }
-
-    pub(crate) const fn compaction_output_rows(self) -> u64 {
-        self.compaction_output_rows
-    }
-}
-
 fn validate_identity_text(text: &str) -> TableRuntimeResult<()> {
     if text.is_empty() {
         return Err(TableRuntimeError::InvalidConfig {

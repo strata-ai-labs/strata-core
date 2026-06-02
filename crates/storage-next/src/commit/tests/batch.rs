@@ -724,32 +724,34 @@ fn validated_commit_batch_stamps_rows_with_supplied_commit_facts() {
         .stamp_user_rows(CommitStamp::new(branch, commit_version, commit_timestamp).expect("stamp"))
         .expect("stamped rows");
 
-    assert_eq!(stamped.branch_id(), branch);
-    assert_eq!(stamped.commit_version(), commit_version);
-    assert_eq!(stamped.commit_timestamp(), commit_timestamp);
-    assert_eq!(stamped.rows().len(), 3);
+    assert_eq!(stamped.len(), 3);
     assert_eq!(
-        stamped.retention_hints(),
-        &[
+        batch
+            .batch()
+            .mutations()
+            .iter()
+            .map(CommitMutation::retention)
+            .collect::<Vec<_>>(),
+        vec![
             Some(CommitRetentionHint::Append),
             None,
             Some(CommitRetentionHint::KeepLastNonZero(keep_last))
         ]
     );
-    assert_eq!(stamped.rows()[0].physical_key().user_key(), b"a");
-    assert_eq!(stamped.rows()[0].commit_version(), commit_version);
-    assert_eq!(stamped.rows()[0].commit_timestamp(), commit_timestamp);
-    assert_eq!(stamped.rows()[0].expires_at(), expiry);
-    assert_eq!(stamped.rows()[0].value(), value.as_slice());
-    assert!(!stamped.rows()[0].is_tombstone());
-    assert_eq!(stamped.rows()[1].physical_key().user_key(), b"b");
-    assert!(stamped.rows()[1].is_tombstone());
-    assert_eq!(stamped.rows()[1].expires_at(), Timestamp::EPOCH);
-    assert_eq!(stamped.rows()[1].value(), b"");
-    assert_eq!(stamped.rows()[2].physical_key().user_key(), b"empty");
-    assert!(!stamped.rows()[2].is_tombstone());
-    assert_eq!(stamped.rows()[2].expires_at(), Timestamp::EPOCH);
-    assert_eq!(stamped.rows()[2].value(), b"");
+    assert_eq!(stamped[0].physical_key().user_key(), b"a");
+    assert_eq!(stamped[0].commit_version(), commit_version);
+    assert_eq!(stamped[0].commit_timestamp(), commit_timestamp);
+    assert_eq!(stamped[0].expires_at(), expiry);
+    assert_eq!(stamped[0].value(), value.as_slice());
+    assert!(!stamped[0].is_tombstone());
+    assert_eq!(stamped[1].physical_key().user_key(), b"b");
+    assert!(stamped[1].is_tombstone());
+    assert_eq!(stamped[1].expires_at(), Timestamp::EPOCH);
+    assert_eq!(stamped[1].value(), b"");
+    assert_eq!(stamped[2].physical_key().user_key(), b"empty");
+    assert!(!stamped[2].is_tombstone());
+    assert_eq!(stamped[2].expires_at(), Timestamp::EPOCH);
+    assert_eq!(stamped[2].value(), b"");
 }
 
 #[test]
@@ -786,15 +788,14 @@ fn validated_commit_batch_preserves_order_and_large_opaque_values() {
         )
         .expect("stamped rows");
 
-    assert_eq!(stamped.rows().len(), 3);
-    assert_eq!(stamped.rows()[0].physical_key().user_key(), b"first");
-    assert_eq!(stamped.rows()[1].physical_key().user_key(), b"second");
-    assert_eq!(stamped.rows()[2].physical_key().user_key(), b"third");
-    assert_eq!(stamped.rows()[0].value(), &[0x00, 0xff]);
-    assert_eq!(stamped.rows()[1].value(), long_value.as_slice());
-    assert!(stamped.rows()[2].is_tombstone());
+    assert_eq!(stamped.len(), 3);
+    assert_eq!(stamped[0].physical_key().user_key(), b"first");
+    assert_eq!(stamped[1].physical_key().user_key(), b"second");
+    assert_eq!(stamped[2].physical_key().user_key(), b"third");
+    assert_eq!(stamped[0].value(), &[0x00, 0xff]);
+    assert_eq!(stamped[1].value(), long_value.as_slice());
+    assert!(stamped[2].is_tombstone());
     assert!(stamped
-        .rows()
         .iter()
         .all(|row| row.physical_key().storage_space_id().is_engine_owned()));
 }

@@ -59,7 +59,6 @@ fn table_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.table_bloom_filter_cases() == 0
                 || outcome.table_compaction_cases() == 0
                 || outcome.error_source_cases() == 0
-                || outcome.stats_cases() == 0
             {
                 return Err(TestCaseError::fail(
                     "table runtime scaffold contract did not exercise all categories",

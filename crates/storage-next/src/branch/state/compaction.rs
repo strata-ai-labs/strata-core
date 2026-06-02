@@ -10,12 +10,17 @@ use crate::branch::read::{
     BranchMaterializationSource, BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::table::{
-    BuiltTableArtifact, ImmutableTableReader, KeepAllTableCompactionPolicy, TableBuilderConfig,
-    TableCompactionConfig, TableCompactionReport, TableCompactionSource, TableCompactionSourceId,
-    TableCompactor, TableIdentity, TableInternalKeyBytes, TableReaderConfig,
+    BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionConfig,
+    TableCompactionDecision, TableCompactionPolicy, TableCompactionReport,
+    TableCompactionRowContext, TableCompactionSource, TableCompactionSourceId, TableCompactor,
+    TableIdentity, TableInternalKeyBytes, TableReaderConfig, TableRow,
 };
 use std::collections::BTreeSet;
 use strata_core_next::BranchId;
+
+fn keep_all_policy() -> impl TableCompactionPolicy {
+    |_: &TableCompactionRowContext<'_>, _: &TableRow| Ok(TableCompactionDecision::Keep)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BranchCompactionKind {
@@ -392,7 +397,7 @@ impl BranchLocalState {
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         let output = match request.retention_policy() {
             BranchCompactionRetentionPolicy::KeepAll => {
-                let mut policy = KeepAllTableCompactionPolicy;
+                let mut policy = keep_all_policy();
                 compactor
                     .compact(request.output_identity_seed(), &sources, &mut policy)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?

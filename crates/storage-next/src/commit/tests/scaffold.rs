@@ -157,18 +157,11 @@ fn commit_runtime_visibility_facts_reject_impossible_order() {
 }
 
 #[test]
-fn commit_runtime_empty_visibility_and_stats_are_explicit() {
+fn commit_runtime_empty_visibility_is_explicit() {
     assert_eq!(
         CommitVisibilityFacts::empty(),
         CommitVisibilityFacts::default()
     );
-    let stats = CommitRuntimeStats::default();
-
-    assert_eq!(stats.committed_batches(), 0);
-    assert_eq!(stats.read_only_batches(), 0);
-    assert_eq!(stats.rejected_batches(), 0);
-    assert_eq!(stats.replayed_batches(), 0);
-    assert_eq!(stats.durable_but_not_visible(), 0);
 }
 
 #[test]
@@ -335,16 +328,6 @@ fn commit_runtime_result_alias_uses_commit_error() {
     ));
 }
 
-#[test]
-fn commit_runtime_stats_can_be_constructed_for_scaffold_contracts() {
-    let stats = CommitRuntimeStats::new(1, 2, 3, 4, 5);
-
-    assert_eq!(stats.committed_batches(), 1);
-    assert_eq!(stats.read_only_batches(), 2);
-    assert_eq!(stats.rejected_batches(), 3);
-    assert_eq!(stats.replayed_batches(), 4);
-    assert_eq!(stats.durable_but_not_visible(), 5);
-}
 #[derive(Debug)]
 struct WrappedSource;
 

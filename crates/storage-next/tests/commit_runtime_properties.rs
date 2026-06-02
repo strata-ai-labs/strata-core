@@ -208,7 +208,6 @@ fn core_categories_exercised(
         && outcome.invalid_visibility_fact_cases() > 0
         && outcome.error_display_cases() > 0
         && outcome.error_source_cases() > 0
-        && outcome.stats_cases() > 0
         && outcome.source_guard_fixture_cases() > 0
         && outcome.valid_batch_cases() > 0
         && outcome.invalid_batch_cases() > 0

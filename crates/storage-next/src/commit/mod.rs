@@ -42,7 +42,7 @@ pub(crate) use batch::{
     CommitBatch, CommitBatchKind, CommitBatchOptions, CommitCasFact, CommitConflictValidationMode,
     CommitDuplicateKeyPolicy, CommitDurabilityMode, CommitExpiry, CommitMutation,
     CommitObservedVersion, CommitOrigin, CommitReadFact, CommitRetentionHint, CommitStamp,
-    CommitTimestampPolicy, CommitValidationFacts, StampedCommitRows, ValidatedCommitBatch,
+    CommitTimestampPolicy, CommitValidationFacts, ValidatedCommitBatch,
 };
 #[allow(
     unused_imports,
@@ -57,7 +57,7 @@ pub(crate) use branch_registry::{
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"
 )]
-pub(crate) use cache::{CacheCommitRows, CommitCacheRuntime};
+pub(crate) use cache::CommitCacheRuntime;
 #[cfg_attr(
     not(test),
     allow(
@@ -104,9 +104,7 @@ pub(crate) use error::{CommitLowerLayer, CommitRuntimeError};
         reason = "commit scaffold exports define the local surface for later slices"
     )
 )]
-pub(crate) use facts::{
-    CommitDurabilityClass, CommitPhase, CommitRuntimeStats, CommitVisibilityFacts,
-};
+pub(crate) use facts::{CommitDurabilityClass, CommitPhase, CommitVisibilityFacts};
 #[allow(
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"

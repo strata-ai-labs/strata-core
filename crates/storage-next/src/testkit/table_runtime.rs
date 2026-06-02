@@ -7,15 +7,15 @@ use crate::service::{TableObjectFacts, TableObjectReaderService};
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BoundedTableCursor,
     BuiltTableArtifact, BytesTableSource, CacheInsert, CursorMergePath, FrozenTable,
-    ImmutableTableBuilder, ImmutableTableReader, KeepAllTableCompactionPolicy, MergeTableCursor,
-    MutableTable, TableBlockAddress, TableBlockCache, TableBlockCacheKey, TableBlockCacheKind,
-    TableBlockCacheStats, TableBloomFilter, TableBloomProbe, TableBuilderConfig, TableByteSource,
-    TableCacheConfig, TableCacheTableId, TableCommitRange, TableCompactionConfig,
-    TableCompactionDecision, TableCompactionDropReason, TableCompactionSource,
-    TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TableKeyBound, TableKeyBounds, TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes,
-    TableReaderConfig, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts,
-    TableRuntimeResult, TableRuntimeStats, MERGE_HEAP_THRESHOLD,
+    ImmutableTableBuilder, ImmutableTableReader, MergeTableCursor, MutableTable, TableBlockAddress,
+    TableBlockCache, TableBlockCacheKey, TableBlockCacheKind, TableBlockCacheStats,
+    TableBloomFilter, TableBloomProbe, TableBuilderConfig, TableByteSource, TableCacheConfig,
+    TableCacheTableId, TableCommitRange, TableCompactionConfig, TableCompactionDecision,
+    TableCompactionDropReason, TableCompactionSource, TableCompactionSourceId, TableCompactor,
+    TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBound, TableKeyBounds,
+    TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
+    TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    MERGE_HEAP_THRESHOLD,
 };
 use std::collections::{btree_map::Entry, BTreeMap, VecDeque};
 use std::error::Error;

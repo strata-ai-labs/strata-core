@@ -1,7 +1,6 @@
 use super::{
     TableBuilderConfig, TableCacheConfig, TableCommitRange, TableCompactionConfig, TableIdentity,
     TableKeyRange, TableReaderConfig, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts,
-    TableRuntimeStats,
 };
 use crate::format::{FormatError, TableCompression};
 use std::error::Error;
@@ -215,24 +214,4 @@ fn table_runtime_error_display_and_sources_are_typed() {
     assert!(source_read.to_string().contains("range unavailable"));
     assert!(cache.to_string().contains("capacity exceeded"));
     assert!(compaction.to_string().contains("policy rejected row"));
-}
-
-#[test]
-fn table_runtime_stats_default_to_zero_and_expose_fields() {
-    let stats = TableRuntimeStats::default();
-
-    assert_eq!(stats.rows_read(), 0);
-    assert_eq!(stats.bytes_read(), 0);
-    assert_eq!(stats.cache_hits(), 0);
-    assert_eq!(stats.cache_misses(), 0);
-    assert_eq!(stats.compaction_input_rows(), 0);
-    assert_eq!(stats.compaction_output_rows(), 0);
-
-    let stats = TableRuntimeStats::new(1, 2, 3, 4, 5, 6);
-    assert_eq!(stats.rows_read(), 1);
-    assert_eq!(stats.bytes_read(), 2);
-    assert_eq!(stats.cache_hits(), 3);
-    assert_eq!(stats.cache_misses(), 4);
-    assert_eq!(stats.compaction_input_rows(), 5);
-    assert_eq!(stats.compaction_output_rows(), 6);
 }

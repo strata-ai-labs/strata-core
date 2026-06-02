@@ -42,6 +42,12 @@ fn check_table_bloom_filter(script: &[u8]) -> Result<(), TestkitError> {
     Ok(())
 }
 
+fn keep_all_policy() -> impl crate::table::TableCompactionPolicy {
+    |_: &crate::table::TableCompactionRowContext<'_>, _: &TableRow| {
+        Ok(TableCompactionDecision::Keep)
+    }
+}
+
 fn check_table_compaction(script: &[u8]) -> Result<(), TestkitError> {
     let rows = generated_compaction_table_rows(script)?;
     let expected_rows = rows.iter().map(|row| row.row().clone()).collect::<Vec<_>>();
@@ -147,7 +153,7 @@ fn check_keep_all_compaction(
 ) -> Result<(), TestkitError> {
     let keep_identity = TableIdentity::new(format!("compact-keep-{:02x}", script_byte(script, 90)))
         .map_err(|err| TestkitError::new(format!("compaction identity failed: {err}")))?;
-    let mut keep_all = KeepAllTableCompactionPolicy;
+    let mut keep_all = keep_all_policy();
     let keep_all_output = compactor
         .compact(&keep_identity, sources, &mut keep_all)
         .map_err(|err| TestkitError::new(format!("keep-all compaction failed: {err}")))?;
@@ -160,7 +166,7 @@ fn check_keep_all_compaction(
         rows.len() as u64,
         0,
     )?;
-    let mut repeat_keep_all = KeepAllTableCompactionPolicy;
+    let mut repeat_keep_all = keep_all_policy();
     let repeated_output = compactor
         .compact(&keep_identity, sources, &mut repeat_keep_all)
         .map_err(|err| TestkitError::new(format!("repeat compaction failed: {err}")))?;
@@ -181,7 +187,7 @@ fn check_keep_all_compaction(
 
     let regrouped_count = if source_count == 1 { 2 } else { 1 };
     let regrouped_sources = generated_compaction_sources(rows, regrouped_count, "regrouped")?;
-    let mut regrouped_keep_all = KeepAllTableCompactionPolicy;
+    let mut regrouped_keep_all = keep_all_policy();
     let regrouped_output = compactor
         .compact(&keep_identity, &regrouped_sources, &mut regrouped_keep_all)
         .map_err(|err| TestkitError::new(format!("regrouped compaction failed: {err}")))?;
@@ -519,7 +525,7 @@ fn assert_compaction_rejects_duplicate_and_output_limit(script: &[u8]) -> Result
         )
         .map_err(|err| TestkitError::new(format!("right duplicate setup failed: {err}")))?,
     ];
-    let mut keep_all = KeepAllTableCompactionPolicy;
+    let mut keep_all = keep_all_policy();
     match generated_compactor(script, 96, 4)?.compact(
         &TableIdentity::new("compact-duplicate")
             .map_err(|err| TestkitError::new(format!("duplicate identity failed: {err}")))?,

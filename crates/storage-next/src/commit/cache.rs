@@ -7,7 +7,7 @@ use super::{
     CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitMutationCounts,
     CommitOutcome, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
     CommitTimelineEntry, CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurable,
-    CommitUnresolvedDurableGate, CommitVisibilityFacts, CommitVisiblePublisher, StampedCommitRows,
+    CommitUnresolvedDurableGate, CommitVisibilityFacts, CommitVisiblePublisher,
     ValidatedCommitBatch,
 };
 use crate::row::StorageRow;
@@ -21,14 +21,6 @@ pub(crate) struct CommitCacheRuntime<'a, S, B, V> {
     branch: &'a mut B,
     visible: &'a mut V,
     durable_gate: &'a CommitUnresolvedDurableGate,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CacheCommitRows {
-    stamp: CommitStamp,
-    user_rows: StampedCommitRows,
-    timeline_rows: CommitTimelineRows,
-    mutation_counts: CommitMutationCounts,
 }
 
 impl<'a, S, B, V> CommitCacheRuntime<'a, S, B, V> {
@@ -95,9 +87,8 @@ where
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
         require_allocated_after_visible(stamp, current_visible_version)?;
-        let rows = CacheCommitRows::prepare(&batch, stamp, self.config)?;
+        let (combined_rows, mutation_counts) = prepare_commit_rows(&batch, stamp, self.config)?;
         let facts = visible_cache_facts(stamp)?;
-        let combined_rows = rows.combined_rows();
         self.branch
             .validate_committed_rows_before_apply(&combined_rows)?;
 
@@ -136,64 +127,36 @@ where
             batch.batch().branch_id(),
             stamp,
             CommitDurabilityClass::NotDurable,
-            rows.mutation_counts(),
+            mutation_counts,
             facts,
         )
     }
 }
 
-impl CacheCommitRows {
-    pub(crate) fn prepare(
-        batch: &ValidatedCommitBatch,
-        stamp: CommitStamp,
-        config: &CommitRuntimeConfig,
-    ) -> CommitRuntimeResult<Self> {
-        let user_rows = batch.stamp_user_rows(stamp)?;
-        let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
-        let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
-        let user_counts = CommitMutationCounts::from_validated_batch(batch)?;
-        let mutation_counts = CommitMutationCounts::new(
-            user_counts.puts(),
-            user_counts.deletes(),
-            CommitTimelineRows::timeline_row_count(),
-            config,
-        )?;
+pub(crate) fn prepare_commit_rows(
+    batch: &ValidatedCommitBatch,
+    stamp: CommitStamp,
+    config: &CommitRuntimeConfig,
+) -> CommitRuntimeResult<(Vec<StorageRow>, CommitMutationCounts)> {
+    let user_rows = batch.stamp_user_rows(stamp)?;
+    let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
+    let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
+    let user_counts = CommitMutationCounts::from_validated_batch(batch)?;
+    let mutation_counts = CommitMutationCounts::new(
+        user_counts.puts(),
+        user_counts.deletes(),
+        CommitTimelineRows::timeline_row_count(),
+        config,
+    )?;
 
-        Ok(Self {
-            stamp,
-            user_rows,
-            timeline_rows,
-            mutation_counts,
-        })
-    }
-
-    pub(crate) const fn stamp(&self) -> CommitStamp {
-        self.stamp
-    }
-
-    pub(crate) const fn user_rows(&self) -> &StampedCommitRows {
-        &self.user_rows
-    }
-
-    pub(crate) const fn timeline_rows(&self) -> &CommitTimelineRows {
-        &self.timeline_rows
-    }
-
-    pub(crate) const fn mutation_counts(&self) -> CommitMutationCounts {
-        self.mutation_counts
-    }
-
-    pub(crate) fn combined_rows(&self) -> Vec<StorageRow> {
-        let mut rows = Vec::with_capacity(
-            self.user_rows
-                .rows()
-                .len()
-                .saturating_add(CommitTimelineRows::timeline_row_count()),
-        );
-        rows.extend(self.user_rows.rows().iter().cloned());
-        rows.extend(self.timeline_rows.rows().into_iter().cloned());
-        rows
-    }
+    let mut rows = Vec::with_capacity(
+        user_rows
+            .len()
+            .saturating_add(CommitTimelineRows::timeline_row_count()),
+    );
+    rows.extend(user_rows);
+    rows.extend(timeline_rows.rows().into_iter().cloned());
+    Ok((rows, mutation_counts))
 }
 
 fn require_cache_mutating_batch(batch: &ValidatedCommitBatch) -> CommitRuntimeResult<()> {

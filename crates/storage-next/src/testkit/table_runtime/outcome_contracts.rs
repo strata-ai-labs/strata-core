@@ -18,7 +18,6 @@ pub struct TableRuntimeScaffoldOutcome {
     table_bloom_filters: usize,
     table_compactions: usize,
     error_sources: usize,
-    stats: usize,
 }
 
 impl TableRuntimeScaffoldOutcome {
@@ -107,10 +106,6 @@ impl TableRuntimeScaffoldOutcome {
         self.error_sources
     }
 
-    /// Number of stats construction cases exercised.
-    pub const fn stats_cases(self) -> usize {
-        self.stats
-    }
 }
 
 /// Runs one deterministic generated scaffold contract case for the L5 table runtime.
@@ -139,7 +134,6 @@ pub fn check_table_runtime_scaffold_contract(
         table_bloom_filters: 0,
         table_compactions: 0,
         error_sources: 0,
-        stats: 0,
     };
 
     check_valid_config(script)?;
@@ -176,9 +170,6 @@ pub fn check_table_runtime_scaffold_contract(
 
     check_error_source_chain()?;
     outcome.error_sources += 1;
-
-    check_stats(script)?;
-    outcome.stats += 1;
 
     Ok(outcome)
 }

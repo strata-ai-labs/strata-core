@@ -1132,22 +1132,17 @@ fn cache_commit_row_preparation_uses_one_stamp_for_user_and_timeline_rows() {
     let stamp =
         CommitStamp::new(branch, CommitVersion::new(5), Timestamp::from_micros(55)).expect("stamp");
 
-    let rows = CacheCommitRows::prepare(&batch, stamp, &CommitRuntimeConfig::default())
-        .expect("cache rows");
+    let (rows, mutation_counts) =
+        prepare_commit_rows(&batch, stamp, &CommitRuntimeConfig::default()).expect("cache rows");
 
-    assert_eq!(rows.stamp(), stamp);
-    assert_eq!(rows.user_rows().rows().len(), 2);
+    assert_eq!(rows.len(), 2 + CommitTimelineRows::timeline_row_count());
+    assert_eq!(mutation_counts.puts(), 1);
+    assert_eq!(mutation_counts.deletes(), 1);
     assert_eq!(
-        rows.timeline_rows().entry(),
-        CommitTimelineEntry::from_stamp(stamp).expect("timeline entry")
-    );
-    assert_eq!(rows.mutation_counts().puts(), 1);
-    assert_eq!(rows.mutation_counts().deletes(), 1);
-    assert_eq!(
-        rows.mutation_counts().timeline_rows(),
+        mutation_counts.timeline_rows(),
         CommitTimelineRows::timeline_row_count()
     );
-    for row in rows.combined_rows() {
+    for row in rows {
         assert_eq!(row.commit_version(), stamp.commit_version());
         assert_eq!(row.commit_timestamp(), stamp.commit_timestamp());
     }

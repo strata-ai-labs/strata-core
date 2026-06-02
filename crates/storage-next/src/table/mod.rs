@@ -46,10 +46,9 @@ pub(crate) use cache::{
     )
 )]
 pub(crate) use compaction::{
-    KeepAllTableCompactionPolicy, TableCompactionDecision, TableCompactionDropReason,
-    TableCompactionDropSummary, TableCompactionOutput, TableCompactionPolicy,
-    TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
-    TableCompactionSourceId, TableCompactor,
+    TableCompactionDecision, TableCompactionDropReason, TableCompactionDropSummary,
+    TableCompactionOutput, TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
+    TableCompactionSource, TableCompactionSourceId, TableCompactor,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
@@ -74,16 +73,7 @@ pub(crate) use cursor::{
     MERGE_HEAP_THRESHOLD,
 };
 pub(crate) use error::{TableRuntimeError, TableRuntimeResult};
-#[cfg_attr(
-    all(not(test), not(feature = "testkit")),
-    expect(
-        unused_imports,
-        reason = "table scaffold exports define the local surface for later slices"
-    )
-)]
-pub(crate) use facts::{
-    TableCommitRange, TableIdentity, TableKeyRange, TableRuntimeFacts, TableRuntimeStats,
-};
+pub(crate) use facts::{TableCommitRange, TableIdentity, TableKeyRange, TableRuntimeFacts};
 #[cfg_attr(
     not(test),
     expect(

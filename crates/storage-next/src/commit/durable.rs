@@ -1,13 +1,14 @@
 //! Durable WAL-backed commit execution.
 
+use super::cache::prepare_commit_rows;
 use super::{
-    admit_mutating_commit, validate_commit_conflicts, CacheCommitRows, CommitBatch,
-    CommitBatchKind, CommitBranchGenerationGuard, CommitBranchGuardSet,
-    CommitBranchReadViewConflictSource, CommitBranchRegistry, CommitDurabilityClass,
-    CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitLowerLayer,
-    CommitOutcome, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
-    CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
-    CommitVisibilityFacts, ValidatedCommitBatch, VisibleVersionPublish, VisibleVersionTracker,
+    admit_mutating_commit, validate_commit_conflicts, CommitBatch, CommitBatchKind,
+    CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchReadViewConflictSource,
+    CommitBranchRegistry, CommitDurabilityClass, CommitDurabilityMode, CommitFactAllocation,
+    CommitFactAllocator, CommitLowerLayer, CommitOutcome, CommitRuntimeConfig, CommitRuntimeError,
+    CommitRuntimeResult, CommitStamp, CommitTimestampSource, CommitUnresolvedDurable,
+    CommitUnresolvedDurableGate, CommitVisibilityFacts, ValidatedCommitBatch,
+    VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::branch::read::BranchReadView;
 use crate::branch::state::BranchLocalState;
@@ -40,14 +41,8 @@ pub(crate) struct CommitWalAppendFacts {
 
 #[derive(Clone, Debug)]
 pub(crate) struct CommitWalAppendError {
-    kind: CommitWalAppendErrorKind,
+    durability_uncertain: bool,
     error: CommitRuntimeError,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CommitWalAppendErrorKind {
-    Clean,
-    Uncertain,
 }
 
 pub(crate) trait CommitWalAppender {
@@ -209,8 +204,7 @@ where
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
         require_allocated_after_visible(stamp, current_visible_version)?;
-        let rows = CacheCommitRows::prepare(&batch, stamp, self.config)?;
-        let combined_rows = rows.combined_rows();
+        let (combined_rows, mutation_counts) = prepare_commit_rows(&batch, stamp, self.config)?;
         self.branch
             .validate_committed_rows_before_apply(&combined_rows)?;
         let record = build_wal_record(stamp, combined_rows.clone())?;
@@ -255,7 +249,7 @@ where
             batch.batch().branch_id(),
             stamp,
             durability,
-            rows.mutation_counts(),
+            mutation_counts,
             facts,
         )
     }
@@ -296,14 +290,14 @@ impl CommitWalAppendFacts {
 impl CommitWalAppendError {
     pub(crate) const fn clean(error: CommitRuntimeError) -> Self {
         Self {
-            kind: CommitWalAppendErrorKind::Clean,
+            durability_uncertain: false,
             error,
         }
     }
 
     pub(crate) const fn uncertain(error: CommitRuntimeError) -> Self {
         Self {
-            kind: CommitWalAppendErrorKind::Uncertain,
+            durability_uncertain: true,
             error,
         }
     }
@@ -313,14 +307,15 @@ impl CommitWalAppendError {
         branch_id: strata_core_next::BranchId,
         version: strata_core_next::CommitVersion,
     ) -> CommitRuntimeError {
-        match self.kind {
-            CommitWalAppendErrorKind::Clean => self.error,
-            CommitWalAppendErrorKind::Uncertain => CommitRuntimeError::durability_uncertain_with(
+        if self.durability_uncertain {
+            CommitRuntimeError::durability_uncertain_with(
                 branch_id,
                 version,
                 "WAL append durability is uncertain",
                 self.error,
-            ),
+            )
+        } else {
+            self.error
         }
     }
 }

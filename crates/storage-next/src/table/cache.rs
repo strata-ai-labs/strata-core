@@ -40,10 +40,9 @@ impl TableCacheTableId {
 
 impl fmt::Debug for TableCacheTableId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("TableCacheTableId")
-            .field(&BoundedBytes(self.as_slice()))
-            .finish()
+        formatter.write_str("TableCacheTableId(")?;
+        fmt_bounded_bytes(formatter, self.as_slice())?;
+        formatter.write_str(")")
     }
 }
 
@@ -559,21 +558,15 @@ fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
     hash
 }
 
-struct BoundedBytes<'a>(&'a [u8]);
-
-impl fmt::Debug for BoundedBytes<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let shown = self.0.len().min(MAX_DEBUG_BYTES);
-        for byte in &self.0[..shown] {
-            formatter
-                .write_str(char::from(HEX[usize::from(byte >> 4)]).encode_utf8(&mut [0; 4]))?;
-            formatter
-                .write_str(char::from(HEX[usize::from(byte & 0x0f)]).encode_utf8(&mut [0; 4]))?;
-        }
-        if self.0.len() > shown {
-            write!(formatter, "...({} bytes)", self.0.len())?;
-        }
-        Ok(())
+fn fmt_bounded_bytes(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let shown = bytes.len().min(MAX_DEBUG_BYTES);
+    for byte in &bytes[..shown] {
+        formatter.write_str(char::from(HEX[usize::from(byte >> 4)]).encode_utf8(&mut [0; 4]))?;
+        formatter.write_str(char::from(HEX[usize::from(byte & 0x0f)]).encode_utf8(&mut [0; 4]))?;
     }
+    if bytes.len() > shown {
+        write!(formatter, "...({} bytes)", bytes.len())?;
+    }
+    Ok(())
 }

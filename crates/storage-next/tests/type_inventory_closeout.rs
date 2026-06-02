@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const INVENTORY_SNAPSHOT: &str =
-    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t7.md";
+    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t9.md";
 
 #[test]
 fn type_inventory_snapshot_is_current() {
@@ -18,9 +18,9 @@ fn type_inventory_snapshot_is_current() {
             "--require-inventory",
             INVENTORY_SNAPSHOT,
             "--max-all-types",
-            "903",
+            "894",
             "--max-cleanup-target-types",
-            "488",
+            "479",
         ])
         .output()
         .expect("run inventory guard");
@@ -43,13 +43,13 @@ fn parent_facade_reexports_do_not_regrow() {
             "--max-reexport-names",
             "api/mod.rs=96",
             "--max-reexport-names",
-            "commit/mod.rs=82",
+            "commit/mod.rs=79",
             "--max-reexport-names",
             "service/mod.rs=70",
             "--max-reexport-names",
             "format/mod.rs=69",
             "--max-reexport-names",
-            "table/mod.rs=58",
+            "table/mod.rs=56",
             "--max-reexport-names",
             "testkit/lifecycle/mod.rs=36",
             "--max-reexport-names",
@@ -71,7 +71,7 @@ fn operation_family_suffix_counts_do_not_regrow() {
             "--max-suffix-count",
             "Request=22",
             "--max-suffix-count",
-            "Policy=14",
+            "Policy=13",
             "--max-suffix-count",
             "Report=10",
             "--max-suffix-count",
@@ -79,7 +79,7 @@ fn operation_family_suffix_counts_do_not_regrow() {
             "--max-suffix-count",
             "Proof=7",
             "--max-suffix-count",
-            "Stats=5",
+            "Stats=3",
             "--max-suffix-count",
             "Plan=3",
             "--max-suffix-count",
@@ -113,7 +113,7 @@ fn scaffold_allowance_markers_do_not_regrow() {
             "--max-scaffold-markers",
             "lifecycle/cache.rs=0:12",
             "--max-scaffold-markers",
-            "table/mod.rs=10:1",
+            "table/mod.rs=9:1",
             "--max-scaffold-markers",
             "lifecycle/checkpoint.rs=0:10",
             "--max-scaffold-markers",

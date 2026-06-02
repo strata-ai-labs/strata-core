@@ -235,19 +235,6 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct KeepAllTableCompactionPolicy;
-
-impl TableCompactionPolicy for KeepAllTableCompactionPolicy {
-    fn decide(
-        &mut self,
-        _context: &TableCompactionRowContext<'_>,
-        _row: &TableRow,
-    ) -> TableRuntimeResult<TableCompactionDecision> {
-        Ok(TableCompactionDecision::Keep)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableCompactionReport {
     input_sources: usize,
@@ -350,13 +337,6 @@ impl TableCompactionOutput {
     }
 }
 
-#[derive(Clone, Copy)]
-struct MergedRow<'a> {
-    source_index: usize,
-    source_row_index: usize,
-    row: &'a TableRow,
-}
-
 fn compact_tables(
     compactor: &TableCompactor,
     output_identity_seed: &TableIdentity,
@@ -366,43 +346,63 @@ fn compact_tables(
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
     let mut merged = merged_rows(sources);
-    merged.sort_by(|left, right| {
-        left.row
-            .key()
-            .cmp(right.row.key())
-            .then_with(|| left.source_index.cmp(&right.source_index))
-            .then_with(|| left.source_row_index.cmp(&right.source_row_index))
-    });
+    merged.sort_by(
+        |(left_source_index, left_row_index, left_row),
+         (right_source_index, right_row_index, right_row)| {
+            left_row
+                .key()
+                .cmp(right_row.key())
+                .then_with(|| left_source_index.cmp(right_source_index))
+                .then_with(|| left_row_index.cmp(right_row_index))
+        },
+    );
     validate_no_global_duplicate_internal_keys(&merged)?;
 
-    let mut output = PendingOutput::new(compactor.config.target_output_bytes())?;
+    let target_output_bytes = compactor.config.target_output_bytes();
+    require_nonzero_target_output_bytes(target_output_bytes)?;
+    let mut output_rows = Vec::new();
+    let mut output_approximate_bytes = 0;
+    let mut output_last_physical_key = None;
     let mut artifacts = Vec::new();
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
 
-    for merged_row in merged {
+    for (source_index, source_row_index, row) in merged {
         report.input_rows = report.input_rows.saturating_add(1);
 
         let context = TableCompactionRowContext {
-            source_id: sources[merged_row.source_index].id(),
-            source_index: merged_row.source_index,
-            source_row_index: merged_row.source_row_index,
+            source_id: sources[source_index].id(),
+            source_index,
+            source_row_index,
             merged_row_index: report.input_rows.saturating_sub(1),
             previous_kept_key: previous_kept_key.as_ref(),
         };
-        match policy.decide(&context, merged_row.row)? {
+        match policy.decide(&context, row)? {
             TableCompactionDecision::Keep => {
-                if output.should_split_before(merged_row.row)? {
+                if should_split_before(
+                    &output_rows,
+                    output_approximate_bytes,
+                    output_last_physical_key.as_deref(),
+                    target_output_bytes,
+                    row,
+                )? {
                     build_pending_output(
                         &builder,
                         output_identity_seed,
-                        &mut output,
+                        &mut output_rows,
+                        &mut output_approximate_bytes,
+                        &mut output_last_physical_key,
                         &mut artifacts,
                         &mut report,
                         compactor.config.max_output_tables(),
                     )?;
                 }
-                output.push(merged_row.row.clone())?;
-                previous_kept_key = Some(merged_row.row.key().clone());
+                push_pending_row(
+                    &mut output_rows,
+                    &mut output_approximate_bytes,
+                    &mut output_last_physical_key,
+                    row.clone(),
+                )?;
+                previous_kept_key = Some(row.key().clone());
                 report.record_keep();
             }
             TableCompactionDecision::Drop { reason } => {
@@ -414,7 +414,9 @@ fn compact_tables(
     build_pending_output(
         &builder,
         output_identity_seed,
-        &mut output,
+        &mut output_rows,
+        &mut output_approximate_bytes,
+        &mut output_last_physical_key,
         &mut artifacts,
         &mut report,
         compactor.config.max_output_tables(),
@@ -423,108 +425,95 @@ fn compact_tables(
     Ok(TableCompactionOutput::new(artifacts, report))
 }
 
-fn validate_no_global_duplicate_internal_keys(merged: &[MergedRow<'_>]) -> TableRuntimeResult<()> {
+fn validate_no_global_duplicate_internal_keys(
+    merged: &[(usize, usize, &TableRow)],
+) -> TableRuntimeResult<()> {
     let mut previous_key: Option<&TableInternalKeyBytes> = None;
-    for merged_row in merged {
+    for (_, _, row) in merged {
         if let Some(previous) = previous_key {
-            if previous == merged_row.row.key() {
+            if previous == row.key() {
                 return Err(TableRuntimeError::DuplicateInternalKey {
-                    key: merged_row.row.encoded_key().to_vec(),
+                    key: row.encoded_key().to_vec(),
                 });
             }
         }
-        previous_key = Some(merged_row.row.key());
+        previous_key = Some(row.key());
     }
     Ok(())
 }
 
-fn merged_rows(sources: &[TableCompactionSource]) -> Vec<MergedRow<'_>> {
+fn merged_rows(sources: &[TableCompactionSource]) -> Vec<(usize, usize, &TableRow)> {
     let capacity = sources.iter().map(TableCompactionSource::len).sum();
     let mut merged = Vec::with_capacity(capacity);
     for (source_index, source) in sources.iter().enumerate() {
         for (source_row_index, row) in source.rows().iter().enumerate() {
-            merged.push(MergedRow {
-                source_index,
-                source_row_index,
-                row,
-            });
+            merged.push((source_index, source_row_index, row));
         }
     }
     merged
 }
 
-struct PendingOutput {
-    target_output_bytes: u64,
-    rows: Vec<TableRow>,
-    approximate_bytes: u64,
-    last_physical_key: Option<Vec<u8>>,
+fn require_nonzero_target_output_bytes(target_output_bytes: u64) -> TableRuntimeResult<()> {
+    if target_output_bytes == 0 {
+        return Err(TableRuntimeError::InvalidConfig {
+            field: "target_output_bytes",
+            reason: "must be nonzero",
+        });
+    }
+    Ok(())
 }
 
-impl PendingOutput {
-    fn new(target_output_bytes: u64) -> TableRuntimeResult<Self> {
-        if target_output_bytes == 0 {
-            return Err(TableRuntimeError::InvalidConfig {
-                field: "target_output_bytes",
-                reason: "must be nonzero",
-            });
+fn should_split_before(
+    pending_rows: &[TableRow],
+    pending_approximate_bytes: u64,
+    pending_last_physical_key: Option<&[u8]>,
+    target_output_bytes: u64,
+    row: &TableRow,
+) -> TableRuntimeResult<bool> {
+    if pending_rows.is_empty() {
+        return Ok(false);
+    }
+    let next_size = u64::try_from(row.approximate_size_bytes()).map_err(|_| {
+        TableRuntimeError::InvalidRange {
+            field: "row_approximate_size",
         }
-        Ok(Self {
-            target_output_bytes,
-            rows: Vec::new(),
-            approximate_bytes: 0,
-            last_physical_key: None,
-        })
+    })?;
+    let would_cross_target =
+        pending_approximate_bytes.saturating_add(next_size) > target_output_bytes;
+    if !would_cross_target {
+        return Ok(false);
     }
+    Ok(pending_last_physical_key != Some(physical_key_bytes(row).as_slice()))
+}
 
-    fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-
-    fn should_split_before(&self, row: &TableRow) -> TableRuntimeResult<bool> {
-        if self.rows.is_empty() {
-            return Ok(false);
+fn push_pending_row(
+    pending_rows: &mut Vec<TableRow>,
+    pending_approximate_bytes: &mut u64,
+    pending_last_physical_key: &mut Option<Vec<u8>>,
+    row: TableRow,
+) -> TableRuntimeResult<()> {
+    let row_size = u64::try_from(row.approximate_size_bytes()).map_err(|_| {
+        TableRuntimeError::InvalidRange {
+            field: "row_approximate_size",
         }
-        let next_size = u64::try_from(row.approximate_size_bytes()).map_err(|_| {
-            TableRuntimeError::InvalidRange {
-                field: "row_approximate_size",
-            }
-        })?;
-        let would_cross_target =
-            self.approximate_bytes.saturating_add(next_size) > self.target_output_bytes;
-        if !would_cross_target {
-            return Ok(false);
-        }
-        Ok(self.last_physical_key.as_deref() != Some(physical_key_bytes(row).as_slice()))
-    }
-
-    fn push(&mut self, row: TableRow) -> TableRuntimeResult<()> {
-        let row_size = u64::try_from(row.approximate_size_bytes()).map_err(|_| {
-            TableRuntimeError::InvalidRange {
-                field: "row_approximate_size",
-            }
-        })?;
-        self.approximate_bytes = self.approximate_bytes.saturating_add(row_size);
-        self.last_physical_key = Some(physical_key_bytes(&row));
-        self.rows.push(row);
-        Ok(())
-    }
-
-    fn take_rows(&mut self) -> Vec<TableRow> {
-        self.approximate_bytes = 0;
-        self.last_physical_key = None;
-        std::mem::take(&mut self.rows)
-    }
+    })?;
+    *pending_approximate_bytes = pending_approximate_bytes.saturating_add(row_size);
+    *pending_last_physical_key = Some(physical_key_bytes(&row));
+    pending_rows.push(row);
+    Ok(())
 }
 
 fn build_pending_output(
     builder: &ImmutableTableBuilder,
     output_identity_seed: &TableIdentity,
-    output: &mut PendingOutput,
+    pending_rows: &mut Vec<TableRow>,
+    pending_approximate_bytes: &mut u64,
+    pending_last_physical_key: &mut Option<Vec<u8>>,
     artifacts: &mut Vec<BuiltTableArtifact>,
     report: &mut TableCompactionReport,
     max_output_tables: usize,
 ) -> TableRuntimeResult<()> {
-    if output.is_empty() {
+    if pending_rows.is_empty() {
         return Ok(());
     }
     if artifacts.len() >= max_output_tables {
@@ -533,7 +522,9 @@ fn build_pending_output(
         });
     }
     let output_index = artifacts.len();
-    let rows = output.take_rows();
+    let rows = std::mem::take(pending_rows);
+    *pending_approximate_bytes = 0;
+    *pending_last_physical_key = None;
     let identity = output_identity(output_identity_seed, output_index, &rows)?;
     let artifact = builder.build_from_rows(identity, &rows)?;
     report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());

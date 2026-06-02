@@ -2,14 +2,17 @@ use crate::format::{decode_immutable_table, TableCompression};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BuiltTableArtifact,
-    ImmutableTableReader, KeepAllTableCompactionPolicy, MutableTable, TableBuilderConfig,
-    TableCompactionConfig, TableCompactionDecision, TableCompactionDropReason,
-    TableCompactionDropSummary, TableCompactionOutput, TableCompactionPolicy,
-    TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
-    TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TableReaderConfig, TableRow, TableRuntimeError,
+    ImmutableTableReader, MutableTable, TableBuilderConfig, TableCompactionConfig,
+    TableCompactionDecision, TableCompactionDropReason, TableCompactionDropSummary,
+    TableCompactionOutput, TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
+    TableCompactionSource, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
+    TableInternalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+fn keep_all_policy() -> impl TableCompactionPolicy {
+    |_: &TableCompactionRowContext<'_>, _: &TableRow| Ok(TableCompactionDecision::Keep)
+}
 
 fn branch(byte: u8) -> BranchId {
     BranchId::from_bytes([byte; BranchId::BYTE_LEN])
@@ -255,7 +258,7 @@ fn compactor_validates_config_and_treats_empty_inputs_as_no_output() {
         })
     );
 
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     assert_eq!(compactor(1024, 2).config().target_output_bytes(), 1024);
     assert_eq!(compactor(1024, 2).builder_config().rows_per_block(), 2);
     let output = compactor(1024, 2)
@@ -315,7 +318,7 @@ fn keep_all_policy_has_no_hidden_retention_rules() {
     ];
     let expected = sorted_storage_rows(&rows);
 
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let output = compactor(64 * 1024, 4)
         .compact(
             &identity("no-hidden-retention"),
@@ -355,7 +358,7 @@ fn keep_all_policy_merges_sources_and_preserves_row_facts() {
         .map(TableRow::into_row)
         .collect::<Vec<_>>();
 
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let output = compactor(16 * 1024, 8)
         .compact(&identity("keep-all"), &[first, second], &mut policy)
         .expect("keep all compaction");
@@ -561,7 +564,7 @@ fn keep_all_policy_preserves_only_tombstone_and_expired_fixtures() {
         tombstone_row(b"deleted".to_vec(), 7),
         expired_row(b"expired".to_vec(), 6),
     ];
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let output = compactor(16 * 1024, 2)
         .compact(
             &identity("keep-sensitive-fixtures"),
@@ -690,7 +693,7 @@ fn source_validation_and_global_duplicate_rejection_are_typed() {
         Err(TableRuntimeError::DuplicateInternalKey { .. })
     ));
 
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let duplicate = put_row(b"same".to_vec(), 7);
     let duplicate_again = duplicate.clone();
     let err = compactor(16 * 1024, 4)
@@ -746,7 +749,7 @@ fn exact_max_output_table_count_is_accepted() {
         put_row(b"bravo".to_vec(), 2),
         put_row(b"charlie".to_vec(), 3),
     ];
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
 
     let output = compactor(1, 3)
         .compact(
@@ -769,7 +772,7 @@ fn output_splitting_respects_limits_and_keeps_physical_key_groups_together() {
         put_row_for_key(same_key.clone(), 3, vec![1; 256]),
         put_row_for_key(same_key, 5, vec![2; 256]),
     ];
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let output = compactor(1, 4)
         .compact(
             &identity("grouped-output"),
@@ -876,7 +879,7 @@ fn compaction_outputs_valid_zstd_table_artifacts() {
         put_row(b"bravo".to_vec(), 2),
         put_row(b"charlie".to_vec(), 3),
     ];
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
 
     let output = zstd_compactor(64 * 1024, 2)
         .compact(
@@ -920,7 +923,7 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
         source("last", &[rows[3].clone()]),
     ];
 
-    let mut first_policy = KeepAllTableCompactionPolicy;
+    let mut first_policy = keep_all_policy();
     let first = compactor(1, 8)
         .compact(
             &identity("deterministic-output"),
@@ -928,7 +931,7 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
             &mut first_policy,
         )
         .expect("first compaction");
-    let mut repeat_policy = KeepAllTableCompactionPolicy;
+    let mut repeat_policy = keep_all_policy();
     let repeat = compactor(1, 8)
         .compact(
             &identity("deterministic-output"),
@@ -936,7 +939,7 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
             &mut repeat_policy,
         )
         .expect("repeat compaction");
-    let mut regrouped_policy = KeepAllTableCompactionPolicy;
+    let mut regrouped_policy = keep_all_policy();
     let regrouped = compactor(1, 8)
         .compact(
             &identity("deterministic-output"),
@@ -961,7 +964,7 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
         put_row(b"bravo".to_vec(), 2),
         put_row(b"echo".to_vec(), 5),
     ];
-    let mut changed_policy = KeepAllTableCompactionPolicy;
+    let mut changed_policy = keep_all_policy();
     let changed = compactor(1, 8)
         .compact(
             &identity("deterministic-output"),
@@ -1000,7 +1003,7 @@ fn source_can_be_collected_from_raw_cursor() {
     assert!(!source.is_empty());
     assert!(cursor.current().is_none());
 
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let output = compactor(16 * 1024, 4)
         .compact(&identity("cursor-output"), &[source], &mut policy)
         .expect("compact cursor source");

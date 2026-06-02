@@ -40,15 +40,19 @@ use super::state::snapshot::{
 use super::state::{BranchImmutableInstallOutcome, BranchLocalState, BranchRotationOutcome};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader,
-    KeepAllTableCompactionPolicy, MutableTable, TableBuilderConfig, TableCommitRange,
-    TableCompactionConfig, TableCompactionSource, TableCompactionSourceId, TableCompactor,
-    TableIdentity, TableInternalKeyBytes, TableKeyRange, TablePhysicalKeyBytes, TableReaderConfig,
-    TableRow, TableRuntimeFacts,
+    sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, MutableTable,
+    TableBuilderConfig, TableCommitRange, TableCompactionConfig, TableCompactionDecision,
+    TableCompactionPolicy, TableCompactionRowContext, TableCompactionSource,
+    TableCompactionSourceId, TableCompactor, TableIdentity, TableInternalKeyBytes, TableKeyRange,
+    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeFacts,
 };
 use std::error::Error;
 use std::fmt;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+fn keep_all_policy() -> impl TableCompactionPolicy {
+    |_: &TableCompactionRowContext<'_>, _: &TableRow| Ok(TableCompactionDecision::Keep)
+}
 
 mod facts_reachability;
 mod identity_state;
@@ -174,7 +178,7 @@ fn expected_keep_all_compaction_output_identity(
     sort_table_rows_by_key(&mut table_rows);
     let source = TableCompactionSource::from_rows(source_id, table_rows).expect("source rows");
     let compactor = TableCompactor::default();
-    let mut policy = KeepAllTableCompactionPolicy;
+    let mut policy = keep_all_policy();
     let output = compactor
         .compact(output_seed, &[source], &mut policy)
         .expect("expected compaction");
