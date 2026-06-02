@@ -23,7 +23,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | commit/batch.rs | 18 | 676 |
 | lifecycle/maintenance.rs | 18 | 1213 |
 | api/read.rs | 16 | 540 |
-| branch/facts.rs | 15 | 1012 |
+| branch/facts.rs | 15 | 1014 |
 | branch/read.rs | 13 | 1546 |
 | lifecycle/branch_lifecycle.rs | 13 | 1210 |
 | testkit/branch_lsm/contracts.rs | 13 | 441 |

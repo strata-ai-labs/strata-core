@@ -315,10 +315,21 @@ fn branch_reachability_fact_types_are_deterministic_and_validated() {
         ),
         Err(BranchRuntimeError::InvalidReachability { .. })
     ));
+    let wrong_owner_error = BranchReachabilitySnapshot::new(branch_id(113), vec![owned.clone()])
+        .expect_err("wrong owner rejected");
     assert!(matches!(
-        BranchReachabilitySnapshot::new(branch_id(113), vec![owned]),
-        Err(BranchRuntimeError::InvalidReachability { .. })
+        wrong_owner_error,
+        BranchRuntimeError::InvalidReachability { .. }
     ));
+    assert!(wrong_owner_error
+        .to_string()
+        .contains("owner branch must match snapshot branch"));
+    let wrong_owner_duplicate_error =
+        BranchReachabilitySnapshot::new(branch_id(113), vec![owned.clone(), owned])
+            .expect_err("wrong owner duplicate rejected");
+    assert!(wrong_owner_duplicate_error
+        .to_string()
+        .contains("owner branch must match snapshot branch"));
     assert!(matches!(
         BranchReachabilitySnapshot::new(owner, vec![inherited.clone(), inherited]),
         Err(BranchRuntimeError::InvalidReachability { .. })

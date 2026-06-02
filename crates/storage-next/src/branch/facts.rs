@@ -539,20 +539,22 @@ impl BranchReachabilitySnapshot {
         mut table_refs: Vec<BranchTableRef>,
     ) -> BranchRuntimeResult<Self> {
         table_refs.sort_by(BranchTableRef::stable_cmp);
-        if table_refs.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(BranchRuntimeError::InvalidReachability {
-                reason: "snapshot table references must be unique",
-            });
-        }
         let mut protected_tables = BTreeSet::new();
         let mut owned_table_count = 0;
         let mut inherited_table_count = 0;
+        let mut previous_ref = None;
         for table_ref in &table_refs {
             if table_ref.owner_branch_id() != branch_id {
                 return Err(BranchRuntimeError::InvalidReachability {
                     reason: "snapshot table reference owner branch must match snapshot branch",
                 });
             }
+            if previous_ref.is_some_and(|previous| previous == table_ref) {
+                return Err(BranchRuntimeError::InvalidReachability {
+                    reason: "snapshot table references must be unique",
+                });
+            }
+            previous_ref = Some(table_ref);
             protected_tables.insert(table_ref.table_identity().as_str().to_owned());
             if table_ref.reference_kind().is_owned_like() {
                 owned_table_count += 1;
