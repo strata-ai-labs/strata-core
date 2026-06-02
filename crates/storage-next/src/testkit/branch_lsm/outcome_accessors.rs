@@ -27,10 +27,6 @@ impl BranchLsmScaffoldOutcome {
         self.error_sources
     }
 
-    pub const fn stats_cases(self) -> usize {
-        self.stats
-    }
-
     pub const fn matching_row_cases(self) -> usize {
         self.matching_rows
     }

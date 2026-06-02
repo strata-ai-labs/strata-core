@@ -5,9 +5,9 @@ use super::error::{
 };
 use super::facts::{
     BranchLevel, BranchProtectedTable, BranchProtectionReason, BranchReachabilityAggregate,
-    BranchReachabilityFacts, BranchReachabilitySnapshot, BranchReleasePlan, BranchRuntimeStats,
-    BranchStateFacts, BranchTableDescriptor, BranchTableRef, BranchTableReferenceKind,
-    InheritedLayerDescriptor, InheritedLayerStatus, SharedTableRegistry,
+    BranchReachabilityFacts, BranchReachabilitySnapshot, BranchReleasePlan, BranchStateFacts,
+    BranchTableDescriptor, BranchTableRef, BranchTableReferenceKind, InheritedLayerDescriptor,
+    InheritedLayerStatus, SharedTableRegistry,
 };
 use super::identity::{
     require_physical_key_branch, require_row_branch, rewrite_physical_key_branch,
@@ -19,8 +19,8 @@ use super::pruning::{
 use super::read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
     BranchMaterializationSource, BranchOwnedTable, BranchReadBound, BranchReadView,
-    BranchRowCandidateFacts, BranchRowSource, BranchScanBounds, BranchTimestampCoverage,
-    BranchUserKeyBound, BranchVisibleRow,
+    BranchRowSource, BranchScanBounds, BranchTimestampCoverage, BranchUserKeyBound,
+    BranchVisibleRow,
 };
 use super::state::compaction::{
     BranchCompactionCandidate, BranchCompactionKind, BranchCompactionNoopReason,

@@ -20,9 +20,6 @@ pub fn check_branch_lsm_scaffold_contract(
     check_error_sources()?;
     outcome.error_sources += 1;
 
-    check_stats(script)?;
-    outcome.stats += 1;
-
     let identity_outcome = check_row_identity_and_rewrites(script)?;
     outcome.matching_rows += identity_outcome.matching_rows;
     outcome.mismatching_rows += identity_outcome.mismatching_rows;

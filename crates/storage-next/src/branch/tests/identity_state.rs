@@ -551,15 +551,14 @@ fn branch_effective_bounds_filter_row_chains_without_collapsing_versions() {
 
     let candidates = rows
         .iter()
-        .map(|row| {
-            BranchRowCandidateFacts::from_row(row.row(), BranchRowSource::Active, combined_bound)
-        })
-        .filter(BranchRowCandidateFacts::matches_effective_bound)
+        .filter(|row| combined_bound.matches_row(row.row()))
         .collect::<Vec<_>>();
-    assert!(candidates.iter().any(BranchRowCandidateFacts::is_tombstone));
     assert!(candidates
         .iter()
-        .any(|candidate| candidate.expires_at() == Timestamp::from_micros(25)));
+        .any(|candidate| candidate.row().is_tombstone()));
+    assert!(candidates
+        .iter()
+        .any(|candidate| candidate.row().expires_at() == Timestamp::from_micros(25)));
 
     let wrong_branch = storage_row(branch_id(19), 4);
     assert!(matches!(
@@ -569,7 +568,7 @@ fn branch_effective_bounds_filter_row_chains_without_collapsing_versions() {
 }
 
 #[test]
-fn branch_candidate_facts_preserve_tombstone_and_expiry_without_visibility_policy() {
+fn branch_candidate_filtering_preserves_tombstone_and_expiry_without_visibility_policy() {
     let branch = branch_id(15);
     let expired_looking = storage_row_with(
         branch,
@@ -582,28 +581,27 @@ fn branch_candidate_facts_preserve_tombstone_and_expiry_without_visibility_polic
     let bound = BranchEffectiveReadBound::for_own_branch(BranchReadBound::at_timestamp(
         Timestamp::from_micros(100),
     ));
-    let facts = BranchRowCandidateFacts::from_row(&expired_looking, BranchRowSource::Active, bound);
-    assert_eq!(facts.source(), BranchRowSource::Active);
-    assert_eq!(facts.physical_key(), expired_looking.physical_key());
-    assert_eq!(facts.commit_version(), CommitVersion::new(10));
-    assert_eq!(facts.commit_timestamp(), Timestamp::from_micros(100));
-    assert_eq!(facts.expires_at(), Timestamp::from_micros(90));
-    assert!(!facts.is_tombstone());
-    assert!(facts.matches_effective_bound());
+    let source = BranchRowSource::Active;
+    assert_eq!(source, BranchRowSource::Active);
+    assert_eq!(expired_looking.physical_key().branch_id(), branch);
+    assert_eq!(expired_looking.commit_version(), CommitVersion::new(10));
+    assert_eq!(
+        expired_looking.commit_timestamp(),
+        Timestamp::from_micros(100)
+    );
+    assert_eq!(expired_looking.expires_at(), Timestamp::from_micros(90));
+    assert!(!expired_looking.is_tombstone());
+    assert!(bound.matches_row(&expired_looking));
 
     let tombstone = tombstone_row(branch, b"deleted".to_vec(), 11, 100);
-    let tombstone_facts =
-        BranchRowCandidateFacts::from_row(&tombstone, BranchRowSource::Frozen { index: 0 }, bound);
-    assert_eq!(
-        tombstone_facts.source(),
-        BranchRowSource::Frozen { index: 0 }
-    );
-    assert!(tombstone_facts.is_tombstone());
-    assert!(tombstone_facts.matches_effective_bound());
+    let tombstone_source = BranchRowSource::Frozen { index: 0 };
+    assert_eq!(tombstone_source, BranchRowSource::Frozen { index: 0 });
+    assert!(tombstone.is_tombstone());
+    assert!(bound.matches_row(&tombstone));
 }
 
 #[test]
-fn branch_candidate_bound_facts_record_each_axis_independently() {
+fn branch_effective_bound_records_each_axis_independently() {
     let row = storage_row_with(
         branch_id(26),
         b"axis".to_vec(),
@@ -613,48 +611,32 @@ fn branch_candidate_bound_facts_record_each_axis_independently() {
         b"value".to_vec(),
     );
 
-    let version_miss = BranchRowCandidateFacts::from_row(
-        &row,
-        BranchRowSource::Active,
-        BranchEffectiveReadBound::new(
-            Some(CommitVersion::new(4)),
-            Some(Timestamp::from_micros(50)),
-        ),
+    let version_miss = BranchEffectiveReadBound::new(
+        Some(CommitVersion::new(4)),
+        Some(Timestamp::from_micros(50)),
     );
-    assert!(!version_miss.version_in_bound());
-    assert!(version_miss.timestamp_in_bound());
-    assert!(!version_miss.matches_effective_bound());
+    assert!(!version_miss.row_version_in_bound(&row));
+    assert!(version_miss.row_timestamp_in_bound(&row));
+    assert!(!version_miss.matches_row(&row));
 
-    let timestamp_miss = BranchRowCandidateFacts::from_row(
-        &row,
-        BranchRowSource::Active,
-        BranchEffectiveReadBound::new(
-            Some(CommitVersion::new(5)),
-            Some(Timestamp::from_micros(49)),
-        ),
+    let timestamp_miss = BranchEffectiveReadBound::new(
+        Some(CommitVersion::new(5)),
+        Some(Timestamp::from_micros(49)),
     );
-    assert!(timestamp_miss.version_in_bound());
-    assert!(!timestamp_miss.timestamp_in_bound());
-    assert!(!timestamp_miss.matches_effective_bound());
+    assert!(timestamp_miss.row_version_in_bound(&row));
+    assert!(!timestamp_miss.row_timestamp_in_bound(&row));
+    assert!(!timestamp_miss.matches_row(&row));
 
-    let both_miss = BranchRowCandidateFacts::from_row(
-        &row,
-        BranchRowSource::Active,
-        BranchEffectiveReadBound::new(
-            Some(CommitVersion::new(4)),
-            Some(Timestamp::from_micros(49)),
-        ),
+    let both_miss = BranchEffectiveReadBound::new(
+        Some(CommitVersion::new(4)),
+        Some(Timestamp::from_micros(49)),
     );
-    assert!(!both_miss.version_in_bound());
-    assert!(!both_miss.timestamp_in_bound());
-    assert!(!both_miss.matches_effective_bound());
+    assert!(!both_miss.row_version_in_bound(&row));
+    assert!(!both_miss.row_timestamp_in_bound(&row));
+    assert!(!both_miss.matches_row(&row));
 
-    let latest = BranchRowCandidateFacts::from_row(
-        &row,
-        BranchRowSource::Active,
-        BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest()),
-    );
-    assert!(latest.matches_effective_bound());
+    let latest = BranchEffectiveReadBound::for_own_branch(BranchReadBound::latest());
+    assert!(latest.matches_row(&row));
 }
 
 #[test]

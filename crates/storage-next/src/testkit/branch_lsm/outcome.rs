@@ -7,7 +7,6 @@ pub struct BranchLsmScaffoldOutcome {
     invalid_facts: usize,
     descriptors: usize,
     error_sources: usize,
-    stats: usize,
     matching_rows: usize,
     mismatching_rows: usize,
     physical_key_rewrites: usize,

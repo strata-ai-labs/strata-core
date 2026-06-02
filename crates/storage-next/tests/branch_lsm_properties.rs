@@ -218,7 +218,6 @@ const REQUIRED_OUTCOME_COUNTERS: &[BranchLsmOutcomeCounter] = &[
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::invalid_fact_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::descriptor_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::error_source_cases,
-    strata_storage_next::testkit::BranchLsmScaffoldOutcome::stats_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::matching_row_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::mismatching_row_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::physical_key_rewrite_cases,

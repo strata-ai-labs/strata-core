@@ -192,73 +192,6 @@ pub(crate) enum BranchRowSource {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchRowCandidateFacts {
-    source: BranchRowSource,
-    physical_key: PhysicalKey,
-    commit_version: CommitVersion,
-    commit_timestamp: Timestamp,
-    expires_at: Timestamp,
-    is_tombstone: bool,
-    version_in_bound: bool,
-    timestamp_in_bound: bool,
-}
-
-impl BranchRowCandidateFacts {
-    pub(crate) fn from_row(
-        row: &StorageRow,
-        source: BranchRowSource,
-        effective_bound: BranchEffectiveReadBound,
-    ) -> Self {
-        Self {
-            source,
-            physical_key: row.physical_key().clone(),
-            commit_version: row.commit_version(),
-            commit_timestamp: row.commit_timestamp(),
-            expires_at: row.expires_at(),
-            is_tombstone: row.is_tombstone(),
-            version_in_bound: effective_bound.row_version_in_bound(row),
-            timestamp_in_bound: effective_bound.row_timestamp_in_bound(row),
-        }
-    }
-
-    pub(crate) const fn source(&self) -> BranchRowSource {
-        self.source
-    }
-
-    pub(crate) const fn physical_key(&self) -> &PhysicalKey {
-        &self.physical_key
-    }
-
-    pub(crate) const fn commit_version(&self) -> CommitVersion {
-        self.commit_version
-    }
-
-    pub(crate) const fn commit_timestamp(&self) -> Timestamp {
-        self.commit_timestamp
-    }
-
-    pub(crate) const fn expires_at(&self) -> Timestamp {
-        self.expires_at
-    }
-
-    pub(crate) const fn is_tombstone(&self) -> bool {
-        self.is_tombstone
-    }
-
-    pub(crate) const fn version_in_bound(&self) -> bool {
-        self.version_in_bound
-    }
-
-    pub(crate) const fn timestamp_in_bound(&self) -> bool {
-        self.timestamp_in_bound
-    }
-
-    pub(crate) const fn matches_effective_bound(&self) -> bool {
-        self.version_in_bound && self.timestamp_in_bound
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchVisibleRow {
     row: StorageRow,
     source: BranchRowSource,
@@ -860,15 +793,16 @@ impl BranchReadView {
         let before_version = options.before_version_bound();
         let mut history = Vec::new();
         for candidate in rows {
+            let row = candidate_row_ref(&candidate);
             if before_version
-                .is_some_and(|version| candidate.row.commit_version().as_u64() >= version.as_u64())
+                .is_some_and(|version| row.commit_version().as_u64() >= version.as_u64())
             {
                 continue;
             }
-            if !options.includes_tombstones() && candidate.row.is_tombstone() {
+            if !options.includes_tombstones() && row.is_tombstone() {
                 continue;
             }
-            history.push(candidate.into_history_row());
+            history.push(candidate_into_history_row(candidate));
             if options
                 .limit_bound()
                 .is_some_and(|limit| history.len() >= limit)
@@ -958,14 +892,11 @@ impl BranchReadView {
     ) -> BranchRuntimeResult<Vec<CandidateRow>> {
         let mut rows = Vec::new();
         for row in self.active.iter().filter(|row| row.physical_key() == key) {
-            rows.push(CandidateRow::new(
-                row.row().clone(),
-                BranchRowSource::Active,
-            ));
+            rows.push(candidate_row(row.row().clone(), BranchRowSource::Active));
         }
         for (index, table) in self.frozen.iter().enumerate() {
             for row in table.iter().filter(|row| row.physical_key() == key) {
-                rows.push(CandidateRow::new(
+                rows.push(candidate_row(
                     row.row().clone(),
                     BranchRowSource::Frozen { index },
                 ));
@@ -974,7 +905,7 @@ impl BranchReadView {
         for tables in &self.owned_levels {
             for (table_index, table) in tables.iter().enumerate() {
                 for row in table.rows().iter().filter(|row| row.physical_key() == key) {
-                    rows.push(CandidateRow::new(
+                    rows.push(candidate_row(
                         row.row().clone(),
                         BranchRowSource::OwnedTable {
                             level: table.level(),
@@ -1002,10 +933,7 @@ impl BranchReadView {
             grouped
                 .entry(TablePhysicalKeyBytes::from_row(row.row()))
                 .or_default()
-                .push(CandidateRow::new(
-                    row.row().clone(),
-                    BranchRowSource::Active,
-                ));
+                .push(candidate_row(row.row().clone(), BranchRowSource::Active));
         }
         for (index, table) in self.frozen.iter().enumerate() {
             for row in table
@@ -1015,7 +943,7 @@ impl BranchReadView {
                 grouped
                     .entry(TablePhysicalKeyBytes::from_row(row.row()))
                     .or_default()
-                    .push(CandidateRow::new(
+                    .push(candidate_row(
                         row.row().clone(),
                         BranchRowSource::Frozen { index },
                     ));
@@ -1031,7 +959,7 @@ impl BranchReadView {
                     grouped
                         .entry(TablePhysicalKeyBytes::from_row(row.row()))
                         .or_default()
-                        .push(CandidateRow::new(
+                        .push(candidate_row(
                             row.row().clone(),
                             BranchRowSource::OwnedTable {
                                 level: table.level(),
@@ -1067,7 +995,7 @@ impl BranchReadView {
                 for row in table.rows().iter().filter(|row| {
                     row.physical_key() == &source_key && inherited_bound.matches_row(row.row())
                 }) {
-                    rows.push(CandidateRow::new(
+                    rows.push(candidate_row(
                         rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
                             .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
                                 reason: "inherited row branch rewrite failed",
@@ -1110,7 +1038,7 @@ impl BranchReadView {
                         grouped
                             .entry(TablePhysicalKeyBytes::from_row(&rewritten))
                             .or_default()
-                            .push(CandidateRow::new(
+                            .push(candidate_row(
                                 rewritten,
                                 BranchRowSource::Inherited {
                                     source_branch_id: layer.source_branch_id(),
@@ -1146,28 +1074,33 @@ impl BranchReadView {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CandidateRow {
-    row: StorageRow,
-    source: BranchRowSource,
+type CandidateRow = (StorageRow, BranchRowSource);
+
+fn candidate_row(row: StorageRow, source: BranchRowSource) -> CandidateRow {
+    (row, source)
 }
 
-impl CandidateRow {
-    fn new(row: StorageRow, source: BranchRowSource) -> Self {
-        Self { row, source }
-    }
+fn candidate_row_ref(candidate: &CandidateRow) -> &StorageRow {
+    &candidate.0
+}
 
-    fn into_visible_row(self, read_timestamp: Option<Timestamp>) -> Option<BranchVisibleRow> {
-        if self.row.is_tombstone() || row_is_expired_at(&self.row, read_timestamp) {
-            None
-        } else {
-            Some(BranchVisibleRow::new(self.row, self.source))
-        }
-    }
+fn candidate_source(candidate: &CandidateRow) -> BranchRowSource {
+    candidate.1
+}
 
-    fn into_history_row(self) -> BranchHistoryRow {
-        BranchHistoryRow::new(self.row, self.source)
+fn candidate_into_visible_row(
+    (row, source): CandidateRow,
+    read_timestamp: Option<Timestamp>,
+) -> Option<BranchVisibleRow> {
+    if row.is_tombstone() || row_is_expired_at(&row, read_timestamp) {
+        None
+    } else {
+        Some(BranchVisibleRow::new(row, source))
     }
+}
+
+fn candidate_into_history_row((row, source): CandidateRow) -> BranchHistoryRow {
+    BranchHistoryRow::new(row, source)
 }
 
 fn effective_own_read_bound(bound: BranchReadBound) -> BranchEffectiveReadBound {
@@ -1179,10 +1112,10 @@ fn select_visible_row(
     effective_bound: BranchEffectiveReadBound,
 ) -> Option<BranchVisibleRow> {
     sort_candidates_newest_first(&mut candidates);
-    candidates
+    let candidate = candidates
         .into_iter()
-        .find(|candidate| effective_bound.matches_row(&candidate.row))?
-        .into_visible_row(effective_bound.max_commit_timestamp())
+        .find(|candidate| effective_bound.matches_row(candidate_row_ref(candidate)))?;
+    candidate_into_visible_row(candidate, effective_bound.max_commit_timestamp())
 }
 
 fn select_visible_row_or_tombstone(
@@ -1192,11 +1125,14 @@ fn select_visible_row_or_tombstone(
     sort_candidates_newest_first(&mut candidates);
     let candidate = candidates
         .into_iter()
-        .find(|candidate| effective_bound.matches_row(&candidate.row))?;
-    if row_is_expired_at(&candidate.row, effective_bound.max_commit_timestamp()) {
+        .find(|candidate| effective_bound.matches_row(candidate_row_ref(candidate)))?;
+    if row_is_expired_at(
+        candidate_row_ref(&candidate),
+        effective_bound.max_commit_timestamp(),
+    ) {
         None
     } else {
-        Some(candidate.into_history_row())
+        Some(candidate_into_history_row(candidate))
     }
 }
 
@@ -1211,11 +1147,11 @@ fn row_is_expired_at(row: &StorageRow, read_timestamp: Option<Timestamp>) -> boo
 fn sort_candidates_newest_first(candidates: &mut [CandidateRow]) {
     candidates.sort_by(|left, right| {
         right
-            .row
+            .0
             .commit_version()
             .as_u64()
-            .cmp(&left.row.commit_version().as_u64())
-            .then_with(|| source_order_cmp(left.source, right.source))
+            .cmp(&left.0.commit_version().as_u64())
+            .then_with(|| source_order_cmp(candidate_source(left), candidate_source(right)))
     });
 }
 
@@ -1339,26 +1275,59 @@ fn validate_read_view_inputs(
     validate_owned_levels(owned_levels)?;
     validate_inherited_layers(branch_id, inherited_layers)?;
 
-    let mut observed = ObservedReadViewFacts::default();
+    let mut max_commit_version = None;
+    let mut timestamp_min = None;
+    let mut timestamp_max = None;
     for row in active.iter() {
-        observed.record(branch_id, row.row())?;
+        record_read_view_row_facts(
+            branch_id,
+            row.row(),
+            &mut max_commit_version,
+            &mut timestamp_min,
+            &mut timestamp_max,
+        )?;
     }
     for table in frozen {
         for row in table.iter() {
-            observed.record(branch_id, row.row())?;
+            record_read_view_row_facts(
+                branch_id,
+                row.row(),
+                &mut max_commit_version,
+                &mut timestamp_min,
+                &mut timestamp_max,
+            )?;
         }
     }
     for tables in owned_levels {
         for table in tables {
             for row in table.rows() {
-                observed.record(branch_id, row.row())?;
+                record_read_view_row_facts(
+                    branch_id,
+                    row.row(),
+                    &mut max_commit_version,
+                    &mut timestamp_min,
+                    &mut timestamp_max,
+                )?;
             }
         }
     }
     for layer in inherited_layers {
-        observed.record_inherited_layer(layer)?;
+        record_inherited_layer_read_view_facts(
+            layer,
+            &mut max_commit_version,
+            &mut timestamp_min,
+            &mut timestamp_max,
+        )?;
     }
-    observed.matches(facts)
+    if max_commit_version != facts.max_commit_version()
+        || timestamp_min != facts.timestamp_min()
+        || timestamp_max != facts.timestamp_max()
+    {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view source facts must match branch facts",
+        });
+    }
+    Ok(())
 }
 
 fn owned_table_count(owned_levels: &[Vec<BranchOwnedTable>]) -> usize {
@@ -1515,72 +1484,63 @@ fn table_physical_key_bounds(
     Some((min, max))
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ObservedReadViewFacts {
-    max_commit_version: Option<CommitVersion>,
-    timestamp_min: Option<Timestamp>,
-    timestamp_max: Option<Timestamp>,
+fn record_read_view_row_facts(
+    branch_id: BranchId,
+    row: &StorageRow,
+    max_commit_version: &mut Option<CommitVersion>,
+    timestamp_min: &mut Option<Timestamp>,
+    timestamp_max: &mut Option<Timestamp>,
+) -> BranchRuntimeResult<()> {
+    if row.physical_key().branch_id() != branch_id {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view source rows must match the view branch",
+        });
+    }
+    record_commit_version(max_commit_version, row.commit_version());
+    record_timestamp(timestamp_min, timestamp_max, row.commit_timestamp());
+    Ok(())
 }
 
-impl ObservedReadViewFacts {
-    fn record(&mut self, branch_id: BranchId, row: &StorageRow) -> BranchRuntimeResult<()> {
-        if row.physical_key().branch_id() != branch_id {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "read view source rows must match the view branch",
-            });
-        }
-        self.record_commit_version(row.commit_version());
-        self.record_timestamp(row.commit_timestamp());
-        Ok(())
+fn record_inherited_layer_read_view_facts(
+    layer: &BranchInheritedLayer,
+    max_commit_version: &mut Option<CommitVersion>,
+    timestamp_min: &mut Option<Timestamp>,
+    timestamp_max: &mut Option<Timestamp>,
+) -> BranchRuntimeResult<()> {
+    if layer.status() == InheritedLayerStatus::Materialized {
+        return Ok(());
     }
-
-    fn record_inherited_layer(&mut self, layer: &BranchInheritedLayer) -> BranchRuntimeResult<()> {
-        if layer.status() == InheritedLayerStatus::Materialized {
-            return Ok(());
-        }
-        for table in layer.owned_levels().iter().flatten() {
-            for row in table.rows() {
-                if row.physical_key().branch_id() != layer.source_branch_id() {
-                    return Err(BranchRuntimeError::InvalidInheritedLayer {
-                        reason: "inherited read view source rows must match layer source branch",
-                    });
-                }
-                if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
-                    self.record_commit_version(row.commit_version());
-                    self.record_timestamp(row.commit_timestamp());
-                }
+    for table in layer.owned_levels().iter().flatten() {
+        for row in table.rows() {
+            if row.physical_key().branch_id() != layer.source_branch_id() {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited read view source rows must match layer source branch",
+                });
+            }
+            if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
+                record_commit_version(max_commit_version, row.commit_version());
+                record_timestamp(timestamp_min, timestamp_max, row.commit_timestamp());
             }
         }
-        Ok(())
     }
+    Ok(())
+}
 
-    fn record_commit_version(&mut self, commit_version: CommitVersion) {
-        self.max_commit_version = Some(
-            self.max_commit_version
-                .map_or(commit_version, |current| current.max(commit_version)),
-        );
-    }
+fn record_commit_version(
+    max_commit_version: &mut Option<CommitVersion>,
+    commit_version: CommitVersion,
+) {
+    *max_commit_version =
+        Some((*max_commit_version).map_or(commit_version, |current| current.max(commit_version)));
+}
 
-    fn record_timestamp(&mut self, commit_timestamp: Timestamp) {
-        self.timestamp_min = Some(
-            self.timestamp_min
-                .map_or(commit_timestamp, |current| current.min(commit_timestamp)),
-        );
-        self.timestamp_max = Some(
-            self.timestamp_max
-                .map_or(commit_timestamp, |current| current.max(commit_timestamp)),
-        );
-    }
-
-    fn matches(self, facts: BranchStateFacts) -> BranchRuntimeResult<()> {
-        if self.max_commit_version != facts.max_commit_version()
-            || self.timestamp_min != facts.timestamp_min()
-            || self.timestamp_max != facts.timestamp_max()
-        {
-            return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "read view source facts must match branch facts",
-            });
-        }
-        Ok(())
-    }
+fn record_timestamp(
+    timestamp_min: &mut Option<Timestamp>,
+    timestamp_max: &mut Option<Timestamp>,
+    commit_timestamp: Timestamp,
+) {
+    *timestamp_min =
+        Some((*timestamp_min).map_or(commit_timestamp, |current| current.min(commit_timestamp)));
+    *timestamp_max =
+        Some((*timestamp_max).map_or(commit_timestamp, |current| current.max(commit_timestamp)));
 }

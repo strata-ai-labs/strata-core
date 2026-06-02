@@ -188,32 +188,6 @@ fn check_error_sources() -> Result<(), TestkitError> {
     Ok(())
 }
 
-fn check_stats(script: &[u8]) -> Result<(), TestkitError> {
-    let empty = BranchRuntimeStats::default();
-    if empty.latest_reads() != 0
-        || empty.bounded_reads() != 0
-        || empty.history_reads() != 0
-        || empty.inherited_layers_examined() != 0
-    {
-        return Err(TestkitError::new("default branch stats drifted"));
-    }
-
-    let stats = BranchRuntimeStats::new(
-        u64::from(script_byte(script, 12)),
-        u64::from(script_byte(script, 13)),
-        u64::from(script_byte(script, 14)),
-        u64::from(script_byte(script, 15)),
-    );
-    if stats.latest_reads() != u64::from(script_byte(script, 12))
-        || stats.bounded_reads() != u64::from(script_byte(script, 13))
-        || stats.history_reads() != u64::from(script_byte(script, 14))
-        || stats.inherited_layers_examined() != u64::from(script_byte(script, 15))
-    {
-        return Err(TestkitError::new("branch stats drifted"));
-    }
-    Ok(())
-}
-
 fn check_row_identity_and_rewrites(script: &[u8]) -> Result<IdentityOutcome, TestkitError> {
     let source = branch_id(script_byte(script, 16));
     let target = branch_id(script_byte(script, 16).wrapping_add(1));
@@ -357,22 +331,16 @@ fn check_effective_bounds_and_candidates(script: &[u8]) -> Result<BoundsOutcome,
         ));
     }
 
-    let put_candidate =
-        BranchRowCandidateFacts::from_row(&row, BranchRowSource::Active, own_timestamp);
-    if put_candidate.is_tombstone()
-        || put_candidate.expires_at() != row.expires_at()
-        || !put_candidate.matches_effective_bound()
+    if row.is_tombstone()
+        || row.expires_at() != Timestamp::from_micros(timestamp.as_micros().saturating_sub(1))
+        || !own_timestamp.matches_row(&row)
     {
         return Err(TestkitError::new("put candidate facts drifted"));
     }
-    let tombstone_candidate = BranchRowCandidateFacts::from_row(
-        &tombstone,
-        BranchRowSource::Frozen { index: 0 },
-        own_timestamp,
-    );
-    if !tombstone_candidate.is_tombstone()
-        || tombstone_candidate.source() != (BranchRowSource::Frozen { index: 0 })
-        || !tombstone_candidate.matches_effective_bound()
+    let tombstone_source = BranchRowSource::Frozen { index: 0 };
+    if !tombstone.is_tombstone()
+        || tombstone_source != (BranchRowSource::Frozen { index: 0 })
+        || !own_timestamp.matches_row(&tombstone)
     {
         return Err(TestkitError::new("tombstone candidate facts drifted"));
     }
@@ -528,16 +496,13 @@ fn check_row_chains_and_fork_edges(script: &[u8]) -> Result<ChainOutcome, Testki
 
     let candidates = rows
         .iter()
-        .map(|row| {
-            BranchRowCandidateFacts::from_row(row.row(), BranchRowSource::Active, combined_bound)
-        })
-        .filter(BranchRowCandidateFacts::matches_effective_bound)
+        .filter(|row| combined_bound.matches_row(row.row()))
         .collect::<Vec<_>>();
     if candidates.len() != 2
-        || !candidates.iter().any(BranchRowCandidateFacts::is_tombstone)
+        || !candidates.iter().any(|candidate| candidate.row().is_tombstone())
         || !candidates
             .iter()
-            .any(|candidate| candidate.expires_at() == Timestamp::from_micros(25))
+            .any(|candidate| candidate.row().expires_at() == Timestamp::from_micros(25))
     {
         return Err(TestkitError::new(
             "row-chain candidates collapsed tombstone or expiry facts",

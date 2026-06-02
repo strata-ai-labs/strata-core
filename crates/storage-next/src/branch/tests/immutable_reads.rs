@@ -721,18 +721,3 @@ fn branch_immutable_range_scans_cover_l1_edge_and_degenerate_bounds() {
         vec![b"scan-h".to_vec()]
     );
 }
-
-#[test]
-fn branch_runtime_stats_default_and_accessors_are_stable() {
-    let empty = BranchRuntimeStats::default();
-    assert_eq!(empty.latest_reads(), 0);
-    assert_eq!(empty.bounded_reads(), 0);
-    assert_eq!(empty.history_reads(), 0);
-    assert_eq!(empty.inherited_layers_examined(), 0);
-
-    let stats = BranchRuntimeStats::new(1, 2, 3, 4);
-    assert_eq!(stats.latest_reads(), 1);
-    assert_eq!(stats.bounded_reads(), 2);
-    assert_eq!(stats.history_reads(), 3);
-    assert_eq!(stats.inherited_layers_examined(), 4);
-}

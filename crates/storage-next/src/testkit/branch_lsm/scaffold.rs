@@ -5,17 +5,17 @@ use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchTimestampHistorySource};
 use crate::branch::facts::{
     BranchLevel, BranchProtectionReason, BranchReachabilityAggregate, BranchReachabilityFacts,
-    BranchReachabilitySnapshot, BranchReleasePlan, BranchRuntimeStats, BranchStateFacts,
-    BranchTableDescriptor, BranchTableRef, BranchTableReferenceKind, InheritedLayerDescriptor,
-    InheritedLayerStatus, SharedTableRegistry,
+    BranchReachabilitySnapshot, BranchReleasePlan, BranchStateFacts, BranchTableDescriptor,
+    BranchTableRef, BranchTableReferenceKind, InheritedLayerDescriptor, InheritedLayerStatus,
+    SharedTableRegistry,
 };
 use crate::branch::identity::{
     require_row_branch, rewrite_physical_key_branch, rewrite_row_branch, row_matches_branch,
 };
 use crate::branch::read::{
     BranchEffectiveReadBound, BranchHistoryOptions, BranchHistoryRow, BranchInheritedLayer,
-    BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowCandidateFacts, BranchRowSource,
-    BranchScanBounds, BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
+    BranchOwnedTable, BranchReadBound, BranchReadView, BranchRowSource, BranchScanBounds,
+    BranchTimestampCoverage, BranchUserKeyBound, BranchVisibleRow,
 };
 use crate::branch::state::compaction::{
     BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionRequest,

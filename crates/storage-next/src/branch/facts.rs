@@ -2,6 +2,7 @@
 
 use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::table::{TableIdentity, TableRuntimeFacts};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -464,11 +465,39 @@ impl BranchTableRef {
         self.reference_kind
     }
 
-    fn stable_sort_key(&self) -> BranchTableRefSortKey {
+    fn stable_cmp(left: &Self, right: &Self) -> Ordering {
+        let (left_source_branch, left_fork_version, left_layer_index) =
+            left.reference_kind.stable_components();
+        let (right_source_branch, right_fork_version, right_layer_index) =
+            right.reference_kind.stable_components();
+        left.table_identity
+            .as_str()
+            .cmp(right.table_identity.as_str())
+            .then_with(|| left.reference_kind.rank().cmp(&right.reference_kind.rank()))
+            .then_with(|| {
+                left.owner_branch_id
+                    .as_bytes()
+                    .cmp(right.owner_branch_id.as_bytes())
+            })
+            .then_with(|| {
+                left.table_branch_id
+                    .as_bytes()
+                    .cmp(right.table_branch_id.as_bytes())
+            })
+            .then_with(|| left_source_branch.cmp(&right_source_branch))
+            .then_with(|| left_fork_version.cmp(&right_fork_version))
+            .then_with(|| left_layer_index.cmp(&right_layer_index))
+            .then_with(|| left.level.raw().cmp(&right.level.raw()))
+            .then_with(|| left.table_index.cmp(&right.table_index))
+    }
+}
+
+impl BranchTableReferenceKind {
+    fn stable_components(self) -> ([u8; BranchId::BYTE_LEN], u64, usize) {
         let mut source_branch = [0; BranchId::BYTE_LEN];
         let mut fork_version = 0;
         let mut layer_index = 0;
-        match self.reference_kind {
+        match self {
             BranchTableReferenceKind::Owned => {}
             BranchTableReferenceKind::Replacement {
                 source_branch_id,
@@ -492,31 +521,8 @@ impl BranchTableRef {
                 layer_index = index;
             }
         }
-        BranchTableRefSortKey {
-            table_identity: self.table_identity.as_str().to_owned(),
-            reference_kind_rank: self.reference_kind.rank(),
-            owner_branch: *self.owner_branch_id.as_bytes(),
-            table_branch: *self.table_branch_id.as_bytes(),
-            source_branch,
-            fork_version,
-            layer_index,
-            level: self.level.raw(),
-            table_index: self.table_index,
-        }
+        (source_branch, fork_version, layer_index)
     }
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct BranchTableRefSortKey {
-    table_identity: String,
-    reference_kind_rank: u8,
-    owner_branch: [u8; BranchId::BYTE_LEN],
-    table_branch: [u8; BranchId::BYTE_LEN],
-    source_branch: [u8; BranchId::BYTE_LEN],
-    fork_version: u64,
-    layer_index: usize,
-    level: u8,
-    table_index: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -532,8 +538,12 @@ impl BranchReachabilitySnapshot {
         branch_id: BranchId,
         mut table_refs: Vec<BranchTableRef>,
     ) -> BranchRuntimeResult<Self> {
-        table_refs.sort_by_key(BranchTableRef::stable_sort_key);
-        let mut seen_refs = BTreeSet::new();
+        table_refs.sort_by(BranchTableRef::stable_cmp);
+        if table_refs.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(BranchRuntimeError::InvalidReachability {
+                reason: "snapshot table references must be unique",
+            });
+        }
         let mut protected_tables = BTreeSet::new();
         let mut owned_table_count = 0;
         let mut inherited_table_count = 0;
@@ -541,11 +551,6 @@ impl BranchReachabilitySnapshot {
             if table_ref.owner_branch_id() != branch_id {
                 return Err(BranchRuntimeError::InvalidReachability {
                     reason: "snapshot table reference owner branch must match snapshot branch",
-                });
-            }
-            if !seen_refs.insert(table_ref.stable_sort_key()) {
-                return Err(BranchRuntimeError::InvalidReachability {
-                    reason: "snapshot table references must be unique",
                 });
             }
             protected_tables.insert(table_ref.table_identity().as_str().to_owned());
@@ -596,7 +601,7 @@ pub(crate) struct BranchTableProtection {
 
 impl BranchTableProtection {
     fn new(table_identity: TableIdentity, mut table_refs: Vec<BranchTableRef>) -> Self {
-        table_refs.sort_by_key(BranchTableRef::stable_sort_key);
+        table_refs.sort_by(BranchTableRef::stable_cmp);
         Self {
             table_identity,
             table_refs,
@@ -912,7 +917,7 @@ impl BranchReleasePlan {
         aggregate_after_release: &BranchReachabilityAggregate,
         runtime_registry: Option<&SharedTableRegistry>,
     ) -> BranchRuntimeResult<Self> {
-        removed_refs.sort_by_key(BranchTableRef::stable_sort_key);
+        removed_refs.sort_by(BranchTableRef::stable_cmp);
         let mut removed_tables = BTreeMap::<String, TableIdentity>::new();
         for table_ref in &removed_refs {
             if table_ref.owner_branch_id() != released_branch_id {
@@ -1003,45 +1008,5 @@ impl BranchProtectionReason {
             Self::RuntimeReferenced => 1,
             Self::RegistryDisagreement => 2,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct BranchRuntimeStats {
-    latest_reads: u64,
-    bounded_reads: u64,
-    history_reads: u64,
-    inherited_layers_examined: u64,
-}
-
-impl BranchRuntimeStats {
-    pub(crate) const fn new(
-        latest_reads: u64,
-        bounded_reads: u64,
-        history_reads: u64,
-        inherited_layers_examined: u64,
-    ) -> Self {
-        Self {
-            latest_reads,
-            bounded_reads,
-            history_reads,
-            inherited_layers_examined,
-        }
-    }
-
-    pub(crate) const fn latest_reads(self) -> u64 {
-        self.latest_reads
-    }
-
-    pub(crate) const fn bounded_reads(self) -> u64 {
-        self.bounded_reads
-    }
-
-    pub(crate) const fn history_reads(self) -> u64 {
-        self.history_reads
-    }
-
-    pub(crate) const fn inherited_layers_examined(self) -> u64 {
-        self.inherited_layers_examined
     }
 }
