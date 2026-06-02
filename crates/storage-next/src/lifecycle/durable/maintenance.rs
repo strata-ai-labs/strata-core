@@ -9,11 +9,10 @@ use crate::commit::{
 use crate::lifecycle::checkpoint::{
     checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
-    truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
+    persist_flush_watermark_with_table_manifest_proof, truncate_wal,
+    wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
-    LifecycleFlushWatermarkRequest, LifecycleFlushWatermarkValidationContext,
     LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
-    LifecycleWalTruncationRequest,
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure,
@@ -285,14 +284,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     )]
     pub(crate) fn persist_flush_watermark(
         &mut self,
-        request: &LifecycleFlushWatermarkRequest,
+        candidate: strata_core_next::CommitVersion,
+        proof: &LifecycleFlushWatermarkProof,
     ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         persist_flush_watermark(
             self.services.manifest(),
             self.visible.visible_version(),
-            request,
-            &LifecycleFlushWatermarkValidationContext::none(),
+            candidate,
+            proof,
         )
     }
 
@@ -334,20 +334,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 reason: "table manifest flush proof requires all active branches to be loaded",
             });
         }
-        let request = LifecycleFlushWatermarkRequest::new(
-            candidate,
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )?;
-        let context = LifecycleFlushWatermarkValidationContext::table_manifest(
-            proof.manifest_epoch(),
-            proof.recovery_health_epoch(),
-        )?
-        .with_required_branch_epochs([(branch_id, manifest.manifest_sequence())])?;
-        persist_flush_watermark(
+        persist_flush_watermark_with_table_manifest_proof(
             self.services.manifest(),
             self.visible.visible_version(),
-            &request,
-            &context,
+            candidate,
+            &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+            proof.manifest_epoch(),
+            proof.recovery_health_epoch(),
+            &[(branch_id, manifest.manifest_sequence())],
         )
     }
 
@@ -357,10 +351,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     )]
     pub(crate) fn truncate_wal(
         &mut self,
-        request: LifecycleWalTruncationRequest,
+        proof: crate::service::WalRetentionProof,
     ) -> LifecycleResult<LifecycleWalTruncationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        truncate_wal(self.services.wal(), request)
+        truncate_wal(self.services.wal(), proof)
     }
 
     #[allow(
@@ -1198,19 +1192,16 @@ impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
                 reason: "table manifest flush proof requires all active branches to be loaded",
             });
         }
-        let request = LifecycleFlushWatermarkRequest::new(
+        Ok(persist_flush_watermark_with_table_manifest_proof(
+            self.manifest,
+            self.visible_version,
             candidate,
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )?;
-        let context = LifecycleFlushWatermarkValidationContext::table_manifest(
+            &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
             proof.manifest_epoch(),
             proof.recovery_health_epoch(),
+            &[(branch_id, table_manifest.manifest_sequence())],
         )?
-        .with_required_branch_epochs([(branch_id, table_manifest.manifest_sequence())])?;
-        Ok(
-            persist_flush_watermark(self.manifest, self.visible_version, &request, &context)?
-                .maintenance_outcome(),
-        )
+        .maintenance_outcome())
     }
 }
 

@@ -1602,7 +1602,7 @@ fn assert_checkpoint_runtime_fixtures() {
         "WalRetentionProof::snapshot_watermark(version)"
     ));
     assert!(!contains_forbidden_checkpoint_dependency(
-        "wal.delete_covered_segments(request.proof())"
+        "wal.delete_covered_segments(proof)"
     ));
 }
 

@@ -5,9 +5,8 @@ use super::{ensure, script_byte};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitTimelineEntry, CommitTimelineRows};
 use crate::lifecycle::{
-    flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
-    LifecycleCheckpointRequest, LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest,
-    LifecycleWalTruncationRequest,
+    flush_cache_branch, validate_wal_retention_proof, FlushFrozenRequest, FlushTableIdentitySeed,
+    FlushTableObjectId, LifecycleCheckpointRequest, LifecycleFlushWatermarkProof,
 };
 use crate::row::StorageRow;
 use crate::service::{WalRetentionProof, WalRetentionProofSource};
@@ -227,43 +226,32 @@ fn check_input_flush_proofs(
     let candidate = CommitVersion::new(1 + u64::from(script_byte(script, 5) % 8));
     let snapshot_watermark =
         CommitVersion::new(candidate.as_u64() + 1 + u64::from(script_byte(script, 6) % 4));
-    let accepted = LifecycleFlushWatermarkRequest::new(
-        candidate,
-        LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark },
-    )
-    .map_err(testkit_error)?;
+    let accepted = LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark };
     ensure(
-        accepted.candidate() == candidate,
-        "flush request did not preserve candidate",
+        matches!(
+            accepted,
+            LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark: watermark }
+                if watermark == snapshot_watermark
+        ),
+        "flush proof did not preserve snapshot watermark",
     )?;
     outcome.flush_accepts += 1;
 
-    let table_only = LifecycleFlushWatermarkRequest::new(
-        candidate,
-        LifecycleFlushWatermarkProof::TableObjectsOnly {
-            flushed_through: candidate,
-        },
-    )
-    .map_err(testkit_error)?;
+    let table_only = LifecycleFlushWatermarkProof::TableObjectsOnly {
+        flushed_through: candidate,
+    };
     ensure(
         matches!(
-            table_only.proof(),
+            table_only,
             LifecycleFlushWatermarkProof::TableObjectsOnly { .. }
         ),
         "table-only flush proof lost its source",
     )?;
     outcome.flush_rejects += 1;
 
-    let already = LifecycleFlushWatermarkRequest::new(
-        candidate,
-        LifecycleFlushWatermarkProof::AlreadyPersisted,
-    )
-    .map_err(testkit_error)?;
+    let already = LifecycleFlushWatermarkProof::AlreadyPersisted;
     ensure(
-        matches!(
-            already.proof(),
-            LifecycleFlushWatermarkProof::AlreadyPersisted
-        ),
+        matches!(already, LifecycleFlushWatermarkProof::AlreadyPersisted),
         "already-persisted flush proof lost its source",
     )?;
     outcome.flush_noops += 1;
@@ -275,24 +263,20 @@ fn check_input_retention_proofs(
     outcome: &mut LifecycleCheckpointContractOutcome,
 ) -> Result<(), TestkitError> {
     let covered = CommitVersion::new(1 + u64::from(script_byte(script, 7) % 8));
-    let snapshot =
-        LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(covered))
-            .map_err(testkit_error)?;
+    let snapshot = WalRetentionProof::snapshot_watermark(covered);
     ensure(
-        snapshot.proof().source() == WalRetentionProofSource::SnapshotWatermark,
+        snapshot.source() == WalRetentionProofSource::SnapshotWatermark,
         "snapshot retention proof source changed",
     )?;
-    let flush = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(covered))
-        .map_err(testkit_error)?;
+    let flush = WalRetentionProof::flush_watermark(covered);
     ensure(
-        flush.proof().source() == WalRetentionProofSource::FlushWatermark,
+        flush.source() == WalRetentionProofSource::FlushWatermark,
         "flush retention proof source changed",
     )?;
     outcome.retention_accepts += 1;
 
-    let zero = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::ZERO,
-    ));
+    let zero =
+        validate_wal_retention_proof(WalRetentionProof::snapshot_watermark(CommitVersion::ZERO));
     ensure(zero.is_err(), "zero retention proof was accepted")?;
     outcome.retention_rejects += 1;
     Ok(())
@@ -317,37 +301,28 @@ fn check_input_fault_windows(
     outcome.service_failures += 1;
 
     let partial_candidate = CommitVersion::new(1 + u64::from(script_byte(script, 11) % 8));
-    let rejected_flush = LifecycleFlushWatermarkRequest::new(
-        partial_candidate,
-        LifecycleFlushWatermarkProof::TableObjectsOnly {
-            flushed_through: partial_candidate,
-        },
-    )
-    .map_err(testkit_error)?;
+    let rejected_flush = LifecycleFlushWatermarkProof::TableObjectsOnly {
+        flushed_through: partial_candidate,
+    };
     ensure(
         matches!(
-            rejected_flush.proof(),
+            rejected_flush,
             LifecycleFlushWatermarkProof::TableObjectsOnly { .. }
         ),
         "partial-window flush proof source changed",
     )?;
     outcome.partial_windows += 1;
 
-    let delete_failure_proof =
-        LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(partial_candidate))
-            .map_err(testkit_error)?;
+    let delete_failure_proof = WalRetentionProof::flush_watermark(partial_candidate);
     ensure(
-        delete_failure_proof.proof().covered_through() == partial_candidate,
+        delete_failure_proof.covered_through() == partial_candidate,
         "delete-failure proof lost its covered version",
     )?;
     outcome.delete_failures += 1;
 
-    let round_trip_proof = LifecycleWalTruncationRequest::new(
-        WalRetentionProof::snapshot_watermark(partial_candidate),
-    )
-    .map_err(testkit_error)?;
+    let round_trip_proof = WalRetentionProof::snapshot_watermark(partial_candidate);
     ensure(
-        round_trip_proof.proof().source() == WalRetentionProofSource::SnapshotWatermark,
+        round_trip_proof.source() == WalRetentionProofSource::SnapshotWatermark,
         "checkpoint-truncation proof lost its source",
     )?;
     outcome.checkpoint_truncation_round_trips += 1;

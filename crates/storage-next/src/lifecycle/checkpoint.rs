@@ -59,20 +59,6 @@ pub(crate) enum LifecycleCheckpointStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleFlushWatermarkRequest {
-    candidate: CommitVersion,
-    proof: LifecycleFlushWatermarkProof,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleFlushWatermarkValidationContext {
-    table_manifest_epoch: Option<u64>,
-    recovery_health_epoch: Option<u64>,
-    required_branches: Vec<BranchId>,
-    required_branch_epochs: Vec<(BranchId, u64)>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 #[allow(
     dead_code,
@@ -132,17 +118,13 @@ const COVERAGE_COMPLETE: u8 = COVERAGE_USER_ROWS
     | COVERAGE_TIMELINE_ROWS
     | COVERAGE_INHERITED_LAYERS
     | COVERAGE_MATERIALIZED_REPLACEMENTS;
+type TableManifestFlushContext<'a> = (u64, u64, &'a [(BranchId, u64)]);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleFlushWatermarkOutcome {
     candidate: CommitVersion,
     persisted: Option<CommitVersion>,
     already_persisted: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleWalTruncationRequest {
-    proof: WalRetentionProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -444,135 +426,89 @@ impl LifecycleCheckpointOutcome {
     }
 }
 
-impl LifecycleFlushWatermarkRequest {
-    pub(crate) fn new(
-        candidate: CommitVersion,
-        proof: LifecycleFlushWatermarkProof,
-    ) -> LifecycleResult<Self> {
-        let request = Self { candidate, proof };
-        request.validate_static()?;
-        Ok(request)
+fn validate_flush_watermark_input(
+    candidate: CommitVersion,
+    proof: &LifecycleFlushWatermarkProof,
+) -> LifecycleResult<()> {
+    if candidate.as_u64() == 0 {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "flush watermark candidate must be nonzero",
+        });
     }
-
-    pub(crate) const fn candidate(&self) -> CommitVersion {
-        self.candidate
-    }
-
-    pub(crate) const fn proof(&self) -> &LifecycleFlushWatermarkProof {
-        &self.proof
-    }
-
-    fn validate_static(&self) -> LifecycleResult<()> {
-        if self.candidate.as_u64() == 0 {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "flush watermark candidate must be nonzero",
-            });
+    match proof {
+        LifecycleFlushWatermarkProof::TableManifestCovered(proof) => {
+            proof.validate_for_candidate(candidate)?;
         }
-        match &self.proof {
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof) => {
-                proof.validate_for_candidate(self.candidate)?;
-            }
-            LifecycleFlushWatermarkProof::Combined { table_manifest, .. } => {
-                table_manifest.validate_for_candidate(self.candidate)?;
-            }
-            LifecycleFlushWatermarkProof::CheckpointCovered { .. }
-            | LifecycleFlushWatermarkProof::AlreadyPersisted
-            | LifecycleFlushWatermarkProof::TableObjectsOnly { .. } => {}
+        LifecycleFlushWatermarkProof::Combined { table_manifest, .. } => {
+            table_manifest.validate_for_candidate(candidate)?;
         }
-        Ok(())
+        LifecycleFlushWatermarkProof::CheckpointCovered { .. }
+        | LifecycleFlushWatermarkProof::AlreadyPersisted
+        | LifecycleFlushWatermarkProof::TableObjectsOnly { .. } => {}
     }
+    Ok(())
 }
 
-impl LifecycleFlushWatermarkValidationContext {
-    pub(crate) const fn none() -> Self {
-        Self {
-            table_manifest_epoch: None,
-            recovery_health_epoch: None,
-            required_branches: Vec::new(),
-            required_branch_epochs: Vec::new(),
-        }
+fn validate_table_manifest_proof_extending_checkpoint(
+    proof: &LifecycleTableManifestFlushCoverageProof,
+    checkpoint_watermark: CommitVersion,
+    manifest_epoch: Option<u64>,
+    recovery_health_epoch: Option<u64>,
+    required_branch_epochs: &[(BranchId, u64)],
+) -> LifecycleResult<()> {
+    let Some(manifest_epoch) = manifest_epoch else {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof requires current manifest epoch",
+        });
+    };
+    let Some(recovery_health_epoch) = recovery_health_epoch else {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof requires current recovery health epoch",
+        });
+    };
+    if manifest_epoch == 0 {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof manifest epoch must be nonzero",
+        });
+    }
+    if recovery_health_epoch == 0 {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof recovery health epoch must be nonzero",
+        });
     }
 
-    pub(crate) fn table_manifest(
-        table_manifest_epoch: u64,
-        recovery_health_epoch: u64,
-    ) -> LifecycleResult<Self> {
-        if table_manifest_epoch == 0 {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof manifest epoch must be nonzero",
-            });
-        }
-        if recovery_health_epoch == 0 {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof recovery health epoch must be nonzero",
-            });
-        }
-        Ok(Self {
-            table_manifest_epoch: Some(table_manifest_epoch),
-            recovery_health_epoch: Some(recovery_health_epoch),
-            required_branches: Vec::new(),
-            required_branch_epochs: Vec::new(),
-        })
+    let branch_epochs = sorted_required_branch_epochs(required_branch_epochs)?;
+    if branch_epochs.is_empty() {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof requires a current branch set",
+        });
     }
+    let required_branches = branch_epochs
+        .iter()
+        .map(|(branch, _)| *branch)
+        .collect::<Vec<_>>();
+    proof.validate_current_epochs(manifest_epoch, recovery_health_epoch)?;
+    proof.validate_current_branch_epochs(&branch_epochs)?;
+    proof.validate_required_branches(&required_branches)?;
+    proof.validate_extends_checkpoint(checkpoint_watermark)
+}
 
-    pub(crate) fn with_required_branch_epochs(
-        mut self,
-        branch_epochs: impl IntoIterator<Item = (BranchId, u64)>,
-    ) -> LifecycleResult<Self> {
-        self.required_branch_epochs = branch_epochs.into_iter().collect();
-        self.required_branch_epochs
-            .sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-        if self
-            .required_branch_epochs
-            .iter()
-            .any(|(_, epoch)| *epoch == 0)
-        {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof branch epoch must be nonzero",
-            });
-        }
-        if self
-            .required_branch_epochs
-            .windows(2)
-            .any(|pair| pair[0].0 == pair[1].0)
-        {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof required branch epochs contain duplicates",
-            });
-        }
-        self.required_branches = self
-            .required_branch_epochs
-            .iter()
-            .map(|(branch, _)| *branch)
-            .collect();
-        Ok(self)
+fn sorted_required_branch_epochs(
+    branch_epochs: &[(BranchId, u64)],
+) -> LifecycleResult<Vec<(BranchId, u64)>> {
+    let mut branch_epochs = branch_epochs.to_vec();
+    branch_epochs.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+    if branch_epochs.iter().any(|(_, epoch)| *epoch == 0) {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof branch epoch must be nonzero",
+        });
     }
-
-    fn validate_table_manifest_proof_extending_checkpoint(
-        &self,
-        proof: &LifecycleTableManifestFlushCoverageProof,
-        checkpoint_watermark: CommitVersion,
-    ) -> LifecycleResult<()> {
-        let Some(manifest_epoch) = self.table_manifest_epoch else {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof requires current manifest epoch",
-            });
-        };
-        let Some(recovery_health_epoch) = self.recovery_health_epoch else {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof requires current recovery health epoch",
-            });
-        };
-        if self.required_branches.is_empty() {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof requires a current branch set",
-            });
-        }
-        proof.validate_current_epochs(manifest_epoch, recovery_health_epoch)?;
-        proof.validate_current_branch_epochs(&self.required_branch_epochs)?;
-        proof.validate_required_branches(&self.required_branches)?;
-        proof.validate_extends_checkpoint(checkpoint_watermark)
+    if branch_epochs.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof required branch epochs contain duplicates",
+        });
     }
+    Ok(branch_epochs)
 }
 
 #[allow(
@@ -1236,19 +1172,15 @@ impl LifecycleFlushWatermarkOutcome {
     }
 }
 
-impl LifecycleWalTruncationRequest {
-    pub(crate) fn new(proof: WalRetentionProof) -> LifecycleResult<Self> {
-        if proof.covered_through() == CommitVersion::ZERO {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "WAL retention proof must be nonzero",
-            });
-        }
-        Ok(Self { proof })
+pub(crate) fn validate_wal_retention_proof(
+    proof: WalRetentionProof,
+) -> LifecycleResult<WalRetentionProof> {
+    if proof.covered_through() == CommitVersion::ZERO {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "WAL retention proof must be nonzero",
+        });
     }
-
-    pub(crate) const fn proof(self) -> WalRetentionProof {
-        self.proof
-    }
+    Ok(proof)
 }
 
 #[allow(
@@ -1508,13 +1440,10 @@ fn run_checkpoint_follow_ups(
         let Ok(flush) = persist_flush_watermark(
             services.manifest(),
             visible_version,
-            &LifecycleFlushWatermarkRequest::new(
-                visible_version,
-                LifecycleFlushWatermarkProof::CheckpointCovered {
-                    snapshot_watermark: visible_version,
-                },
-            )?,
-            &LifecycleFlushWatermarkValidationContext::none(),
+            visible_version,
+            &LifecycleFlushWatermarkProof::CheckpointCovered {
+                snapshot_watermark: visible_version,
+            },
         ) else {
             return outcome.with_follow_up_failure(
                 LifecycleCheckpointStatus::FlushWatermarkFailed,
@@ -1526,9 +1455,7 @@ fn run_checkpoint_follow_ups(
     if request.truncate_wal_after_checkpoint() {
         let Ok(truncation) = truncate_wal(
             services.wal(),
-            LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-                visible_version,
-            ))?,
+            WalRetentionProof::snapshot_watermark(visible_version),
         ) else {
             return outcome.with_follow_up_health_debt("checkpoint WAL truncation failed");
         };
@@ -1540,89 +1467,104 @@ fn run_checkpoint_follow_ups(
 pub(crate) fn persist_flush_watermark(
     manifest: &DatabaseManifestService<'_>,
     visible_version: CommitVersion,
-    request: &LifecycleFlushWatermarkRequest,
-    context: &LifecycleFlushWatermarkValidationContext,
+    candidate: CommitVersion,
+    proof: &LifecycleFlushWatermarkProof,
 ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
-    request.validate_static()?;
-    if request.candidate() > visible_version {
+    persist_flush_watermark_inner(manifest, visible_version, candidate, proof, None)
+}
+
+pub(crate) fn persist_flush_watermark_with_table_manifest_proof(
+    manifest: &DatabaseManifestService<'_>,
+    visible_version: CommitVersion,
+    candidate: CommitVersion,
+    proof: &LifecycleFlushWatermarkProof,
+    manifest_epoch: u64,
+    recovery_health_epoch: u64,
+    required_branch_epochs: &[(BranchId, u64)],
+) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+    persist_flush_watermark_inner(
+        manifest,
+        visible_version,
+        candidate,
+        proof,
+        Some((
+            manifest_epoch,
+            recovery_health_epoch,
+            required_branch_epochs,
+        )),
+    )
+}
+
+fn persist_flush_watermark_inner(
+    manifest: &DatabaseManifestService<'_>,
+    visible_version: CommitVersion,
+    candidate: CommitVersion,
+    proof: &LifecycleFlushWatermarkProof,
+    table_manifest_context: Option<TableManifestFlushContext<'_>>,
+) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+    validate_flush_watermark_input(candidate, proof)?;
+    if candidate > visible_version {
         return Err(LifecycleError::WalRetentionProofIncomplete {
             reason: "flush watermark candidate exceeds visible version",
         });
     }
     let current = manifest.load_required().map_err(manifest_error)?;
-    if let Some(persisted) = current.flushed_through_commit_id() {
-        if request.candidate() < persisted {
+    if candidate_already_persisted(candidate, current.flushed_through_commit_id())? {
+        return Ok(LifecycleFlushWatermarkOutcome::already_persisted(candidate));
+    }
+    validate_flush_watermark_proof(candidate, proof, &current, table_manifest_context)?;
+    manifest
+        .persist_flush_watermark(candidate)
+        .map_err(manifest_error)?;
+    Ok(LifecycleFlushWatermarkOutcome::persisted(candidate))
+}
+
+fn candidate_already_persisted(
+    candidate: CommitVersion,
+    persisted: Option<CommitVersion>,
+) -> LifecycleResult<bool> {
+    if let Some(persisted) = persisted {
+        if candidate < persisted {
             return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "flush watermark candidate is below current persisted watermark",
             });
         }
-        if request.candidate() == persisted {
-            return Ok(LifecycleFlushWatermarkOutcome::already_persisted(
-                request.candidate(),
-            ));
+        if candidate == persisted {
+            return Ok(true);
         }
     }
-    match request.proof() {
+    Ok(false)
+}
+
+fn validate_flush_watermark_proof(
+    candidate: CommitVersion,
+    proof: &LifecycleFlushWatermarkProof,
+    current: &crate::format::DatabaseManifest,
+    table_manifest_context: Option<TableManifestFlushContext<'_>>,
+) -> LifecycleResult<()> {
+    match proof {
         LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark } => {
-            if request.candidate() > *snapshot_watermark {
-                return Err(LifecycleError::WalRetentionProofIncomplete {
-                    reason: "flush watermark candidate exceeds checkpoint proof",
-                });
-            }
-            if current
-                .snapshot_watermark()
-                .is_none_or(|snapshot| request.candidate().as_u64() > snapshot)
-            {
-                return Err(LifecycleError::WalRetentionProofIncomplete {
-                    reason: "flush watermark candidate exceeds durable checkpoint facts",
-                });
-            }
+            validate_checkpoint_flush_watermark(candidate, *snapshot_watermark, current)?;
         }
         LifecycleFlushWatermarkProof::TableManifestCovered(proof) => {
-            proof.validate_for_candidate(request.candidate())?;
-            let Some(snapshot_watermark) = current.snapshot_watermark().map(CommitVersion::new)
-            else {
-                return Err(LifecycleError::WalRetentionProofIncomplete {
-                    reason: "table manifest flush proof requires durable checkpoint facts",
-                });
-            };
-            context
-                .validate_table_manifest_proof_extending_checkpoint(proof, snapshot_watermark)?;
+            validate_table_manifest_flush_watermark(
+                candidate,
+                proof,
+                current.snapshot_watermark().map(CommitVersion::new),
+                table_manifest_context,
+            )?;
         }
         LifecycleFlushWatermarkProof::Combined {
             checkpoint,
             table_manifest,
         } => {
-            if request.candidate() <= *checkpoint {
-                if current
-                    .snapshot_watermark()
-                    .is_none_or(|snapshot| request.candidate().as_u64() > snapshot)
-                {
-                    return Err(LifecycleError::WalRetentionProofIncomplete {
-                        reason: "flush watermark candidate exceeds durable checkpoint facts",
-                    });
-                }
-            } else {
-                if *checkpoint == CommitVersion::ZERO {
-                    return Err(LifecycleError::WalRetentionProofIncomplete {
-                        reason:
-                            "table manifest flush proof requires a nonzero checkpoint lower bound",
-                    });
-                }
-                if current
-                    .snapshot_watermark()
-                    .is_none_or(|snapshot| checkpoint.as_u64() > snapshot)
-                {
-                    return Err(LifecycleError::WalRetentionProofIncomplete {
-                        reason: "checkpoint lower bound exceeds durable checkpoint facts",
-                    });
-                }
-                table_manifest.validate_for_candidate(request.candidate())?;
-                context.validate_table_manifest_proof_extending_checkpoint(
-                    table_manifest,
-                    *checkpoint,
-                )?;
-            }
+            validate_combined_flush_watermark(
+                candidate,
+                *checkpoint,
+                table_manifest,
+                current,
+                table_manifest_context,
+            )?;
         }
         LifecycleFlushWatermarkProof::AlreadyPersisted => {
             return Err(LifecycleError::WalRetentionProofIncomplete {
@@ -1635,22 +1577,103 @@ pub(crate) fn persist_flush_watermark(
             });
         }
     }
-    manifest
-        .persist_flush_watermark(request.candidate())
-        .map_err(manifest_error)?;
-    Ok(LifecycleFlushWatermarkOutcome::persisted(
-        request.candidate(),
-    ))
+    Ok(())
+}
+
+fn validate_checkpoint_flush_watermark(
+    candidate: CommitVersion,
+    snapshot_watermark: CommitVersion,
+    current: &crate::format::DatabaseManifest,
+) -> LifecycleResult<()> {
+    if candidate > snapshot_watermark {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "flush watermark candidate exceeds checkpoint proof",
+        });
+    }
+    if current
+        .snapshot_watermark()
+        .is_none_or(|snapshot| candidate.as_u64() > snapshot)
+    {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "flush watermark candidate exceeds durable checkpoint facts",
+        });
+    }
+    Ok(())
+}
+
+fn validate_table_manifest_flush_watermark(
+    candidate: CommitVersion,
+    proof: &LifecycleTableManifestFlushCoverageProof,
+    snapshot_watermark: Option<CommitVersion>,
+    table_manifest_context: Option<TableManifestFlushContext<'_>>,
+) -> LifecycleResult<()> {
+    proof.validate_for_candidate(candidate)?;
+    let Some(snapshot_watermark) = snapshot_watermark else {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof requires durable checkpoint facts",
+        });
+    };
+    let (manifest_epoch, recovery_health_epoch, branch_epochs) =
+        unpack_table_manifest_context(table_manifest_context);
+    validate_table_manifest_proof_extending_checkpoint(
+        proof,
+        snapshot_watermark,
+        manifest_epoch,
+        recovery_health_epoch,
+        branch_epochs,
+    )
+}
+
+fn validate_combined_flush_watermark(
+    candidate: CommitVersion,
+    checkpoint: CommitVersion,
+    table_manifest: &LifecycleTableManifestFlushCoverageProof,
+    current: &crate::format::DatabaseManifest,
+    table_manifest_context: Option<TableManifestFlushContext<'_>>,
+) -> LifecycleResult<()> {
+    if candidate <= checkpoint {
+        return validate_checkpoint_flush_watermark(candidate, checkpoint, current);
+    }
+    if checkpoint == CommitVersion::ZERO {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "table manifest flush proof requires a nonzero checkpoint lower bound",
+        });
+    }
+    if current
+        .snapshot_watermark()
+        .is_none_or(|snapshot| checkpoint.as_u64() > snapshot)
+    {
+        return Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "checkpoint lower bound exceeds durable checkpoint facts",
+        });
+    }
+    let (manifest_epoch, recovery_health_epoch, branch_epochs) =
+        unpack_table_manifest_context(table_manifest_context);
+    table_manifest.validate_for_candidate(candidate)?;
+    validate_table_manifest_proof_extending_checkpoint(
+        table_manifest,
+        checkpoint,
+        manifest_epoch,
+        recovery_health_epoch,
+        branch_epochs,
+    )
+}
+
+fn unpack_table_manifest_context(
+    context: Option<TableManifestFlushContext<'_>>,
+) -> (Option<u64>, Option<u64>, &[(BranchId, u64)]) {
+    context.map_or((None, None, &[][..]), |(manifest, health, branches)| {
+        (Some(manifest), Some(health), branches)
+    })
 }
 
 pub(crate) fn truncate_wal(
     wal: &WalService<'_>,
-    request: LifecycleWalTruncationRequest,
+    proof: WalRetentionProof,
 ) -> LifecycleResult<LifecycleWalTruncationOutcome> {
-    let report = wal
-        .delete_covered_segments(request.proof())
-        .map_err(wal_error)?;
-    LifecycleWalTruncationOutcome::completed(request.proof(), &report)
+    let proof = validate_wal_retention_proof(proof)?;
+    let report = wal.delete_covered_segments(proof).map_err(wal_error)?;
+    LifecycleWalTruncationOutcome::completed(proof, &report)
 }
 
 pub(crate) fn checkpoint_request_from_maintenance_task(
@@ -1711,7 +1734,7 @@ pub(crate) fn checkpoint_request_from_maintenance_task_with_snapshot_id(
 pub(crate) fn wal_truncation_request_from_maintenance_task(
     task: &MaintenanceTask,
     manifest: &DatabaseManifestService<'_>,
-) -> LifecycleResult<Option<LifecycleWalTruncationRequest>> {
+) -> LifecycleResult<Option<WalRetentionProof>> {
     if task.kind() != MaintenanceTaskKind::WalTruncation {
         return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "maintenance task kind is not WAL truncation",
@@ -1733,7 +1756,7 @@ pub(crate) fn wal_truncation_request_from_maintenance_task(
         (None, Some(flush)) => WalRetentionProof::flush_watermark(flush),
         (None, None) => return Ok(None),
     };
-    Ok(Some(LifecycleWalTruncationRequest::new(proof)?))
+    Ok(Some(validate_wal_retention_proof(proof)?))
 }
 
 fn validate_snapshot_id_advances(

@@ -2,10 +2,14 @@ use super::*;
 
 #[test]
 fn flush_watermark_request_rejects_zero_candidate() {
+    let backend = CheckpointTestBackend::new();
+    let shell = assemble_shell(branch_id(0x01), &backend).expect("shell");
     assert_eq!(
-        LifecycleFlushWatermarkRequest::new(
+        persist_flush_watermark(
+            shell.services().manifest(),
+            CommitVersion::new(1),
             CommitVersion::ZERO,
-            LifecycleFlushWatermarkProof::CheckpointCovered {
+            &LifecycleFlushWatermarkProof::CheckpointCovered {
                 snapshot_watermark: CommitVersion::new(1),
             },
         ),
@@ -277,10 +281,7 @@ fn wal_truncation_no_segments_is_completed_noop() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x31);
     let mut runtime = open_runtime(branch, &backend);
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
@@ -296,10 +297,7 @@ fn wal_truncation_service_error_has_stable_code_and_source() {
     let branch = branch_id(0x32);
     let mut runtime = open_runtime(branch, &backend);
     backend.fail_wal_listing();
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let error = runtime
         .truncate_wal(request)
@@ -316,10 +314,7 @@ fn wal_truncation_deletes_covered_segments_and_keeps_active_segment() {
     let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let active = runtime.services().wal().active_segment_id();
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(24),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(24));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
@@ -337,10 +332,7 @@ fn wal_truncation_from_table_manifest_flush_watermark_deletes_covered_segments()
     let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let active = runtime.services().wal().active_segment_id();
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(24),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::flush_watermark(CommitVersion::new(24));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
@@ -358,10 +350,7 @@ fn wal_truncation_delete_failure_records_health_debt() {
     let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     backend.fail_delete();
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(24),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::flush_watermark(CommitVersion::new(24));
 
     let outcome = runtime.truncate_wal(request).expect("truncation report");
 
@@ -557,10 +546,7 @@ fn wal_truncation_keeps_segment_with_record_above_watermark() {
     let branch = branch_id(0x3b);
     let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
     commit_many_with_value_len(&mut runtime, branch, 12, 1);
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
@@ -575,10 +561,7 @@ fn wal_truncation_keeps_segment_with_record_above_table_manifest_watermark() {
     let branch = branch_id(0x3e);
     let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
     commit_many_with_value_len(&mut runtime, branch, 12, 1);
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::flush_watermark(CommitVersion::new(1));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
@@ -594,10 +577,7 @@ fn wal_truncation_keeps_active_segment_under_table_manifest_watermark() {
     let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let active = runtime.services().wal().active_segment_id();
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(24),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::flush_watermark(CommitVersion::new(24));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
 
@@ -626,10 +606,7 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
         config,
     )
     .expect("active segment");
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
 
@@ -658,10 +635,7 @@ fn wal_truncation_keeps_newer_than_active_segment() {
         config,
     )
     .expect("active segment");
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::flush_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
 
@@ -690,10 +664,7 @@ fn wal_truncation_handles_empty_segment_through_service_report() {
         config,
     )
     .expect("active segment");
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
 
@@ -731,10 +702,7 @@ fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
     )
     .expect("active segment");
     backend.fail_delete_on_call(2);
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active, request).expect("truncation");
 
@@ -774,10 +742,7 @@ fn wal_truncation_partial_delete_report_preserves_source_chain() {
     )
     .expect("active segment");
     backend.fail_delete_on_call(2);
-    let request = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(1),
-    ))
-    .expect("truncation request");
+    let request = WalRetentionProof::flush_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active, request).expect("truncation");
 

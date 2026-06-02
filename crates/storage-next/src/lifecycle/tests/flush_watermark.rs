@@ -31,21 +31,51 @@ mod remaining;
 
 const DATABASE_ID: [u8; 16] = [0x7d; 16];
 
-fn validation_context_for(
+fn required_branch_epochs_for(
     proof: &LifecycleTableManifestFlushCoverageProof,
-) -> LifecycleFlushWatermarkValidationContext {
-    LifecycleFlushWatermarkValidationContext::table_manifest(
-        proof.manifest_epoch(),
-        proof.recovery_health_epoch(),
+) -> Vec<(BranchId, u64)> {
+    proof
+        .branch_coverages()
+        .iter()
+        .map(|coverage| (coverage.branch_id(), coverage.manifest_sequence()))
+        .collect()
+}
+
+fn persist_table_manifest_watermark(
+    manifest: &DatabaseManifestService<'_>,
+    visible_version: CommitVersion,
+    candidate: CommitVersion,
+    proof: &LifecycleFlushWatermarkProof,
+    coverage: &LifecycleTableManifestFlushCoverageProof,
+) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+    persist_flush_watermark_with_table_manifest_proof(
+        manifest,
+        visible_version,
+        candidate,
+        proof,
+        coverage.manifest_epoch(),
+        coverage.recovery_health_epoch(),
+        &required_branch_epochs_for(coverage),
     )
-    .expect("validation context")
-    .with_required_branch_epochs(
-        proof
-            .branch_coverages()
-            .iter()
-            .map(|coverage| (coverage.branch_id(), coverage.manifest_sequence())),
+}
+
+fn persist_table_manifest_watermark_with_branch_epochs(
+    manifest: &DatabaseManifestService<'_>,
+    visible_version: CommitVersion,
+    candidate: CommitVersion,
+    coverage: &LifecycleTableManifestFlushCoverageProof,
+    proof: &LifecycleFlushWatermarkProof,
+    required_branch_epochs: &[(BranchId, u64)],
+) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+    persist_flush_watermark_with_table_manifest_proof(
+        manifest,
+        visible_version,
+        candidate,
+        proof,
+        coverage.manifest_epoch(),
+        coverage.recovery_health_epoch(),
+        required_branch_epochs,
     )
-    .expect("required branch epochs")
 }
 
 #[test]
@@ -395,15 +425,12 @@ fn flush_watermark_persists_from_table_manifest_coverage() {
     )
     .expect("proof");
 
-    let outcome = persist_flush_watermark(
+    let outcome = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect("persist watermark");
 
@@ -440,18 +467,15 @@ fn flush_watermark_persists_from_combined_checkpoint_and_table_manifest_coverage
     )
     .expect("proof");
 
-    let outcome = persist_flush_watermark(
+    let outcome = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::Combined {
-                checkpoint: CommitVersion::new(3),
-                table_manifest: proof.clone(),
-            },
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::Combined {
+            checkpoint: CommitVersion::new(3),
+            table_manifest: proof.clone(),
+        },
+        &proof,
     )
     .expect("persist combined watermark");
 
@@ -510,15 +534,12 @@ fn flush_watermark_success_does_not_publish_table_manifest() {
     )
     .expect("proof");
 
-    persist_flush_watermark(
+    persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect("persist watermark");
 

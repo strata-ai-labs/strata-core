@@ -637,19 +637,15 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
         .persist_snapshot_facts(3, CommitVersion::new(7))
         .expect("snapshot facts");
 
-    let table_only = LifecycleFlushWatermarkRequest::new(
-        CommitVersion::new(5),
-        LifecycleFlushWatermarkProof::TableObjectsOnly {
-            flushed_through: CommitVersion::new(5),
-        },
-    )
-    .expect("table-only request");
+    let table_only = LifecycleFlushWatermarkProof::TableObjectsOnly {
+        flushed_through: CommitVersion::new(5),
+    };
     assert!(matches!(
         persist_flush_watermark(
             shell.services().manifest(),
             CommitVersion::new(7),
+            CommitVersion::new(5),
             &table_only,
-            &LifecycleFlushWatermarkValidationContext::none(),
         ),
         Err(LifecycleError::WalRetentionProofIncomplete { .. })
     ));
@@ -657,14 +653,10 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
     let persisted = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(7),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::CheckpointCovered {
-                snapshot_watermark: CommitVersion::new(7),
-            },
-        )
-        .expect("covered request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::CheckpointCovered {
+            snapshot_watermark: CommitVersion::new(7),
+        },
     )
     .expect("persisted");
     assert!(persisted.was_persisted());
@@ -673,12 +665,8 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
     let already = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(7),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::AlreadyPersisted,
-        )
-        .expect("already request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::AlreadyPersisted,
     )
     .expect("already persisted");
     assert!(already.was_already_persisted());
@@ -700,38 +688,26 @@ fn flush_watermark_rejects_bounds_and_preserves_branch_state() {
     let above_checkpoint = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(8),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(7),
-            LifecycleFlushWatermarkProof::CheckpointCovered {
-                snapshot_watermark: CommitVersion::new(6),
-            },
-        )
-        .expect("covered request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(7),
+        &LifecycleFlushWatermarkProof::CheckpointCovered {
+            snapshot_watermark: CommitVersion::new(6),
+        },
     )
     .expect_err("above checkpoint rejects");
     let above_visible = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(7),
-            LifecycleFlushWatermarkProof::CheckpointCovered {
-                snapshot_watermark: CommitVersion::new(7),
-            },
-        )
-        .expect("covered request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(7),
+        &LifecycleFlushWatermarkProof::CheckpointCovered {
+            snapshot_watermark: CommitVersion::new(7),
+        },
     )
     .expect_err("above visible rejects");
     let already_not_persisted = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::AlreadyPersisted,
-        )
-        .expect("already request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::AlreadyPersisted,
     )
     .expect_err("not already persisted");
 
@@ -765,14 +741,10 @@ fn flush_watermark_persist_failure_preserves_source_chain() {
     let error = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(7),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::CheckpointCovered {
-                snapshot_watermark: CommitVersion::new(7),
-            },
-        )
-        .expect("covered request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::CheckpointCovered {
+            snapshot_watermark: CommitVersion::new(7),
+        },
     )
     .expect_err("persist failure");
 
@@ -805,34 +777,22 @@ fn wal_truncation_task_uses_strongest_manifest_retention_proof() {
         .expect("request")
         .expect("proof");
 
-    assert_eq!(request.proof().covered_through(), CommitVersion::new(6));
-    assert_eq!(
-        request.proof().source(),
-        WalRetentionProofSource::FlushWatermark
-    );
+    assert_eq!(request.covered_through(), CommitVersion::new(6));
+    assert_eq!(request.source(), WalRetentionProofSource::FlushWatermark);
 }
 
 #[test]
 fn wal_truncation_from_checkpoint_and_flush_proofs_are_typed() {
-    let snapshot = LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-        CommitVersion::new(3),
-    ))
-    .expect("snapshot proof");
-    let flush = LifecycleWalTruncationRequest::new(WalRetentionProof::flush_watermark(
-        CommitVersion::new(4),
-    ))
-    .expect("flush proof");
+    let snapshot = WalRetentionProof::snapshot_watermark(CommitVersion::new(3));
+    let flush = WalRetentionProof::flush_watermark(CommitVersion::new(4));
 
-    assert_eq!(snapshot.proof().covered_through(), CommitVersion::new(3));
+    assert_eq!(snapshot.covered_through(), CommitVersion::new(3));
     assert_eq!(
-        snapshot.proof().source(),
+        snapshot.source(),
         WalRetentionProofSource::SnapshotWatermark
     );
-    assert_eq!(flush.proof().covered_through(), CommitVersion::new(4));
-    assert_eq!(
-        flush.proof().source(),
-        WalRetentionProofSource::FlushWatermark
-    );
+    assert_eq!(flush.covered_through(), CommitVersion::new(4));
+    assert_eq!(flush.source(), WalRetentionProofSource::FlushWatermark);
 }
 
 #[test]
@@ -997,10 +957,22 @@ fn duplicate_wal_truncation_tasks_coalesce_by_retention_scope() {
 
 #[test]
 fn wal_truncation_request_rejects_zero_proof() {
+    let backend = CheckpointTestBackend::new();
+    let shell = assemble_shell(branch_id(0x29), &backend).expect("shell");
     assert_eq!(
-        LifecycleWalTruncationRequest::new(WalRetentionProof::snapshot_watermark(
-            CommitVersion::ZERO,
-        )),
+        truncate_wal(
+            shell.services().wal(),
+            WalRetentionProof::snapshot_watermark(CommitVersion::ZERO),
+        ),
+        Err(LifecycleError::WalRetentionProofIncomplete {
+            reason: "WAL retention proof must be nonzero",
+        })
+    );
+    assert_eq!(
+        truncate_wal(
+            shell.services().wal(),
+            WalRetentionProof::flush_watermark(CommitVersion::ZERO),
+        ),
         Err(LifecycleError::WalRetentionProofIncomplete {
             reason: "WAL retention proof must be nonzero",
         })

@@ -73,15 +73,12 @@ fn table_manifest_flush_proof_rejects_manifest_publish_uncertain() {
     .expect("proof");
     backend.uncertain_manifest_replacement_on_call(2);
 
-    let error = persist_flush_watermark(
+    let error = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(1),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(1),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(1),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect_err("uncertain publish rejects");
 
@@ -107,15 +104,12 @@ fn table_manifest_flush_proof_rejects_candidate_above_visible_version() {
     )
     .expect("proof");
 
-    let error = persist_flush_watermark(
+    let error = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(6),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(6),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect_err("above visible rejects");
 
@@ -280,15 +274,12 @@ fn flush_watermark_rejects_table_manifest_candidate_below_current_as_stale() {
     )
     .expect("proof");
 
-    let error = persist_flush_watermark(
+    let error = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(4),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(4),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect_err("below current rejects");
 
@@ -314,12 +305,8 @@ fn flush_watermark_equal_to_current_is_noop() {
     let outcome = persist_flush_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::AlreadyPersisted,
-        )
-        .expect("request"),
-        &LifecycleFlushWatermarkValidationContext::none(),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::AlreadyPersisted,
     )
     .expect("noop");
 
@@ -353,15 +340,12 @@ fn flush_watermark_persist_failure_prevents_wal_truncation() {
     .expect("proof");
     backend.fail_manifest_replacement_on_call(2);
 
-    let error = persist_flush_watermark(
+    let error = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect_err("persist fails");
 
@@ -395,15 +379,12 @@ fn flush_watermark_success_records_manifest_fact() {
     )
     .expect("proof");
 
-    persist_flush_watermark(
+    persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect("persist");
 
@@ -443,15 +424,12 @@ fn flush_watermark_success_does_not_mutate_branch_state() {
     .expect("proof");
     let before = shell.branch_state().facts();
 
-    persist_flush_watermark(
+    persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(5),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
-        )
-        .expect("request"),
-        &validation_context_for(&proof),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
     )
     .expect("persist");
 
@@ -904,26 +882,18 @@ fn missing_branch_lifecycle_fact_blocks_absence_coverage() {
         .manifest()
         .persist_snapshot_facts(1, CommitVersion::new(1))
         .expect("snapshot facts");
-    let context = LifecycleFlushWatermarkValidationContext::table_manifest(
-        proof.manifest_epoch(),
-        proof.recovery_health_epoch(),
-    )
-    .expect("context")
-    .with_required_branch_epochs([
+    let required_branch_epochs = [
         (branch, proof.branch_coverages()[0].manifest_sequence()),
         (missing, 1),
-    ])
-    .expect("required branches");
+    ];
 
-    let error = persist_flush_watermark(
+    let error = persist_table_manifest_watermark_with_branch_epochs(
         shell.services().manifest(),
         CommitVersion::new(1),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(1),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof),
-        )
-        .expect("request"),
-        &context,
+        CommitVersion::new(1),
+        &proof,
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &required_branch_epochs,
     )
     .expect_err("missing branch rejects");
 
@@ -953,22 +923,18 @@ fn branch_absence_does_not_advance_flush_watermark() {
         &RecoveryHealth::Healthy,
     )
     .expect("proof");
-    let context = validation_context_for(&proof)
-        .with_required_branch_epochs([
-            (branch, proof.branch_coverages()[0].manifest_sequence()),
-            (missing, 1),
-        ])
-        .expect("required branches");
+    let required_branch_epochs = [
+        (branch, proof.branch_coverages()[0].manifest_sequence()),
+        (missing, 1),
+    ];
 
-    let error = persist_flush_watermark(
+    let error = persist_table_manifest_watermark_with_branch_epochs(
         shell.services().manifest(),
         CommitVersion::new(1),
-        &LifecycleFlushWatermarkRequest::new(
-            CommitVersion::new(1),
-            LifecycleFlushWatermarkProof::TableManifestCovered(proof),
-        )
-        .expect("request"),
-        &context,
+        CommitVersion::new(1),
+        &proof,
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &required_branch_epochs,
     )
     .expect_err("missing branch coverage rejects");
 

@@ -73,12 +73,12 @@ pub(crate) use capability::{
 )]
 pub(crate) use checkpoint::{
     checkpoint_durable_branch, checkpoint_request_from_maintenance_task, persist_flush_watermark,
-    truncate_wal, wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
+    persist_flush_watermark_with_table_manifest_proof, truncate_wal, validate_wal_retention_proof,
+    wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleCheckpointStatus, LifecycleFlushWatermarkOutcome,
-    LifecycleFlushWatermarkProof, LifecycleFlushWatermarkRequest,
-    LifecycleFlushWatermarkValidationContext, LifecycleTableManifestBranchCoverage,
+    LifecycleFlushWatermarkProof, LifecycleTableManifestBranchCoverage,
     LifecycleTableManifestCoverageFamilies, LifecycleTableManifestFlushCoverageProof,
-    LifecycleWalTruncationOutcome, LifecycleWalTruncationRequest,
+    LifecycleWalTruncationOutcome,
 };
 #[allow(
     unused_imports,
