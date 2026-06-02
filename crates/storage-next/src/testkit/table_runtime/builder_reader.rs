@@ -453,9 +453,9 @@ fn check_object_backed_table_reader(script: &[u8]) -> Result<(), TestkitError> {
     backend
         .write_object(&object, artifact.bytes())
         .map_err(|err| TestkitError::new(format!("object-backed seed write failed: {err}")))?;
-    let source = TableObjectByteSource::new(&backend, object, artifact.byte_count())
-        .map_err(|err| TestkitError::new(format!("object-backed source setup failed: {err}")))?;
-    let object_reader = ImmutableTableReader::open_source(identity.clone(), &source, config)
+    let object_facts = TableObjectFacts::from_runtime_facts(object, artifact.facts());
+    let object_reader = TableObjectReaderService::new(&backend)
+        .open_reader(identity.clone(), &object_facts, config)
         .map_err(|err| TestkitError::new(format!("object-backed reader open failed: {err}")))?;
     assert_immutable_reader_matches_model(
         "generated object-backed reader",

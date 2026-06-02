@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const INVENTORY_SNAPSHOT: &str =
-    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t1.md";
+    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t2.md";
 
 #[test]
 fn type_inventory_snapshot_is_current() {
@@ -18,9 +18,9 @@ fn type_inventory_snapshot_is_current() {
             "--require-inventory",
             INVENTORY_SNAPSHOT,
             "--max-all-types",
-            "928",
+            "925",
             "--max-cleanup-target-types",
-            "513",
+            "510",
         ])
         .output()
         .expect("run inventory guard");
@@ -45,7 +45,7 @@ fn parent_facade_reexports_do_not_regrow() {
             "--max-reexport-names",
             "commit/mod.rs=82",
             "--max-reexport-names",
-            "service/mod.rs=75",
+            "service/mod.rs=73",
             "--max-reexport-names",
             "format/mod.rs=69",
             "--max-reexport-names",
@@ -119,7 +119,7 @@ fn scaffold_allowance_markers_do_not_regrow() {
             "--max-scaffold-markers",
             "lifecycle/durable/bootstrap.rs=0:7",
             "--max-scaffold-markers",
-            "service/mod.rs=6:0",
+            "service/mod.rs=5:0",
             "--max-scaffold-markers",
             "service/manifest.rs=0:6",
             "--max-scaffold-markers",

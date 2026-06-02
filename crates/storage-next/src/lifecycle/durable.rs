@@ -70,7 +70,6 @@ pub(crate) struct LifecycleDurableLocalServices<'a> {
     wal_sidecar: WalSegmentMetadataSidecarService<'a>,
     snapshot: SnapshotService<'a>,
     table_object: TableObjectService<'a>,
-    table_reader: TableObjectReaderService<'a>,
     checkpoint: CheckpointService<'a>,
     quarantine: QuarantineService<'a>,
     assembly_facts: LifecycleDurableAssemblyFacts,
@@ -275,7 +274,7 @@ impl<'a> LifecycleDurableLocalServices<'a> {
     }
 
     pub(crate) const fn table_reader(&self) -> &TableObjectReaderService<'a> {
-        &self.table_reader
+        &self.table_object
     }
 
     pub(crate) const fn checkpoint(&self) -> &CheckpointService<'a> {
@@ -350,7 +349,6 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             wal_sidecar: WalSegmentMetadataSidecarService::new(backend),
             snapshot: SnapshotService::new(backend),
             table_object: TableObjectService::new(backend),
-            table_reader: TableObjectReaderService::new(backend),
             checkpoint: CheckpointService::new(backend),
             quarantine: QuarantineService::new(backend),
             assembly_facts,

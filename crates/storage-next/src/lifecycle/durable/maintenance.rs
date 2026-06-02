@@ -1679,9 +1679,7 @@ fn table_object_retention_request(
         .list_inventory()
         .map_err(table_object_service_error)?
         .into_iter()
-        .map(|entry| {
-            LifecycleTableObjectInventoryEntry::new(entry.object().clone(), entry.byte_count())
-        })
+        .map(|(object, byte_count)| LifecycleTableObjectInventoryEntry::new(object, byte_count))
         .collect::<LifecycleResult<Vec<_>>>()?;
     // Inventory is global (`tables/` prefix); to avoid re-classifying another
     // branch's already-quarantined object as a fresh candidate, load the

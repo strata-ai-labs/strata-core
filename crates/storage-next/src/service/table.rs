@@ -1,13 +1,5 @@
 //! Durable immutable-table object publication service.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "table object publication and reads are consumed by later branch table integration"
-    )
-)]
-
 use crate::backend::{
     Backend, BackendCapability, BackendError, BackendRange, PublishError, PublishFailureKind,
 };
@@ -49,12 +41,6 @@ pub(crate) enum TableObjectServiceError {
         object: ObjectName,
         field: &'static str,
     },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TableObjectInventoryObject {
-    object: ObjectName,
-    byte_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,20 +126,6 @@ impl std::error::Error for TableObjectServiceError {
             Self::Publish { source, .. } => Some(source),
             Self::InvalidPublishMetadata { .. } => None,
         }
-    }
-}
-
-impl TableObjectInventoryObject {
-    fn new(object: ObjectName, byte_count: u64) -> Self {
-        Self { object, byte_count }
-    }
-
-    pub(crate) const fn object(&self) -> &ObjectName {
-        &self.object
-    }
-
-    pub(crate) const fn byte_count(&self) -> u64 {
-        self.byte_count
     }
 }
 
@@ -279,147 +251,139 @@ impl TableObjectFacts {
     }
 }
 
-pub(crate) struct TableObjectByteSource<'a> {
-    backend: &'a dyn Backend,
-    object: ObjectName,
-    byte_count: u64,
-}
-
-impl<'a> TableObjectByteSource<'a> {
-    pub(crate) fn new(
-        backend: &'a dyn Backend,
-        object: ObjectName,
-        byte_count: u64,
-    ) -> Result<Self, TableObjectReadError> {
-        if !backend
-            .capabilities()
-            .contains(BackendCapability::ReadRange)
-        {
-            return Err(TableObjectReadError::UnsupportedCapability {
-                object,
-                capability: BackendCapability::ReadRange,
-            });
-        }
-        if byte_count == 0 {
-            return Err(TableObjectReadError::Source {
-                object,
-                reason: "table object byte count is zero",
-            });
-        }
-        let source = Self {
-            backend,
-            object,
-            byte_count,
-        };
-        source.validate_metadata_if_available()?;
-        Ok(source)
-    }
-
-    pub(crate) const fn object(&self) -> &ObjectName {
-        &self.object
-    }
-
-    fn validate_metadata_if_available(&self) -> Result<(), TableObjectReadError> {
-        if !self
-            .backend
-            .capabilities()
-            .contains(BackendCapability::ObjectMetadata)
-        {
-            return Ok(());
-        }
-
-        let metadata = self
-            .backend
-            .object_metadata(&self.object)
-            .map_err(|source| TableObjectReadError::Backend {
-                object: self.object.clone(),
-                source,
-            })?;
-        if metadata.size_bytes() != self.byte_count {
-            return Err(TableObjectReadError::FactMismatch {
-                object: self.object.clone(),
-                field: "byte_count",
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn read_exact_at(
-        &self,
-        offset: u64,
-        len: usize,
-    ) -> Result<Vec<u8>, TableObjectReadError> {
-        if len == 0 {
-            if offset > self.byte_count {
-                return Err(TableObjectReadError::Source {
-                    object: self.object.clone(),
-                    reason: "range exceeds table object byte count",
-                });
-            }
-            return Ok(Vec::new());
-        }
-
-        let len_u64 = u64::try_from(len).map_err(|_| TableObjectReadError::Source {
-            object: self.object.clone(),
-            reason: "range length is too large",
-        })?;
-        let end = offset
-            .checked_add(len_u64)
-            .ok_or_else(|| TableObjectReadError::Source {
-                object: self.object.clone(),
-                reason: "range end overflows",
-            })?;
-        if end > self.byte_count {
-            return Err(TableObjectReadError::Source {
-                object: self.object.clone(),
-                reason: "range exceeds table object byte count",
-            });
-        }
-
-        let bytes = self
-            .backend
-            .read_range(&self.object, BackendRange::new(offset, len_u64))
-            .map_err(|source| TableObjectReadError::Backend {
-                object: self.object.clone(),
-                source,
-            })?;
-        if bytes.len() != len {
-            let reason = if bytes.len() < len {
-                "short table object range read"
-            } else {
-                "long table object range read"
-            };
-            return Err(TableObjectReadError::Source {
-                object: self.object.clone(),
-                reason,
-            });
-        }
-        Ok(bytes)
-    }
-
-    fn read_all_for_exact_match(&self) -> Result<Vec<u8>, TableObjectReadError> {
-        let len = usize::try_from(self.byte_count).map_err(|_| TableObjectReadError::Source {
-            object: self.object.clone(),
-            reason: "table object byte count is too large",
-        })?;
-        self.read_exact_at(0, len)
-    }
-}
-
-impl TableByteSource for TableObjectByteSource<'_> {
+impl<B: Backend + ?Sized> TableByteSource for (&B, &ObjectName, u64) {
     fn byte_count(&self) -> u64 {
-        self.byte_count
+        self.2
     }
 
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
-        self.read_exact_at(offset, len)
+        read_table_object_exact_at(self.0, self.1, self.2, offset, len)
             .map_err(|error| TableRuntimeError::source_read_with(error.source_read_reason(), error))
     }
+}
+
+fn validate_table_object_source(
+    backend: &(impl Backend + ?Sized),
+    object: &ObjectName,
+    byte_count: u64,
+) -> Result<(), TableObjectReadError> {
+    if !backend
+        .capabilities()
+        .contains(BackendCapability::ReadRange)
+    {
+        return Err(TableObjectReadError::UnsupportedCapability {
+            object: object.clone(),
+            capability: BackendCapability::ReadRange,
+        });
+    }
+    if byte_count == 0 {
+        return Err(TableObjectReadError::Source {
+            object: object.clone(),
+            reason: "table object byte count is zero",
+        });
+    }
+    validate_table_object_metadata_if_available(backend, object, byte_count)
+}
+
+fn validate_table_object_metadata_if_available(
+    backend: &(impl Backend + ?Sized),
+    object: &ObjectName,
+    byte_count: u64,
+) -> Result<(), TableObjectReadError> {
+    if !backend
+        .capabilities()
+        .contains(BackendCapability::ObjectMetadata)
+    {
+        return Ok(());
+    }
+
+    let metadata =
+        backend
+            .object_metadata(object)
+            .map_err(|source| TableObjectReadError::Backend {
+                object: object.clone(),
+                source,
+            })?;
+    if metadata.size_bytes() != byte_count {
+        return Err(TableObjectReadError::FactMismatch {
+            object: object.clone(),
+            field: "byte_count",
+        });
+    }
+    Ok(())
+}
+
+fn read_table_object_exact_at(
+    backend: &(impl Backend + ?Sized),
+    object: &ObjectName,
+    byte_count: u64,
+    offset: u64,
+    len: usize,
+) -> Result<Vec<u8>, TableObjectReadError> {
+    if len == 0 {
+        if offset > byte_count {
+            return Err(TableObjectReadError::Source {
+                object: object.clone(),
+                reason: "range exceeds table object byte count",
+            });
+        }
+        return Ok(Vec::new());
+    }
+
+    let len_u64 = u64::try_from(len).map_err(|_| TableObjectReadError::Source {
+        object: object.clone(),
+        reason: "range length is too large",
+    })?;
+    let end = offset
+        .checked_add(len_u64)
+        .ok_or_else(|| TableObjectReadError::Source {
+            object: object.clone(),
+            reason: "range end overflows",
+        })?;
+    if end > byte_count {
+        return Err(TableObjectReadError::Source {
+            object: object.clone(),
+            reason: "range exceeds table object byte count",
+        });
+    }
+
+    let bytes = backend
+        .read_range(object, BackendRange::new(offset, len_u64))
+        .map_err(|source| TableObjectReadError::Backend {
+            object: object.clone(),
+            source,
+        })?;
+    if bytes.len() != len {
+        let reason = if bytes.len() < len {
+            "short table object range read"
+        } else {
+            "long table object range read"
+        };
+        return Err(TableObjectReadError::Source {
+            object: object.clone(),
+            reason,
+        });
+    }
+    Ok(bytes)
+}
+
+fn read_all_table_object_for_exact_match(
+    backend: &dyn Backend,
+    object: &ObjectName,
+    byte_count: u64,
+) -> Result<Vec<u8>, TableObjectReadError> {
+    let len = usize::try_from(byte_count).map_err(|_| TableObjectReadError::Source {
+        object: object.clone(),
+        reason: "table object byte count is too large",
+    })?;
+    read_table_object_exact_at(backend, object, byte_count, 0, len)
 }
 
 pub(crate) struct TableObjectService<'a> {
     backend: &'a dyn Backend,
 }
+
+pub(crate) type TableObjectReaderService<'a> = TableObjectService<'a>;
 
 impl<'a> TableObjectService<'a> {
     pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
@@ -470,9 +434,7 @@ impl<'a> TableObjectService<'a> {
         Ok(TableObjectFacts::from_runtime_facts(object, facts))
     }
 
-    pub(crate) fn list_inventory(
-        &self,
-    ) -> TableObjectServiceResult<Vec<TableObjectInventoryObject>> {
+    pub(crate) fn list_inventory(&self) -> TableObjectServiceResult<Vec<(ObjectName, u64)>> {
         let prefix = ObjectLayout::table_prefix()
             .map_err(|source| TableObjectServiceError::Layout { source })?;
         let mut objects =
@@ -492,22 +454,9 @@ impl<'a> TableObjectService<'a> {
                         source,
                     }
                 })?;
-                Ok(TableObjectInventoryObject::new(
-                    object,
-                    metadata.size_bytes(),
-                ))
+                Ok((object, metadata.size_bytes()))
             })
             .collect()
-    }
-}
-
-pub(crate) struct TableObjectReaderService<'a> {
-    backend: &'a dyn Backend,
-}
-
-impl<'a> TableObjectReaderService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
     }
 
     pub(crate) fn open_reader(
@@ -516,11 +465,16 @@ impl<'a> TableObjectReaderService<'a> {
         object_facts: &TableObjectFacts,
         config: TableReaderConfig,
     ) -> Result<ImmutableTableReader, TableObjectReadError> {
-        let source = TableObjectByteSource::new(
+        validate_table_object_source(
             self.backend,
-            object_facts.object().clone(),
+            object_facts.object(),
             object_facts.byte_count(),
         )?;
+        let source = (
+            self.backend,
+            object_facts.object(),
+            object_facts.byte_count(),
+        );
         let reader = ImmutableTableReader::open_source(identity, source, config)
             .map_err(|source| table_object_open_error(object_facts.object(), source))?;
         validate_reader_facts(object_facts, &reader)?;
@@ -543,12 +497,16 @@ impl<'a> TableObjectReaderService<'a> {
                 field: "byte_count",
             });
         }
-        let source = TableObjectByteSource::new(
+        validate_table_object_source(
             self.backend,
-            object_facts.object().clone(),
+            object_facts.object(),
             object_facts.byte_count(),
         )?;
-        let existing_bytes = source.read_all_for_exact_match()?;
+        let existing_bytes = read_all_table_object_for_exact_match(
+            self.backend,
+            object_facts.object(),
+            object_facts.byte_count(),
+        )?;
         if existing_bytes != expected_bytes {
             return Err(TableObjectReadError::FactMismatch {
                 object: object_facts.object().clone(),
@@ -648,8 +606,9 @@ fn require_durable_publish_capabilities(
 #[cfg(test)]
 mod tests {
     use super::{
-        TableObjectByteSource, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
-        TableObjectService, TableObjectServiceError,
+        read_table_object_exact_at, validate_table_object_source, TableObjectFacts,
+        TableObjectReadError, TableObjectReaderService, TableObjectService,
+        TableObjectServiceError,
     };
     use crate::backend::memory::MemoryBackend;
     use crate::backend::{
@@ -1267,14 +1226,12 @@ mod tests {
     }
 
     #[test]
-    fn table_object_byte_source_enforces_capabilities_and_exact_ranges() {
+    fn table_object_range_source_enforces_capabilities_and_exact_ranges() {
         let object = ObjectLayout::table_object(&branch_id().to_string(), 0, "table0001")
             .expect("table object");
         let backend = RecordingBackend::durable().without_capability(BackendCapability::ReadRange);
         assert_eq!(
-            TableObjectByteSource::new(&backend, object.clone(), 3)
-                .err()
-                .expect("read range needed"),
+            validate_table_object_source(&backend, &object, 3).expect_err("read range needed"),
             TableObjectReadError::UnsupportedCapability {
                 object: object.clone(),
                 capability: BackendCapability::ReadRange,
@@ -1284,34 +1241,42 @@ mod tests {
         let backend = RecordingBackend::durable();
         backend.seed(object.clone(), b"abcdef");
         assert_eq!(
-            TableObjectByteSource::new(&backend, object.clone(), 0)
-                .err()
-                .expect("zero byte count rejected"),
+            validate_table_object_source(&backend, &object, 0)
+                .expect_err("zero byte count rejected"),
             TableObjectReadError::Source {
                 object: object.clone(),
                 reason: "table object byte count is zero",
             }
         );
-        let source = TableObjectByteSource::new(&backend, object.clone(), 6).expect("source");
-        assert_eq!(source.object(), &object);
+        validate_table_object_source(&backend, &object, 6).expect("source");
+        let source = (&backend, &object, 6);
         assert_eq!(source.byte_count(), 6);
-        assert_eq!(source.read_exact_at(0, 0).expect("zero read"), b"");
-        assert_eq!(source.read_exact_at(6, 0).expect("end zero read"), b"");
+        assert_eq!(
+            read_table_object_exact_at(&backend, &object, 6, 0, 0).expect("zero read"),
+            b""
+        );
+        assert_eq!(
+            read_table_object_exact_at(&backend, &object, 6, 6, 0).expect("end zero read"),
+            b""
+        );
         assert!(backend.range_reads().is_empty());
-        assert_eq!(source.read_exact_at(2, 3).expect("range read"), b"cde");
+        assert_eq!(
+            read_table_object_exact_at(&backend, &object, 6, 2, 3).expect("range read"),
+            b"cde"
+        );
         assert_eq!(
             backend.range_reads(),
             vec![(object.clone(), BackendRange::new(2, 3))]
         );
         assert_eq!(
-            source.read_exact_at(5, 2),
+            read_table_object_exact_at(&backend, &object, 6, 5, 2),
             Err(TableObjectReadError::Source {
                 object: object.clone(),
                 reason: "range exceeds table object byte count",
             })
         );
         assert_eq!(
-            source.read_exact_at(u64::MAX, 1),
+            read_table_object_exact_at(&backend, &object, 6, u64::MAX, 1),
             Err(TableObjectReadError::Source {
                 object,
                 reason: "range end overflows",
@@ -1322,9 +1287,9 @@ mod tests {
             .expect("table object");
         let backend = RecordingBackend::durable().with_long_read();
         backend.seed(object.clone(), b"abcdef");
-        let source = TableObjectByteSource::new(&backend, object.clone(), 6).expect("source");
+        validate_table_object_source(&backend, &object, 6).expect("source");
         assert_eq!(
-            source.read_exact_at(0, 3),
+            read_table_object_exact_at(&backend, &object, 6, 0, 3),
             Err(TableObjectReadError::Source {
                 object,
                 reason: "long table object range read",
@@ -1372,7 +1337,7 @@ mod tests {
 
         assert_reader_source_chain_preserves_backend_error(
             &interrupted,
-            object.clone(),
+            &object,
             &facts,
             identity.clone(),
         );
@@ -2073,14 +2038,15 @@ mod tests {
 
     fn assert_reader_source_chain_preserves_backend_error(
         backend: &RecordingBackend,
-        object: ObjectName,
+        object: &ObjectName,
         facts: &TableObjectFacts,
         identity: TableIdentity,
     ) {
-        let source = TableObjectByteSource::new(backend, object, facts.byte_count())
+        validate_table_object_source(backend, object, facts.byte_count())
             .expect("table object source");
+        let source = (backend, object, facts.byte_count());
         let runtime_error =
-            ImmutableTableReader::open_source(identity, &source, TableReaderConfig::default())
+            ImmutableTableReader::open_source(identity, source, TableReaderConfig::default())
                 .expect_err("object source failure should preserve source chain");
         let table_source = std::error::Error::source(&runtime_error)
             .expect("table runtime source read error should expose object read source");

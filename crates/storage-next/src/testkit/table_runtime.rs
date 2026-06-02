@@ -3,7 +3,7 @@ use crate::backend::Backend;
 use crate::format::{decode_immutable_table, encode_internal_key, FormatError, TableCompression};
 use crate::layout::ObjectLayout;
 use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
-use crate::service::TableObjectByteSource;
+use crate::service::{TableObjectFacts, TableObjectReaderService};
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BoundedTableCursor,
     BuiltTableArtifact, BytesTableSource, CacheInsert, CursorMergePath, FrozenTable,
