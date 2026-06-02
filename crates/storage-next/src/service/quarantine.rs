@@ -29,14 +29,12 @@ mod reconcile;
 
 pub(crate) use mutation::{
     QuarantineDeleteOutcome, QuarantineGate, QuarantineObjectReport, QuarantineObjectRequest,
-    QuarantineObjectStatus, QuarantinePublishFailure, QuarantinePurgeReport,
-    QuarantinePurgeRequest,
+    QuarantineObjectStatus, QuarantinePurgeReport, QuarantinePurgeRequest,
 };
+#[cfg(test)]
+pub(crate) use reconcile::QuarantineInventoryCorruption;
 pub(crate) use reconcile::{
-    QuarantineBackendUnavailable, QuarantineCorruptInventory, QuarantineFamilyReconciliation,
-    QuarantineInventoryCorruption, QuarantineListedObject, QuarantineMalformedObject,
-    QuarantineMissingObject, QuarantineReconciliationKind, QuarantineReconciliationReport,
-    QuarantineUnlistedObject,
+    QuarantineFamilyReconciliation, QuarantineReconciliationKind, QuarantineReconciliationReport,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

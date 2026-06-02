@@ -19,50 +19,33 @@ pub(crate) use checkpoint::{
     CheckpointWrite,
 };
 
-#[expect(
-    unused_imports,
-    reason = "manifest services are consumed by lifecycle and table services added later"
-)]
 pub(crate) use manifest::{
-    BranchCatalogManifestService, BranchCatalogManifestWrite, DatabaseManifestService,
-    DatabaseManifestWrite, ManifestRole, ManifestServiceError, PendingReleasesManifestService,
-    PendingReleasesManifestWrite, TableManifestService, TableManifestWrite,
+    BranchCatalogManifestService, DatabaseManifestService, ManifestRole, ManifestServiceError,
+    PendingReleasesManifestService, TableManifestService, TableManifestWrite,
 };
 
 pub(crate) use publish::{validate_publish_outcome, ObjectPublisher};
 
-#[expect(
-    unused_imports,
-    reason = "quarantine service is consumed by lifecycle and recovery services added later"
-)]
 pub(crate) use quarantine::{
-    QuarantineBackendUnavailable, QuarantineCorruptInventory, QuarantineDeleteOutcome,
-    QuarantineFamilyReconciliation, QuarantineGate, QuarantineInventoryCorruption,
-    QuarantineInventoryLoad, QuarantineInventoryToken, QuarantineInventoryWrite,
-    QuarantineListedObject, QuarantineMalformedObject, QuarantineMissingObject,
-    QuarantineObjectReport, QuarantineObjectRequest, QuarantineObjectStatus,
-    QuarantinePublishFailure, QuarantinePurgeReport, QuarantinePurgeRequest,
+    QuarantineDeleteOutcome, QuarantineFamilyReconciliation, QuarantineGate,
+    QuarantineInventoryToken, QuarantineObjectReport, QuarantineObjectRequest,
+    QuarantineObjectStatus, QuarantinePurgeReport, QuarantinePurgeRequest,
     QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineService,
-    QuarantineServiceError, QuarantineUnlistedObject,
+    QuarantineServiceError,
 };
 
-#[expect(
-    unused_imports,
-    reason = "sidecar services are consumed by lifecycle and recovery services added later"
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "sidecar services are consumed by lifecycle and recovery services added later"
+    )
 )]
-pub(crate) use sidecar::{
-    WalSegmentMetadataSidecar, WalSegmentMetadataSidecarDelete, WalSegmentMetadataSidecarError,
-    WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService,
-    WalSegmentMetadataSidecarWrite,
-};
+pub(crate) use sidecar::{WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService};
 
-#[expect(
-    unused_imports,
-    reason = "snapshot service is consumed by lifecycle and recovery services added later"
-)]
 pub(crate) use snapshot::{
-    SnapshotDeleteFailure, SnapshotDeleteReport, SnapshotObject, SnapshotPublishRequest,
-    SnapshotService, SnapshotServiceError,
+    SnapshotDeleteFailure, SnapshotObject, SnapshotPublishRequest, SnapshotService,
+    SnapshotServiceError,
 };
 
 pub(crate) use table::{
@@ -70,12 +53,14 @@ pub(crate) use table::{
     TableObjectServiceError,
 };
 
-#[expect(
-    unused_imports,
-    reason = "WAL service is consumed by commit and lifecycle services added later"
+#[cfg_attr(
+    all(not(test), not(feature = "testkit")),
+    expect(
+        unused_imports,
+        reason = "WAL service is consumed by commit and lifecycle services added later"
+    )
 )]
 pub(crate) use wal::{
-    WalAppend, WalDeleteReport, WalGrowthFacts, WalOperation, WalRead, WalRepair,
-    WalRetentionProof, WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError,
-    WalTruncation,
+    WalAppend, WalDeleteReport, WalGrowthFacts, WalRepair, WalRetentionProof,
+    WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError, WalTruncation,
 };

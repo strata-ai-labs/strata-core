@@ -40,8 +40,7 @@ mod wal_growth;
 pub(crate) use branch_lifecycle::{
     LifecycleBranchCatalog, LifecycleBranchClearOutcome, LifecycleBranchCreateOutcome,
     LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
-    LifecycleBranchParent, LifecycleBranchStatus, LifecyclePinnedBranchReachability,
-    RecoveryExclusivityToken,
+    LifecycleBranchParent, LifecycleBranchStatus, RecoveryExclusivityToken,
 };
 #[allow(
     unused_imports,
@@ -51,8 +50,8 @@ pub(crate) use budget::{
     require_generated_artifact_budget, require_maintenance_enqueue_budget,
     require_manifest_catalog_budget, require_rotate_budget, require_table_reader_budget,
     snapshot_with_runtime_usage, BudgetedCommitBranch, StorageBudgetLedger, StorageBudgetPool,
-    StorageBudgetPressureSeverity, StorageBudgetReservation, StorageBudgetSnapshot,
-    StorageBudgetUsage, StorageRuntimeBudget, StorageRuntimeBudgetParts,
+    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageBudgetUsage, StorageRuntimeBudget,
+    StorageRuntimeBudgetParts,
 };
 #[allow(
     unused_imports,
@@ -144,11 +143,10 @@ pub(crate) use health::{
 pub(crate) use maintenance::{
     maintenance_ready_for_recovery_health, telemetry_health_debt, LifecycleMaintenanceExecutor,
     LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
-    MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceDrainOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceFaultHook,
-    MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId,
-    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, NoopMaintenanceFaultHook,
+    MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceFaultHook, MaintenanceFaultPoint,
+    MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
+    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
 };
 #[allow(
     unused_imports,
@@ -167,9 +165,9 @@ pub(crate) use quarantine::{
     purge_proof_from_maintenance_task, purge_quarantine, quarantine_object,
     quarantine_task_without_request, repair_branch_from_maintenance_task, repair_branch_quarantine,
     repair_quarantine_family, unsupported_quarantine_maintenance, LifecyclePurgeOutcome,
-    LifecyclePurgeProof, LifecyclePurgeProofStatus, LifecyclePurgeStatus,
-    LifecycleQuarantineOutcome, LifecycleQuarantineProof, LifecycleQuarantineProofStatus,
-    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRequest, LifecycleQuarantineStatus,
+    LifecyclePurgeProof, LifecyclePurgeStatus, LifecycleQuarantineOutcome,
+    LifecycleQuarantineProof, LifecycleQuarantineProofStatus, LifecycleQuarantineRepairOutcome,
+    LifecycleQuarantineRequest, LifecycleQuarantineStatus,
 };
 #[allow(
     unused_imports,
@@ -210,9 +208,9 @@ pub(crate) use rewrite_publication::{
     reason = "lifecycle state exports define the local surface for later slices"
 )]
 pub(crate) use state::{
-    LifecycleAdmissionEffect, LifecycleCloseFact, LifecycleFailureFact,
-    LifecycleOperationAdmission, LifecycleOperationKind, LifecycleStateMachine,
-    LifecycleTransitionEffect, LifecycleTransitionOutcome, LifecycleTransitionTrigger,
+    LifecycleAdmissionEffect, LifecycleCloseFact, LifecycleOperationAdmission,
+    LifecycleOperationKind, LifecycleStateMachine, LifecycleTransitionEffect,
+    LifecycleTransitionTrigger,
 };
 #[allow(
     unused_imports,
@@ -220,11 +218,9 @@ pub(crate) use state::{
 )]
 pub(crate) use table_manifest::{
     apply_loaded_table_manifest_to_branch, preflight_table_manifest_with_checkpoint,
-    publish_table_manifest_for_branch, publish_table_manifest_for_branch_with_budget,
-    recover_table_manifest_for_branch, require_table_manifest_covers_checkpoint_rows,
+    publish_table_manifest_for_branch_with_budget, require_table_manifest_covers_checkpoint_rows,
     stage_table_manifest_for_branch, table_manifest_debt_outcome, LifecycleDurableTableCatalog,
-    LifecycleDurableTableCatalogEntry, LifecycleTableManifestRecoveryOutcome,
-    LifecycleTableManifestRecoveryStage,
+    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
 };
 #[allow(
     unused_imports,

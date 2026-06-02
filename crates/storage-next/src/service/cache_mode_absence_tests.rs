@@ -1,11 +1,12 @@
 mod support;
 
 use self::support::*;
+use super::sidecar::WalSegmentMetadataSidecarError;
 use super::{
     CheckpointManifestOperation, CheckpointService, CheckpointServiceError,
     DatabaseManifestService, ManifestRole, ObjectPublisher, QuarantineGate, QuarantinePurgeRequest,
     QuarantineReconciliationKind, QuarantineService, QuarantineServiceError, SnapshotService,
-    SnapshotServiceError, TableManifestService, TableObjectService, WalSegmentMetadataSidecarError,
+    SnapshotServiceError, TableManifestService, TableObjectService,
     WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
 };
 use crate::backend::{

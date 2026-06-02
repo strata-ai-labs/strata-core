@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const INVENTORY_SNAPSHOT: &str =
-    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t9.md";
+    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t10.md";
 
 #[test]
 fn type_inventory_snapshot_is_current() {
@@ -37,15 +37,15 @@ fn parent_facade_reexports_do_not_regrow() {
         .args([
             "--quiet",
             "--max-reexport-names",
-            "lifecycle/mod.rs=210",
+            "lifecycle/mod.rs=200",
             "--max-reexport-names",
             "testkit/mod.rs=99",
             "--max-reexport-names",
             "api/mod.rs=96",
             "--max-reexport-names",
-            "commit/mod.rs=79",
+            "commit/mod.rs=76",
             "--max-reexport-names",
-            "service/mod.rs=70",
+            "service/mod.rs=50",
             "--max-reexport-names",
             "format/mod.rs=69",
             "--max-reexport-names",
@@ -119,7 +119,7 @@ fn scaffold_allowance_markers_do_not_regrow() {
             "--max-scaffold-markers",
             "lifecycle/durable/bootstrap.rs=0:7",
             "--max-scaffold-markers",
-            "service/mod.rs=5:0",
+            "service/mod.rs=2:0",
             "--max-scaffold-markers",
             "service/manifest.rs=0:6",
             "--max-scaffold-markers",

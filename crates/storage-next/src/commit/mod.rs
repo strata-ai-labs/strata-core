@@ -49,9 +49,8 @@ pub(crate) use batch::{
     reason = "commit scaffold exports define the local surface for later slices"
 )]
 pub(crate) use branch_registry::{
-    admit_mutating_commit, CommitBranchAdmission, CommitBranchAdmissionGuard,
-    CommitBranchDescriptor, CommitBranchGeneration, CommitBranchGenerationGuard,
-    CommitBranchRegistry, CommitBranchState,
+    admit_mutating_commit, CommitBranchDescriptor, CommitBranchGeneration,
+    CommitBranchGenerationGuard, CommitBranchRegistry, CommitBranchState,
 };
 #[allow(
     unused_imports,
@@ -138,9 +137,8 @@ pub(crate) use result::CommitRuntimeResult;
     reason = "commit scaffold exports define the local surface for later slices"
 )]
 pub(crate) use timeline::{
-    CommitTimelineBounds, CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup,
-    CommitTimelineMiss, CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView,
-    COMMIT_TIMELINE_SPACE,
+    CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup, CommitTimelineMiss,
+    CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView, COMMIT_TIMELINE_SPACE,
 };
 #[allow(
     unused_imports,
