@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const INVENTORY_SNAPSHOT: &str =
-    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t3.md";
+    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t4.md";
 
 #[test]
 fn type_inventory_snapshot_is_current() {
@@ -18,9 +18,9 @@ fn type_inventory_snapshot_is_current() {
             "--require-inventory",
             INVENTORY_SNAPSHOT,
             "--max-all-types",
-            "922",
+            "917",
             "--max-cleanup-target-types",
-            "507",
+            "502",
         ])
         .output()
         .expect("run inventory guard");
@@ -37,7 +37,7 @@ fn parent_facade_reexports_do_not_regrow() {
         .args([
             "--quiet",
             "--max-reexport-names",
-            "lifecycle/mod.rs=215",
+            "lifecycle/mod.rs=213",
             "--max-reexport-names",
             "testkit/mod.rs=99",
             "--max-reexport-names",
@@ -83,7 +83,7 @@ fn operation_family_suffix_counts_do_not_regrow() {
             "--max-suffix-count",
             "Plan=3",
             "--max-suffix-count",
-            "Recovery=2",
+            "Recovery=1",
             "--max-suffix-count",
             "Invalidity=1",
             "--max-suffix-count",
@@ -125,7 +125,7 @@ fn scaffold_allowance_markers_do_not_regrow() {
             "--max-scaffold-markers",
             "lifecycle/table_manifest.rs=0:6",
             "--max-scaffold-markers",
-            "lifecycle/recovery.rs=0:6",
+            "lifecycle/recovery.rs=0:2",
             "--max-scaffold-markers",
             "branch/state/manifest_recovery.rs=0:6",
             "--max-scaffold-markers",

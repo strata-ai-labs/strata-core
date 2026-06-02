@@ -179,9 +179,8 @@ pub(crate) use quarantine::{
 )]
 pub(crate) use recovery::{
     encode_checkpoint_row_section, LifecycleRecoveredCheckpoint, LifecycleRecoveredQuarantine,
-    LifecycleRecoveredTable, LifecycleRecoveredTables, LifecycleRecoveredWal,
-    LifecycleRecoveryOutcome, LifecycleRecoveryRequest, LifecycleRecoveryRuntime,
-    LifecycleRecoveryTableObject, SNAPSHOT_ROW_SECTION_KIND,
+    LifecycleRecoveredTables, LifecycleRecoveredWal, LifecycleRecoveryOutcome,
+    LifecycleRecoveryRequest, LifecycleRecoveryRuntime, SNAPSHOT_ROW_SECTION_KIND,
 };
 #[allow(
     unused_imports,

@@ -11,6 +11,7 @@ use super::{
 use crate::branch::state::snapshot::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
 };
+use crate::branch::state::BranchLocalState;
 use crate::format::{
     decode_storage_row, encode_storage_row, FormatError, SnapshotContainer, SnapshotSection,
     WalRecord,
@@ -18,8 +19,7 @@ use crate::format::{
 use crate::object::ObjectName;
 use crate::row::StorageRow;
 use crate::service::{
-    QuarantineServiceError, SnapshotServiceError, TableObjectFacts, WalRepair, WalServiceError,
-    WalTruncation,
+    QuarantineServiceError, SnapshotServiceError, WalRepair, WalServiceError, WalTruncation,
 };
 use crate::table::TableIdentity;
 use strata_core_next::{CommitVersion, Timestamp};
@@ -42,13 +42,7 @@ pub(crate) struct LifecycleRecoveryRequest {
     max_faults: usize,
     max_snapshot_sections: usize,
     checkpoint_identity_seed: TableIdentity,
-    table_objects: Vec<LifecycleRecoveryTableObject>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleRecoveryTableObject {
-    identity: TableIdentity,
-    facts: TableObjectFacts,
+    table_object_references: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,19 +92,8 @@ pub(crate) struct LifecycleRecoveredQuarantine {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleRecoveredTables {
-    validated: Vec<LifecycleRecoveredTable>,
+    validated_count: usize,
     table_manifest: LifecycleTableManifestRecoveryOutcome,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleRecoveredTable {
-    identity: TableIdentity,
-    facts: TableObjectFacts,
-}
-
-struct TableRecoveryStage {
-    recovered_tables: LifecycleRecoveredTables,
-    table_manifest_stage: Option<LifecycleTableManifestRecoveryStage>,
 }
 
 impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
@@ -126,35 +109,31 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         request.validate_against_plan(self.shell.open_plan())?;
 
         let mut faults = Vec::new();
-        let checkpoint = self.recover_checkpoint(request, &mut faults)?;
+        let (checkpoint, recovered_branch) = self.recover_checkpoint(request, &mut faults)?;
         let quarantine = self.recover_quarantine(request, &mut faults)?;
-        let tables = self.recover_tables(request, &mut faults)?;
+        let (tables, table_manifest_stage) = self.recover_tables(request, &mut faults)?;
         let trusted_flush_watermark = validate_flush_watermark_is_recoverable(
             self.shell.assembly_facts().manifest_flush_watermark(),
-            &checkpoint.checkpoint,
-            &tables.recovered_tables,
-            tables
-                .table_manifest_stage
+            &checkpoint,
+            &tables,
+            table_manifest_stage
                 .as_ref()
                 .map(LifecycleTableManifestRecoveryStage::staged_branch),
             request.strictness(),
             &mut faults,
             request.max_faults(),
         )?;
-        let replay_start = trusted_replay_start(
-            checkpoint.checkpoint.trusted_watermark(),
-            trusted_flush_watermark,
-        );
+        let replay_start =
+            trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark);
         let wal = self.recover_wal(request, replay_start, &mut faults)?;
         let health = recovery_health_from_faults(request, faults)?;
         let use_table_manifest_as_base = trusted_flush_watermark.is_some_and(|flush| {
             checkpoint
-                .checkpoint
                 .trusted_watermark()
                 .is_none_or(|checkpoint| flush > checkpoint)
         });
-        if let Some(recovered_branch) = checkpoint.recovered_branch {
-            if let Some(stage) = tables.table_manifest_stage {
+        if let Some(recovered_branch) = recovered_branch {
+            if let Some(stage) = table_manifest_stage {
                 // Recovery Protocol rule 9: when both checkpoint rows and a
                 // table manifest are present, preflight the combined state
                 // before installing either source. Exact byte duplicates at
@@ -168,10 +147,10 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     self.shell.apply_table_manifest_recovery(stage);
                     return Ok(LifecycleRecoveryOutcome {
                         health,
-                        checkpoint: checkpoint.checkpoint,
+                        checkpoint,
                         wal,
                         quarantine,
-                        tables: tables.recovered_tables,
+                        tables,
                     });
                 }
                 // The flush watermark sits at or below the checkpoint, so the
@@ -192,23 +171,23 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     .set_timestamp_coverage(staged_coverage);
                 return Ok(LifecycleRecoveryOutcome {
                     health,
-                    checkpoint: checkpoint.checkpoint,
+                    checkpoint,
                     wal,
                     quarantine,
-                    tables: tables.recovered_tables,
+                    tables,
                 });
             }
             *self.shell.branch_state_mut() = recovered_branch;
-        } else if let Some(stage) = tables.table_manifest_stage {
+        } else if let Some(stage) = table_manifest_stage {
             self.shell.apply_table_manifest_recovery(stage);
         }
 
         Ok(LifecycleRecoveryOutcome {
             health,
-            checkpoint: checkpoint.checkpoint,
+            checkpoint,
             wal,
             quarantine,
-            tables: tables.recovered_tables,
+            tables,
         })
     }
 
@@ -216,11 +195,11 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         &mut self,
         request: &LifecycleRecoveryRequest,
         faults: &mut Vec<RecoveryFault>,
-    ) -> LifecycleResult<CheckpointRecovery> {
+    ) -> LifecycleResult<(LifecycleRecoveredCheckpoint, Option<BranchLocalState>)> {
         let snapshot_id = self.shell.assembly_facts().manifest_snapshot_id();
         let snapshot_watermark = manifest_snapshot_watermark(self.shell.assembly_facts())?;
         match (snapshot_id, snapshot_watermark) {
-            (None, None) => Ok(CheckpointRecovery::empty()),
+            (None, None) => Ok((LifecycleRecoveredCheckpoint::empty(), None)),
             (Some(id), Some(watermark)) => {
                 self.load_and_install_checkpoint(request, faults, id, watermark)
             }
@@ -236,7 +215,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         faults: &mut Vec<RecoveryFault>,
         snapshot_id: u64,
         watermark: CommitVersion,
-    ) -> LifecycleResult<CheckpointRecovery> {
+    ) -> LifecycleResult<(LifecycleRecoveredCheckpoint, Option<BranchLocalState>)> {
         if watermark == CommitVersion::ZERO {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "manifest snapshot watermark must be nonzero",
@@ -263,7 +242,10 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     RecoveryFaultKind::MissingSnapshotObject,
                     "manifest-listed snapshot is missing",
                 )?;
-                return Ok(CheckpointRecovery::missing_lossy(snapshot_id));
+                return Ok((
+                    LifecycleRecoveredCheckpoint::missing_lossy(snapshot_id),
+                    None,
+                ));
             }
             Err(source) => {
                 return Err(snapshot_error(source));
@@ -284,23 +266,23 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         let (seeded_rows, non_seeded_rows): (Vec<_>, Vec<_>) = rows
             .into_iter()
             .partition(|row| row.physical_key().branch_id() == seeded_branch_id);
-        let install_outcome = install_checkpoint_rows(
+        let (recovered_branch, install_outcome) = install_checkpoint_rows(
             self.shell.branch_state().clone(),
             request.checkpoint_identity_seed(),
             seeded_rows,
         )?;
-        Ok(CheckpointRecovery {
-            checkpoint: LifecycleRecoveredCheckpoint {
+        Ok((
+            LifecycleRecoveredCheckpoint {
                 snapshot_id: Some(snapshot_id),
                 trusted_watermark: Some(watermark),
                 section_count: container.sections().len(),
                 row_count,
-                install_outcome: Some(install_outcome.outcome),
+                install_outcome: Some(install_outcome),
                 non_seeded_rows,
                 install_identity_seed: Some(request.checkpoint_identity_seed().clone()),
             },
-            recovered_branch: install_outcome.recovered_branch,
-        })
+            recovered_branch,
+        ))
     }
 
     fn recover_wal(
@@ -352,8 +334,11 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         &mut self,
         request: &LifecycleRecoveryRequest,
         faults: &mut Vec<RecoveryFault>,
-    ) -> LifecycleResult<TableRecoveryStage> {
-        if !request.table_objects().is_empty() {
+    ) -> LifecycleResult<(
+        LifecycleRecoveredTables,
+        Option<LifecycleTableManifestRecoveryStage>,
+    )> {
+        if request.table_object_references() != 0 {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "table object recovery references require a table manifest",
             });
@@ -371,13 +356,13 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     table_manifest_recovery_fault_reason(&error),
                     self.shell.branch_state().branch_id(),
                 )?;
-                return Ok(TableRecoveryStage {
-                    recovered_tables: LifecycleRecoveredTables {
-                        validated: Vec::new(),
+                return Ok((
+                    LifecycleRecoveredTables {
+                        validated_count: 0,
                         table_manifest: LifecycleTableManifestRecoveryOutcome::absent(),
                     },
-                    table_manifest_stage: None,
-                });
+                    None,
+                ));
             }
             Err(error) => return Err(error),
         };
@@ -387,13 +372,13 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         } else {
             None
         };
-        Ok(TableRecoveryStage {
-            recovered_tables: LifecycleRecoveredTables {
-                validated: Vec::new(),
+        Ok((
+            LifecycleRecoveredTables {
+                validated_count: 0,
                 table_manifest: outcome,
             },
             table_manifest_stage,
-        })
+        ))
     }
 
     fn recover_quarantine(
@@ -490,7 +475,7 @@ impl LifecycleRecoveryRequest {
             max_snapshot_sections,
             checkpoint_identity_seed: TableIdentity::new(checkpoint_identity_seed.into())
                 .map_err(table_runtime_error)?,
-            table_objects: Vec::new(),
+            table_object_references: 0,
         };
         request.validate()?;
         Ok(request)
@@ -521,20 +506,17 @@ impl LifecycleRecoveryRequest {
         &self.checkpoint_identity_seed
     }
 
-    pub(crate) fn table_objects(&self) -> &[LifecycleRecoveryTableObject] {
-        &self.table_objects
-    }
-
     #[allow(
         dead_code,
         reason = "table-object recovery references are introduced before table-backed checkpoint sections"
     )]
-    pub(crate) fn with_table_objects(
-        mut self,
-        table_objects: Vec<LifecycleRecoveryTableObject>,
-    ) -> Self {
-        self.table_objects = table_objects;
+    pub(crate) const fn with_table_object_references(mut self, references: usize) -> Self {
+        self.table_object_references = references;
         self
+    }
+
+    pub(crate) const fn table_object_references(&self) -> usize {
+        self.table_object_references
     }
 
     fn validate(&self) -> LifecycleResult<()> {
@@ -550,7 +532,7 @@ impl LifecycleRecoveryRequest {
                 reason: "must be nonzero",
             });
         }
-        if !self.table_objects.is_empty() {
+        if self.table_object_references != 0 {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "table object recovery references require a table manifest",
             });
@@ -568,16 +550,6 @@ impl LifecycleRecoveryRequest {
             });
         }
         Ok(())
-    }
-}
-
-impl LifecycleRecoveryTableObject {
-    #[allow(
-        dead_code,
-        reason = "table-object recovery references are introduced before table-backed checkpoint sections"
-    )]
-    pub(crate) const fn new(identity: TableIdentity, facts: TableObjectFacts) -> Self {
-        Self { identity, facts }
     }
 }
 
@@ -708,16 +680,8 @@ impl LifecycleRecoveredQuarantine {
 }
 
 impl LifecycleRecoveredTables {
-    #[allow(
-        dead_code,
-        reason = "table-manifest recovery tests inspect validated legacy counters"
-    )]
-    pub(crate) fn validated(&self) -> &[LifecycleRecoveredTable] {
-        &self.validated
-    }
-
     pub(crate) const fn validated_count(&self) -> usize {
-        self.validated.len()
+        self.validated_count
     }
 
     #[allow(
@@ -726,24 +690,6 @@ impl LifecycleRecoveredTables {
     )]
     pub(crate) const fn table_manifest(&self) -> &LifecycleTableManifestRecoveryOutcome {
         &self.table_manifest
-    }
-}
-
-impl LifecycleRecoveredTable {
-    #[allow(
-        dead_code,
-        reason = "table-manifest recovery tests inspect validated legacy counters"
-    )]
-    pub(crate) const fn identity(&self) -> &TableIdentity {
-        &self.identity
-    }
-
-    #[allow(
-        dead_code,
-        reason = "table-manifest recovery tests inspect validated legacy counters"
-    )]
-    pub(crate) const fn facts(&self) -> &TableObjectFacts {
-        &self.facts
     }
 }
 
@@ -859,37 +805,11 @@ fn decode_checkpoint_row_payload(payload: &[u8]) -> LifecycleResult<Vec<StorageR
     Ok(rows)
 }
 
-struct CheckpointInstall {
-    recovered_branch: Option<crate::branch::state::BranchLocalState>,
-    outcome: BranchSnapshotInstallOutcome,
-}
-
-struct CheckpointRecovery {
-    checkpoint: LifecycleRecoveredCheckpoint,
-    recovered_branch: Option<crate::branch::state::BranchLocalState>,
-}
-
-impl CheckpointRecovery {
-    const fn empty() -> Self {
-        Self {
-            checkpoint: LifecycleRecoveredCheckpoint::empty(),
-            recovered_branch: None,
-        }
-    }
-
-    const fn missing_lossy(snapshot_id: u64) -> Self {
-        Self {
-            checkpoint: LifecycleRecoveredCheckpoint::missing_lossy(snapshot_id),
-            recovered_branch: None,
-        }
-    }
-}
-
 fn install_checkpoint_rows(
-    current_branch: crate::branch::state::BranchLocalState,
+    current_branch: BranchLocalState,
     identity_seed: &TableIdentity,
     rows: Vec<StorageRow>,
-) -> LifecycleResult<CheckpointInstall> {
+) -> LifecycleResult<(Option<BranchLocalState>, BranchSnapshotInstallOutcome)> {
     let branch_id = current_branch.branch_id();
     let mut branches = vec![current_branch];
     let request = BranchSnapshotInstallRequest::from_rows(identity_seed.as_str(), rows)
@@ -899,10 +819,7 @@ fn install_checkpoint_rows(
     let recovered_branch = branches
         .into_iter()
         .find(|branch| branch.branch_id() == branch_id);
-    Ok(CheckpointInstall {
-        recovered_branch,
-        outcome,
-    })
+    Ok((recovered_branch, outcome))
 }
 
 fn trusted_replay_start(

@@ -994,22 +994,11 @@ fn recovery_rejects_flush_watermark_without_recovered_table_state() {
 fn recovery_rejects_ad_hoc_table_object_references() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x42);
-    let table_identity = TableIdentity::new("recovery-table-valid").expect("table identity");
-    let table_bytes = table_bytes(
-        table_identity.clone(),
-        std::slice::from_ref(&put_row(branch, 2, b"table-row", b"value")),
-    );
-    let facts = TableObjectService::new(&backend)
-        .publish_create("branch", 0, "table0002", &table_bytes)
-        .expect("publish table");
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .expect("recovery request")
-        .with_table_objects(vec![LifecycleRecoveryTableObject::new(
-            table_identity.clone(),
-            facts.clone(),
-        )]);
+        .with_table_object_references(1);
 
     assert_eq!(
         LifecycleRecoveryRuntime::new(&mut shell).recover(&request),
@@ -1021,28 +1010,14 @@ fn recovery_rejects_ad_hoc_table_object_references() {
 }
 
 #[test]
-fn recovery_rejects_missing_referenced_table_object() {
+fn recovery_rejects_table_object_references_without_manifest() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x3d);
-    let table_identity = TableIdentity::new("recovery-table").expect("table identity");
-    let table_bytes = table_bytes(
-        table_identity.clone(),
-        std::slice::from_ref(&put_row(branch, 2, b"table-row", b"value")),
-    );
-    let facts = TableObjectService::new(&backend)
-        .publish_create("branch", 0, "table0001", &table_bytes)
-        .expect("publish table");
-    backend
-        .delete_object(facts.object())
-        .expect("remove referenced table");
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .expect("recovery request")
-        .with_table_objects(vec![LifecycleRecoveryTableObject::new(
-            table_identity,
-            facts.clone(),
-        )]);
+        .with_table_object_references(1);
 
     let error = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
@@ -1058,20 +1033,9 @@ fn recovery_rejects_missing_referenced_table_object() {
 }
 
 #[test]
-fn recovery_validates_tables_before_wal_tail_repair() {
+fn recovery_rejects_table_references_before_wal_tail_repair() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x43);
-    let table_identity = TableIdentity::new("recovery-table-before-wal").expect("table identity");
-    let table_bytes = table_bytes(
-        table_identity.clone(),
-        std::slice::from_ref(&put_row(branch, 2, b"table-row", b"value")),
-    );
-    let facts = TableObjectService::new(&backend)
-        .publish_create("branch", 0, "table0003", &table_bytes)
-        .expect("publish table");
-    backend
-        .delete_object(facts.object())
-        .expect("remove referenced table");
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
         .expect("durable shell");
     let record = wal_record(branch, 3, b"valid", b"value");
@@ -1085,10 +1049,7 @@ fn recovery_validates_tables_before_wal_tail_repair() {
     let before = backend.object_bytes(&wal_object).expect("wal bytes before");
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .expect("recovery request")
-        .with_table_objects(vec![LifecycleRecoveryTableObject::new(
-            table_identity,
-            facts.clone(),
-        )]);
+        .with_table_object_references(1);
 
     let error = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
