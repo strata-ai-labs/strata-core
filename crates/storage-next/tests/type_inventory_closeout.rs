@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const INVENTORY_SNAPSHOT: &str =
-    "docs/architecture/cleanup/storage-next-type-inventory-after-cln-t10.md";
+    "docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t1.md";
 
 #[test]
 fn type_inventory_snapshot_is_current() {
@@ -18,9 +18,9 @@ fn type_inventory_snapshot_is_current() {
             "--require-inventory",
             INVENTORY_SNAPSHOT,
             "--max-all-types",
-            "932",
+            "928",
             "--max-cleanup-target-types",
-            "517",
+            "513",
         ])
         .output()
         .expect("run inventory guard");

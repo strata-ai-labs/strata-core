@@ -23,6 +23,13 @@ use strata_core_next::CommitVersion;
 
 pub(crate) type ManifestServiceResult<T> = Result<T, ManifestServiceError>;
 
+const DATABASE_MANIFEST_SERVICE: u8 = 0;
+const TABLE_MANIFEST_SERVICE: u8 = 1;
+const BRANCH_CATALOG_MANIFEST_SERVICE: u8 = 2;
+const PENDING_RELEASES_MANIFEST_SERVICE: u8 = 3;
+const CREATE_MANIFEST_OBJECT: bool = true;
+const REPLACE_MANIFEST_OBJECT: bool = false;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ManifestRole {
     Database,
@@ -215,15 +222,24 @@ impl<M> ManifestWrite<M> {
     }
 }
 
-pub(crate) struct DatabaseManifestService<'a> {
+pub(crate) type DatabaseManifestService<'a> = ManifestService<'a, DATABASE_MANIFEST_SERVICE>;
+pub(crate) type TableManifestService<'a> = ManifestService<'a, TABLE_MANIFEST_SERVICE>;
+pub(crate) type BranchCatalogManifestService<'a> =
+    ManifestService<'a, BRANCH_CATALOG_MANIFEST_SERVICE>;
+pub(crate) type PendingReleasesManifestService<'a> =
+    ManifestService<'a, PENDING_RELEASES_MANIFEST_SERVICE>;
+
+pub(crate) struct ManifestService<'a, const ROLE: u8> {
     backend: &'a dyn Backend,
 }
 
-impl<'a> DatabaseManifestService<'a> {
+impl<'a, const ROLE: u8> ManifestService<'a, ROLE> {
     pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
         Self { backend }
     }
+}
 
+impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
     pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<DatabaseManifest>> {
         let object = database_manifest_object()?;
         read_optional(self.backend, ManifestRole::Database, &object)?
@@ -262,7 +278,7 @@ impl<'a> DatabaseManifestService<'a> {
                 source,
             }
         })?;
-        publish_database_manifest(self.backend, &object, &manifest, PublishIntent::Create)
+        publish_database_manifest(self.backend, &object, &manifest, CREATE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn publish_current(
@@ -273,7 +289,7 @@ impl<'a> DatabaseManifestService<'a> {
         // Raw publish replaces the manifest the caller supplied; it does not
         // merge with current durable state. The persist_* paths below own
         // preservation of unrelated recovery facts.
-        publish_database_manifest(self.backend, &object, manifest, PublishIntent::Replace)
+        publish_database_manifest(self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn persist_active_wal_segment(
@@ -310,7 +326,7 @@ impl<'a> DatabaseManifestService<'a> {
                 object: object.clone(),
                 source,
             })?;
-        publish_database_manifest(self.backend, &object, &updated, PublishIntent::Replace)
+        publish_database_manifest(self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn persist_snapshot_facts(
@@ -352,7 +368,7 @@ impl<'a> DatabaseManifestService<'a> {
                 object: object.clone(),
                 source,
             })?;
-        publish_database_manifest(self.backend, &object, &updated, PublishIntent::Replace)
+        publish_database_manifest(self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn persist_flush_watermark(
@@ -386,19 +402,11 @@ impl<'a> DatabaseManifestService<'a> {
                 object: object.clone(),
                 source,
             })?;
-        publish_database_manifest(self.backend, &object, &updated, PublishIntent::Replace)
+        publish_database_manifest(self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
     }
 }
 
-pub(crate) struct BranchCatalogManifestService<'a> {
-    backend: &'a dyn Backend,
-}
-
-impl<'a> BranchCatalogManifestService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
-    }
-
+impl ManifestService<'_, BRANCH_CATALOG_MANIFEST_SERVICE> {
     #[allow(
         dead_code,
         reason = "branch catalog manifest load is consumed by recovery rebuild"
@@ -419,7 +427,7 @@ impl<'a> BranchCatalogManifestService<'a> {
         manifest: &BranchCatalogManifest,
     ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
         let object = branch_catalog_manifest_object()?;
-        publish_branch_catalog(self.backend, &object, manifest, PublishIntent::Create)
+        publish_branch_catalog(self.backend, &object, manifest, CREATE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn publish_replace(
@@ -427,19 +435,11 @@ impl<'a> BranchCatalogManifestService<'a> {
         manifest: &BranchCatalogManifest,
     ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
         let object = branch_catalog_manifest_object()?;
-        publish_branch_catalog(self.backend, &object, manifest, PublishIntent::Replace)
+        publish_branch_catalog(self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
     }
 }
 
-pub(crate) struct PendingReleasesManifestService<'a> {
-    backend: &'a dyn Backend,
-}
-
-impl<'a> PendingReleasesManifestService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
-    }
-
+impl ManifestService<'_, PENDING_RELEASES_MANIFEST_SERVICE> {
     pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<PendingReleasesManifest>> {
         let object = pending_releases_manifest_object()?;
         read_optional(self.backend, ManifestRole::PendingReleases, &object)?
@@ -452,19 +452,11 @@ impl<'a> PendingReleasesManifestService<'a> {
         manifest: &PendingReleasesManifest,
     ) -> ManifestServiceResult<PendingReleasesManifestWrite> {
         let object = pending_releases_manifest_object()?;
-        publish_pending_releases(self.backend, &object, manifest, PublishIntent::Replace)
+        publish_pending_releases(self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
     }
 }
 
-pub(crate) struct TableManifestService<'a> {
-    backend: &'a dyn Backend,
-}
-
-impl<'a> TableManifestService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
-    }
-
+impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
     pub(crate) fn load(&self, branch_id: &str) -> ManifestServiceResult<Option<Vec<u8>>> {
         let object = table_manifest_object(branch_id)?;
         read_optional(self.backend, ManifestRole::Table, &object)
@@ -588,7 +580,7 @@ impl<'a> TableManifestService<'a> {
             branch_id,
             &object,
             manifest,
-            PublishIntent::Create,
+            CREATE_MANIFEST_OBJECT,
         )
     }
 
@@ -605,15 +597,9 @@ impl<'a> TableManifestService<'a> {
             branch_id,
             &object,
             manifest,
-            PublishIntent::Replace,
+            REPLACE_MANIFEST_OBJECT,
         )
     }
-}
-
-#[derive(Clone, Copy)]
-enum PublishIntent {
-    Create,
-    Replace,
 }
 
 fn database_manifest_object() -> ManifestServiceResult<ObjectName> {
@@ -652,7 +638,7 @@ fn publish_pending_releases(
     backend: &dyn Backend,
     object: &ObjectName,
     manifest: &PendingReleasesManifest,
-    intent: PublishIntent,
+    create_object: bool,
 ) -> ManifestServiceResult<PendingReleasesManifestWrite> {
     let bytes = encode_pending_releases_manifest(manifest).map_err(|source| {
         ManifestServiceError::Encode {
@@ -663,9 +649,10 @@ fn publish_pending_releases(
     })?;
     let decoded = decode_pending_releases(object, &bytes)?;
     let publisher = ObjectPublisher::new(backend);
-    let outcome = match intent {
-        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
-        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    let outcome = if create_object {
+        publisher.publish_durable_create(object, &bytes)
+    } else {
+        publisher.publish_durable_replace(object, &bytes)
     }
     .map_err(|source| ManifestServiceError::Publish {
         role: ManifestRole::PendingReleases,
@@ -695,7 +682,7 @@ fn publish_branch_catalog(
     backend: &dyn Backend,
     object: &ObjectName,
     manifest: &BranchCatalogManifest,
-    intent: PublishIntent,
+    create_object: bool,
 ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
     let bytes = encode_branch_catalog_manifest(manifest).map_err(|source| {
         ManifestServiceError::Encode {
@@ -706,9 +693,10 @@ fn publish_branch_catalog(
     })?;
     let decoded = decode_branch_catalog(object, &bytes)?;
     let publisher = ObjectPublisher::new(backend);
-    let outcome = match intent {
-        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
-        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    let outcome = if create_object {
+        publisher.publish_durable_create(object, &bytes)
+    } else {
+        publisher.publish_durable_replace(object, &bytes)
     }
     .map_err(|source| ManifestServiceError::Publish {
         role: ManifestRole::BranchCatalog,
@@ -803,7 +791,7 @@ fn publish_database_manifest(
     backend: &dyn Backend,
     object: &ObjectName,
     manifest: &DatabaseManifest,
-    intent: PublishIntent,
+    create_object: bool,
 ) -> ManifestServiceResult<DatabaseManifestWrite> {
     let bytes = encode_manifest(manifest).map_err(|source| ManifestServiceError::Encode {
         role: ManifestRole::Database,
@@ -814,9 +802,10 @@ fn publish_database_manifest(
     // exact durable representation facts, not an unchecked input value.
     let decoded = decode_database_manifest(object, &bytes)?;
     let publisher = ObjectPublisher::new(backend);
-    let outcome = match intent {
-        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
-        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    let outcome = if create_object {
+        publisher.publish_durable_create(object, &bytes)
+    } else {
+        publisher.publish_durable_replace(object, &bytes)
     }
     .map_err(|source| ManifestServiceError::Publish {
         role: ManifestRole::Database,
@@ -851,7 +840,7 @@ fn publish_branch_table_manifest(
     branch_id: strata_core_next::BranchId,
     object: &ObjectName,
     manifest: &TableManifest,
-    intent: PublishIntent,
+    create_object: bool,
 ) -> ManifestServiceResult<TableManifestWrite> {
     let bytes = encode_table_manifest(manifest).map_err(|source| ManifestServiceError::Encode {
         role: ManifestRole::Table,
@@ -860,9 +849,10 @@ fn publish_branch_table_manifest(
     })?;
     let decoded = decode_branch_table_manifest(branch_id, object, &bytes)?;
     let publisher = ObjectPublisher::new(backend);
-    let outcome = match intent {
-        PublishIntent::Create => publisher.publish_durable_create(object, &bytes),
-        PublishIntent::Replace => publisher.publish_durable_replace(object, &bytes),
+    let outcome = if create_object {
+        publisher.publish_durable_create(object, &bytes)
+    } else {
+        publisher.publish_durable_replace(object, &bytes)
     }
     .map_err(|source| ManifestServiceError::Publish {
         role: ManifestRole::Table,
