@@ -8,12 +8,11 @@ use crate::backend::{
 };
 use crate::layout::ObjectLayout;
 use crate::lifecycle::{
-    purge_quarantine, quarantine_object, repair_quarantine, unsupported_quarantine_maintenance,
-    LifecycleCodecId, LifecyclePurgeProof, LifecyclePurgeRequest, LifecyclePurgeStatus,
-    LifecycleQuarantineProof, LifecycleQuarantineProofStatus, LifecycleQuarantineRepairReport,
-    LifecycleQuarantineRepairRequest, LifecycleQuarantineStatus, MaintenanceOutcomeStatus,
-    MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind,
-    RecoveryHealth, RetentionDecision,
+    purge_quarantine, quarantine_object, repair_branch_quarantine,
+    unsupported_quarantine_maintenance, LifecycleCodecId, LifecyclePurgeProof,
+    LifecyclePurgeStatus, LifecycleQuarantineProof, LifecycleQuarantineProofStatus,
+    LifecycleQuarantineStatus, MaintenanceOutcomeStatus, MaintenanceTaskKind,
+    RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth, RetentionDecision,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::QuarantineService;
@@ -300,14 +299,12 @@ fn check_purge(
     let branch = branch_id(script_byte(script, 3));
     let stale = purge_quarantine(
         &QuarantineService::new(&ScriptQuarantineBackend::new()),
-        &LifecyclePurgeRequest::new(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-            LifecyclePurgeProof::stale(RecoveryHealth::Healthy),
-        )
-        .map_err(quarantine_error)?,
-    );
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
+        &LifecyclePurgeProof::stale(RecoveryHealth::Healthy),
+    )
+    .map_err(quarantine_error)?;
     ensure(
         stale.status() == LifecyclePurgeStatus::StaleProof,
         "stale purge proof was not deferred",
@@ -325,14 +322,12 @@ fn check_purge(
     let quarantine_name = quarantined.quarantine_object().expect("object").clone();
     let purged = purge_quarantine(
         &service,
-        &LifecyclePurgeRequest::new(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-            fresh_purge_proof(&service, branch, RecoveryHealth::Healthy)?,
-        )
-        .map_err(quarantine_error)?,
-    );
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(&service, branch, RecoveryHealth::Healthy)?,
+    )
+    .map_err(quarantine_error)?;
     ensure(
         purged.status() == LifecyclePurgeStatus::Completed,
         "fresh purge did not complete",
@@ -358,14 +353,12 @@ fn check_purge(
     failing.fail_delete(failing_object.clone(), BackendErrorKind::Unavailable);
     let partial = purge_quarantine(
         &failing_service,
-        &LifecyclePurgeRequest::new(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-            fresh_purge_proof(&failing_service, branch, RecoveryHealth::Healthy)?,
-        )
-        .map_err(quarantine_error)?,
-    );
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(&failing_service, branch, RecoveryHealth::Healthy)?,
+    )
+    .map_err(quarantine_error)?;
     ensure(
         partial.status() == LifecyclePurgeStatus::CompletedWithHealthDebt,
         "purge delete fault did not produce health debt",
@@ -389,14 +382,11 @@ fn check_repair(
             .map_err(|error| TestkitError::new(error.to_string()))?,
         b"not-an-inventory",
     );
-    let corrupt_report = repair_quarantine(
+    let corrupt_report = repair_branch_quarantine(
         &QuarantineService::new(&corrupt),
-        &LifecycleQuarantineRepairRequest::branch(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-        )
-        .map_err(quarantine_error)?,
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
     )
     .map_err(quarantine_error)?;
     ensure(
@@ -404,10 +394,7 @@ fn check_repair(
         "corrupt quarantine inventory did not produce repair health debt",
     )?;
     ensure(
-        corrupt_report
-            .reports()
-            .iter()
-            .any(LifecycleQuarantineRepairReport::inventory_present),
+        corrupt_report.inventory_present_reports() > 0,
         "corrupt inventory report did not preserve inventory fact",
     )?;
     outcome.corrupt_inventory_repairs += 1;
@@ -418,14 +405,11 @@ fn check_repair(
             .map_err(|error| TestkitError::new(error.to_string()))?,
         b"table",
     );
-    let unlisted_report = repair_quarantine(
+    let unlisted_report = repair_branch_quarantine(
         &QuarantineService::new(&unlisted),
-        &LifecycleQuarantineRepairRequest::branch(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-        )
-        .map_err(quarantine_error)?,
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
     )
     .map_err(quarantine_error)?;
     ensure(
@@ -433,10 +417,7 @@ fn check_repair(
         "unlisted quarantine object did not produce repair health debt",
     )?;
     ensure(
-        unlisted_report
-            .reports()
-            .iter()
-            .any(|report| report.unlisted_objects() > 0),
+        unlisted_report.unlisted_objects() > 0,
         "unlisted quarantine object was not reported",
     )?;
     outcome.unlisted_object_repairs += 1;
@@ -570,14 +551,12 @@ fn input_purge_route(
     )?;
     let purge = purge_quarantine(
         &service,
-        &LifecyclePurgeRequest::new(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-            fresh_purge_proof(&service, branch, RecoveryHealth::Healthy)?,
-        )
-        .map_err(quarantine_error)?,
-    );
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(&service, branch, RecoveryHealth::Healthy)?,
+    )
+    .map_err(quarantine_error)?;
     ensure(
         purge.status() == LifecyclePurgeStatus::Completed,
         "input purge route did not complete",
@@ -605,32 +584,21 @@ fn input_repair_route(
         ),
         _ => {}
     }
-    let repair = repair_quarantine(
+    let repair = repair_branch_quarantine(
         &QuarantineService::new(&backend),
-        &LifecycleQuarantineRepairRequest::branch(
-            branch,
-            DATABASE_ID,
-            LifecycleCodecId::identity(),
-        )
-        .map_err(quarantine_error)?,
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
     )
     .map_err(quarantine_error)?;
     if repair.backend_unavailable() {
         return Err(TestkitError::new("input repair route backend failed"));
     }
     if repair.completed_with_health_debt() {
-        if repair
-            .reports()
-            .iter()
-            .any(LifecycleQuarantineRepairReport::inventory_present)
-        {
+        if repair.inventory_present_reports() > 0 {
             outcome.corrupt_inventory_repairs += 1;
         }
-        if repair
-            .reports()
-            .iter()
-            .any(|report| report.unlisted_objects() > 0)
-        {
+        if repair.unlisted_objects() > 0 {
             outcome.unlisted_object_repairs += 1;
         }
     }

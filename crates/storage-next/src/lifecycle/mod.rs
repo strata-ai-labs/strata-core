@@ -164,14 +164,12 @@ pub(crate) use outcome::{
     reason = "quarantine maintenance exports define the local surface for reclaim slices"
 )]
 pub(crate) use quarantine::{
-    purge_quarantine, purge_request_from_maintenance_task, quarantine_object,
-    quarantine_task_without_request, repair_quarantine, repair_request_from_maintenance_task,
-    unsupported_quarantine_maintenance, LifecyclePurgeOutcome, LifecyclePurgeProof,
-    LifecyclePurgeProofStatus, LifecyclePurgeRequest, LifecyclePurgeStatus,
+    purge_proof_from_maintenance_task, purge_quarantine, quarantine_object,
+    quarantine_task_without_request, repair_branch_from_maintenance_task, repair_branch_quarantine,
+    repair_quarantine_family, unsupported_quarantine_maintenance, LifecyclePurgeOutcome,
+    LifecyclePurgeProof, LifecyclePurgeProofStatus, LifecyclePurgeStatus,
     LifecycleQuarantineOutcome, LifecycleQuarantineProof, LifecycleQuarantineProofStatus,
-    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairReport,
-    LifecycleQuarantineRepairRequest, LifecycleQuarantineRepairScope, LifecycleQuarantineRequest,
-    LifecycleQuarantineStatus,
+    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRequest, LifecycleQuarantineStatus,
 };
 #[allow(
     unused_imports,

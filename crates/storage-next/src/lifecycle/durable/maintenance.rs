@@ -38,15 +38,17 @@ use crate::lifecycle::table_reachability::{
 use crate::lifecycle::{
     checkpoint_task_for_wal_growth, commits_since_checkpoint,
     compact_durable_branch_manifest_backed, materialize_durable_branch_manifest_backed,
-    policy_admission_error, purge_quarantine as purge_lifecycle_quarantine,
-    purge_request_from_maintenance_task, quarantine_object as quarantine_lifecycle_object,
-    quarantine_task_without_request, repair_quarantine as repair_lifecycle_quarantine,
-    repair_request_from_maintenance_task, require_maintenance_enqueue_budget,
-    require_rotate_budget, telemetry_health_debt, FlushFrozenOutcome, FlushFrozenRequest,
-    LifecycleCodecId, LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
-    LifecycleLowerLayer, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
-    LifecycleOperationKind, LifecyclePurgeOutcome, LifecyclePurgeRequest,
-    LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome, LifecycleQuarantineRepairRequest,
+    policy_admission_error, purge_proof_from_maintenance_task,
+    purge_quarantine as purge_lifecycle_quarantine,
+    quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
+    repair_branch_from_maintenance_task,
+    repair_branch_quarantine as repair_branch_lifecycle_quarantine,
+    repair_quarantine_family as repair_lifecycle_quarantine_family,
+    require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
+    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
+    LifecyclePurgeOutcome, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
     LifecycleQuarantineRequest, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
     LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
     MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
@@ -445,10 +447,18 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     )]
     pub(crate) fn purge_quarantine(
         &mut self,
-        request: &LifecyclePurgeRequest,
+        branch_id: strata_core_next::BranchId,
+        proof: &crate::lifecycle::LifecyclePurgeProof,
     ) -> LifecycleResult<LifecyclePurgeOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = purge_lifecycle_quarantine(self.services.quarantine(), request);
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let outcome = purge_lifecycle_quarantine(
+            self.services.quarantine(),
+            branch_id,
+            *self.services.assembly_facts().database_id(),
+            &codec_id,
+            proof,
+        )?;
         self.record_recovery_health(outcome.recovery_health());
         Ok(outcome)
     }
@@ -457,12 +467,18 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         dead_code,
         reason = "durable maintenance dispatch uses this concrete repair hook"
     )]
-    pub(crate) fn repair_quarantine(
+    pub(crate) fn repair_branch_quarantine(
         &mut self,
-        request: &LifecycleQuarantineRepairRequest,
+        branch_id: strata_core_next::BranchId,
     ) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let outcome = repair_lifecycle_quarantine(self.services.quarantine(), request)?;
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let outcome = repair_branch_lifecycle_quarantine(
+            self.services.quarantine(),
+            branch_id,
+            *self.services.assembly_facts().database_id(),
+            &codec_id,
+        )?;
         self.record_recovery_health(outcome.recovery_health());
         Ok(outcome)
     }
@@ -1470,15 +1486,20 @@ impl MaintenanceTaskRunner for DurablePurgeMaintenanceRunner<'_, '_> {
             .quarantine
             .load_inventory(branch_id, self.database_id, self.codec_id.as_str())
             .map_err(durable_quarantine_service_error)?;
-        let request = purge_request_from_maintenance_task(
+        let (branch_id, proof) = purge_proof_from_maintenance_task(
             task,
-            self.database_id,
-            self.codec_id.clone(),
             self.health.clone(),
             self.default_branch_id,
             inventory.token(),
         )?;
-        Ok(purge_lifecycle_quarantine(self.quarantine, &request).maintenance_outcome())
+        Ok(purge_lifecycle_quarantine(
+            self.quarantine,
+            branch_id,
+            self.database_id,
+            &self.codec_id,
+            &proof,
+        )?
+        .maintenance_outcome())
     }
 }
 
@@ -1531,9 +1552,21 @@ struct DurableQuarantineRepairMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurableQuarantineRepairMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let request =
-            repair_request_from_maintenance_task(task, self.database_id, self.codec_id.clone())?;
-        Ok(repair_lifecycle_quarantine(self.quarantine, &request)?.maintenance_outcome())
+        let branch_id = repair_branch_from_maintenance_task(task)?;
+        let outcome = match branch_id {
+            Some(branch_id) => repair_branch_lifecycle_quarantine(
+                self.quarantine,
+                branch_id,
+                self.database_id,
+                &self.codec_id,
+            )?,
+            None => repair_lifecycle_quarantine_family(
+                self.quarantine,
+                self.database_id,
+                &self.codec_id,
+            )?,
+        };
+        Ok(outcome.maintenance_outcome())
     }
 }
 

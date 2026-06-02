@@ -894,7 +894,8 @@ fn reachability_does_not_call_quarantine_mutation() {
     for forbidden in [
         "quarantine_object(",
         "purge_quarantine(",
-        "repair_quarantine(",
+        "repair_branch_quarantine(",
+        "repair_quarantine_family(",
         "QuarantineService::",
         "publish_quarantine(",
         "stage_quarantine(",

@@ -18,8 +18,8 @@ use crate::service::{
     QuarantineDeleteOutcome, QuarantineFamilyReconciliation, QuarantineGate,
     QuarantineInventoryToken, QuarantineObjectReport, QuarantineObjectRequest,
     QuarantineObjectStatus, QuarantinePurgeReport, QuarantinePurgeRequest,
-    QuarantineReconciliationKind, QuarantineReconciliationReport, QuarantineRecoveryClass,
-    QuarantineService, QuarantineServiceError,
+    QuarantineReconciliationReport, QuarantineRecoveryClass, QuarantineService,
+    QuarantineServiceError,
 };
 use sha2::{Digest, Sha256};
 use strata_core_next::{BranchId, Timestamp};
@@ -113,14 +113,6 @@ pub(crate) enum LifecyclePurgeProofStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecyclePurgeRequest {
-    branch_id: BranchId,
-    database_id: [u8; 16],
-    codec_id: LifecycleCodecId,
-    proof: LifecyclePurgeProof,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecyclePurgeOutcome {
     status: LifecyclePurgeStatus,
     branch_id: BranchId,
@@ -147,36 +139,16 @@ pub(crate) enum LifecyclePurgeStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleQuarantineRepairRequest {
-    scope: LifecycleQuarantineRepairScope,
-    database_id: [u8; 16],
-    codec_id: LifecycleCodecId,
-    allow_mutation: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum LifecycleQuarantineRepairScope {
-    Branch(BranchId),
-    Family,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleQuarantineRepairOutcome {
-    reports: Vec<LifecycleQuarantineRepairReport>,
-    recovery_health: Option<RecoveryHealth>,
-    source_error: Option<LifecycleError>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LifecycleQuarantineRepairReport {
-    branch_id: BranchId,
-    kind: QuarantineReconciliationKind,
+    report_count: usize,
+    family_malformed_objects: usize,
+    inventory_present_reports: usize,
     listed_objects: usize,
     missing_objects: usize,
     unlisted_objects: usize,
     malformed_objects: usize,
-    inventory_present: bool,
+    recovery_health: Option<RecoveryHealth>,
+    source_error: Option<LifecycleError>,
 }
 
 impl LifecycleQuarantineProof {
@@ -753,56 +725,14 @@ impl LifecyclePurgeProof {
     }
 }
 
-impl LifecyclePurgeRequest {
-    pub(crate) fn new(
-        branch_id: BranchId,
-        database_id: [u8; 16],
-        codec_id: LifecycleCodecId,
-        proof: LifecyclePurgeProof,
-    ) -> LifecycleResult<Self> {
-        let request = Self {
-            branch_id,
-            database_id,
-            codec_id,
-            proof,
-        };
-        request.validate()?;
-        Ok(request)
-    }
-
-    fn validate(&self) -> LifecycleResult<()> {
-        if self.database_id == [0; 16] {
-            return Err(LifecycleError::InvalidConfig {
-                field: "database_id",
-                reason: "must not be zero",
-            });
-        }
-        if self.proof.status == LifecyclePurgeProofStatus::CompleteFresh
-            && self.proof.inventory_token.is_none()
-        {
-            return Err(LifecycleError::InvalidConfig {
-                field: "inventory_token",
-                reason: "fresh purge proof requires an inventory token",
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) const fn branch_id(&self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn proof(&self) -> &LifecyclePurgeProof {
-        &self.proof
-    }
-}
-
 impl LifecyclePurgeOutcome {
-    fn deferred(request: &LifecyclePurgeRequest, status: LifecyclePurgeStatus) -> Self {
+    fn deferred(
+        branch_id: BranchId,
+        proof: &LifecyclePurgeProof,
+        status: LifecyclePurgeStatus,
+    ) -> Self {
         let recovery_health = match status {
-            LifecyclePurgeStatus::BlockedByRecoveryHealth => {
-                Some(request.proof.recovery_health.clone())
-            }
+            LifecyclePurgeStatus::BlockedByRecoveryHealth => Some(proof.recovery_health.clone()),
             LifecyclePurgeStatus::DeferredIncompleteProof | LifecyclePurgeStatus::StaleProof => {
                 Some(telemetry_health_debt("purge proof is not safe").expect("health debt"))
             }
@@ -810,7 +740,7 @@ impl LifecyclePurgeOutcome {
         };
         Self {
             status,
-            branch_id: request.branch_id,
+            branch_id,
             inventory_object: None,
             deleted_objects: Vec::new(),
             already_missing_objects: Vec::new(),
@@ -991,70 +921,19 @@ impl LifecyclePurgeOutcome {
     }
 }
 
-impl LifecycleQuarantineRepairRequest {
-    pub(crate) fn branch(
-        branch_id: BranchId,
-        database_id: [u8; 16],
-        codec_id: LifecycleCodecId,
-    ) -> LifecycleResult<Self> {
-        Self::new(
-            LifecycleQuarantineRepairScope::Branch(branch_id),
-            database_id,
-            codec_id,
-        )
-    }
-
-    pub(crate) fn family(
-        database_id: [u8; 16],
-        codec_id: LifecycleCodecId,
-    ) -> LifecycleResult<Self> {
-        Self::new(
-            LifecycleQuarantineRepairScope::Family,
-            database_id,
-            codec_id,
-        )
-    }
-
-    fn new(
-        scope: LifecycleQuarantineRepairScope,
-        database_id: [u8; 16],
-        codec_id: LifecycleCodecId,
-    ) -> LifecycleResult<Self> {
-        if database_id == [0; 16] {
-            return Err(LifecycleError::InvalidConfig {
-                field: "database_id",
-                reason: "must not be zero",
-            });
-        }
-        Ok(Self {
-            scope,
-            database_id,
-            codec_id,
-            allow_mutation: false,
-        })
-    }
-
-    pub(crate) const fn with_mutation_allowed(mut self, allow_mutation: bool) -> Self {
-        self.allow_mutation = allow_mutation;
-        self
-    }
-
-    pub(crate) const fn scope(&self) -> LifecycleQuarantineRepairScope {
-        self.scope
-    }
-
-    pub(crate) const fn allow_mutation(&self) -> bool {
-        self.allow_mutation
-    }
-}
-
 impl LifecycleQuarantineRepairOutcome {
     fn from_branch_report(report: &QuarantineReconciliationReport) -> LifecycleResult<Self> {
         let recovery_health =
             health_for_reconciliation_class(report.recovery_class(), Some(report.branch_id()))?;
         let source_error = repair_report_error(report);
         Ok(Self {
-            reports: vec![LifecycleQuarantineRepairReport::from_branch_report(report)],
+            report_count: 1,
+            family_malformed_objects: 0,
+            inventory_present_reports: usize::from(report.inventory_present()),
+            listed_objects: report.listed_objects().len(),
+            missing_objects: report.missing_objects().len(),
+            unlisted_objects: report.unlisted_objects().len(),
+            malformed_objects: report.malformed_objects().len(),
             recovery_health,
             source_error,
         })
@@ -1065,13 +944,31 @@ impl LifecycleQuarantineRepairOutcome {
         // single branch owns the resulting health so the fault stays
         // unscoped.
         let recovery_health = health_for_reconciliation_class(report.recovery_class(), None)?;
-        let reports = report
-            .branch_reports()
-            .iter()
-            .map(LifecycleQuarantineRepairReport::from_branch_report)
-            .collect();
+        let branch_reports = report.branch_reports();
         Ok(Self {
-            reports,
+            report_count: branch_reports.len(),
+            family_malformed_objects: report.malformed_objects().len(),
+            inventory_present_reports: branch_reports
+                .iter()
+                .filter(|report| report.inventory_present())
+                .count(),
+            listed_objects: branch_reports
+                .iter()
+                .map(|report| report.listed_objects().len())
+                .sum(),
+            missing_objects: branch_reports
+                .iter()
+                .map(|report| report.missing_objects().len())
+                .sum(),
+            unlisted_objects: branch_reports
+                .iter()
+                .map(|report| report.unlisted_objects().len())
+                .sum(),
+            malformed_objects: branch_reports
+                .iter()
+                .map(|report| report.malformed_objects().len())
+                .sum::<usize>()
+                + report.malformed_objects().len(),
             recovery_health,
             source_error: report
                 .unavailable()
@@ -1087,7 +984,13 @@ impl LifecycleQuarantineRepairOutcome {
 
     fn failed_from_service(source: QuarantineServiceError) -> Self {
         Self {
-            reports: Vec::new(),
+            report_count: 0,
+            family_malformed_objects: 0,
+            inventory_present_reports: 0,
+            listed_objects: 0,
+            missing_objects: 0,
+            unlisted_objects: 0,
+            malformed_objects: 0,
             recovery_health: Some(RecoveryHealth::failed(
                 RecoveryFault::new(
                     RecoveryFaultKind::QuarantineInventoryMismatch,
@@ -1111,8 +1014,28 @@ impl LifecycleQuarantineRepairOutcome {
         matches!(self.recovery_health, Some(RecoveryHealth::Failed { .. }))
     }
 
-    pub(crate) fn reports(&self) -> &[LifecycleQuarantineRepairReport] {
-        &self.reports
+    pub(crate) const fn report_count(&self) -> usize {
+        self.report_count
+    }
+
+    pub(crate) const fn inventory_present_reports(&self) -> usize {
+        self.inventory_present_reports
+    }
+
+    pub(crate) const fn listed_objects(&self) -> usize {
+        self.listed_objects
+    }
+
+    pub(crate) const fn missing_objects(&self) -> usize {
+        self.missing_objects
+    }
+
+    pub(crate) const fn unlisted_objects(&self) -> usize {
+        self.unlisted_objects
+    }
+
+    pub(crate) const fn malformed_objects(&self) -> usize {
+        self.malformed_objects
     }
 
     pub(crate) const fn recovery_health(&self) -> Option<&RecoveryHealth> {
@@ -1130,7 +1053,7 @@ impl LifecycleQuarantineRepairOutcome {
             MaintenanceOutcomeStatus::Completed
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Repair, status)
-            .with_effects(self.reports.len(), 0, self.retryable())
+            .with_effects(self.affected_object_count(), 0, self.retryable())
             .with_state_changes(0)
             .with_stats(LifecycleStats::new(
                 0,
@@ -1153,6 +1076,10 @@ impl LifecycleQuarantineRepairOutcome {
         outcome
     }
 
+    const fn affected_object_count(&self) -> usize {
+        self.report_count + self.family_malformed_objects
+    }
+
     const fn retryable(&self) -> bool {
         self.backend_unavailable()
     }
@@ -1165,48 +1092,6 @@ impl LifecycleQuarantineRepairOutcome {
         } else {
             None
         }
-    }
-}
-
-impl LifecycleQuarantineRepairReport {
-    fn from_branch_report(report: &QuarantineReconciliationReport) -> Self {
-        Self {
-            branch_id: report.branch_id(),
-            kind: report.kind(),
-            listed_objects: report.listed_objects().len(),
-            missing_objects: report.missing_objects().len(),
-            unlisted_objects: report.unlisted_objects().len(),
-            malformed_objects: report.malformed_objects().len(),
-            inventory_present: report.inventory_present(),
-        }
-    }
-
-    pub(crate) const fn branch_id(&self) -> BranchId {
-        self.branch_id
-    }
-
-    pub(crate) const fn kind(&self) -> QuarantineReconciliationKind {
-        self.kind
-    }
-
-    pub(crate) const fn listed_objects(&self) -> usize {
-        self.listed_objects
-    }
-
-    pub(crate) const fn missing_objects(&self) -> usize {
-        self.missing_objects
-    }
-
-    pub(crate) const fn unlisted_objects(&self) -> usize {
-        self.unlisted_objects
-    }
-
-    pub(crate) const fn malformed_objects(&self) -> usize {
-        self.malformed_objects
-    }
-
-    pub(crate) const fn inventory_present(&self) -> bool {
-        self.inventory_present
     }
 }
 
@@ -1257,84 +1142,115 @@ pub(crate) fn quarantine_object(
 
 pub(crate) fn purge_quarantine(
     service: &QuarantineService<'_>,
-    request: &LifecyclePurgeRequest,
-) -> LifecyclePurgeOutcome {
-    match request.proof.status() {
+    branch_id: BranchId,
+    database_id: [u8; 16],
+    codec_id: &LifecycleCodecId,
+    proof: &LifecyclePurgeProof,
+) -> LifecycleResult<LifecyclePurgeOutcome> {
+    validate_purge_request(database_id, proof)?;
+    match proof.status() {
         LifecyclePurgeProofStatus::CompleteFresh => {}
         LifecyclePurgeProofStatus::Stale => {
-            return LifecyclePurgeOutcome::deferred(request, LifecyclePurgeStatus::StaleProof);
+            return Ok(LifecyclePurgeOutcome::deferred(
+                branch_id,
+                proof,
+                LifecyclePurgeStatus::StaleProof,
+            ));
         }
         LifecyclePurgeProofStatus::Incomplete => {
-            return LifecyclePurgeOutcome::deferred(
-                request,
+            return Ok(LifecyclePurgeOutcome::deferred(
+                branch_id,
+                proof,
                 LifecyclePurgeStatus::DeferredIncompleteProof,
-            );
+            ));
         }
         LifecyclePurgeProofStatus::BlockedByRecoveryHealth => {
-            return LifecyclePurgeOutcome::deferred(
-                request,
+            return Ok(LifecyclePurgeOutcome::deferred(
+                branch_id,
+                proof,
                 LifecyclePurgeStatus::BlockedByRecoveryHealth,
-            );
+            ));
         }
     }
 
     let service_request = QuarantinePurgeRequest::new(
-        request.branch_id,
-        request.database_id,
-        request.codec_id.as_str(),
-        request.proof.gate(),
-        request.proof.inventory_token(),
+        branch_id,
+        database_id,
+        codec_id.as_str(),
+        proof.gate(),
+        proof.inventory_token(),
     );
-    match service.purge_quarantine(service_request) {
+    Ok(match service.purge_quarantine(service_request) {
         Ok(report) => LifecyclePurgeOutcome::from_report(&report),
-        Err(source) => LifecyclePurgeOutcome::failed_from_service(request.branch_id, source),
-    }
+        Err(source) => LifecyclePurgeOutcome::failed_from_service(branch_id, source),
+    })
 }
 
-pub(crate) fn repair_quarantine(
+pub(crate) fn repair_branch_quarantine(
     service: &QuarantineService<'_>,
-    request: &LifecycleQuarantineRepairRequest,
+    branch_id: BranchId,
+    database_id: [u8; 16],
+    codec_id: &LifecycleCodecId,
 ) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
-    if request.allow_mutation {
+    repair_quarantine_inner(service, Some(branch_id), database_id, codec_id, false)
+}
+
+pub(crate) fn repair_quarantine_family(
+    service: &QuarantineService<'_>,
+    database_id: [u8; 16],
+    codec_id: &LifecycleCodecId,
+) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
+    repair_quarantine_inner(service, None, database_id, codec_id, false)
+}
+
+#[cfg(test)]
+pub(crate) fn repair_branch_quarantine_with_mutation_for_test(
+    service: &QuarantineService<'_>,
+    branch_id: BranchId,
+    database_id: [u8; 16],
+    codec_id: &LifecycleCodecId,
+) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
+    repair_quarantine_inner(service, Some(branch_id), database_id, codec_id, true)
+}
+
+fn repair_quarantine_inner(
+    service: &QuarantineService<'_>,
+    branch_id: Option<BranchId>,
+    database_id: [u8; 16],
+    codec_id: &LifecycleCodecId,
+    allow_mutation: bool,
+) -> LifecycleResult<LifecycleQuarantineRepairOutcome> {
+    validate_repair_request(database_id)?;
+    if allow_mutation {
         return Err(LifecycleError::QuarantineRepairInconclusive {
             reason: "mutating quarantine repair is not supported",
             source: None,
         });
     }
-    match request.scope {
-        LifecycleQuarantineRepairScope::Branch(branch_id) => {
-            match service.reconcile_branch_quarantine(
-                branch_id,
-                request.database_id,
-                request.codec_id.as_str(),
-            ) {
+    match branch_id {
+        Some(branch_id) => {
+            match service.reconcile_branch_quarantine(branch_id, database_id, codec_id.as_str()) {
                 Ok(report) => LifecycleQuarantineRepairOutcome::from_branch_report(&report),
                 Err(source) => Ok(LifecycleQuarantineRepairOutcome::failed_from_service(
                     source,
                 )),
             }
         }
-        LifecycleQuarantineRepairScope::Family => {
-            match service
-                .reconcile_quarantine_family(request.database_id, request.codec_id.as_str())
-            {
-                Ok(report) => LifecycleQuarantineRepairOutcome::from_family_report(&report),
-                Err(source) => Ok(LifecycleQuarantineRepairOutcome::failed_from_service(
-                    source,
-                )),
-            }
-        }
+        None => match service.reconcile_quarantine_family(database_id, codec_id.as_str()) {
+            Ok(report) => LifecycleQuarantineRepairOutcome::from_family_report(&report),
+            Err(source) => Ok(LifecycleQuarantineRepairOutcome::failed_from_service(
+                source,
+            )),
+        },
     }
 }
 
-pub(crate) fn purge_request_from_maintenance_task(
+pub(crate) fn purge_proof_from_maintenance_task(
     task: &MaintenanceTask,
-    database_id: [u8; 16],
-    codec_id: LifecycleCodecId,
     recovery_health: RecoveryHealth,
     default_branch_id: BranchId,
     inventory_token: QuarantineInventoryToken,
-) -> LifecycleResult<LifecyclePurgeRequest> {
+) -> LifecycleResult<(BranchId, LifecyclePurgeProof)> {
     if task.kind() != MaintenanceTaskKind::Purge {
         return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "purge request requires purge task",
@@ -1349,36 +1265,28 @@ pub(crate) fn purge_request_from_maintenance_task(
             });
         }
     };
-    LifecyclePurgeRequest::new(
+    Ok((
         branch_id,
-        database_id,
-        codec_id,
         // Pass the candidate's branch so the proof refuses reclaim under
         // Telemetry debt that names this branch (the live current
         // recovery health may carry branch-scoped faults attached by
         // recovery or by prior quarantine attempts via
         // `with_affected_branch`).
         LifecyclePurgeProof::fresh_for_candidate(recovery_health, inventory_token, branch_id),
-    )
+    ))
 }
 
-pub(crate) fn repair_request_from_maintenance_task(
+pub(crate) fn repair_branch_from_maintenance_task(
     task: &MaintenanceTask,
-    database_id: [u8; 16],
-    codec_id: LifecycleCodecId,
-) -> LifecycleResult<LifecycleQuarantineRepairRequest> {
+) -> LifecycleResult<Option<BranchId>> {
     if task.kind() != MaintenanceTaskKind::Repair {
         return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "repair request requires repair task",
         });
     }
     match task.scope() {
-        super::MaintenanceTaskScope::Branch(branch_id) => {
-            LifecycleQuarantineRepairRequest::branch(branch_id, database_id, codec_id)
-        }
-        super::MaintenanceTaskScope::Quarantine | super::MaintenanceTaskScope::Global => {
-            LifecycleQuarantineRepairRequest::family(database_id, codec_id)
-        }
+        super::MaintenanceTaskScope::Branch(branch_id) => Ok(Some(branch_id)),
+        super::MaintenanceTaskScope::Quarantine | super::MaintenanceTaskScope::Global => Ok(None),
         _ => Err(LifecycleError::MaintenanceTaskFailed {
             reason: "repair task scope is invalid",
         }),
@@ -1398,6 +1306,35 @@ pub(crate) fn quarantine_task_without_request() -> MaintenanceOutcome {
     )
     .with_reason("quarantine task requires an explicit quarantine request")
     .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+}
+
+fn validate_purge_request(
+    database_id: [u8; 16],
+    proof: &LifecyclePurgeProof,
+) -> LifecycleResult<()> {
+    if database_id == [0; 16] {
+        return Err(LifecycleError::InvalidConfig {
+            field: "database_id",
+            reason: "must not be zero",
+        });
+    }
+    if proof.status == LifecyclePurgeProofStatus::CompleteFresh && proof.inventory_token.is_none() {
+        return Err(LifecycleError::InvalidConfig {
+            field: "inventory_token",
+            reason: "fresh purge proof requires an inventory token",
+        });
+    }
+    Ok(())
+}
+
+fn validate_repair_request(database_id: [u8; 16]) -> LifecycleResult<()> {
+    if database_id == [0; 16] {
+        return Err(LifecycleError::InvalidConfig {
+            field: "database_id",
+            reason: "must not be zero",
+        });
+    }
+    Ok(())
 }
 
 fn status_from_report(status: QuarantineObjectStatus) -> LifecycleQuarantineStatus {

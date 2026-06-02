@@ -5,7 +5,7 @@ use crate::backend::{
     BackendMetadata, BackendRange, BackendResult, PublishDurability, PublishError,
     PublishFailureKind, PublishMode, PublishOutcome,
 };
-use crate::layout::ObjectLayout;
+use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::QuarantineService;
 use std::collections::BTreeMap;
@@ -339,18 +339,17 @@ fn quarantine_inventory_mismatch_blocks_followup_purge() {
             faults,
         } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::QuarantineInventoryMismatch)
     ));
-    let purge = LifecyclePurgeRequest::new(
+    let purge = purge_quarantine(
+        &QuarantineService::new(&backend),
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
-        fresh_purge_proof(
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(
             &QuarantineService::new(&QuarantineTestBackend::durable()),
             health.clone(),
         ),
     )
-    .expect("purge request");
-
-    let purge = purge_quarantine(&QuarantineService::new(&backend), &purge);
+    .expect("purge outcome");
 
     assert_eq!(
         purge.status(),
@@ -460,15 +459,14 @@ fn quarantine_missing_source_is_transient_service_failure_not_publish_failure() 
 #[test]
 fn purge_requires_fresh_proof_before_backend_access() {
     let backend = QuarantineTestBackend::durable();
-    let request = LifecyclePurgeRequest::new(
+    let outcome = purge_quarantine(
+        &QuarantineService::new(&backend),
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
-        LifecyclePurgeProof::stale(RecoveryHealth::Healthy),
+        &LifecycleCodecId::identity(),
+        &LifecyclePurgeProof::stale(RecoveryHealth::Healthy),
     )
-    .expect("purge request");
-
-    let outcome = purge_quarantine(&QuarantineService::new(&backend), &request);
+    .expect("purge outcome");
 
     assert_eq!(outcome.status(), LifecyclePurgeStatus::StaleProof);
     assert_eq!(backend.operations(), Vec::<Operation>::new());
@@ -483,11 +481,12 @@ fn purge_request_rejects_missing_database_id_before_backend_access() {
     let backend = QuarantineTestBackend::durable();
     let service = QuarantineService::new(&backend);
     assert_eq!(
-        LifecyclePurgeRequest::new(
+        purge_quarantine(
+            &service,
             branch_id(),
             [0; 16],
-            LifecycleCodecId::identity(),
-            fresh_purge_proof(&service, RecoveryHealth::Healthy),
+            &LifecycleCodecId::identity(),
+            &fresh_purge_proof(&service, RecoveryHealth::Healthy),
         ),
         Err(LifecycleError::InvalidConfig {
             field: "database_id",
@@ -508,15 +507,14 @@ fn purge_blocked_recovery_health_defers_before_backend_access() {
         .expect("fault")],
     )
     .expect("health");
-    let request = LifecyclePurgeRequest::new(
+    let outcome = purge_quarantine(
+        &QuarantineService::new(&backend),
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
-        fresh_purge_proof(&QuarantineService::new(&backend), health),
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(&QuarantineService::new(&backend), health),
     )
-    .expect("purge request");
-
-    let outcome = purge_quarantine(&QuarantineService::new(&backend), &request);
+    .expect("purge outcome");
 
     assert_eq!(
         outcome.status(),
@@ -539,14 +537,14 @@ fn purge_deletes_inventory_listed_quarantine_objects() {
     );
     let quarantine_object = quarantine.quarantine_object().expect("object").clone();
 
-    let purge = LifecyclePurgeRequest::new(
+    let outcome = purge_quarantine(
+        &service,
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
-        fresh_purge_proof(&service, RecoveryHealth::Healthy),
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(&service, RecoveryHealth::Healthy),
     )
-    .expect("purge request");
-    let outcome = purge_quarantine(&service, &purge);
+    .expect("purge outcome");
 
     assert_eq!(outcome.status(), LifecyclePurgeStatus::Completed);
     assert_eq!(
@@ -579,15 +577,14 @@ fn purge_delete_failure_retains_entry_and_preserves_source_error() {
     );
     let quarantine_object = quarantine.quarantine_object().expect("object").clone();
     backend.fail_delete(quarantine_object.clone(), BackendErrorKind::Interrupted);
-    let purge = LifecyclePurgeRequest::new(
+    let outcome = purge_quarantine(
+        &service,
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
-        fresh_purge_proof(&service, RecoveryHealth::Healthy),
+        &LifecycleCodecId::identity(),
+        &fresh_purge_proof(&service, RecoveryHealth::Healthy),
     )
-    .expect("purge request");
-
-    let outcome = purge_quarantine(&service, &purge);
+    .expect("purge outcome");
 
     assert_eq!(
         outcome.status(),
@@ -608,17 +605,16 @@ fn repair_reports_unlisted_quarantine_object_as_health_debt() {
         ObjectLayout::quarantine_object(&branch_id().to_string(), "orphan").expect("object"),
         b"orphaned",
     );
-    let request = LifecycleQuarantineRepairRequest::branch(
+    let outcome = repair_branch_quarantine(
+        &QuarantineService::new(&backend),
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
+        &LifecycleCodecId::identity(),
     )
-    .expect("repair request");
-
-    let outcome = repair_quarantine(&QuarantineService::new(&backend), &request).expect("repair");
+    .expect("repair");
 
     assert!(outcome.completed_with_health_debt());
-    assert_eq!(outcome.reports()[0].unlisted_objects(), 1);
+    assert_eq!(outcome.unlisted_objects(), 1);
     assert!(outcome.recovery_health().is_some());
     assert_eq!(
         outcome.maintenance_outcome().status(),
@@ -627,12 +623,34 @@ fn repair_reports_unlisted_quarantine_object_as_health_debt() {
 }
 
 #[test]
+fn repair_family_reports_malformed_quarantine_object_facts() {
+    let backend = QuarantineTestBackend::durable()
+        .with_object(malformed_family_quarantine_object(), b"malformed");
+    let outcome = repair_quarantine_family(
+        &QuarantineService::new(&backend),
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
+    )
+    .expect("repair");
+
+    assert!(outcome.completed_with_health_debt());
+    assert_eq!(outcome.report_count(), 0);
+    assert_eq!(outcome.malformed_objects(), 1);
+    assert_eq!(
+        outcome.maintenance_outcome().status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_eq!(outcome.maintenance_outcome().affected_objects(), 1);
+}
+
+#[test]
 fn repair_request_rejects_missing_database_id_before_backend_access() {
     assert_eq!(
-        LifecycleQuarantineRepairRequest::branch(
+        repair_branch_quarantine(
+            &QuarantineService::new(&QuarantineTestBackend::durable()),
             branch_id(),
             [0; 16],
-            LifecycleCodecId::identity(),
+            &LifecycleCodecId::identity(),
         ),
         Err(LifecycleError::InvalidConfig {
             field: "database_id",
@@ -640,7 +658,11 @@ fn repair_request_rejects_missing_database_id_before_backend_access() {
         })
     );
     assert_eq!(
-        LifecycleQuarantineRepairRequest::family([0; 16], LifecycleCodecId::identity()),
+        repair_quarantine_family(
+            &QuarantineService::new(&QuarantineTestBackend::durable()),
+            [0; 16],
+            &LifecycleCodecId::identity(),
+        ),
         Err(LifecycleError::InvalidConfig {
             field: "database_id",
             reason: "must not be zero",
@@ -652,14 +674,13 @@ fn repair_request_rejects_missing_database_id_before_backend_access() {
 fn repair_backend_unavailable_preserves_source_chain() {
     let backend = QuarantineTestBackend::durable();
     backend.fail_list(BackendErrorKind::Interrupted);
-    let request = LifecycleQuarantineRepairRequest::branch(
+    let outcome = repair_branch_quarantine(
+        &QuarantineService::new(&backend),
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
+        &LifecycleCodecId::identity(),
     )
-    .expect("repair request");
-
-    let outcome = repair_quarantine(&QuarantineService::new(&backend), &request).expect("repair");
+    .expect("repair");
 
     assert!(outcome.backend_unavailable());
     assert!(outcome.source_error().is_some());
@@ -669,16 +690,13 @@ fn repair_backend_unavailable_preserves_source_chain() {
 #[test]
 fn repair_mutation_is_rejected_before_backend_access() {
     let backend = QuarantineTestBackend::durable();
-    let request = LifecycleQuarantineRepairRequest::branch(
+    let error = crate::lifecycle::quarantine::repair_branch_quarantine_with_mutation_for_test(
+        &QuarantineService::new(&backend),
         branch_id(),
         DATABASE_ID,
-        LifecycleCodecId::identity(),
+        &LifecycleCodecId::identity(),
     )
-    .expect("repair request")
-    .with_mutation_allowed(true);
-
-    let error = repair_quarantine(&QuarantineService::new(&backend), &request)
-        .expect_err("mutation reject");
+    .expect_err("mutation reject");
 
     assert_eq!(
         error,
@@ -1051,6 +1069,15 @@ fn branch_id() -> BranchId {
 
 fn source_object() -> ObjectName {
     ObjectLayout::table_object(&branch_id().to_string(), 0, "source").expect("table object")
+}
+
+fn malformed_family_quarantine_object() -> ObjectName {
+    ObjectName::new(format!(
+        "{}/{}/table0001",
+        ObjectFamily::Quarantine.as_str(),
+        "not-a-branch"
+    ))
+    .expect("malformed branch quarantine object")
 }
 
 fn quarantine_request(
