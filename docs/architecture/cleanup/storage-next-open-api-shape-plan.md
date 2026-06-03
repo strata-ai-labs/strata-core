@@ -294,6 +294,12 @@ Add guard coverage after the migration:
 4. docs showing ephemeral open only as explicit volatile storage;
 5. tests for `open_local` failure when `localfs` is unavailable, if applicable.
 
+`CLN3-O6` closes the storage-next side by documenting durable-local native
+opens before explicit ephemeral opens in the crate/API rustdoc, guarding
+production source against `StorageOpenOptions::default()` open paths, and
+guarding API source against silent durable-to-cache fallback wording. The
+no-`localfs` rejection test for `open_local` landed with `CLN3-O5`.
+
 ## Compatibility Strategy
 
 The migration should be additive before it is subtractive.

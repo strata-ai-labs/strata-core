@@ -1,8 +1,12 @@
 //! Storage substrate for Strata.
 //!
-//! This crate currently defines storage module ownership buckets. The public API
-//! remains empty until the backend, format, and lifecycle contracts are
-//! implemented.
+//! The supported public boundary is [`api`]. Native callers that have a
+//! database directory should open durable local storage with
+//! `api::StorageRuntime::open_local(root)`.
+//!
+//! Volatile storage is available only through explicit APIs such as
+//! `api::StorageRuntime::open_ephemeral()` for tests, demos, and sessions that
+//! intentionally do not persist after the runtime is dropped.
 
 #![deny(unsafe_code)]
 

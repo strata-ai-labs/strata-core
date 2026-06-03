@@ -1,4 +1,29 @@
 //! Engine-facing storage API boundary.
+//!
+//! Native database opens should use durable local storage first:
+//!
+//! ```no_run
+//! # use strata_storage_next::api::{StorageApiResult, StorageRuntime};
+//! # fn open(root: std::path::PathBuf) -> StorageApiResult<()> {
+//! let outcome = StorageRuntime::open_local(root)?;
+//! let runtime = outcome.into_runtime();
+//! # let _ = runtime;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Volatile storage must be requested explicitly. Use this for tests, demos, or
+//! sessions where losing all state after the runtime is dropped is intended:
+//!
+//! ```
+//! # use strata_storage_next::api::{StorageApiResult, StorageRuntime};
+//! # fn open() -> StorageApiResult<()> {
+//! let outcome = StorageRuntime::open_ephemeral()?;
+//! let runtime = outcome.into_runtime();
+//! # let _ = runtime;
+//! # Ok(())
+//! # }
+//! ```
 
 #![allow(
     missing_docs,

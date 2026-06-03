@@ -161,6 +161,37 @@ fn api_open_options_do_not_have_implicit_default_mode() {
 }
 
 #[test]
+fn production_open_paths_do_not_use_storage_open_options_default() {
+    let root = common::crate_root();
+    for file in production_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read production source");
+        let compact = text.split_whitespace().collect::<String>();
+        for forbidden in [
+            "StorageOpenOptions::default",
+            "StorageRuntime::open(StorageOpenOptions::default())",
+            "StorageRuntime::open(Default::default())",
+        ] {
+            assert!(
+                !compact.contains(forbidden),
+                "{} uses implicit storage open default via {forbidden}",
+                file.strip_prefix(&root).unwrap_or(&file).display()
+            );
+        }
+
+        for (line_number, line) in text.lines().enumerate() {
+            let compact_line = line.split_whitespace().collect::<String>();
+            assert!(
+                !(compact_line.contains("StorageOpenOptions")
+                    && compact_line.contains("Default::default()")),
+                "{}:{} uses implicit StorageOpenOptions default: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn api_open_local_routes_to_durable_local_without_cache_fallback() {
     let root = common::crate_root();
     let runtime = fs::read_to_string(root.join("src/api/runtime.rs")).expect("read runtime");
@@ -173,6 +204,40 @@ fn api_open_local_routes_to_durable_local_without_cache_fallback() {
     assert!(compact_runtime.contains("capability:\"localfs\""));
     assert!(!compact_runtime.contains("open_local(root:implInto<std::path::PathBuf>)->StorageApiResult<StorageOpenOutcome<'static>>{Self::open_cache()"));
     assert!(!compact_runtime.contains("open_local(root:implInto<std::path::PathBuf>)->StorageApiResult<StorageOpenOutcome<'static>>{Self::open_ephemeral()"));
+}
+
+#[test]
+fn api_source_rejects_silent_durable_to_cache_fallback_wording() {
+    let root = common::crate_root();
+    for file in api_source_files(&root) {
+        let text = fs::read_to_string(&file).expect("read API source");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !looks_like_silent_durable_to_cache_fallback(line),
+                "{}:{} suggests silent durable-to-cache fallback: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn api_docs_show_native_durable_open_before_explicit_ephemeral_open() {
+    let root = common::crate_root();
+    let api_mod = fs::read_to_string(root.join("src/api/mod.rs")).expect("read api mod");
+    let durable = api_mod
+        .find("StorageRuntime::open_local(root)")
+        .expect("API docs show native durable local open");
+    let ephemeral = api_mod
+        .find("StorageRuntime::open_ephemeral()")
+        .expect("API docs show explicit ephemeral open");
+
+    assert!(
+        durable < ephemeral,
+        "API docs must present native durable local open before ephemeral open"
+    );
+    assert!(api_mod.contains("Volatile storage must be requested explicitly"));
 }
 
 #[test]
@@ -347,6 +412,24 @@ fn api_source_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn production_source_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    common::source_guard_helpers::collect_rs_files(&root.join("src"), &mut files);
+    files
+        .into_iter()
+        .filter(|file| {
+            let relative = file.strip_prefix(root).unwrap_or(file.as_path());
+            let path = relative.to_string_lossy();
+            !path.contains("/tests/")
+                && !path.ends_with("/tests.rs")
+                && !path.ends_with("_tests.rs")
+                && !path.contains("/testkit/")
+                && !path.contains("/test_support/")
+                && !path.contains("/proptest-regressions/")
+        })
+        .collect()
+}
+
 fn contains_forbidden_api_dependency(line: &str) -> bool {
     let compact = compact_line(line);
     [
@@ -437,6 +520,25 @@ fn assert_storage_open_options_derive_excludes_default(compact_source: &str) {
             .any(|trait_path| trait_path.ends_with("Default")),
         "StorageOpenOptions must not derive Default"
     );
+}
+
+fn looks_like_silent_durable_to_cache_fallback(line: &str) -> bool {
+    let compact = compact_line(line);
+    let mentions_fallback = compact.contains("fallback")
+        || compact.contains("fallbacks")
+        || compact.contains("fallsback")
+        || compact.contains("fallingback");
+    let explicitly_rejected = compact.contains("never")
+        || compact.contains("without")
+        || compact.contains("cannot")
+        || compact.contains("reject")
+        || compact.contains("mustnot")
+        || compact.contains("doesnot");
+
+    compact.contains("durable")
+        && compact.contains("cache")
+        && mentions_fallback
+        && !explicitly_rejected
 }
 
 fn compact_line(line: &str) -> String {
