@@ -153,6 +153,16 @@ fn api_open_unsupported_modes_do_not_claim_production_support() {
 }
 
 #[test]
+fn api_open_options_do_not_have_implicit_default_mode() {
+    let root = common::crate_root();
+    let options = fs::read_to_string(root.join("src/api/options.rs")).expect("read options");
+    let compact_options = options.split_whitespace().collect::<String>();
+
+    assert!(!compact_options.contains("implDefaultforStorageOpenOptions"));
+    assert!(!options.contains("StorageOpenOptions::default"));
+}
+
+#[test]
 fn api_source_avoids_engine_product_and_runtime_dependencies() {
     let root = common::crate_root();
     for file in api_source_files(&root) {

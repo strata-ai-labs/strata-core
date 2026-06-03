@@ -73,12 +73,12 @@ fn api_module_exports_storage_runtime_shell() {
 }
 
 #[test]
-fn open_options_default_is_cache_or_explicitly_invalid() {
-    let options: StorageOpenOptions = Default::default();
+fn open_options_do_not_have_implicit_default_mode() {
+    let options_source = include_str!("../options.rs");
+    let compact_options_source = options_source.split_whitespace().collect::<String>();
 
-    assert_eq!(options.mode(), StorageMode::Cache);
-    assert!(options.validate().is_ok());
-    assert!(!options.requires_backend());
+    assert!(!compact_options_source.contains("implDefaultforStorageOpenOptions"));
+    assert!(!options_source.contains("StorageOpenOptions::default"));
 }
 
 #[test]

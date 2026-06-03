@@ -172,12 +172,6 @@ impl StorageOpenOptions {
     }
 }
 
-impl Default for StorageOpenOptions {
-    fn default() -> Self {
-        Self::cache()
-    }
-}
-
 impl StorageWalGrowthPolicy {
     #[must_use]
     pub const fn thresholds(

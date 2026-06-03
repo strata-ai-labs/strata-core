@@ -227,18 +227,21 @@ This is a mechanical clarity slice. It should not change runtime behavior.
 
 After call sites are explicit, choose the compatibility policy.
 
-Preferred final state:
+Chosen final state:
 
 ```rust
 // no impl Default for StorageOpenOptions
 ```
+
+`CLN3-O4` removes the implementation outright because storage-next call sites
+are explicit after `CLN3-O3`.
 
 If removing `Default` creates too much external churn for the current release,
 deprecate it first:
 
 ```rust
 #[deprecated(
-    note = "StorageOpenOptions::default() opens ephemeral cache mode; choose cache(), durable_local(), or open_local() explicitly"
+    note = "StorageOpenOptions::default() opens ephemeral cache mode; choose cache(), ephemeral(), or durable_local() explicitly"
 )]
 impl Default for StorageOpenOptions { ... }
 ```
