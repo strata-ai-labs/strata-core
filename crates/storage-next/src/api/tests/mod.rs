@@ -74,7 +74,7 @@ fn api_module_exports_storage_runtime_shell() {
 
 #[test]
 fn open_options_default_is_cache_or_explicitly_invalid() {
-    let options = StorageOpenOptions::default();
+    let options: StorageOpenOptions = Default::default();
 
     assert_eq!(options.mode(), StorageMode::Cache);
     assert!(options.validate().is_ok());

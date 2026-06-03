@@ -10,8 +10,7 @@ fn api_property_harness_checks_empty_runtime_reads_are_deterministic() {
     use proptest::test_runner::TestCaseError;
     use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
     use strata_storage_next::api::{
-        BranchId, PointReadRequest, ReadBound, StorageKey, StorageOpenOptions, StorageRuntime,
-        StorageSpaceId,
+        BranchId, PointReadRequest, ReadBound, StorageKey, StorageRuntime, StorageSpaceId,
     };
 
     let mut runner = TestRunner::new(Config {
@@ -24,7 +23,7 @@ fn api_property_harness_checks_empty_runtime_reads_are_deterministic() {
 
     runner
         .run(&vec(any::<u8>(), 1..=32), |bytes| {
-            let outcome = StorageRuntime::open(StorageOpenOptions::default())
+            let outcome = StorageRuntime::open_ephemeral()
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             let runtime = outcome.summary();
             if !runtime.maintenance_ready() {
@@ -58,11 +57,11 @@ fn api_property_harness_checks_empty_runtime_reads_are_deterministic() {
 #[test]
 fn api_property_harness_rejects_closed_runtime_reads() {
     use strata_storage_next::api::{
-        BranchId, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey,
-        StorageOpenOptions, StorageRuntime, StorageSpaceId,
+        BranchId, PointReadRequest, ReadBound, StorageApiErrorClass, StorageKey, StorageRuntime,
+        StorageSpaceId,
     };
 
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::default())
+    let mut runtime = StorageRuntime::open_ephemeral()
         .expect("open runtime")
         .into_runtime();
     runtime.close().expect("close runtime");
