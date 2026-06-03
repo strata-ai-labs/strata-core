@@ -523,7 +523,7 @@ fn assert_storage_open_options_derive_excludes_default(compact_source: &str) {
 }
 
 fn looks_like_silent_durable_to_cache_fallback(line: &str) -> bool {
-    let compact = compact_line(line);
+    let compact = compact_full_line(line);
     let mentions_fallback = compact.contains("fallback")
         || compact.contains("fallbacks")
         || compact.contains("fallsback")
@@ -539,6 +539,12 @@ fn looks_like_silent_durable_to_cache_fallback(line: &str) -> bool {
         && compact.contains("cache")
         && mentions_fallback
         && !explicitly_rejected
+}
+
+fn compact_full_line(line: &str) -> String {
+    line.split_whitespace()
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn compact_line(line: &str) -> String {
@@ -647,6 +653,19 @@ pub fn leaky(
 fn api_runtime_guard_catches_future_after_lowercasing() {
     assert!(contains_forbidden_runtime_dependency(
         "pub fn returns_future() -> impl Future<Output = ()>"
+    ));
+}
+
+#[test]
+fn durable_to_cache_fallback_guard_scans_rustdoc_comments() {
+    assert!(looks_like_silent_durable_to_cache_fallback(
+        "//! durable local falls back to cache mode"
+    ));
+    assert!(looks_like_silent_durable_to_cache_fallback(
+        "/// durable local fallback to cache mode"
+    ));
+    assert!(!looks_like_silent_durable_to_cache_fallback(
+        "//! durable local never falls back to cache mode"
     ));
 }
 
