@@ -7,8 +7,8 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 use crate::api::{
     CommitBatch, CommitMutation, CommitOptions, CommitSummary, HistoryReadRequest,
     PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadRequest,
-    StorageApiErrorClass, StorageKey, StorageOpenOptions, StorageReadRow, StorageRuntime,
-    StorageSpaceId, StorageValue, TimestampLookupRequest, VersionLookupRequest,
+    StorageApiErrorClass, StorageKey, StorageReadRow, StorageRuntime, StorageSpaceId, StorageValue,
+    TimestampLookupRequest, VersionLookupRequest,
 };
 use crate::testkit::TestkitError;
 
@@ -71,7 +71,7 @@ type ModelRow = (Vec<u8>, Option<Vec<u8>>, CommitVersion, Timestamp);
 pub fn check_storage_api_read_model_contract(
     script: &[u8],
 ) -> Result<StorageApiReadModelOutcome, TestkitError> {
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::default())
+    let mut runtime = StorageRuntime::open_ephemeral()
         .map_err(testkit_error)?
         .into_runtime();
     let mut model = BTreeMap::<Vec<u8>, Vec<ModelRow>>::new();

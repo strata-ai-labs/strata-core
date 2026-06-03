@@ -33,9 +33,10 @@ pub fn check_storage_api_diagnostics_model_contract(
         script
     };
     let options = if script[0] % 2 == 0 {
-        StorageOpenOptions::default()
+        StorageOpenOptions::ephemeral()
     } else {
-        StorageOpenOptions::default().with_budget_policy(crate::api::StorageBudgetPolicy::LowMemory)
+        StorageOpenOptions::ephemeral()
+            .with_budget_policy(crate::api::StorageBudgetPolicy::LowMemory)
     };
     let mut runtime = StorageRuntime::open(options)
         .map_err(testkit_error)?

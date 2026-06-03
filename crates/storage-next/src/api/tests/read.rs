@@ -7,8 +7,8 @@ use crate::commit::COMMIT_TIMELINE_SPACE;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 
 fn open_runtime() -> StorageRuntime<'static> {
-    StorageRuntime::open(StorageOpenOptions::default())
-        .expect("open cache runtime")
+    StorageRuntime::open_ephemeral()
+        .expect("open ephemeral runtime")
         .into_runtime()
 }
 

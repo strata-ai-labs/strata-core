@@ -5,7 +5,7 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 use crate::api::{
     BranchAction, BranchGeneration, BranchOperation, BranchRequest, BranchStatus, BranchSummary,
     CommitBatch, CommitMutation, CommitOptions, PointReadRequest, ReadBound, StorageApiErrorClass,
-    StorageKey, StorageOpenOptions, StorageRuntime, StorageSpaceId, StorageValue,
+    StorageKey, StorageRuntime, StorageSpaceId, StorageValue,
 };
 use crate::testkit::TestkitError;
 
@@ -82,7 +82,7 @@ pub fn check_storage_api_branch_model_contract(
     script: &[u8],
 ) -> Result<StorageApiBranchModelOutcome, TestkitError> {
     let script = non_empty_script(script);
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::default())
+    let mut runtime = StorageRuntime::open_ephemeral()
         .map_err(testkit_error)?
         .into_runtime();
     let mut outcome = StorageApiBranchModelOutcome {

@@ -12,7 +12,7 @@ pub enum StorageDurabilityPolicy {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageMode {
-    /// Volatile in-memory storage for tests, previews, and explicit
+    /// Volatile in-memory storage for tests, demos, and explicit
     /// ephemeral sessions. This mode does not persist data across process
     /// lifetime.
     Cache,
@@ -55,7 +55,7 @@ pub struct StorageOpenOptions {
 impl StorageOpenOptions {
     /// Open volatile cache storage.
     ///
-    /// Cache mode is intentionally non-durable. Use this for tests, previews,
+    /// Cache mode is intentionally non-durable. Use this for tests, demos,
     /// and explicitly ephemeral sessions rather than normal database opens.
     #[must_use]
     pub const fn cache() -> Self {

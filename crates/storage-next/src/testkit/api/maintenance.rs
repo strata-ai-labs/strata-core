@@ -8,8 +8,8 @@ use strata_core_next::BranchId;
 use crate::api::{
     CommitBatch, CommitMutation, CommitOptions, MaintenanceRequest, MaintenanceScope,
     MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask as ApiMaintenanceTask,
-    MaintenanceWalGrowthStatus, StorageApiError, StorageApiErrorClass, StorageKey,
-    StorageOpenOptions, StorageRuntime, StorageSpaceId, StorageValue,
+    MaintenanceWalGrowthStatus, StorageApiError, StorageApiErrorClass, StorageKey, StorageRuntime,
+    StorageSpaceId, StorageValue,
 };
 use crate::lifecycle::{
     LifecycleError, LifecycleLowerLayer, MaintenanceOutcome, MaintenanceOutcomeStatus,
@@ -60,7 +60,7 @@ pub fn check_storage_api_maintenance_model_contract(
     script: &[u8],
 ) -> Result<StorageApiMaintenanceModelOutcome, TestkitError> {
     let script = non_empty_script(script);
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::default())
+    let mut runtime = StorageRuntime::open_ephemeral()
         .map_err(testkit_error)?
         .into_runtime();
     let mut outcome = StorageApiMaintenanceModelOutcome {

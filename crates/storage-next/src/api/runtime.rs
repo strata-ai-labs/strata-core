@@ -137,7 +137,7 @@ impl StorageRuntime<'static> {
         Self::open_cache()
     }
 
-    /// Open a cache-mode runtime for cache-specific tests and previews.
+    /// Open a cache-mode runtime for cache-specific tests and demos.
     pub fn open_cache() -> StorageApiResult<StorageOpenOutcome<'static>> {
         Self::open(StorageOpenOptions::cache())
     }
