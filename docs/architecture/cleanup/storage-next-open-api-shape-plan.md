@@ -196,6 +196,12 @@ to manually keep a backend value alive is not ergonomic enough for the default
 product path, so that work should land as a separate ownership slice before
 `StorageRuntime::open_local(root)` is introduced.
 
+`CLN3-O5` resolves that ownership blocker by adding an internal
+owned-or-borrowed backend handle. That lets `StorageRuntime::open_local(root)`
+construct a localfs backend, retain it through durable service handles, and
+return a durable runtime without leaking memory or relying on self-referential
+storage.
+
 ### `CLN3-O2`: Rename Or Document Ephemeral Cache Mode
 
 Make volatile storage impossible to miss:
@@ -255,6 +261,16 @@ examples and production call sites until the implementation can be removed.
 
 Update the engine-facing open path so native Strata databases use durable local
 by default.
+
+`CLN3-O5` implements the storage-next side of this boundary by adding
+`StorageRuntime::open_local(root)` and
+`StorageRuntime::open_durable_local(root, policy)`. These helpers construct and
+own the local backend inside the storage runtime, so callers that have a native
+database directory can open durable-local storage directly. They never fall
+back to cache mode; builds without `localfs` return an explicit unsupported
+capability error. The old `strata-engine` crate still uses the pre-V1 storage
+crate, so product cutover to storage-next remains owned by the later
+engine-next milestones.
 
 Expected product rule:
 

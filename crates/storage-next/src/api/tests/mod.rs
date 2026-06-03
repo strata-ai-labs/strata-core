@@ -643,6 +643,121 @@ fn open_cache_helper_returns_open_runtime_and_cache_summary() {
 }
 
 #[test]
+#[cfg(feature = "localfs")]
+fn open_local_returns_durable_standard_runtime() {
+    let outcome = StorageRuntime::open_local(temp_dir_for_api_test("open-local"))
+        .expect("local durable open should succeed");
+    let summary = outcome.summary();
+    let mut runtime = outcome.into_runtime();
+
+    assert_eq!(
+        summary.mode(),
+        StorageMode::DurableLocal {
+            policy: StorageDurabilityPolicy::Standard,
+        }
+    );
+    assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
+    assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Healthy);
+    assert!(summary.recovered_visible_version().is_some());
+    assert!(summary.has_durable_recovery_facts());
+    assert!(summary.backend_capabilities_used());
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+
+    let close = runtime.close().expect("local durable close");
+    assert!(close.durable_synced());
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_local_reopens_persisted_commits_from_same_root() {
+    let root = temp_dir_for_api_test("open-local-reopen");
+    let branch = StorageRuntime::default_branch_id_for_test();
+    let storage_space = StorageSpaceId::new(vec![0x20]).expect("valid engine storage space");
+    let storage_key = key(b"persisted");
+    let storage_value = StorageValue::new(b"value".to_vec());
+    let batch = CommitBatch::new(
+        branch,
+        vec![CommitMutation::Put {
+            storage_space: storage_space.clone(),
+            key: storage_key.clone(),
+            value: storage_value.clone(),
+            ttl: None,
+        }],
+        CommitOptions::default(),
+    )
+    .expect("valid put batch");
+
+    let mut first = StorageRuntime::open_local(root.clone())
+        .expect("first local durable open")
+        .into_runtime();
+    first.commit(&batch).expect("persisted commit");
+    first.close().expect("first local durable close");
+    drop(first);
+
+    let second = StorageRuntime::open_local(root).expect("second local durable open");
+    let second_summary = second.summary();
+    let second = second.into_runtime();
+    let read = second
+        .read_point(&PointReadRequest::new(
+            branch,
+            storage_space,
+            storage_key,
+            ReadBound::Latest,
+        ))
+        .expect("read persisted value");
+    let row = read.row().expect("persisted row");
+
+    assert_eq!(
+        second_summary.disposition(),
+        StorageOpenDisposition::OpenedExisting
+    );
+    assert_eq!(row.value(), Some(&storage_value));
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_local_returns_requested_policy() {
+    let outcome = StorageRuntime::open_durable_local(
+        temp_dir_for_api_test("open-durable-local-always"),
+        StorageDurabilityPolicy::Always,
+    )
+    .expect("local durable open should succeed");
+    let summary = outcome.summary();
+    let mut runtime = outcome.into_runtime();
+
+    assert_eq!(
+        summary.mode(),
+        StorageMode::DurableLocal {
+            policy: StorageDurabilityPolicy::Always,
+        }
+    );
+    assert!(summary.has_durable_recovery_facts());
+
+    let close = runtime.close().expect("local durable close");
+    assert!(close.durable_synced());
+}
+
+#[test]
+#[cfg(not(feature = "localfs"))]
+fn open_local_without_localfs_rejects_without_cache_fallback() {
+    let outcome = StorageRuntime::open_local(std::path::PathBuf::from("no-localfs"));
+
+    match outcome {
+        Ok(open) => {
+            let summary = open.summary();
+            panic!(
+                "open_local unexpectedly succeeded in mode {:?}",
+                summary.mode()
+            );
+        }
+        Err(error) => {
+            assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+            assert_eq!(error.code(), "unsupported.storage_api.capability");
+        }
+    }
+}
+
+#[test]
 fn open_cache_returns_open_runtime() {
     let outcome = StorageRuntime::open(StorageOpenOptions::cache()).expect("cache open");
     let runtime = outcome.into_runtime();

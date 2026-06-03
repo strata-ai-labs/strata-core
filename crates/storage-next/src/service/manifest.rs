@@ -8,7 +8,9 @@
     )
 )]
 
-use crate::backend::{Backend, BackendError, BackendErrorKind, PublishError, PublishOutcome};
+use crate::backend::{
+    Backend, BackendError, BackendErrorKind, BackendHandle, PublishError, PublishOutcome,
+};
 use crate::format::{
     decode_branch_catalog_manifest, decode_manifest, decode_pending_releases_manifest,
     decode_table_manifest, encode_branch_catalog_manifest, encode_manifest,
@@ -230,19 +232,21 @@ pub(crate) type PendingReleasesManifestService<'a> =
     ManifestService<'a, PENDING_RELEASES_MANIFEST_SERVICE>;
 
 pub(crate) struct ManifestService<'a, const ROLE: u8> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
 }
 
 impl<'a, const ROLE: u8> ManifestService<'a, ROLE> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        Self {
+            backend: backend.into(),
+        }
     }
 }
 
 impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
     pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<DatabaseManifest>> {
         let object = database_manifest_object()?;
-        read_optional(self.backend, ManifestRole::Database, &object)?
+        read_optional(&self.backend, ManifestRole::Database, &object)?
             .map(|bytes| decode_database_manifest(&object, &bytes))
             .transpose()
     }
@@ -278,7 +282,7 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
                 source,
             }
         })?;
-        publish_database_manifest(self.backend, &object, &manifest, CREATE_MANIFEST_OBJECT)
+        publish_database_manifest(&self.backend, &object, &manifest, CREATE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn publish_current(
@@ -289,7 +293,7 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
         // Raw publish replaces the manifest the caller supplied; it does not
         // merge with current durable state. The persist_* paths below own
         // preservation of unrelated recovery facts.
-        publish_database_manifest(self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
+        publish_database_manifest(&self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn persist_active_wal_segment(
@@ -326,7 +330,7 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
                 object: object.clone(),
                 source,
             })?;
-        publish_database_manifest(self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
+        publish_database_manifest(&self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn persist_snapshot_facts(
@@ -368,7 +372,7 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
                 object: object.clone(),
                 source,
             })?;
-        publish_database_manifest(self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
+        publish_database_manifest(&self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn persist_flush_watermark(
@@ -402,7 +406,7 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
                 object: object.clone(),
                 source,
             })?;
-        publish_database_manifest(self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
+        publish_database_manifest(&self.backend, &object, &updated, REPLACE_MANIFEST_OBJECT)
     }
 }
 
@@ -413,7 +417,7 @@ impl ManifestService<'_, BRANCH_CATALOG_MANIFEST_SERVICE> {
     )]
     pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<BranchCatalogManifest>> {
         let object = branch_catalog_manifest_object()?;
-        read_optional(self.backend, ManifestRole::BranchCatalog, &object)?
+        read_optional(&self.backend, ManifestRole::BranchCatalog, &object)?
             .map(|bytes| decode_branch_catalog(&object, &bytes))
             .transpose()
     }
@@ -427,7 +431,7 @@ impl ManifestService<'_, BRANCH_CATALOG_MANIFEST_SERVICE> {
         manifest: &BranchCatalogManifest,
     ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
         let object = branch_catalog_manifest_object()?;
-        publish_branch_catalog(self.backend, &object, manifest, CREATE_MANIFEST_OBJECT)
+        publish_branch_catalog(&self.backend, &object, manifest, CREATE_MANIFEST_OBJECT)
     }
 
     pub(crate) fn publish_replace(
@@ -435,14 +439,14 @@ impl ManifestService<'_, BRANCH_CATALOG_MANIFEST_SERVICE> {
         manifest: &BranchCatalogManifest,
     ) -> ManifestServiceResult<BranchCatalogManifestWrite> {
         let object = branch_catalog_manifest_object()?;
-        publish_branch_catalog(self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
+        publish_branch_catalog(&self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
     }
 }
 
 impl ManifestService<'_, PENDING_RELEASES_MANIFEST_SERVICE> {
     pub(crate) fn load_current(&self) -> ManifestServiceResult<Option<PendingReleasesManifest>> {
         let object = pending_releases_manifest_object()?;
-        read_optional(self.backend, ManifestRole::PendingReleases, &object)?
+        read_optional(&self.backend, ManifestRole::PendingReleases, &object)?
             .map(|bytes| decode_pending_releases(&object, &bytes))
             .transpose()
     }
@@ -452,14 +456,14 @@ impl ManifestService<'_, PENDING_RELEASES_MANIFEST_SERVICE> {
         manifest: &PendingReleasesManifest,
     ) -> ManifestServiceResult<PendingReleasesManifestWrite> {
         let object = pending_releases_manifest_object()?;
-        publish_pending_releases(self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
+        publish_pending_releases(&self.backend, &object, manifest, REPLACE_MANIFEST_OBJECT)
     }
 }
 
 impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
     pub(crate) fn load(&self, branch_id: &str) -> ManifestServiceResult<Option<Vec<u8>>> {
         let object = table_manifest_object(branch_id)?;
-        read_optional(self.backend, ManifestRole::Table, &object)
+        read_optional(&self.backend, ManifestRole::Table, &object)
     }
 
     pub(crate) fn load_current(
@@ -468,7 +472,7 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
     ) -> ManifestServiceResult<Option<TableManifest>> {
         let branch_component = branch_id.to_string();
         let object = table_manifest_object(&branch_component)?;
-        read_optional(self.backend, ManifestRole::Table, &object)?
+        read_optional(&self.backend, ManifestRole::Table, &object)?
             .map(|bytes| decode_branch_table_manifest(branch_id, &object, &bytes))
             .transpose()
     }
@@ -493,7 +497,7 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
             .filter(is_branch_table_manifest_object)
             .map(|object| {
                 let branch_id = branch_id_from_table_manifest_object(&object)?;
-                read_optional(self.backend, ManifestRole::Table, &object)?
+                read_optional(&self.backend, ManifestRole::Table, &object)?
                     .map(|bytes| decode_branch_table_manifest(branch_id, &object, &bytes))
                     .transpose()?
                     .ok_or(ManifestServiceError::Missing {
@@ -527,7 +531,7 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
         bytes: &[u8],
     ) -> ManifestServiceResult<PublishOutcome> {
         let object = table_manifest_object(branch_id)?;
-        let outcome = ObjectPublisher::new(self.backend)
+        let outcome = ObjectPublisher::new(&self.backend)
             .publish_durable_create(&object, bytes)
             .map_err(|source| ManifestServiceError::Publish {
                 role: ManifestRole::Table,
@@ -548,7 +552,7 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
         bytes: &[u8],
     ) -> ManifestServiceResult<PublishOutcome> {
         let object = table_manifest_object(branch_id)?;
-        let outcome = ObjectPublisher::new(self.backend)
+        let outcome = ObjectPublisher::new(&self.backend)
             .publish_durable_replace(&object, bytes)
             .map_err(|source| ManifestServiceError::Publish {
                 role: ManifestRole::Table,
@@ -576,7 +580,7 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
         let object = table_manifest_object(&branch_component)?;
         validate_table_manifest_branch(branch_id, &object, manifest)?;
         publish_branch_table_manifest(
-            self.backend,
+            &self.backend,
             branch_id,
             &object,
             manifest,
@@ -593,7 +597,7 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
         let object = table_manifest_object(&branch_component)?;
         validate_table_manifest_branch(branch_id, &object, manifest)?;
         publish_branch_table_manifest(
-            self.backend,
+            &self.backend,
             branch_id,
             &object,
             manifest,

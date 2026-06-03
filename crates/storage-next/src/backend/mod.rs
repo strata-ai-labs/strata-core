@@ -10,6 +10,8 @@
 
 use crate::object::{ObjectName, ObjectPrefix};
 use std::fmt;
+#[cfg(feature = "localfs")]
+use std::sync::Arc;
 
 #[cfg(test)]
 mod conformance;
@@ -427,6 +429,134 @@ pub(crate) trait Backend: Send + Sync {
             name,
             BackendError::unsupported(BackendCapability::DurablePublish),
         ))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct BackendHandle<'a> {
+    inner: BackendHandleInner<'a>,
+}
+
+#[derive(Clone)]
+enum BackendHandleInner<'a> {
+    Borrowed(&'a dyn Backend),
+    #[cfg(feature = "localfs")]
+    Owned(Arc<dyn Backend>),
+}
+
+impl<'a> BackendHandle<'a> {
+    pub(crate) const fn borrowed(backend: &'a dyn Backend) -> Self {
+        Self {
+            inner: BackendHandleInner::Borrowed(backend),
+        }
+    }
+
+    pub(crate) fn as_backend(&self) -> &dyn Backend {
+        match &self.inner {
+            BackendHandleInner::Borrowed(backend) => *backend,
+            #[cfg(feature = "localfs")]
+            BackendHandleInner::Owned(backend) => backend.as_ref(),
+        }
+    }
+}
+
+#[cfg(feature = "localfs")]
+impl BackendHandle<'static> {
+    pub(crate) fn owned(backend: impl Backend + 'static) -> Self {
+        Self {
+            inner: BackendHandleInner::Owned(Arc::new(backend)),
+        }
+    }
+}
+
+impl<'a> From<&'a dyn Backend> for BackendHandle<'a> {
+    fn from(backend: &'a dyn Backend) -> Self {
+        Self::borrowed(backend)
+    }
+}
+
+impl<'a, T> From<&'a T> for BackendHandle<'a>
+where
+    T: Backend + Sized + 'a,
+{
+    fn from(backend: &'a T) -> Self {
+        Self::borrowed(backend)
+    }
+}
+
+impl fmt::Debug for BackendHandle<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BackendHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Backend for BackendHandle<'_> {
+    fn capabilities(&self) -> BackendCapabilities {
+        self.as_backend().capabilities()
+    }
+
+    fn read_object(&self, name: &ObjectName) -> BackendResult<Vec<u8>> {
+        self.as_backend().read_object(name)
+    }
+
+    fn read_range(&self, name: &ObjectName, range: BackendRange) -> BackendResult<Vec<u8>> {
+        self.as_backend().read_range(name, range)
+    }
+
+    fn write_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendMetadata> {
+        self.as_backend().write_object(name, bytes)
+    }
+
+    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+        self.as_backend().delete_object(name)
+    }
+
+    fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
+        self.as_backend().list_prefix(prefix)
+    }
+
+    fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
+        self.as_backend().object_metadata(name)
+    }
+
+    fn acquire_writer_lock(&self, name: &ObjectName) -> BackendResult<BackendWriterGuard> {
+        self.as_backend().acquire_writer_lock(name)
+    }
+
+    fn append_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendAppend> {
+        self.as_backend().append_object(name, bytes)
+    }
+
+    fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+        self.as_backend().sync_object(name)
+    }
+
+    fn conditional_create(
+        &self,
+        name: &ObjectName,
+        bytes: &[u8],
+    ) -> BackendResult<BackendMetadata> {
+        self.as_backend().conditional_create(name, bytes)
+    }
+
+    fn conditional_update(
+        &self,
+        name: &ObjectName,
+        expected: &BackendFence,
+        bytes: &[u8],
+    ) -> BackendResult<BackendMetadata> {
+        self.as_backend().conditional_update(name, expected, bytes)
+    }
+
+    fn publish_object(
+        &self,
+        name: &ObjectName,
+        bytes: &[u8],
+        mode: PublishMode,
+    ) -> PublishResult<PublishOutcome> {
+        self.as_backend().publish_object(name, bytes, mode)
     }
 }
 

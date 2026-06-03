@@ -85,7 +85,7 @@ impl SnapshotDeleteReport {
 
 impl SnapshotService<'_> {
     pub(crate) fn list_snapshots(&self) -> SnapshotServiceResult<Vec<SnapshotObject>> {
-        list_snapshot_objects(self.backend)
+        list_snapshot_objects(&self.backend)
     }
 
     pub(crate) fn latest_snapshot(&self) -> SnapshotServiceResult<Option<SnapshotObject>> {
@@ -100,7 +100,7 @@ impl SnapshotService<'_> {
         if let Some(snapshot_id) = live_snapshot_id {
             validate_snapshot_id(snapshot_id)?;
         }
-        require_capability(self.backend, BackendCapability::DeleteObject)?;
+        require_capability(&self.backend, BackendCapability::DeleteObject)?;
 
         let snapshots = self.list_snapshots()?;
         let retain_newest = retain_newest.max(1);

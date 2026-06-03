@@ -8,7 +8,7 @@
     )
 )]
 
-use crate::backend::{PublishFailureKind, PublishOutcome};
+use crate::backend::{BackendHandle, PublishFailureKind, PublishOutcome};
 use crate::format::{DatabaseManifest, SnapshotSection};
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
@@ -237,9 +237,10 @@ pub(crate) struct CheckpointService<'a> {
 }
 
 impl<'a> CheckpointService<'a> {
-    pub(crate) fn new(backend: &'a dyn crate::backend::Backend) -> Self {
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        let backend = backend.into();
         Self {
-            manifest: DatabaseManifestService::new(backend),
+            manifest: DatabaseManifestService::new(backend.clone()),
             snapshot: SnapshotService::new(backend),
         }
     }

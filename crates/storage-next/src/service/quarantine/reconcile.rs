@@ -423,8 +423,8 @@ impl QuarantineService<'_> {
         expected_database_id: [u8; 16],
         expected_codec_id: &str,
     ) -> QuarantineServiceResult<QuarantineReconciliationReport> {
-        require_capability(self.backend, BackendCapability::ListPrefix)?;
-        require_capability(self.backend, BackendCapability::ReadObject)?;
+        require_capability(&self.backend, BackendCapability::ListPrefix)?;
+        require_capability(&self.backend, BackendCapability::ReadObject)?;
 
         let inventory_object = inventory_object(branch_id)?;
         let mut report = QuarantineReconciliationReport::new(branch_id, inventory_object.clone());
@@ -432,7 +432,7 @@ impl QuarantineService<'_> {
         // has been inspected. An orphaned quarantine object means recovery
         // should retain and report policy-downgraded state, not synthesize an
         // empty inventory.
-        let listing = match list_branch_quarantine_objects(self.backend, branch_id) {
+        let listing = match list_branch_quarantine_objects(&self.backend, branch_id) {
             Ok(listing) => listing,
             Err(source) => {
                 report.unavailable = Some(QuarantineBackendUnavailable::new(
@@ -447,7 +447,7 @@ impl QuarantineService<'_> {
         report.malformed_objects = malformed_objects;
 
         let Some(inventory) = (match load_reconciliation_inventory(
-            self.backend,
+            &self.backend,
             branch_id,
             &inventory_object,
             expected_database_id,
@@ -514,7 +514,7 @@ impl QuarantineService<'_> {
         expected_database_id: [u8; 16],
         expected_codec_id: &str,
     ) -> QuarantineServiceResult<QuarantineFamilyReconciliation> {
-        require_capability(self.backend, BackendCapability::ListPrefix)?;
+        require_capability(&self.backend, BackendCapability::ListPrefix)?;
 
         let prefix = ObjectLayout::quarantine_prefix()
             .map_err(|source| QuarantineServiceError::Layout { source })?;

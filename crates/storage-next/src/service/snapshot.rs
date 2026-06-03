@@ -9,7 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendErrorKind, PublishError, PublishOutcome,
+    Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, PublishError,
+    PublishOutcome,
 };
 use crate::format::FormatError;
 use crate::format::{
@@ -249,12 +250,14 @@ impl SnapshotPublishRequest {
 pub(crate) type SnapshotWrite = (SnapshotContainer, PublishOutcome);
 
 pub(crate) struct SnapshotService<'a> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
 }
 
 impl<'a> SnapshotService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        Self {
+            backend: backend.into(),
+        }
     }
 
     pub(crate) fn publish_create(
@@ -276,7 +279,7 @@ impl<'a> SnapshotService<'a> {
             source,
         })?;
         let container = SnapshotContainer::new(header, request.sections);
-        publish_snapshot_container(self.backend, &object, &container)
+        publish_snapshot_container(&self.backend, &object, &container)
     }
 
     pub(crate) fn load_optional(
@@ -285,7 +288,7 @@ impl<'a> SnapshotService<'a> {
     ) -> SnapshotServiceResult<Option<SnapshotContainer>> {
         validate_snapshot_id(snapshot_id)?;
         let object = snapshot_object(snapshot_id)?;
-        read_snapshot_optional(self.backend, &object, snapshot_id)?
+        read_snapshot_optional(&self.backend, &object, snapshot_id)?
             .map(|bytes| decode_snapshot(&object, snapshot_id, &bytes))
             .transpose()
     }
@@ -331,7 +334,7 @@ impl<'a> SnapshotService<'a> {
     ) -> SnapshotServiceResult<SnapshotHeader> {
         validate_snapshot_id(snapshot_id)?;
         let object = snapshot_object(snapshot_id)?;
-        let Some(bytes) = read_snapshot_optional(self.backend, &object, snapshot_id)? else {
+        let Some(bytes) = read_snapshot_optional(&self.backend, &object, snapshot_id)? else {
             return Err(SnapshotServiceError::Missing {
                 object,
                 snapshot_id,

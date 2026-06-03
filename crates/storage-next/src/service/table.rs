@@ -1,7 +1,8 @@
 //! Durable immutable-table object publication service.
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendRange, PublishError, PublishFailureKind,
+    Backend, BackendCapability, BackendError, BackendHandle, BackendRange, PublishError,
+    PublishFailureKind,
 };
 use crate::format::{decode_immutable_table, FormatError, ImmutableTable, TableManifestTableRef};
 use crate::layout::{LayoutError, ObjectLayout};
@@ -380,14 +381,16 @@ fn read_all_table_object_for_exact_match(
 }
 
 pub(crate) struct TableObjectService<'a> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
 }
 
 pub(crate) type TableObjectReaderService<'a> = TableObjectService<'a>;
 
 impl<'a> TableObjectService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        Self {
+            backend: backend.into(),
+        }
     }
 
     pub(crate) fn publish_create(
@@ -402,14 +405,14 @@ impl<'a> TableObjectService<'a> {
         // checks before backend mutation; this earlier check preserves the
         // service contract that unsupported durable publication does not spend
         // work decoding caller-supplied table bytes.
-        require_durable_publish_capabilities(self.backend, &object)?;
+        require_durable_publish_capabilities(&self.backend, &object)?;
         let table =
             decode_immutable_table(bytes).map_err(|source| TableObjectServiceError::Decode {
                 object: object.clone(),
                 source,
             })?;
         let facts = TableObjectFacts::from_table(object.clone(), bytes, &table)?;
-        let outcome = ObjectPublisher::new(self.backend)
+        let outcome = ObjectPublisher::new(&self.backend)
             .publish_durable_create(&object, bytes)
             .map_err(|source| TableObjectServiceError::Publish {
                 object: object.clone(),
@@ -466,12 +469,12 @@ impl<'a> TableObjectService<'a> {
         config: TableReaderConfig,
     ) -> Result<ImmutableTableReader, TableObjectReadError> {
         validate_table_object_source(
-            self.backend,
+            &self.backend,
             object_facts.object(),
             object_facts.byte_count(),
         )?;
         let source = (
-            self.backend,
+            &self.backend,
             object_facts.object(),
             object_facts.byte_count(),
         );
@@ -498,12 +501,12 @@ impl<'a> TableObjectService<'a> {
             });
         }
         validate_table_object_source(
-            self.backend,
+            &self.backend,
             object_facts.object(),
             object_facts.byte_count(),
         )?;
         let existing_bytes = read_all_table_object_for_exact_match(
-            self.backend,
+            &self.backend,
             object_facts.object(),
             object_facts.byte_count(),
         )?;

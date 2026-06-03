@@ -1,5 +1,6 @@
 //! API runtime handle.
 
+use crate::backend::BackendHandle;
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::facts::BranchReleasePlan;
 use crate::branch::read::{
@@ -142,6 +143,25 @@ impl StorageRuntime<'static> {
         Self::open(StorageOpenOptions::cache())
     }
 
+    /// Open durable local storage at `root` with standard durability.
+    ///
+    /// This is the native product-facing open helper. It never falls back to
+    /// cache mode; builds without the `localfs` feature return an explicit
+    /// unsupported-capability error instead.
+    pub fn open_local(
+        root: impl Into<std::path::PathBuf>,
+    ) -> StorageApiResult<StorageOpenOutcome<'static>> {
+        Self::open_durable_local(root, StorageDurabilityPolicy::Standard)
+    }
+
+    /// Open durable local storage at `root` with an explicit durability policy.
+    pub fn open_durable_local(
+        root: impl Into<std::path::PathBuf>,
+        policy: StorageDurabilityPolicy,
+    ) -> StorageApiResult<StorageOpenOutcome<'static>> {
+        open_durable_local_owned(root, policy)
+    }
+
     pub fn open(options: StorageOpenOptions) -> StorageApiResult<StorageOpenOutcome<'static>> {
         options.validate()?;
         match options.mode() {
@@ -158,6 +178,29 @@ impl StorageRuntime<'static> {
             }
         }
     }
+}
+
+#[cfg(feature = "localfs")]
+fn open_durable_local_owned(
+    root: impl Into<std::path::PathBuf>,
+    policy: StorageDurabilityPolicy,
+) -> StorageApiResult<StorageOpenOutcome<'static>> {
+    let backend = StorageBackend::local_fs(root);
+    StorageRuntime::open_durable_with_backend_handle(
+        StorageOpenOptions::durable_local(policy),
+        backend.into_backend_handle(),
+    )
+}
+
+#[cfg(not(feature = "localfs"))]
+fn open_durable_local_owned(
+    _root: impl Into<std::path::PathBuf>,
+    _policy: StorageDurabilityPolicy,
+) -> StorageApiResult<StorageOpenOutcome<'static>> {
+    Err(StorageApiError::UnsupportedCapability {
+        capability: "localfs",
+        reason: "durable local storage requires the localfs feature",
+    })
 }
 
 impl<'a> StorageRuntime<'a> {
@@ -179,7 +222,9 @@ impl<'a> StorageRuntime<'a> {
         options.validate()?;
         match options.mode() {
             StorageMode::Cache => Self::open_cache_with_backend(options, backend),
-            StorageMode::DurableLocal { .. } => Self::open_durable_with_backend(options, backend),
+            StorageMode::DurableLocal { .. } => {
+                Self::open_durable_with_backend_handle(options, backend.as_backend_handle())
+            }
             StorageMode::ObjectDurableCandidate | StorageMode::DistributedCandidate => {
                 unreachable!("unsupported modes are rejected during validation")
             }
@@ -1242,9 +1287,9 @@ impl<'a> StorageRuntime<'a> {
         ))
     }
 
-    fn open_durable_with_backend(
+    fn open_durable_with_backend_handle(
         options: StorageOpenOptions,
-        backend: &'a StorageBackend,
+        backend: BackendHandle<'a>,
     ) -> StorageApiResult<StorageOpenOutcome<'a>> {
         let plan = lifecycle_plan(options)?;
         let request = LifecycleDurableLocalOpenRequest::new(
@@ -1257,12 +1302,9 @@ impl<'a> StorageRuntime<'a> {
             WalServiceConfig::default(),
         )
         .map_err(map_lifecycle_error)?;
-        let mut shell = LifecycleDurableLocalShell::assemble(
-            request,
-            backend.as_backend(),
-            default_timestamp_source(),
-        )
-        .map_err(map_lifecycle_error)?;
+        let mut shell =
+            LifecycleDurableLocalShell::assemble(request, backend, default_timestamp_source())
+                .map_err(map_lifecycle_error)?;
         let recovery_request =
             crate::lifecycle::LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
                 .map_err(map_lifecycle_error)?;
@@ -1364,6 +1406,13 @@ impl<'a> StorageRuntime<'a> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(
+        not(feature = "localfs"),
+        expect(
+            dead_code,
+            reason = "durable recovery health hook is exercised by localfs diagnostics tests"
+        )
+    )]
     pub(crate) fn record_recovery_health_for_test(
         &mut self,
         health: &RecoveryHealth,

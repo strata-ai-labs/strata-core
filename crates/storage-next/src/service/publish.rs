@@ -9,18 +9,20 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, PublishDurability, PublishError, PublishFailureKind,
-    PublishMode, PublishOutcome, PublishResult,
+    Backend, BackendCapability, BackendError, BackendHandle, PublishDurability, PublishError,
+    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
 };
 use crate::object::ObjectName;
 
 pub(crate) struct ObjectPublisher<'a> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
 }
 
 impl<'a> ObjectPublisher<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
-        Self { backend }
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        Self {
+            backend: backend.into(),
+        }
     }
 
     pub(crate) fn publish_durable_create(

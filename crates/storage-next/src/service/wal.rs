@@ -9,7 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendErrorKind, BackendRange, PublishError,
+    Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
+    PublishError,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
@@ -579,7 +580,7 @@ impl WalDeleteReport {
 }
 
 pub(crate) struct WalService<'a> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
     database_id: [u8; 16],
     active_segment_id: u64,
     active_object: ObjectName,
@@ -595,7 +596,7 @@ pub(crate) struct WalService<'a> {
 
 impl<'a> WalService<'a> {
     pub(crate) fn open(
-        backend: &'a dyn Backend,
+        backend: impl Into<BackendHandle<'a>>,
         database_id: [u8; 16],
         active_segment_id: u64,
         durability_policy: DurabilityPolicy,
@@ -603,9 +604,10 @@ impl<'a> WalService<'a> {
     ) -> WalServiceResult<Self> {
         config.validate()?;
         validate_segment_id(active_segment_id)?;
-        require_capabilities(backend, WAL_REQUIRED_CAPABILITIES)?;
+        let backend = backend.into();
+        require_capabilities(&backend, WAL_REQUIRED_CAPABILITIES)?;
         let (active_object, active_segment_size, active_metadata) =
-            open_or_create_segment(backend, database_id, active_segment_id, config.codec_id())?;
+            open_or_create_segment(&backend, database_id, active_segment_id, config.codec_id())?;
 
         Ok(Self {
             backend,
@@ -778,7 +780,7 @@ impl<'a> WalService<'a> {
     }
 
     pub(crate) fn read_all(&self) -> WalServiceResult<WalRead> {
-        let segments = list_segments(self.backend)?;
+        let segments = list_segments(&self.backend)?;
         let latest_segment_id = segments.last().map(|(segment_id, _)| *segment_id);
         let mut records = Vec::new();
         let mut truncation = None;
@@ -786,7 +788,7 @@ impl<'a> WalService<'a> {
         for (segment_id, object) in segments {
             let is_latest = latest_segment_id == Some(segment_id);
             let read = read_segment(
-                self.backend,
+                &self.backend,
                 self.database_id,
                 segment_id,
                 &object,
@@ -817,7 +819,7 @@ impl<'a> WalService<'a> {
     }
 
     pub(crate) fn growth_facts(&self) -> WalServiceResult<WalGrowthFacts> {
-        let segments = list_segments(self.backend)?;
+        let segments = list_segments(&self.backend)?;
         let mut retained_bytes = 0_u64;
         for (_, object) in &segments {
             let metadata = self.backend.object_metadata(object).map_err(|source| {
@@ -893,7 +895,7 @@ impl<'a> WalService<'a> {
             self.codec_id,
             WalOperation::Repair,
         )?;
-        let outcome = match ObjectPublisher::new(self.backend)
+        let outcome = match ObjectPublisher::new(&self.backend)
             .publish_durable_replace(&self.active_object, &prefix)
         {
             Ok(outcome) => outcome,
@@ -932,18 +934,18 @@ impl<'a> WalService<'a> {
         &self,
         retention_proof: WalRetentionProof,
     ) -> WalServiceResult<WalDeleteReport> {
-        require_capability(self.backend, BackendCapability::DeleteObject)?;
+        require_capability(&self.backend, BackendCapability::DeleteObject)?;
         let mut report = WalDeleteReport::new();
         let covered_through = retention_proof.covered_through();
 
-        for (segment_id, object) in list_segments(self.backend)? {
+        for (segment_id, object) in list_segments(&self.backend)? {
             if segment_id >= self.active_segment_id {
                 report.protected.push(segment_id);
                 continue;
             }
 
             let read = read_segment(
-                self.backend,
+                &self.backend,
                 self.database_id,
                 segment_id,
                 &object,
@@ -1000,7 +1002,7 @@ impl<'a> WalService<'a> {
                     segment_id: self.active_segment_id,
                 })?;
         let (next_object, next_size, next_metadata) =
-            create_segment(self.backend, self.database_id, next_segment_id)?;
+            create_segment(&self.backend, self.database_id, next_segment_id)?;
 
         self.active_segment_id = next_segment_id;
         self.active_object = next_object;

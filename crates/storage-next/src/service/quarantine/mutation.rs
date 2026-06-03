@@ -1,7 +1,7 @@
 use super::{
     require_capability, QuarantineService, QuarantineServiceError, QuarantineServiceResult,
 };
-use crate::backend::{BackendCapability, BackendErrorKind, PublishFailureKind};
+use crate::backend::{Backend, BackendCapability, BackendErrorKind, PublishFailureKind};
 use crate::format::quarantine::{QuarantineEntry, QuarantineInventory};
 use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
@@ -23,7 +23,7 @@ impl QuarantineService<'_> {
         validate_gate(request.gate)?;
         validate_quarantine_request(request)?;
         require_capabilities(
-            self.backend,
+            &self.backend,
             &[
                 BackendCapability::ReadObject,
                 BackendCapability::ObjectMetadata,
@@ -43,8 +43,8 @@ impl QuarantineService<'_> {
             .find(|entry| entry.object_id() == request.object_id);
 
         if let Some(entry) = entry {
-            let quarantine_bytes = read_object_optional(self.backend, &quarantine_object)?;
-            let source_bytes = read_object_optional(self.backend, &request.source_object)?;
+            let quarantine_bytes = read_object_optional(&self.backend, &quarantine_object)?;
+            let source_bytes = read_object_optional(&self.backend, &request.source_object)?;
             return self.handle_existing_quarantine_entry(
                 request,
                 &quarantine_object,
@@ -55,7 +55,7 @@ impl QuarantineService<'_> {
             );
         }
 
-        let quarantine_object_exists = object_exists(self.backend, &quarantine_object)?;
+        let quarantine_object_exists = object_exists(&self.backend, &quarantine_object)?;
         if quarantine_object_exists {
             return Err(QuarantineServiceError::InventoryMismatch {
                 object_id: request.object_id.clone(),
@@ -64,7 +64,7 @@ impl QuarantineService<'_> {
                 reason: "quarantine object is not listed in inventory",
             });
         }
-        let source_bytes = read_object_optional(self.backend, &request.source_object)?;
+        let source_bytes = read_object_optional(&self.backend, &request.source_object)?;
         self.handle_new_quarantine_entry(
             request,
             quarantine_object,
@@ -160,7 +160,7 @@ impl QuarantineService<'_> {
                         field: mismatch.field(),
                     },
                 )?;
-                let source_delete = delete_source(self.backend, &request.source_object);
+                let source_delete = delete_source(&self.backend, &request.source_object);
                 let status = status_after_source_delete(&source_delete);
                 let mut report = QuarantineObjectReport::new(
                     status,
@@ -214,7 +214,7 @@ impl QuarantineService<'_> {
         }
 
         require_capabilities(
-            self.backend,
+            &self.backend,
             &[
                 BackendCapability::DeleteObject,
                 BackendCapability::DurablePublish,
@@ -326,7 +326,7 @@ impl QuarantineService<'_> {
             });
         }
 
-        let source_delete = delete_source(self.backend, &request.source_object);
+        let source_delete = delete_source(&self.backend, &request.source_object);
         let status = status_after_retry_source_delete(&source_delete);
         let mut report = QuarantineObjectReport::new(
             status,

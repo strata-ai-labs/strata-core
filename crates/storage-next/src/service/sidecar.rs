@@ -8,7 +8,9 @@
     )
 )]
 
-use crate::backend::{Backend, BackendError, BackendErrorKind, PublishError, PublishOutcome};
+use crate::backend::{
+    Backend, BackendError, BackendErrorKind, BackendHandle, PublishError, PublishOutcome,
+};
 use crate::format::{
     decode_segment_metadata, encode_segment_metadata, FormatError, SegmentMetadata,
 };
@@ -220,15 +222,16 @@ impl WalSegmentMetadataSidecarDelete {
 }
 
 pub(crate) struct WalSegmentMetadataSidecarService<'a> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
     publisher: ObjectPublisher<'a>,
 }
 
 impl<'a> WalSegmentMetadataSidecarService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        let backend = backend.into();
         Self {
+            publisher: ObjectPublisher::new(backend.clone()),
             backend,
-            publisher: ObjectPublisher::new(backend),
         }
     }
 

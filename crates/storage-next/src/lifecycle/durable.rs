@@ -7,7 +7,9 @@ use super::{
     LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageBudgetLedger,
     StorageMode, StorageOpenDisposition, StorageOpenPlan,
 };
-use crate::backend::{Backend, BackendError, BackendWriterGuard, PublishFailureKind};
+use crate::backend::{
+    Backend, BackendError, BackendHandle, BackendWriterGuard, PublishFailureKind,
+};
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
@@ -289,15 +291,16 @@ impl<'a> LifecycleDurableLocalServices<'a> {
 impl<'a, S> LifecycleDurableLocalShell<'a, S> {
     pub(crate) fn assemble(
         request: LifecycleDurableLocalOpenRequest,
-        backend: &'a dyn Backend,
+        backend: impl Into<BackendHandle<'a>>,
         timestamp_source: S,
     ) -> LifecycleResult<Self> {
         request.validate()?;
+        let backend = backend.into();
         let mut state = LifecycleStateMachine::new();
         require_admitted(state, LifecycleOperationKind::Open)?;
         state.transition(LifecycleTransitionTrigger::OpenRequested)?;
 
-        let capability_outcome = validate_backend_capabilities_for_open(request.plan(), backend)?;
+        let capability_outcome = validate_backend_capabilities_for_open(request.plan(), &backend)?;
         let durability_policy =
             capability_outcome
                 .durability_policy()
@@ -310,12 +313,12 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .acquire_writer_lock(&writer_lock_object)
             .map_err(backend_error)?;
 
-        let manifest_service = DatabaseManifestService::new(backend);
+        let manifest_service = DatabaseManifestService::new(backend.clone());
         let (manifest, disposition) = load_or_create_manifest(&manifest_service, &request)?;
         validate_manifest_identity(&manifest, &request)?;
 
         let wal = WalService::open(
-            backend,
+            backend.clone(),
             request.database_id(),
             manifest.active_wal_segment(),
             durability_policy,
@@ -342,14 +345,14 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         let services = LifecycleDurableLocalServices {
             capability_outcome,
             manifest: manifest_service,
-            table_manifest: TableManifestService::new(backend),
-            branch_catalog_manifest: BranchCatalogManifestService::new(backend),
-            pending_releases_manifest: PendingReleasesManifestService::new(backend),
+            table_manifest: TableManifestService::new(backend.clone()),
+            branch_catalog_manifest: BranchCatalogManifestService::new(backend.clone()),
+            pending_releases_manifest: PendingReleasesManifestService::new(backend.clone()),
             wal,
-            wal_sidecar: WalSegmentMetadataSidecarService::new(backend),
-            snapshot: SnapshotService::new(backend),
-            table_object: TableObjectService::new(backend),
-            checkpoint: CheckpointService::new(backend),
+            wal_sidecar: WalSegmentMetadataSidecarService::new(backend.clone()),
+            snapshot: SnapshotService::new(backend.clone()),
+            table_object: TableObjectService::new(backend.clone()),
+            checkpoint: CheckpointService::new(backend.clone()),
             quarantine: QuarantineService::new(backend),
             assembly_facts,
             writer_guard: Some(writer_guard),

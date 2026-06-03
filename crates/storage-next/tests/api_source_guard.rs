@@ -161,6 +161,21 @@ fn api_open_options_do_not_have_implicit_default_mode() {
 }
 
 #[test]
+fn api_open_local_routes_to_durable_local_without_cache_fallback() {
+    let root = common::crate_root();
+    let runtime = fs::read_to_string(root.join("src/api/runtime.rs")).expect("read runtime");
+    let compact_runtime = runtime.split_whitespace().collect::<String>();
+
+    assert!(compact_runtime.contains("pubfnopen_local("));
+    assert!(compact_runtime
+        .contains("Self::open_durable_local(root,StorageDurabilityPolicy::Standard)"));
+    assert!(compact_runtime.contains("StorageOpenOptions::durable_local(policy)"));
+    assert!(compact_runtime.contains("capability:\"localfs\""));
+    assert!(!compact_runtime.contains("open_local(root:implInto<std::path::PathBuf>)->StorageApiResult<StorageOpenOutcome<'static>>{Self::open_cache()"));
+    assert!(!compact_runtime.contains("open_local(root:implInto<std::path::PathBuf>)->StorageApiResult<StorageOpenOutcome<'static>>{Self::open_ephemeral()"));
+}
+
+#[test]
 fn api_source_avoids_engine_product_and_runtime_dependencies() {
     let root = common::crate_root();
     for file in api_source_files(&root) {

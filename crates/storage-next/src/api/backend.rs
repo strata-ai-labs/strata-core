@@ -1,6 +1,6 @@
 //! Opaque storage backend handles.
 
-use crate::backend::{memory::MemoryBackend, Backend};
+use crate::backend::{memory::MemoryBackend, Backend, BackendHandle};
 
 #[cfg(feature = "localfs")]
 use crate::backend::local_fs::LocalFsBackend;
@@ -49,6 +49,19 @@ impl StorageBackend {
             StorageBackendInner::Memory(backend) => backend,
             #[cfg(feature = "localfs")]
             StorageBackendInner::LocalFs(backend) => backend,
+        }
+    }
+
+    pub(crate) fn as_backend_handle(&self) -> BackendHandle<'_> {
+        BackendHandle::borrowed(self.as_backend())
+    }
+
+    #[cfg(feature = "localfs")]
+    pub(crate) fn into_backend_handle(self) -> BackendHandle<'static> {
+        match self.inner {
+            StorageBackendInner::Memory(backend) => BackendHandle::owned(backend),
+            #[cfg(feature = "localfs")]
+            StorageBackendInner::LocalFs(backend) => BackendHandle::owned(backend),
         }
     }
 }

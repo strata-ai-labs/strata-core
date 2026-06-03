@@ -9,7 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendErrorKind, PublishError, PublishOutcome,
+    Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, PublishError,
+    PublishOutcome,
 };
 use crate::format::quarantine::{
     decode_quarantine_inventory, encode_quarantine_inventory, QuarantineInventory,
@@ -342,15 +343,16 @@ impl QuarantineInventoryWrite {
 }
 
 pub(crate) struct QuarantineService<'a> {
-    backend: &'a dyn Backend,
+    backend: BackendHandle<'a>,
     publisher: ObjectPublisher<'a>,
 }
 
 impl<'a> QuarantineService<'a> {
-    pub(crate) const fn new(backend: &'a dyn Backend) -> Self {
+    pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
+        let backend = backend.into();
         Self {
+            publisher: ObjectPublisher::new(backend.clone()),
             backend,
-            publisher: ObjectPublisher::new(backend),
         }
     }
 
@@ -396,7 +398,7 @@ impl<'a> QuarantineService<'a> {
         expected_codec_id: &str,
     ) -> QuarantineServiceResult<Option<QuarantineInventoryLoad>> {
         let object = inventory_object(branch_id)?;
-        let Some(bytes) = read_inventory_optional(self.backend, &object)? else {
+        let Some(bytes) = read_inventory_optional(&self.backend, &object)? else {
             return Ok(None);
         };
         let byte_count = bytes.len() as u64;

@@ -1747,7 +1747,11 @@ fn writer_guard_re_acquire_after_release_succeeds() -> Result<(), TestkitError> 
     Ok(())
 }
 
-#[cfg(any(test, feature = "fault-injection"))]
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
 fn next_unique_suffix() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
