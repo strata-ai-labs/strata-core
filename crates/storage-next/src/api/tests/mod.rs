@@ -75,10 +75,48 @@ fn api_module_exports_storage_runtime_shell() {
 #[test]
 fn open_options_do_not_have_implicit_default_mode() {
     let options_source = include_str!("../options.rs");
-    let compact_options_source = options_source.split_whitespace().collect::<String>();
 
-    assert!(!compact_options_source.contains("implDefaultforStorageOpenOptions"));
-    assert!(!options_source.contains("StorageOpenOptions::default"));
+    assert_storage_open_options_has_no_default(options_source);
+}
+
+fn assert_storage_open_options_has_no_default(source: &str) {
+    let compact_source = source.split_whitespace().collect::<String>();
+    for forbidden_impl in [
+        "implDefaultforStorageOpenOptions",
+        "implstd::default::DefaultforStorageOpenOptions",
+        "implcore::default::DefaultforStorageOpenOptions",
+        "impl::std::default::DefaultforStorageOpenOptions",
+        "impl::core::default::DefaultforStorageOpenOptions",
+    ] {
+        assert!(
+            !compact_source.contains(forbidden_impl),
+            "StorageOpenOptions must not implement Default via {forbidden_impl}"
+        );
+    }
+
+    assert!(!source.contains("StorageOpenOptions::default"));
+    assert_storage_open_options_derive_excludes_default(&compact_source);
+}
+
+fn assert_storage_open_options_derive_excludes_default(compact_source: &str) {
+    let prefix = compact_source
+        .split("pubstructStorageOpenOptions")
+        .next()
+        .expect("StorageOpenOptions declaration is present");
+    let derive_args = prefix
+        .rsplit("#[derive(")
+        .next()
+        .unwrap_or_default()
+        .split(")]")
+        .next()
+        .unwrap_or_default();
+
+    assert!(
+        !derive_args
+            .split(',')
+            .any(|trait_path| trait_path.ends_with("Default")),
+        "StorageOpenOptions must not derive Default"
+    );
 }
 
 #[test]

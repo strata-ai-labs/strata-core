@@ -4,7 +4,8 @@ Status: draft cleanup plan
 
 ## Context
 
-`storage-next` currently treats `StorageOpenOptions::default()` as cache mode:
+Before `CLN3-O4`, `storage-next` treated
+`StorageOpenOptions::default()` as cache mode:
 
 ```rust
 impl Default for StorageOpenOptions {
@@ -14,14 +15,14 @@ impl Default for StorageOpenOptions {
 }
 ```
 
-That made sense while the API boundary was being built because cache mode is
-the only storage mode that can open without a caller-provided backend handle.
+That made sense while the API boundary was being built because cache mode was
+the only storage mode that could open without a caller-provided backend handle.
 `StorageRuntime::open(options)` can manufacture an in-memory backend internally.
 Durable local mode cannot: it needs a concrete directory-backed
-`StorageBackend::local_fs(root)` and therefore currently goes through
+`StorageBackend::local_fs(root)` and therefore goes through
 `StorageRuntime::open_with_backend(options, backend)`.
 
-That shape is now too easy to misuse. A caller can write
+That shape was too easy to misuse. A caller could write
 `StorageOpenOptions::default()` or `StorageRuntime::open(Default::default())`
 and get a volatile runtime even though most Strata databases should be backed
 by an actual directory that survives the process.
@@ -31,10 +32,10 @@ mode explicitly ephemeral.
 
 ## Problem
 
-There are two different defaults today:
+Before this cleanup, there were two different defaults:
 
 1. crate feature defaults enable `localfs` on native builds;
-2. `StorageOpenOptions::default()` selects volatile cache mode.
+2. `StorageOpenOptions::default()` selected volatile cache mode.
 
 Those defaults point in opposite directions. Native builds include the durable
 local backend by default, but the no-argument open path chooses an in-memory
