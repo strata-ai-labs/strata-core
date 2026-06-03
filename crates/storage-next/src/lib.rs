@@ -28,6 +28,14 @@ mod row;
 mod service;
 mod table;
 
+#[cfg(feature = "perf-trace")]
+#[doc(hidden)]
+pub use observability::perf_probe;
+
+#[cfg(feature = "perf-trace")]
+#[doc(hidden)]
+pub use observability::perf_trace;
+
 #[cfg(test)]
 mod test_support;
 

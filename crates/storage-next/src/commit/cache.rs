@@ -10,6 +10,7 @@ use super::{
     CommitUnresolvedDurableGate, CommitVisibilityFacts, CommitVisiblePublisher,
     ValidatedCommitBatch,
 };
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
 
 #[derive(Debug)]
@@ -80,6 +81,9 @@ where
         )?;
 
         let read_view = self.branch.capture_read_view()?;
+        if is_blind_batch(&batch) {
+            perf_trace::record_blind_conflict_source_built();
+        }
         let conflict_source =
             CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
         validate_commit_conflicts(&batch, &conflict_source)?;
@@ -131,6 +135,11 @@ where
             facts,
         )
     }
+}
+
+fn is_blind_batch(batch: &ValidatedCommitBatch) -> bool {
+    let validation = batch.batch().validation();
+    validation.read_set().is_empty() && validation.cas_set().is_empty()
 }
 
 pub(crate) fn prepare_commit_rows(

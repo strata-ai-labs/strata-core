@@ -8,6 +8,7 @@ use crate::branch::read::{
     inherited_table_count, BranchInheritedLayer, BranchOwnedTable, BranchReadView,
     BranchTimestampCoverage,
 };
+use crate::observability::perf_trace;
 use crate::table::{FrozenTable, MutableTable};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -213,6 +214,7 @@ impl BranchLocalState {
     }
 
     pub(crate) fn capture_read_view(&self) -> BranchRuntimeResult<BranchReadView> {
+        perf_trace::record_read_view_capture(read_view_clone_row_count(self));
         BranchReadView::new_with_inherited(
             self.branch_id,
             self.active.clone(),
@@ -223,4 +225,28 @@ impl BranchLocalState {
         )
         .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
     }
+}
+
+fn read_view_clone_row_count(state: &BranchLocalState) -> usize {
+    state
+        .active
+        .len()
+        .saturating_add(state.frozen.iter().map(FrozenTable::len).sum::<usize>())
+        .saturating_add(owned_levels_row_count(&state.owned_levels))
+        .saturating_add(inherited_layers_row_count(&state.inherited_layers))
+}
+
+fn inherited_layers_row_count(layers: &[BranchInheritedLayer]) -> usize {
+    layers
+        .iter()
+        .map(|layer| owned_levels_row_count(layer.owned_levels()))
+        .sum()
+}
+
+fn owned_levels_row_count(levels: &[Vec<BranchOwnedTable>]) -> usize {
+    levels
+        .iter()
+        .flatten()
+        .map(|table| table.rows().len())
+        .sum()
 }

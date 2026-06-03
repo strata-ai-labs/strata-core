@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-03T19:29:51Z",
+    "git_commit": "56d9ac5e",
+    "git_branch": "v1",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "seed": 5860399455655764006,
+        "perf_trace": {
+          "append_staging_clones": 100,
+          "append_staging_rows_cloned": 4959900,
+          "blind_conflict_sources_built": 100,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 100,
+          "read_view_rows_cloned": 4959900,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "batch_size": 1000,
+        "engine": "cache",
+        "samples": 1000,
+        "branch_samples": 100,
+        "scan_limit": 10,
+        "scale_keys": 100000,
+        "value_bytes": 150
+      },
+      "metrics": {
+        "ops_per_sec": 35471.96993531473,
+        "avg_ns": 28191,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/point-latest-throughput",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "samples": 1000,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 1000,
+          "point_rows_visited": 100200000,
+          "read_view_captures": 1000,
+          "read_view_rows_cloned": 100200000,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "scan_limit": 10,
+        "value_bytes": 150,
+        "scale_keys": 100000,
+        "engine": "cache",
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 43.960979985697236,
+        "avg_ns": 22747445,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/scan-range-throughput",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scan_limit": 10,
+        "seed": 5860399455655764006,
+        "branch_samples": 100,
+        "scale_keys": 100000,
+        "value_bytes": 150,
+        "engine": "cache",
+        "batch_size": 1000,
+        "samples": 1000,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 1000,
+          "read_view_rows_cloned": 100200000,
+          "scan_candidates_materialized": 49301780,
+          "scan_rows_visited": 100200000,
+          "table_seeks": 0
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 21.946760365730533,
+        "avg_ns": 45564811,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scan_limit": 10,
+        "value_bytes": 150,
+        "scale_keys": 100000,
+        "batch_size": 1000,
+        "samples": 1000,
+        "perf_trace": {
+          "append_staging_clones": 100,
+          "append_staging_rows_cloned": 4959900,
+          "blind_conflict_sources_built": 100,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 100,
+          "read_view_rows_cloned": 4959900,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "engine": "standard",
+        "branch_samples": 100,
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 42838.462986243416,
+        "avg_ns": 23343,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/point-latest-throughput",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "branch_samples": 100,
+        "batch_size": 1000,
+        "engine": "standard",
+        "value_bytes": 150,
+        "scan_limit": 10,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 1000,
+          "point_rows_visited": 100200000,
+          "read_view_captures": 1000,
+          "read_view_rows_cloned": 100200000,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "samples": 1000
+      },
+      "metrics": {
+        "ops_per_sec": 44.75186189002597,
+        "avg_ns": 22345439,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/scan-range-throughput",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "engine": "standard",
+        "scale_keys": 100000,
+        "scan_limit": 10,
+        "seed": 5860399455655764006,
+        "samples": 1000,
+        "value_bytes": 150,
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 1000,
+          "read_view_rows_cloned": 100200000,
+          "scan_candidates_materialized": 49301780,
+          "scan_rows_visited": 100200000,
+          "table_seeks": 0
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 22.39837969225371,
+        "avg_ns": 44646086,
+        "samples": 1000
+      }
+    }
+  ]
+}

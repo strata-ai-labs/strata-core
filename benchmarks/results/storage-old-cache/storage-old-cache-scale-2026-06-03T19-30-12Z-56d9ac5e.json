@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-03T19:30:12Z",
+    "git_commit": "56d9ac5e",
+    "git_branch": "v1",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "value_bytes": 150,
+        "engine": "old-cache",
+        "scale_keys": 100000,
+        "samples": 1000,
+        "scan_limit": 10,
+        "batch_size": 1000,
+        "seed": 5860399455655764006,
+        "branch_samples": 100
+      },
+      "metrics": {
+        "ops_per_sec": 434757.64037534036,
+        "avg_ns": 2300,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/point-latest-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "branch_samples": 100,
+        "scan_limit": 10,
+        "batch_size": 1000,
+        "engine": "old-cache",
+        "value_bytes": 150,
+        "seed": 5860399455655764006,
+        "scale_keys": 100000,
+        "samples": 1000
+      },
+      "metrics": {
+        "ops_per_sec": 464935.9271798754,
+        "avg_ns": 2150,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "engine": "old-cache",
+        "batch_size": 1000,
+        "seed": 5860399455655764006,
+        "value_bytes": 150,
+        "branch_samples": 100,
+        "scale_keys": 100000,
+        "samples": 1000,
+        "scan_limit": 10
+      },
+      "metrics": {
+        "ops_per_sec": 88382.49255951987,
+        "avg_ns": 11314,
+        "samples": 1000
+      }
+    }
+  ]
+}

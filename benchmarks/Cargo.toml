@@ -15,6 +15,7 @@ embed = ["stratadb/embed"]
 stratadb = { path = ".." }
 strata-core = { path = "../crates/core" }
 strata-engine = { path = "../crates/engine" }
+strata-storage-next = { path = "../crates/storage-next", features = ["perf-trace"] }
 # Required only for the B6 materialize smoke in `src/bin/regression.rs`:
 # the benchmark opens a fresh engine `Database` rather than reusing the
 # `Strata` executor, which does not expose `storage().materialize_layer`.
@@ -67,6 +68,18 @@ path = "src/bin/compare.rs"
 [[bin]]
 name = "regression"
 path = "src/bin/regression.rs"
+
+[[bin]]
+name = "storage-next-l9-scale"
+path = "src/bin/storage_next_l9_scale.rs"
+
+[[bin]]
+name = "storage-old-cache-scale"
+path = "src/bin/storage_old_cache_scale.rs"
+
+[[bin]]
+name = "storage-next-point-spike"
+path = "src/bin/storage_next_point_spike.rs"
 
 [profile.bench]
 debug = true

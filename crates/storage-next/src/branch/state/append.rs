@@ -3,6 +3,7 @@
 use super::BranchLocalState;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::identity::require_row_branch;
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::TableInternalKeyBytes;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -112,6 +113,7 @@ impl BranchLocalState {
             });
         }
 
+        perf_trace::record_append_staging_clone(branch_row_count(self));
         let mut staged = self.clone();
         for row in rows {
             staged.append_committed_row(row)?;
@@ -131,4 +133,27 @@ impl BranchLocalState {
         *self = staged;
         Ok(outcome)
     }
+}
+
+fn branch_row_count(state: &BranchLocalState) -> usize {
+    state
+        .active
+        .len()
+        .saturating_add(state.frozen.iter().map(|table| table.len()).sum::<usize>())
+        .saturating_add(
+            state
+                .owned_levels
+                .iter()
+                .flatten()
+                .map(|table| table.rows().len())
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            state
+                .inherited_layers
+                .iter()
+                .flat_map(|layer| layer.owned_levels().iter().flatten())
+                .map(|table| table.rows().len())
+                .sum::<usize>(),
+        )
 }

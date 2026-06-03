@@ -6,6 +6,7 @@ use super::facts::{
     InheritedLayerStatus,
 };
 use super::identity::{rewrite_physical_key_branch, rewrite_row_branch};
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     FrozenTable, ImmutableTableReader, MutableTable, TableInternalKeyBytes, TablePhysicalKeyBytes,
@@ -891,10 +892,13 @@ impl BranchReadView {
         bound: BranchReadBound,
     ) -> BranchRuntimeResult<Vec<CandidateRow>> {
         let mut rows = Vec::new();
+        let mut rows_visited = self.active.len();
+        let initial_candidates = rows.len();
         for row in self.active.iter().filter(|row| row.physical_key() == key) {
             rows.push(candidate_row(row.row().clone(), BranchRowSource::Active));
         }
         for (index, table) in self.frozen.iter().enumerate() {
+            rows_visited = rows_visited.saturating_add(table.len());
             for row in table.iter().filter(|row| row.physical_key() == key) {
                 rows.push(candidate_row(
                     row.row().clone(),
@@ -904,6 +908,7 @@ impl BranchReadView {
         }
         for tables in &self.owned_levels {
             for (table_index, table) in tables.iter().enumerate() {
+                rows_visited = rows_visited.saturating_add(table.rows().len());
                 for row in table.rows().iter().filter(|row| row.physical_key() == key) {
                     rows.push(candidate_row(
                         row.row().clone(),
@@ -915,6 +920,10 @@ impl BranchReadView {
                 }
             }
         }
+        perf_trace::record_point_candidate_collection(
+            rows_visited,
+            rows.len().saturating_sub(initial_candidates),
+        );
         self.collect_inherited_point_candidates(key, bound, &mut rows)?;
         Ok(rows)
     }
@@ -925,6 +934,8 @@ impl BranchReadView {
         bound: BranchReadBound,
         grouped: &mut BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>>,
     ) -> BranchRuntimeResult<()> {
+        let mut rows_visited = self.active.len();
+        let mut candidates_materialized = 0usize;
         for row in self
             .active
             .iter()
@@ -934,8 +945,10 @@ impl BranchReadView {
                 .entry(TablePhysicalKeyBytes::from_row(row.row()))
                 .or_default()
                 .push(candidate_row(row.row().clone(), BranchRowSource::Active));
+            candidates_materialized = candidates_materialized.saturating_add(1);
         }
         for (index, table) in self.frozen.iter().enumerate() {
+            rows_visited = rows_visited.saturating_add(table.len());
             for row in table
                 .iter()
                 .filter(|row| bounds.contains(row.physical_key()))
@@ -947,10 +960,12 @@ impl BranchReadView {
                         row.row().clone(),
                         BranchRowSource::Frozen { index },
                     ));
+                candidates_materialized = candidates_materialized.saturating_add(1);
             }
         }
         for tables in &self.owned_levels {
             for (table_index, table) in tables.iter().enumerate() {
+                rows_visited = rows_visited.saturating_add(table.rows().len());
                 for row in table
                     .rows()
                     .iter()
@@ -966,9 +981,11 @@ impl BranchReadView {
                                 table_index,
                             },
                         ));
+                    candidates_materialized = candidates_materialized.saturating_add(1);
                 }
             }
         }
+        perf_trace::record_scan_candidate_collection(rows_visited, candidates_materialized);
         self.collect_inherited_scan_candidates(bounds, bound, grouped)?;
         Ok(())
     }
@@ -979,6 +996,8 @@ impl BranchReadView {
         bound: BranchReadBound,
         rows: &mut Vec<CandidateRow>,
     ) -> BranchRuntimeResult<()> {
+        let mut rows_visited = 0usize;
+        let initial_candidates = rows.len();
         for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
             if !layer.is_readable() {
                 continue;
@@ -992,6 +1011,7 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
+                rows_visited = rows_visited.saturating_add(table.rows().len());
                 for row in table.rows().iter().filter(|row| {
                     row.physical_key() == &source_key && inherited_bound.matches_row(row.row())
                 }) {
@@ -1008,6 +1028,10 @@ impl BranchReadView {
                 }
             }
         }
+        perf_trace::record_point_candidate_collection(
+            rows_visited,
+            rows.len().saturating_sub(initial_candidates),
+        );
         Ok(())
     }
 
@@ -1017,6 +1041,8 @@ impl BranchReadView {
         bound: BranchReadBound,
         grouped: &mut BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>>,
     ) -> BranchRuntimeResult<()> {
+        let mut rows_visited = 0usize;
+        let mut candidates_materialized = 0usize;
         for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
             if !layer.is_readable() {
                 continue;
@@ -1024,6 +1050,7 @@ impl BranchReadView {
             let inherited_bound =
                 BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
+                rows_visited = rows_visited.saturating_add(table.rows().len());
                 for row in table
                     .rows()
                     .iter()
@@ -1045,10 +1072,12 @@ impl BranchReadView {
                                     layer_index,
                                 },
                             ));
+                        candidates_materialized = candidates_materialized.saturating_add(1);
                     }
                 }
             }
         }
+        perf_trace::record_scan_candidate_collection(rows_visited, candidates_materialized);
         Ok(())
     }
 

@@ -5,6 +5,8 @@ use super::{
     TableRuntimeError, TableRuntimeResult,
 };
 use crate::row::StorageRow;
+#[cfg(feature = "perf-trace")]
+use crate::row::{InternalKey, PhysicalKey};
 use std::collections::BTreeMap;
 use strata_core_next::CommitVersion;
 
@@ -136,6 +138,14 @@ impl MutableTable {
             .filter(move |row| prefix.is_prefix_of(row.key()))
     }
 
+    #[cfg(feature = "perf-trace")]
+    pub(crate) fn perf_seek_physical_key_latest(
+        &self,
+        key: &PhysicalKey,
+    ) -> (Option<&TableRow>, usize) {
+        seek_physical_key_at_version(&self.rows, key, CommitVersion::MAX)
+    }
+
     pub(crate) fn freeze(self) -> FrozenTable {
         FrozenTable {
             rows: self.rows,
@@ -213,6 +223,38 @@ impl FrozenTable {
             .values()
             .filter(move |row| prefix.is_prefix_of(row.key()))
     }
+
+    #[cfg(feature = "perf-trace")]
+    pub(crate) fn perf_seek_physical_key_latest(
+        &self,
+        key: &PhysicalKey,
+    ) -> (Option<&TableRow>, usize) {
+        seek_physical_key_at_version(&self.rows, key, CommitVersion::MAX)
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+fn seek_physical_key_at_version<'a>(
+    rows: &'a BTreeMap<TableInternalKeyBytes, TableRow>,
+    key: &PhysicalKey,
+    max_commit_version: CommitVersion,
+) -> (Option<&'a TableRow>, usize) {
+    let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+    let seek_key = TableInternalKeyBytes::from_internal_key(&InternalKey::new(
+        key.clone(),
+        CommitVersion::MAX,
+    ));
+    let mut visited = 0usize;
+    for (_, row) in rows.range(seek_key..) {
+        visited = visited.saturating_add(1);
+        if !prefix.is_prefix_of(row.key()) {
+            break;
+        }
+        if row.commit_version().as_u64() <= max_commit_version.as_u64() {
+            return (Some(row), visited);
+        }
+    }
+    (None, visited)
 }
 
 fn update_commit_range(

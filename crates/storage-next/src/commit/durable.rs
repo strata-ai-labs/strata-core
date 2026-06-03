@@ -14,6 +14,7 @@ use crate::branch::read::BranchReadView;
 use crate::branch::state::BranchLocalState;
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{WalCommitPayload, WalRecord};
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::service::{WalAppend, WalService, WalServiceError};
 use strata_core_next::{BranchId, CommitVersion};
@@ -197,6 +198,9 @@ where
         )?;
 
         let read_view = self.branch.capture_read_view()?;
+        if is_blind_batch(&batch) {
+            perf_trace::record_blind_conflict_source_built();
+        }
         let conflict_source =
             CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
         validate_commit_conflicts(&batch, &conflict_source)?;
@@ -253,6 +257,11 @@ where
             facts,
         )
     }
+}
+
+fn is_blind_batch(batch: &ValidatedCommitBatch) -> bool {
+    let validation = batch.batch().validation();
+    validation.read_set().is_empty() && validation.cas_set().is_empty()
 }
 
 impl CommitWalAppendFacts {

@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-03T17:27:50Z",
+    "git_commit": "56d9ac5e",
+    "git_branch": "v1",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "engine": "cache",
+        "samples": 10000,
+        "value_bytes": 64,
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "scan_limit": 64
+      },
+      "metrics": {
+        "ops_per_sec": 41406.55872180252,
+        "avg_ns": 24150,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/point-latest",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "scan_limit": 64,
+        "value_bytes": 64,
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "engine": "cache",
+        "samples": 10000
+      },
+      "metrics": {
+        "ops_per_sec": 47.51513609862889,
+        "p50_ns": 20789416,
+        "p95_ns": 22167667,
+        "p99_ns": 24440834,
+        "min_ns": 19943792,
+        "max_ns": 89500000,
+        "avg_ns": 21045844,
+        "samples": 10000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/scan-prefix",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "seed": 5860399455655764006,
+        "batch_size": 1000,
+        "scan_limit": 64,
+        "branch_samples": 100,
+        "scale_keys": 100000,
+        "value_bytes": 64,
+        "samples": 10000,
+        "engine": "cache"
+      },
+      "metrics": {
+        "ops_per_sec": 46.55828890389907,
+        "p50_ns": 21084125,
+        "p95_ns": 23628958,
+        "p99_ns": 26818667,
+        "min_ns": 20087833,
+        "max_ns": 73490584,
+        "avg_ns": 21478343,
+        "samples": 10000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/branch-fork-current",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "seed": 5860399455655764006,
+        "value_bytes": 64,
+        "branch_samples": 100,
+        "samples": 10000,
+        "scale_keys": 100000,
+        "batch_size": 1000,
+        "engine": "cache",
+        "scan_limit": 64
+      },
+      "metrics": {
+        "ops_per_sec": 1.55824241607263,
+        "p50_ns": 636639083,
+        "p95_ns": 767779625,
+        "p99_ns": 915066250,
+        "min_ns": 560505375,
+        "max_ns": 915066250,
+        "avg_ns": 641748463,
+        "samples": 100
+      }
+    }
+  ]
+}

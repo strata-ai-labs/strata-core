@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-03T20:00:44Z",
+    "git_commit": "56d9ac5e",
+    "git_branch": "v1",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-point-spike/current-view/current-scan",
+      "category": "storage-next-point-spike",
+      "parameters": {
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 1000,
+          "point_rows_visited": 100200000,
+          "read_view_captures": 1000,
+          "read_view_rows_cloned": 100200000,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "scale_keys": 100000,
+        "case": "current-view/current-scan",
+        "batch_size": 1000,
+        "branch_rows": 100200,
+        "bucket_count": 4096,
+        "seed": 5860399455655764006,
+        "elapsed_ns": 28641773334,
+        "samples": 1000,
+        "found_rows": 1000,
+        "value_bytes": 150
+      },
+      "metrics": {
+        "ops_per_sec": 34.91403930680936,
+        "avg_ns": 28641773,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-next-point-spike/current-view/direct-seek",
+      "category": "storage-next-point-spike",
+      "parameters": {
+        "case": "current-view/direct-seek",
+        "samples": 1000,
+        "batch_size": 1000,
+        "value_bytes": 150,
+        "found_rows": 1000,
+        "bucket_count": 4096,
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "branch_rows": 100200,
+        "elapsed_ns": 22561994125,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 1000,
+          "point_rows_visited": 1000,
+          "read_view_captures": 1000,
+          "read_view_rows_cloned": 100200000,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 1000
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 44.32232339303475,
+        "avg_ns": 22561994,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-next-point-spike/borrowed-view/current-scan",
+      "category": "storage-next-point-spike",
+      "parameters": {
+        "bucket_count": 4096,
+        "case": "borrowed-view/current-scan",
+        "value_bytes": 150,
+        "scale_keys": 100000,
+        "samples": 1000,
+        "seed": 5860399455655764006,
+        "branch_rows": 100200,
+        "batch_size": 1000,
+        "elapsed_ns": 2093569917,
+        "found_rows": 1000,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 1000,
+          "point_rows_visited": 100200000,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 477.65302313521926,
+        "avg_ns": 2093569,
+        "samples": 1000
+      }
+    },
+    {
+      "benchmark": "storage-next-point-spike/borrowed-view/direct-seek",
+      "category": "storage-next-point-spike",
+      "parameters": {
+        "case": "borrowed-view/direct-seek",
+        "found_rows": 1000,
+        "samples": 1000,
+        "batch_size": 1000,
+        "value_bytes": 150,
+        "seed": 5860399455655764006,
+        "bucket_count": 4096,
+        "elapsed_ns": 887042,
+        "scale_keys": 100000,
+        "branch_rows": 100200,
+        "perf_trace": {
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "blind_conflict_sources_built": 0,
+          "point_candidates_materialized": 1000,
+          "point_rows_visited": 1000,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 1000
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 1127342.3355376634,
+        "avg_ns": 887,
+        "samples": 1000
+      }
+    }
+  ]
+}
