@@ -10,11 +10,22 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(all(test, feature = "perf-trace"))]
 use std::sync::{Mutex, MutexGuard};
+#[cfg(feature = "perf-trace")]
+use std::time::Instant;
 
 /// Point-in-time storage hot-path counter snapshot.
 #[cfg(feature = "perf-trace")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StoragePerfSnapshot {
+    api_commit_map_ns: u64,
+    api_commit_runtime_ns: u64,
+    runtime_batch_validate_ns: u64,
+    runtime_duplicate_mutation_key_checks: u64,
+    commit_prepare_rows_ns: u64,
+    append_batch_validate_ns: u64,
+    append_insert_rows_ns: u64,
+    append_absent_internal_key_checks: u64,
+    mutable_insert_duplicate_checks: u64,
     commit_batches_prepared: u64,
     commit_user_mutation_rows: u64,
     commit_timeline_rows_prepared: u64,
@@ -36,6 +47,51 @@ pub struct StoragePerfSnapshot {
 
 #[cfg(feature = "perf-trace")]
 impl StoragePerfSnapshot {
+    /// Nanoseconds spent mapping public API commit batches into runtime batches.
+    pub const fn api_commit_map_ns(self) -> u64 {
+        self.api_commit_map_ns
+    }
+
+    /// Nanoseconds spent inside cache/durable commit execution from the API.
+    pub const fn api_commit_runtime_ns(self) -> u64 {
+        self.api_commit_runtime_ns
+    }
+
+    /// Nanoseconds spent validating runtime commit batch shape and invariants.
+    pub const fn runtime_batch_validate_ns(self) -> u64 {
+        self.runtime_batch_validate_ns
+    }
+
+    /// Duplicate-mutation key checks performed by runtime validation.
+    pub const fn runtime_duplicate_mutation_key_checks(self) -> u64 {
+        self.runtime_duplicate_mutation_key_checks
+    }
+
+    /// Nanoseconds spent stamping user rows and timeline rows.
+    pub const fn commit_prepare_rows_ns(self) -> u64 {
+        self.commit_prepare_rows_ns
+    }
+
+    /// Nanoseconds spent validating append batches before applying rows.
+    pub const fn append_batch_validate_ns(self) -> u64 {
+        self.append_batch_validate_ns
+    }
+
+    /// Nanoseconds spent inserting append rows into the active table.
+    pub const fn append_insert_rows_ns(self) -> u64 {
+        self.append_insert_rows_ns
+    }
+
+    /// Internal-key absence checks performed before append/install.
+    pub const fn append_absent_internal_key_checks(self) -> u64 {
+        self.append_absent_internal_key_checks
+    }
+
+    /// Duplicate-key checks performed by mutable table insertion.
+    pub const fn mutable_insert_duplicate_checks(self) -> u64 {
+        self.mutable_insert_duplicate_checks
+    }
+
     /// Number of mutating commit batches whose storage rows were prepared.
     pub const fn commit_batches_prepared(self) -> u64 {
         self.commit_batches_prepared
@@ -128,6 +184,29 @@ impl StoragePerfSnapshot {
 }
 
 #[cfg(feature = "perf-trace")]
+pub(crate) type PerfTraceTimer = Instant;
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) type PerfTraceTimer = ();
+
+#[cfg(feature = "perf-trace")]
+static API_COMMIT_MAP_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static API_COMMIT_RUNTIME_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static RUNTIME_BATCH_VALIDATE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static RUNTIME_DUPLICATE_MUTATION_KEY_CHECKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_PREPARE_ROWS_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static APPEND_BATCH_VALIDATE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static APPEND_INSERT_ROWS_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static APPEND_ABSENT_INTERNAL_KEY_CHECKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static MUTABLE_INSERT_DUPLICATE_CHECKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_BATCHES_PREPARED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_USER_MUTATION_ROWS: AtomicU64 = AtomicU64::new(0);
@@ -204,6 +283,15 @@ pub(crate) fn begin_test_capture() -> PerfTraceTestGuard {
 /// Reset all performance proof counters.
 #[cfg(feature = "perf-trace")]
 pub fn reset() {
+    API_COMMIT_MAP_NS.store(0, Ordering::Relaxed);
+    API_COMMIT_RUNTIME_NS.store(0, Ordering::Relaxed);
+    RUNTIME_BATCH_VALIDATE_NS.store(0, Ordering::Relaxed);
+    RUNTIME_DUPLICATE_MUTATION_KEY_CHECKS.store(0, Ordering::Relaxed);
+    COMMIT_PREPARE_ROWS_NS.store(0, Ordering::Relaxed);
+    APPEND_BATCH_VALIDATE_NS.store(0, Ordering::Relaxed);
+    APPEND_INSERT_ROWS_NS.store(0, Ordering::Relaxed);
+    APPEND_ABSENT_INTERNAL_KEY_CHECKS.store(0, Ordering::Relaxed);
+    MUTABLE_INSERT_DUPLICATE_CHECKS.store(0, Ordering::Relaxed);
     COMMIT_BATCHES_PREPARED.store(0, Ordering::Relaxed);
     COMMIT_USER_MUTATION_ROWS.store(0, Ordering::Relaxed);
     COMMIT_TIMELINE_ROWS_PREPARED.store(0, Ordering::Relaxed);
@@ -227,6 +315,17 @@ pub fn reset() {
 #[cfg(feature = "perf-trace")]
 pub fn snapshot() -> StoragePerfSnapshot {
     StoragePerfSnapshot {
+        api_commit_map_ns: API_COMMIT_MAP_NS.load(Ordering::Relaxed),
+        api_commit_runtime_ns: API_COMMIT_RUNTIME_NS.load(Ordering::Relaxed),
+        runtime_batch_validate_ns: RUNTIME_BATCH_VALIDATE_NS.load(Ordering::Relaxed),
+        runtime_duplicate_mutation_key_checks: RUNTIME_DUPLICATE_MUTATION_KEY_CHECKS
+            .load(Ordering::Relaxed),
+        commit_prepare_rows_ns: COMMIT_PREPARE_ROWS_NS.load(Ordering::Relaxed),
+        append_batch_validate_ns: APPEND_BATCH_VALIDATE_NS.load(Ordering::Relaxed),
+        append_insert_rows_ns: APPEND_INSERT_ROWS_NS.load(Ordering::Relaxed),
+        append_absent_internal_key_checks: APPEND_ABSENT_INTERNAL_KEY_CHECKS
+            .load(Ordering::Relaxed),
+        mutable_insert_duplicate_checks: MUTABLE_INSERT_DUPLICATE_CHECKS.load(Ordering::Relaxed),
         commit_batches_prepared: COMMIT_BATCHES_PREPARED.load(Ordering::Relaxed),
         commit_user_mutation_rows: COMMIT_USER_MUTATION_ROWS.load(Ordering::Relaxed),
         commit_timeline_rows_prepared: COMMIT_TIMELINE_ROWS_PREPARED.load(Ordering::Relaxed),
@@ -246,6 +345,92 @@ pub fn snapshot() -> StoragePerfSnapshot {
         scan_candidates_materialized: SCAN_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
         table_seeks: TABLE_SEEKS.load(Ordering::Relaxed),
     }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn start_timer() -> PerfTraceTimer {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn start_timer() -> PerfTraceTimer {
+    Instant::now()
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_api_commit_map_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_api_commit_map_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&API_COMMIT_MAP_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_api_commit_runtime_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_api_commit_runtime_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&API_COMMIT_RUNTIME_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_runtime_batch_validate_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_runtime_batch_validate_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&RUNTIME_BATCH_VALIDATE_NS, start);
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_runtime_duplicate_mutation_key_checks(checks: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    RUNTIME_DUPLICATE_MUTATION_KEY_CHECKS.fetch_add(as_u64(checks), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_prepare_rows_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_prepare_rows_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_PREPARE_ROWS_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_append_batch_validate_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_append_batch_validate_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&APPEND_BATCH_VALIDATE_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_append_insert_rows_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_append_insert_rows_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&APPEND_INSERT_ROWS_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_append_absent_internal_key_check() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_append_absent_internal_key_check() {
+    if !recording_enabled() {
+        return;
+    }
+    APPEND_ABSENT_INTERNAL_KEY_CHECKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_mutable_insert_duplicate_check() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_mutable_insert_duplicate_check() {
+    if !recording_enabled() {
+        return;
+    }
+    MUTABLE_INSERT_DUPLICATE_CHECKS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -375,4 +560,13 @@ const fn recording_enabled() -> bool {
 #[cfg(feature = "perf-trace")]
 fn as_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "perf-trace")]
+fn record_elapsed(counter: &AtomicU64, start: PerfTraceTimer) {
+    if !recording_enabled() {
+        return;
+    }
+    let nanos = start.elapsed().as_nanos();
+    counter.fetch_add(u64::try_from(nanos).unwrap_or(u64::MAX), Ordering::Relaxed);
 }

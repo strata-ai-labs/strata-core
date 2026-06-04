@@ -537,6 +537,36 @@ fn commit_batch_rejects_all_duplicate_mutation_shapes() {
 }
 
 #[test]
+fn commit_batch_reports_first_later_duplicate_in_input_order() {
+    let branch = branch_id(39);
+    let first_pair = physical_key(branch, 0x20, b"first-pair".to_vec());
+    let earlier_second_pair = physical_key(branch, 0x21, b"earlier-second-pair".to_vec());
+    let batch = CommitBatch::mutating(
+        branch,
+        vec![
+            CommitMutation::delete(first_pair.clone()),
+            CommitMutation::delete(earlier_second_pair.clone()),
+            CommitMutation::put(
+                earlier_second_pair,
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            ),
+            CommitMutation::delete(first_pair),
+        ],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    assert_eq!(
+        batch.validate(&CommitRuntimeConfig::default()),
+        Err(CommitRuntimeError::DuplicateMutationKey {
+            space_id: StorageSpaceId::engine(0x21).expect("engine id"),
+        })
+    );
+}
+
+#[test]
 fn commit_batch_rejects_duplicate_validation_facts() {
     let branch = branch_id(7);
     let key = physical_key(branch, 0x20, b"dup".to_vec());

@@ -72,6 +72,7 @@ impl MutableTable {
 
     pub(crate) fn insert_table_row(&mut self, row: TableRow) -> TableRuntimeResult<()> {
         let key = row.key().clone();
+        perf_trace::record_mutable_insert_duplicate_check();
         if self.rows.contains_key(&key) {
             return Err(TableRuntimeError::DuplicateInternalKey {
                 key: key.as_slice().to_vec(),

@@ -128,17 +128,22 @@ fn run_load_seq(db: &Strata, scale: usize, config: &Config) -> Result<RunResult,
     let value = Value::Bytes(vec![0x42; config.value_bytes]);
     let bucket_count = bucket_count(scale);
     let start = Instant::now();
+    let mut load_phase = LoadPhaseTrace::default();
     let mut written = 0usize;
 
     while written < scale {
         let end = written.saturating_add(config.batch_size).min(scale);
+        let build_start = Instant::now();
         let entries = (written..end)
             .map(|index| BatchKvEntry {
                 key: key_for_index(index, bucket_count),
                 value: value.clone(),
             })
             .collect::<Vec<_>>();
+        load_phase.record_batch_build(build_start.elapsed());
+        let commit_start = Instant::now();
         let summary = db.kv_batch_put(entries)?;
+        load_phase.record_commit_call(commit_start.elapsed());
         black_box(summary.len());
         written = end;
         if config.progress && written % progress_step(scale) == 0 {
@@ -151,7 +156,8 @@ fn run_load_seq(db: &Strata, scale: usize, config: &Config) -> Result<RunResult,
         scale,
         scale,
         start.elapsed(),
-    ))
+    )
+    .with_load_phase_trace(load_phase))
 }
 
 fn run_point_latest(
@@ -413,6 +419,12 @@ fn print_result(result: &RunResult) {
             );
         }
     }
+    if let Some(load_phase) = result.load_phase_trace {
+        eprintln!(
+            "    load-phase batch_build_ns={} commit_call_ns={}",
+            load_phase.batch_build_ns, load_phase.commit_call_ns
+        );
+    }
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -642,6 +654,7 @@ struct RunResult {
     workload: Workload,
     scale: usize,
     measurement: Measurement,
+    load_phase_trace: Option<LoadPhaseTrace>,
 }
 
 impl RunResult {
@@ -650,6 +663,7 @@ impl RunResult {
             workload,
             scale,
             measurement: Measurement::Throughput { elapsed, ops },
+            load_phase_trace: None,
         }
     }
 
@@ -658,7 +672,13 @@ impl RunResult {
             workload,
             scale,
             measurement: Measurement::Latency(samples),
+            load_phase_trace: None,
         }
+    }
+
+    const fn with_load_phase_trace(mut self, load_phase_trace: LoadPhaseTrace) -> Self {
+        self.load_phase_trace = Some(load_phase_trace);
+        self
     }
 
     fn into_benchmark_result(self, config: &Config) -> BenchmarkResult {
@@ -683,6 +703,15 @@ impl RunResult {
             serde_json::json!(config.scan_limit),
         );
         parameters.insert("seed".to_string(), serde_json::json!(config.seed));
+        if let Some(load_phase) = self.load_phase_trace {
+            parameters.insert(
+                "load_phase_trace".to_string(),
+                serde_json::json!({
+                    "batch_build_ns": load_phase.batch_build_ns,
+                    "commit_call_ns": load_phase.commit_call_ns,
+                }),
+            );
+        }
 
         BenchmarkResult {
             benchmark: format!("storage-old-cache/{}", self.workload),
@@ -690,6 +719,26 @@ impl RunResult {
             parameters,
             metrics: self.measurement.into_metrics(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LoadPhaseTrace {
+    batch_build_ns: u64,
+    commit_call_ns: u64,
+}
+
+impl LoadPhaseTrace {
+    fn record_batch_build(&mut self, duration: Duration) {
+        self.batch_build_ns = self
+            .batch_build_ns
+            .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
+    }
+
+    fn record_commit_call(&mut self, duration: Duration) {
+        self.commit_call_ns = self
+            .commit_call_ns
+            .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
     }
 }
 

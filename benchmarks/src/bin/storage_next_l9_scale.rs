@@ -159,10 +159,12 @@ fn run_load_seq(
     let value = vec![0x42; config.value_bytes];
     let bucket_count = bucket_count(scale);
     let start = Instant::now();
+    let mut load_phase = LoadPhaseTrace::default();
     let mut written = 0usize;
 
     while written < scale {
         let end = written.saturating_add(config.batch_size).min(scale);
+        let build_start = Instant::now();
         let mut mutations = Vec::with_capacity(end - written);
         for index in written..end {
             mutations.push(CommitMutation::Put {
@@ -177,7 +179,10 @@ fn run_load_seq(
             mutations,
             CommitOptions::default().require_conflict_check(false),
         )?;
+        load_phase.record_batch_build(build_start.elapsed());
+        let commit_start = Instant::now();
         let summary = runtime.commit(&batch)?;
+        load_phase.record_commit_call(commit_start.elapsed());
         black_box(summary.commit_version());
         written = end;
         if config.progress && written % progress_step(scale) == 0 {
@@ -193,6 +198,7 @@ fn run_load_seq(
         scale,
         elapsed,
     )
+    .with_load_phase_trace(load_phase)
     .with_perf_trace(perf_trace::snapshot()))
 }
 
@@ -575,7 +581,16 @@ fn print_result(result: &RunResult) {
     }
     if let Some(perf_trace) = result.perf_trace {
         eprintln!(
-            "    perf-trace commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} table_seeks={}",
+            "    perf-trace api_map_ns={} api_runtime_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} table_seeks={}",
+            perf_trace.api_commit_map_ns(),
+            perf_trace.api_commit_runtime_ns(),
+            perf_trace.runtime_batch_validate_ns(),
+            perf_trace.runtime_duplicate_mutation_key_checks(),
+            perf_trace.commit_prepare_rows_ns(),
+            perf_trace.append_batch_validate_ns(),
+            perf_trace.append_insert_rows_ns(),
+            perf_trace.append_absent_internal_key_checks(),
+            perf_trace.mutable_insert_duplicate_checks(),
             perf_trace.commit_batches_prepared(),
             perf_trace.commit_user_mutation_rows(),
             perf_trace.commit_timeline_rows_prepared(),
@@ -593,6 +608,12 @@ fn print_result(result: &RunResult) {
             perf_trace.scan_rows_visited(),
             perf_trace.scan_candidates_materialized(),
             perf_trace.table_seeks(),
+        );
+    }
+    if let Some(load_phase) = result.load_phase_trace {
+        eprintln!(
+            "    load-phase batch_build_ns={} commit_call_ns={}",
+            load_phase.batch_build_ns, load_phase.commit_call_ns
         );
     }
 }
@@ -936,6 +957,7 @@ struct RunResult {
     scale: usize,
     measurement: Measurement,
     perf_trace: Option<StoragePerfSnapshot>,
+    load_phase_trace: Option<LoadPhaseTrace>,
 }
 
 impl RunResult {
@@ -952,6 +974,7 @@ impl RunResult {
             scale,
             measurement: Measurement::Throughput { elapsed, ops },
             perf_trace: None,
+            load_phase_trace: None,
         }
     }
 
@@ -967,11 +990,17 @@ impl RunResult {
             scale,
             measurement: Measurement::Latency(samples),
             perf_trace: None,
+            load_phase_trace: None,
         }
     }
 
     const fn with_perf_trace(mut self, perf_trace: StoragePerfSnapshot) -> Self {
         self.perf_trace = Some(perf_trace);
+        self
+    }
+
+    const fn with_load_phase_trace(mut self, load_phase_trace: LoadPhaseTrace) -> Self {
+        self.load_phase_trace = Some(load_phase_trace);
         self
     }
 
@@ -1000,10 +1029,28 @@ impl RunResult {
             serde_json::json!(config.scan_limit),
         );
         parameters.insert("seed".to_string(), serde_json::json!(config.seed));
+        if let Some(load_phase) = self.load_phase_trace {
+            parameters.insert(
+                "load_phase_trace".to_string(),
+                serde_json::json!({
+                    "batch_build_ns": load_phase.batch_build_ns,
+                    "commit_call_ns": load_phase.commit_call_ns,
+                }),
+            );
+        }
         if let Some(perf_trace) = self.perf_trace {
             parameters.insert(
                 "perf_trace".to_string(),
                 serde_json::json!({
+                    "api_commit_map_ns": perf_trace.api_commit_map_ns(),
+                    "api_commit_runtime_ns": perf_trace.api_commit_runtime_ns(),
+                    "runtime_batch_validate_ns": perf_trace.runtime_batch_validate_ns(),
+                    "runtime_duplicate_mutation_key_checks": perf_trace.runtime_duplicate_mutation_key_checks(),
+                    "commit_prepare_rows_ns": perf_trace.commit_prepare_rows_ns(),
+                    "append_batch_validate_ns": perf_trace.append_batch_validate_ns(),
+                    "append_insert_rows_ns": perf_trace.append_insert_rows_ns(),
+                    "append_absent_internal_key_checks": perf_trace.append_absent_internal_key_checks(),
+                    "mutable_insert_duplicate_checks": perf_trace.mutable_insert_duplicate_checks(),
                     "commit_batches_prepared": perf_trace.commit_batches_prepared(),
                     "commit_user_mutation_rows": perf_trace.commit_user_mutation_rows(),
                     "commit_timeline_rows_prepared": perf_trace.commit_timeline_rows_prepared(),
@@ -1031,6 +1078,26 @@ impl RunResult {
             parameters,
             metrics: self.measurement.into_metrics(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LoadPhaseTrace {
+    batch_build_ns: u64,
+    commit_call_ns: u64,
+}
+
+impl LoadPhaseTrace {
+    fn record_batch_build(&mut self, duration: Duration) {
+        self.batch_build_ns = self
+            .batch_build_ns
+            .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
+    }
+
+    fn record_commit_call(&mut self, duration: Duration) {
+        self.commit_call_ns = self
+            .commit_call_ns
+            .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
     }
 }
 

@@ -147,31 +147,36 @@ pub(crate) fn prepare_commit_rows(
     stamp: CommitStamp,
     config: &CommitRuntimeConfig,
 ) -> CommitRuntimeResult<(Vec<StorageRow>, CommitMutationCounts)> {
-    let user_rows = batch.stamp_user_rows(stamp)?;
-    let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
-    let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
-    let user_counts = CommitMutationCounts::from_validated_batch(batch)?;
-    let mutation_counts = CommitMutationCounts::new(
-        user_counts.puts(),
-        user_counts.deletes(),
-        CommitTimelineRows::timeline_row_count(),
-        config,
-    )?;
+    let timer = perf_trace::start_timer();
+    let result = (|| {
+        let user_rows = batch.stamp_user_rows(stamp)?;
+        let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
+        let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
+        let user_counts = CommitMutationCounts::from_validated_batch(batch)?;
+        let mutation_counts = CommitMutationCounts::new(
+            user_counts.puts(),
+            user_counts.deletes(),
+            CommitTimelineRows::timeline_row_count(),
+            config,
+        )?;
 
-    let mut rows = Vec::with_capacity(
-        user_rows
-            .len()
-            .saturating_add(CommitTimelineRows::timeline_row_count()),
-    );
-    rows.extend(user_rows);
-    let timeline_row_count = CommitTimelineRows::timeline_row_count();
-    rows.extend(timeline_rows.into_rows());
-    perf_trace::record_commit_rows_prepared(
-        batch.batch().mutations().len(),
-        timeline_row_count,
-        rows.len(),
-    );
-    Ok((rows, mutation_counts))
+        let mut rows = Vec::with_capacity(
+            user_rows
+                .len()
+                .saturating_add(CommitTimelineRows::timeline_row_count()),
+        );
+        rows.extend(user_rows);
+        let timeline_row_count = CommitTimelineRows::timeline_row_count();
+        rows.extend(timeline_rows.into_rows());
+        perf_trace::record_commit_rows_prepared(
+            batch.batch().mutations().len(),
+            timeline_row_count,
+            rows.len(),
+        );
+        Ok((rows, mutation_counts))
+    })();
+    perf_trace::record_commit_prepare_rows_elapsed(timer);
+    result
 }
 
 fn require_cache_mutating_batch(batch: &ValidatedCommitBatch) -> CommitRuntimeResult<()> {

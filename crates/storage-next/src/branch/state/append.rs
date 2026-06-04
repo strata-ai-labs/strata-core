@@ -125,7 +125,10 @@ impl BranchLocalState {
         rows: impl IntoIterator<Item = StorageRow>,
     ) -> BranchRuntimeResult<BranchAppendBatchOutcome> {
         let rows = rows.into_iter().collect::<Vec<_>>();
-        let validated_rows = self.validate_committed_row_batch(&rows)?;
+        let validate_timer = perf_trace::start_timer();
+        let validated_rows = self.validate_committed_row_batch(&rows);
+        perf_trace::record_append_batch_validate_elapsed(validate_timer);
+        let validated_rows = validated_rows?;
         let active_rows_before = self.active.len();
         let active_snapshot = self.active.append_snapshot();
         let metadata_snapshot = BranchAppendMetadataSnapshot::capture(self);
@@ -134,8 +137,10 @@ impl BranchLocalState {
         // Atomicity is preserved by validating every fallible branch/table
         // condition before mutation. The rollback guard below handles any
         // unexpected table insertion rejection without cloning the full branch.
+        let insert_timer = perf_trace::start_timer();
         for (row, validated) in rows.into_iter().zip(validated_rows.iter()) {
             if let Err(source) = self.active.insert_row(row) {
+                perf_trace::record_append_insert_rows_elapsed(insert_timer);
                 rollback_direct_append(self, active_snapshot, metadata_snapshot, &inserted_keys);
                 return Err(BranchRuntimeError::TableRuntime { source });
             }
@@ -146,6 +151,7 @@ impl BranchLocalState {
                 validated.is_tombstone,
             );
         }
+        perf_trace::record_append_insert_rows_elapsed(insert_timer);
 
         perf_trace::record_append_rows_applied(inserted_keys.len());
         let outcome = BranchAppendBatchOutcome {

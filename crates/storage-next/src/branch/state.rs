@@ -7,6 +7,7 @@ use super::read::{
     require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
     BranchOwnedTable, BranchTimestampCoverage,
 };
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
     FrozenTable, MutableTable, TableIdentity, TableInternalKeyBytes, TableRuntimeError,
@@ -229,6 +230,7 @@ impl BranchLocalState {
         key: &TableInternalKeyBytes,
         skip_frozen_index: Option<usize>,
     ) -> BranchRuntimeResult<()> {
+        perf_trace::record_append_absent_internal_key_check();
         if self.active.get(key).is_some()
             || self
                 .frozen

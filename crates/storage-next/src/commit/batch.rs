@@ -1,7 +1,9 @@
 //! Commit batch, mutation, validation fact, and stamping model.
 
 use super::{CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult};
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow};
+use std::collections::HashSet;
 use std::fmt;
 use std::num::NonZeroUsize;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -121,6 +123,25 @@ pub(crate) struct ValidatedCommitBatch {
     batch: CommitBatch,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PhysicalKeyIdentity<'a> {
+    branch_id: BranchId,
+    space: &'a str,
+    storage_space_id: crate::row::StorageSpaceId,
+    user_key: &'a [u8],
+}
+
+impl<'a> From<&'a PhysicalKey> for PhysicalKeyIdentity<'a> {
+    fn from(key: &'a PhysicalKey) -> Self {
+        Self {
+            branch_id: key.branch_id(),
+            space: key.space(),
+            storage_space_id: key.storage_space_id(),
+            user_key: key.user_key(),
+        }
+    }
+}
+
 impl CommitBatch {
     pub(crate) fn mutating(
         branch_id: BranchId,
@@ -175,9 +196,14 @@ impl CommitBatch {
         self,
         config: &CommitRuntimeConfig,
     ) -> CommitRuntimeResult<ValidatedCommitBatch> {
-        config.validate()?;
-        validate_batch_shape(&self, config)?;
-        Ok(ValidatedCommitBatch { batch: self })
+        let timer = perf_trace::start_timer();
+        let result = (|| {
+            config.validate()?;
+            validate_batch_shape(&self, config)?;
+            Ok(ValidatedCommitBatch { batch: self })
+        })();
+        perf_trace::record_runtime_batch_validate_elapsed(timer);
+        result
     }
 }
 
@@ -530,16 +556,31 @@ fn validate_fact_spaces(validation: &CommitValidationFacts) -> CommitRuntimeResu
 }
 
 fn validate_duplicate_mutations(mutations: &[CommitMutation]) -> CommitRuntimeResult<()> {
-    for (index, mutation) in mutations.iter().enumerate() {
-        if mutations[..index]
-            .iter()
-            .any(|seen| seen.physical_key() == mutation.physical_key())
+    if mutations.len() < 2 {
+        #[cfg(feature = "perf-trace")]
+        perf_trace::record_runtime_duplicate_mutation_key_checks(mutations.len());
+        return Ok(());
+    }
+
+    #[cfg(feature = "perf-trace")]
+    let mut checks = 0usize;
+    let mut seen = HashSet::with_capacity(mutations.len());
+    for mutation in mutations {
+        #[cfg(feature = "perf-trace")]
         {
+            checks = checks.saturating_add(1);
+        }
+        let key = mutation.physical_key();
+        if !seen.insert(PhysicalKeyIdentity::from(key)) {
+            #[cfg(feature = "perf-trace")]
+            perf_trace::record_runtime_duplicate_mutation_key_checks(checks);
             return Err(CommitRuntimeError::DuplicateMutationKey {
-                space_id: mutation.physical_key().storage_space_id(),
+                space_id: key.storage_space_id(),
             });
         }
     }
+    #[cfg(feature = "perf-trace")]
+    perf_trace::record_runtime_duplicate_mutation_key_checks(checks);
     Ok(())
 }
 

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-04T21:13:37Z",
+    "git_commit": "6e4ccce4",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "perf_trace": {
+          "api_commit_map_ns": 4135831,
+          "api_commit_runtime_ns": 114099459,
+          "append_absent_internal_key_checks": 100200,
+          "append_batch_validate_ns": 40598629,
+          "append_insert_rows_ns": 43743537,
+          "append_rows_applied": 100200,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 0,
+          "commit_batches_prepared": 100,
+          "commit_prepare_rows_ns": 6331917,
+          "commit_rows_prepared": 100200,
+          "commit_timeline_rows_prepared": 200,
+          "commit_user_mutation_rows": 100000,
+          "conflict_sources_built": 0,
+          "mutable_insert_duplicate_checks": 100200,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "read_view_validation_rows_scanned": 0,
+          "runtime_batch_validate_ns": 4626083,
+          "runtime_duplicate_mutation_key_checks": 100000,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "load_phase_trace": {
+          "batch_build_ns": 19930249,
+          "commit_call_ns": 118248041
+        },
+        "engine": "cache",
+        "value_bytes": 150,
+        "batch_size": 1000,
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "scan_limit": 64,
+        "samples": 1000,
+        "branch_samples": 100
+      },
+      "metrics": {
+        "ops_per_sec": 705606.751245396,
+        "avg_ns": 1417,
+        "samples": 100000
+      }
+    }
+  ]
+}

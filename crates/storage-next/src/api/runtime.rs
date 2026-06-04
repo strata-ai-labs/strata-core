@@ -33,6 +33,7 @@ use crate::lifecycle::{
     StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode as LifecycleStorageMode,
     StorageOpenOutcome as LifecycleStorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
 };
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 use crate::service::WalServiceConfig;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -1467,9 +1468,14 @@ impl<'a> StorageRuntime<'a> {
         let timestamp_policy = crate::commit::CommitTimestampPolicy::Explicit(timestamp_base);
         let durability = self.resolve_commit_durability(batch.options().durability())?;
         let generation_guard = map_generation_guard(batch.options().expected_generation())?;
-        let runtime_batch =
-            map_api_commit_batch(batch, timestamp_base, timestamp_policy, durability)?;
-        let outcome = match &mut self.inner {
+        let map_timer = perf_trace::start_timer();
+        let runtime_batch_result =
+            map_api_commit_batch(batch, timestamp_base, timestamp_policy, durability);
+        perf_trace::record_api_commit_map_elapsed(map_timer);
+        let runtime_batch = runtime_batch_result?;
+
+        let runtime_timer = perf_trace::start_timer();
+        let outcome_result = match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
                 runtime.execute_cache_commit(runtime_batch, generation_guard)
             }
@@ -1481,8 +1487,9 @@ impl<'a> StorageRuntime<'a> {
                     reason: "commit requires an open runtime",
                 });
             }
-        }
-        .map_err(map_lifecycle_error)?;
+        };
+        perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
+        let outcome = outcome_result.map_err(map_lifecycle_error)?;
         map_commit_summary(&outcome)
     }
 
