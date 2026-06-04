@@ -134,7 +134,7 @@ fn failed_table_rewrite_attempt_does_not_close_runtime() {
         .compact_branch_tables(&request)
         .expect_err("wrong branch");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.branch_runtime");
+    assert_eq!(error.code(), "not_found.lifecycle.branch");
     assert_eq!(runtime.state(), LifecycleState::Open);
     assert!(runtime.branch_state().is_empty());
 }

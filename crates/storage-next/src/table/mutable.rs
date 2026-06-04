@@ -4,11 +4,11 @@ use super::{
     MemoryTableCursor, TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes, TableRow,
     TableRuntimeError, TableRuntimeResult,
 };
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
-#[cfg(feature = "perf-trace")]
 use crate::row::{InternalKey, PhysicalKey};
 use std::collections::BTreeMap;
-use strata_core_next::CommitVersion;
+use strata_core_next::{CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableMemoryFacts {
@@ -54,6 +54,13 @@ pub(crate) struct MutableTable {
     max_commit: Option<CommitVersion>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MutableTableAppendSnapshot {
+    approximate_size_bytes: usize,
+    min_commit: Option<CommitVersion>,
+    max_commit: Option<CommitVersion>,
+}
+
 impl MutableTable {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -77,6 +84,27 @@ impl MutableTable {
         self.approximate_size_bytes = self.approximate_size_bytes.saturating_add(row_size);
         update_commit_range(&mut self.min_commit, &mut self.max_commit, commit_version);
         Ok(())
+    }
+
+    pub(crate) const fn append_snapshot(&self) -> MutableTableAppendSnapshot {
+        MutableTableAppendSnapshot {
+            approximate_size_bytes: self.approximate_size_bytes,
+            min_commit: self.min_commit,
+            max_commit: self.max_commit,
+        }
+    }
+
+    pub(crate) fn rollback_appended_rows(
+        &mut self,
+        snapshot: MutableTableAppendSnapshot,
+        inserted_keys: &[TableInternalKeyBytes],
+    ) {
+        for key in inserted_keys {
+            self.rows.remove(key);
+        }
+        self.approximate_size_bytes = snapshot.approximate_size_bytes;
+        self.min_commit = snapshot.min_commit;
+        self.max_commit = snapshot.max_commit;
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -138,12 +166,21 @@ impl MutableTable {
             .filter(move |row| prefix.is_prefix_of(row.key()))
     }
 
+    pub(crate) fn seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> (Option<&TableRow>, usize) {
+        seek_physical_key_in_rows(&self.rows, key, max_commit_version, max_commit_timestamp)
+    }
+
     #[cfg(feature = "perf-trace")]
     pub(crate) fn perf_seek_physical_key_latest(
         &self,
         key: &PhysicalKey,
     ) -> (Option<&TableRow>, usize) {
-        seek_physical_key_at_version(&self.rows, key, CommitVersion::MAX)
+        self.seek_physical_key(key, None, None)
     }
 
     pub(crate) fn freeze(self) -> FrozenTable {
@@ -224,37 +261,55 @@ impl FrozenTable {
             .filter(move |row| prefix.is_prefix_of(row.key()))
     }
 
+    pub(crate) fn seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> (Option<&TableRow>, usize) {
+        seek_physical_key_in_rows(&self.rows, key, max_commit_version, max_commit_timestamp)
+    }
+
     #[cfg(feature = "perf-trace")]
     pub(crate) fn perf_seek_physical_key_latest(
         &self,
         key: &PhysicalKey,
     ) -> (Option<&TableRow>, usize) {
-        seek_physical_key_at_version(&self.rows, key, CommitVersion::MAX)
+        self.seek_physical_key(key, None, None)
     }
 }
 
-#[cfg(feature = "perf-trace")]
-fn seek_physical_key_at_version<'a>(
+fn seek_physical_key_in_rows<'a>(
     rows: &'a BTreeMap<TableInternalKeyBytes, TableRow>,
     key: &PhysicalKey,
-    max_commit_version: CommitVersion,
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
 ) -> (Option<&'a TableRow>, usize) {
+    perf_trace::record_table_seek();
     let prefix = TablePhysicalKeyBytes::from_physical_key(key);
-    let seek_key = TableInternalKeyBytes::from_internal_key(&InternalKey::new(
-        key.clone(),
-        CommitVersion::MAX,
-    ));
+    let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
+    let seek_key =
+        TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
     let mut visited = 0usize;
     for (_, row) in rows.range(seek_key..) {
         visited = visited.saturating_add(1);
         if !prefix.is_prefix_of(row.key()) {
             break;
         }
-        if row.commit_version().as_u64() <= max_commit_version.as_u64() {
+        if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
             return (Some(row), visited);
         }
     }
     (None, visited)
+}
+
+fn row_matches_point_bound(
+    row: &TableRow,
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> bool {
+    max_commit_version.is_none_or(|version| row.commit_version().as_u64() <= version.as_u64())
+        && max_commit_timestamp.is_none_or(|timestamp| row.commit_timestamp() <= timestamp)
 }
 
 fn update_commit_range(

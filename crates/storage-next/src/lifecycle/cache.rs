@@ -25,7 +25,7 @@ use super::{
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::read::BranchReadView;
+use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView};
 use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
@@ -34,6 +34,7 @@ use crate::commit::{
     CommitUnresolvedDurable, CommitUnresolvedDurableGate, CommitVersionAllocator,
     VisibleVersionTracker,
 };
+use crate::row::PhysicalKey;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -241,6 +242,18 @@ impl<S> LifecycleCacheRuntime<S> {
         branch.capture_read_view().map_err(branch_error)
     }
 
+    pub(crate) fn read_latest_point_or_tombstone_for_branch(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        key: &PhysicalKey,
+    ) -> LifecycleResult<Option<BranchHistoryRow>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
+        let branch = self.branch_catalog.branch_state(branch_id)?;
+        branch
+            .read_point_or_tombstone_borrowed(key, BranchReadBound::Latest)
+            .map_err(branch_error)
+    }
+
     pub(crate) fn rotate_active_for_maintenance(
         &mut self,
     ) -> LifecycleResult<BranchRotationOutcome> {
@@ -409,12 +422,7 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> LifecycleResult<LifecycleCompactionOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let branch_id = request.branch_id();
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
+        let generation = self.branch_catalog.lookup(branch_id)?.generation();
         let outcome = {
             let branch = self
                 .branch_catalog
@@ -434,12 +442,7 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> LifecycleResult<LifecycleMaterializationOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let branch_id = request.child_branch_id();
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
+        let generation = self.branch_catalog.lookup(branch_id)?.generation();
         let outcome = {
             let branch = self
                 .branch_catalog
@@ -526,6 +529,7 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
@@ -565,6 +569,7 @@ impl<S> LifecycleCacheRuntime<S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Compaction)
@@ -600,6 +605,7 @@ impl<S> LifecycleCacheRuntime<S> {
     pub(crate) fn run_next_materialization_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Materialization)
@@ -614,6 +620,7 @@ impl<S> LifecycleCacheRuntime<S> {
         task_id: MaintenanceTaskId,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self.maintenance.next_matching_task(|task| {
             task.id() == task_id && task.kind() == MaintenanceTaskKind::Materialization
         }) else {

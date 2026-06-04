@@ -957,6 +957,151 @@ fn branch_local_state_rejects_active_and_frozen_duplicates_without_mutation() {
 }
 
 #[test]
+fn branch_local_state_atomic_batch_append_rejects_invalid_rows_without_mutation() {
+    let branch = branch_id(34);
+    let wrong_branch = branch_id(35);
+    let row = storage_row_with(
+        branch,
+        b"batch-duplicate".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+    let wrong_row = storage_row_with(
+        wrong_branch,
+        b"wrong".to_vec(),
+        8,
+        80,
+        Timestamp::EPOCH,
+        b"secret-payload".to_vec(),
+    );
+
+    let mut empty_state = BranchLocalState::empty(branch);
+    let empty_facts = empty_state.facts().expect("empty facts");
+    assert!(matches!(
+        empty_state.append_committed_rows_atomically(Vec::new()),
+        Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+    assert_eq!(empty_state.facts().expect("after empty"), empty_facts);
+
+    let mut wrong_state = BranchLocalState::empty(branch);
+    let wrong_facts = wrong_state.facts().expect("wrong baseline facts");
+    assert!(matches!(
+        wrong_state.append_committed_rows_atomically(vec![wrong_row]),
+        Err(BranchRuntimeError::InvalidBranchRow { .. })
+    ));
+    assert_eq!(
+        wrong_state.facts().expect("after wrong branch"),
+        wrong_facts
+    );
+    assert_eq!(wrong_state.active_row_count(), 0);
+
+    let mut active_duplicate_state = BranchLocalState::empty(branch);
+    active_duplicate_state
+        .append_committed_row(row.clone())
+        .expect("seed active row");
+    let active_duplicate_facts = active_duplicate_state
+        .facts()
+        .expect("active duplicate baseline");
+    let active_duplicate = active_duplicate_state
+        .append_committed_rows_atomically(vec![row.clone()])
+        .expect_err("active duplicate rejected");
+    assert_duplicate_internal_key(&active_duplicate);
+    assert_eq!(
+        active_duplicate_state
+            .facts()
+            .expect("after active duplicate"),
+        active_duplicate_facts
+    );
+    assert_eq!(active_duplicate_state.active_row_count(), 1);
+
+    let mut frozen_duplicate_state = BranchLocalState::empty(branch);
+    frozen_duplicate_state
+        .append_committed_row(row.clone())
+        .expect("seed frozen row");
+    assert!(matches!(
+        frozen_duplicate_state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let frozen_duplicate_facts = frozen_duplicate_state
+        .facts()
+        .expect("frozen duplicate baseline");
+    let frozen_duplicate = frozen_duplicate_state
+        .append_committed_rows_atomically(vec![row.clone()])
+        .expect_err("frozen duplicate rejected");
+    assert_duplicate_internal_key(&frozen_duplicate);
+    assert_eq!(
+        frozen_duplicate_state
+            .facts()
+            .expect("after frozen duplicate"),
+        frozen_duplicate_facts
+    );
+    assert_eq!(frozen_duplicate_state.active_row_count(), 0);
+    assert_eq!(frozen_duplicate_state.frozen_table_count(), 1);
+
+    let mut batch_duplicate_state = BranchLocalState::empty(branch);
+    let batch_duplicate_facts = batch_duplicate_state
+        .facts()
+        .expect("batch duplicate baseline");
+    let batch_duplicate = batch_duplicate_state
+        .append_committed_rows_atomically(vec![row.clone(), row])
+        .expect_err("batch duplicate rejected");
+    assert_duplicate_internal_key(&batch_duplicate);
+    assert_eq!(
+        batch_duplicate_state
+            .facts()
+            .expect("after batch duplicate"),
+        batch_duplicate_facts
+    );
+    assert_eq!(batch_duplicate_state.active_row_count(), 0);
+}
+
+#[test]
+fn branch_local_state_atomic_batch_append_reports_batch_state_after_success() {
+    let branch = branch_id(34);
+    let mut state = BranchLocalState::empty(branch);
+    let first = storage_row_with(
+        branch,
+        b"first".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"first".to_vec(),
+    );
+    let second = tombstone_row(branch, b"second".to_vec(), 4, 40);
+
+    let outcome = state
+        .append_committed_rows_atomically(vec![first.clone(), second.clone()])
+        .expect("atomic batch append succeeds");
+
+    assert_eq!(outcome.branch_id(), branch);
+    assert_eq!(outcome.appended_rows(), 2);
+    assert_eq!(outcome.active_rows(), 2);
+    assert!(outcome.approximate_active_bytes() > 0);
+    assert_eq!(outcome.max_commit_version(), Some(CommitVersion::new(4)));
+    assert_eq!(state.active_row_count(), 2);
+    assert_eq!(state.put_rows(), 1);
+    assert_eq!(state.tombstone_rows(), 1);
+    assert_eq!(
+        state
+            .active()
+            .get(&TableInternalKeyBytes::from_row(&first))
+            .expect("stored first")
+            .row(),
+        &first
+    );
+    assert_eq!(
+        state
+            .active()
+            .get(&TableInternalKeyBytes::from_row(&second))
+            .expect("stored second")
+            .row(),
+        &second
+    );
+}
+
+#[test]
 fn branch_local_state_rotation_preserves_rows_and_newest_first_order() {
     let branch = branch_id(35);
     let mut state =

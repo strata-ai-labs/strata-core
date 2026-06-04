@@ -40,6 +40,9 @@ pub(crate) trait CommitConflictReadSource {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct UnusedConflictSource;
+
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct CommitBranchReadViewConflictSource<'a> {
     read_view: &'a BranchReadView,
     bound: BranchReadBound,
@@ -223,6 +226,39 @@ pub(crate) fn validate_commit_conflicts(
         checked_read_facts,
         checked_cas_facts,
     ))
+}
+
+pub(crate) fn commit_conflict_validation_needs_source(batch: &ValidatedCommitBatch) -> bool {
+    let batch = batch.batch();
+    if batch.kind() == CommitBatchKind::ReadOnlyDiagnostic
+        || batch.options().conflict_validation() == CommitConflictValidationMode::Skip
+    {
+        return false;
+    }
+
+    let validation = batch.validation();
+    !validation.read_set().is_empty() || !validation.cas_set().is_empty()
+}
+
+pub(crate) fn validate_commit_conflicts_without_source(
+    batch: &ValidatedCommitBatch,
+) -> CommitRuntimeResult<CommitConflictReport> {
+    debug_assert!(
+        !commit_conflict_validation_needs_source(batch),
+        "source-backed conflict validation requires a read source"
+    );
+    validate_commit_conflicts(batch, &UnusedConflictSource)
+}
+
+impl CommitConflictReadSource for UnusedConflictSource {
+    fn current_observed_version(
+        &self,
+        _key: &PhysicalKey,
+    ) -> CommitRuntimeResult<CommitObservedVersion> {
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "conflict validation source was unexpectedly read",
+        })
+    }
 }
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;

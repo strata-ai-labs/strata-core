@@ -90,6 +90,99 @@ fn durable_standard_commit_appends_wal_record_then_applies_rows_and_publishes_vi
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_blind_commit_does_not_capture_conflict_read_view() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(97);
+    let key = physical_key(branch, 0x20, b"blind-durable".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let batch = durable_batch(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            key,
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+    );
+
+    fixture
+        .execute(batch)
+        .expect("blind durable commit succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.read_view_rows_cloned(), 0);
+    assert_eq!(perf.read_view_validation_rows_scanned(), 0);
+    assert_eq!(fixture.wal.records.len(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_cas_commit_still_captures_read_view_and_rejects_before_wal_append() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(98);
+    let key = physical_key(branch, 0x20, b"durable-stale-cas".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture.seed_visible_row(StorageRow::put(
+        key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    ));
+    fixture.catch_up_to(CommitVersion::new(1), Timestamp::from_micros(1_000));
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(1));
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-stale-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            Vec::new(),
+            vec![CommitCasFact::new(key, CommitObservedVersion::Missing)],
+        ),
+    );
+
+    assert!(matches!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::CommitConflict { conflict })
+            if conflict.kind() == CommitConflictKind::Cas
+    ));
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.conflict_sources_built(), 1);
+    assert_eq!(perf.read_view_captures(), 1);
+    assert!(perf.read_view_rows_cloned() > 0);
+    assert!(perf.read_view_validation_rows_scanned() > 0);
+    assert!(fixture.wal.records.is_empty());
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+}
+
 #[cfg(all(feature = "localfs", unix))]
 #[test]
 fn durable_standard_commit_appends_through_real_l4_wal_service() {

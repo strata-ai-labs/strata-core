@@ -547,6 +547,9 @@ impl<'a> StorageRuntime<'a> {
     }
 
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
+        if request.bound() == ReadBound::Latest {
+            return self.read_latest_point(request);
+        }
         let view = self.read_view_for_branch(request.branch_id())?;
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
         let resolved = resolve_read_bound(&view, request.bound())?;
@@ -557,6 +560,28 @@ impl<'a> StorageRuntime<'a> {
             Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
             None => visible_tombstone_at_bound(&view, &key, resolved)?,
         };
+        Ok(PointReadOutcome::new(row))
+    }
+
+    fn read_latest_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
+        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
+        let row = match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime
+                .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
+                .map_err(map_lifecycle_error)?,
+            StorageRuntimeInner::Durable(runtime) => runtime
+                .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
+                .map_err(map_lifecycle_error)?,
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "read requires an open runtime",
+                });
+            }
+        };
+        let row = row
+            .as_ref()
+            .map(|row| read_row_from_storage(row.row()))
+            .transpose()?;
         Ok(PointReadOutcome::new(row))
     }
 

@@ -340,7 +340,6 @@ fn seek_state_latest(state: &BranchLocalState, key: &PhysicalKey) -> Option<Stor
     let mut rows_visited = 0usize;
     let mut candidates = 0usize;
 
-    perf_trace::record_table_seek();
     let (row, visited) = state.active().perf_seek_physical_key_latest(key);
     rows_visited = rows_visited.saturating_add(visited);
     if let Some(row) = row {
@@ -350,7 +349,6 @@ fn seek_state_latest(state: &BranchLocalState, key: &PhysicalKey) -> Option<Stor
     }
 
     for table in state.frozen() {
-        perf_trace::record_table_seek();
         let (row, visited) = table.perf_seek_physical_key_latest(key);
         rows_visited = rows_visited.saturating_add(visited);
         if let Some(row) = row {

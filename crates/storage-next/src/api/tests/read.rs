@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use crate::branch::read::BranchTimestampCoverage;
 use crate::commit::COMMIT_TIMELINE_SPACE;
+#[cfg(feature = "perf-trace")]
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 
 fn open_runtime() -> StorageRuntime<'static> {
@@ -142,6 +144,36 @@ fn read_latest_returns_tombstone_fact_for_visible_delete() {
     assert!(row.is_tombstone());
     assert!(row.value().is_none());
     assert_eq!(row.commit_version(), deleted.commit_version());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn read_latest_uses_borrowed_bounded_point_path() {
+    let mut runtime = open_runtime();
+    for index in 0..64u8 {
+        let key = vec![b'k', index];
+        let value = vec![b'v', index];
+        commit_put(&mut runtime, &key, &value, u64::from(index) + 1);
+    }
+
+    let _perf_trace = perf_trace::begin_test_capture();
+    for index in 0..64u8 {
+        let key = vec![b'k', index];
+        let outcome = runtime
+            .read_point(&point_request(&key, ReadBound::Latest))
+            .expect("latest read");
+        assert_eq!(
+            read_value(outcome.row().expect("row present")),
+            &[b'v', index]
+        );
+    }
+
+    let snapshot = perf_trace::snapshot();
+    assert_eq!(snapshot.read_view_captures(), 0);
+    assert_eq!(snapshot.read_view_rows_cloned(), 0);
+    assert_eq!(snapshot.point_rows_visited(), 64);
+    assert_eq!(snapshot.point_candidates_materialized(), 64);
+    assert_eq!(snapshot.table_seeks(), 64);
 }
 
 #[test]

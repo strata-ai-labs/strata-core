@@ -1,7 +1,8 @@
 //! Cache/no-WAL commit execution.
 
 use super::{
-    admit_mutating_commit, validate_commit_conflicts, CommitBatch, CommitBatchKind,
+    admit_mutating_commit, commit_conflict_validation_needs_source, validate_commit_conflicts,
+    validate_commit_conflicts_without_source, CommitBatch, CommitBatchKind,
     CommitBranchApplyTarget, CommitBranchGenerationGuard, CommitBranchGuardSet,
     CommitBranchReadViewConflictSource, CommitBranchRegistry, CommitDurabilityClass,
     CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitMutationCounts,
@@ -80,13 +81,17 @@ where
             current_visible_version,
         )?;
 
-        let read_view = self.branch.capture_read_view()?;
-        if is_blind_batch(&batch) {
-            perf_trace::record_blind_conflict_source_built();
+        if commit_conflict_validation_needs_source(&batch) {
+            let read_view = self.branch.capture_read_view()?;
+            perf_trace::record_conflict_source_built();
+            let conflict_source = CommitBranchReadViewConflictSource::new_at_version(
+                &read_view,
+                current_visible_version,
+            );
+            validate_commit_conflicts(&batch, &conflict_source)?;
+        } else {
+            validate_commit_conflicts_without_source(&batch)?;
         }
-        let conflict_source =
-            CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
-        validate_commit_conflicts(&batch, &conflict_source)?;
 
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
@@ -137,11 +142,6 @@ where
     }
 }
 
-fn is_blind_batch(batch: &ValidatedCommitBatch) -> bool {
-    let validation = batch.batch().validation();
-    validation.read_set().is_empty() && validation.cas_set().is_empty()
-}
-
 pub(crate) fn prepare_commit_rows(
     batch: &ValidatedCommitBatch,
     stamp: CommitStamp,
@@ -164,7 +164,13 @@ pub(crate) fn prepare_commit_rows(
             .saturating_add(CommitTimelineRows::timeline_row_count()),
     );
     rows.extend(user_rows);
-    rows.extend(timeline_rows.rows().into_iter().cloned());
+    let timeline_row_count = CommitTimelineRows::timeline_row_count();
+    rows.extend(timeline_rows.into_rows());
+    perf_trace::record_commit_rows_prepared(
+        batch.batch().mutations().len(),
+        timeline_row_count,
+        rows.len(),
+    );
     Ok((rows, mutation_counts))
 }
 

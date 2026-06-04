@@ -2,7 +2,8 @@
 
 use super::cache::prepare_commit_rows;
 use super::{
-    admit_mutating_commit, validate_commit_conflicts, CommitBatch, CommitBatchKind,
+    admit_mutating_commit, commit_conflict_validation_needs_source, validate_commit_conflicts,
+    validate_commit_conflicts_without_source, CommitBatch, CommitBatchKind,
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchReadViewConflictSource,
     CommitBranchRegistry, CommitDurabilityClass, CommitDurabilityMode, CommitFactAllocation,
     CommitFactAllocator, CommitLowerLayer, CommitOutcome, CommitRuntimeConfig, CommitRuntimeError,
@@ -197,13 +198,17 @@ where
             current_visible_version,
         )?;
 
-        let read_view = self.branch.capture_read_view()?;
-        if is_blind_batch(&batch) {
-            perf_trace::record_blind_conflict_source_built();
+        if commit_conflict_validation_needs_source(&batch) {
+            let read_view = self.branch.capture_read_view()?;
+            perf_trace::record_conflict_source_built();
+            let conflict_source = CommitBranchReadViewConflictSource::new_at_version(
+                &read_view,
+                current_visible_version,
+            );
+            validate_commit_conflicts(&batch, &conflict_source)?;
+        } else {
+            validate_commit_conflicts_without_source(&batch)?;
         }
-        let conflict_source =
-            CommitBranchReadViewConflictSource::new_at_version(&read_view, current_visible_version);
-        validate_commit_conflicts(&batch, &conflict_source)?;
 
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
@@ -257,11 +262,6 @@ where
             facts,
         )
     }
-}
-
-fn is_blind_batch(batch: &ValidatedCommitBatch) -> bool {
-    let validation = batch.batch().validation();
-    validation.read_set().is_empty() && validation.cas_set().is_empty()
 }
 
 impl CommitWalAppendFacts {

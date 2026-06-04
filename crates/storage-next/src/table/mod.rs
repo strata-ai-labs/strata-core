@@ -102,7 +102,7 @@ pub(crate) use key::{
         reason = "mutable and frozen table surfaces are consumed by later M4 table slices"
     )
 )]
-pub(crate) use mutable::{FrozenTable, MutableTable, TableMemoryFacts};
+pub(crate) use mutable::{FrozenTable, MutableTable, MutableTableAppendSnapshot, TableMemoryFacts};
 #[cfg_attr(
     not(test),
     expect(

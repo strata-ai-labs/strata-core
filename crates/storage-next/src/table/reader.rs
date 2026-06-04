@@ -2,14 +2,17 @@
 
 use super::{
     BoundedTableCursor, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyBounds,
-    TableKeyRange, TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts,
-    TableRuntimeResult,
+    TableKeyRange, TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
+    TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
     decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata,
     MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
+use crate::observability::perf_trace;
+use crate::row::{InternalKey, PhysicalKey};
+use strata_core_next::{CommitVersion, Timestamp};
 
 use super::facts::table_facts_from_decoded;
 
@@ -130,6 +133,15 @@ impl ImmutableTableReader {
             .map(|index| self.rows[index].clone())
     }
 
+    pub(crate) fn seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> (Option<&TableRow>, usize) {
+        seek_physical_key_in_slice(&self.rows, key, max_commit_version, max_commit_timestamp)
+    }
+
     pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_> {
         ImmutableTableCursor::new(&self.rows)
     }
@@ -183,6 +195,44 @@ impl super::TableCursor for ImmutableTableCursor<'_> {
     fn current(&self) -> Option<&TableRow> {
         self.position.and_then(|position| self.rows.get(position))
     }
+}
+
+fn seek_physical_key_in_slice<'a>(
+    rows: &'a [TableRow],
+    key: &PhysicalKey,
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> (Option<&'a TableRow>, usize) {
+    perf_trace::record_table_seek();
+    let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+    let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
+    let seek_key =
+        TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
+    let start = match rows.binary_search_by(|row| row.key().cmp(&seek_key)) {
+        Ok(index) | Err(index) if index < rows.len() => index,
+        Ok(_) | Err(_) => return (None, 0),
+    };
+
+    let mut visited = 0usize;
+    for row in &rows[start..] {
+        visited = visited.saturating_add(1);
+        if !prefix.is_prefix_of(row.key()) {
+            break;
+        }
+        if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
+            return (Some(row), visited);
+        }
+    }
+    (None, visited)
+}
+
+fn row_matches_point_bound(
+    row: &TableRow,
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> bool {
+    max_commit_version.is_none_or(|version| row.commit_version().as_u64() <= version.as_u64())
+        && max_commit_timestamp.is_none_or(|timestamp| row.commit_timestamp() <= timestamp)
 }
 
 fn require_validate_on_open(config: TableReaderConfig) {

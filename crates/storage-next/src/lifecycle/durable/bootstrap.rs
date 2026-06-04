@@ -5,7 +5,7 @@ use super::{
     LifecycleDurableLocalShell,
 };
 use crate::branch::error::BranchRuntimeError;
-use crate::branch::read::BranchReadView;
+use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
@@ -23,6 +23,7 @@ use crate::lifecycle::{
     RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
     StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
+use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
 use crate::table::TableRuntimeError;
 use std::sync::Arc;
@@ -539,6 +540,18 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
         branch.capture_read_view().map_err(branch_error)
+    }
+
+    pub(crate) fn read_latest_point_or_tombstone_for_branch(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        key: &PhysicalKey,
+    ) -> LifecycleResult<Option<BranchHistoryRow>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
+        let branch = self.branch_catalog.branch_state(branch_id)?;
+        branch
+            .read_point_or_tombstone_borrowed(key, BranchReadBound::Latest)
+            .map_err(branch_error)
     }
 
     /// Storage-internal: create a new branch in the catalog. The new

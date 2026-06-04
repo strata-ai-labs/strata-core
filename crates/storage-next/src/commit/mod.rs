@@ -70,7 +70,8 @@ pub(crate) use config::{CommitReadOnlyDiagnostics, CommitRuntimeConfig};
     reason = "commit scaffold exports define the local surface for later slices"
 )]
 pub(crate) use conflict::{
-    validate_commit_conflicts, CommitBranchReadViewConflictSource, CommitConflict,
+    commit_conflict_validation_needs_source, validate_commit_conflicts,
+    validate_commit_conflicts_without_source, CommitBranchReadViewConflictSource, CommitConflict,
     CommitConflictKind, CommitConflictReadSource, CommitConflictReport,
 };
 #[allow(

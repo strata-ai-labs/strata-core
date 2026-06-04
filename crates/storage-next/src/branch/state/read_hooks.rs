@@ -200,6 +200,7 @@ impl BranchLocalState {
     }
 
     pub(crate) fn facts(&self) -> BranchRuntimeResult<BranchStateFacts> {
+        perf_trace::record_branch_facts_observed(read_view_clone_row_count(self));
         let observed = self.observe_rows();
         BranchStateFacts::new(
             self.branch_id,

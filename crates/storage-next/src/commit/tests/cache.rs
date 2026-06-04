@@ -74,6 +74,82 @@ fn cache_commit_applies_user_and_timeline_rows_and_publishes_visible_version() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_blind_commit_does_not_capture_conflict_read_view() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(97);
+    let key = physical_key(branch, 0x20, b"blind-cache".to_vec());
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            key,
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    fixture.execute(batch).expect("blind cache commit succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.read_view_rows_cloned(), 0);
+    assert_eq!(perf.read_view_validation_rows_scanned(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_read_set_commit_still_captures_read_view_and_rejects_stale_fact() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(98);
+    let key = physical_key(branch, 0x20, b"cache-stale-read".to_vec());
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    fixture.seed_visible_row(StorageRow::put(
+        key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    ));
+    fixture.catch_up_to(CommitVersion::new(1), Timestamp::from_micros(1_000));
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(1));
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"cache-stale-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(key, CommitObservedVersion::Missing)],
+            Vec::new(),
+        ),
+        CommitBatchOptions::default(),
+    );
+
+    assert!(matches!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::CommitConflict { conflict })
+            if conflict.kind() == CommitConflictKind::ReadSet
+    ));
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.conflict_sources_built(), 1);
+    assert_eq!(perf.read_view_captures(), 1);
+    assert!(perf.read_view_rows_cloned() > 0);
+    assert!(perf.read_view_validation_rows_scanned() > 0);
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::new(1)
+    );
+}
+
 #[test]
 fn cache_commit_delete_installs_tombstone_and_hides_latest() {
     let branch = branch_id(34);

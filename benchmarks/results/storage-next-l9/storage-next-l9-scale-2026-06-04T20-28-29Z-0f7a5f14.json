@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-04T20:28:29Z",
+    "git_commit": "0f7a5f14",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scale_keys": 100000,
+        "samples": 1000,
+        "perf_trace": {
+          "append_rows_applied": 100200,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 4959900,
+          "commit_batches_prepared": 100,
+          "commit_rows_prepared": 100200,
+          "commit_timeline_rows_prepared": 200,
+          "commit_user_mutation_rows": 100000,
+          "conflict_sources_built": 100,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 100,
+          "read_view_rows_cloned": 4959900,
+          "read_view_validation_rows_scanned": 4959900,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "branch_samples": 100,
+        "batch_size": 1000,
+        "value_bytes": 150,
+        "scan_limit": 64,
+        "engine": "cache",
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 59364.21226670702,
+        "avg_ns": 16845,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "engine": "standard",
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "batch_size": 1000,
+        "value_bytes": 150,
+        "branch_samples": 100,
+        "scan_limit": 64,
+        "samples": 1000,
+        "perf_trace": {
+          "append_rows_applied": 100200,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 4959900,
+          "commit_batches_prepared": 100,
+          "commit_rows_prepared": 100200,
+          "commit_timeline_rows_prepared": 200,
+          "commit_user_mutation_rows": 100000,
+          "conflict_sources_built": 100,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 100,
+          "read_view_rows_cloned": 4959900,
+          "read_view_validation_rows_scanned": 4959900,
+          "scan_candidates_materialized": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 57278.8220429704,
+        "avg_ns": 17458,
+        "samples": 100000
+      }
+    }
+  ]
+}

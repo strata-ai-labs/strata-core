@@ -5,7 +5,8 @@ use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::identity::require_row_branch;
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
-use crate::table::TableInternalKeyBytes;
+use crate::table::{MutableTableAppendSnapshot, TableInternalKeyBytes, TableRuntimeError};
+use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +26,23 @@ pub(crate) struct BranchAppendBatchOutcome {
     active_rows: usize,
     approximate_active_bytes: usize,
     max_commit_version: Option<CommitVersion>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BranchAppendMetadataSnapshot {
+    max_commit_version: Option<CommitVersion>,
+    timestamp_min: Option<Timestamp>,
+    timestamp_max: Option<Timestamp>,
+    put_rows: u64,
+    tombstone_rows: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ValidatedAppendRow {
+    key: TableInternalKeyBytes,
+    commit_version: CommitVersion,
+    commit_timestamp: Timestamp,
+    is_tombstone: bool,
 }
 
 impl BranchAppendOutcome {
@@ -107,53 +125,109 @@ impl BranchLocalState {
         rows: impl IntoIterator<Item = StorageRow>,
     ) -> BranchRuntimeResult<BranchAppendBatchOutcome> {
         let rows = rows.into_iter().collect::<Vec<_>>();
+        let validated_rows = self.validate_committed_row_batch(&rows)?;
+        let active_rows_before = self.active.len();
+        let active_snapshot = self.active.append_snapshot();
+        let metadata_snapshot = BranchAppendMetadataSnapshot::capture(self);
+        let mut inserted_keys = Vec::with_capacity(validated_rows.len());
+
+        // Atomicity is preserved by validating every fallible branch/table
+        // condition before mutation. The rollback guard below handles any
+        // unexpected table insertion rejection without cloning the full branch.
+        for (row, validated) in rows.into_iter().zip(validated_rows.iter()) {
+            if let Err(source) = self.active.insert_row(row) {
+                rollback_direct_append(self, active_snapshot, metadata_snapshot, &inserted_keys);
+                return Err(BranchRuntimeError::TableRuntime { source });
+            }
+            inserted_keys.push(validated.key.clone());
+            self.track_committed_row(
+                validated.commit_version,
+                validated.commit_timestamp,
+                validated.is_tombstone,
+            );
+        }
+
+        perf_trace::record_append_rows_applied(inserted_keys.len());
+        let outcome = BranchAppendBatchOutcome {
+            branch_id: self.branch_id,
+            appended_rows: self.active.len().checked_sub(active_rows_before).ok_or(
+                BranchRuntimeError::InvalidBranchState {
+                    reason: "active row count regressed during append",
+                },
+            )?,
+            active_rows: self.active.len(),
+            approximate_active_bytes: self.active.approximate_size_bytes(),
+            max_commit_version: self.max_commit_version,
+        };
+        Ok(outcome)
+    }
+
+    fn validate_committed_row_batch(
+        &self,
+        rows: &[StorageRow],
+    ) -> BranchRuntimeResult<Vec<ValidatedAppendRow>> {
         if rows.is_empty() {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "committed row batch must not be empty",
             });
         }
 
-        perf_trace::record_append_staging_clone(branch_row_count(self));
-        let mut staged = self.clone();
+        let mut seen = BTreeSet::new();
+        let mut validated = Vec::with_capacity(rows.len());
         for row in rows {
-            staged.append_committed_row(row)?;
+            let identity = require_row_branch(self.branch_id, row)?;
+            let key = TableInternalKeyBytes::from_row(row);
+            if !seen.insert(key.clone()) {
+                return Err(duplicate_internal_key_error(&key));
+            }
+            self.require_absent_internal_key(&key)?;
+            validated.push(ValidatedAppendRow {
+                key,
+                commit_version: identity.commit_version(),
+                commit_timestamp: identity.commit_timestamp(),
+                is_tombstone: row.is_tombstone(),
+            });
         }
-
-        let outcome = BranchAppendBatchOutcome {
-            branch_id: staged.branch_id,
-            appended_rows: staged.active.len().checked_sub(self.active.len()).ok_or(
-                BranchRuntimeError::InvalidBranchState {
-                    reason: "staged active row count regressed",
-                },
-            )?,
-            active_rows: staged.active.len(),
-            approximate_active_bytes: staged.active.approximate_size_bytes(),
-            max_commit_version: staged.max_commit_version,
-        };
-        *self = staged;
-        Ok(outcome)
+        Ok(validated)
     }
 }
 
-fn branch_row_count(state: &BranchLocalState) -> usize {
+impl BranchAppendMetadataSnapshot {
+    const fn capture(state: &BranchLocalState) -> Self {
+        Self {
+            max_commit_version: state.max_commit_version,
+            timestamp_min: state.timestamp_min,
+            timestamp_max: state.timestamp_max,
+            put_rows: state.put_rows,
+            tombstone_rows: state.tombstone_rows,
+        }
+    }
+
+    fn restore(self, state: &mut BranchLocalState) {
+        state.max_commit_version = self.max_commit_version;
+        state.timestamp_min = self.timestamp_min;
+        state.timestamp_max = self.timestamp_max;
+        state.put_rows = self.put_rows;
+        state.tombstone_rows = self.tombstone_rows;
+    }
+}
+
+fn rollback_direct_append(
+    state: &mut BranchLocalState,
+    active_snapshot: MutableTableAppendSnapshot,
+    metadata_snapshot: BranchAppendMetadataSnapshot,
+    inserted_keys: &[TableInternalKeyBytes],
+) {
     state
         .active
-        .len()
-        .saturating_add(state.frozen.iter().map(|table| table.len()).sum::<usize>())
-        .saturating_add(
-            state
-                .owned_levels
-                .iter()
-                .flatten()
-                .map(|table| table.rows().len())
-                .sum::<usize>(),
-        )
-        .saturating_add(
-            state
-                .inherited_layers
-                .iter()
-                .flat_map(|layer| layer.owned_levels().iter().flatten())
-                .map(|table| table.rows().len())
-                .sum::<usize>(),
-        )
+        .rollback_appended_rows(active_snapshot, inserted_keys);
+    metadata_snapshot.restore(state);
+}
+
+fn duplicate_internal_key_error(key: &TableInternalKeyBytes) -> BranchRuntimeError {
+    BranchRuntimeError::TableRuntime {
+        source: TableRuntimeError::DuplicateInternalKey {
+            key: key.as_slice().to_vec(),
+        },
+    }
 }

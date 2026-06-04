@@ -6,6 +6,7 @@ use super::facts::{
     InheritedLayerStatus,
 };
 use super::identity::{rewrite_physical_key_branch, rewrite_row_branch};
+use super::state::BranchLocalState;
 use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
@@ -773,7 +774,16 @@ impl BranchReadView {
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
         Ok(select_visible_row(
-            self.point_candidates(key, bound)?,
+            visible_point_candidates(
+                self.branch_id,
+                &self.active,
+                &self.frozen,
+                &self.owned_levels,
+                &self.inherited_layers,
+                key,
+                bound,
+                effective_bound,
+            )?,
             effective_bound,
         ))
     }
@@ -1103,6 +1113,31 @@ impl BranchReadView {
     }
 }
 
+impl BranchLocalState {
+    pub(crate) fn read_point_or_tombstone_borrowed(
+        &self,
+        key: &PhysicalKey,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Option<BranchHistoryRow>> {
+        require_state_matching_branch(self, key.branch_id())?;
+        require_state_timestamp_coverage(self, bound)?;
+        let effective_bound = effective_own_read_bound(bound);
+        Ok(select_visible_row_or_tombstone(
+            visible_point_candidates(
+                self.branch_id(),
+                self.active(),
+                self.frozen(),
+                self.owned_levels(),
+                self.inherited_layers(),
+                key,
+                bound,
+                effective_bound,
+            )?,
+            effective_bound,
+        ))
+    }
+}
+
 type CandidateRow = (StorageRow, BranchRowSource);
 
 fn candidate_row(row: StorageRow, source: BranchRowSource) -> CandidateRow {
@@ -1134,6 +1169,148 @@ fn candidate_into_history_row((row, source): CandidateRow) -> BranchHistoryRow {
 
 fn effective_own_read_bound(bound: BranchReadBound) -> BranchEffectiveReadBound {
     BranchEffectiveReadBound::for_own_branch(bound)
+}
+
+fn visible_point_candidates(
+    branch_id: BranchId,
+    active: &MutableTable,
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    key: &PhysicalKey,
+    bound: BranchReadBound,
+    effective_bound: BranchEffectiveReadBound,
+) -> BranchRuntimeResult<Vec<CandidateRow>> {
+    let mut rows = Vec::new();
+    let mut rows_visited = 0usize;
+
+    let (row, visited) = active.seek_physical_key(
+        key,
+        effective_bound.max_commit_version(),
+        effective_bound.max_commit_timestamp(),
+    );
+    rows_visited = rows_visited.saturating_add(visited);
+    if let Some(row) = row {
+        rows.push(candidate_row(row.row().clone(), BranchRowSource::Active));
+    }
+
+    for (index, table) in frozen.iter().enumerate() {
+        let (row, visited) = table.seek_physical_key(
+            key,
+            effective_bound.max_commit_version(),
+            effective_bound.max_commit_timestamp(),
+        );
+        rows_visited = rows_visited.saturating_add(visited);
+        if let Some(row) = row {
+            rows.push(candidate_row(
+                row.row().clone(),
+                BranchRowSource::Frozen { index },
+            ));
+        }
+    }
+
+    for tables in owned_levels {
+        for (table_index, table) in tables.iter().enumerate() {
+            let (row, visited) = table.reader().seek_physical_key(
+                key,
+                effective_bound.max_commit_version(),
+                effective_bound.max_commit_timestamp(),
+            );
+            rows_visited = rows_visited.saturating_add(visited);
+            if let Some(row) = row {
+                rows.push(candidate_row(
+                    row.row().clone(),
+                    BranchRowSource::OwnedTable {
+                        level: table.level(),
+                        table_index,
+                    },
+                ));
+            }
+        }
+    }
+
+    collect_visible_inherited_point_candidates(
+        branch_id,
+        inherited_layers,
+        key,
+        bound,
+        &mut rows,
+        &mut rows_visited,
+    )?;
+    perf_trace::record_point_candidate_collection(rows_visited, rows.len());
+    Ok(rows)
+}
+
+fn collect_visible_inherited_point_candidates(
+    branch_id: BranchId,
+    inherited_layers: &[BranchInheritedLayer],
+    key: &PhysicalKey,
+    bound: BranchReadBound,
+    rows: &mut Vec<CandidateRow>,
+    rows_visited: &mut usize,
+) -> BranchRuntimeResult<()> {
+    for (layer_index, layer) in inherited_layers.iter().enumerate() {
+        if !layer.is_readable() {
+            continue;
+        }
+        let source_key =
+            rewrite_physical_key_branch(key, layer.source_branch_id()).map_err(|_| {
+                BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited point key rewrite failed",
+                }
+            })?;
+        let inherited_bound =
+            BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
+        for table in layer.owned_levels().iter().flatten() {
+            let (row, visited) = table.reader().seek_physical_key(
+                &source_key,
+                inherited_bound.max_commit_version(),
+                inherited_bound.max_commit_timestamp(),
+            );
+            *rows_visited = (*rows_visited).saturating_add(visited);
+            if let Some(row) = row {
+                rows.push(candidate_row(
+                    rewrite_row_branch(row.row(), layer.source_branch_id(), branch_id).map_err(
+                        |_| BranchRuntimeError::InvalidInheritedLayer {
+                            reason: "inherited row branch rewrite failed",
+                        },
+                    )?,
+                    BranchRowSource::Inherited {
+                        source_branch_id: layer.source_branch_id(),
+                        layer_index,
+                    },
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_state_matching_branch(
+    state: &BranchLocalState,
+    branch_id: BranchId,
+) -> BranchRuntimeResult<()> {
+    if branch_id == state.branch_id() {
+        Ok(())
+    } else {
+        Err(BranchRuntimeError::InvalidBranchRow {
+            reason: "read target branch id does not match read view branch",
+        })
+    }
+}
+
+fn require_state_timestamp_coverage(
+    state: &BranchLocalState,
+    bound: BranchReadBound,
+) -> BranchRuntimeResult<()> {
+    match bound {
+        BranchReadBound::Latest | BranchReadBound::AtVersion(_) => Ok(()),
+        BranchReadBound::AtTimestamp(timestamp) => state.timestamp_coverage().require_timestamp(
+            state.branch_id(),
+            timestamp,
+            BranchTimestampHistorySource::Combined,
+        ),
+    }
 }
 
 fn select_visible_row(
@@ -1304,6 +1481,13 @@ fn validate_read_view_inputs(
     validate_owned_levels(owned_levels)?;
     validate_inherited_layers(branch_id, inherited_layers)?;
 
+    perf_trace::record_read_view_validation_scan(read_view_validation_row_count(
+        active,
+        frozen,
+        owned_levels,
+        inherited_layers,
+    ));
+
     let mut max_commit_version = None;
     let mut timestamp_min = None;
     let mut timestamp_max = None;
@@ -1357,6 +1541,32 @@ fn validate_read_view_inputs(
         });
     }
     Ok(())
+}
+
+fn read_view_validation_row_count(
+    active: &MutableTable,
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+) -> usize {
+    active
+        .len()
+        .saturating_add(frozen.iter().map(FrozenTable::len).sum::<usize>())
+        .saturating_add(
+            owned_levels
+                .iter()
+                .flatten()
+                .map(|table| table.rows().len())
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            inherited_layers
+                .iter()
+                .filter(|layer| layer.status() != InheritedLayerStatus::Materialized)
+                .flat_map(|layer| layer.owned_levels().iter().flatten())
+                .map(|table| table.rows().len())
+                .sum::<usize>(),
+        )
 }
 
 fn owned_table_count(owned_levels: &[Vec<BranchOwnedTable>]) -> usize {
