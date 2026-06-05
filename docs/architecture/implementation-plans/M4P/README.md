@@ -1,0 +1,74 @@
+# M4P Slice Plans
+
+This directory holds detailed implementation and test plans for the M4P
+storage-next parity-restoration program.
+
+Parent plan:
+`docs/architecture/implementation-plans/m4p-storage-next-parity-restoration-implementation-plan.md`
+
+Test methodology:
+`docs/architecture/implementation-plans/m4p-storage-next-parity-restoration-test-plan.md`
+
+Required audit sources:
+
+1. `docs/architecture/perf-tuning/storage-next-mechanics-parity-audit.md`
+2. `docs/architecture/perf-tuning/storage-next-serving-path-parity-plan.md`
+
+Supporting perf evidence:
+
+1. `docs/architecture/perf-tuning/perf-p*.md`
+2. `docs/architecture/perf-tuning/perf-i*.md`
+
+The mechanics audit is the source of required parity findings. Slice plans must
+cite the relevant L1-L9 layer audit section and, when applicable, the
+Restoration Source Map, Audit Matrix, and Final Parity Matrix sections. The
+serving-path proof plan and perf reports must be cited for point-read, load,
+scan, compaction, and source-fanout work.
+
+## Naming
+
+Use the existing M4 slice naming style:
+
+1. implementation plan:
+   `m4p-l6b-nonzero-level-point-pruning-implementation-plan.md`
+2. test plan:
+   `m4p-l6b-nonzero-level-point-pruning-test-plan.md`
+
+Keep slice labels in planning documents only. Do not put `M4P`, `L6B`, or other
+roadmap labels in production Rust identifiers, comments, fixture bytes, panic
+messages, or user-visible text.
+
+## Required Slice Contents
+
+Each slice pair must record:
+
+1. objective;
+2. audit finding references by file and section heading;
+3. old-source map and storage-next target map;
+4. predecessors and exact lower-layer dependencies;
+5. implementation scope and non-goals;
+6. correctness, crash/fault, source-guard, fuzz/generated, and benchmark gates;
+7. expected mechanical counter movement for performance-sensitive work;
+8. a stop condition if the measured counter movement does not appear.
+
+If a slice defers an audit finding, the slice must record the owner layer,
+reason, and replacement proof or later slice that will close it.
+
+## Initial Slice Queue
+
+The parent plan defines the first executable queue:
+
+1. `M4P-L1A`: IO boundary guard and durable-delete decision scope.
+2. `M4P-L2A`: object/table classifier helpers.
+3. `M4P-L3A`: format-impact decision.
+4. `M4P-L4A`: touched publication/recovery windows.
+5. `M4P-L5A`: table/source counters and facts.
+6. `M4P-L6A`: branch source-layout counters.
+7. `M4P-L6B`: nonzero-level point-read pruning.
+8. `M4P-L6C`: lazy nonzero-level scan planning.
+9. `M4P-L6D`: history, timestamp, and hot-facts boundedness.
+10. `M4P-L8A`: automatic maintenance scheduling.
+11. `M4P-L8B`: score-based compaction drain.
+12. `M4P-L8C`: write-admission and pressure policy.
+13. `M4P-L9A`: diagnostics boundary.
+14. `M4P-L9B`: storage-shaped read-set facts.
