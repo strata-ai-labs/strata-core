@@ -13,6 +13,8 @@ use strata_benchmarks::harness::{read_cpu_model, read_total_ram_gb};
 use strata_benchmarks::schema::{
     BenchmarkMetrics, BenchmarkReport, BenchmarkResult, HardwareInfo, RunMetadata,
 };
+use strata_storage::perf_trace as old_perf_trace;
+use strata_storage::perf_trace::StoragePerfSnapshot;
 use stratadb::{BatchKvEntry, Strata, Value};
 
 const CATEGORY: &str = "storage-old-cache-scale";
@@ -151,13 +153,10 @@ fn run_load_seq(db: &Strata, scale: usize, config: &Config) -> Result<RunResult,
         }
     }
 
-    Ok(RunResult::throughput(
-        Workload::LoadSeq,
-        scale,
-        scale,
-        start.elapsed(),
+    Ok(
+        RunResult::throughput(Workload::LoadSeq, scale, scale, start.elapsed())
+            .with_load_phase_trace(load_phase),
     )
-    .with_load_phase_trace(load_phase))
 }
 
 fn run_point_latest(
@@ -214,6 +213,7 @@ fn run_scan_prefix(
     scale: usize,
     config: &Config,
 ) -> Result<RunResult, BenchmarkError> {
+    old_perf_trace::reset();
     let bucket_count = bucket_count(scale);
     let mut rng = FastRng::new(config.seed ^ 0x22);
     let requests = (0..config.samples)
@@ -229,7 +229,8 @@ fn run_scan_prefix(
         Ok(())
     })?;
 
-    Ok(RunResult::latency(Workload::ScanPrefix, scale, timed))
+    Ok(RunResult::latency(Workload::ScanPrefix, scale, timed)
+        .with_perf_trace(old_perf_trace::snapshot()))
 }
 
 fn run_scan_range_throughput(
@@ -237,6 +238,7 @@ fn run_scan_range_throughput(
     scale: usize,
     config: &Config,
 ) -> Result<RunResult, BenchmarkError> {
+    old_perf_trace::reset();
     let bucket_count = bucket_count(scale);
     let mut rng = FastRng::new(config.seed ^ 0x44);
     let start = Instant::now();
@@ -255,7 +257,8 @@ fn run_scan_range_throughput(
         scale,
         config.samples,
         start.elapsed(),
-    ))
+    )
+    .with_perf_trace(old_perf_trace::snapshot()))
 }
 
 fn run_branch_fork_current(
@@ -423,6 +426,16 @@ fn print_result(result: &RunResult) {
         eprintln!(
             "    load-phase batch_build_ns={} commit_call_ns={}",
             load_phase.batch_build_ns, load_phase.commit_call_ns
+        );
+    }
+    if let Some(perf_trace) = result.perf_trace {
+        eprintln!(
+            "    perf-trace old_scan_calls={} old_scan_rows={} iterator_seeks={} pipeline_builds={} iterator_rows_yielded={}",
+            perf_trace.kv_scan_calls(),
+            perf_trace.kv_scan_rows_returned(),
+            perf_trace.storage_iterator_seeks(),
+            perf_trace.storage_iterator_pipeline_builds(),
+            perf_trace.storage_iterator_rows_yielded(),
         );
     }
 }
@@ -655,6 +668,7 @@ struct RunResult {
     scale: usize,
     measurement: Measurement,
     load_phase_trace: Option<LoadPhaseTrace>,
+    perf_trace: Option<StoragePerfSnapshot>,
 }
 
 impl RunResult {
@@ -664,6 +678,7 @@ impl RunResult {
             scale,
             measurement: Measurement::Throughput { elapsed, ops },
             load_phase_trace: None,
+            perf_trace: None,
         }
     }
 
@@ -673,11 +688,17 @@ impl RunResult {
             scale,
             measurement: Measurement::Latency(samples),
             load_phase_trace: None,
+            perf_trace: None,
         }
     }
 
     const fn with_load_phase_trace(mut self, load_phase_trace: LoadPhaseTrace) -> Self {
         self.load_phase_trace = Some(load_phase_trace);
+        self
+    }
+
+    const fn with_perf_trace(mut self, perf_trace: StoragePerfSnapshot) -> Self {
+        self.perf_trace = Some(perf_trace);
         self
     }
 
@@ -709,6 +730,18 @@ impl RunResult {
                 serde_json::json!({
                     "batch_build_ns": load_phase.batch_build_ns,
                     "commit_call_ns": load_phase.commit_call_ns,
+                }),
+            );
+        }
+        if let Some(perf_trace) = self.perf_trace {
+            parameters.insert(
+                "perf_trace".to_string(),
+                serde_json::json!({
+                    "storage_iterator_seeks": perf_trace.storage_iterator_seeks(),
+                    "storage_iterator_pipeline_builds": perf_trace.storage_iterator_pipeline_builds(),
+                    "storage_iterator_rows_yielded": perf_trace.storage_iterator_rows_yielded(),
+                    "kv_scan_calls": perf_trace.kv_scan_calls(),
+                    "kv_scan_rows_returned": perf_trace.kv_scan_rows_returned(),
                 }),
             );
         }

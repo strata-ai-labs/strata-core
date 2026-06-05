@@ -191,15 +191,11 @@ fn run_load_seq(
     }
 
     let elapsed = start.elapsed();
-    Ok(RunResult::throughput(
-        Workload::LoadSeq,
-        engine,
-        scale,
-        scale,
-        elapsed,
+    Ok(
+        RunResult::throughput(Workload::LoadSeq, engine, scale, scale, elapsed)
+            .with_load_phase_trace(load_phase)
+            .with_perf_trace(perf_trace::snapshot()),
     )
-    .with_load_phase_trace(load_phase)
-    .with_perf_trace(perf_trace::snapshot()))
 }
 
 fn run_point_latest(
@@ -234,13 +230,10 @@ fn run_point_latest(
         Ok(())
     })?;
 
-    Ok(RunResult::latency(
-        Workload::PointLatest,
-        engine,
-        scale,
-        timed,
+    Ok(
+        RunResult::latency(Workload::PointLatest, engine, scale, timed)
+            .with_perf_trace(perf_trace::snapshot()),
     )
-    .with_perf_trace(perf_trace::snapshot()))
 }
 
 fn run_point_latest_throughput(
@@ -315,13 +308,10 @@ fn run_scan_prefix(
         Ok(())
     })?;
 
-    Ok(RunResult::latency(
-        Workload::ScanPrefix,
-        engine,
-        scale,
-        timed,
+    Ok(
+        RunResult::latency(Workload::ScanPrefix, engine, scale, timed)
+            .with_perf_trace(perf_trace::snapshot()),
     )
-    .with_perf_trace(perf_trace::snapshot()))
 }
 
 fn run_scan_range_throughput(
@@ -391,13 +381,10 @@ fn run_branch_fork_current(
         Ok(())
     })?;
 
-    Ok(RunResult::latency(
-        Workload::BranchForkCurrent,
-        engine,
-        scale,
-        timed,
+    Ok(
+        RunResult::latency(Workload::BranchForkCurrent, engine, scale, timed)
+            .with_perf_trace(perf_trace::snapshot()),
     )
-    .with_perf_trace(perf_trace::snapshot()))
 }
 
 fn measure_requests<'a, I, T, F>(requests: I, mut f: F) -> Result<TimedSamples, BenchmarkError>
@@ -581,7 +568,7 @@ fn print_result(result: &RunResult) {
     }
     if let Some(perf_trace) = result.perf_trace {
         eprintln!(
-            "    perf-trace api_map_ns={} api_runtime_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} table_seeks={}",
+            "    perf-trace api_map_ns={} api_runtime_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} table_seeks={}",
             perf_trace.api_commit_map_ns(),
             perf_trace.api_commit_runtime_ns(),
             perf_trace.runtime_batch_validate_ns(),
@@ -607,6 +594,8 @@ fn print_result(result: &RunResult) {
             perf_trace.point_candidates_materialized(),
             perf_trace.scan_rows_visited(),
             perf_trace.scan_candidates_materialized(),
+            perf_trace.scan_cursor_seeks(),
+            perf_trace.scan_cursor_rows_yielded(),
             perf_trace.table_seeks(),
         );
     }
@@ -1067,6 +1056,8 @@ impl RunResult {
                     "point_candidates_materialized": perf_trace.point_candidates_materialized(),
                     "scan_rows_visited": perf_trace.scan_rows_visited(),
                     "scan_candidates_materialized": perf_trace.scan_candidates_materialized(),
+                    "scan_cursor_seeks": perf_trace.scan_cursor_seeks(),
+                    "scan_cursor_rows_yielded": perf_trace.scan_cursor_rows_yielded(),
                     "table_seeks": perf_trace.table_seeks(),
                 }),
             );

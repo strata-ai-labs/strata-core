@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-04T22:04:56Z",
+    "git_commit": "11c2e293",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "scale_keys": 100000,
+        "batch_size": 1000,
+        "samples": 100,
+        "branch_samples": 100,
+        "value_bytes": 150,
+        "engine": "old-cache",
+        "scan_limit": 64,
+        "seed": 5860399455655764006,
+        "load_phase_trace": {
+          "batch_build_ns": 20929959,
+          "commit_call_ns": 191689495
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 470110.1056631226,
+        "avg_ns": 2127,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-prefix",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "value_bytes": 150,
+        "branch_samples": 100,
+        "engine": "old-cache",
+        "scan_limit": 64,
+        "scale_keys": 100000,
+        "batch_size": 1000,
+        "seed": 5860399455655764006,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "samples": 100
+      },
+      "metrics": {
+        "ops_per_sec": 22830.83130253089,
+        "p50_ns": 42834,
+        "p95_ns": 46667,
+        "p99_ns": 116500,
+        "min_ns": 38958,
+        "max_ns": 116500,
+        "avg_ns": 43760,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "seed": 5860399455655764006,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "batch_size": 1000,
+        "value_bytes": 150,
+        "engine": "old-cache",
+        "branch_samples": 100,
+        "scale_keys": 100000,
+        "samples": 100,
+        "scan_limit": 64
+      },
+      "metrics": {
+        "ops_per_sec": 23674.713228198667,
+        "avg_ns": 42239,
+        "samples": 100
+      }
+    }
+  ]
+}

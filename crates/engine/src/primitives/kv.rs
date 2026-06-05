@@ -320,7 +320,9 @@ impl KVStore {
         start: Option<&str>,
         limit: Option<usize>,
     ) -> StrataResult<Vec<(String, Value)>> {
+        strata_storage::perf_trace::record_kv_scan_call();
         if limit == Some(0) {
+            strata_storage::perf_trace::record_kv_scan_rows_returned(0);
             return Ok(Vec::new());
         }
 
@@ -342,6 +344,7 @@ impl KVStore {
             }
         }
 
+        strata_storage::perf_trace::record_kv_scan_rows_returned(results.len());
         Ok(results)
     }
 

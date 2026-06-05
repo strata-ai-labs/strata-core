@@ -616,12 +616,26 @@ impl<'a> StorageRuntime<'a> {
         &self,
         request: &PrefixScanReadRequest,
     ) -> StorageApiResult<ScanReadOutcome> {
-        let view = self.read_view_for_branch(request.branch_id())?;
         let prefix = physical_key(
             request.branch_id(),
             request.storage_space(),
             request.prefix(),
         )?;
+        if matches!(request.bound(), ReadBound::Latest) {
+            let bounds = BranchScanBounds::prefix(&prefix);
+            let rows = self.scan_latest_including_tombstones_for_branch(
+                request.branch_id(),
+                &bounds,
+                request.limit().map(ReadLimit::get),
+            )?;
+            return map_scan_rows(
+                rows.iter().map(crate::branch::read::BranchHistoryRow::row),
+                request.limit(),
+                None,
+            );
+        }
+
+        let view = self.read_view_for_branch(request.branch_id())?;
         let resolved = resolve_read_bound(&view, request.bound())?;
         let bounds = BranchScanBounds::prefix(&prefix);
         let rows = view
@@ -635,9 +649,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     pub fn scan_range(&self, request: &ScanReadRequest) -> StorageApiResult<ScanReadOutcome> {
-        let view = self.read_view_for_branch(request.branch_id())?;
         let storage_space = map_storage_space(request.storage_space())?;
-        let resolved = resolve_read_bound(&view, request.bound())?;
         let bounds = BranchScanBounds::range(
             request.branch_id(),
             API_PHYSICAL_SPACE,
@@ -656,6 +668,21 @@ impl<'a> StorageRuntime<'a> {
                 }),
         )
         .map_err(branch_error)?;
+        if matches!(request.bound(), ReadBound::Latest) {
+            let rows = self.scan_latest_including_tombstones_for_branch(
+                request.branch_id(),
+                &bounds,
+                request.limit().map(ReadLimit::get),
+            )?;
+            return map_scan_rows(
+                rows.iter().map(crate::branch::read::BranchHistoryRow::row),
+                request.limit(),
+                None,
+            );
+        }
+
+        let view = self.read_view_for_branch(request.branch_id())?;
+        let resolved = resolve_read_bound(&view, request.bound())?;
         let rows = view
             .scan_range_including_tombstones(&bounds, resolved.branch_bound)
             .map_err(branch_error)?;
@@ -1368,6 +1395,25 @@ impl<'a> StorageRuntime<'a> {
                 .map_err(map_lifecycle_error),
             StorageRuntimeInner::Durable(runtime) => runtime
                 .read_view_for_branch(branch_id)
+                .map_err(map_lifecycle_error),
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "read requires an open runtime",
+            }),
+        }
+    }
+
+    fn scan_latest_including_tombstones_for_branch(
+        &self,
+        branch_id: BranchId,
+        bounds: &BranchScanBounds,
+        visible_limit: Option<usize>,
+    ) -> StorageApiResult<Vec<crate::branch::read::BranchHistoryRow>> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime
+                .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
+                .map_err(map_lifecycle_error),
+            StorageRuntimeInner::Durable(runtime) => runtime
+                .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
                 .map_err(map_lifecycle_error),
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "read requires an open runtime",

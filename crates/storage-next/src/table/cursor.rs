@@ -4,9 +4,11 @@ use super::{
     validate_strictly_sorted_unique_keys, FrozenTable, MutableTable, TableInternalKeyBytes,
     TableKeyBounds, TableRow,
 };
+use crate::observability::perf_trace;
 use crate::table::TableRuntimeResult;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
+use std::ops::Bound::{Excluded, Unbounded};
 
 pub(crate) const MERGE_HEAP_THRESHOLD: usize = 4;
 const _: () = assert!(MERGE_HEAP_THRESHOLD >= 2);
@@ -28,17 +30,35 @@ pub(crate) trait TableCursor {
 
 #[derive(Clone)]
 pub(crate) struct MemoryTableCursor<'a> {
-    rows: Vec<&'a TableRow>,
-    position: Option<usize>,
+    source: MemoryCursorSource<'a>,
+    position: Option<MemoryCursorPosition>,
+}
+
+#[derive(Clone)]
+enum MemoryCursorSource<'a> {
+    Map(&'a BTreeMap<TableInternalKeyBytes, TableRow>),
+    Rows(Vec<&'a TableRow>),
+}
+
+#[derive(Clone)]
+enum MemoryCursorPosition {
+    Map(TableInternalKeyBytes),
+    Rows(usize),
 }
 
 impl<'a> MemoryTableCursor<'a> {
     pub(crate) fn from_mutable(table: &'a MutableTable) -> Self {
-        Self::from_trusted_rows(table.iter())
+        Self {
+            source: MemoryCursorSource::Map(table.row_map()),
+            position: None,
+        }
     }
 
     pub(crate) fn from_frozen(table: &'a FrozenTable) -> Self {
-        Self::from_trusted_rows(table.iter())
+        Self {
+            source: MemoryCursorSource::Map(table.row_map()),
+            position: None,
+        }
     }
 
     pub(crate) fn from_sorted_rows(
@@ -47,48 +67,76 @@ impl<'a> MemoryTableCursor<'a> {
         let rows = rows.into_iter().collect::<Vec<_>>();
         validate_strictly_sorted_unique_keys(rows.iter().map(|row| row.key()))?;
         Ok(Self {
-            rows,
+            source: MemoryCursorSource::Rows(rows),
             position: None,
         })
     }
 
-    fn from_trusted_rows(rows: impl IntoIterator<Item = &'a TableRow>) -> Self {
-        Self {
-            rows: rows.into_iter().collect(),
-            position: None,
+    fn seek_position(&self, target: &TableInternalKeyBytes) -> Option<MemoryCursorPosition> {
+        match &self.source {
+            MemoryCursorSource::Map(rows) => rows
+                .range(target.clone()..)
+                .next()
+                .map(|(key, _)| MemoryCursorPosition::Map(key.clone())),
+            MemoryCursorSource::Rows(rows) => {
+                let index = match rows.binary_search_by(|row| row.key().cmp(target)) {
+                    Ok(index) | Err(index) => index,
+                };
+                (index < rows.len()).then_some(MemoryCursorPosition::Rows(index))
+            }
         }
     }
 
-    fn seek_index(&self, target: &TableInternalKeyBytes) -> Option<usize> {
-        let index = match self.rows.binary_search_by(|row| row.key().cmp(target)) {
-            Ok(index) | Err(index) => index,
-        };
-        (index < self.rows.len()).then_some(index)
+    fn first_position(&self) -> Option<MemoryCursorPosition> {
+        match &self.source {
+            MemoryCursorSource::Map(rows) => rows
+                .first_key_value()
+                .map(|(key, _)| MemoryCursorPosition::Map(key.clone())),
+            MemoryCursorSource::Rows(rows) => {
+                (!rows.is_empty()).then_some(MemoryCursorPosition::Rows(0))
+            }
+        }
+    }
+
+    fn next_position(&self) -> Option<MemoryCursorPosition> {
+        match (&self.source, &self.position) {
+            (MemoryCursorSource::Map(rows), Some(MemoryCursorPosition::Map(key))) => rows
+                .range((Excluded(key.clone()), Unbounded))
+                .next()
+                .map(|(key, _)| MemoryCursorPosition::Map(key.clone())),
+            (MemoryCursorSource::Rows(rows), Some(MemoryCursorPosition::Rows(position))) => {
+                let next = position.saturating_add(1);
+                (next < rows.len()).then_some(MemoryCursorPosition::Rows(next))
+            }
+            _ => None,
+        }
     }
 }
 
 impl TableCursor for MemoryTableCursor<'_> {
     fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
-        self.position = if self.rows.is_empty() { None } else { Some(0) };
+        self.position = self.first_position();
         Ok(())
     }
 
     fn seek(&mut self, target: &TableInternalKeyBytes) -> TableRuntimeResult<()> {
-        self.position = self.seek_index(target);
+        self.position = self.seek_position(target);
         Ok(())
     }
 
     fn advance(&mut self) -> TableRuntimeResult<()> {
-        self.position = self.position.and_then(|position| {
-            let next = position.saturating_add(1);
-            (next < self.rows.len()).then_some(next)
-        });
+        self.position = self.next_position();
         Ok(())
     }
 
     fn current(&self) -> Option<&TableRow> {
-        self.position
-            .and_then(|position| self.rows.get(position).copied())
+        match (&self.source, &self.position) {
+            (MemoryCursorSource::Map(rows), Some(MemoryCursorPosition::Map(key))) => rows.get(key),
+            (MemoryCursorSource::Rows(rows), Some(MemoryCursorPosition::Rows(position))) => {
+                rows.get(*position).copied()
+            }
+            _ => None,
+        }
     }
 }
 
@@ -110,9 +158,17 @@ impl<'a> BoundedTableCursor<'a> {
     fn skip_to_next_in_bounds(&mut self) -> TableRuntimeResult<()> {
         while let Some(key) = self.inner.current_key() {
             if self.bounds.contains_key(key) {
+                perf_trace::record_scan_cursor_row_yielded();
+                break;
+            }
+            if self.bounds.is_past_upper_bound(key) {
+                self.positioned = false;
                 break;
             }
             self.inner.advance()?;
+        }
+        if self.inner.current().is_none() {
+            self.positioned = false;
         }
         Ok(())
     }
@@ -120,13 +176,19 @@ impl<'a> BoundedTableCursor<'a> {
 
 impl TableCursor for BoundedTableCursor<'_> {
     fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
-        self.inner.seek_to_first()?;
+        if let Some(lower) = self.bounds.lower_seek_key() {
+            self.inner.seek(&lower)?;
+        } else {
+            self.inner.seek_to_first()?;
+        }
+        perf_trace::record_scan_cursor_seek();
         self.positioned = true;
         self.skip_to_next_in_bounds()
     }
 
     fn seek(&mut self, target: &TableInternalKeyBytes) -> TableRuntimeResult<()> {
         self.inner.seek(target)?;
+        perf_trace::record_scan_cursor_seek();
         self.positioned = true;
         self.skip_to_next_in_bounds()
     }

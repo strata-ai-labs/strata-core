@@ -42,6 +42,8 @@ pub struct StoragePerfSnapshot {
     point_candidates_materialized: u64,
     scan_rows_visited: u64,
     scan_candidates_materialized: u64,
+    scan_cursor_seeks: u64,
+    scan_cursor_rows_yielded: u64,
     table_seeks: u64,
 }
 
@@ -177,6 +179,16 @@ impl StoragePerfSnapshot {
         self.scan_candidates_materialized
     }
 
+    /// Number of bounded scan cursor seeks performed.
+    pub const fn scan_cursor_seeks(self) -> u64 {
+        self.scan_cursor_seeks
+    }
+
+    /// Number of rows reached by bounded scan cursors.
+    pub const fn scan_cursor_rows_yielded(self) -> u64 {
+        self.scan_cursor_rows_yielded
+    }
+
     /// Number of ordered table seeks performed by the serving path.
     pub const fn table_seeks(self) -> u64 {
         self.table_seeks
@@ -238,6 +250,10 @@ static POINT_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
 static SCAN_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static SCAN_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_CURSOR_SEEKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_CURSOR_ROWS_YIELDED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_SEEKS: AtomicU64 = AtomicU64::new(0);
 
@@ -308,6 +324,8 @@ pub fn reset() {
     POINT_CANDIDATES_MATERIALIZED.store(0, Ordering::Relaxed);
     SCAN_ROWS_VISITED.store(0, Ordering::Relaxed);
     SCAN_CANDIDATES_MATERIALIZED.store(0, Ordering::Relaxed);
+    SCAN_CURSOR_SEEKS.store(0, Ordering::Relaxed);
+    SCAN_CURSOR_ROWS_YIELDED.store(0, Ordering::Relaxed);
     TABLE_SEEKS.store(0, Ordering::Relaxed);
 }
 
@@ -343,6 +361,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
         point_candidates_materialized: POINT_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
         scan_rows_visited: SCAN_ROWS_VISITED.load(Ordering::Relaxed),
         scan_candidates_materialized: SCAN_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
+        scan_cursor_seeks: SCAN_CURSOR_SEEKS.load(Ordering::Relaxed),
+        scan_cursor_rows_yielded: SCAN_CURSOR_ROWS_YIELDED.load(Ordering::Relaxed),
         table_seeks: TABLE_SEEKS.load(Ordering::Relaxed),
     }
 }
@@ -534,6 +554,28 @@ pub(crate) fn record_scan_candidate_collection(rows_visited: usize, candidates: 
     }
     SCAN_ROWS_VISITED.fetch_add(as_u64(rows_visited), Ordering::Relaxed);
     SCAN_CANDIDATES_MATERIALIZED.fetch_add(as_u64(candidates), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_scan_cursor_seek() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_scan_cursor_seek() {
+    if !recording_enabled() {
+        return;
+    }
+    SCAN_CURSOR_SEEKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_scan_cursor_row_yielded() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_scan_cursor_row_yielded() {
+    if !recording_enabled() {
+        return;
+    }
+    SCAN_CURSOR_ROWS_YIELDED.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

@@ -1,9 +1,13 @@
+#[cfg(feature = "perf-trace")]
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     BoundedTableCursor, CursorMergePath, MemoryTableCursor, MergeTableCursor, MutableTable,
     TableCursor, TableInternalKeyBytes, TableKeyBound, TableKeyBounds, TablePhysicalKeyBytes,
     TableRow, MERGE_HEAP_THRESHOLD,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 fn branch(byte: u8) -> BranchId {
@@ -122,6 +126,66 @@ fn boxed_cursors<'a>(tables: &'a [MutableTable]) -> Vec<Box<dyn TableCursor + 'a
         .iter()
         .map(|table| Box::new(table.cursor()) as Box<dyn TableCursor + 'a>)
         .collect()
+}
+
+#[derive(Default)]
+struct RecordingCursorLog {
+    seek_to_first_calls: usize,
+    seek_targets: Vec<Vec<u8>>,
+    advance_calls: usize,
+}
+
+struct RecordingCursor {
+    rows: Vec<TableRow>,
+    position: Option<usize>,
+    log: Rc<RefCell<RecordingCursorLog>>,
+}
+
+impl RecordingCursor {
+    fn new(rows: Vec<StorageRow>, log: Rc<RefCell<RecordingCursorLog>>) -> Self {
+        Self {
+            rows: sorted_table_rows(&rows),
+            position: None,
+            log,
+        }
+    }
+
+    fn seek_index(&self, target: &TableInternalKeyBytes) -> Option<usize> {
+        let index = match self.rows.binary_search_by(|row| row.key().cmp(target)) {
+            Ok(index) | Err(index) => index,
+        };
+        (index < self.rows.len()).then_some(index)
+    }
+}
+
+impl TableCursor for RecordingCursor {
+    fn seek_to_first(&mut self) -> crate::table::TableRuntimeResult<()> {
+        self.log.borrow_mut().seek_to_first_calls += 1;
+        self.position = (!self.rows.is_empty()).then_some(0);
+        Ok(())
+    }
+
+    fn seek(&mut self, target: &TableInternalKeyBytes) -> crate::table::TableRuntimeResult<()> {
+        self.log
+            .borrow_mut()
+            .seek_targets
+            .push(target.as_slice().to_vec());
+        self.position = self.seek_index(target);
+        Ok(())
+    }
+
+    fn advance(&mut self) -> crate::table::TableRuntimeResult<()> {
+        self.log.borrow_mut().advance_calls += 1;
+        self.position = self.position.and_then(|position| {
+            let next = position.saturating_add(1);
+            (next < self.rows.len()).then_some(next)
+        });
+        Ok(())
+    }
+
+    fn current(&self) -> Option<&TableRow> {
+        self.position.and_then(|position| self.rows.get(position))
+    }
 }
 
 #[test]
@@ -423,6 +487,117 @@ fn bounded_cursor_seek_repositions_inside_bounds() {
     );
     open.seek(&upper).expect("seek excluded upper");
     assert!(open.current().is_none());
+}
+
+#[test]
+fn bounded_cursor_seek_to_first_uses_lower_bound_seek() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 1),
+        put_row(b"delta".to_vec(), 1),
+    ];
+    let model_rows = sorted_table_rows(&rows);
+    let lower = model_rows[2].key().clone();
+    let upper = model_rows[3].key().clone();
+    let log = Rc::new(RefCell::new(RecordingCursorLog::default()));
+    let inner = RecordingCursor::new(rows, Rc::clone(&log));
+    let mut cursor = BoundedTableCursor::new(
+        Box::new(inner),
+        TableKeyBounds::closed(lower.clone(), upper).expect("closed bounds"),
+    );
+
+    cursor.seek_to_first().expect("seek bounded first");
+
+    let log = log.borrow();
+    assert_eq!(log.seek_to_first_calls, 0);
+    assert_eq!(log.seek_targets, vec![lower.as_slice().to_vec()]);
+    assert_eq!(log.advance_calls, 0);
+    assert_eq!(cursor.current_key(), Some(&lower));
+}
+
+#[test]
+fn bounded_cursor_stops_after_upper_bound_without_walking_to_end() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 1),
+        put_row(b"delta".to_vec(), 1),
+        put_row(b"echo".to_vec(), 1),
+    ];
+    let model_rows = sorted_table_rows(&rows);
+    let selected = model_rows[1].key().clone();
+    let log = Rc::new(RefCell::new(RecordingCursorLog::default()));
+    let inner = RecordingCursor::new(rows, Rc::clone(&log));
+    let mut cursor =
+        BoundedTableCursor::new(Box::new(inner), TableKeyBounds::exact(selected.clone()));
+
+    cursor.seek_to_first().expect("seek exact");
+    assert_eq!(cursor.current_key(), Some(&selected));
+    cursor.advance().expect("advance past exact bound");
+    assert!(cursor.current().is_none());
+
+    let log = log.borrow();
+    assert_eq!(
+        log.advance_calls, 1,
+        "bounded cursor must stop as soon as the next key is past the upper bound"
+    );
+}
+
+#[test]
+fn bounded_cursor_seek_after_last_marks_cursor_done() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 1),
+    ];
+    let after_last = sorted_table_rows(&[put_row(b"zulu".to_vec(), 1)])
+        .pop()
+        .expect("after-last row")
+        .key()
+        .clone();
+    let log = Rc::new(RefCell::new(RecordingCursorLog::default()));
+    let inner = RecordingCursor::new(rows, Rc::clone(&log));
+    let mut cursor =
+        BoundedTableCursor::new(Box::new(inner), TableKeyBounds::exact(after_last.clone()));
+
+    cursor.seek_to_first().expect("seek after last");
+    assert!(cursor.current().is_none());
+    cursor.advance().expect("advance completed cursor");
+
+    let log = log.borrow();
+    assert_eq!(log.seek_targets, vec![after_last.as_slice().to_vec()]);
+    assert_eq!(
+        log.advance_calls, 0,
+        "completed bounded cursors must not keep advancing their inner cursor"
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn bounded_cursor_records_scan_seek_and_positioned_rows() {
+    let _capture = perf_trace::begin_test_capture();
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 1),
+        put_row(b"delta".to_vec(), 1),
+    ];
+    let table = table_from_rows(rows.clone());
+    let model_rows = sorted_table_rows(&rows);
+    let lower = model_rows[1].key().clone();
+    let upper = model_rows[2].key().clone();
+    let mut cursor = BoundedTableCursor::new(
+        Box::new(table.cursor()),
+        TableKeyBounds::closed(lower, upper).expect("closed bounds"),
+    );
+
+    cursor.seek_to_first().expect("seek bounded first");
+    assert_eq!(collect_keys(&mut cursor).len(), 2);
+
+    let snapshot = perf_trace::snapshot();
+    assert_eq!(snapshot.scan_cursor_seeks(), 1);
+    assert_eq!(snapshot.scan_cursor_rows_yielded(), 2);
 }
 
 #[test]

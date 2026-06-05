@@ -99,18 +99,33 @@ fn parameters(
     let perf = case.perf();
     let mut parameters = HashMap::new();
     parameters.insert("case".to_string(), serde_json::json!(case.name()));
-    parameters.insert("scale_keys".to_string(), serde_json::json!(config.scale_keys));
+    parameters.insert(
+        "scale_keys".to_string(),
+        serde_json::json!(config.scale_keys),
+    );
     parameters.insert("samples".to_string(), serde_json::json!(config.samples));
-    parameters.insert("batch_size".to_string(), serde_json::json!(config.batch_size));
-    parameters.insert("value_bytes".to_string(), serde_json::json!(config.value_bytes));
-    parameters.insert("bucket_count".to_string(), serde_json::json!(config.bucket_count));
+    parameters.insert(
+        "batch_size".to_string(),
+        serde_json::json!(config.batch_size),
+    );
+    parameters.insert(
+        "value_bytes".to_string(),
+        serde_json::json!(config.value_bytes),
+    );
+    parameters.insert(
+        "bucket_count".to_string(),
+        serde_json::json!(config.bucket_count),
+    );
     parameters.insert("seed".to_string(), serde_json::json!(config.seed));
     parameters.insert("branch_rows".to_string(), serde_json::json!(branch_rows));
     parameters.insert(
         "elapsed_ns".to_string(),
         serde_json::json!(as_u64(case.elapsed_ns())),
     );
-    parameters.insert("found_rows".to_string(), serde_json::json!(case.found_rows()));
+    parameters.insert(
+        "found_rows".to_string(),
+        serde_json::json!(case.found_rows()),
+    );
     parameters.insert(
         "perf_trace".to_string(),
         serde_json::json!({
@@ -130,6 +145,8 @@ fn parameters(
             "point_candidates_materialized": perf.point_candidates_materialized(),
             "scan_rows_visited": perf.scan_rows_visited(),
             "scan_candidates_materialized": perf.scan_candidates_materialized(),
+            "scan_cursor_seeks": perf.scan_cursor_seeks(),
+            "scan_cursor_rows_yielded": perf.scan_cursor_rows_yielded(),
             "table_seeks": perf.table_seeks(),
         }),
     );

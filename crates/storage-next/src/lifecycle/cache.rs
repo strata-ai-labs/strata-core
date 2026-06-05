@@ -25,7 +25,7 @@ use super::{
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView};
+use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, BranchScanBounds};
 use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
@@ -251,6 +251,24 @@ impl<S> LifecycleCacheRuntime<S> {
         let branch = self.branch_catalog.branch_state(branch_id)?;
         branch
             .read_point_or_tombstone_borrowed(key, BranchReadBound::Latest)
+            .map_err(branch_error)
+    }
+
+    pub(crate) fn scan_latest_including_tombstones_for_branch(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        bounds: &BranchScanBounds,
+        visible_limit: Option<usize>,
+    ) -> LifecycleResult<Vec<BranchHistoryRow>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
+        let branch = self.branch_catalog.branch_state(branch_id)?;
+        branch
+            .scan_including_tombstones_borrowed(
+                bounds,
+                BranchReadBound::Latest,
+                visible_limit,
+                None,
+            )
             .map_err(branch_error)
     }
 

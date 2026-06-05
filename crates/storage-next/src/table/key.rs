@@ -89,6 +89,12 @@ impl TablePhysicalKeyBytes {
         }
     }
 
+    pub(crate) fn from_physical_key_prefix(key: &PhysicalKey) -> Self {
+        let mut bytes = encode_physical_key(key);
+        bytes.truncate(bytes.len().saturating_sub(2));
+        Self { bytes }
+    }
+
     pub(crate) fn from_row(row: &StorageRow) -> Self {
         Self::from_physical_key(row.physical_key())
     }
@@ -245,12 +251,41 @@ impl TableKeyBound {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TablePhysicalKeyBound {
+    Unbounded,
+    Included(TablePhysicalKeyBytes),
+    Excluded(TablePhysicalKeyBytes),
+}
+
+impl TablePhysicalKeyBound {
+    pub(crate) fn included(key: TablePhysicalKeyBytes) -> Self {
+        Self::Included(key)
+    }
+
+    pub(crate) fn excluded(key: TablePhysicalKeyBytes) -> Self {
+        Self::Excluded(key)
+    }
+
+    fn finite_key(&self) -> Option<&TablePhysicalKeyBytes> {
+        match self {
+            Self::Unbounded => None,
+            Self::Included(key) | Self::Excluded(key) => Some(key),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TableKeyBounds {
     Range {
         lower: TableKeyBound,
         upper: TableKeyBound,
     },
     Prefix(Vec<u8>),
+    PhysicalRange {
+        namespace_prefix: Vec<u8>,
+        lower: TablePhysicalKeyBound,
+        upper: TablePhysicalKeyBound,
+    },
 }
 
 impl TableKeyBounds {
@@ -297,12 +332,78 @@ impl TableKeyBounds {
         Self::Prefix(prefix.into())
     }
 
+    pub(crate) fn physical_range(
+        namespace_prefix: TablePhysicalKeyBytes,
+        lower: TablePhysicalKeyBound,
+        upper: TablePhysicalKeyBound,
+    ) -> TableRuntimeResult<Self> {
+        validate_physical_bound_order(&lower, &upper)?;
+        Ok(Self::PhysicalRange {
+            namespace_prefix: namespace_prefix.as_slice().to_vec(),
+            lower,
+            upper,
+        })
+    }
+
     pub(crate) fn contains_key(&self, key: &TableInternalKeyBytes) -> bool {
         match self {
             Self::Range { lower, upper } => {
                 lower_contains(lower, key) && upper_contains(upper, key)
             }
             Self::Prefix(prefix) => key.as_slice().starts_with(prefix),
+            Self::PhysicalRange {
+                namespace_prefix,
+                lower,
+                upper,
+            } => {
+                let physical_key = table_internal_physical_key_bytes(key);
+                physical_key.starts_with(namespace_prefix)
+                    && physical_lower_contains(lower, physical_key)
+                    && physical_upper_contains(upper, physical_key)
+            }
+        }
+    }
+
+    pub(crate) fn lower_seek_key(&self) -> Option<TableInternalKeyBytes> {
+        match self {
+            Self::Range { lower, .. } => lower.finite_key().cloned(),
+            Self::Prefix(prefix) if prefix.is_empty() => None,
+            Self::Prefix(prefix) => Some(TableInternalKeyBytes {
+                bytes: prefix.clone(),
+            }),
+            Self::PhysicalRange {
+                namespace_prefix,
+                lower,
+                ..
+            } => lower
+                .finite_key()
+                .map(|key| TableInternalKeyBytes {
+                    bytes: key.as_slice().to_vec(),
+                })
+                .or_else(|| {
+                    (!namespace_prefix.is_empty()).then(|| TableInternalKeyBytes {
+                        bytes: namespace_prefix.clone(),
+                    })
+                }),
+        }
+    }
+
+    pub(crate) fn is_past_upper_bound(&self, key: &TableInternalKeyBytes) -> bool {
+        match self {
+            Self::Range { upper, .. } => upper_excludes_current_and_following(upper, key),
+            Self::Prefix(prefix) => {
+                !key.as_slice().starts_with(prefix) && key.as_slice() > prefix.as_slice()
+            }
+            Self::PhysicalRange {
+                namespace_prefix,
+                upper,
+                ..
+            } => {
+                let physical_key = table_internal_physical_key_bytes(key);
+                (!physical_key.starts_with(namespace_prefix)
+                    && physical_key > namespace_prefix.as_slice())
+                    || physical_upper_excludes_current_and_following(upper, physical_key)
+            }
         }
     }
 }
@@ -367,6 +468,20 @@ fn validate_bound_order(lower: &TableKeyBound, upper: &TableKeyBound) -> TableRu
     Ok(())
 }
 
+fn validate_physical_bound_order(
+    lower: &TablePhysicalKeyBound,
+    upper: &TablePhysicalKeyBound,
+) -> TableRuntimeResult<()> {
+    if let (Some(lower), Some(upper)) = (lower.finite_key(), upper.finite_key()) {
+        if lower > upper {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "physical_key_bounds",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn lower_contains(bound: &TableKeyBound, key: &TableInternalKeyBytes) -> bool {
     match bound {
         TableKeyBound::Unbounded => true,
@@ -381,4 +496,51 @@ fn upper_contains(bound: &TableKeyBound, key: &TableInternalKeyBytes) -> bool {
         TableKeyBound::Included(upper) => key <= upper,
         TableKeyBound::Excluded(upper) => key < upper,
     }
+}
+
+fn upper_excludes_current_and_following(
+    bound: &TableKeyBound,
+    key: &TableInternalKeyBytes,
+) -> bool {
+    match bound {
+        TableKeyBound::Unbounded => false,
+        TableKeyBound::Included(upper) => key > upper,
+        TableKeyBound::Excluded(upper) => key >= upper,
+    }
+}
+
+fn physical_lower_contains(bound: &TablePhysicalKeyBound, key: &[u8]) -> bool {
+    match bound {
+        TablePhysicalKeyBound::Unbounded => true,
+        TablePhysicalKeyBound::Included(lower) => key >= lower.as_slice(),
+        TablePhysicalKeyBound::Excluded(lower) => key > lower.as_slice(),
+    }
+}
+
+fn physical_upper_contains(bound: &TablePhysicalKeyBound, key: &[u8]) -> bool {
+    match bound {
+        TablePhysicalKeyBound::Unbounded => true,
+        TablePhysicalKeyBound::Included(upper) => key <= upper.as_slice(),
+        TablePhysicalKeyBound::Excluded(upper) => key < upper.as_slice(),
+    }
+}
+
+fn physical_upper_excludes_current_and_following(
+    bound: &TablePhysicalKeyBound,
+    key: &[u8],
+) -> bool {
+    match bound {
+        TablePhysicalKeyBound::Unbounded => false,
+        TablePhysicalKeyBound::Included(upper) => key > upper.as_slice(),
+        TablePhysicalKeyBound::Excluded(upper) => key >= upper.as_slice(),
+    }
+}
+
+fn table_internal_physical_key_bytes(key: &TableInternalKeyBytes) -> &[u8] {
+    key.as_slice()
+        .split_at(
+            key.len()
+                .saturating_sub(TABLE_INTERNAL_KEY_COMMIT_SUFFIX_BYTES),
+        )
+        .0
 }

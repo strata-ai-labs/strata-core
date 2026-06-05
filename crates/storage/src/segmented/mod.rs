@@ -476,6 +476,7 @@ impl StorageIterator {
     /// segment iterators are repositioned via in-memory index (O(log B)),
     /// memtable entries are re-collected from the seek position.
     pub fn seek(&mut self, target: &Key) -> StorageResult<()> {
+        crate::perf_trace::record_storage_iterator_seek();
         let target_ik = InternalKey::encode(target, CommitVersion::MAX);
 
         if let Some(ref mut pipeline) = self.pipeline {
@@ -483,6 +484,7 @@ impl StorageIterator {
             pipeline.seek(target_ik.as_bytes());
         } else {
             // First seek: build the pipeline
+            crate::perf_trace::record_storage_iterator_pipeline_build();
             let mut pipeline = self.build_seekable_pipeline();
             pipeline.seek(target_ik.as_bytes());
             self.pipeline = Some(pipeline);
@@ -654,6 +656,7 @@ impl StorageIterator {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<(Key, VersionedValue)> {
         let result = self.current.take()?;
+        crate::perf_trace::record_storage_iterator_row_yielded();
 
         // Pre-load next live entry
         let pipeline = self.pipeline.as_mut()?;

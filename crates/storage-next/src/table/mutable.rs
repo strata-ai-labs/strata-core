@@ -149,6 +149,10 @@ impl MutableTable {
         MemoryTableCursor::from_mutable(self)
     }
 
+    pub(super) fn row_map(&self) -> &BTreeMap<TableInternalKeyBytes, TableRow> {
+        &self.rows
+    }
+
     pub(crate) fn rows_in_bounds<'a>(
         &'a self,
         bounds: &'a TableKeyBounds,
@@ -242,6 +246,10 @@ impl FrozenTable {
 
     pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
         MemoryTableCursor::from_frozen(self)
+    }
+
+    pub(super) fn row_map(&self) -> &BTreeMap<TableInternalKeyBytes, TableRow> {
+        &self.rows
     }
 
     pub(crate) fn rows_in_bounds<'a>(

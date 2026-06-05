@@ -322,6 +322,164 @@ fn branch_inherited_scans_and_history_rewrite_before_grouping() {
 }
 
 #[test]
+fn branch_borrowed_latest_scan_matches_read_view_with_inherited_sources() {
+    let source = branch_id(98);
+    let child = branch_id(99);
+    let source_a = storage_row_with(
+        source,
+        b"fast-scan-a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"source-a".to_vec(),
+    );
+    let source_b_tombstone = tombstone_row(source, b"fast-scan-b".to_vec(), 4, 40);
+    let source_c = storage_row_with(
+        source,
+        b"fast-scan-c".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"source-c".to_vec(),
+    );
+    let child_a = storage_row_with(
+        child,
+        b"fast-scan-a".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"child-a".to_vec(),
+    );
+    let child_d = storage_row_with(
+        child,
+        b"fast-scan-d".to_vec(),
+        6,
+        60,
+        Timestamp::EPOCH,
+        b"child-d".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(4),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fast-scan-inherited",
+            vec![source_a, source_b_tombstone.clone(), source_c.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited");
+    child_state
+        .append_committed_row(child_a.clone())
+        .expect("child active row");
+    child_state
+        .install_l0_table(branch_owned_table(
+            child,
+            BranchLevel::ZERO,
+            "fast-scan-owned",
+            vec![child_d],
+        ))
+        .expect("child owned row");
+
+    let bounds = BranchScanBounds::prefix(&physical_key(child, b"fast-scan-".to_vec()));
+    let view = child_state.capture_read_view().expect("view");
+    let read_view_rows = view
+        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest())
+        .expect("read-view scan");
+    let borrowed_rows = child_state
+        .scan_including_tombstones_borrowed(&bounds, BranchReadBound::latest(), Some(2), None)
+        .expect("borrowed scan");
+
+    assert_eq!(
+        borrowed_rows
+            .iter()
+            .map(|row| row.row())
+            .collect::<Vec<_>>(),
+        read_view_rows
+            .iter()
+            .take(3)
+            .map(|row| row.row())
+            .collect::<Vec<_>>(),
+        "borrowed scan keeps the same visible ordering and includes tombstones before the visible limit"
+    );
+    assert_eq!(
+        borrowed_rows
+            .iter()
+            .map(BranchHistoryRow::source)
+            .collect::<Vec<_>>(),
+        vec![
+            BranchRowSource::Active,
+            BranchRowSource::Inherited {
+                source_branch_id: source,
+                layer_index: 0,
+            },
+            BranchRowSource::Inherited {
+                source_branch_id: source,
+                layer_index: 0,
+            },
+        ]
+    );
+    assert_eq!(borrowed_rows[0].row(), &child_a);
+    assert!(borrowed_rows[1].row().is_tombstone());
+    assert_eq!(
+        borrowed_rows[2].row(),
+        &rewrite_row_branch(&source_c, source, child).expect("source c rewrite")
+    );
+}
+
+#[test]
+fn branch_borrowed_latest_scan_applies_inherited_fork_bound() {
+    let source = branch_id(100);
+    let child = branch_id(101);
+    let post_fork = storage_row_with(
+        source,
+        b"fast-fork-a".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    );
+    let at_fork = storage_row_with(
+        source,
+        b"fast-fork-a".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"at-fork".to_vec(),
+    );
+    let layer = branch_inherited_layer_unchecked_for_fork_gate_tests(
+        source,
+        CommitVersion::new(4),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fast-fork-inherited",
+            vec![post_fork, at_fork.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited");
+
+    let bounds = BranchScanBounds::prefix(&physical_key(child, b"fast-fork-".to_vec()));
+    let borrowed_rows = child_state
+        .scan_including_tombstones_borrowed(&bounds, BranchReadBound::latest(), None, None)
+        .expect("borrowed scan");
+
+    assert_eq!(history_versions(&borrowed_rows), vec![4]);
+    assert_eq!(
+        borrowed_rows[0].row(),
+        &rewrite_row_branch(&at_fork, source, child).expect("at-fork rewrite")
+    );
+}
+
+#[test]
 fn branch_inherited_scans_preserve_space_boundaries() {
     let fixture = inherited_scan_boundary_fixture();
     let closed = fixture

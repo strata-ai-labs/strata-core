@@ -298,6 +298,28 @@ fn read_after_close_rejects_closed_runtime() {
         .read_point(&point_request(b"alpha", ReadBound::Latest))
         .expect_err("closed runtime rejected");
     assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+
+    let error = runtime
+        .scan_prefix(&PrefixScanReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"a"),
+            ReadBound::Latest,
+            None,
+        ))
+        .expect_err("closed runtime rejects latest prefix scan");
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+
+    let error = runtime
+        .scan_range(&ScanReadRequest::new(
+            branch(),
+            engine_space(),
+            ScanRange::new(Some(api_key(b"a")), Some(api_key(b"z"))).expect("valid range"),
+            ReadBound::Latest,
+            None,
+        ))
+        .expect_err("closed runtime rejects latest range scan");
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
 }
 
 #[test]

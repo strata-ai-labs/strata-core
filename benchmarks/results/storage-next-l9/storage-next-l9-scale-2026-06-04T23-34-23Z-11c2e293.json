@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-04T23:34:23Z",
+    "git_commit": "11c2e293",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-l9/load-seq",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scan_limit": 64,
+        "load_phase_trace": {
+          "batch_build_ns": 24070671,
+          "commit_call_ns": 138151500
+        },
+        "perf_trace": {
+          "api_commit_map_ns": 4730335,
+          "api_commit_runtime_ns": 133402539,
+          "append_absent_internal_key_checks": 100200,
+          "append_batch_validate_ns": 46598708,
+          "append_insert_rows_ns": 51575661,
+          "append_rows_applied": 100200,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 0,
+          "commit_batches_prepared": 100,
+          "commit_prepare_rows_ns": 7763998,
+          "commit_rows_prepared": 100200,
+          "commit_timeline_rows_prepared": 200,
+          "commit_user_mutation_rows": 100000,
+          "conflict_sources_built": 0,
+          "mutable_insert_duplicate_checks": 100200,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "read_view_validation_rows_scanned": 0,
+          "runtime_batch_validate_ns": 5896461,
+          "runtime_duplicate_mutation_key_checks": 100000,
+          "scan_candidates_materialized": 0,
+          "scan_cursor_rows_yielded": 0,
+          "scan_cursor_seeks": 0,
+          "scan_rows_visited": 0,
+          "table_seeks": 0
+        },
+        "value_bytes": 150,
+        "engine": "cache",
+        "seed": 5860399455655764006,
+        "samples": 100,
+        "scale_keys": 100000,
+        "branch_samples": 100,
+        "batch_size": 1000
+      },
+      "metrics": {
+        "ops_per_sec": 601737.2153406885,
+        "avg_ns": 1661,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/scan-prefix",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "scan_limit": 64,
+        "engine": "cache",
+        "value_bytes": 150,
+        "samples": 100,
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "branch_samples": 100,
+        "perf_trace": {
+          "api_commit_map_ns": 0,
+          "api_commit_runtime_ns": 0,
+          "append_absent_internal_key_checks": 0,
+          "append_batch_validate_ns": 0,
+          "append_insert_rows_ns": 0,
+          "append_rows_applied": 0,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 0,
+          "commit_batches_prepared": 0,
+          "commit_prepare_rows_ns": 0,
+          "commit_rows_prepared": 0,
+          "commit_timeline_rows_prepared": 0,
+          "commit_user_mutation_rows": 0,
+          "conflict_sources_built": 0,
+          "mutable_insert_duplicate_checks": 0,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "read_view_validation_rows_scanned": 0,
+          "runtime_batch_validate_ns": 0,
+          "runtime_duplicate_mutation_key_checks": 0,
+          "scan_candidates_materialized": 2435,
+          "scan_cursor_rows_yielded": 2435,
+          "scan_cursor_seeks": 100,
+          "scan_rows_visited": 2435,
+          "table_seeks": 0
+        },
+        "batch_size": 1000
+      },
+      "metrics": {
+        "ops_per_sec": 1036.8473999516912,
+        "p50_ns": 933916,
+        "p95_ns": 1191375,
+        "p99_ns": 1804708,
+        "min_ns": 826667,
+        "max_ns": 1804708,
+        "avg_ns": 964374,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-next-l9/scan-range-throughput",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "value_bytes": 150,
+        "engine": "cache",
+        "batch_size": 1000,
+        "scan_limit": 64,
+        "samples": 100,
+        "scale_keys": 100000,
+        "branch_samples": 100,
+        "seed": 5860399455655764006,
+        "perf_trace": {
+          "api_commit_map_ns": 0,
+          "api_commit_runtime_ns": 0,
+          "append_absent_internal_key_checks": 0,
+          "append_batch_validate_ns": 0,
+          "append_insert_rows_ns": 0,
+          "append_rows_applied": 0,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 0,
+          "commit_batches_prepared": 0,
+          "commit_prepare_rows_ns": 0,
+          "commit_rows_prepared": 0,
+          "commit_timeline_rows_prepared": 0,
+          "commit_user_mutation_rows": 0,
+          "conflict_sources_built": 0,
+          "mutable_insert_duplicate_checks": 0,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "read_view_validation_rows_scanned": 0,
+          "runtime_batch_validate_ns": 0,
+          "runtime_duplicate_mutation_key_checks": 0,
+          "scan_candidates_materialized": 6400,
+          "scan_cursor_rows_yielded": 6500,
+          "scan_cursor_seeks": 100,
+          "scan_rows_visited": 6400,
+          "table_seeks": 0
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 1026.656710286778,
+        "avg_ns": 974035,
+        "samples": 100
+      }
+    }
+  ]
+}

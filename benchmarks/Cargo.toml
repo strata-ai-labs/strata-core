@@ -15,6 +15,7 @@ embed = ["stratadb/embed"]
 stratadb = { path = ".." }
 strata-core = { path = "../crates/core" }
 strata-engine = { path = "../crates/engine" }
+strata-storage = { path = "../crates/storage", features = ["perf-trace"] }
 strata-storage-next = { path = "../crates/storage-next", features = ["perf-trace"] }
 # Required only for the B6 materialize smoke in `src/bin/regression.rs`:
 # the benchmark opens a fresh engine `Database` rather than reusing the

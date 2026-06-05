@@ -23,6 +23,7 @@ pub mod manifest;
 pub mod memory_stats;
 pub mod memtable;
 pub mod merge_iter;
+pub mod perf_trace;
 pub mod pressure;
 pub mod quarantine;
 pub mod rate_limiter;

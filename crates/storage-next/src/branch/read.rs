@@ -10,8 +10,9 @@ use super::state::BranchLocalState;
 use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    FrozenTable, ImmutableTableReader, MutableTable, TableInternalKeyBytes, TablePhysicalKeyBytes,
-    TableRow, TableRuntimeFacts,
+    BoundedTableCursor, FrozenTable, ImmutableTableReader, MutableTable, TableCursor,
+    TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableRow,
+    TableRuntimeFacts,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -333,6 +334,50 @@ impl BranchScanBounds {
 
     pub(crate) const fn branch_id(&self) -> BranchId {
         self.branch_id
+    }
+
+    fn table_key_bounds(&self) -> BranchRuntimeResult<TableKeyBounds> {
+        self.table_key_bounds_for_branch(self.branch_id)
+    }
+
+    fn table_key_bounds_for_branch(
+        &self,
+        branch_id: BranchId,
+    ) -> BranchRuntimeResult<TableKeyBounds> {
+        if let Some(prefix) = &self.user_key_prefix {
+            let prefix_key = scan_physical_key(
+                branch_id,
+                &self.space,
+                self.storage_space_id,
+                prefix.clone(),
+            )?;
+            return Ok(TableKeyBounds::prefix(
+                TablePhysicalKeyBytes::from_physical_key_prefix(&prefix_key)
+                    .as_slice()
+                    .to_vec(),
+            ));
+        }
+
+        let namespace_key =
+            scan_physical_key(branch_id, &self.space, self.storage_space_id, Vec::new())?;
+        let namespace_prefix = TablePhysicalKeyBytes::from_physical_key_prefix(&namespace_key);
+        let lower = table_physical_bound_for_user_key(
+            branch_id,
+            &self.space,
+            self.storage_space_id,
+            &self.lower_user_key,
+        )?;
+        let upper = table_physical_bound_for_user_key(
+            branch_id,
+            &self.space,
+            self.storage_space_id,
+            &self.upper_user_key,
+        )?;
+        TableKeyBounds::physical_range(namespace_prefix, lower, upper).map_err(|_| {
+            BranchRuntimeError::InvalidReadBound {
+                reason: "scan table key bounds are invalid",
+            }
+        })
     }
 
     fn contains(&self, key: &PhysicalKey) -> bool {
@@ -1136,6 +1181,28 @@ impl BranchLocalState {
             effective_bound,
         ))
     }
+
+    pub(crate) fn scan_including_tombstones_borrowed(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+        visible_limit: Option<usize>,
+        visible_limit_timestamp: Option<Timestamp>,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        require_state_matching_branch(self, bounds.branch_id())?;
+        require_state_timestamp_coverage(self, bound)?;
+        scan_including_tombstones_from_sources(
+            self.branch_id(),
+            self.active(),
+            self.frozen(),
+            self.owned_levels(),
+            self.inherited_layers(),
+            bounds,
+            bound,
+            visible_limit,
+            visible_limit_timestamp,
+        )
+    }
 }
 
 type CandidateRow = (StorageRow, BranchRowSource);
@@ -1239,6 +1306,275 @@ fn visible_point_candidates(
     )?;
     perf_trace::record_point_candidate_collection(rows_visited, rows.len());
     Ok(rows)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BranchScanCursorSource {
+    Active,
+    Frozen {
+        index: usize,
+    },
+    OwnedTable {
+        level: BranchLevel,
+        table_index: usize,
+    },
+    Inherited {
+        source_branch_id: BranchId,
+        layer_index: usize,
+        child_branch_id: BranchId,
+    },
+}
+
+struct BranchScanCursor<'a> {
+    cursor: Box<dyn TableCursor + 'a>,
+    source: BranchScanCursorSource,
+    effective_bound: BranchEffectiveReadBound,
+}
+
+impl<'a> BranchScanCursor<'a> {
+    fn new(
+        cursor: Box<dyn TableCursor + 'a>,
+        source: BranchScanCursorSource,
+        effective_bound: BranchEffectiveReadBound,
+    ) -> Self {
+        Self {
+            cursor,
+            source,
+            effective_bound,
+        }
+    }
+
+    fn seek_to_first(&mut self) -> BranchRuntimeResult<()> {
+        self.cursor
+            .seek_to_first()
+            .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                reason: "branch scan cursor seek failed",
+            })
+    }
+
+    fn advance(&mut self) -> BranchRuntimeResult<()> {
+        self.cursor
+            .advance()
+            .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                reason: "branch scan cursor advance failed",
+            })
+    }
+
+    fn current_logical_physical_key(&self) -> BranchRuntimeResult<Option<TablePhysicalKeyBytes>> {
+        let Some(row) = self.cursor.current() else {
+            return Ok(None);
+        };
+        match self.source {
+            BranchScanCursorSource::Inherited {
+                source_branch_id,
+                child_branch_id,
+                ..
+            } => {
+                let key = rewrite_physical_key_branch(row.physical_key(), child_branch_id)
+                    .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "inherited scan key branch rewrite failed",
+                    })?;
+                if key.branch_id() == source_branch_id {
+                    return Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "inherited scan key rewrite did not change branch",
+                    });
+                }
+                Ok(Some(TablePhysicalKeyBytes::from_physical_key(&key)))
+            }
+            BranchScanCursorSource::Active
+            | BranchScanCursorSource::Frozen { .. }
+            | BranchScanCursorSource::OwnedTable { .. } => {
+                Ok(Some(TablePhysicalKeyBytes::from_row(row.row())))
+            }
+        }
+    }
+
+    fn current_candidate(&self) -> BranchRuntimeResult<Option<CandidateRow>> {
+        let Some(row) = self.cursor.current() else {
+            return Ok(None);
+        };
+        if !self.effective_bound.matches_row(row.row()) {
+            return Ok(None);
+        }
+        match self.source {
+            BranchScanCursorSource::Active => Ok(Some(candidate_row(
+                row.row().clone(),
+                BranchRowSource::Active,
+            ))),
+            BranchScanCursorSource::Frozen { index } => Ok(Some(candidate_row(
+                row.row().clone(),
+                BranchRowSource::Frozen { index },
+            ))),
+            BranchScanCursorSource::OwnedTable { level, table_index } => Ok(Some(candidate_row(
+                row.row().clone(),
+                BranchRowSource::OwnedTable { level, table_index },
+            ))),
+            BranchScanCursorSource::Inherited {
+                source_branch_id,
+                layer_index,
+                child_branch_id,
+            } => Ok(Some(candidate_row(
+                rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(|_| {
+                    BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "inherited scan row branch rewrite failed",
+                    }
+                })?,
+                BranchRowSource::Inherited {
+                    source_branch_id,
+                    layer_index,
+                },
+            ))),
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "scan source assembly mirrors branch read-view source families"
+)]
+fn scan_including_tombstones_from_sources(
+    branch_id: BranchId,
+    active: &MutableTable,
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    bounds: &BranchScanBounds,
+    bound: BranchReadBound,
+    visible_limit: Option<usize>,
+    visible_limit_timestamp: Option<Timestamp>,
+) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+    let effective_bound = effective_own_read_bound(bound);
+    let mut cursors = scan_cursors_for_sources(
+        branch_id,
+        active,
+        frozen,
+        owned_levels,
+        inherited_layers,
+        bounds,
+        bound,
+    )?;
+    for cursor in &mut cursors {
+        cursor.seek_to_first()?;
+    }
+
+    let mut rows = Vec::new();
+    let mut visible_rows = 0usize;
+    let mut candidate_rows = 0usize;
+    while let Some(selected_key) = min_current_logical_physical_key(&cursors)? {
+        let mut candidates = Vec::new();
+        for cursor in &mut cursors {
+            while cursor.current_logical_physical_key()?.as_ref() == Some(&selected_key) {
+                if let Some(candidate) = cursor.current_candidate()? {
+                    candidate_rows = candidate_rows.saturating_add(1);
+                    candidates.push(candidate);
+                }
+                cursor.advance()?;
+            }
+        }
+
+        if let Some(row) = select_visible_row_or_tombstone(candidates, effective_bound) {
+            let counts_for_limit =
+                !row.row().is_tombstone() && !row_is_expired_at(row.row(), visible_limit_timestamp);
+            rows.push(row);
+            if counts_for_limit {
+                visible_rows = visible_rows.saturating_add(1);
+                if visible_limit.is_some_and(|limit| visible_rows >= limit) {
+                    break;
+                }
+            }
+        }
+    }
+    perf_trace::record_scan_candidate_collection(candidate_rows, candidate_rows);
+    Ok(rows)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "scan source assembly mirrors branch read-view source families"
+)]
+fn scan_cursors_for_sources<'a>(
+    branch_id: BranchId,
+    active: &'a MutableTable,
+    frozen: &'a [FrozenTable],
+    owned_levels: &'a [Vec<BranchOwnedTable>],
+    inherited_layers: &'a [BranchInheritedLayer],
+    bounds: &BranchScanBounds,
+    bound: BranchReadBound,
+) -> BranchRuntimeResult<Vec<BranchScanCursor<'a>>> {
+    let own_bounds = bounds.table_key_bounds()?;
+    let own_bound = BranchEffectiveReadBound::for_own_branch(bound);
+    let mut cursors = Vec::new();
+    cursors.push(BranchScanCursor::new(
+        Box::new(BoundedTableCursor::new(
+            Box::new(active.cursor()),
+            own_bounds.clone(),
+        )),
+        BranchScanCursorSource::Active,
+        own_bound,
+    ));
+    for (index, table) in frozen.iter().enumerate() {
+        cursors.push(BranchScanCursor::new(
+            Box::new(BoundedTableCursor::new(
+                Box::new(table.cursor()),
+                own_bounds.clone(),
+            )),
+            BranchScanCursorSource::Frozen { index },
+            own_bound,
+        ));
+    }
+    for tables in owned_levels {
+        for (table_index, table) in tables.iter().enumerate() {
+            cursors.push(BranchScanCursor::new(
+                Box::new(BoundedTableCursor::new(
+                    Box::new(table.reader().cursor()),
+                    own_bounds.clone(),
+                )),
+                BranchScanCursorSource::OwnedTable {
+                    level: table.level(),
+                    table_index,
+                },
+                own_bound,
+            ));
+        }
+    }
+    for (layer_index, layer) in inherited_layers.iter().enumerate() {
+        if !layer.is_readable() {
+            continue;
+        }
+        let inherited_bound =
+            BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
+        let source_bounds = bounds.table_key_bounds_for_branch(layer.source_branch_id())?;
+        for table in layer.owned_levels().iter().flatten() {
+            cursors.push(BranchScanCursor::new(
+                Box::new(BoundedTableCursor::new(
+                    Box::new(table.reader().cursor()),
+                    source_bounds.clone(),
+                )),
+                BranchScanCursorSource::Inherited {
+                    source_branch_id: layer.source_branch_id(),
+                    layer_index,
+                    child_branch_id: branch_id,
+                },
+                inherited_bound,
+            ));
+        }
+    }
+    Ok(cursors)
+}
+
+fn min_current_logical_physical_key(
+    cursors: &[BranchScanCursor<'_>],
+) -> BranchRuntimeResult<Option<TablePhysicalKeyBytes>> {
+    let mut selected: Option<TablePhysicalKeyBytes> = None;
+    for cursor in cursors {
+        let Some(key) = cursor.current_logical_physical_key()? else {
+            continue;
+        };
+        if selected.as_ref().is_none_or(|current| &key < current) {
+            selected = Some(key);
+        }
+    }
+    Ok(selected)
 }
 
 fn collect_visible_inherited_point_candidates(
@@ -1425,6 +1761,42 @@ fn validate_scan_space(
         .map_err(|_| BranchRuntimeError::InvalidReadBound {
             reason: "scan bounds must use a valid physical key space",
         })
+}
+
+fn scan_physical_key(
+    branch_id: BranchId,
+    space: &str,
+    storage_space_id: StorageSpaceId,
+    user_key: Vec<u8>,
+) -> BranchRuntimeResult<PhysicalKey> {
+    PhysicalKey::new(branch_id, space.to_owned(), storage_space_id, user_key).map_err(|_| {
+        BranchRuntimeError::InvalidReadBound {
+            reason: "scan physical key bound is invalid",
+        }
+    })
+}
+
+fn table_physical_bound_for_user_key(
+    branch_id: BranchId,
+    space: &str,
+    storage_space_id: StorageSpaceId,
+    bound: &BranchUserKeyBound,
+) -> BranchRuntimeResult<TablePhysicalKeyBound> {
+    match bound {
+        BranchUserKeyBound::Unbounded => Ok(TablePhysicalKeyBound::Unbounded),
+        BranchUserKeyBound::Included(user_key) => {
+            let key = scan_physical_key(branch_id, space, storage_space_id, user_key.clone())?;
+            Ok(TablePhysicalKeyBound::included(
+                TablePhysicalKeyBytes::from_physical_key(&key),
+            ))
+        }
+        BranchUserKeyBound::Excluded(user_key) => {
+            let key = scan_physical_key(branch_id, space, storage_space_id, user_key.clone())?;
+            Ok(TablePhysicalKeyBound::excluded(
+                TablePhysicalKeyBytes::from_physical_key(&key),
+            ))
+        }
+    }
 }
 
 fn lower_contains(bound: &BranchUserKeyBound, user_key: &[u8]) -> bool {

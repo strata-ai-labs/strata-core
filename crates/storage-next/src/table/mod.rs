@@ -93,7 +93,7 @@ pub(crate) use key::{
 )]
 pub(crate) use key::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, TableInternalKeyBytes,
-    TableKeyBounds, TablePhysicalKeyBytes, TableRow,
+    TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableRow,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
