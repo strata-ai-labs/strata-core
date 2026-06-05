@@ -654,6 +654,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     pub fn scan_range(&self, request: &ScanReadRequest) -> StorageApiResult<ScanReadOutcome> {
+        let bounds_timer = perf_trace::start_timer();
         let storage_space = map_storage_space(request.storage_space())?;
         let bounds = BranchScanBounds::range(
             request.branch_id(),
@@ -673,6 +674,7 @@ impl<'a> StorageRuntime<'a> {
                 }),
         )
         .map_err(branch_error)?;
+        perf_trace::record_api_scan_bounds_elapsed(bounds_timer);
         if matches!(request.bound(), ReadBound::Latest) {
             let scan_timer = perf_trace::start_timer();
             let rows = self.scan_latest_including_tombstones_for_branch(

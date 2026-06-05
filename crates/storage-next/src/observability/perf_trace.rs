@@ -21,6 +21,7 @@ pub struct StoragePerfSnapshot {
     api_commit_runtime_ns: u64,
     api_scan_runtime_ns: u64,
     api_scan_map_ns: u64,
+    api_scan_bounds_ns: u64,
     runtime_batch_validate_ns: u64,
     runtime_duplicate_mutation_key_checks: u64,
     commit_prepare_rows_ns: u64,
@@ -53,10 +54,13 @@ pub struct StoragePerfSnapshot {
     branch_scan_candidate_ns: u64,
     branch_scan_advance_ns: u64,
     branch_scan_select_ns: u64,
+    branch_scan_emit_ns: u64,
     scan_logical_key_encodes: u64,
     scan_candidate_row_clones: u64,
     scan_candidate_row_clone_bytes: u64,
     table_seeks: u64,
+    table_bound_checks: u64,
+    table_bound_check_ns: u64,
 }
 
 #[cfg(feature = "perf-trace")]
@@ -79,6 +83,11 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent mapping scan storage rows into public API rows.
     pub const fn api_scan_map_ns(self) -> u64 {
         self.api_scan_map_ns
+    }
+
+    /// Nanoseconds spent constructing physical scan bounds from public API keys.
+    pub const fn api_scan_bounds_ns(self) -> u64 {
+        self.api_scan_bounds_ns
     }
 
     /// Nanoseconds spent validating runtime commit batch shape and invariants.
@@ -246,6 +255,11 @@ impl StoragePerfSnapshot {
         self.branch_scan_select_ns
     }
 
+    /// Nanoseconds spent emitting selected branch scan rows and applying limits.
+    pub const fn branch_scan_emit_ns(self) -> u64 {
+        self.branch_scan_emit_ns
+    }
+
     /// Number of logical physical-key encodes performed by branch scan grouping.
     pub const fn scan_logical_key_encodes(self) -> u64 {
         self.scan_logical_key_encodes
@@ -265,6 +279,16 @@ impl StoragePerfSnapshot {
     pub const fn table_seeks(self) -> u64 {
         self.table_seeks
     }
+
+    /// Number of bounded table-key checks performed by scan cursors.
+    pub const fn table_bound_checks(self) -> u64 {
+        self.table_bound_checks
+    }
+
+    /// Nanoseconds spent checking bounded table-key predicates.
+    pub const fn table_bound_check_ns(self) -> u64 {
+        self.table_bound_check_ns
+    }
 }
 
 #[cfg(feature = "perf-trace")]
@@ -280,6 +304,8 @@ static API_COMMIT_RUNTIME_NS: AtomicU64 = AtomicU64::new(0);
 static API_SCAN_RUNTIME_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static API_SCAN_MAP_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static API_SCAN_BOUNDS_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static RUNTIME_BATCH_VALIDATE_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -345,6 +371,8 @@ static BRANCH_SCAN_ADVANCE_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static BRANCH_SCAN_SELECT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static BRANCH_SCAN_EMIT_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static SCAN_LOGICAL_KEY_ENCODES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static SCAN_CANDIDATE_ROW_CLONES: AtomicU64 = AtomicU64::new(0);
@@ -352,6 +380,10 @@ static SCAN_CANDIDATE_ROW_CLONES: AtomicU64 = AtomicU64::new(0);
 static SCAN_CANDIDATE_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_SEEKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_BOUND_CHECKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_BOUND_CHECK_NS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(test, feature = "perf-trace"))]
 thread_local! {
@@ -399,6 +431,7 @@ pub fn reset() {
     API_COMMIT_RUNTIME_NS.store(0, Ordering::Relaxed);
     API_SCAN_RUNTIME_NS.store(0, Ordering::Relaxed);
     API_SCAN_MAP_NS.store(0, Ordering::Relaxed);
+    API_SCAN_BOUNDS_NS.store(0, Ordering::Relaxed);
     RUNTIME_BATCH_VALIDATE_NS.store(0, Ordering::Relaxed);
     RUNTIME_DUPLICATE_MUTATION_KEY_CHECKS.store(0, Ordering::Relaxed);
     COMMIT_PREPARE_ROWS_NS.store(0, Ordering::Relaxed);
@@ -431,10 +464,13 @@ pub fn reset() {
     BRANCH_SCAN_CANDIDATE_NS.store(0, Ordering::Relaxed);
     BRANCH_SCAN_ADVANCE_NS.store(0, Ordering::Relaxed);
     BRANCH_SCAN_SELECT_NS.store(0, Ordering::Relaxed);
+    BRANCH_SCAN_EMIT_NS.store(0, Ordering::Relaxed);
     SCAN_LOGICAL_KEY_ENCODES.store(0, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONES.store(0, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
     TABLE_SEEKS.store(0, Ordering::Relaxed);
+    TABLE_BOUND_CHECKS.store(0, Ordering::Relaxed);
+    TABLE_BOUND_CHECK_NS.store(0, Ordering::Relaxed);
 }
 
 /// Capture all performance proof counters.
@@ -445,6 +481,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         api_commit_runtime_ns: API_COMMIT_RUNTIME_NS.load(Ordering::Relaxed),
         api_scan_runtime_ns: API_SCAN_RUNTIME_NS.load(Ordering::Relaxed),
         api_scan_map_ns: API_SCAN_MAP_NS.load(Ordering::Relaxed),
+        api_scan_bounds_ns: API_SCAN_BOUNDS_NS.load(Ordering::Relaxed),
         runtime_batch_validate_ns: RUNTIME_BATCH_VALIDATE_NS.load(Ordering::Relaxed),
         runtime_duplicate_mutation_key_checks: RUNTIME_DUPLICATE_MUTATION_KEY_CHECKS
             .load(Ordering::Relaxed),
@@ -480,10 +517,13 @@ pub fn snapshot() -> StoragePerfSnapshot {
         branch_scan_candidate_ns: BRANCH_SCAN_CANDIDATE_NS.load(Ordering::Relaxed),
         branch_scan_advance_ns: BRANCH_SCAN_ADVANCE_NS.load(Ordering::Relaxed),
         branch_scan_select_ns: BRANCH_SCAN_SELECT_NS.load(Ordering::Relaxed),
+        branch_scan_emit_ns: BRANCH_SCAN_EMIT_NS.load(Ordering::Relaxed),
         scan_logical_key_encodes: SCAN_LOGICAL_KEY_ENCODES.load(Ordering::Relaxed),
         scan_candidate_row_clones: SCAN_CANDIDATE_ROW_CLONES.load(Ordering::Relaxed),
         scan_candidate_row_clone_bytes: SCAN_CANDIDATE_ROW_CLONE_BYTES.load(Ordering::Relaxed),
         table_seeks: TABLE_SEEKS.load(Ordering::Relaxed),
+        table_bound_checks: TABLE_BOUND_CHECKS.load(Ordering::Relaxed),
+        table_bound_check_ns: TABLE_BOUND_CHECK_NS.load(Ordering::Relaxed),
     }
 }
 
@@ -525,6 +565,14 @@ pub(crate) fn record_api_scan_map_elapsed(_start: PerfTraceTimer) {}
 #[cfg(feature = "perf-trace")]
 pub(crate) fn record_api_scan_map_elapsed(start: PerfTraceTimer) {
     record_elapsed(&API_SCAN_MAP_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_api_scan_bounds_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_api_scan_bounds_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&API_SCAN_BOUNDS_NS, start);
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -771,6 +819,14 @@ pub(crate) fn record_branch_scan_select_elapsed(start: PerfTraceTimer) {
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_scan_emit_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_scan_emit_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&BRANCH_SCAN_EMIT_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_scan_logical_key_encode() {}
 
 #[cfg(feature = "perf-trace")]
@@ -802,6 +858,18 @@ pub(crate) fn record_table_seek() {
         return;
     }
     TABLE_SEEKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_bound_check_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_bound_check_elapsed(start: PerfTraceTimer) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_BOUND_CHECKS.fetch_add(1, Ordering::Relaxed);
+    record_elapsed(&TABLE_BOUND_CHECK_NS, start);
 }
 
 #[cfg(all(test, feature = "perf-trace"))]

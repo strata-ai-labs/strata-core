@@ -1582,15 +1582,18 @@ fn scan_heap_sources_including_tombstones(
         let selected = select_visible_row_or_tombstone(candidates, effective_bound);
         perf_trace::record_branch_scan_select_elapsed(select_timer);
         if let Some(row) = selected {
+            let emit_timer = perf_trace::start_timer();
             let counts_for_limit =
                 !row.row().is_tombstone() && !row_is_expired_at(row.row(), visible_limit_timestamp);
             rows.push(row);
             if counts_for_limit {
                 visible_rows = visible_rows.saturating_add(1);
                 if visible_limit.is_some_and(|limit| visible_rows >= limit) {
+                    perf_trace::record_branch_scan_emit_elapsed(emit_timer);
                     break;
                 }
             }
+            perf_trace::record_branch_scan_emit_elapsed(emit_timer);
         }
     }
     perf_trace::record_scan_candidate_collection(candidate_rows, candidate_rows);
@@ -1637,15 +1640,18 @@ fn scan_single_source_including_tombstones(
         let selected = select_visible_row_or_tombstone(candidates, effective_bound);
         perf_trace::record_branch_scan_select_elapsed(select_timer);
         if let Some(row) = selected {
+            let emit_timer = perf_trace::start_timer();
             let counts_for_limit =
                 !row.row().is_tombstone() && !row_is_expired_at(row.row(), visible_limit_timestamp);
             rows.push(row);
             if counts_for_limit {
                 visible_rows = visible_rows.saturating_add(1);
                 if visible_limit.is_some_and(|limit| visible_rows >= limit) {
+                    perf_trace::record_branch_scan_emit_elapsed(emit_timer);
                     break;
                 }
             }
+            perf_trace::record_branch_scan_emit_elapsed(emit_timer);
         }
     }
     perf_trace::record_scan_candidate_collection(candidate_rows, candidate_rows);

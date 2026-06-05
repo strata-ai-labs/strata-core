@@ -601,11 +601,12 @@ fn print_result(result: &RunResult) {
     }
     if let Some(perf_trace) = result.perf_trace {
         eprintln!(
-            "    perf-trace api_map_ns={} api_runtime_ns={} api_scan_runtime_ns={} api_scan_map_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} branch_scan_source_setup_ns={} branch_scan_merge_ns={} branch_scan_min_key_ns={} branch_scan_group_key_ns={} branch_scan_candidate_ns={} branch_scan_advance_ns={} branch_scan_select_ns={} scan_logical_key_encodes={} scan_candidate_row_clones={} scan_candidate_row_clone_bytes={} table_seeks={}",
+            "    perf-trace api_map_ns={} api_runtime_ns={} api_scan_runtime_ns={} api_scan_map_ns={} api_scan_bounds_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} branch_scan_source_setup_ns={} branch_scan_merge_ns={} branch_scan_min_key_ns={} branch_scan_group_key_ns={} branch_scan_candidate_ns={} branch_scan_advance_ns={} branch_scan_select_ns={} branch_scan_emit_ns={} scan_logical_key_encodes={} scan_candidate_row_clones={} scan_candidate_row_clone_bytes={} table_seeks={} table_bound_checks={} table_bound_check_ns={}",
             perf_trace.api_commit_map_ns(),
             perf_trace.api_commit_runtime_ns(),
             perf_trace.api_scan_runtime_ns(),
             perf_trace.api_scan_map_ns(),
+            perf_trace.api_scan_bounds_ns(),
             perf_trace.runtime_batch_validate_ns(),
             perf_trace.runtime_duplicate_mutation_key_checks(),
             perf_trace.commit_prepare_rows_ns(),
@@ -638,10 +639,13 @@ fn print_result(result: &RunResult) {
             perf_trace.branch_scan_candidate_ns(),
             perf_trace.branch_scan_advance_ns(),
             perf_trace.branch_scan_select_ns(),
+            perf_trace.branch_scan_emit_ns(),
             perf_trace.scan_logical_key_encodes(),
             perf_trace.scan_candidate_row_clones(),
             perf_trace.scan_candidate_row_clone_bytes(),
             perf_trace.table_seeks(),
+            perf_trace.table_bound_checks(),
+            perf_trace.table_bound_check_ns(),
         );
     }
     if let Some(load_phase) = result.load_phase_trace {
@@ -1094,51 +1098,7 @@ impl RunResult {
             );
         }
         if let Some(perf_trace) = self.perf_trace {
-            parameters.insert(
-                "perf_trace".to_string(),
-                serde_json::json!({
-                    "api_commit_map_ns": perf_trace.api_commit_map_ns(),
-                    "api_commit_runtime_ns": perf_trace.api_commit_runtime_ns(),
-                    "api_scan_runtime_ns": perf_trace.api_scan_runtime_ns(),
-                    "api_scan_map_ns": perf_trace.api_scan_map_ns(),
-                    "runtime_batch_validate_ns": perf_trace.runtime_batch_validate_ns(),
-                    "runtime_duplicate_mutation_key_checks": perf_trace.runtime_duplicate_mutation_key_checks(),
-                    "commit_prepare_rows_ns": perf_trace.commit_prepare_rows_ns(),
-                    "append_batch_validate_ns": perf_trace.append_batch_validate_ns(),
-                    "append_insert_rows_ns": perf_trace.append_insert_rows_ns(),
-                    "append_absent_internal_key_checks": perf_trace.append_absent_internal_key_checks(),
-                    "mutable_insert_duplicate_checks": perf_trace.mutable_insert_duplicate_checks(),
-                    "commit_batches_prepared": perf_trace.commit_batches_prepared(),
-                    "commit_user_mutation_rows": perf_trace.commit_user_mutation_rows(),
-                    "commit_timeline_rows_prepared": perf_trace.commit_timeline_rows_prepared(),
-                    "commit_rows_prepared": perf_trace.commit_rows_prepared(),
-                    "append_rows_applied": perf_trace.append_rows_applied(),
-                    "branch_facts_rows_observed": perf_trace.branch_facts_rows_observed(),
-                    "read_view_captures": perf_trace.read_view_captures(),
-                    "read_view_rows_cloned": perf_trace.read_view_rows_cloned(),
-                    "read_view_validation_rows_scanned": perf_trace.read_view_validation_rows_scanned(),
-                    "append_staging_clones": perf_trace.append_staging_clones(),
-                    "append_staging_rows_cloned": perf_trace.append_staging_rows_cloned(),
-                    "conflict_sources_built": perf_trace.conflict_sources_built(),
-                    "point_rows_visited": perf_trace.point_rows_visited(),
-                    "point_candidates_materialized": perf_trace.point_candidates_materialized(),
-                    "scan_rows_visited": perf_trace.scan_rows_visited(),
-                    "scan_candidates_materialized": perf_trace.scan_candidates_materialized(),
-                    "scan_cursor_seeks": perf_trace.scan_cursor_seeks(),
-                    "scan_cursor_rows_yielded": perf_trace.scan_cursor_rows_yielded(),
-                    "branch_scan_source_setup_ns": perf_trace.branch_scan_source_setup_ns(),
-                    "branch_scan_merge_ns": perf_trace.branch_scan_merge_ns(),
-                    "branch_scan_min_key_ns": perf_trace.branch_scan_min_key_ns(),
-                    "branch_scan_group_key_ns": perf_trace.branch_scan_group_key_ns(),
-                    "branch_scan_candidate_ns": perf_trace.branch_scan_candidate_ns(),
-                    "branch_scan_advance_ns": perf_trace.branch_scan_advance_ns(),
-                    "branch_scan_select_ns": perf_trace.branch_scan_select_ns(),
-                    "scan_logical_key_encodes": perf_trace.scan_logical_key_encodes(),
-                    "scan_candidate_row_clones": perf_trace.scan_candidate_row_clones(),
-                    "scan_candidate_row_clone_bytes": perf_trace.scan_candidate_row_clone_bytes(),
-                    "table_seeks": perf_trace.table_seeks(),
-                }),
-            );
+            parameters.insert("perf_trace".to_string(), perf_trace_json(perf_trace));
         }
 
         BenchmarkResult {
@@ -1148,6 +1108,101 @@ impl RunResult {
             metrics: self.measurement.into_metrics(),
         }
     }
+}
+
+fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
+    let mut trace = serde_json::Map::new();
+    macro_rules! field {
+        ($name:literal, $value:expr) => {
+            trace.insert($name.to_string(), serde_json::json!($value));
+        };
+    }
+
+    field!("api_commit_map_ns", perf_trace.api_commit_map_ns());
+    field!("api_commit_runtime_ns", perf_trace.api_commit_runtime_ns());
+    field!("api_scan_runtime_ns", perf_trace.api_scan_runtime_ns());
+    field!("api_scan_map_ns", perf_trace.api_scan_map_ns());
+    field!("api_scan_bounds_ns", perf_trace.api_scan_bounds_ns());
+    field!("runtime_batch_validate_ns", perf_trace.runtime_batch_validate_ns());
+    field!(
+        "runtime_duplicate_mutation_key_checks",
+        perf_trace.runtime_duplicate_mutation_key_checks()
+    );
+    field!("commit_prepare_rows_ns", perf_trace.commit_prepare_rows_ns());
+    field!("append_batch_validate_ns", perf_trace.append_batch_validate_ns());
+    field!("append_insert_rows_ns", perf_trace.append_insert_rows_ns());
+    field!(
+        "append_absent_internal_key_checks",
+        perf_trace.append_absent_internal_key_checks()
+    );
+    field!(
+        "mutable_insert_duplicate_checks",
+        perf_trace.mutable_insert_duplicate_checks()
+    );
+    field!("commit_batches_prepared", perf_trace.commit_batches_prepared());
+    field!("commit_user_mutation_rows", perf_trace.commit_user_mutation_rows());
+    field!(
+        "commit_timeline_rows_prepared",
+        perf_trace.commit_timeline_rows_prepared()
+    );
+    field!("commit_rows_prepared", perf_trace.commit_rows_prepared());
+    field!("append_rows_applied", perf_trace.append_rows_applied());
+    field!("branch_facts_rows_observed", perf_trace.branch_facts_rows_observed());
+    field!("read_view_captures", perf_trace.read_view_captures());
+    field!("read_view_rows_cloned", perf_trace.read_view_rows_cloned());
+    field!(
+        "read_view_validation_rows_scanned",
+        perf_trace.read_view_validation_rows_scanned()
+    );
+    field!("append_staging_clones", perf_trace.append_staging_clones());
+    field!(
+        "append_staging_rows_cloned",
+        perf_trace.append_staging_rows_cloned()
+    );
+    field!("conflict_sources_built", perf_trace.conflict_sources_built());
+    field!("point_rows_visited", perf_trace.point_rows_visited());
+    field!(
+        "point_candidates_materialized",
+        perf_trace.point_candidates_materialized()
+    );
+    field!("scan_rows_visited", perf_trace.scan_rows_visited());
+    field!(
+        "scan_candidates_materialized",
+        perf_trace.scan_candidates_materialized()
+    );
+    field!("scan_cursor_seeks", perf_trace.scan_cursor_seeks());
+    field!(
+        "scan_cursor_rows_yielded",
+        perf_trace.scan_cursor_rows_yielded()
+    );
+    field!(
+        "branch_scan_source_setup_ns",
+        perf_trace.branch_scan_source_setup_ns()
+    );
+    field!("branch_scan_merge_ns", perf_trace.branch_scan_merge_ns());
+    field!("branch_scan_min_key_ns", perf_trace.branch_scan_min_key_ns());
+    field!("branch_scan_group_key_ns", perf_trace.branch_scan_group_key_ns());
+    field!("branch_scan_candidate_ns", perf_trace.branch_scan_candidate_ns());
+    field!("branch_scan_advance_ns", perf_trace.branch_scan_advance_ns());
+    field!("branch_scan_select_ns", perf_trace.branch_scan_select_ns());
+    field!("branch_scan_emit_ns", perf_trace.branch_scan_emit_ns());
+    field!(
+        "scan_logical_key_encodes",
+        perf_trace.scan_logical_key_encodes()
+    );
+    field!(
+        "scan_candidate_row_clones",
+        perf_trace.scan_candidate_row_clones()
+    );
+    field!(
+        "scan_candidate_row_clone_bytes",
+        perf_trace.scan_candidate_row_clone_bytes()
+    );
+    field!("table_seeks", perf_trace.table_seeks());
+    field!("table_bound_checks", perf_trace.table_bound_checks());
+    field!("table_bound_check_ns", perf_trace.table_bound_check_ns());
+
+    serde_json::Value::Object(trace)
 }
 
 #[derive(Clone, Copy, Debug, Default)]

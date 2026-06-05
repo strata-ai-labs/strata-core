@@ -5,6 +5,8 @@
 
 #[cfg(feature = "perf-trace")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "perf-trace")]
+use std::time::Instant;
 
 /// Point-in-time legacy storage hot-path counter snapshot.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -14,6 +16,10 @@ pub struct StoragePerfSnapshot {
     storage_iterator_rows_yielded: u64,
     kv_scan_calls: u64,
     kv_scan_rows_returned: u64,
+    kv_scan_iter_create_ns: u64,
+    kv_scan_seek_ns: u64,
+    kv_scan_next_ns: u64,
+    kv_scan_map_ns: u64,
 }
 
 impl StoragePerfSnapshot {
@@ -41,7 +47,34 @@ impl StoragePerfSnapshot {
     pub const fn kv_scan_rows_returned(self) -> u64 {
         self.kv_scan_rows_returned
     }
+
+    /// Nanoseconds spent creating legacy storage iterators for KV scans.
+    pub const fn kv_scan_iter_create_ns(self) -> u64 {
+        self.kv_scan_iter_create_ns
+    }
+
+    /// Nanoseconds spent seeking legacy storage iterators for KV scans.
+    pub const fn kv_scan_seek_ns(self) -> u64 {
+        self.kv_scan_seek_ns
+    }
+
+    /// Nanoseconds spent pulling rows from legacy storage iterators.
+    pub const fn kv_scan_next_ns(self) -> u64 {
+        self.kv_scan_next_ns
+    }
+
+    /// Nanoseconds spent mapping legacy scan rows into public KV rows.
+    pub const fn kv_scan_map_ns(self) -> u64 {
+        self.kv_scan_map_ns
+    }
 }
+
+#[cfg(feature = "perf-trace")]
+/// Timer token used to measure legacy storage perf-trace phases.
+pub type PerfTraceTimer = Instant;
+#[cfg(not(feature = "perf-trace"))]
+/// Timer token used to measure legacy storage perf-trace phases.
+pub type PerfTraceTimer = ();
 
 #[cfg(feature = "perf-trace")]
 static STORAGE_ITERATOR_SEEKS: AtomicU64 = AtomicU64::new(0);
@@ -53,6 +86,14 @@ static STORAGE_ITERATOR_ROWS_YIELDED: AtomicU64 = AtomicU64::new(0);
 static KV_SCAN_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static KV_SCAN_ROWS_RETURNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static KV_SCAN_ITER_CREATE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static KV_SCAN_SEEK_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static KV_SCAN_NEXT_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static KV_SCAN_MAP_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Reset all legacy storage performance counters.
 #[cfg(feature = "perf-trace")]
@@ -62,6 +103,10 @@ pub fn reset() {
     STORAGE_ITERATOR_ROWS_YIELDED.store(0, Ordering::Relaxed);
     KV_SCAN_CALLS.store(0, Ordering::Relaxed);
     KV_SCAN_ROWS_RETURNED.store(0, Ordering::Relaxed);
+    KV_SCAN_ITER_CREATE_NS.store(0, Ordering::Relaxed);
+    KV_SCAN_SEEK_NS.store(0, Ordering::Relaxed);
+    KV_SCAN_NEXT_NS.store(0, Ordering::Relaxed);
+    KV_SCAN_MAP_NS.store(0, Ordering::Relaxed);
 }
 
 /// Reset all legacy storage performance counters.
@@ -78,6 +123,10 @@ pub fn snapshot() -> StoragePerfSnapshot {
         storage_iterator_rows_yielded: STORAGE_ITERATOR_ROWS_YIELDED.load(Ordering::Relaxed),
         kv_scan_calls: KV_SCAN_CALLS.load(Ordering::Relaxed),
         kv_scan_rows_returned: KV_SCAN_ROWS_RETURNED.load(Ordering::Relaxed),
+        kv_scan_iter_create_ns: KV_SCAN_ITER_CREATE_NS.load(Ordering::Relaxed),
+        kv_scan_seek_ns: KV_SCAN_SEEK_NS.load(Ordering::Relaxed),
+        kv_scan_next_ns: KV_SCAN_NEXT_NS.load(Ordering::Relaxed),
+        kv_scan_map_ns: KV_SCAN_MAP_NS.load(Ordering::Relaxed),
     }
 }
 
@@ -91,7 +140,22 @@ pub const fn snapshot() -> StoragePerfSnapshot {
         storage_iterator_rows_yielded: 0,
         kv_scan_calls: 0,
         kv_scan_rows_returned: 0,
+        kv_scan_iter_create_ns: 0,
+        kv_scan_seek_ns: 0,
+        kv_scan_next_ns: 0,
+        kv_scan_map_ns: 0,
     }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+/// Start a legacy storage perf-trace timer.
+pub const fn start_timer() -> PerfTraceTimer {}
+
+#[cfg(feature = "perf-trace")]
+/// Start a legacy storage perf-trace timer.
+#[must_use]
+pub fn start_timer() -> PerfTraceTimer {
+    Instant::now()
 }
 
 /// Record one seek against a legacy storage iterator.
@@ -144,7 +208,57 @@ pub fn record_kv_scan_rows_returned(rows: usize) {
 #[cfg(not(feature = "perf-trace"))]
 pub const fn record_kv_scan_rows_returned(_rows: usize) {}
 
+/// Record elapsed iterator creation time for public KV scans.
+#[cfg(feature = "perf-trace")]
+pub fn record_kv_scan_iter_create_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&KV_SCAN_ITER_CREATE_NS, start);
+}
+
+/// Record elapsed iterator creation time for public KV scans.
+#[cfg(not(feature = "perf-trace"))]
+pub const fn record_kv_scan_iter_create_elapsed(_start: PerfTraceTimer) {}
+
+/// Record elapsed iterator seek time for public KV scans.
+#[cfg(feature = "perf-trace")]
+pub fn record_kv_scan_seek_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&KV_SCAN_SEEK_NS, start);
+}
+
+/// Record elapsed iterator seek time for public KV scans.
+#[cfg(not(feature = "perf-trace"))]
+pub const fn record_kv_scan_seek_elapsed(_start: PerfTraceTimer) {}
+
+/// Record elapsed iterator next time for public KV scans.
+#[cfg(feature = "perf-trace")]
+pub fn record_kv_scan_next_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&KV_SCAN_NEXT_NS, start);
+}
+
+/// Record elapsed iterator next time for public KV scans.
+#[cfg(not(feature = "perf-trace"))]
+pub const fn record_kv_scan_next_elapsed(_start: PerfTraceTimer) {}
+
+/// Record elapsed public-row mapping time for public KV scans.
+#[cfg(feature = "perf-trace")]
+pub fn record_kv_scan_map_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&KV_SCAN_MAP_NS, start);
+}
+
+/// Record elapsed public-row mapping time for public KV scans.
+#[cfg(not(feature = "perf-trace"))]
+pub const fn record_kv_scan_map_elapsed(_start: PerfTraceTimer) {}
+
 #[cfg(feature = "perf-trace")]
 fn as_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "perf-trace")]
+fn record_elapsed(counter: &AtomicU64, start: PerfTraceTimer) {
+    counter.fetch_add(as_u64_ns(start.elapsed().as_nanos()), Ordering::Relaxed);
+}
+
+#[cfg(feature = "perf-trace")]
+fn as_u64_ns(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }

@@ -430,12 +430,16 @@ fn print_result(result: &RunResult) {
     }
     if let Some(perf_trace) = result.perf_trace {
         eprintln!(
-            "    perf-trace old_scan_calls={} old_scan_rows={} iterator_seeks={} pipeline_builds={} iterator_rows_yielded={}",
+            "    perf-trace old_scan_calls={} old_scan_rows={} iterator_seeks={} pipeline_builds={} iterator_rows_yielded={} kv_scan_iter_create_ns={} kv_scan_seek_ns={} kv_scan_next_ns={} kv_scan_map_ns={}",
             perf_trace.kv_scan_calls(),
             perf_trace.kv_scan_rows_returned(),
             perf_trace.storage_iterator_seeks(),
             perf_trace.storage_iterator_pipeline_builds(),
             perf_trace.storage_iterator_rows_yielded(),
+            perf_trace.kv_scan_iter_create_ns(),
+            perf_trace.kv_scan_seek_ns(),
+            perf_trace.kv_scan_next_ns(),
+            perf_trace.kv_scan_map_ns(),
         );
     }
 }
@@ -742,6 +746,10 @@ impl RunResult {
                     "storage_iterator_rows_yielded": perf_trace.storage_iterator_rows_yielded(),
                     "kv_scan_calls": perf_trace.kv_scan_calls(),
                     "kv_scan_rows_returned": perf_trace.kv_scan_rows_returned(),
+                    "kv_scan_iter_create_ns": perf_trace.kv_scan_iter_create_ns(),
+                    "kv_scan_seek_ns": perf_trace.kv_scan_seek_ns(),
+                    "kv_scan_next_ns": perf_trace.kv_scan_next_ns(),
+                    "kv_scan_map_ns": perf_trace.kv_scan_map_ns(),
                 }),
             );
         }

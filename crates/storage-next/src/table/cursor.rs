@@ -157,11 +157,17 @@ impl<'a> BoundedTableCursor<'a> {
 
     fn skip_to_next_in_bounds(&mut self) -> TableRuntimeResult<()> {
         while let Some(key) = self.inner.current_key() {
-            if self.bounds.contains_key(key) {
+            let bounds_timer = perf_trace::start_timer();
+            let in_bounds = self.bounds.contains_key(key);
+            perf_trace::record_table_bound_check_elapsed(bounds_timer);
+            if in_bounds {
                 perf_trace::record_scan_cursor_row_yielded();
                 break;
             }
-            if self.bounds.is_past_upper_bound(key) {
+            let bounds_timer = perf_trace::start_timer();
+            let past_upper = self.bounds.is_past_upper_bound(key);
+            perf_trace::record_table_bound_check_elapsed(bounds_timer);
+            if past_upper {
                 self.positioned = false;
                 break;
             }
@@ -202,13 +208,14 @@ impl TableCursor for BoundedTableCursor<'_> {
     }
 
     fn current(&self) -> Option<&TableRow> {
-        self.positioned
-            .then(|| {
-                self.inner
-                    .current()
-                    .filter(|row| self.bounds.contains_key(row.key()))
-            })
-            .flatten()
+        if !self.positioned {
+            return None;
+        }
+        let row = self.inner.current()?;
+        let bounds_timer = perf_trace::start_timer();
+        let in_bounds = self.bounds.contains_key(row.key());
+        perf_trace::record_table_bound_check_elapsed(bounds_timer);
+        in_bounds.then_some(row)
     }
 }
 

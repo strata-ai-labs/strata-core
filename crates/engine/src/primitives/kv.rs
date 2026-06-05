@@ -326,17 +326,29 @@ impl KVStore {
             return Ok(Vec::new());
         }
 
+        let iter_timer = strata_storage::perf_trace::start_timer();
         let mut iter = self.scan_iter(branch_id, space)?;
+        strata_storage::perf_trace::record_kv_scan_iter_create_elapsed(iter_timer);
         let ns = self.namespace_for(branch_id, space);
         let start_key = Key::new_kv(ns, start.unwrap_or(""));
+        let seek_timer = strata_storage::perf_trace::start_timer();
         iter.seek(&start_key)?;
+        strata_storage::perf_trace::record_kv_scan_seek_elapsed(seek_timer);
 
         let cap = limit.unwrap_or(1000).min(10_000);
         let mut results = Vec::with_capacity(cap);
-        while let Some((key, vv)) = iter.next() {
+        loop {
+            let next_timer = strata_storage::perf_trace::start_timer();
+            let next = iter.next();
+            strata_storage::perf_trace::record_kv_scan_next_elapsed(next_timer);
+            let Some((key, vv)) = next else {
+                break;
+            };
+            let map_timer = strata_storage::perf_trace::start_timer();
             if let Some(k) = key.user_key_string() {
                 results.push((k, vv.value));
             }
+            strata_storage::perf_trace::record_kv_scan_map_elapsed(map_timer);
             if let Some(lim) = limit {
                 if results.len() >= lim {
                     break;

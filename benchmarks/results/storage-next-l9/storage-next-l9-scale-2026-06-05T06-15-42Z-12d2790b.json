@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-05T06:15:42Z",
+    "git_commit": "12d2790b",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-next-l9/scan-range-throughput",
+      "category": "storage-next-l9-scale",
+      "parameters": {
+        "batch_size": 1000,
+        "flush_every": null,
+        "branch_samples": 100,
+        "scan_limit": 64,
+        "perf_trace": {
+          "api_commit_map_ns": 0,
+          "api_commit_runtime_ns": 0,
+          "api_scan_bounds_ns": 17920,
+          "api_scan_map_ns": 197246,
+          "api_scan_runtime_ns": 6858580,
+          "append_absent_internal_key_checks": 0,
+          "append_batch_validate_ns": 0,
+          "append_insert_rows_ns": 0,
+          "append_rows_applied": 0,
+          "append_staging_clones": 0,
+          "append_staging_rows_cloned": 0,
+          "branch_facts_rows_observed": 0,
+          "branch_scan_advance_ns": 3778464,
+          "branch_scan_candidate_ns": 959285,
+          "branch_scan_emit_ns": 157409,
+          "branch_scan_group_key_ns": 237436,
+          "branch_scan_merge_ns": 6575168,
+          "branch_scan_min_key_ns": 0,
+          "branch_scan_select_ns": 220725,
+          "branch_scan_source_setup_ns": 255420,
+          "commit_batches_prepared": 0,
+          "commit_prepare_rows_ns": 0,
+          "commit_rows_prepared": 0,
+          "commit_timeline_rows_prepared": 0,
+          "commit_user_mutation_rows": 0,
+          "conflict_sources_built": 0,
+          "mutable_insert_duplicate_checks": 0,
+          "point_candidates_materialized": 0,
+          "point_rows_visited": 0,
+          "read_view_captures": 0,
+          "read_view_rows_cloned": 0,
+          "read_view_validation_rows_scanned": 0,
+          "runtime_batch_validate_ns": 0,
+          "runtime_duplicate_mutation_key_checks": 0,
+          "scan_candidate_row_clone_bytes": 499200,
+          "scan_candidate_row_clones": 6400,
+          "scan_candidates_materialized": 6400,
+          "scan_cursor_rows_yielded": 6500,
+          "scan_cursor_seeks": 100,
+          "scan_logical_key_encodes": 6500,
+          "scan_rows_visited": 6400,
+          "table_bound_check_ns": 663630,
+          "table_bound_checks": 19400,
+          "table_seeks": 0
+        },
+        "value_bytes": 64,
+        "seed": 5860399455655764006,
+        "scale_keys": 100000,
+        "samples": 100,
+        "engine": "cache"
+      },
+      "metrics": {
+        "ops_per_sec": 13522.19329975322,
+        "avg_ns": 73952,
+        "samples": 100
+      }
+    }
+  ]
+}
