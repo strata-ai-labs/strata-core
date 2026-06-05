@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-05T05:42:53Z",
+    "git_commit": "a1e46221",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "batch_size": 1000,
+        "scale_keys": 100000,
+        "value_bytes": 64,
+        "samples": 100,
+        "scan_limit": 64,
+        "load_phase_trace": {
+          "batch_build_ns": 19101913,
+          "commit_call_ns": 177824627
+        },
+        "branch_samples": 100,
+        "engine": "old-cache",
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 507589.843732274,
+        "avg_ns": 1970,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/point-latest",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "scale_keys": 100000,
+        "scan_limit": 64,
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "engine": "old-cache",
+        "value_bytes": 64,
+        "samples": 100,
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 474588.1761101804,
+        "p50_ns": 1583,
+        "p95_ns": 4625,
+        "p99_ns": 18083,
+        "min_ns": 875,
+        "max_ns": 18083,
+        "avg_ns": 2070,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/point-latest-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "engine": "old-cache",
+        "value_bytes": 64,
+        "samples": 100,
+        "scan_limit": 64,
+        "seed": 5860399455655764006,
+        "scale_keys": 100000,
+        "branch_samples": 100,
+        "batch_size": 1000
+      },
+      "metrics": {
+        "ops_per_sec": 517017.6354715459,
+        "avg_ns": 1934,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-prefix",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "samples": 100,
+        "scale_keys": 100000,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "value_bytes": 64,
+        "engine": "old-cache",
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "seed": 5860399455655764006,
+        "scan_limit": 64
+      },
+      "metrics": {
+        "ops_per_sec": 22665.457842248412,
+        "p50_ns": 42875,
+        "p95_ns": 51458,
+        "p99_ns": 62875,
+        "min_ns": 39375,
+        "max_ns": 62875,
+        "avg_ns": 44083,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "batch_size": 1000,
+        "value_bytes": 64,
+        "scale_keys": 100000,
+        "scan_limit": 64,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "branch_samples": 100,
+        "engine": "old-cache",
+        "samples": 100,
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 20312.301637679317,
+        "avg_ns": 49231,
+        "samples": 100
+      }
+    }
+  ]
+}

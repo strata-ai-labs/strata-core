@@ -16,9 +16,10 @@ use strata_benchmarks::schema::{
 };
 use strata_storage_next::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
-    CommitOptions, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange,
-    ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiResult, StorageDurabilityPolicy,
-    StorageKey, StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
+    CommitOptions, MaintenanceRequest, MaintenanceScope, MaintenanceSummaryStatus, MaintenanceTask,
+    PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome,
+    ScanReadRequest, StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey,
+    StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
 };
 use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
@@ -52,6 +53,11 @@ fn main() {
 
     if let Err(error) = run(config) {
         eprintln!("benchmark failed: {error}");
+        let mut source = std::error::Error::source(&error);
+        while let Some(error) = source {
+            eprintln!("  caused by: {error}");
+            source = error.source();
+        }
         std::process::exit(1);
     }
 }
@@ -66,9 +72,12 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
     eprintln!("engines: {}", format_list(&config.engines));
     eprintln!("workloads: {}", format_list(&config.workloads));
     eprintln!(
-        "value={}B batch={} samples={} branch_samples={} scan_limit={}",
+        "value={}B batch={} flush_every={} samples={} branch_samples={} scan_limit={}",
         config.value_bytes,
         config.batch_size,
+        config
+            .flush_every
+            .map_or_else(|| "off".to_string(), |rows| rows.to_string()),
         config.samples,
         config.branch_samples,
         config.scan_limit
@@ -161,6 +170,7 @@ fn run_load_seq(
     let start = Instant::now();
     let mut load_phase = LoadPhaseTrace::default();
     let mut written = 0usize;
+    let mut next_flush_at = config.flush_every;
 
     while written < scale {
         let end = written.saturating_add(config.batch_size).min(scale);
@@ -185,6 +195,29 @@ fn run_load_seq(
         load_phase.record_commit_call(commit_start.elapsed());
         black_box(summary.commit_version());
         written = end;
+        while let Some(flush_at) = next_flush_at {
+            if written < flush_at {
+                break;
+            }
+            let maintenance_start = Instant::now();
+            let summary = runtime.maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch_id),
+            ))?;
+            load_phase
+                .record_maintenance_call(maintenance_start.elapsed(), summary.rows_processed());
+            if summary.status() != MaintenanceSummaryStatus::Completed {
+                return Err(BenchmarkError::MaintenanceDidNotComplete {
+                    after_rows: written,
+                    status: summary.status(),
+                    reason: summary.reason(),
+                });
+            }
+            black_box(summary.rows_processed());
+            next_flush_at = config
+                .flush_every
+                .and_then(|flush_every| flush_at.checked_add(flush_every));
+        }
         if config.progress && written % progress_step(scale) == 0 {
             eprintln!("  load progress: {}/{}", written, scale);
         }
@@ -568,9 +601,11 @@ fn print_result(result: &RunResult) {
     }
     if let Some(perf_trace) = result.perf_trace {
         eprintln!(
-            "    perf-trace api_map_ns={} api_runtime_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} table_seeks={}",
+            "    perf-trace api_map_ns={} api_runtime_ns={} api_scan_runtime_ns={} api_scan_map_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} branch_scan_source_setup_ns={} branch_scan_merge_ns={} branch_scan_min_key_ns={} branch_scan_group_key_ns={} branch_scan_candidate_ns={} branch_scan_advance_ns={} branch_scan_select_ns={} scan_logical_key_encodes={} scan_candidate_row_clones={} scan_candidate_row_clone_bytes={} table_seeks={}",
             perf_trace.api_commit_map_ns(),
             perf_trace.api_commit_runtime_ns(),
+            perf_trace.api_scan_runtime_ns(),
+            perf_trace.api_scan_map_ns(),
             perf_trace.runtime_batch_validate_ns(),
             perf_trace.runtime_duplicate_mutation_key_checks(),
             perf_trace.commit_prepare_rows_ns(),
@@ -596,13 +631,27 @@ fn print_result(result: &RunResult) {
             perf_trace.scan_candidates_materialized(),
             perf_trace.scan_cursor_seeks(),
             perf_trace.scan_cursor_rows_yielded(),
+            perf_trace.branch_scan_source_setup_ns(),
+            perf_trace.branch_scan_merge_ns(),
+            perf_trace.branch_scan_min_key_ns(),
+            perf_trace.branch_scan_group_key_ns(),
+            perf_trace.branch_scan_candidate_ns(),
+            perf_trace.branch_scan_advance_ns(),
+            perf_trace.branch_scan_select_ns(),
+            perf_trace.scan_logical_key_encodes(),
+            perf_trace.scan_candidate_row_clones(),
+            perf_trace.scan_candidate_row_clone_bytes(),
             perf_trace.table_seeks(),
         );
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
-            "    load-phase batch_build_ns={} commit_call_ns={}",
-            load_phase.batch_build_ns, load_phase.commit_call_ns
+            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={}",
+            load_phase.batch_build_ns,
+            load_phase.commit_call_ns,
+            load_phase.maintenance_call_ns,
+            load_phase.maintenance_runs,
+            load_phase.maintenance_rows,
         );
     }
 }
@@ -652,6 +701,7 @@ Options:
   --workloads LIST       Comma list: load-seq,point-latest,point-throughput,scan-prefix,scan-range-throughput,branch-fork-current. Default: all
   --value-bytes N        Value size in bytes. Default: 64
   --batch-size N         Mutations per L9 commit during load. Default: 1000
+  --flush-every N        Run public Flush maintenance every N loaded rows. Default: off
   --samples N            Read/scan samples. Default: 10000
   --branch-samples N     Branch fork samples. Default: 100
   --scan-limit N         Prefix scan limit. Default: 64
@@ -676,6 +726,7 @@ struct Config {
     workloads: Vec<Workload>,
     value_bytes: usize,
     batch_size: usize,
+    flush_every: Option<usize>,
     samples: usize,
     branch_samples: usize,
     scan_limit: usize,
@@ -694,6 +745,7 @@ impl Config {
             workloads: Workload::ALL.to_vec(),
             value_bytes: DEFAULT_VALUE_BYTES,
             batch_size: DEFAULT_BATCH_SIZE,
+            flush_every: None,
             samples: DEFAULT_SAMPLES,
             branch_samples: DEFAULT_BRANCH_SAMPLES,
             scan_limit: DEFAULT_SCAN_LIMIT,
@@ -730,6 +782,10 @@ impl Config {
                 "--batch-size" => {
                     index += 1;
                     config.batch_size = parse_usize(args.get(index), "--batch-size")?;
+                }
+                "--flush-every" => {
+                    index += 1;
+                    config.flush_every = Some(parse_usize(args.get(index), "--flush-every")?);
                 }
                 "--samples" => {
                     index += 1;
@@ -782,6 +838,9 @@ impl Config {
         }
         if self.batch_size == 0 {
             return Err(CliError::InvalidNumber("--batch-size"));
+        }
+        if self.flush_every == Some(0) {
+            return Err(CliError::InvalidNumber("--flush-every"));
         }
         if self.samples == 0 {
             return Err(CliError::InvalidNumber("--samples"));
@@ -1008,6 +1067,10 @@ impl RunResult {
             "batch_size".to_string(),
             serde_json::json!(config.batch_size),
         );
+        parameters.insert(
+            "flush_every".to_string(),
+            serde_json::json!(config.flush_every),
+        );
         parameters.insert("samples".to_string(), serde_json::json!(config.samples));
         parameters.insert(
             "branch_samples".to_string(),
@@ -1024,6 +1087,9 @@ impl RunResult {
                 serde_json::json!({
                     "batch_build_ns": load_phase.batch_build_ns,
                     "commit_call_ns": load_phase.commit_call_ns,
+                    "maintenance_call_ns": load_phase.maintenance_call_ns,
+                    "maintenance_runs": load_phase.maintenance_runs,
+                    "maintenance_rows": load_phase.maintenance_rows,
                 }),
             );
         }
@@ -1033,6 +1099,8 @@ impl RunResult {
                 serde_json::json!({
                     "api_commit_map_ns": perf_trace.api_commit_map_ns(),
                     "api_commit_runtime_ns": perf_trace.api_commit_runtime_ns(),
+                    "api_scan_runtime_ns": perf_trace.api_scan_runtime_ns(),
+                    "api_scan_map_ns": perf_trace.api_scan_map_ns(),
                     "runtime_batch_validate_ns": perf_trace.runtime_batch_validate_ns(),
                     "runtime_duplicate_mutation_key_checks": perf_trace.runtime_duplicate_mutation_key_checks(),
                     "commit_prepare_rows_ns": perf_trace.commit_prepare_rows_ns(),
@@ -1058,6 +1126,16 @@ impl RunResult {
                     "scan_candidates_materialized": perf_trace.scan_candidates_materialized(),
                     "scan_cursor_seeks": perf_trace.scan_cursor_seeks(),
                     "scan_cursor_rows_yielded": perf_trace.scan_cursor_rows_yielded(),
+                    "branch_scan_source_setup_ns": perf_trace.branch_scan_source_setup_ns(),
+                    "branch_scan_merge_ns": perf_trace.branch_scan_merge_ns(),
+                    "branch_scan_min_key_ns": perf_trace.branch_scan_min_key_ns(),
+                    "branch_scan_group_key_ns": perf_trace.branch_scan_group_key_ns(),
+                    "branch_scan_candidate_ns": perf_trace.branch_scan_candidate_ns(),
+                    "branch_scan_advance_ns": perf_trace.branch_scan_advance_ns(),
+                    "branch_scan_select_ns": perf_trace.branch_scan_select_ns(),
+                    "scan_logical_key_encodes": perf_trace.scan_logical_key_encodes(),
+                    "scan_candidate_row_clones": perf_trace.scan_candidate_row_clones(),
+                    "scan_candidate_row_clone_bytes": perf_trace.scan_candidate_row_clone_bytes(),
                     "table_seeks": perf_trace.table_seeks(),
                 }),
             );
@@ -1076,6 +1154,9 @@ impl RunResult {
 struct LoadPhaseTrace {
     batch_build_ns: u64,
     commit_call_ns: u64,
+    maintenance_call_ns: u64,
+    maintenance_runs: u64,
+    maintenance_rows: u64,
 }
 
 impl LoadPhaseTrace {
@@ -1089,6 +1170,14 @@ impl LoadPhaseTrace {
         self.commit_call_ns = self
             .commit_call_ns
             .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
+    }
+
+    fn record_maintenance_call(&mut self, duration: Duration, rows_processed: u64) {
+        self.maintenance_call_ns = self
+            .maintenance_call_ns
+            .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
+        self.maintenance_runs = self.maintenance_runs.saturating_add(1);
+        self.maintenance_rows = self.maintenance_rows.saturating_add(rows_processed);
     }
 }
 
@@ -1279,6 +1368,11 @@ enum BenchmarkError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Storage(StorageApiError),
+    MaintenanceDidNotComplete {
+        after_rows: usize,
+        status: MaintenanceSummaryStatus,
+        reason: Option<&'static str>,
+    },
     MissingInitialBranch,
     MissingRow,
 }
@@ -1307,6 +1401,15 @@ impl fmt::Display for BenchmarkError {
             Self::Io(error) => write!(f, "io error: {error}"),
             Self::Json(error) => write!(f, "json error: {error}"),
             Self::Storage(error) => write!(f, "storage API error: {error}"),
+            Self::MaintenanceDidNotComplete {
+                after_rows,
+                status,
+                reason,
+            } => write!(
+                f,
+                "flush maintenance after {after_rows} loaded rows did not complete: status={status:?} reason={}",
+                reason.unwrap_or("none")
+            ),
             Self::MissingInitialBranch => {
                 f.write_str("storage runtime did not list an active branch")
             }
@@ -1315,4 +1418,15 @@ impl fmt::Display for BenchmarkError {
     }
 }
 
-impl std::error::Error for BenchmarkError {}
+impl std::error::Error for BenchmarkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::Storage(error) => Some(error),
+            Self::MaintenanceDidNotComplete { .. }
+            | Self::MissingInitialBranch
+            | Self::MissingRow => None,
+        }
+    }
+}

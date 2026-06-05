@@ -623,16 +623,21 @@ impl<'a> StorageRuntime<'a> {
         )?;
         if matches!(request.bound(), ReadBound::Latest) {
             let bounds = BranchScanBounds::prefix(&prefix);
+            let scan_timer = perf_trace::start_timer();
             let rows = self.scan_latest_including_tombstones_for_branch(
                 request.branch_id(),
                 &bounds,
                 request.limit().map(ReadLimit::get),
             )?;
-            return map_scan_rows(
+            perf_trace::record_api_scan_runtime_elapsed(scan_timer);
+            let map_timer = perf_trace::start_timer();
+            let outcome = map_scan_rows(
                 rows.iter().map(crate::branch::read::BranchHistoryRow::row),
                 request.limit(),
                 None,
             );
+            perf_trace::record_api_scan_map_elapsed(map_timer);
+            return outcome;
         }
 
         let view = self.read_view_for_branch(request.branch_id())?;
@@ -669,16 +674,21 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(branch_error)?;
         if matches!(request.bound(), ReadBound::Latest) {
+            let scan_timer = perf_trace::start_timer();
             let rows = self.scan_latest_including_tombstones_for_branch(
                 request.branch_id(),
                 &bounds,
                 request.limit().map(ReadLimit::get),
             )?;
-            return map_scan_rows(
+            perf_trace::record_api_scan_runtime_elapsed(scan_timer);
+            let map_timer = perf_trace::start_timer();
+            let outcome = map_scan_rows(
                 rows.iter().map(crate::branch::read::BranchHistoryRow::row),
                 request.limit(),
                 None,
             );
+            perf_trace::record_api_scan_map_elapsed(map_timer);
+            return outcome;
         }
 
         let view = self.read_view_for_branch(request.branch_id())?;

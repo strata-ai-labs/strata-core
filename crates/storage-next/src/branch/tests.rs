@@ -213,6 +213,12 @@ fn history_versions(rows: &[BranchHistoryRow]) -> Vec<u64> {
         .collect()
 }
 
+fn history_user_keys(rows: &[BranchHistoryRow]) -> Vec<Vec<u8>> {
+    rows.iter()
+        .map(|row| row.row().physical_key().user_key().to_vec())
+        .collect()
+}
+
 fn scan_user_keys(rows: &[BranchVisibleRow]) -> Vec<Vec<u8>> {
     rows.iter()
         .map(|row| row.row().physical_key().user_key().to_vec())

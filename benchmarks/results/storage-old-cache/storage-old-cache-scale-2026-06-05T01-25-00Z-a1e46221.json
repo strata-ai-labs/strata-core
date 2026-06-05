@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-05T01:25:00Z",
+    "git_commit": "a1e46221",
+    "git_branch": "perf/storage-next-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "engine": "old-cache",
+        "scan_limit": 64,
+        "value_bytes": 64,
+        "samples": 100,
+        "load_phase_trace": {
+          "batch_build_ns": 6664794,
+          "commit_call_ns": 55389541
+        },
+        "scale_keys": 25000,
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "seed": 5860399455655764006
+      },
+      "metrics": {
+        "ops_per_sec": 402685.9150534062,
+        "avg_ns": 2483,
+        "samples": 25000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "value_bytes": 64,
+        "batch_size": 1000,
+        "samples": 100,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "branch_samples": 100,
+        "seed": 5860399455655764006,
+        "scan_limit": 64,
+        "engine": "old-cache",
+        "scale_keys": 25000
+      },
+      "metrics": {
+        "ops_per_sec": 20959.60183463587,
+        "avg_ns": 47710,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "load_phase_trace": {
+          "batch_build_ns": 9546832,
+          "commit_call_ns": 82406835
+        },
+        "scan_limit": 64,
+        "scale_keys": 50000,
+        "seed": 5860399455655764006,
+        "branch_samples": 100,
+        "value_bytes": 64,
+        "engine": "old-cache",
+        "batch_size": 1000,
+        "samples": 100
+      },
+      "metrics": {
+        "ops_per_sec": 543527.4914628952,
+        "avg_ns": 1839,
+        "samples": 50000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "engine": "old-cache",
+        "scan_limit": 64,
+        "samples": 100,
+        "seed": 5860399455655764006,
+        "batch_size": 1000,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "scale_keys": 50000,
+        "value_bytes": 64,
+        "branch_samples": 100
+      },
+      "metrics": {
+        "ops_per_sec": 19559.902200489,
+        "avg_ns": 51125,
+        "samples": 100
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "branch_samples": 100,
+        "scale_keys": 100000,
+        "seed": 5860399455655764006,
+        "load_phase_trace": {
+          "batch_build_ns": 18981879,
+          "commit_call_ns": 178669702
+        },
+        "engine": "old-cache",
+        "samples": 100,
+        "value_bytes": 64,
+        "batch_size": 1000,
+        "scan_limit": 64
+      },
+      "metrics": {
+        "ops_per_sec": 505707.11465736094,
+        "avg_ns": 1977,
+        "samples": 100000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "scan_limit": 64,
+        "branch_samples": 100,
+        "perf_trace": {
+          "kv_scan_calls": 100,
+          "kv_scan_rows_returned": 6400,
+          "storage_iterator_pipeline_builds": 100,
+          "storage_iterator_rows_yielded": 6400,
+          "storage_iterator_seeks": 100
+        },
+        "seed": 5860399455655764006,
+        "value_bytes": 64,
+        "batch_size": 1000,
+        "engine": "old-cache",
+        "samples": 100,
+        "scale_keys": 100000
+      },
+      "metrics": {
+        "ops_per_sec": 22201.047356610095,
+        "avg_ns": 45042,
+        "samples": 100
+      }
+    }
+  ]
+}

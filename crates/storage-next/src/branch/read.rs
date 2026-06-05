@@ -15,7 +15,7 @@ use crate::table::{
     TableRuntimeFacts,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1329,6 +1329,7 @@ struct BranchScanCursor<'a> {
     cursor: Box<dyn TableCursor + 'a>,
     source: BranchScanCursorSource,
     effective_bound: BranchEffectiveReadBound,
+    current_logical_key: Option<TablePhysicalKeyBytes>,
 }
 
 impl<'a> BranchScanCursor<'a> {
@@ -1341,6 +1342,7 @@ impl<'a> BranchScanCursor<'a> {
             cursor,
             source,
             effective_bound,
+            current_logical_key: None,
         }
     }
 
@@ -1349,7 +1351,8 @@ impl<'a> BranchScanCursor<'a> {
             .seek_to_first()
             .map_err(|_| BranchRuntimeError::InvalidBranchState {
                 reason: "branch scan cursor seek failed",
-            })
+            })?;
+        self.refresh_current_logical_key()
     }
 
     fn advance(&mut self) -> BranchRuntimeResult<()> {
@@ -1357,10 +1360,20 @@ impl<'a> BranchScanCursor<'a> {
             .advance()
             .map_err(|_| BranchRuntimeError::InvalidBranchState {
                 reason: "branch scan cursor advance failed",
-            })
+            })?;
+        self.refresh_current_logical_key()
     }
 
-    fn current_logical_physical_key(&self) -> BranchRuntimeResult<Option<TablePhysicalKeyBytes>> {
+    fn current_logical_physical_key(&self) -> Option<&TablePhysicalKeyBytes> {
+        self.current_logical_key.as_ref()
+    }
+
+    fn refresh_current_logical_key(&mut self) -> BranchRuntimeResult<()> {
+        self.current_logical_key = self.compute_current_logical_key()?;
+        Ok(())
+    }
+
+    fn compute_current_logical_key(&self) -> BranchRuntimeResult<Option<TablePhysicalKeyBytes>> {
         let Some(row) = self.cursor.current() else {
             return Ok(None);
         };
@@ -1370,6 +1383,7 @@ impl<'a> BranchScanCursor<'a> {
                 child_branch_id,
                 ..
             } => {
+                perf_trace::record_scan_logical_key_encode();
                 let key = rewrite_physical_key_branch(row.physical_key(), child_branch_id)
                     .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
                         reason: "inherited scan key branch rewrite failed",
@@ -1384,6 +1398,7 @@ impl<'a> BranchScanCursor<'a> {
             BranchScanCursorSource::Active
             | BranchScanCursorSource::Frozen { .. }
             | BranchScanCursorSource::OwnedTable { .. } => {
+                perf_trace::record_scan_logical_key_encode();
                 Ok(Some(TablePhysicalKeyBytes::from_row(row.row())))
             }
         }
@@ -1397,34 +1412,67 @@ impl<'a> BranchScanCursor<'a> {
             return Ok(None);
         }
         match self.source {
-            BranchScanCursorSource::Active => Ok(Some(candidate_row(
-                row.row().clone(),
-                BranchRowSource::Active,
-            ))),
-            BranchScanCursorSource::Frozen { index } => Ok(Some(candidate_row(
-                row.row().clone(),
-                BranchRowSource::Frozen { index },
-            ))),
-            BranchScanCursorSource::OwnedTable { level, table_index } => Ok(Some(candidate_row(
-                row.row().clone(),
-                BranchRowSource::OwnedTable { level, table_index },
-            ))),
+            BranchScanCursorSource::Active => {
+                record_scan_candidate_clone(row.row());
+                Ok(Some(candidate_row(
+                    row.row().clone(),
+                    BranchRowSource::Active,
+                )))
+            }
+            BranchScanCursorSource::Frozen { index } => {
+                record_scan_candidate_clone(row.row());
+                Ok(Some(candidate_row(
+                    row.row().clone(),
+                    BranchRowSource::Frozen { index },
+                )))
+            }
+            BranchScanCursorSource::OwnedTable { level, table_index } => {
+                record_scan_candidate_clone(row.row());
+                Ok(Some(candidate_row(
+                    row.row().clone(),
+                    BranchRowSource::OwnedTable { level, table_index },
+                )))
+            }
             BranchScanCursorSource::Inherited {
                 source_branch_id,
                 layer_index,
                 child_branch_id,
-            } => Ok(Some(candidate_row(
-                rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(|_| {
-                    BranchRuntimeError::InvalidInheritedLayer {
-                        reason: "inherited scan row branch rewrite failed",
-                    }
-                })?,
-                BranchRowSource::Inherited {
-                    source_branch_id,
-                    layer_index,
-                },
-            ))),
+            } => {
+                record_scan_candidate_clone(row.row());
+                Ok(Some(candidate_row(
+                    rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(
+                        |_| BranchRuntimeError::InvalidInheritedLayer {
+                            reason: "inherited scan row branch rewrite failed",
+                        },
+                    )?,
+                    BranchRowSource::Inherited {
+                        source_branch_id,
+                        layer_index,
+                    },
+                )))
+            }
         }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BranchScanHeapItem {
+    key: TablePhysicalKeyBytes,
+    source_index: usize,
+}
+
+impl Ord for BranchScanHeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .key
+            .cmp(&self.key)
+            .then_with(|| other.source_index.cmp(&self.source_index))
+    }
+}
+
+impl PartialOrd for BranchScanHeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -1444,6 +1492,7 @@ fn scan_including_tombstones_from_sources(
     visible_limit_timestamp: Option<Timestamp>,
 ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
     let effective_bound = effective_own_read_bound(bound);
+    let source_setup_timer = perf_trace::start_timer();
     let mut cursors = scan_cursors_for_sources(
         branch_id,
         active,
@@ -1456,23 +1505,83 @@ fn scan_including_tombstones_from_sources(
     for cursor in &mut cursors {
         cursor.seek_to_first()?;
     }
+    perf_trace::record_branch_scan_source_setup_elapsed(source_setup_timer);
+
+    let merge_timer = perf_trace::start_timer();
+    if let [cursor] = cursors.as_mut_slice() {
+        let rows = scan_single_source_including_tombstones(
+            cursor,
+            effective_bound,
+            visible_limit,
+            visible_limit_timestamp,
+        )?;
+        perf_trace::record_branch_scan_merge_elapsed(merge_timer);
+        return Ok(rows);
+    }
+
+    let rows = scan_heap_sources_including_tombstones(
+        &mut cursors,
+        effective_bound,
+        visible_limit,
+        visible_limit_timestamp,
+    )?;
+    perf_trace::record_branch_scan_merge_elapsed(merge_timer);
+    Ok(rows)
+}
+
+fn scan_heap_sources_including_tombstones(
+    cursors: &mut [BranchScanCursor<'_>],
+    effective_bound: BranchEffectiveReadBound,
+    visible_limit: Option<usize>,
+    visible_limit_timestamp: Option<Timestamp>,
+) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+    let mut heap = BinaryHeap::new();
+    for (source_index, cursor) in cursors.iter().enumerate() {
+        if let Some(key) = cursor.current_logical_physical_key() {
+            heap.push(BranchScanHeapItem {
+                key: key.clone(),
+                source_index,
+            });
+        }
+    }
 
     let mut rows = Vec::new();
     let mut visible_rows = 0usize;
     let mut candidate_rows = 0usize;
-    while let Some(selected_key) = min_current_logical_physical_key(&cursors)? {
+    loop {
+        let min_key_timer = perf_trace::start_timer();
+        let selected = heap.pop();
+        if selected.is_some() {
+            perf_trace::record_branch_scan_min_key_elapsed(min_key_timer);
+        }
+        let Some(selected) = selected else {
+            break;
+        };
+        let selected_key = selected.key;
+
         let mut candidates = Vec::new();
-        for cursor in &mut cursors {
-            while cursor.current_logical_physical_key()?.as_ref() == Some(&selected_key) {
-                if let Some(candidate) = cursor.current_candidate()? {
-                    candidate_rows = candidate_rows.saturating_add(1);
-                    candidates.push(candidate);
-                }
-                cursor.advance()?;
-            }
+        candidate_rows = candidate_rows.saturating_add(collect_scan_group_from_cursor(
+            &selected_key,
+            selected.source_index,
+            cursors,
+            &mut heap,
+            &mut candidates,
+        )?);
+        while heap.peek().is_some_and(|item| item.key == selected_key) {
+            let matching = heap.pop().expect("matching heap item");
+            candidate_rows = candidate_rows.saturating_add(collect_scan_group_from_cursor(
+                &selected_key,
+                matching.source_index,
+                cursors,
+                &mut heap,
+                &mut candidates,
+            )?);
         }
 
-        if let Some(row) = select_visible_row_or_tombstone(candidates, effective_bound) {
+        let select_timer = perf_trace::start_timer();
+        let selected = select_visible_row_or_tombstone(candidates, effective_bound);
+        perf_trace::record_branch_scan_select_elapsed(select_timer);
+        if let Some(row) = selected {
             let counts_for_limit =
                 !row.row().is_tombstone() && !row_is_expired_at(row.row(), visible_limit_timestamp);
             rows.push(row);
@@ -1488,10 +1597,109 @@ fn scan_including_tombstones_from_sources(
     Ok(rows)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "scan source assembly mirrors branch read-view source families"
-)]
+fn scan_single_source_including_tombstones(
+    cursor: &mut BranchScanCursor<'_>,
+    effective_bound: BranchEffectiveReadBound,
+    visible_limit: Option<usize>,
+    visible_limit_timestamp: Option<Timestamp>,
+) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+    let mut rows = Vec::new();
+    let mut visible_rows = 0usize;
+    let mut candidate_rows = 0usize;
+    loop {
+        let Some(selected_key) = cursor.current_logical_physical_key().cloned() else {
+            break;
+        };
+
+        let mut candidates = Vec::new();
+        loop {
+            let group_key_timer = perf_trace::start_timer();
+            let cursor_key = cursor.current_logical_physical_key();
+            perf_trace::record_branch_scan_group_key_elapsed(group_key_timer);
+            if cursor_key != Some(&selected_key) {
+                break;
+            }
+
+            let candidate_timer = perf_trace::start_timer();
+            let candidate = cursor.current_candidate()?;
+            perf_trace::record_branch_scan_candidate_elapsed(candidate_timer);
+            if let Some(candidate) = candidate {
+                candidate_rows = candidate_rows.saturating_add(1);
+                candidates.push(candidate);
+            }
+
+            let advance_timer = perf_trace::start_timer();
+            cursor.advance()?;
+            perf_trace::record_branch_scan_advance_elapsed(advance_timer);
+        }
+
+        let select_timer = perf_trace::start_timer();
+        let selected = select_visible_row_or_tombstone(candidates, effective_bound);
+        perf_trace::record_branch_scan_select_elapsed(select_timer);
+        if let Some(row) = selected {
+            let counts_for_limit =
+                !row.row().is_tombstone() && !row_is_expired_at(row.row(), visible_limit_timestamp);
+            rows.push(row);
+            if counts_for_limit {
+                visible_rows = visible_rows.saturating_add(1);
+                if visible_limit.is_some_and(|limit| visible_rows >= limit) {
+                    break;
+                }
+            }
+        }
+    }
+    perf_trace::record_scan_candidate_collection(candidate_rows, candidate_rows);
+    Ok(rows)
+}
+
+fn collect_scan_group_from_cursor(
+    selected_key: &TablePhysicalKeyBytes,
+    source_index: usize,
+    cursors: &mut [BranchScanCursor<'_>],
+    heap: &mut BinaryHeap<BranchScanHeapItem>,
+    candidates: &mut Vec<CandidateRow>,
+) -> BranchRuntimeResult<usize> {
+    let cursor = &mut cursors[source_index];
+    let mut candidate_rows = 0usize;
+    loop {
+        let group_key_timer = perf_trace::start_timer();
+        let cursor_key = cursor.current_logical_physical_key();
+        perf_trace::record_branch_scan_group_key_elapsed(group_key_timer);
+        if cursor_key != Some(selected_key) {
+            break;
+        }
+
+        let candidate_timer = perf_trace::start_timer();
+        let candidate = cursor.current_candidate()?;
+        perf_trace::record_branch_scan_candidate_elapsed(candidate_timer);
+        if let Some(candidate) = candidate {
+            candidate_rows = candidate_rows.saturating_add(1);
+            candidates.push(candidate);
+        }
+
+        let advance_timer = perf_trace::start_timer();
+        cursor.advance()?;
+        perf_trace::record_branch_scan_advance_elapsed(advance_timer);
+    }
+    if let Some(key) = cursor.current_logical_physical_key() {
+        heap.push(BranchScanHeapItem {
+            key: key.clone(),
+            source_index,
+        });
+    }
+    Ok(candidate_rows)
+}
+
+fn record_scan_candidate_clone(row: &StorageRow) {
+    let bytes = row
+        .physical_key()
+        .space()
+        .len()
+        .saturating_add(row.physical_key().user_key().len())
+        .saturating_add(row.value().len());
+    perf_trace::record_scan_candidate_row_clone(bytes);
+}
+
 fn scan_cursors_for_sources<'a>(
     branch_id: BranchId,
     active: &'a MutableTable,
@@ -1560,21 +1768,6 @@ fn scan_cursors_for_sources<'a>(
         }
     }
     Ok(cursors)
-}
-
-fn min_current_logical_physical_key(
-    cursors: &[BranchScanCursor<'_>],
-) -> BranchRuntimeResult<Option<TablePhysicalKeyBytes>> {
-    let mut selected: Option<TablePhysicalKeyBytes> = None;
-    for cursor in cursors {
-        let Some(key) = cursor.current_logical_physical_key()? else {
-            continue;
-        };
-        if selected.as_ref().is_none_or(|current| &key < current) {
-            selected = Some(key);
-        }
-    }
-    Ok(selected)
 }
 
 fn collect_visible_inherited_point_candidates(
