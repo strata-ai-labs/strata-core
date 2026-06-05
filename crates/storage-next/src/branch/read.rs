@@ -373,7 +373,7 @@ impl BranchScanBounds {
             self.storage_space_id,
             &self.upper_user_key,
         )?;
-        TableKeyBounds::physical_range(namespace_prefix, lower, upper).map_err(|_| {
+        TableKeyBounds::physical_range(&namespace_prefix, lower, upper).map_err(|_| {
             BranchRuntimeError::InvalidReadBound {
                 reason: "scan table key bounds are invalid",
             }

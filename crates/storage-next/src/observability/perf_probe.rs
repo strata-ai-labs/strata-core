@@ -112,6 +112,10 @@ impl PointReadProbeCase {
     }
 
     /// Throughput for this case.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "throughput is a display-only floating point summary"
+    )]
     pub fn ops_per_sec(&self) -> f64 {
         self.samples as f64 / (self.elapsed_ns as f64 / 1_000_000_000.0)
     }
@@ -243,7 +247,7 @@ fn measure_current_view_current_scan(
             let row = view
                 .read_point(key, BranchReadBound::latest())
                 .map_err(|error| error.to_string())?;
-            found = found.saturating_add(require_visible(row, key)?.then_some(1).unwrap_or(0));
+            found = found.saturating_add(usize::from(require_visible(row, key)?));
         }
         Ok(found)
     })
@@ -417,7 +421,7 @@ struct FastRng {
 impl FastRng {
     const fn new(seed: u64) -> Self {
         Self {
-            state: seed ^ 0x5DEE_CE66_D,
+            state: seed ^ 0x0005_DEEC_E66D,
         }
     }
 
@@ -430,6 +434,9 @@ impl FastRng {
     }
 
     fn next_usize(&mut self, upper: usize) -> usize {
-        (self.next_u64() % upper as u64) as usize
+        assert!(upper > 0, "upper bound must be positive");
+        let upper = u64::try_from(upper).expect("upper bound must fit in u64");
+        let index = self.next_u64() % upper;
+        usize::try_from(index).expect("modulo result is less than upper")
     }
 }

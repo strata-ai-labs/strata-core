@@ -333,7 +333,7 @@ impl TableKeyBounds {
     }
 
     pub(crate) fn physical_range(
-        namespace_prefix: TablePhysicalKeyBytes,
+        namespace_prefix: &TablePhysicalKeyBytes,
         lower: TablePhysicalKeyBound,
         upper: TablePhysicalKeyBound,
     ) -> TableRuntimeResult<Self> {
