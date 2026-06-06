@@ -58,6 +58,24 @@ pub struct StoragePerfSnapshot {
     scan_logical_key_encodes: u64,
     scan_candidate_row_clones: u64,
     scan_candidate_row_clone_bytes: u64,
+    table_reader_opens: u64,
+    table_metadata_read_bytes: u64,
+    table_index_read_bytes: u64,
+    table_properties_read_bytes: u64,
+    table_data_block_reads: u64,
+    table_data_block_read_bytes: u64,
+    table_data_block_decodes: u64,
+    table_rows_decoded: u64,
+    table_point_rows_visited: u64,
+    table_cursor_rows_visited: u64,
+    table_cache_hits: u64,
+    table_cache_misses: u64,
+    table_cache_inserts: u64,
+    table_cache_skipped_inserts: u64,
+    table_filter_probes: u64,
+    table_filter_negative_probes: u64,
+    table_filter_positive_probes: u64,
+    table_filter_absent_probes: u64,
     table_seeks: u64,
     table_bound_checks: u64,
     table_bound_check_ns: u64,
@@ -275,6 +293,96 @@ impl StoragePerfSnapshot {
         self.scan_candidate_row_clone_bytes
     }
 
+    /// Number of immutable table reader opens performed.
+    pub const fn table_reader_opens(self) -> u64 {
+        self.table_reader_opens
+    }
+
+    /// Bytes read for table header/footer metadata.
+    pub const fn table_metadata_read_bytes(self) -> u64 {
+        self.table_metadata_read_bytes
+    }
+
+    /// Bytes read for table index blocks.
+    pub const fn table_index_read_bytes(self) -> u64 {
+        self.table_index_read_bytes
+    }
+
+    /// Bytes read for table properties blocks.
+    pub const fn table_properties_read_bytes(self) -> u64 {
+        self.table_properties_read_bytes
+    }
+
+    /// Number of table data-block source reads performed.
+    pub const fn table_data_block_reads(self) -> u64 {
+        self.table_data_block_reads
+    }
+
+    /// Bytes read for table data-block frames.
+    pub const fn table_data_block_read_bytes(self) -> u64 {
+        self.table_data_block_read_bytes
+    }
+
+    /// Number of table data blocks decoded.
+    pub const fn table_data_block_decodes(self) -> u64 {
+        self.table_data_block_decodes
+    }
+
+    /// Number of table rows decoded from immutable table data blocks.
+    pub const fn table_rows_decoded(self) -> u64 {
+        self.table_rows_decoded
+    }
+
+    /// Number of table rows visited during table-local point lookup.
+    pub const fn table_point_rows_visited(self) -> u64 {
+        self.table_point_rows_visited
+    }
+
+    /// Number of table rows reached by immutable table cursor movement.
+    pub const fn table_cursor_rows_visited(self) -> u64 {
+        self.table_cursor_rows_visited
+    }
+
+    /// Number of table block-cache hits.
+    pub const fn table_cache_hits(self) -> u64 {
+        self.table_cache_hits
+    }
+
+    /// Number of table block-cache misses.
+    pub const fn table_cache_misses(self) -> u64 {
+        self.table_cache_misses
+    }
+
+    /// Number of table block-cache inserts.
+    pub const fn table_cache_inserts(self) -> u64 {
+        self.table_cache_inserts
+    }
+
+    /// Number of table block-cache insert attempts skipped by cache policy.
+    pub const fn table_cache_skipped_inserts(self) -> u64 {
+        self.table_cache_skipped_inserts
+    }
+
+    /// Number of table filter probes.
+    pub const fn table_filter_probes(self) -> u64 {
+        self.table_filter_probes
+    }
+
+    /// Number of table filter probes that returned definitely absent.
+    pub const fn table_filter_negative_probes(self) -> u64 {
+        self.table_filter_negative_probes
+    }
+
+    /// Number of table filter probes that returned maybe present.
+    pub const fn table_filter_positive_probes(self) -> u64 {
+        self.table_filter_positive_probes
+    }
+
+    /// Number of table filter probes where the filter was unavailable.
+    pub const fn table_filter_absent_probes(self) -> u64 {
+        self.table_filter_absent_probes
+    }
+
     /// Number of ordered table seeks performed by the serving path.
     pub const fn table_seeks(self) -> u64 {
         self.table_seeks
@@ -379,6 +487,42 @@ static SCAN_CANDIDATE_ROW_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static SCAN_CANDIDATE_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_READER_OPENS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_METADATA_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_INDEX_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PROPERTIES_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_DATA_BLOCK_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_DATA_BLOCK_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_DATA_BLOCK_DECODES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_ROWS_DECODED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_POINT_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CURSOR_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_INSERTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_SKIPPED_INSERTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_FILTER_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_FILTER_NEGATIVE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_FILTER_POSITIVE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_FILTER_ABSENT_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_SEEKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_BOUND_CHECKS: AtomicU64 = AtomicU64::new(0);
@@ -468,6 +612,24 @@ pub fn reset() {
     SCAN_LOGICAL_KEY_ENCODES.store(0, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONES.store(0, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
+    TABLE_READER_OPENS.store(0, Ordering::Relaxed);
+    TABLE_METADATA_READ_BYTES.store(0, Ordering::Relaxed);
+    TABLE_INDEX_READ_BYTES.store(0, Ordering::Relaxed);
+    TABLE_PROPERTIES_READ_BYTES.store(0, Ordering::Relaxed);
+    TABLE_DATA_BLOCK_READS.store(0, Ordering::Relaxed);
+    TABLE_DATA_BLOCK_READ_BYTES.store(0, Ordering::Relaxed);
+    TABLE_DATA_BLOCK_DECODES.store(0, Ordering::Relaxed);
+    TABLE_ROWS_DECODED.store(0, Ordering::Relaxed);
+    TABLE_POINT_ROWS_VISITED.store(0, Ordering::Relaxed);
+    TABLE_CURSOR_ROWS_VISITED.store(0, Ordering::Relaxed);
+    TABLE_CACHE_HITS.store(0, Ordering::Relaxed);
+    TABLE_CACHE_MISSES.store(0, Ordering::Relaxed);
+    TABLE_CACHE_INSERTS.store(0, Ordering::Relaxed);
+    TABLE_CACHE_SKIPPED_INSERTS.store(0, Ordering::Relaxed);
+    TABLE_FILTER_PROBES.store(0, Ordering::Relaxed);
+    TABLE_FILTER_NEGATIVE_PROBES.store(0, Ordering::Relaxed);
+    TABLE_FILTER_POSITIVE_PROBES.store(0, Ordering::Relaxed);
+    TABLE_FILTER_ABSENT_PROBES.store(0, Ordering::Relaxed);
     TABLE_SEEKS.store(0, Ordering::Relaxed);
     TABLE_BOUND_CHECKS.store(0, Ordering::Relaxed);
     TABLE_BOUND_CHECK_NS.store(0, Ordering::Relaxed);
@@ -521,6 +683,24 @@ pub fn snapshot() -> StoragePerfSnapshot {
         scan_logical_key_encodes: SCAN_LOGICAL_KEY_ENCODES.load(Ordering::Relaxed),
         scan_candidate_row_clones: SCAN_CANDIDATE_ROW_CLONES.load(Ordering::Relaxed),
         scan_candidate_row_clone_bytes: SCAN_CANDIDATE_ROW_CLONE_BYTES.load(Ordering::Relaxed),
+        table_reader_opens: TABLE_READER_OPENS.load(Ordering::Relaxed),
+        table_metadata_read_bytes: TABLE_METADATA_READ_BYTES.load(Ordering::Relaxed),
+        table_index_read_bytes: TABLE_INDEX_READ_BYTES.load(Ordering::Relaxed),
+        table_properties_read_bytes: TABLE_PROPERTIES_READ_BYTES.load(Ordering::Relaxed),
+        table_data_block_reads: TABLE_DATA_BLOCK_READS.load(Ordering::Relaxed),
+        table_data_block_read_bytes: TABLE_DATA_BLOCK_READ_BYTES.load(Ordering::Relaxed),
+        table_data_block_decodes: TABLE_DATA_BLOCK_DECODES.load(Ordering::Relaxed),
+        table_rows_decoded: TABLE_ROWS_DECODED.load(Ordering::Relaxed),
+        table_point_rows_visited: TABLE_POINT_ROWS_VISITED.load(Ordering::Relaxed),
+        table_cursor_rows_visited: TABLE_CURSOR_ROWS_VISITED.load(Ordering::Relaxed),
+        table_cache_hits: TABLE_CACHE_HITS.load(Ordering::Relaxed),
+        table_cache_misses: TABLE_CACHE_MISSES.load(Ordering::Relaxed),
+        table_cache_inserts: TABLE_CACHE_INSERTS.load(Ordering::Relaxed),
+        table_cache_skipped_inserts: TABLE_CACHE_SKIPPED_INSERTS.load(Ordering::Relaxed),
+        table_filter_probes: TABLE_FILTER_PROBES.load(Ordering::Relaxed),
+        table_filter_negative_probes: TABLE_FILTER_NEGATIVE_PROBES.load(Ordering::Relaxed),
+        table_filter_positive_probes: TABLE_FILTER_POSITIVE_PROBES.load(Ordering::Relaxed),
+        table_filter_absent_probes: TABLE_FILTER_ABSENT_PROBES.load(Ordering::Relaxed),
         table_seeks: TABLE_SEEKS.load(Ordering::Relaxed),
         table_bound_checks: TABLE_BOUND_CHECKS.load(Ordering::Relaxed),
         table_bound_check_ns: TABLE_BOUND_CHECK_NS.load(Ordering::Relaxed),
@@ -847,6 +1027,176 @@ pub(crate) fn record_scan_candidate_row_clone(bytes: usize) {
     }
     SCAN_CANDIDATE_ROW_CLONES.fetch_add(1, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONE_BYTES.fetch_add(as_u64(bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_reader_open() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_reader_open() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_READER_OPENS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_metadata_read(_bytes: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_metadata_read(bytes: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_METADATA_READ_BYTES.fetch_add(as_u64(bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_index_read(_bytes: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_index_read(bytes: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_INDEX_READ_BYTES.fetch_add(as_u64(bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_properties_read(_bytes: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_properties_read(bytes: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_PROPERTIES_READ_BYTES.fetch_add(as_u64(bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_data_block_read(_bytes: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_data_block_read(bytes: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_DATA_BLOCK_READS.fetch_add(1, Ordering::Relaxed);
+    TABLE_DATA_BLOCK_READ_BYTES.fetch_add(as_u64(bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_data_blocks_decoded(_blocks: usize, _rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_data_blocks_decoded(blocks: usize, rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_DATA_BLOCK_DECODES.fetch_add(as_u64(blocks), Ordering::Relaxed);
+    TABLE_ROWS_DECODED.fetch_add(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_point_rows_visited(_rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_point_rows_visited(rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_POINT_ROWS_VISITED.fetch_add(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_cursor_row_visited() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_cursor_row_visited() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CURSOR_ROWS_VISITED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_cache_hit() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_cache_hit() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_cache_miss() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_cache_miss() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_cache_insert() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_cache_insert() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CACHE_INSERTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_cache_skipped_insert() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_cache_skipped_insert() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CACHE_SKIPPED_INSERTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_filter_negative_probe() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_filter_negative_probe() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
+    TABLE_FILTER_NEGATIVE_PROBES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_filter_positive_probe() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_filter_positive_probe() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
+    TABLE_FILTER_POSITIVE_PROBES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_filter_absent_probe() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_filter_absent_probe() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
+    TABLE_FILTER_ABSENT_PROBES.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

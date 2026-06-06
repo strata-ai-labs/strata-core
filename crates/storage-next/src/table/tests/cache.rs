@@ -250,6 +250,40 @@ fn table_cache_stats_include_hits_misses_entries_bytes() {
     assert_eq!(stats.capacity_bytes(), 8);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn table_cache_perf_counters_distinguish_hits_misses_inserts_and_skips() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let zero = crate::observability::perf_trace::snapshot();
+    assert_eq!(zero.table_cache_hits(), 0);
+    assert_eq!(zero.table_cache_misses(), 0);
+    assert_eq!(zero.table_cache_inserts(), 0);
+    assert_eq!(zero.table_cache_skipped_inserts(), 0);
+
+    let cache = enabled_cache(4);
+    let first = key("perf-cache", TableBlockCacheKind::Data, 0, 4);
+    let oversized = key("perf-cache", TableBlockCacheKind::Data, 8, 8);
+
+    assert!(cache.get(&first).is_none());
+    assert!(matches!(
+        cache.insert(first.clone(), bytes(7, 4)).expect("insert"),
+        CacheInsert::Inserted(_)
+    ));
+    assert!(cache.get(&first).is_some());
+    assert!(matches!(
+        cache
+            .insert(oversized, bytes(8, 8))
+            .expect("oversized insert"),
+        CacheInsert::SkippedOversized(_)
+    ));
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_cache_misses(), 1);
+    assert_eq!(perf.table_cache_inserts(), 1);
+    assert_eq!(perf.table_cache_hits(), 1);
+    assert_eq!(perf.table_cache_skipped_inserts(), 1);
+}
+
 #[test]
 fn table_cache_keys_use_table_identity_not_path() {
     let cache = enabled_cache(16);
@@ -642,6 +676,29 @@ fn bloom_filter_has_no_false_negatives_and_is_conservative_for_absence() {
         filter
     );
     assert_eq!(TableBloomProbe::Unavailable, TableBloomProbe::Unavailable);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn bloom_filter_perf_counters_distinguish_negative_and_positive_probes() {
+    let filter =
+        TableBloomFilter::build([b"alpha".as_slice(), b"bravo".as_slice()], 10).expect("filter");
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+
+    assert_eq!(
+        filter.might_contain(b"alpha"),
+        TableBloomProbe::MaybePresent
+    );
+    assert_eq!(
+        filter.might_contain(b"definitely-absent"),
+        TableBloomProbe::DefinitelyAbsent
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_filter_probes(), 2);
+    assert_eq!(perf.table_filter_positive_probes(), 1);
+    assert_eq!(perf.table_filter_negative_probes(), 1);
+    assert_eq!(perf.table_filter_absent_probes(), 0);
 }
 
 #[test]

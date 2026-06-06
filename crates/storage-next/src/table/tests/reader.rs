@@ -1,11 +1,13 @@
 use crate::format::TableCompression;
+#[cfg(feature = "perf-trace")]
+use crate::format::{MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
     ImmutableTableCursor, ImmutableTableReader, TableBuilderConfig, TableByteSource,
     TableCacheConfig, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TableKeyBound, TableKeyBounds, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
+    TableKeyBound, TableKeyBounds, TablePhysicalKeyBytes, TableReaderConfig, TableReaderOpenMode,
+    TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
 };
 use std::cell::Cell;
 use std::error::Error as _;
@@ -289,6 +291,22 @@ fn immutable_reader_opens_bytes_and_exposes_facts_and_exact_lookup() {
 
     assert_eq!(reader.config(), config);
     assert_eq!(reader.facts(), artifact.facts());
+    assert_eq!(
+        reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerBytes
+    );
+    assert!(reader.runtime_facts().metadata_loaded());
+    assert!(reader.runtime_facts().index_loaded());
+    assert_eq!(
+        reader.runtime_facts().data_blocks_loaded(),
+        artifact.facts().data_block_count()
+    );
+    assert_eq!(
+        reader.runtime_facts().rows_materialized(),
+        artifact.facts().row_count()
+    );
+    assert!(!reader.runtime_facts().filter_available());
+    assert!(!reader.runtime_facts().cache_enabled());
     assert_eq!(reader.byte_count(), artifact.byte_count());
     assert_eq!(reader.rows(), table_rows.as_slice());
 
@@ -316,6 +334,22 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
     )
     .expect("open source");
     assert!(source_probe.calls() > 1);
+    assert_eq!(
+        reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerSource
+    );
+    assert!(reader.runtime_facts().metadata_loaded());
+    assert!(reader.runtime_facts().index_loaded());
+    assert_eq!(
+        reader.runtime_facts().data_blocks_loaded(),
+        artifact.facts().data_block_count()
+    );
+    assert_eq!(
+        reader.runtime_facts().rows_materialized(),
+        artifact.facts().row_count()
+    );
+    assert!(!reader.runtime_facts().filter_available());
+    assert!(!reader.runtime_facts().cache_enabled());
     assert_eq!(reader.facts(), artifact.facts());
     assert_eq!(reader.rows(), rows.as_slice());
 
@@ -376,6 +410,118 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
         long_advertised,
         TableRuntimeError::source_read("short table footer read")
     );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_source_open_perf_counters_prove_current_eager_path() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-l5a-eager-proof",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert_eq!(artifact.facts().data_block_count(), 3);
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let zero = crate::observability::perf_trace::snapshot();
+    assert_eq!(zero.table_reader_opens(), 0);
+    assert_eq!(zero.table_data_block_reads(), 0);
+    assert_eq!(zero.table_data_block_decodes(), 0);
+    assert_eq!(zero.table_rows_decoded(), 0);
+
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-l5a-eager-proof"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open eager source reader");
+
+    assert_eq!(reader.rows(), table_rows.as_slice());
+    assert_eq!(
+        reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerSource
+    );
+    assert_eq!(
+        reader.runtime_facts().data_blocks_loaded(),
+        artifact.facts().data_block_count()
+    );
+    assert_eq!(
+        reader.runtime_facts().rows_materialized(),
+        artifact.facts().row_count()
+    );
+    assert_eq!(
+        source_probe.calls(),
+        usize::try_from(artifact.facts().data_block_count()).expect("block count fits") + 4
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_reader_opens(), 1);
+    assert_eq!(
+        perf.table_metadata_read_bytes(),
+        u64::try_from(MAX_TABLE_HEADER_SIZE + MAX_TABLE_FOOTER_SIZE).expect("metadata bytes fit")
+    );
+    assert!(perf.table_index_read_bytes() > 0);
+    assert!(perf.table_properties_read_bytes() > 0);
+    assert_eq!(
+        perf.table_data_block_reads(),
+        u64::from(artifact.facts().data_block_count())
+    );
+    assert!(perf.table_data_block_read_bytes() > 0);
+    assert_eq!(
+        perf.table_data_block_decodes(),
+        u64::from(artifact.facts().data_block_count())
+    );
+    assert_eq!(perf.table_rows_decoded(), artifact.facts().row_count());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_query_perf_counters_record_seek_and_cursor_work() {
+    let versioned_key = physical_key(2, "reader", 0x20, b"counter-key".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(versioned_key.clone(), 9, b"newer".to_vec()),
+        put_row_for_key(versioned_key.clone(), 3, b"older".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-l5a-query-counters",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let reader = ImmutableTableReader::open_bytes(
+        identity("reader-l5a-query-counters"),
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .expect("open reader");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = reader.seek_physical_key(&versioned_key, None, None);
+    assert!(row.is_some());
+    assert!(visited >= 1);
+    let mut cursor = reader.cursor();
+    cursor.seek_to_first().expect("seek first");
+    cursor.advance().expect("advance");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_seeks(), 1);
+    assert_eq!(
+        perf.table_point_rows_visited(),
+        u64::try_from(visited).expect("visited rows fit")
+    );
+    assert_eq!(perf.table_cursor_rows_visited(), 2);
 }
 
 #[test]
@@ -930,6 +1076,25 @@ fn immutable_reader_bytes_and_source_paths_are_identical_for_queries() {
 
     assert!(source_probe.calls() > 1);
     assert_eq!(byte_reader, source_reader);
+    assert_eq!(byte_reader.config(), source_reader.config());
+    assert_eq!(byte_reader.facts(), source_reader.facts());
+    assert_eq!(byte_reader.rows(), source_reader.rows());
+    assert_eq!(
+        byte_reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerBytes
+    );
+    assert_eq!(
+        source_reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerSource
+    );
+    assert_eq!(
+        byte_reader.runtime_facts().data_blocks_loaded(),
+        source_reader.runtime_facts().data_blocks_loaded()
+    );
+    assert_eq!(
+        byte_reader.runtime_facts().rows_materialized(),
+        source_reader.runtime_facts().rows_materialized()
+    );
     assert_eq!(
         all_reader_keys(&byte_reader),
         all_reader_keys(&source_reader)

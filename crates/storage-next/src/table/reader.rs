@@ -67,11 +67,82 @@ impl<T: TableByteSource + ?Sized> TableByteSource for &T {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct ImmutableTableReader {
     config: TableReaderConfig,
     facts: TableRuntimeFacts,
+    runtime_facts: TableReaderRuntimeFacts,
     rows: Vec<TableRow>,
+}
+
+impl PartialEq for ImmutableTableReader {
+    fn eq(&self, other: &Self) -> bool {
+        self.config == other.config && self.facts == other.facts && self.rows == other.rows
+    }
+}
+
+impl Eq for ImmutableTableReader {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableReaderOpenMode {
+    EagerBytes,
+    EagerSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TableReaderRuntimeFacts {
+    open_mode: TableReaderOpenMode,
+    flags: u8,
+    data_blocks_loaded: u32,
+    rows_materialized: u64,
+}
+
+const RUNTIME_FACT_METADATA_LOADED: u8 = 1 << 0;
+const RUNTIME_FACT_INDEX_LOADED: u8 = 1 << 1;
+const RUNTIME_FACT_FILTER_AVAILABLE: u8 = 1 << 2;
+const RUNTIME_FACT_CACHE_ENABLED: u8 = 1 << 3;
+
+impl TableReaderRuntimeFacts {
+    const fn eager(
+        open_mode: TableReaderOpenMode,
+        data_blocks_loaded: u32,
+        rows_materialized: u64,
+    ) -> Self {
+        Self {
+            open_mode,
+            flags: RUNTIME_FACT_METADATA_LOADED | RUNTIME_FACT_INDEX_LOADED,
+            data_blocks_loaded,
+            rows_materialized,
+        }
+    }
+
+    pub(crate) const fn open_mode(self) -> TableReaderOpenMode {
+        self.open_mode
+    }
+
+    pub(crate) const fn metadata_loaded(self) -> bool {
+        self.flags & RUNTIME_FACT_METADATA_LOADED != 0
+    }
+
+    pub(crate) const fn index_loaded(self) -> bool {
+        self.flags & RUNTIME_FACT_INDEX_LOADED != 0
+    }
+
+    pub(crate) const fn data_blocks_loaded(self) -> u32 {
+        self.data_blocks_loaded
+    }
+
+    pub(crate) const fn rows_materialized(self) -> u64 {
+        self.rows_materialized
+    }
+
+    pub(crate) const fn filter_available(self) -> bool {
+        self.flags & RUNTIME_FACT_FILTER_AVAILABLE != 0
+    }
+
+    pub(crate) const fn cache_enabled(self) -> bool {
+        self.flags & RUNTIME_FACT_CACHE_ENABLED != 0
+    }
 }
 
 impl ImmutableTableReader {
@@ -85,10 +156,17 @@ impl ImmutableTableReader {
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
+        perf_trace::record_table_reader_open();
         let (facts, rows) = decode_reader_rows(identity, &bytes)?;
+        let runtime_facts = TableReaderRuntimeFacts::eager(
+            TableReaderOpenMode::EagerBytes,
+            facts.data_block_count(),
+            facts.row_count(),
+        );
         Ok(Self {
             config,
             facts,
+            runtime_facts,
             rows,
         })
     }
@@ -99,13 +177,20 @@ impl ImmutableTableReader {
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
+        perf_trace::record_table_reader_open();
         let metadata = read_table_metadata(&source)?;
         let facts = table_facts_from_metadata(identity, &metadata)?;
         let rows = read_rows_from_metadata(&source, &metadata)?;
         super::validate_strictly_sorted_unique_rows(&rows)?;
+        let runtime_facts = TableReaderRuntimeFacts::eager(
+            TableReaderOpenMode::EagerSource,
+            facts.data_block_count(),
+            facts.row_count(),
+        );
         Ok(Self {
             config,
             facts,
+            runtime_facts,
             rows,
         })
     }
@@ -116,6 +201,10 @@ impl ImmutableTableReader {
 
     pub(crate) const fn facts(&self) -> &TableRuntimeFacts {
         &self.facts
+    }
+
+    pub(crate) const fn runtime_facts(&self) -> TableReaderRuntimeFacts {
+        self.runtime_facts
     }
 
     pub(crate) const fn byte_count(&self) -> u64 {
@@ -176,11 +265,13 @@ impl<'a> ImmutableTableCursor<'a> {
 impl super::TableCursor for ImmutableTableCursor<'_> {
     fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
         self.position = if self.rows.is_empty() { None } else { Some(0) };
+        record_cursor_position(self.position);
         Ok(())
     }
 
     fn seek(&mut self, target: &TableInternalKeyBytes) -> TableRuntimeResult<()> {
         self.position = self.seek_index(target);
+        record_cursor_position(self.position);
         Ok(())
     }
 
@@ -189,6 +280,7 @@ impl super::TableCursor for ImmutableTableCursor<'_> {
             let next = position.saturating_add(1);
             (next < self.rows.len()).then_some(next)
         });
+        record_cursor_position(self.position);
         Ok(())
     }
 
@@ -210,7 +302,10 @@ fn seek_physical_key_in_slice<'a>(
         TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
     let start = match rows.binary_search_by(|row| row.key().cmp(&seek_key)) {
         Ok(index) | Err(index) if index < rows.len() => index,
-        Ok(_) | Err(_) => return (None, 0),
+        Ok(_) | Err(_) => {
+            perf_trace::record_table_point_rows_visited(0);
+            return (None, 0);
+        }
     };
 
     let mut visited = 0usize;
@@ -220,10 +315,18 @@ fn seek_physical_key_in_slice<'a>(
             break;
         }
         if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
+            perf_trace::record_table_point_rows_visited(visited);
             return (Some(row), visited);
         }
     }
+    perf_trace::record_table_point_rows_visited(visited);
     (None, visited)
+}
+
+fn record_cursor_position(position: Option<usize>) {
+    if position.is_some() {
+        perf_trace::record_table_cursor_row_visited();
+    }
 }
 
 fn row_matches_point_bound(
@@ -247,6 +350,7 @@ fn decode_reader_rows(
 ) -> TableRuntimeResult<(TableRuntimeFacts, Vec<TableRow>)> {
     let decoded = decode_immutable_table(bytes)
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+    perf_trace::record_table_data_blocks_decoded(decoded.data_blocks().len(), decoded.rows().len());
     let rows = decoded
         .rows()
         .iter()
@@ -269,12 +373,14 @@ fn read_table_metadata(
     )?;
     let header_bytes =
         read_exact_source(source, 0, MAX_TABLE_HEADER_SIZE, "short table header read")?;
+    perf_trace::record_table_metadata_read(header_bytes.len());
     let footer_bytes = read_exact_source(
         source,
         footer_offset,
         MAX_TABLE_FOOTER_SIZE,
         "short table footer read",
     )?;
+    perf_trace::record_table_metadata_read(footer_bytes.len());
 
     let (_, header_len) = decode_table_header(&header_bytes)
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
@@ -308,12 +414,14 @@ fn read_table_metadata(
         index_len,
         "short table index read",
     )?;
+    perf_trace::record_table_index_read(index_bytes.len());
     let properties_bytes = read_exact_source(
         source,
         footer.properties_block_offset(),
         properties_len,
         "short table properties read",
     )?;
+    perf_trace::record_table_properties_read(properties_bytes.len());
     decode_immutable_table_metadata(
         byte_count,
         &header_bytes,
@@ -341,8 +449,10 @@ fn read_rows_from_metadata(
             frame_len,
             "short table data block read",
         )?;
+        perf_trace::record_table_data_block_read(frame_bytes.len());
         let block = decode_immutable_table_data_block(entry, &frame_bytes)
             .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+        perf_trace::record_table_data_blocks_decoded(1, block.row_count());
         rows.extend(block.rows().cloned().map(TableRow::new));
     }
     Ok(rows)

@@ -1,6 +1,7 @@
 //! Table-local cache and read accelerators.
 
 use super::{TableCacheConfig, TableRuntimeError, TableRuntimeResult};
+use crate::observability::perf_trace;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -257,10 +258,12 @@ impl TableBlockCache {
         let bytes = state.entries.get(key).cloned();
         if let Some(bytes) = bytes {
             state.stats.hits = state.stats.hits.saturating_add(1);
+            perf_trace::record_table_cache_hit();
             touch_recency(&mut state.recency, key);
             Some(bytes)
         } else {
             state.stats.misses = state.stats.misses.saturating_add(1);
+            perf_trace::record_table_cache_miss();
             None
         }
     }
@@ -279,6 +282,7 @@ impl TableBlockCache {
         let mut state = self.lock_state();
         if !state.enabled {
             state.stats.skipped_disabled = state.stats.skipped_disabled.saturating_add(1);
+            perf_trace::record_table_cache_skipped_insert();
             return Ok(CacheInsert::SkippedDisabled(bytes));
         }
 
@@ -290,12 +294,14 @@ impl TableBlockCache {
 
         if bytes.len() > state.capacity_bytes {
             state.stats.skipped_oversized = state.stats.skipped_oversized.saturating_add(1);
+            perf_trace::record_table_cache_skipped_insert();
             return Ok(CacheInsert::SkippedOversized(bytes));
         }
 
         evict_to_fit(&mut state, bytes.len());
         if state.bytes.saturating_add(bytes.len()) > state.capacity_bytes {
             state.stats.skipped_oversized = state.stats.skipped_oversized.saturating_add(1);
+            perf_trace::record_table_cache_skipped_insert();
             return Ok(CacheInsert::SkippedOversized(bytes));
         }
 
@@ -304,6 +310,7 @@ impl TableBlockCache {
         state.entries.insert(key, Arc::clone(&bytes));
         touch_recency(&mut state.recency, &recency_key);
         state.stats.inserts = state.stats.inserts.saturating_add(1);
+        perf_trace::record_table_cache_insert();
         refresh_gauges(&mut state);
         Ok(CacheInsert::Inserted(bytes))
     }
@@ -453,17 +460,21 @@ impl TableBloomFilter {
 
     pub(crate) fn might_contain(&self, key: &[u8]) -> TableBloomProbe {
         if self.key_count == 0 {
+            perf_trace::record_table_filter_negative_probe();
             return TableBloomProbe::DefinitelyAbsent;
         }
         if self.bits.is_empty() || self.bit_count == 0 || self.probes == 0 {
+            perf_trace::record_table_filter_absent_probe();
             return TableBloomProbe::Unavailable;
         }
         for probe in 0..self.probes {
             let bit = bloom_bit(key, probe, self.bit_count);
             if self.bits[bit / 8] & (1 << (bit % 8)) == 0 {
+                perf_trace::record_table_filter_negative_probe();
                 return TableBloomProbe::DefinitelyAbsent;
             }
         }
+        perf_trace::record_table_filter_positive_probe();
         TableBloomProbe::MaybePresent
     }
 
