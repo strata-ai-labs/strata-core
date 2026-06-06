@@ -15,8 +15,10 @@ mod key;
 mod manifest;
 mod pending_releases_manifest;
 pub(crate) mod quarantine;
+mod retained_history_extension;
 mod segment_metadata;
 mod snapshot;
+mod snapshot_rows;
 mod storage_row;
 mod table;
 mod table_manifest;
@@ -33,12 +35,23 @@ pub(crate) use pending_releases_manifest::{
     decode_pending_releases_manifest, encode_pending_releases_manifest, PendingReleasesEntry,
     PendingReleasesManifest,
 };
+pub(crate) use retained_history_extension::{
+    decode_retained_history_extension_payload, decode_retained_history_extension_section,
+    encode_retained_history_extension_payload, RetainedHistoryExtensionPayload,
+};
+#[cfg(test)]
+pub(crate) use retained_history_extension::{
+    RETAINED_HISTORY_EXTENSION_KIND, RETAINED_HISTORY_EXTENSION_PAYLOAD_LEN,
+};
 pub(crate) use segment_metadata::{
     decode_segment_metadata, encode_segment_metadata, SegmentMetadata,
 };
 pub(crate) use snapshot::{
     decode_snapshot_container, encode_snapshot_container, visit_snapshot_container_sections,
     SnapshotContainer, SnapshotHeader, SnapshotSection, SnapshotSectionRef,
+};
+pub(crate) use snapshot_rows::{
+    decode_snapshot_row_payload, encode_snapshot_row_section, SNAPSHOT_ROW_SECTION_KIND,
 };
 pub(crate) use storage_row::{decode_storage_row, encode_storage_row};
 #[expect(

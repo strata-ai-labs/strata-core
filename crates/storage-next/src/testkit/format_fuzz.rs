@@ -8,11 +8,15 @@ use super::TestkitError;
 /// Durable byte decoder available to storage fuzz targets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FormatDecoder {
+    BranchCatalogManifest,
     Key,
     Manifest,
+    PendingReleasesManifest,
     QuarantineInventory,
+    RetainedHistoryExtensionPayload,
     SegmentMetadata,
     SnapshotEnvelope,
+    SnapshotRowPayload,
     StorageRow,
     TableArtifact,
     TableBlock,
@@ -37,11 +41,17 @@ pub enum FormatDecodeOutcome {
 /// production format API.
 pub fn decode_format_bytes(decoder: FormatDecoder, bytes: &[u8]) -> FormatDecodeOutcome {
     let accepted = match decoder {
+        FormatDecoder::BranchCatalogManifest => fuzzing::decode_branch_catalog_manifest(bytes),
         FormatDecoder::Key => fuzzing::decode_key(bytes),
         FormatDecoder::Manifest => fuzzing::decode_manifest(bytes),
+        FormatDecoder::PendingReleasesManifest => fuzzing::decode_pending_releases_manifest(bytes),
         FormatDecoder::QuarantineInventory => fuzzing::decode_quarantine_inventory(bytes),
+        FormatDecoder::RetainedHistoryExtensionPayload => {
+            fuzzing::decode_retained_history_extension_payload(bytes)
+        }
         FormatDecoder::SegmentMetadata => fuzzing::decode_segment_metadata(bytes),
         FormatDecoder::SnapshotEnvelope => fuzzing::decode_snapshot_envelope(bytes),
+        FormatDecoder::SnapshotRowPayload => fuzzing::decode_snapshot_row_payload(bytes),
         FormatDecoder::StorageRow => fuzzing::decode_storage_row(bytes),
         FormatDecoder::TableArtifact => fuzzing::decode_table_artifact(bytes),
         FormatDecoder::TableBlock => fuzzing::decode_table_block(bytes),
@@ -204,11 +214,15 @@ mod tests {
     #[test]
     fn format_fuzz_decoders_reject_empty_input_without_panicking() {
         for decoder in [
+            FormatDecoder::BranchCatalogManifest,
             FormatDecoder::Key,
             FormatDecoder::Manifest,
+            FormatDecoder::PendingReleasesManifest,
             FormatDecoder::QuarantineInventory,
+            FormatDecoder::RetainedHistoryExtensionPayload,
             FormatDecoder::SegmentMetadata,
             FormatDecoder::SnapshotEnvelope,
+            FormatDecoder::SnapshotRowPayload,
             FormatDecoder::StorageRow,
             FormatDecoder::TableArtifact,
             FormatDecoder::TableBlock,
@@ -221,6 +235,71 @@ mod tests {
             assert_eq!(
                 decode_format_bytes(decoder, &[]),
                 FormatDecodeOutcome::Rejected
+            );
+        }
+    }
+
+    #[test]
+    fn format_fuzz_decoders_accept_valid_l3_seed_bytes() {
+        for (decoder, bytes) in [
+            (
+                FormatDecoder::BranchCatalogManifest,
+                include_bytes!("../../fuzz/corpus/format_branch_catalog_manifest/valid-empty")
+                    .as_slice(),
+            ),
+            (
+                FormatDecoder::BranchCatalogManifest,
+                include_bytes!(
+                    "../../fuzz/corpus/format_branch_catalog_manifest/valid-single-active"
+                )
+                .as_slice(),
+            ),
+            (
+                FormatDecoder::BranchCatalogManifest,
+                include_bytes!(
+                    "../../fuzz/corpus/format_branch_catalog_manifest/valid-active-and-deleted"
+                )
+                .as_slice(),
+            ),
+            (
+                FormatDecoder::BranchCatalogManifest,
+                include_bytes!(
+                    "../../fuzz/corpus/format_branch_catalog_manifest/valid-with-parent"
+                )
+                .as_slice(),
+            ),
+            (
+                FormatDecoder::PendingReleasesManifest,
+                include_bytes!("../../fuzz/corpus/format_pending_releases_manifest/valid-empty")
+                    .as_slice(),
+            ),
+            (
+                FormatDecoder::PendingReleasesManifest,
+                include_bytes!("../../fuzz/corpus/format_pending_releases_manifest/valid-single")
+                    .as_slice(),
+            ),
+            (
+                FormatDecoder::PendingReleasesManifest,
+                include_bytes!("../../fuzz/corpus/format_pending_releases_manifest/valid-multi")
+                    .as_slice(),
+            ),
+            (
+                FormatDecoder::RetainedHistoryExtensionPayload,
+                include_bytes!(
+                    "../../fuzz/corpus/format_retained_history_extension/valid-no-timestamp"
+                )
+                .as_slice(),
+            ),
+            (
+                FormatDecoder::SnapshotRowPayload,
+                include_bytes!("../../fuzz/corpus/format_snapshot_row_payload/valid-empty")
+                    .as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                decode_format_bytes(decoder, bytes),
+                FormatDecodeOutcome::Accepted,
+                "{decoder:?} should accept its valid seed"
             );
         }
     }

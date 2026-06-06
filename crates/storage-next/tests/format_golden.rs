@@ -59,6 +59,41 @@ fn format_golden_harness_has_storage_format_directory() {
 fn format_fuzz_corpus_matches_golden_vectors() {
     let cases = [
         (
+            "branch-catalog-manifest-empty.hex",
+            "format_branch_catalog_manifest",
+            "valid-empty",
+        ),
+        (
+            "branch-catalog-manifest-single-active.hex",
+            "format_branch_catalog_manifest",
+            "valid-single-active",
+        ),
+        (
+            "branch-catalog-manifest-active-and-deleted.hex",
+            "format_branch_catalog_manifest",
+            "valid-active-and-deleted",
+        ),
+        (
+            "branch-catalog-manifest-with-parent.hex",
+            "format_branch_catalog_manifest",
+            "valid-with-parent",
+        ),
+        (
+            "pending-releases-manifest-empty.hex",
+            "format_pending_releases_manifest",
+            "valid-empty",
+        ),
+        (
+            "pending-releases-manifest-single.hex",
+            "format_pending_releases_manifest",
+            "valid-single",
+        ),
+        (
+            "pending-releases-manifest-multi.hex",
+            "format_pending_releases_manifest",
+            "valid-multi",
+        ),
+        (
             "quarantine-inventory-empty.hex",
             "format_quarantine",
             "quarantine-inventory-empty",
@@ -137,6 +172,41 @@ fn format_fuzz_corpus_matches_golden_vectors() {
 }
 
 #[test]
+fn format_fuzz_targets_cover_storage_owned_manifest_and_extension_codecs() {
+    let root = common::crate_root();
+    let manifest = fs::read_to_string(root.join("fuzz/Cargo.toml")).expect("read fuzz manifest");
+
+    for (target, decoder) in [
+        (
+            "format_branch_catalog_manifest",
+            "FormatDecoder::BranchCatalogManifest",
+        ),
+        (
+            "format_pending_releases_manifest",
+            "FormatDecoder::PendingReleasesManifest",
+        ),
+        (
+            "format_retained_history_extension",
+            "FormatDecoder::RetainedHistoryExtensionPayload",
+        ),
+        (
+            "format_snapshot_row_payload",
+            "FormatDecoder::SnapshotRowPayload",
+        ),
+    ] {
+        let target_path = format!("fuzz_targets/{target}.rs");
+        assert!(manifest.contains(&format!("name = \"{target}\"")));
+        assert!(manifest.contains(&target_path));
+        let target_source =
+            fs::read_to_string(root.join("fuzz").join(&target_path)).expect("read fuzz target");
+        assert!(
+            target_source.contains(decoder),
+            "{target} should route through {decoder}"
+        );
+    }
+}
+
+#[test]
 fn format_table_manifest_fuzz_corpus_has_required_semantic_seeds() {
     let corpus = common::crate_root().join("fuzz/corpus/format_table_manifest");
     let seeds = [
@@ -156,6 +226,39 @@ fn format_table_manifest_fuzz_corpus_has_required_semantic_seeds() {
             panic!("missing or unreadable table-manifest corpus seed {seed}: {err}")
         });
         assert!(!bytes.is_empty(), "empty table-manifest corpus seed {seed}");
+    }
+}
+
+#[test]
+fn format_l3_fuzz_corpus_has_required_semantic_seeds() {
+    let root = common::crate_root();
+    for (corpus, seeds) in [
+        (
+            "format_branch_catalog_manifest",
+            &[
+                "valid-empty",
+                "valid-single-active",
+                "valid-active-and-deleted",
+                "valid-with-parent",
+            ][..],
+        ),
+        (
+            "format_pending_releases_manifest",
+            &["valid-empty", "valid-single", "valid-multi"][..],
+        ),
+        ("format_snapshot_row_payload", &["valid-empty"][..]),
+        (
+            "format_retained_history_extension",
+            &["valid-no-timestamp"][..],
+        ),
+    ] {
+        for seed in seeds {
+            let path = root.join("fuzz/corpus").join(corpus).join(seed);
+            let bytes = fs::read(&path).unwrap_or_else(|err| {
+                panic!("missing or unreadable {corpus} corpus seed {seed}: {err}")
+            });
+            assert!(!bytes.is_empty(), "empty {corpus} corpus seed {seed}");
+        }
     }
 }
 

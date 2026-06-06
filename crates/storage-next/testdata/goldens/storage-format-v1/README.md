@@ -10,9 +10,16 @@ Current vectors:
 
 | File | Format | Version | Purpose |
 | --- | --- | --- | --- |
+| `branch-catalog-manifest-active-and-deleted.hex` | Branch catalog manifest | V1 branch catalog format 1 | Branch catalog with one active branch and one deleted branch. |
+| `branch-catalog-manifest-empty.hex` | Branch catalog manifest | V1 branch catalog format 1 | Empty branch catalog for a physical database. |
+| `branch-catalog-manifest-single-active.hex` | Branch catalog manifest | V1 branch catalog format 1 | Branch catalog with one active branch, creation time, and state revision. |
+| `branch-catalog-manifest-with-parent.hex` | Branch catalog manifest | V1 branch catalog format 1 | Branch catalog with a parent branch reference and fork version. |
 | `internal-key-ordinary.hex` | Internal key | V1 key encoding | Ordinary engine-owned storage key with commit version 42. |
 | `internal-key-zero-user-byte.hex` | Internal key | V1 key encoding | Storage-owned timeline key with escaped NUL bytes in the user key. |
 | `manifest-identity.hex` | Manifest | V1 manifest format 1 | Database manifest with identity codec and recovery watermarks. |
+| `pending-releases-manifest-empty.hex` | Pending releases manifest | V1 pending releases format 1 | Empty pending table-release manifest for a physical database. |
+| `pending-releases-manifest-multi.hex` | Pending releases manifest | V1 pending releases format 1 | Pending table releases for two branches. |
+| `pending-releases-manifest-single.hex` | Pending releases manifest | V1 pending releases format 1 | Pending table release for one branch. |
 | `quarantine-inventory-empty.hex` | Quarantine inventory | V1 quarantine inventory format 1 | Empty branch-local quarantine inventory. |
 | `quarantine-inventory-multi-entry.hex` | Quarantine inventory | V1 quarantine inventory format 1 | Branch-local quarantine inventory with two canonical entries. |
 | `segment-metadata-sidecar.hex` | Segment metadata | V1 metadata format 1 | WAL segment metadata sidecar with timestamp and commit-version ranges. |

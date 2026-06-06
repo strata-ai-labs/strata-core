@@ -802,24 +802,42 @@ cross-module contracts visible and invokable.
 
 ## Fuzz Target Shape
 
-M2 may keep `fuzz/` as documentation-only scaffolding. Do not create
-`fuzz/Cargo.toml` until storage-next has a byte parser, durable codec, or
-state-machine harness worth fuzzing.
+Storage-next owns a `fuzz/` package with targets named by byte-oriented durable
+input or scripted service family, not layer number.
 
-Once cargo-fuzz is used, storage-next should own a `fuzz/` package with targets
-named by byte-oriented durable input, not layer number.
+Current durable-format targets:
 
-Suggested targets:
+1. `format_manifest`
+2. `format_branch_catalog_manifest`
+3. `format_pending_releases_manifest`
+4. `format_quarantine`
+5. `format_retained_history_extension`
+6. `format_snapshot_envelope`
+7. `format_snapshot_row_payload`
+8. `format_storage_row`
+9. `format_table_artifact`
+10. `format_table_block`
+11. `format_table_manifest`
+12. `format_wal_commit_payload`
+13. `format_wal_record`
 
-1. `object_name_parse`
-2. `format_wal_record`
-3. `format_manifest`
-4. `format_snapshot_envelope`
-5. `format_commit_payload`
-6. `format_table_block`
-7. `format_timeline_row`
-8. `recovery_object_inventory`
-9. `api_command_payload` after the command boundary is defined.
+Current generated-runtime and service targets:
+
+1. `table_runtime_reader`
+2. `table_runtime_cursor`
+3. `table_runtime_compaction`
+4. `branch_lsm_reads`
+5. `branch_lsm_inheritance`
+6. `branch_lsm_install`
+7. `commit_runtime_batch`
+8. `commit_runtime_conflict`
+9. `commit_runtime_durable`
+10. `commit_runtime_timeline`
+11. `lifecycle_recovery`
+12. `lifecycle_maintenance`
+13. `lifecycle_retention`
+14. `service_snapshot`
+15. `service_quarantine`
 
 Fuzz targets should fail on panic, unbounded allocation, unexpected successful
 decode, and wrong error class.

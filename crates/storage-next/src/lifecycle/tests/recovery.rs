@@ -12,7 +12,9 @@ use crate::commit::{
     CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitStamp, CommitTimelineEntry,
     CommitTimelineRows, CommitTimestampPolicy, CommitUnresolvedDurable, CommitValidationFacts,
 };
-use crate::format::{encode_manifest, DatabaseManifest, WalCommitPayload, WalRecord};
+use crate::format::{
+    encode_manifest, DatabaseManifest, WalCommitPayload, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
+};
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};

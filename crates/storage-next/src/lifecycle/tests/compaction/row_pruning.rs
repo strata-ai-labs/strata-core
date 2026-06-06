@@ -46,7 +46,7 @@ fn durable_pruned_compaction_publishes_pruned_manifest_facts() {
 #[test]
 fn manifest_records_retained_version_floor() {
     // After a pruning compaction, the durable manifest must carry a
-    // `storage.retained_history` extension recording the retained version
+    // retained-history extension recording the retained version
     // floor used by the proof. Reopening the database recreates that
     // floor from the manifest bytes.
     let backend = CheckpointTestBackend::new();
@@ -69,7 +69,7 @@ fn manifest_records_retained_version_floor() {
     let extension = manifest
         .extension_sections()
         .iter()
-        .find(|section| section.kind() == "storage.retained_history")
+        .find(|section| section.kind() == crate::format::RETAINED_HISTORY_EXTENSION_KIND)
         .expect("retained-history extension present");
     let facts = crate::lifecycle::retained_history_extension::RetainedHistoryFacts::decode(
         extension.payload(),
@@ -218,7 +218,7 @@ fn manifest_missing_pruning_facts_rejects_recovery() {
     assert!(recovered_manifest
         .extension_sections()
         .iter()
-        .any(|section| section.kind() == "storage.retained_history"));
+        .any(|section| section.kind() == crate::format::RETAINED_HISTORY_EXTENSION_KIND));
     let coverage = reopened.branch_state().timestamp_coverage();
     assert_eq!(
         coverage,

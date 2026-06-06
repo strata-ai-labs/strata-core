@@ -14,8 +14,12 @@ Useful local commands:
 ```bash
 cargo install cargo-fuzz --locked
 cargo +nightly fuzz run format_manifest
+cargo +nightly fuzz run format_branch_catalog_manifest
+cargo +nightly fuzz run format_pending_releases_manifest
 cargo +nightly fuzz run format_quarantine
+cargo +nightly fuzz run format_retained_history_extension
 cargo +nightly fuzz run format_snapshot_envelope
+cargo +nightly fuzz run format_snapshot_row_payload
 cargo +nightly fuzz run format_storage_row
 cargo +nightly fuzz run format_table_artifact
 cargo +nightly fuzz run format_table_block

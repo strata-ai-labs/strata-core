@@ -1,6 +1,13 @@
 use super::{
+    branch_catalog_manifest::{
+        BranchCatalogEntry, BranchCatalogManifest, BranchCatalogParent, BranchCatalogStatus,
+    },
     key::{decode_internal_key, encode_internal_key},
     manifest::{decode_manifest, encode_manifest, DatabaseManifest},
+    pending_releases_manifest::{
+        decode_pending_releases_manifest, encode_pending_releases_manifest, PendingReleasesEntry,
+        PendingReleasesManifest,
+    },
     quarantine::{
         decode_quarantine_inventory, encode_quarantine_inventory, QuarantineEntry,
         QuarantineInventory,
@@ -40,6 +47,23 @@ const STORAGE_ROW_TOMBSTONE: &str =
     include_str!("../../testdata/goldens/storage-format-v1/storage-row-tombstone.hex");
 const DATABASE_IDENTITY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/manifest-identity.hex");
+const BRANCH_CATALOG_MANIFEST_EMPTY: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/branch-catalog-manifest-empty.hex");
+const BRANCH_CATALOG_MANIFEST_SINGLE_ACTIVE: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/branch-catalog-manifest-single-active.hex"
+);
+const BRANCH_CATALOG_MANIFEST_ACTIVE_AND_DELETED: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/branch-catalog-manifest-active-and-deleted.hex"
+);
+const BRANCH_CATALOG_MANIFEST_WITH_PARENT: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/branch-catalog-manifest-with-parent.hex"
+);
+const PENDING_RELEASES_MANIFEST_EMPTY: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/pending-releases-manifest-empty.hex");
+const PENDING_RELEASES_MANIFEST_SINGLE: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/pending-releases-manifest-single.hex");
+const PENDING_RELEASES_MANIFEST_MULTI: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/pending-releases-manifest-multi.hex");
 const QUARANTINE_INVENTORY_EMPTY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/quarantine-inventory-empty.hex");
 const QUARANTINE_INVENTORY_MULTI_ENTRY: &str =
@@ -140,6 +164,125 @@ fn manifest_identity_matches_golden_vector() {
 
     assert_eq!(encode_manifest(&manifest).expect("encode manifest"), golden);
     assert_eq!(decode_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn branch_catalog_manifest_empty_matches_golden_vector() {
+    let manifest =
+        BranchCatalogManifest::new(branch_catalog_database_id(), 1, Vec::new()).expect("manifest");
+    let golden = parse_hex(BRANCH_CATALOG_MANIFEST_EMPTY);
+
+    assert_eq!(
+        super::encode_branch_catalog_manifest(&manifest).expect("encode branch catalog manifest"),
+        golden
+    );
+    assert_eq!(super::decode_branch_catalog_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn branch_catalog_manifest_single_active_matches_golden_vector() {
+    let active = BranchCatalogEntry::new(repeated_branch_id(0x10), 3, BranchCatalogStatus::Active)
+        .expect("active")
+        .with_created_at(7)
+        .expect("created")
+        .with_state_revision(2);
+    let manifest = BranchCatalogManifest::new(branch_catalog_database_id(), 5, vec![active])
+        .expect("manifest");
+    let golden = parse_hex(BRANCH_CATALOG_MANIFEST_SINGLE_ACTIVE);
+
+    assert_eq!(
+        super::encode_branch_catalog_manifest(&manifest).expect("encode branch catalog manifest"),
+        golden
+    );
+    assert_eq!(super::decode_branch_catalog_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn branch_catalog_manifest_active_and_deleted_matches_golden_vector() {
+    let active = BranchCatalogEntry::new(repeated_branch_id(0x10), 1, BranchCatalogStatus::Active)
+        .expect("active");
+    let deleted =
+        BranchCatalogEntry::new(repeated_branch_id(0x22), 4, BranchCatalogStatus::Deleted)
+            .expect("deleted")
+            .with_deleted_at(11)
+            .expect("deleted timestamp");
+    let manifest =
+        BranchCatalogManifest::new(branch_catalog_database_id(), 7, vec![active, deleted])
+            .expect("manifest");
+    let golden = parse_hex(BRANCH_CATALOG_MANIFEST_ACTIVE_AND_DELETED);
+
+    assert_eq!(
+        super::encode_branch_catalog_manifest(&manifest).expect("encode branch catalog manifest"),
+        golden
+    );
+    assert_eq!(super::decode_branch_catalog_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn branch_catalog_manifest_with_parent_matches_golden_vector() {
+    let entry = BranchCatalogEntry::new(repeated_branch_id(0x40), 2, BranchCatalogStatus::Active)
+        .expect("active")
+        .with_parent(BranchCatalogParent::new(repeated_branch_id(0x10), 9))
+        .with_created_at(10)
+        .expect("created timestamp");
+    let manifest =
+        BranchCatalogManifest::new(branch_catalog_database_id(), 3, vec![entry]).expect("manifest");
+    let golden = parse_hex(BRANCH_CATALOG_MANIFEST_WITH_PARENT);
+
+    assert_eq!(
+        super::encode_branch_catalog_manifest(&manifest).expect("encode branch catalog manifest"),
+        golden
+    );
+    assert_eq!(super::decode_branch_catalog_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn pending_releases_manifest_empty_matches_golden_vector() {
+    let manifest = PendingReleasesManifest::new(pending_releases_database_id(), 1, Vec::new())
+        .expect("manifest");
+    let golden = parse_hex(PENDING_RELEASES_MANIFEST_EMPTY);
+
+    assert_eq!(
+        encode_pending_releases_manifest(&manifest).expect("encode pending releases manifest"),
+        golden
+    );
+    assert_eq!(decode_pending_releases_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn pending_releases_manifest_single_matches_golden_vector() {
+    let entry = PendingReleasesEntry::new(repeated_branch_id(0x21), vec!["table-alpha".to_owned()])
+        .expect("entry");
+    let manifest = PendingReleasesManifest::new(pending_releases_database_id(), 5, vec![entry])
+        .expect("manifest");
+    let golden = parse_hex(PENDING_RELEASES_MANIFEST_SINGLE);
+
+    assert_eq!(
+        encode_pending_releases_manifest(&manifest).expect("encode pending releases manifest"),
+        golden
+    );
+    assert_eq!(decode_pending_releases_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn pending_releases_manifest_multi_matches_golden_vector() {
+    let first = PendingReleasesEntry::new(
+        repeated_branch_id(0x11),
+        vec!["table-a-1".to_owned(), "table-a-2".to_owned()],
+    )
+    .expect("first entry");
+    let second = PendingReleasesEntry::new(repeated_branch_id(0x22), vec!["table-b-1".to_owned()])
+        .expect("second entry");
+    let manifest =
+        PendingReleasesManifest::new(pending_releases_database_id(), 9, vec![first, second])
+            .expect("manifest");
+    let golden = parse_hex(PENDING_RELEASES_MANIFEST_MULTI);
+
+    assert_eq!(
+        encode_pending_releases_manifest(&manifest).expect("encode pending releases manifest"),
+        golden
+    );
+    assert_eq!(decode_pending_releases_manifest(&golden), Ok(manifest));
 }
 
 #[test]
@@ -736,6 +879,18 @@ fn ordinary_branch_id() -> BranchId {
     ])
 }
 
+fn repeated_branch_id(byte: u8) -> BranchId {
+    BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+}
+
+fn branch_catalog_database_id() -> [u8; 16] {
+    [0xAB; 16]
+}
+
+fn pending_releases_database_id() -> [u8; 16] {
+    [0xCD; 16]
+}
+
 fn quarantine_entry(
     object_id: &str,
     source_object: &str,
@@ -752,12 +907,16 @@ fn quarantine_entry(
 }
 
 fn parse_hex(text: &str) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for line in text.lines() {
-        let data = line.split_once('#').map_or(line, |(data, _comment)| data);
-        for token in data.split_whitespace() {
-            bytes.push(u8::from_str_radix(token, 16).expect("valid hex byte"));
-        }
-    }
-    bytes
+    let hex: String = text
+        .lines()
+        .map(|line| line.split_once('#').map_or(line, |(data, _comment)| data))
+        .flat_map(str::chars)
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+
+    assert_eq!(hex.len() % 2, 0, "hex fixture has odd byte count");
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex byte"))
+        .collect()
 }

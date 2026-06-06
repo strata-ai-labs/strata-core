@@ -238,8 +238,8 @@ Current evidence:
 1. WAL record payloads are encoded through the configured codec before they are
    written into codec-aware WAL segment envelopes.
 2. Snapshot containers record and validate the database codec ID.
-3. Current primitive snapshot section payloads use a canonical section codec
-   independent from the database codec.
+3. Storage-owned snapshot row-section payloads use a canonical row snapshot
+   payload codec independent from the database codec.
 
 The stable V1 spec must make every codec boundary explicit. A codec MUST NOT be
 implicitly applied to an object family without this specification saying so.
@@ -293,6 +293,98 @@ Requirements:
 10. Pre-V1 development manifest version `2` is rejected by the normal V1
    decoder. Strata is pre-launch; old development databases are not a stable
    migration target.
+
+### 8.1 Branch Catalog Manifest Format
+
+The branch catalog manifest stores storage-owned branch catalog metadata. L3
+owns the canonical byte shape. Branch lifecycle rules, such as when a deleted
+branch can be reclaimed, remain L4/L5 concerns.
+
+V1 branch catalog manifest byte layout:
+
+```text
+magic                  4 bytes   "STBC"
+format_version         u32 LE, MUST be 1
+database_id            16 bytes
+manifest_sequence      u64 LE, MUST be nonzero
+entry_count            u32 LE
+
+entries repeated entry_count times:
+  branch_id            16 raw BranchId bytes
+  generation           u64 LE, MUST be nonzero
+  status               u8, 0 active, 1 deleted
+  flags                u8
+  state_revision       u64 LE
+  parent_branch_id     16 raw BranchId bytes, present when flags bit 0 is set
+  parent_fork_version  u64 LE, present when flags bit 0 is set
+  created_at_micros    u64 LE, present when flags bit 1 is set
+  deleted_at_micros    u64 LE, present when flags bit 2 is set
+
+crc32                  u32 LE over all preceding bytes
+```
+
+V1 branch catalog constants:
+
+```text
+BRANCH_CATALOG_MAGIC             "STBC"
+BRANCH_CATALOG_FORMAT_VERSION    1
+```
+
+Requirements:
+
+1. Entries MUST be sorted by raw `branch_id` bytes and duplicate branch ids are
+   invalid.
+2. Flags other than parent-present, created-at-present, and deleted-at-present
+   are reserved and MUST be zero.
+3. Status values other than active and deleted are invalid in V1.
+4. A deleted entry MAY carry `deleted_at_micros`; an active entry MUST NOT.
+5. Optional timestamps, when present, MUST be nonzero.
+6. Decode MUST reject invalid magic, pre-V1 version `0`, future versions,
+   checksum mismatch, insufficient bytes, invalid flags, invalid status,
+   noncanonical entry ordering, impossible counts, and trailing data.
+
+### 8.2 Pending Releases Manifest Format
+
+The pending releases manifest stores storage-owned table-release work that has
+not yet been durably completed. L3 owns only the canonical bytes and branch/table
+identity shape. The lifecycle service owns when pending releases are created,
+retried, or cleared.
+
+V1 pending releases manifest byte layout:
+
+```text
+magic                  4 bytes   "STPR"
+format_version         u32 LE, MUST be 1
+database_id            16 bytes
+manifest_sequence      u64 LE, MUST be nonzero
+entry_count            u32 LE
+
+entries repeated entry_count times:
+  branch_id            16 raw BranchId bytes
+  released_count       u32 LE
+  released tables repeated released_count times:
+    table_identity_len u32 LE
+    table_identity     table_identity_len UTF-8 bytes
+
+crc32                  u32 LE over all preceding bytes
+```
+
+V1 pending releases constants:
+
+```text
+PENDING_RELEASES_MAGIC            "STPR"
+PENDING_RELEASES_FORMAT_VERSION   1
+```
+
+Requirements:
+
+1. Entries MUST be sorted by raw `branch_id` bytes and duplicate branch ids are
+   invalid.
+2. Released table identities within one entry MUST be sorted and unique.
+3. Released table identities MUST be valid table identities.
+4. Decode MUST reject invalid magic, pre-V1 version `0`, future versions,
+   checksum mismatch, invalid UTF-8, invalid table identities, noncanonical
+   ordering, impossible counts, insufficient bytes, and trailing data.
 
 ## 9. WAL Segment Format
 
@@ -433,7 +525,7 @@ MAX_WAL_COMMIT_PAYLOAD_BYTES        64 MiB
 MAX_WAL_COMMIT_PAYLOAD_ROW_BYTES    16 MiB
 ```
 
-The nested `storage_row` bytes use the storage-row format from section 4.
+The nested `storage_row` bytes use the storage-row format from section 15.
 
 Requirements:
 
@@ -515,18 +607,14 @@ section_data_len       u64 LE
 section_data           section_data_len bytes
 ```
 
-Current section types are primitive tags:
+Current storage-owned section types:
 
 ```text
-KV       0x01
-Event    0x02
-Branch   0x03
-JSON     0x04
-Vector   0x05
-Graph    0x06
+StorageRows     0x01
 ```
 
-These primitive tags are current-format evidence, not target storage ownership.
+The old primitive section tags from development builds are historical evidence
+only. Stable V1 storage recovery is based on row-native storage sections.
 
 V1 direction:
 
@@ -534,7 +622,8 @@ V1 direction:
 2. `section_kind = 0x00` is invalid and reserved.
 3. L3 validates only mechanical envelope shape. It does not map section kinds
    to KV, JSON, event, vector, graph, search, or any product primitive.
-4. Committed storage state uses row-native storage snapshot sections.
+4. Committed storage state uses row-native storage snapshot sections with
+   `section_kind = 0x01`.
 5. Engine owns opaque derived-state section payload semantics if such sections
    remain.
 6. Unknown storage-owned section types MUST be rejected by the owning snapshot
@@ -548,31 +637,44 @@ V1 direction:
    space or would overflow envelope-size arithmetic before allocating or
    copying payload bytes.
 
-## 14. Primitive Snapshot Payloads
+## 14. Snapshot Row Payloads
 
-This section documents current evidence only. It is not a target V1 storage
-ownership decision and is not a required migration format for stable V1.
+Storage-owned snapshot row sections use a row-native payload. The payload lives
+inside the snapshot section envelope from section 13.
 
-Current primitive snapshot payloads encode:
+V1 snapshot row payload byte layout:
 
-- KV rows with branch id, space, type tag, user key, value, version, timestamp,
-  TTL, and tombstone marker
-- event rows with branch id, space, sequence, payload, version, and timestamp
-- branch rows with branch id, key, value, version, timestamp, and tombstone
-  marker
-- JSON rows with branch id, space, document id, content, version, timestamp,
-  and tombstone marker
-- vector collection rows with branch id, space, collection name, config,
-  config version, config timestamp, and vector entries
-- vector entries with key, vector id, embedding, metadata, raw value, version,
-  timestamp, and tombstone marker
-- graph rows through KV-like typed storage
+```text
+magic                  4 bytes   "STRR"
+format_version         u32 LE, MUST be 1
+row_count              u32 LE
 
-Current primitive payload decoders reject trailing data. That strictness should
-carry into any stable V1 payload format.
+rows repeated row_count times:
+  row_len              u32 LE
+  storage_row          row_len bytes, storage row format V1
+```
 
-Target V1 storage format should not require storage to understand this list as
-product semantics.
+V1 snapshot row constants:
+
+```text
+SNAPSHOT_ROWS_MAGIC             "STRR"
+SNAPSHOT_ROWS_FORMAT_VERSION    1
+SNAPSHOT_ROW_SECTION_KIND       0x01
+```
+
+Requirements:
+
+1. Snapshot row payloads MUST be storage-row-native, not engine-primitive
+   payloads.
+2. `row_count = 0` is valid and represents an empty checkpoint row section.
+3. Row counts and row lengths MUST be validated against the remaining payload
+   bytes before allocating or slicing.
+4. Each nested `storage_row` MUST decode as storage row format V1.
+5. Decode MUST reject invalid magic, pre-V1 version `0`, future versions,
+   impossible counts, zero or truncated row lengths where applicable, invalid
+   nested row bytes, insufficient bytes, and trailing data.
+6. Lifecycle recovery owns which section kinds are required for installing a
+   checkpoint. L3 owns only section-envelope and row-payload byte validity.
 
 ## 15. Storage Row Format
 
@@ -837,6 +939,40 @@ V1 table requirements:
 8. Stable table data entries MUST be based on `StorageRow` bytes, not bincode
    product values or engine primitive payloads.
 
+### 17.1 Retained-History Table Manifest Extension Payload
+
+Table manifests can carry extension sections. L3 owns the extension section
+byte shape and canonical payloads. L4/L5 lifecycle and table runtime own the
+meaning and installation policy for storage retention facts.
+
+The retained-history extension is identified by extension kind:
+
+```text
+storage.retained_history
+```
+
+V1 retained-history extension payload:
+
+```text
+retained_version_floor      u64 LE
+timestamp_present           u8, 0 absent, 1 present
+retained_timestamp_floor    u64 LE, meaningful only when timestamp_present = 1
+reserved                    7 bytes, MUST be zero
+```
+
+The payload is exactly 24 bytes.
+
+Requirements:
+
+1. `timestamp_present` MUST be `0` or `1`.
+2. Reserved bytes MUST be zero.
+3. When `timestamp_present = 0`, `retained_timestamp_floor` is ignored by the
+   current decoder; writers SHOULD encode it as zero.
+4. The extension section SHOULD be marked preserve-on-rewrite so unknown
+   writers do not drop retention coverage facts.
+5. Decode MUST reject payloads with any length other than 24 bytes, unknown
+   timestamp flags, and nonzero reserved bytes.
+
 ## 18. Watermark, Sidecar, And Quarantine Inventory Formats
 
 V1 snapshot watermark byte format:
@@ -968,6 +1104,8 @@ Current evidence uses:
 - CRC32 for table block frames
 - CRC32 for segment metadata sidecars
 - CRC32 for quarantine inventory bytes
+- CRC32 for branch catalog manifest bytes
+- CRC32 for pending releases manifest bytes
 - AES-GCM authentication tags for encrypted codec payloads
 
 Draft V1 requirements:
@@ -1037,6 +1175,13 @@ Required golden vector categories:
 - segment metadata sidecar, if retained
 - quarantine inventory, empty
 - quarantine inventory, multiple entries
+- branch catalog manifest, empty
+- branch catalog manifest, single active entry
+- branch catalog manifest, active and deleted entries
+- branch catalog manifest, entry with parent
+- pending releases manifest, empty
+- pending releases manifest, single branch entry
+- pending releases manifest, multiple branch entries
 
 Golden vectors must include:
 

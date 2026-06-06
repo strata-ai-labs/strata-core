@@ -19,6 +19,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_branch_catalog_manifest"
+path = "fuzz_targets/format_branch_catalog_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_pending_releases_manifest"
+path = "fuzz_targets/format_pending_releases_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_quarantine"
 path = "fuzz_targets/format_quarantine.rs"
 test = false
@@ -26,8 +40,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_retained_history_extension"
+path = "fuzz_targets/format_retained_history_extension.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_snapshot_envelope"
 path = "fuzz_targets/format_snapshot_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_snapshot_row_payload"
+path = "fuzz_targets/format_snapshot_row_payload.rs"
 test = false
 doc = false
 bench = false

@@ -60,6 +60,8 @@ reason, and replacement proof or later slice that will close it.
 2. `m4p-l1-backend-io-parity-test-plan.md`
 3. `m4p-l2-object-layout-parity-implementation-plan.md`
 4. `m4p-l2-object-layout-parity-test-plan.md`
+5. `m4p-l3-durable-format-parity-implementation-plan.md`
+6. `m4p-l3-durable-format-parity-test-plan.md`
 
 ## Initial Slice Queue
 

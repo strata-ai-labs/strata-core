@@ -13,8 +13,8 @@ use crate::branch::state::snapshot::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::{
-    decode_storage_row, encode_storage_row, FormatError, SnapshotContainer, SnapshotSection,
-    WalRecord,
+    decode_snapshot_row_payload, encode_snapshot_row_section, FormatError, SnapshotContainer,
+    SnapshotSection, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
 };
 use crate::object::ObjectName;
 use crate::row::StorageRow;
@@ -23,13 +23,6 @@ use crate::service::{
 };
 use crate::table::TableIdentity;
 use strata_core_next::{CommitVersion, Timestamp};
-
-pub(crate) const SNAPSHOT_ROW_SECTION_KIND: u8 = 1;
-
-const SNAPSHOT_ROWS_FORMAT: &str = "lifecycle_snapshot_rows";
-const SNAPSHOT_ROWS_MAGIC: [u8; 4] = *b"STRR";
-const SNAPSHOT_ROWS_VERSION: u32 = 1;
-const SNAPSHOT_ROWS_HEADER_SIZE: usize = 12;
 
 #[derive(Debug)]
 pub(crate) struct LifecycleRecoveryRuntime<'shell, 'backend, S> {
@@ -696,22 +689,7 @@ impl LifecycleRecoveredTables {
 pub(crate) fn encode_checkpoint_row_section(
     rows: &[StorageRow],
 ) -> Result<SnapshotSection, FormatError> {
-    let row_count = u32::try_from(rows.len()).map_err(|_| FormatError::InvalidLength {
-        field: "snapshot_row_count",
-    })?;
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&SNAPSHOT_ROWS_MAGIC);
-    payload.extend_from_slice(&SNAPSHOT_ROWS_VERSION.to_le_bytes());
-    payload.extend_from_slice(&row_count.to_le_bytes());
-    for row in rows {
-        let row_bytes = encode_storage_row(row)?;
-        let row_len = u32::try_from(row_bytes.len()).map_err(|_| FormatError::InvalidLength {
-            field: "snapshot_row_len",
-        })?;
-        payload.extend_from_slice(&row_len.to_le_bytes());
-        payload.extend_from_slice(&row_bytes);
-    }
-    SnapshotSection::new(SNAPSHOT_ROW_SECTION_KIND, payload)
+    encode_snapshot_row_section(rows)
 }
 
 fn decode_checkpoint_rows(sections: &[SnapshotSection]) -> LifecycleResult<Vec<StorageRow>> {
@@ -720,87 +698,7 @@ fn decode_checkpoint_rows(sections: &[SnapshotSection]) -> LifecycleResult<Vec<S
         if section.section_kind() != SNAPSHOT_ROW_SECTION_KIND {
             continue;
         }
-        rows.extend(decode_checkpoint_row_payload(section.payload())?);
-    }
-    Ok(rows)
-}
-
-fn decode_checkpoint_row_payload(payload: &[u8]) -> LifecycleResult<Vec<StorageRow>> {
-    if payload.len() < SNAPSHOT_ROWS_HEADER_SIZE {
-        return Err(format_error(FormatError::InsufficientBytes {
-            format: SNAPSHOT_ROWS_FORMAT,
-            needed: SNAPSHOT_ROWS_HEADER_SIZE,
-            actual: payload.len(),
-        }));
-    }
-    if payload[..4] != SNAPSHOT_ROWS_MAGIC {
-        return Err(format_error(FormatError::InvalidMagic {
-            format: SNAPSHOT_ROWS_FORMAT,
-        }));
-    }
-    let version = u32::from_le_bytes(
-        payload[4..8]
-            .try_into()
-            .map_err(|_| format_error(FormatError::InvalidLength { field: "version" }))?,
-    );
-    if version != SNAPSHOT_ROWS_VERSION {
-        return Err(format_error(FormatError::FutureFormat {
-            format: SNAPSHOT_ROWS_FORMAT,
-            version,
-            max_supported: SNAPSHOT_ROWS_VERSION,
-        }));
-    }
-    let row_count =
-        usize::try_from(u32::from_le_bytes(payload[8..12].try_into().map_err(
-            |_| format_error(FormatError::InvalidLength { field: "row_count" }),
-        )?))
-        .map_err(|_| format_error(FormatError::InvalidLength { field: "row_count" }))?;
-    let max_possible_rows = (payload.len() - SNAPSHOT_ROWS_HEADER_SIZE) / 4;
-    if row_count > max_possible_rows {
-        return Err(format_error(FormatError::InsufficientBytes {
-            format: SNAPSHOT_ROWS_FORMAT,
-            needed: SNAPSHOT_ROWS_HEADER_SIZE.saturating_add(row_count.saturating_mul(4)),
-            actual: payload.len(),
-        }));
-    }
-    let mut rows = Vec::new();
-    let mut cursor = SNAPSHOT_ROWS_HEADER_SIZE;
-    for _ in 0..row_count {
-        let len_end = cursor
-            .checked_add(4)
-            .ok_or_else(|| format_error(FormatError::InvalidLength { field: "row_len" }))?;
-        if payload.len() < len_end {
-            return Err(format_error(FormatError::InsufficientBytes {
-                format: SNAPSHOT_ROWS_FORMAT,
-                needed: len_end,
-                actual: payload.len(),
-            }));
-        }
-        let row_len = usize::try_from(u32::from_le_bytes(
-            payload[cursor..len_end]
-                .try_into()
-                .map_err(|_| format_error(FormatError::InvalidLength { field: "row_len" }))?,
-        ))
-        .map_err(|_| format_error(FormatError::InvalidLength { field: "row_len" }))?;
-        cursor = len_end;
-        let row_end = cursor
-            .checked_add(row_len)
-            .ok_or_else(|| format_error(FormatError::InvalidLength { field: "row_len" }))?;
-        if payload.len() < row_end {
-            return Err(format_error(FormatError::InsufficientBytes {
-                format: SNAPSHOT_ROWS_FORMAT,
-                needed: row_end,
-                actual: payload.len(),
-            }));
-        }
-        rows.push(decode_storage_row(&payload[cursor..row_end]).map_err(format_error)?);
-        cursor = row_end;
-    }
-    if cursor != payload.len() {
-        return Err(format_error(FormatError::TrailingData {
-            format: SNAPSHOT_ROWS_FORMAT,
-            remaining: payload.len() - cursor,
-        }));
+        rows.extend(decode_snapshot_row_payload(section.payload()).map_err(format_error)?);
     }
     Ok(rows)
 }

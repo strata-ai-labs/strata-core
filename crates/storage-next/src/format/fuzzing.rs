@@ -1,6 +1,7 @@
 use super::{
-    key, manifest, quarantine, segment_metadata, snapshot, storage_row, table, table_manifest, wal,
-    watermark,
+    branch_catalog_manifest, key, manifest, pending_releases_manifest, quarantine,
+    retained_history_extension, segment_metadata, snapshot, snapshot_rows, storage_row, table,
+    table_manifest, wal, watermark,
 };
 
 pub(crate) fn decode_key(bytes: &[u8]) -> bool {
@@ -11,6 +12,14 @@ pub(crate) fn decode_key(bytes: &[u8]) -> bool {
 
 pub(crate) fn decode_manifest(bytes: &[u8]) -> bool {
     manifest::decode_manifest(bytes).is_ok()
+}
+
+pub(crate) fn decode_branch_catalog_manifest(bytes: &[u8]) -> bool {
+    branch_catalog_manifest::decode_branch_catalog_manifest(bytes).is_ok()
+}
+
+pub(crate) fn decode_pending_releases_manifest(bytes: &[u8]) -> bool {
+    pending_releases_manifest::decode_pending_releases_manifest(bytes).is_ok()
 }
 
 pub(crate) fn decode_quarantine_inventory(bytes: &[u8]) -> bool {
@@ -26,6 +35,14 @@ pub(crate) fn decode_snapshot_envelope(bytes: &[u8]) -> bool {
     let section = snapshot::decode_snapshot_section_ref(bytes).is_ok();
     let container = snapshot::visit_snapshot_container_sections(bytes, 4096, |_| Ok(())).is_ok();
     header || section || container
+}
+
+pub(crate) fn decode_snapshot_row_payload(bytes: &[u8]) -> bool {
+    snapshot_rows::decode_snapshot_row_payload(bytes).is_ok()
+}
+
+pub(crate) fn decode_retained_history_extension_payload(bytes: &[u8]) -> bool {
+    retained_history_extension::decode_retained_history_extension_payload(bytes).is_ok()
 }
 
 pub(crate) fn decode_storage_row(bytes: &[u8]) -> bool {

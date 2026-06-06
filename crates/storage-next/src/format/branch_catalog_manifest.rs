@@ -426,6 +426,8 @@ pub(crate) fn decode_branch_catalog_manifest(
             None
         };
 
+        validate_status_timestamps(status, deleted_at)?;
+
         entries.push(BranchCatalogEntry {
             branch_id,
             generation,
@@ -487,6 +489,7 @@ fn validate_entries(entries: &[BranchCatalogEntry]) -> Result<(), FormatError> {
                 });
             }
         }
+        validate_status_timestamps(entry.status, entry.deleted_at)?;
         let bytes = entry.branch_id.as_bytes();
         if let Some(prev) = previous {
             if bytes <= prev {
@@ -498,6 +501,18 @@ fn validate_entries(entries: &[BranchCatalogEntry]) -> Result<(), FormatError> {
         previous = Some(bytes);
     }
     Ok(())
+}
+
+fn validate_status_timestamps(
+    status: BranchCatalogStatus,
+    deleted_at: Option<u64>,
+) -> Result<(), FormatError> {
+    match (status, deleted_at) {
+        (BranchCatalogStatus::Active, Some(_)) => Err(FormatError::InvalidValue {
+            field: "branch_catalog_entry.deleted_at_status",
+        }),
+        (BranchCatalogStatus::Active, None) | (BranchCatalogStatus::Deleted, _) => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -637,6 +652,57 @@ mod tests {
     }
 
     #[test]
+    fn branch_catalog_manifest_round_trip_deleted_without_deleted_at() {
+        let deleted = BranchCatalogEntry::new(branch(0x22), 4, BranchCatalogStatus::Deleted)
+            .expect("deleted entry");
+        let manifest =
+            BranchCatalogManifest::new(database_id(), 7, vec![deleted]).expect("manifest");
+
+        let encoded = encode_branch_catalog_manifest(&manifest).expect("encode");
+        let decoded = decode_branch_catalog_manifest(&encoded).expect("decode");
+
+        assert_eq!(decoded, manifest);
+        assert_eq!(decoded.entries()[0].status(), BranchCatalogStatus::Deleted);
+        assert_eq!(decoded.entries()[0].deleted_at(), None);
+    }
+
+    #[test]
+    fn branch_catalog_manifest_rejects_active_entry_with_deleted_at() {
+        let entry = BranchCatalogEntry::new(branch(0x10), 1, BranchCatalogStatus::Active)
+            .expect("entry")
+            .with_deleted_at(11)
+            .expect("deleted_at");
+
+        let err = BranchCatalogManifest::new(database_id(), 1, vec![entry])
+            .expect_err("active deleted_at rejected");
+        assert!(matches!(
+            err,
+            FormatError::InvalidValue {
+                field: "branch_catalog_entry.deleted_at_status",
+            }
+        ));
+    }
+
+    #[test]
+    fn branch_catalog_manifest_decode_rejects_active_entry_with_deleted_at() {
+        let mut bytes = branch_catalog_manifest_bytes_for_entry(
+            branch(0x10),
+            STATUS_ACTIVE,
+            ENTRY_FLAG_DELETED_AT_PRESENT,
+            Some(11),
+        );
+        append_crc(&mut bytes);
+
+        let err = decode_branch_catalog_manifest(&bytes).expect_err("active deleted_at rejected");
+        assert!(matches!(
+            err,
+            FormatError::InvalidValue {
+                field: "branch_catalog_entry.deleted_at_status",
+            }
+        ));
+    }
+
+    #[test]
     fn branch_catalog_manifest_round_trip_with_parent() {
         let entry = BranchCatalogEntry::new(branch(0x40), 2, BranchCatalogStatus::Active)
             .expect("entry")
@@ -744,5 +810,37 @@ mod tests {
                 field: "branch_catalog_entries_order",
             }
         ));
+    }
+
+    fn branch_catalog_manifest_bytes_for_entry(
+        branch_id: BranchId,
+        status: u8,
+        flags: u8,
+        deleted_at: Option<u64>,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.extend_from_slice(&BRANCH_CATALOG_FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&database_id());
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(branch_id.as_bytes());
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.push(status);
+        bytes.push(flags);
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        if flags & ENTRY_FLAG_DELETED_AT_PRESENT != 0 {
+            bytes.extend_from_slice(
+                &deleted_at
+                    .expect("deleted_at flag requires value in fixture")
+                    .to_le_bytes(),
+            );
+        }
+        bytes
+    }
+
+    fn append_crc(bytes: &mut Vec<u8>) {
+        let crc = crc32fast::hash(bytes);
+        bytes.extend_from_slice(&crc.to_le_bytes());
     }
 }

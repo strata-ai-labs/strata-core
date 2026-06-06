@@ -1,4 +1,5 @@
 use super::{ByteReader, FormatError, PENDING_RELEASES_FORMAT_VERSION};
+use crate::table::TableIdentity;
 use strata_core_next::BranchId;
 
 const FORMAT: &str = "pending_releases_manifest";
@@ -243,6 +244,7 @@ pub(crate) fn decode_pending_releases_manifest(
                 .to_owned();
             released_tables.push(identity);
         }
+        validate_released_tables(&released_tables)?;
 
         entries.push(PendingReleasesEntry {
             branch_id,
@@ -301,6 +303,7 @@ fn validate_released_tables(released_tables: &[String]) -> Result<(), FormatErro
             field: "pending_releases_entry.released_tables_count",
         });
     }
+    let mut previous: Option<&[u8]> = None;
     for identity in released_tables {
         let identity_bytes = identity.as_bytes();
         if identity_bytes.is_empty() || identity_bytes.len() > MAX_TABLE_IDENTITY_LEN {
@@ -308,6 +311,17 @@ fn validate_released_tables(released_tables: &[String]) -> Result<(), FormatErro
                 field: "pending_releases_entry.released_table_identity_len",
             });
         }
+        TableIdentity::new(identity.as_str()).map_err(|_| FormatError::InvalidValue {
+            field: "pending_releases_entry.released_table_identity",
+        })?;
+        if let Some(prev) = previous {
+            if identity_bytes <= prev {
+                return Err(FormatError::InvalidValue {
+                    field: "pending_releases_entry.released_tables_order",
+                });
+            }
+        }
+        previous = Some(identity_bytes);
     }
     Ok(())
 }
@@ -404,6 +418,74 @@ mod tests {
     }
 
     #[test]
+    fn pending_releases_manifest_rejects_invalid_identity() {
+        let result = PendingReleasesEntry::new(branch(0x21), vec!["tables/one".to_owned()]);
+        assert!(matches!(
+            result,
+            Err(FormatError::InvalidValue {
+                field: "pending_releases_entry.released_table_identity",
+            })
+        ));
+    }
+
+    #[test]
+    fn pending_releases_manifest_rejects_unsorted_released_tables() {
+        let result = PendingReleasesEntry::new(
+            branch(0x21),
+            vec!["table-b".to_owned(), "table-a".to_owned()],
+        );
+        assert!(matches!(
+            result,
+            Err(FormatError::InvalidValue {
+                field: "pending_releases_entry.released_tables_order",
+            })
+        ));
+    }
+
+    #[test]
+    fn pending_releases_manifest_rejects_duplicate_released_tables() {
+        let result = PendingReleasesEntry::new(
+            branch(0x21),
+            vec!["table-a".to_owned(), "table-a".to_owned()],
+        );
+        assert!(matches!(
+            result,
+            Err(FormatError::InvalidValue {
+                field: "pending_releases_entry.released_tables_order",
+            })
+        ));
+    }
+
+    #[test]
+    fn pending_releases_manifest_decode_rejects_invalid_released_table_identity() {
+        let mut encoded = pending_releases_manifest_bytes_with_tables(&["tables/one"]);
+        append_crc(&mut encoded);
+
+        let err =
+            decode_pending_releases_manifest(&encoded).expect_err("invalid identity rejected");
+        assert!(matches!(
+            err,
+            FormatError::InvalidValue {
+                field: "pending_releases_entry.released_table_identity",
+            }
+        ));
+    }
+
+    #[test]
+    fn pending_releases_manifest_decode_rejects_unsorted_released_tables() {
+        let mut encoded = pending_releases_manifest_bytes_with_tables(&["table-b", "table-a"]);
+        append_crc(&mut encoded);
+
+        let err = decode_pending_releases_manifest(&encoded).expect_err("unsorted rejected");
+        assert!(matches!(
+            err,
+            FormatError::InvalidValue {
+                field: "pending_releases_entry.released_tables_order",
+            }
+        ));
+    }
+
+    #[test]
     fn pending_releases_manifest_rejects_trailing_data() {
         let manifest =
             PendingReleasesManifest::new(database_id(), 1, Vec::new()).expect("manifest");
@@ -433,6 +515,35 @@ mod tests {
         let err =
             decode_pending_releases_manifest(&encoded).expect_err("oversized entry_count rejected");
         assert!(matches!(err, FormatError::InvalidLength { .. }));
+    }
+
+    fn pending_releases_manifest_bytes_with_tables(tables: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.extend_from_slice(&PENDING_RELEASES_FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&database_id());
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(branch(0x21).as_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(tables.len())
+                .expect("test table count fits")
+                .to_le_bytes(),
+        );
+        for table in tables {
+            bytes.extend_from_slice(
+                &u32::try_from(table.len())
+                    .expect("test table length fits")
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(table.as_bytes());
+        }
+        bytes
+    }
+
+    fn append_crc(bytes: &mut Vec<u8>) {
+        let crc = crc32fast::hash(bytes);
+        bytes.extend_from_slice(&crc.to_le_bytes());
     }
 
     /// Helper for emitting golden vector hex content. Print with

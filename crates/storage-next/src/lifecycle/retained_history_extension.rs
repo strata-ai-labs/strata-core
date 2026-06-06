@@ -1,31 +1,12 @@
-//! Encoding for the durable retained-history coverage extension.
-//!
-//! When row pruning narrows a branch's `BranchTimestampCoverage` to
-//! `CompleteSince(floor)`, the lifecycle table-manifest writer emits an
-//! optional `TableManifestExtensionSection` (kind = `EXTENSION_KIND`)
-//! recording the retained version and timestamp floors so reopening the
-//! branch can restore the narrowed coverage rather than silently widening
-//! history.
-//!
-//! Wire format (24 bytes):
-//!
-//! | offset | width | field                                |
-//! |--------|-------|--------------------------------------|
-//! | 0      | 8 LE  | `retained_version_floor` (u64)       |
-//! | 8      | 1     | timestamp floor flag (0=None, 1=Some)|
-//! | 9      | 8 LE  | `retained_timestamp_floor` (micros)  |
-//! | 17     | 7     | reserved (must be zero)              |
-//!
-//! `preserve_on_rewrite` is set so subsequent rewrites carry the floor
-//! forward until something explicitly overrides it.
+//! Lifecycle mapping for the durable retained-history coverage extension.
 
 use crate::branch::read::BranchTimestampCoverage;
-use crate::format::{FormatError, TableManifestExtensionSection};
+use crate::format::{
+    decode_retained_history_extension_payload, decode_retained_history_extension_section,
+    encode_retained_history_extension_payload, FormatError, RetainedHistoryExtensionPayload,
+    TableManifestExtensionSection,
+};
 use strata_core_next::{CommitVersion, Timestamp};
-
-pub(crate) const EXTENSION_KIND: &str = "storage.retained_history";
-
-pub(crate) const PAYLOAD_LEN: usize = 24;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RetainedHistoryFacts {
@@ -48,73 +29,42 @@ impl RetainedHistoryFacts {
     }
 
     pub(crate) fn to_extension_section(self) -> Result<TableManifestExtensionSection, FormatError> {
-        TableManifestExtensionSection::optional(EXTENSION_KIND, true, self.encode())
+        self.to_payload().to_extension_section()
     }
 
     pub(crate) fn encode(self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(PAYLOAD_LEN);
-        bytes.extend_from_slice(&self.retained_version_floor.as_u64().to_le_bytes());
-        if let Some(timestamp) = self.retained_timestamp_floor {
-            bytes.push(1);
-            bytes.extend_from_slice(&timestamp.as_micros().to_le_bytes());
-        } else {
-            bytes.push(0);
-            bytes.extend_from_slice(&0u64.to_le_bytes());
-        }
-        bytes.extend_from_slice(&[0u8; 7]);
-        debug_assert_eq!(bytes.len(), PAYLOAD_LEN);
-        bytes
+        encode_retained_history_extension_payload(self.to_payload())
     }
 
     pub(crate) fn decode(payload: &[u8]) -> Result<Self, FormatError> {
-        if payload.len() != PAYLOAD_LEN {
-            return Err(FormatError::InvalidLength {
-                field: "retained_history_extension_payload",
-            });
-        }
-        let mut version_bytes = [0u8; 8];
-        version_bytes.copy_from_slice(&payload[0..8]);
-        let retained_version_floor = CommitVersion::new(u64::from_le_bytes(version_bytes));
-        let timestamp_flag = payload[8];
-        let mut timestamp_bytes = [0u8; 8];
-        timestamp_bytes.copy_from_slice(&payload[9..17]);
-        let timestamp_micros = u64::from_le_bytes(timestamp_bytes);
-        let retained_timestamp_floor = match timestamp_flag {
-            0 => None,
-            1 => Some(Timestamp::from_micros(timestamp_micros)),
-            _ => {
-                return Err(FormatError::InvalidValue {
-                    field: "retained_history_timestamp_flag",
-                });
-            }
-        };
-        if payload[17..PAYLOAD_LEN].iter().any(|byte| *byte != 0) {
-            return Err(FormatError::InvalidValue {
-                field: "retained_history_reserved_bytes",
-            });
-        }
-        Ok(Self {
-            retained_version_floor,
-            retained_timestamp_floor,
-        })
+        decode_retained_history_extension_payload(payload).map(Self::from_payload)
     }
 
     pub(crate) fn from_extension_sections(
         sections: &[TableManifestExtensionSection],
     ) -> Result<Option<Self>, FormatError> {
-        for section in sections {
-            let kind: &str = section.kind();
-            if kind == EXTENSION_KIND {
-                return Self::decode(section.payload()).map(Some);
-            }
-        }
-        Ok(None)
+        decode_retained_history_extension_section(sections)
+            .map(|payload| payload.map(Self::from_payload))
     }
 
     pub(crate) fn to_timestamp_coverage(self) -> BranchTimestampCoverage {
         match self.retained_timestamp_floor {
             Some(floor) => BranchTimestampCoverage::complete_since(floor),
             None => BranchTimestampCoverage::Complete,
+        }
+    }
+
+    fn to_payload(self) -> RetainedHistoryExtensionPayload {
+        RetainedHistoryExtensionPayload::new(
+            self.retained_version_floor,
+            self.retained_timestamp_floor,
+        )
+    }
+
+    fn from_payload(payload: RetainedHistoryExtensionPayload) -> Self {
+        Self {
+            retained_version_floor: payload.retained_version_floor(),
+            retained_timestamp_floor: payload.retained_timestamp_floor(),
         }
     }
 }
@@ -155,7 +105,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_unknown_flag() {
-        let mut payload = vec![0u8; PAYLOAD_LEN];
+        let mut payload = vec![0u8; crate::format::RETAINED_HISTORY_EXTENSION_PAYLOAD_LEN];
         payload[8] = 0xff;
         assert!(matches!(
             RetainedHistoryFacts::decode(&payload),
@@ -165,7 +115,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_nonzero_reserved_bytes() {
-        let mut payload = vec![0u8; PAYLOAD_LEN];
+        let mut payload = vec![0u8; crate::format::RETAINED_HISTORY_EXTENSION_PAYLOAD_LEN];
         payload[8] = 1;
         payload[20] = 0x55;
         assert!(matches!(
