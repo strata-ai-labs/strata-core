@@ -14,13 +14,12 @@ fn service_fault_window_harness_exercises_l4_service_faults() {
     // service-fault family enumerated by `LifecycleFaultContractOutcome`.
     // Each route is asserted by its own per-route counter in the
     // outcome; the aggregate `cases_executed` is the family count.
-    assert_eq!(outcome.cases_executed(), 19);
-    // Spot-check a few of the per-route counters to confirm individual
-    // injections actually fired, not just the aggregate.
-    assert!(outcome.capability_preflight_cases() > 0);
-    assert!(outcome.snapshot_orphan_cases() > 0);
-    assert!(outcome.flush_orphan_table_cases() > 0);
-    assert!(outcome.quarantine_publish_blocked_purge_cases() > 0);
-    assert!(outcome.close_log_sync_source_cases() > 0);
+    assert_eq!(
+        outcome.cases_executed(),
+        strata_storage_next::testkit::ServiceFaultWindowHarnessOutcome::EXPECTED_CASES
+    );
+    for (case, count) in outcome.case_counts() {
+        assert!(count > 0, "{case} service fault route did not execute");
+    }
     assert!(common::crate_root().join("src/service/mod.rs").is_file());
 }

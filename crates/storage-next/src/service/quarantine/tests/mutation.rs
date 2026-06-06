@@ -1,8 +1,8 @@
 use super::*;
 use crate::backend::{
     Backend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
-    BackendMetadata, BackendRange, BackendResult, PublishDurability, PublishError,
-    PublishFailureKind, PublishMode, PublishOutcome,
+    BackendMetadata, BackendRange, BackendResult, DeleteDurability, DeleteOutcome,
+    PublishDurability, PublishError, PublishFailureKind, PublishMode, PublishOutcome,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use std::collections::BTreeMap;
@@ -31,6 +31,7 @@ struct MutationBackend {
     read_failures: Mutex<BTreeMap<ObjectName, BackendErrorKind>>,
     publish_failures: Mutex<BTreeMap<ObjectName, (PublishFailureKind, bool)>>,
     delete_failures: Mutex<BTreeMap<ObjectName, BackendErrorKind>>,
+    non_durable_deletes: Mutex<BTreeMap<ObjectName, bool>>,
     metadata_failures: Mutex<BTreeMap<ObjectName, BackendErrorKind>>,
     metadata_override: Mutex<Option<(ObjectName, u64)>>,
     operations: Mutex<Vec<Operation>>,
@@ -54,6 +55,7 @@ impl MutationBackend {
             read_failures: Mutex::new(BTreeMap::new()),
             publish_failures: Mutex::new(BTreeMap::new()),
             delete_failures: Mutex::new(BTreeMap::new()),
+            non_durable_deletes: Mutex::new(BTreeMap::new()),
             metadata_failures: Mutex::new(BTreeMap::new()),
             metadata_override: Mutex::new(None),
             operations: Mutex::new(Vec::new()),
@@ -91,6 +93,13 @@ impl MutationBackend {
             .lock()
             .expect("mutation backend lock")
             .insert(object, kind);
+    }
+
+    fn make_delete_non_durable(&self, object: ObjectName) {
+        self.non_durable_deletes
+            .lock()
+            .expect("mutation backend lock")
+            .insert(object, true);
     }
 
     fn fail_metadata(&self, object: ObjectName, kind: BackendErrorKind) {
@@ -216,6 +225,18 @@ impl Backend for MutationBackend {
             .expect("mutation backend lock")
             .remove(name)
             .is_some();
+        if self
+            .non_durable_deletes
+            .lock()
+            .expect("mutation backend lock")
+            .contains_key(name)
+        {
+            return Ok(DeleteOutcome::from_removed(
+                name.clone(),
+                DeleteDurability::NonDurable,
+                removed,
+            ));
+        }
         crate::backend::durable_delete_result(name, removed)
     }
 
@@ -384,7 +405,15 @@ fn quarantine_publishes_inventory_then_copy_then_deletes_source() {
     assert_eq!(report.quarantine_object(), &quarantine_object);
     assert_eq!(report.byte_count(), source_bytes.len() as u64);
     assert_eq!(report.entry_count(), 1);
-    assert!(report.source_delete().expect("delete").deleted_flag());
+    let source_delete = report.source_delete().expect("delete");
+    assert!(source_delete.deleted_flag());
+    assert_eq!(
+        source_delete
+            .outcome()
+            .expect("source delete outcome")
+            .durability(),
+        DeleteDurability::Durable
+    );
     assert_eq!(backend.read_count(&source_object), 1);
     assert_eq!(backend.read_count(&quarantine_object), 0);
     assert!(!backend.contains(&source_object));
@@ -407,6 +436,31 @@ fn quarantine_publishes_inventory_then_copy_then_deletes_source() {
             Operation::Delete(source_object),
         ]
     );
+}
+
+#[test]
+fn quarantine_non_durable_source_delete_is_health_debt() {
+    let branch_id = branch_id();
+    let source_object = source_object();
+    let backend = MutationBackend::durable().with_object(source_object.clone(), b"table-bytes");
+    backend.make_delete_non_durable(source_object.clone());
+    let service = QuarantineService::new(&backend);
+
+    let report = service
+        .quarantine_object(&request(branch_id, "table0002", source_object.clone()))
+        .expect("quarantine object");
+
+    assert_eq!(
+        report.status(),
+        QuarantineObjectStatus::QuarantinedSourceDeleteFailed
+    );
+    let source_delete = report.source_delete().expect("source delete");
+    assert!(!source_delete.deleted_flag());
+    assert_eq!(
+        source_delete.delete_error().expect("delete error").kind(),
+        crate::backend::DeleteFailureKind::RemovedDurabilityUnconfirmed
+    );
+    assert!(!backend.contains(&source_object));
 }
 
 #[test]

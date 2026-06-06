@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::{DeleteDurability, DeleteFailureKind};
 use crate::service::QuarantineDeleteOutcome;
 
 fn purge_request(
@@ -42,6 +43,13 @@ fn purge_deletes_listed_objects_only_and_rewrites_empty_inventory() {
         .expect("purge");
 
     assert_eq!(report.deleted().len(), 1);
+    assert_eq!(
+        report.deleted()[0]
+            .outcome()
+            .expect("delete outcome")
+            .durability(),
+        DeleteDurability::Durable
+    );
     assert_eq!(report.branch_id(), branch_id);
     assert_eq!(report.inventory_object(), &inventory_object(branch_id));
     assert!(report.failed().is_empty());
@@ -59,6 +67,38 @@ fn purge_deletes_listed_objects_only_and_rewrites_empty_inventory() {
         .expect("load rewritten inventory")
         .inventory()
         .is_empty());
+}
+
+#[test]
+fn purge_non_durable_delete_is_failed_and_retained() {
+    let branch_id = branch_id();
+    let source_object = source_object();
+    let listed_object = quarantine_object(branch_id, "table0002");
+    let entry = QuarantineEntry::new("table0002", source_object, 5, Timestamp::from_micros(2))
+        .expect("entry");
+    let inventory = inventory(branch_id, vec![entry]);
+    let backend = MutationBackend::durable()
+        .with_object(inventory_object(branch_id), &encode_inventory(&inventory))
+        .with_object(listed_object.clone(), b"quarantined");
+    backend.make_delete_non_durable(listed_object.clone());
+    let service = QuarantineService::new(&backend);
+
+    let report = service
+        .purge_quarantine(purge_request(&service, branch_id, QuarantineGate::Safe))
+        .expect("purge report");
+
+    assert!(report.deleted().is_empty());
+    assert!(report.already_missing().is_empty());
+    assert_eq!(report.failed().len(), 1);
+    assert_eq!(report.failed()[0].object(), &listed_object);
+    assert_eq!(
+        report.failed()[0]
+            .delete_error()
+            .expect("delete error")
+            .kind(),
+        DeleteFailureKind::RemovedDurabilityUnconfirmed
+    );
+    assert_eq!(report.retained_entries().len(), 1);
 }
 
 #[test]

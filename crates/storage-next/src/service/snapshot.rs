@@ -564,9 +564,8 @@ fn validate_snapshot_header_identity(
 }
 
 mod listing;
-#[cfg(test)]
 pub(crate) use listing::SnapshotDeleteReport;
-pub(crate) use listing::{SnapshotDeleteFailure, SnapshotObject};
+pub(crate) use listing::{SnapshotDeleteFailure, SnapshotDeleteOutcome, SnapshotObject};
 
 #[cfg(test)]
 mod listing_tests;

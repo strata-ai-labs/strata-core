@@ -13,7 +13,9 @@ use crate::commit::{
     CommitTimelineRows, CommitTimestampPolicy, CommitUnresolvedDurable, CommitValidationFacts,
 };
 use crate::format::{
-    encode_manifest, DatabaseManifest, WalCommitPayload, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
+    encode_manifest, encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header,
+    DatabaseManifest, WalCommitPayload, WalRecord, WalRecordEnvelope, WalSegmentHeader,
+    SNAPSHOT_ROW_SECTION_KIND,
 };
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
@@ -224,6 +226,43 @@ fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() 
 }
 
 #[test]
+fn recovery_ignores_orphan_snapshot_when_manifest_has_no_checkpoint_fact() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x63);
+    let orphan_row = put_row(branch, 4, b"orphan-snapshot", b"ignored");
+    publish_snapshot(
+        &backend,
+        13,
+        CommitVersion::new(4),
+        std::slice::from_ref(&orphan_row),
+    );
+    let orphan_object = ObjectLayout::snapshot(13).expect("orphan snapshot object");
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert_eq!(outcome.checkpoint().snapshot_id(), None);
+    assert_eq!(outcome.checkpoint().trusted_watermark(), None);
+    assert_eq!(outcome.checkpoint().row_count(), 0);
+    assert!(outcome.checkpoint().install_outcome().is_none());
+    assert!(backend.object_bytes(&orphan_object).is_some());
+    assert!(shell.branch_state().is_empty());
+    assert!(shell
+        .branch_state()
+        .capture_read_view()
+        .expect("read view")
+        .latest(orphan_row.physical_key())
+        .expect("orphan read")
+        .is_none());
+}
+
+#[test]
 fn bootstrap_replays_wal_tail_through_commit_runtime() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x46);
@@ -384,6 +423,41 @@ fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
         shell
             .complete_recovery(&outcome)
             .expect_err("non-increasing recovered record package rejects"),
+        LifecycleError::RecoveryFailed {
+            reason: "recovered WAL package must be strictly ordered",
+        }
+    );
+}
+
+#[test]
+fn bootstrap_rejects_recovered_log_records_with_duplicate_commit_versions() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x60);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let first = wal_record(branch, 5, b"duplicate-first", b"value");
+    let second = wal_record(branch, 5, b"duplicate-second", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&first)
+        .expect("append first record");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&second)
+        .expect("append duplicate-version record");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    assert_eq!(outcome.wal().records(), &[first, second]);
+    assert_eq!(
+        shell
+            .complete_recovery(&outcome)
+            .expect_err("duplicate recovered record package rejects"),
         LifecycleError::RecoveryFailed {
             reason: "recovered WAL package must be strictly ordered",
         }
@@ -679,6 +753,53 @@ fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
 }
 
 #[test]
+fn recovery_keeps_checkpoint_covered_wal_segment_without_replay_or_cleanup() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x61);
+    let checkpoint_row = put_row(branch, 3, b"checkpointed", b"checkpoint-value");
+    publish_snapshot(
+        &backend,
+        12,
+        CommitVersion::new(3),
+        std::slice::from_ref(&checkpoint_row),
+    );
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(2, Some(3), Some(12), None)
+            .expect("database root facts"),
+    );
+    let covered = wal_record(branch, 2, b"covered-wal", b"old");
+    let replayed = wal_record(branch, 4, b"active-wal", b"tail");
+    let covered_object = ObjectLayout::wal_segment(1).expect("covered WAL object");
+    let active_object = ObjectLayout::wal_segment(2).expect("active WAL object");
+    backend.write_raw(covered_object.clone(), wal_segment_bytes(1, &[covered]));
+    backend.write_raw(
+        active_object,
+        wal_segment_bytes(2, std::slice::from_ref(&replayed)),
+    );
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert_eq!(outcome.wal().replay_start(), CommitVersion::new(3));
+    assert_eq!(outcome.wal().records(), std::slice::from_ref(&replayed));
+    assert!(outcome.wal().truncation().is_none());
+    assert!(outcome.wal().repair().is_none());
+    assert!(
+        backend.object_bytes(&covered_object).is_some(),
+        "recovery must not delete checkpoint-covered WAL segments"
+    );
+}
+
+#[test]
 fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
     let backend = RecoveryTestBackend::new();
     let branch = branch_id(0x37);
@@ -729,10 +850,14 @@ fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
         .wal_mut()
         .append(&record)
         .expect("append valid record");
-    backend.append_raw(
-        ObjectLayout::wal_segment(1).expect("active log object"),
-        b"partial",
-    );
+    let wal_object = ObjectLayout::wal_segment(1).expect("active log object");
+    let valid_end = backend
+        .object_bytes(&wal_object)
+        .expect("valid WAL bytes")
+        .len() as u64;
+    let partial = b"partial";
+    backend.append_raw(wal_object.clone(), partial);
+    let object_size = valid_end + partial.len() as u64;
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -741,8 +866,21 @@ fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
         .expect("partial tail recovery");
 
     assert_eq!(outcome.wal().records(), std::slice::from_ref(&record));
-    assert!(outcome.wal().truncation().is_some());
-    assert!(outcome.wal().repair().is_some());
+    let truncation = outcome.wal().truncation().expect("truncation fact");
+    assert_eq!(truncation.segment_id(), 1);
+    assert_eq!(truncation.valid_end_offset(), valid_end);
+    assert_eq!(truncation.object_size(), object_size);
+    let repair = outcome.wal().repair().expect("repair fact");
+    assert_eq!(repair.segment_id(), 1);
+    assert_eq!(repair.valid_end_offset(), valid_end);
+    assert_eq!(repair.removed_bytes(), partial.len() as u64);
+    assert_eq!(
+        backend
+            .object_bytes(&wal_object)
+            .expect("repaired WAL bytes")
+            .len() as u64,
+        valid_end
+    );
     assert!(matches!(
         outcome.health(),
         RecoveryHealth::Degraded {
@@ -764,10 +902,9 @@ fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
         .wal_mut()
         .append(&record)
         .expect("append valid record");
-    backend.append_raw(
-        ObjectLayout::wal_segment(1).expect("active log object"),
-        b"partial",
-    );
+    let wal_object = ObjectLayout::wal_segment(1).expect("active log object");
+    backend.append_raw(wal_object.clone(), b"partial");
+    let before = backend.object_bytes(&wal_object).expect("WAL bytes before");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -779,6 +916,57 @@ fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
             reason: "strict recovery cannot repair partial WAL tail",
         }
     );
+    assert_eq!(
+        backend.object_bytes(&wal_object).expect("WAL bytes after"),
+        before,
+        "strict recovery must not mutate an unrepaired WAL tail"
+    );
+    assert!(shell.branch_state().is_empty());
+}
+
+#[test]
+fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x62);
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(2, None, None, None)
+            .expect("database root facts"),
+    );
+    let first = wal_record(branch, 2, b"non-latest-valid", b"value");
+    let first_object = ObjectLayout::wal_segment(1).expect("first WAL object");
+    let second_object = ObjectLayout::wal_segment(2).expect("second WAL object");
+    let mut partial_first = wal_segment_bytes(1, std::slice::from_ref(&first));
+    partial_first.extend_from_slice(b"partial");
+    backend.write_raw(first_object.clone(), partial_first.clone());
+    backend.write_raw(second_object, wal_segment_bytes(2, &[]));
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("non-latest partial tail must fail closed");
+
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::Service,
+            reason: "WAL recovery read failed",
+            ..
+        }
+    ));
+    assert_eq!(
+        backend
+            .object_bytes(&first_object)
+            .expect("first WAL bytes"),
+        partial_first,
+        "non-latest partial tails must not be repaired during recovery"
+    );
+    assert!(shell.branch_state().is_empty());
 }
 
 #[test]
@@ -1189,6 +1377,47 @@ fn recovery_rejects_missing_snapshot_in_strict_mode() {
     ));
     assert!(error.source().is_some());
     assert!(shell.branch_state().is_empty());
+}
+
+#[test]
+fn recovery_rejects_corrupt_manifest_listed_snapshot_without_installing_rows() {
+    let backend = RecoveryTestBackend::new();
+    let branch = branch_id(0x64);
+    let snapshot_object = ObjectLayout::snapshot(14).expect("snapshot object");
+    backend.write_raw(snapshot_object.clone(), b"not a snapshot".to_vec());
+    write_manifest(
+        &backend,
+        &DatabaseManifest::new(DATABASE_ID, "identity")
+            .expect("database root")
+            .with_recovery_facts(1, Some(4), Some(14), None)
+            .expect("database root facts"),
+    );
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("corrupt snapshot rejects");
+
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::Service,
+            reason: "snapshot decode failed",
+            ..
+        }
+    ));
+    assert!(error.source().is_some());
+    assert_eq!(
+        backend
+            .object_bytes(&snapshot_object)
+            .expect("corrupt snapshot bytes"),
+        b"not a snapshot"
+    );
+    assert!(shell.branch_state().is_empty());
+    assert_eq!(shell.visible_version(), CommitVersion::ZERO);
 }
 
 #[test]
@@ -2435,6 +2664,20 @@ fn write_manifest(backend: &RecoveryTestBackend, manifest: &DatabaseManifest) {
         ObjectLayout::database_manifest().expect("database root object"),
         encode_manifest(manifest).expect("database root bytes"),
     );
+}
+
+fn wal_segment_bytes(segment_id: u64, records: &[WalRecord]) -> Vec<u8> {
+    let mut bytes = encode_wal_segment_header(&WalSegmentHeader::new(segment_id, DATABASE_ID));
+    for record in records {
+        bytes.extend_from_slice(&wal_record_frame(record));
+    }
+    bytes
+}
+
+fn wal_record_frame(record: &WalRecord) -> Vec<u8> {
+    let record_bytes = encode_wal_record(record).expect("encode WAL record");
+    let envelope = WalRecordEnvelope::new(record_bytes).expect("WAL record envelope");
+    encode_wal_record_envelope(&envelope).expect("encode WAL record envelope")
 }
 
 fn wal_record(

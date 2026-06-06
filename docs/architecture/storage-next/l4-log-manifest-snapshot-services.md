@@ -243,6 +243,70 @@ Current tests already encode many L4 invariants:
 - codec-aware WAL paths are required for encrypted WALs
 - WAL truncation does not remove active or uncovered segments
 
+## Storage-Next Implementation Map
+
+M4P-L4A reconciles this architecture document with the storage-next service
+layer that exists today. The old-storage references above remain parity
+evidence. The current storage-next implementation lives under
+`crates/storage-next/src/service` and is consumed by lifecycle/recovery code
+under `crates/storage-next/src/lifecycle`.
+
+| Storage-next service | Current role | L4A inventory status |
+| --- | --- | --- |
+| `service/publish.rs` | Shared object publication wrapper over L1 backend publish modes. It enforces durable publish/sync capabilities before durable create/replace and validates visible durable outcomes. | Covered by the durable publisher transition rows below. |
+| `service/wal.rs` | WAL segment creation/open, append, force, read, latest-tail repair, retention delete, growth facts, and optional sidecar cleanup. | Covered by WAL create, append, repair, and retention rows. |
+| `service/manifest.rs` | Database manifest, table manifest, branch catalog manifest, and pending releases manifest services over L3 codecs and L2 names. | Covered by four manifest-role rows. |
+| `service/snapshot.rs` and `service/snapshot/listing.rs` | Snapshot publish/load/list/latest/prune mechanics, including live/newest protection and malformed-object classification. | Covered by snapshot publish/load/list/prune rows. |
+| `service/checkpoint.rs` | Mechanical checkpoint publication sequencing for active-WAL facts, snapshots, final manifest facts, and optional table-manifest records. | Covered by checkpoint rows, with restart proof owned by L8 lifecycle tests. |
+| `service/table.rs` | Immutable table object publication and object-backed reader handoff. It validates object facts before exposing a readable table object. | Covered by table object publish/open rows. |
+| `service/sidecar.rs` | Optional WAL segment metadata sidecar publish/load/delete. Missing or corrupt sidecars are recoverable because the WAL segment is authoritative. | Covered by sidecar and WAL retention rows. |
+| `service/quarantine.rs` and submodules | Quarantine inventory load/publish, object copy/delete mutation, family reconciliation, and purge mechanics. | Covered by quarantine inventory, source-delete, reconcile, and purge rows. |
+| `service/cache_mode_absence_tests.rs` | Durable service absence checks for cache/non-durable storage mode. | Covered by cache-mode absence row. |
+
+The current topology is intentionally different from old storage. Old storage
+used branch-local `segments.manifest` files as the dominant durable table
+source of truth. Storage-next splits durable state across database manifest,
+branch catalog, per-branch table manifests, table-object facts, WAL segments,
+checkpoint facts, snapshot objects, optional sidecars, and quarantine
+inventories. That split is acceptable only if L4 returns enough mechanical facts
+for L8 recovery to classify every partial publication window.
+
+## Publication And Recovery Transition Inventory
+
+Each row names the authoritative object family, optional object family where one
+exists, required lower-layer capabilities, the visible-but-not-durable window,
+the already-missing behavior, the recovery classification, and the owning test
+surface.
+
+| Transition | Authoritative object | Optional objects | Required capabilities | Visible-but-not-durable window | Already-missing behavior | Recovery classification | Owning tests |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Durable publisher create/replace | L2 object supplied by caller | None | L1 durable publish and durable sync | Publish reached namespace but durability confirmation failed | Not applicable for publish; create may reject already-existing object | `PublishFailureKind::VisibilityUnknown` or `VisibleDurabilityUnconfirmed` | `service/publish.rs` unit tests; L4C service conformance |
+| WAL segment create/open | WAL segment object | WAL metadata sidecar | L1 append, read, list, metadata, durable sync | Segment object visible before close/force confirms durability | Missing segment during open/list is skipped unless it is required by recovery facts | Empty/new segment, dirty segment, or missing required segment | `service/wal/tests/append.rs`, `localfs.rs`, `read.rs` |
+| WAL append with `standard` policy | Active WAL segment | WAL metadata sidecar | L1 append and read; durable sync may be deferred | Appended bytes visible but not yet forced durable | Not applicable | Dirty WAL state; strict replay may report latest partial tail | `service/wal/tests/append.rs`, `durability.rs`, `read.rs`, `corruption.rs` |
+| WAL append with `always` policy | Active WAL segment | WAL metadata sidecar | L1 append and durable sync | Append visible but force failed before durable acknowledgement | Not applicable | Commit must not be acknowledged durable; replay still classifies bytes mechanically | `service/wal/tests/durability.rs`, `fault_windows.rs` |
+| WAL latest-tail repair | Latest WAL segment | WAL metadata sidecar | L1 durable replace/publish, read, metadata | Repaired prefix visible but durability unconfirmed | Not applicable | Append is blocked until reopen/recovery confirms repaired state | `service/wal/tests/retention_reopen.rs` |
+| WAL retention delete | Closed WAL segments below durable proof | Matching optional sidecars | L1 list, metadata, delete | Delete returned removed but durability is not confirmed | Missing segment or sidecar is idempotent cleanup | Deleted, already missing, failed, or durability-unconfirmed cleanup fact | `service/wal/tests/retention_reopen.rs`; L4B cleanup tests |
+| Database manifest create/replace | `manifest/current` database manifest | None | L1 durable publish/sync, L2 database manifest name, L3 database manifest codec | New manifest visible but durability unconfirmed | Missing current manifest is allowed only on create/bootstrap paths | Load missing, decode corrupt, codec mismatch, or publish uncertainty | `service/manifest.rs` tests; `lifecycle/tests/durable.rs`; L4C conformance |
+| Table manifest replace | Per-branch table manifest | Referenced table objects | L1 durable publish/sync, L2 table manifest name, L3 table manifest codec | New reachability manifest visible but durability unconfirmed | Missing manifest is recoverable as absent reachability for the owning branch | Missing, corrupt, invalid table facts, or manifest debt for L8 | `service/manifest.rs` tests; `lifecycle/tests/table_manifest_recovery.rs`; L4D restart tests |
+| Branch catalog manifest replace | Branch catalog manifest | Per-branch manifests referenced by catalog | L1 durable publish/sync, L2 branch catalog name, L3 branch catalog codec | New catalog visible but durability unconfirmed | Missing catalog is bootstrap/recovery input, not a silent empty durable database | Missing, corrupt, or catalog/branch topology mismatch | `service/manifest.rs` tests; `lifecycle/tests/branch_lifecycle/catalog.rs` |
+| Pending releases manifest replace | Pending releases manifest | Table objects and table manifests named by release facts | L1 durable publish/sync, L2 pending releases name, L3 pending releases codec | Pending-release fact visible but durability unconfirmed | Missing pending releases means no pending durable release facts | Missing, corrupt, or invalid recovery fact | `service/manifest.rs` tests; lifecycle release tests as added by L4D |
+| Snapshot publish | Snapshot object | None | L1 durable publish/sync, L2 snapshot name, L3 snapshot codec | Snapshot visible but manifest does not yet point at it, or durability is unconfirmed | Missing snapshot is an orphan/missing-reference fact depending on manifest state | Orphan snapshot, missing referenced snapshot, corrupt snapshot, or codec mismatch | `service/snapshot/publish_load_tests.rs`, `publish_fault_tests.rs`; L4D restart tests |
+| Snapshot load/list/latest | Snapshot objects under snapshot prefix | None | L1 read/list/metadata, L2 snapshot classifier, L3 snapshot codec | Not a publish transition | Missing listed object becomes malformed/missing classification | Latest valid snapshot, malformed snapshot, missing referenced snapshot | `service/snapshot/listing_tests.rs`, `listing_property_tests.rs` |
+| Snapshot prune | Snapshot objects proven unreachable | None | L1 list/delete/metadata | Delete returned removed but durability is not confirmed | Missing snapshot is idempotent cleanup | Deleted, already missing, failed, protected live/newest, or malformed-object fact | `service/snapshot/listing_tests.rs`; L4B cleanup tests |
+| Checkpoint active-WAL fact | Database manifest checkpoint fields | Snapshot object and optional table-manifest record | L1 durable publish/sync through manifest/snapshot services | Active-WAL fact visible before snapshot/final manifest completes | Missing manifest on bootstrap may create initial manifest | Incomplete checkpoint phase that L8 must retry or ignore safely | `service/checkpoint/tests/sequencing.rs`; `lifecycle/tests/checkpoint.rs` |
+| Checkpoint snapshot/final manifest | Snapshot object plus database manifest checkpoint facts | Optional table-manifest record | L1 durable publish/sync, L3 snapshot and manifest codecs | Snapshot visible before final manifest, or final manifest visible before all referenced facts are confirmed | Missing referenced object is hard recovery evidence, not ignored success | Orphan snapshot, missing/corrupt referenced snapshot, incomplete table flush proof | `service/checkpoint/tests/sequencing.rs`; `lifecycle/tests/checkpoint/*`; L4D restart tests |
+| Table object publish/open | Immutable table object | Future table sidecars, if any | L1 durable publish/read/range/metadata, L2 table object name, L5 table parser | Table object visible before table manifest names it, or durability unconfirmed | Missing object is valid only if no manifest references it | Orphan table object, missing referenced object, corrupt object, or object fact mismatch | `service/table.rs` tests; `lifecycle/tests/table_manifest_recovery.rs`; L4D restart tests |
+| Rewrite publication and table-manifest debt | Newly published table objects and later table manifest | Old table objects until retention proof | L4 table publish and table manifest publish; L8 owns branch install | Output table visible before catalog update, branch install, or manifest publication | Missing prior output during retry is debt/recovery evidence | Manifest debt, orphaned output, invalid reopened table, or retryable publish failure | `lifecycle/rewrite_publication.rs` tests; `lifecycle/tests/compaction/*`; L4D restart tests |
+| WAL sidecar publish/load/delete | None; sidecar is optional | WAL metadata sidecar | L1 durable publish/read/delete where used | Sidecar visible but durability unconfirmed | Missing sidecar falls back to authoritative WAL scan | Optional accelerator missing/corrupt/delete-failed fact | `service/sidecar/tests/*`; WAL retention tests |
+| Quarantine inventory publish | Quarantine inventory manifest | Quarantine object copy | L1 durable publish/sync, L2 quarantine names, L3 quarantine inventory codec | Inventory visible before quarantine copy or source delete completes | Missing inventory can synthesize an empty optional inventory but must be reconciled with listed quarantine objects | Empty inventory, corrupt inventory, publish uncertainty, or inventory mismatch | `service/quarantine/tests/inventory.rs`, `mutation.rs`, `reconcile.rs` |
+| Quarantine source copy/delete | Quarantine copy object and source object delete outcome | Inventory update | L1 read, metadata, durable publish, delete | Copy visible but source delete failed or durability unconfirmed | Missing source before copy is a pre-mutation failure; missing source after copy is reconciliation input | Quarantined, copy uncertain, source delete failed, or transient failure | `service/quarantine/tests/mutation.rs`; `lifecycle/tests/quarantine.rs` |
+| Quarantine reconcile/purge | Quarantine inventory and quarantine objects | Source objects named by entries | L1 list/read/delete, L2 quarantine classifier, L3 inventory codec | Purge delete removed object but durability is not confirmed; inventory rewrite may fail after deletions | Missing quarantine object is idempotent purge or missing-object reconciliation fact | Listed, unlisted, missing, deleted, already missing, failed, or inventory rewrite failed | `service/quarantine/tests/reconcile.rs`; `lifecycle/tests/quarantine.rs`; L4B cleanup tests |
+| Cache-mode durable service absence | No durable objects | None | Cache backend read/write/list/delete only; no durable publish/sync/WAL | Not applicable because durable services reject before mutation | Not applicable | Explicit unsupported durable service path | `service/cache_mode_absence_tests.rs`; `lifecycle/tests/cache.rs` |
+
+The inventory intentionally records L8-owned recovery classifications beside L4
+service operations. L4 owns the mechanical facts; L8 owns whether those facts
+become retry, repair, quarantine, lifecycle health debt, or hard open failure.
+
 ## Current Pressure Points
 
 ### Local Filesystem Assumptions

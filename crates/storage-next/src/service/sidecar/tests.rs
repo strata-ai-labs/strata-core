@@ -10,8 +10,8 @@ use crate::backend::local_fs::LocalFsBackend;
 use crate::backend::memory::MemoryBackend;
 use crate::backend::{
     Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
-    BackendMetadata, BackendRange, PublishDurability, PublishError, PublishFailureKind,
-    PublishMode, PublishOutcome, PublishResult,
+    BackendMetadata, BackendRange, DeleteStatus, PublishDurability, PublishError,
+    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
 };
 use crate::format::{
     decode_segment_metadata, encode_segment_metadata, FormatError, SegmentMetadata,
@@ -519,6 +519,11 @@ fn delete_failure_is_reported_without_touching_wal_segment() {
         report.failure().map(BackendError::kind),
         Some(BackendErrorKind::Unavailable)
     );
+    assert!(report.outcome().is_none());
+    assert_eq!(
+        report.delete_error().map(|error| error.object()),
+        Some(&sidecar_object(6))
+    );
     assert_eq!(
         backend.read_stored(&wal_object),
         Some(b"wal bytes".to_vec())
@@ -544,4 +549,29 @@ fn delete_missing_sidecar_is_a_noop_fact() {
     assert_eq!(report.object(), &sidecar_object(10));
     assert!(!report.deleted());
     assert!(report.failure().is_none());
+    assert_eq!(
+        report.outcome().map(|outcome| outcome.status()),
+        Some(DeleteStatus::AlreadyMissing)
+    );
+}
+
+#[test]
+fn delete_not_found_sidecar_error_is_a_noop_fact() {
+    let backend = RecordingBackend::new();
+    backend.set_delete_failure(BackendError::new(
+        BackendErrorKind::NotFound,
+        "sidecar already absent",
+    ));
+    let service = WalSegmentMetadataSidecarService::new(&backend);
+
+    let report = service.delete(11).expect("delete report");
+
+    assert_eq!(report.segment_id(), 11);
+    assert_eq!(report.object(), &sidecar_object(11));
+    assert!(!report.deleted());
+    assert!(report.failure().is_none());
+    assert_eq!(
+        report.outcome().map(|outcome| outcome.status()),
+        Some(DeleteStatus::AlreadyMissing)
+    );
 }

@@ -1,5 +1,7 @@
 use super::super::{QuarantineInventoryToken, QuarantineInventoryWrite};
-use crate::backend::{BackendError, PublishError, PublishOutcome};
+use crate::backend::{
+    BackendError, DeleteError, DeleteOutcome, DeleteStatus, PublishError, PublishOutcome,
+};
 use crate::format::quarantine::QuarantineEntry;
 use crate::object::ObjectName;
 use std::fmt;
@@ -120,33 +122,30 @@ pub(crate) struct QuarantineDeleteOutcome {
     object: ObjectName,
     pub(super) deleted: bool,
     pub(super) already_missing: bool,
-    pub(super) failure: Option<BackendError>,
+    pub(super) outcome: Option<DeleteOutcome>,
+    pub(super) failure: Option<DeleteError>,
 }
 
 impl QuarantineDeleteOutcome {
-    pub(super) fn deleted(object: ObjectName) -> Self {
+    pub(super) fn from_outcome(outcome: DeleteOutcome) -> Self {
+        let deleted = outcome.status() == DeleteStatus::Deleted;
+        let already_missing = outcome.status() == DeleteStatus::AlreadyMissing;
+        let object = outcome.object().clone();
         Self {
             object,
-            deleted: true,
-            already_missing: false,
+            deleted,
+            already_missing,
+            outcome: Some(outcome),
             failure: None,
         }
     }
 
-    pub(super) fn missing(object: ObjectName) -> Self {
-        Self {
-            object,
-            deleted: false,
-            already_missing: true,
-            failure: None,
-        }
-    }
-
-    pub(super) fn failed(object: ObjectName, failure: BackendError) -> Self {
+    pub(super) fn failed(object: ObjectName, failure: DeleteError) -> Self {
         Self {
             object,
             deleted: false,
             already_missing: false,
+            outcome: None,
             failure: Some(failure),
         }
     }
@@ -163,7 +162,18 @@ impl QuarantineDeleteOutcome {
         self.already_missing
     }
 
+    pub(crate) const fn outcome(&self) -> Option<&DeleteOutcome> {
+        self.outcome.as_ref()
+    }
+
     pub(crate) const fn failure(&self) -> Option<&BackendError> {
+        match self.failure.as_ref() {
+            Some(failure) => Some(failure.source_error()),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn delete_error(&self) -> Option<&DeleteError> {
         self.failure.as_ref()
     }
 }

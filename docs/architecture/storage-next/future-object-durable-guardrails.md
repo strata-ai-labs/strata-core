@@ -33,6 +33,35 @@ manifest publication to object-store commit chunks, conditional manifests,
 leases, or generation-fenced pointers. Engine and product compute should not
 need to know which durable shape is in use.
 
+## V1 Object-Durable Fencing Decision
+
+V1 admits durable-local storage only. `object-durable-candidate` remains a
+named storage mode for planning and tests, but runtime construction must reject
+it until a focused object-durable implementation plan supplies the missing
+fencing contract.
+
+Durable-local V1 can rely on a single-writer local filesystem guard plus
+atomic durable publication through local filesystem mechanics. Object-durable
+mode cannot inherit that proof. It needs L1/L4 support for conditional
+publication, generation or ETag-style fencing, or an equivalent compare-and-swap
+contract before a visible durable object can be treated as authoritative.
+
+Before object-durable mode can be enabled, the following L4 services must use
+the fencing contract rather than plain write/replace operations:
+
+- database, branch, table, and pending-release manifests;
+- checkpoint snapshot and final-manifest publication;
+- table object publication and table reachability manifests;
+- WAL or the future object-store-native commit durability primitive;
+- snapshot publication, lookup, and retention facts;
+- quarantine inventory, quarantine object copy, source delete projection, and
+  purge/repair reconciliation.
+
+The MVP stop condition is therefore explicit: object-durable mode may parse and
+round-trip as an internal planning value, but durable runtime assembly must fail
+before backend mutation until those L1/L4 fences exist and have their own
+conformance tests.
+
 ## Structural Invariants
 
 1. Engine-next consumes storage through L9. It must not import WAL records,

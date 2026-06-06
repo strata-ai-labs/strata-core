@@ -2,14 +2,13 @@ use super::checkpoint::shared::{open_runtime as open_durable_runtime, Checkpoint
 use super::*;
 use crate::backend::{
     Backend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
-    BackendMetadata, BackendRange, BackendResult, PublishDurability, PublishError,
-    PublishFailureKind, PublishMode, PublishOutcome,
+    BackendMetadata, BackendRange, BackendResult, DeleteDurability, DeleteOutcome,
+    PublishDurability, PublishError, PublishFailureKind, PublishMode, PublishOutcome,
 };
 use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::QuarantineService;
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
 use strata_core_next::{BranchId, Timestamp};
 
@@ -388,6 +387,31 @@ fn quarantine_source_delete_failure_reports_retryable_health_debt() {
         LifecycleQuarantineStatus::QuarantinedSourceDeleteFailed
     );
     assert!(outcome.source_error().is_some());
+    let maintenance = outcome.maintenance_outcome();
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
+    assert!(maintenance.retryable());
+    assert!(maintenance.recovery_health().is_some());
+}
+
+#[test]
+fn quarantine_non_durable_source_delete_reports_retryable_health_debt() {
+    let source = source_object();
+    let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");
+    backend.make_delete_non_durable(source.clone());
+    let request = quarantine_request(
+        LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
+        source.clone(),
+    );
+
+    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleQuarantineStatus::QuarantinedSourceDeleteFailed
+    );
+    assert!(outcome.source_error().is_some());
+    assert!(!backend.contains(&source));
+    assert!(backend.contains(outcome.quarantine_object().expect("quarantine object")));
     let maintenance = outcome.maintenance_outcome();
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
     assert!(maintenance.retryable());
@@ -879,6 +903,7 @@ enum Operation {
 struct QuarantineTestBackend {
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     delete_failures: Mutex<BTreeMap<ObjectName, BackendErrorKind>>,
+    non_durable_deletes: Mutex<BTreeSet<ObjectName>>,
     publish_failures: Mutex<VecDeque<PublishFailureKind>>,
     list_failure: Mutex<Option<BackendErrorKind>>,
     operations: Mutex<Vec<Operation>>,
@@ -889,6 +914,7 @@ impl QuarantineTestBackend {
         Self {
             objects: Mutex::new(BTreeMap::new()),
             delete_failures: Mutex::new(BTreeMap::new()),
+            non_durable_deletes: Mutex::new(BTreeSet::new()),
             publish_failures: Mutex::new(VecDeque::new()),
             list_failure: Mutex::new(None),
             operations: Mutex::new(Vec::new()),
@@ -908,6 +934,13 @@ impl QuarantineTestBackend {
             .lock()
             .expect("backend lock")
             .insert(object, kind);
+    }
+
+    fn make_delete_non_durable(&self, object: ObjectName) {
+        self.non_durable_deletes
+            .lock()
+            .expect("backend lock")
+            .insert(object);
     }
 
     fn fail_next_publish(&self, kind: PublishFailureKind) {
@@ -990,13 +1023,27 @@ impl Backend for QuarantineTestBackend {
                 BackendError::new(kind, "delete failed"),
             );
         }
+        let durability = if self
+            .non_durable_deletes
+            .lock()
+            .expect("backend lock")
+            .remove(name)
+        {
+            DeleteDurability::NonDurable
+        } else {
+            DeleteDurability::Durable
+        };
         let removed = self
             .objects
             .lock()
             .expect("backend lock")
             .remove(name)
             .is_some();
-        crate::backend::durable_delete_result(name, removed)
+        Ok(DeleteOutcome::from_removed(
+            name.clone(),
+            durability,
+            removed,
+        ))
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

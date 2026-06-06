@@ -10,7 +10,7 @@
 
 use crate::backend::{
     Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
-    DeleteStatus, PublishError,
+    DeleteDurability, DeleteError, DeleteOutcome, PublishError,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
@@ -20,7 +20,9 @@ use crate::format::{
 };
 use crate::layout::{LayoutError, ObjectLayout, WalObjectClassification};
 use crate::object::ObjectName;
-use crate::service::{validate_publish_outcome, ObjectPublisher};
+use crate::service::{
+    durable_cleanup_failure, durable_cleanup_succeeded, validate_publish_outcome, ObjectPublisher,
+};
 use std::borrow::Cow;
 use std::fmt;
 use strata_core_next::CommitVersion;
@@ -552,21 +554,47 @@ impl WalTailBoundary<true> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WalDeleteReport {
     deleted: Vec<u64>,
+    delete_outcomes: Vec<WalSegmentDeleteOutcome>,
     protected: Vec<u64>,
     failed: Vec<u64>,
+    delete_failures: Vec<WalSegmentDeleteFailure>,
+    sidecar_deletes: Vec<WalSidecarDeleteOutcome>,
 }
 
 impl WalDeleteReport {
     fn new() -> Self {
         Self {
             deleted: Vec::new(),
+            delete_outcomes: Vec::new(),
             protected: Vec::new(),
             failed: Vec::new(),
+            delete_failures: Vec::new(),
+            sidecar_deletes: Vec::new(),
         }
+    }
+
+    fn record_deleted(&mut self, segment_id: u64, outcome: DeleteOutcome) {
+        self.deleted.push(segment_id);
+        self.delete_outcomes
+            .push(WalSegmentDeleteOutcome::new(segment_id, outcome));
+    }
+
+    fn record_failed(&mut self, segment_id: u64, failure: DeleteError) {
+        self.failed.push(segment_id);
+        self.delete_failures
+            .push(WalSegmentDeleteFailure::new(segment_id, failure));
+    }
+
+    fn record_sidecar_delete(&mut self, outcome: WalSidecarDeleteOutcome) {
+        self.sidecar_deletes.push(outcome);
     }
 
     pub(crate) fn deleted_segments(&self) -> &[u64] {
         &self.deleted
+    }
+
+    pub(crate) fn delete_outcomes(&self) -> &[WalSegmentDeleteOutcome] {
+        &self.delete_outcomes
     }
 
     pub(crate) fn protected_segments(&self) -> &[u64] {
@@ -575,6 +603,112 @@ impl WalDeleteReport {
 
     pub(crate) fn failed_segments(&self) -> &[u64] {
         &self.failed
+    }
+
+    pub(crate) fn delete_failures(&self) -> &[WalSegmentDeleteFailure] {
+        &self.delete_failures
+    }
+
+    pub(crate) fn sidecar_deletes(&self) -> &[WalSidecarDeleteOutcome] {
+        &self.sidecar_deletes
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WalSegmentDeleteOutcome {
+    segment_id: u64,
+    outcome: DeleteOutcome,
+}
+
+impl WalSegmentDeleteOutcome {
+    const fn new(segment_id: u64, outcome: DeleteOutcome) -> Self {
+        Self {
+            segment_id,
+            outcome,
+        }
+    }
+
+    pub(crate) const fn segment_id(&self) -> u64 {
+        self.segment_id
+    }
+
+    pub(crate) const fn object(&self) -> &ObjectName {
+        self.outcome.object()
+    }
+
+    pub(crate) const fn outcome(&self) -> &DeleteOutcome {
+        &self.outcome
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WalSegmentDeleteFailure {
+    segment_id: u64,
+    failure: DeleteError,
+}
+
+impl WalSegmentDeleteFailure {
+    const fn new(segment_id: u64, failure: DeleteError) -> Self {
+        Self {
+            segment_id,
+            failure,
+        }
+    }
+
+    pub(crate) const fn segment_id(&self) -> u64 {
+        self.segment_id
+    }
+
+    pub(crate) const fn object(&self) -> &ObjectName {
+        self.failure.object()
+    }
+
+    pub(crate) const fn failure(&self) -> &DeleteError {
+        &self.failure
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WalSidecarDeleteOutcome {
+    segment_id: u64,
+    object: ObjectName,
+    outcome: Option<DeleteOutcome>,
+    failure: Option<DeleteError>,
+}
+
+impl WalSidecarDeleteOutcome {
+    fn succeeded(segment_id: u64, outcome: DeleteOutcome) -> Self {
+        Self {
+            segment_id,
+            object: outcome.object().clone(),
+            outcome: Some(outcome),
+            failure: None,
+        }
+    }
+
+    fn failed(segment_id: u64, object: ObjectName, failure: DeleteError) -> Self {
+        Self {
+            segment_id,
+            object,
+            outcome: None,
+            failure: Some(failure),
+        }
+    }
+
+    pub(crate) const fn segment_id(&self) -> u64 {
+        self.segment_id
+    }
+
+    pub(crate) const fn object(&self) -> &ObjectName {
+        &self.object
+    }
+
+    pub(crate) const fn outcome(&self) -> Option<&DeleteOutcome> {
+        self.outcome.as_ref()
+    }
+
+    pub(crate) const fn failure(&self) -> Option<&DeleteError> {
+        self.failure.as_ref()
     }
 }
 
@@ -957,20 +1091,28 @@ impl<'a> WalService<'a> {
                 .all(|record| record.commit_version() <= covered_through)
             {
                 match self.backend.delete_object(&object) {
-                    Ok(outcome)
-                        if matches!(
-                            outcome.status(),
-                            DeleteStatus::Deleted | DeleteStatus::AlreadyMissing
-                        ) =>
-                    {
-                        report.deleted.push(segment_id);
-                        self.delete_segment_sidecar_best_effort(segment_id);
+                    Ok(outcome) if durable_cleanup_succeeded(&outcome) => {
+                        report.record_deleted(segment_id, outcome);
+                        if let Some(sidecar) = self.delete_segment_sidecar_best_effort(segment_id) {
+                            report.record_sidecar_delete(sidecar);
+                        }
+                    }
+                    Ok(outcome) => {
+                        report.record_failed(segment_id, durable_cleanup_failure(&outcome));
                     }
                     Err(error) if error.source_error().kind() == BackendErrorKind::NotFound => {
-                        report.deleted.push(segment_id);
-                        self.delete_segment_sidecar_best_effort(segment_id);
+                        report.record_deleted(
+                            segment_id,
+                            DeleteOutcome::already_missing(
+                                object.clone(),
+                                DeleteDurability::NonDurable,
+                            ),
+                        );
+                        if let Some(sidecar) = self.delete_segment_sidecar_best_effort(segment_id) {
+                            report.record_sidecar_delete(sidecar);
+                        }
                     }
-                    Ok(_) | Err(_) => report.failed.push(segment_id),
+                    Err(error) => report.record_failed(segment_id, error),
                 }
             } else {
                 report.protected.push(segment_id);
@@ -980,15 +1122,27 @@ impl<'a> WalService<'a> {
         Ok(report)
     }
 
-    fn delete_segment_sidecar_best_effort(&self, segment_id: u64) {
+    fn delete_segment_sidecar_best_effort(
+        &self,
+        segment_id: u64,
+    ) -> Option<WalSidecarDeleteOutcome> {
         // Segment metadata sidecars are optional accelerators. Once a WAL
         // segment is pruned, its sidecar is unreachable recovery state and can
         // be removed, but sidecar deletion must not turn authoritative WAL
         // retention into a failure.
         let Ok(sidecar) = ObjectLayout::wal_segment_metadata(segment_id) else {
-            return;
+            return None;
         };
-        let _ = self.backend.delete_object(&sidecar);
+        Some(match self.backend.delete_object(&sidecar) {
+            Ok(outcome) => WalSidecarDeleteOutcome::succeeded(segment_id, outcome),
+            Err(error) if error.source_error().kind() == BackendErrorKind::NotFound => {
+                WalSidecarDeleteOutcome::succeeded(
+                    segment_id,
+                    DeleteOutcome::already_missing(sidecar, DeleteDurability::NonDurable),
+                )
+            }
+            Err(error) => WalSidecarDeleteOutcome::failed(segment_id, sidecar, error),
+        })
     }
 
     fn rotate_segment(&mut self) -> WalServiceResult<()> {

@@ -120,6 +120,9 @@ pub(crate) struct LifecyclePurgeOutcome {
     deleted_objects: Vec<ObjectName>,
     already_missing_objects: Vec<ObjectName>,
     failed_objects: Vec<ObjectName>,
+    deleted_outcomes: Vec<QuarantineDeleteOutcome>,
+    already_missing_outcomes: Vec<QuarantineDeleteOutcome>,
+    failed_outcomes: Vec<QuarantineDeleteOutcome>,
     retained_entries: Vec<QuarantineEntry>,
     reclaimed_bytes: u64,
     recovery_health: Option<RecoveryHealth>,
@@ -745,6 +748,9 @@ impl LifecyclePurgeOutcome {
             deleted_objects: Vec::new(),
             already_missing_objects: Vec::new(),
             failed_objects: Vec::new(),
+            deleted_outcomes: Vec::new(),
+            already_missing_outcomes: Vec::new(),
+            failed_outcomes: Vec::new(),
             retained_entries: Vec::new(),
             reclaimed_bytes: 0,
             recovery_health,
@@ -776,6 +782,9 @@ impl LifecyclePurgeOutcome {
             deleted_objects: delete_objects(report.deleted()),
             already_missing_objects: delete_objects(report.already_missing()),
             failed_objects: delete_objects(report.failed()),
+            deleted_outcomes: report.deleted().to_vec(),
+            already_missing_outcomes: report.already_missing().to_vec(),
+            failed_outcomes: report.failed().to_vec(),
             retained_entries: report.retained_entries().to_vec(),
             reclaimed_bytes: report.reclaimed_bytes(),
             recovery_health,
@@ -791,6 +800,9 @@ impl LifecyclePurgeOutcome {
             deleted_objects: Vec::new(),
             already_missing_objects: Vec::new(),
             failed_objects: Vec::new(),
+            deleted_outcomes: Vec::new(),
+            already_missing_outcomes: Vec::new(),
+            failed_outcomes: Vec::new(),
             retained_entries: Vec::new(),
             reclaimed_bytes: 0,
             recovery_health: Some(
@@ -822,6 +834,18 @@ impl LifecyclePurgeOutcome {
 
     pub(crate) fn failed_objects(&self) -> &[ObjectName] {
         &self.failed_objects
+    }
+
+    pub(crate) fn deleted_outcomes(&self) -> &[QuarantineDeleteOutcome] {
+        &self.deleted_outcomes
+    }
+
+    pub(crate) fn already_missing_outcomes(&self) -> &[QuarantineDeleteOutcome] {
+        &self.already_missing_outcomes
+    }
+
+    pub(crate) fn failed_outcomes(&self) -> &[QuarantineDeleteOutcome] {
+        &self.failed_outcomes
     }
 
     pub(crate) fn retained_entries(&self) -> &[QuarantineEntry] {

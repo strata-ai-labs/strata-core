@@ -17,8 +17,9 @@ use crate::lifecycle::recovery::encode_checkpoint_row_section;
 use crate::object::ObjectName;
 use crate::service::{
     CheckpointRequest, CheckpointServiceError, CheckpointSnapshot, CheckpointWrite,
-    DatabaseManifestService, ManifestServiceError, WalDeleteReport, WalRetentionProof, WalService,
-    WalServiceError,
+    DatabaseManifestService, ManifestServiceError, WalDeleteReport, WalRetentionProof,
+    WalSegmentDeleteFailure, WalSegmentDeleteOutcome, WalService, WalServiceError,
+    WalSidecarDeleteOutcome,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -133,6 +134,9 @@ pub(crate) struct LifecycleWalTruncationOutcome {
     deleted_segments: usize,
     protected_segments: usize,
     failed_segments: usize,
+    delete_outcomes: Vec<WalSegmentDeleteOutcome>,
+    delete_failures: Vec<WalSegmentDeleteFailure>,
+    sidecar_deletes: Vec<WalSidecarDeleteOutcome>,
     recovery_health: Option<super::RecoveryHealth>,
 }
 
@@ -1202,6 +1206,9 @@ impl LifecycleWalTruncationOutcome {
             deleted_segments: report.deleted_segments().len(),
             protected_segments: report.protected_segments().len(),
             failed_segments,
+            delete_outcomes: report.delete_outcomes().to_vec(),
+            delete_failures: report.delete_failures().to_vec(),
+            sidecar_deletes: report.sidecar_deletes().to_vec(),
             recovery_health,
         })
     }
@@ -1232,6 +1239,18 @@ impl LifecycleWalTruncationOutcome {
 
     pub(crate) const fn recovery_health(&self) -> Option<&super::RecoveryHealth> {
         self.recovery_health.as_ref()
+    }
+
+    pub(crate) fn delete_outcomes(&self) -> &[WalSegmentDeleteOutcome] {
+        &self.delete_outcomes
+    }
+
+    pub(crate) fn delete_failures(&self) -> &[WalSegmentDeleteFailure] {
+        &self.delete_failures
+    }
+
+    pub(crate) fn sidecar_deletes(&self) -> &[WalSidecarDeleteOutcome] {
+        &self.sidecar_deletes
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {

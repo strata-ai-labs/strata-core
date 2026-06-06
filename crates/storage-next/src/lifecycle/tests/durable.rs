@@ -159,14 +159,24 @@ fn durable_assembly_loads_existing_manifest_and_preserves_recovery_facts() {
 #[test]
 fn durable_request_rejects_non_durable_modes_without_backend_calls() {
     let backend = DurableTestBackend::new();
-    for mode in [StorageMode::Cache, StorageMode::ObjectDurableCandidate] {
-        assert_eq!(
-            request(mode, branch_id(0x12)),
-            Err(LifecycleError::InvalidOpenPlan {
-                reason: "durable local assembly requires durable local storage mode",
-            })
-        );
-    }
+    assert_eq!(
+        request(StorageMode::Cache, branch_id(0x12)),
+        Err(LifecycleError::InvalidOpenPlan {
+            reason: "durable local assembly requires durable local storage mode",
+        })
+    );
+    assert!(backend.operations().is_empty());
+}
+
+#[test]
+fn durable_request_rejects_object_durable_candidate_until_fencing_exists() {
+    let backend = DurableTestBackend::new();
+    assert_eq!(
+        request(StorageMode::ObjectDurableCandidate, branch_id(0x12)),
+        Err(LifecycleError::InvalidOpenPlan {
+            reason: "object-durable mode requires L1/L4 fenced publication before runtime assembly",
+        })
+    );
     assert!(backend.operations().is_empty());
 }
 

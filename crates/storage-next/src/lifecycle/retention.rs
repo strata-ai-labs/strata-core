@@ -14,7 +14,8 @@ use super::{
 use crate::format::DatabaseManifest;
 use crate::object::ObjectName;
 use crate::service::{
-    SnapshotDeleteFailure, SnapshotObject, SnapshotService, SnapshotServiceError,
+    SnapshotDeleteFailure, SnapshotDeleteOutcome, SnapshotDeleteReport, SnapshotObject,
+    SnapshotService, SnapshotServiceError,
 };
 use strata_core_next::{BranchId, CommitVersion};
 
@@ -122,6 +123,7 @@ pub(crate) struct LifecycleSnapshotPruningRequest {
 pub(crate) struct LifecycleSnapshotPruningOutcome {
     proof_status: LifecycleRetentionProofStatus,
     deleted: Vec<SnapshotObject>,
+    delete_outcomes: Vec<SnapshotDeleteOutcome>,
     protected: Vec<SnapshotObject>,
     failed: Vec<SnapshotDeleteFailure>,
     recovery_health: Option<RecoveryHealth>,
@@ -483,11 +485,11 @@ impl LifecycleSnapshotPruningRequest {
 }
 
 impl LifecycleSnapshotPruningOutcome {
-    fn from_completed_report(
-        deleted: Vec<SnapshotObject>,
-        protected: Vec<SnapshotObject>,
-        failed: Vec<SnapshotDeleteFailure>,
-    ) -> LifecycleResult<Self> {
+    fn from_completed_report(report: &SnapshotDeleteReport) -> LifecycleResult<Self> {
+        let deleted = report.deleted().to_vec();
+        let delete_outcomes = report.delete_outcomes().to_vec();
+        let protected = report.protected().to_vec();
+        let failed = report.failed().to_vec();
         let recovery_health = if failed.is_empty() {
             None
         } else {
@@ -514,6 +516,7 @@ impl LifecycleSnapshotPruningOutcome {
         Ok(Self {
             proof_status: LifecycleRetentionProofStatus::Complete,
             deleted,
+            delete_outcomes,
             protected,
             failed,
             recovery_health,
@@ -527,6 +530,7 @@ impl LifecycleSnapshotPruningOutcome {
         Self {
             proof_status,
             deleted: Vec::new(),
+            delete_outcomes: Vec::new(),
             protected: Vec::new(),
             failed: Vec::new(),
             recovery_health,
@@ -558,6 +562,10 @@ impl LifecycleSnapshotPruningOutcome {
 
     pub(crate) fn deleted(&self) -> &[SnapshotObject] {
         &self.deleted
+    }
+
+    pub(crate) fn delete_outcomes(&self) -> &[SnapshotDeleteOutcome] {
+        &self.delete_outcomes
     }
 
     pub(crate) fn protected(&self) -> &[SnapshotObject] {
@@ -751,11 +759,7 @@ pub(crate) fn prune_snapshots_with_proof(
             request.effective_retain_newest(),
         )
         .map_err(snapshot_error)?;
-    LifecycleSnapshotPruningOutcome::from_completed_report(
-        report.deleted().to_vec(),
-        report.protected().to_vec(),
-        report.failed().to_vec(),
-    )
+    LifecycleSnapshotPruningOutcome::from_completed_report(&report)
 }
 
 pub(crate) fn retention_request_from_maintenance_task(

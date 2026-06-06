@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend::{Backend, PublishFailureKind};
+use crate::backend::{Backend, DeleteDurability, DeleteStatus, PublishFailureKind};
 use crate::format::FormatError;
 use crate::service::wal::WalOperation;
 use strata_core_next::CommitVersion;
@@ -182,10 +182,50 @@ fn retention_removes_sidecar_for_deleted_segment() {
         .expect("delete covered WAL segments");
 
     assert_eq!(report.deleted_segments(), &[1]);
+    assert_eq!(report.sidecar_deletes().len(), 1);
+    assert_eq!(report.sidecar_deletes()[0].segment_id(), 1);
+    assert_eq!(report.sidecar_deletes()[0].object(), &sidecar_one);
+    assert!(report.sidecar_deletes()[0].outcome().is_some());
+    assert!(report.sidecar_deletes()[0].failure().is_none());
     assert_segment_missing(&backend, &segment_one);
     assert_object_missing(&backend, &sidecar_one);
     assert_segment_present(&backend, &segment_two);
     assert_segment_present(&backend, &sidecar_two);
+}
+
+#[test]
+fn retention_reports_missing_sidecar_delete_as_idempotent_cleanup() {
+    let backend = StoredWalBackend::new();
+    let segment_one = seed_segment(&backend, 1, &[record(1, b"covered".to_vec())]);
+    let sidecar_one = wal_sidecar(1);
+    backend.fail_delete_with(&sidecar_one, BackendErrorKind::NotFound);
+    let segment_two = seed_segment(&backend, 2, &[record(2, b"active".to_vec())]);
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+
+    let report = service
+        .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(1)))
+        .expect("delete covered WAL segments");
+
+    assert_eq!(report.deleted_segments(), &[1]);
+    assert_eq!(report.sidecar_deletes().len(), 1);
+    assert_eq!(report.sidecar_deletes()[0].segment_id(), 1);
+    assert_eq!(report.sidecar_deletes()[0].object(), &sidecar_one);
+    assert_eq!(
+        report.sidecar_deletes()[0]
+            .outcome()
+            .map(|outcome| outcome.status()),
+        Some(DeleteStatus::AlreadyMissing)
+    );
+    assert!(report.sidecar_deletes()[0].failure().is_none());
+    assert_segment_missing(&backend, &segment_one);
+    assert_segment_present(&backend, &segment_two);
 }
 
 #[test]
@@ -298,8 +338,22 @@ fn retention_records_delete_failure_without_hiding_other_results() {
         .expect("delete covered WAL segments");
 
     assert_eq!(report.deleted_segments(), &[2]);
+    assert_eq!(report.delete_outcomes().len(), 1);
+    assert_eq!(report.delete_outcomes()[0].segment_id(), 2);
+    assert_eq!(report.delete_outcomes()[0].object(), &segment_two);
+    assert_eq!(
+        report.delete_outcomes()[0].outcome().durability(),
+        DeleteDurability::Durable
+    );
     assert_eq!(report.protected_segments(), &[3]);
     assert_eq!(report.failed_segments(), &[1]);
+    assert_eq!(report.delete_failures().len(), 1);
+    assert_eq!(report.delete_failures()[0].segment_id(), 1);
+    assert_eq!(report.delete_failures()[0].object(), &segment_one);
+    assert_eq!(
+        report.delete_failures()[0].failure().source_error().kind(),
+        BackendErrorKind::Unavailable
+    );
     assert_segment_present(&backend, &segment_one);
     assert_segment_missing(&backend, &segment_two);
     assert_segment_present(&backend, &segment_three);

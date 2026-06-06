@@ -1,7 +1,8 @@
 use super::{SnapshotObject, SnapshotService, SnapshotServiceError};
 use crate::backend::{
     memory::MemoryBackend, Backend, BackendCapabilities, BackendCapability, BackendError,
-    BackendErrorKind, BackendMetadata, BackendRange, BackendResult,
+    BackendErrorKind, BackendMetadata, BackendRange, BackendResult, DeleteDurability,
+    DeleteFailureKind, DeleteOutcome, DeleteResult, DeleteStatus,
     BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
 use crate::layout::{ObjectFamily, ObjectLayout};
@@ -194,7 +195,7 @@ fn prune_snapshots_rejects_malformed_snapshot_family_object_before_delete() {
 
 #[test]
 fn prune_snapshots_protects_live_snapshot_and_newest_retained() {
-    let backend = MemoryBackend::new();
+    let backend = DurableMemoryBackend::new();
     for snapshot_id in 1..=5 {
         write_placeholder_snapshot(&backend, snapshot_id);
     }
@@ -216,7 +217,7 @@ fn prune_snapshots_protects_live_snapshot_and_newest_retained() {
 
 #[test]
 fn prune_snapshots_clamps_retain_newest_to_one() {
-    let backend = MemoryBackend::new();
+    let backend = DurableMemoryBackend::new();
     write_placeholder_snapshot(&backend, 1);
     write_placeholder_snapshot(&backend, 2);
     let service = SnapshotService::new(&backend);
@@ -226,6 +227,28 @@ fn prune_snapshots_clamps_retain_newest_to_one() {
     assert_snapshot_ids(report.deleted(), &[1]);
     assert_snapshot_ids(report.protected(), &[2]);
     assert!(report.failed().is_empty());
+}
+
+#[test]
+fn prune_snapshots_reports_non_durable_cache_delete_as_health_debt() {
+    let backend = MemoryBackend::new();
+    write_placeholder_snapshot(&backend, 1);
+    write_placeholder_snapshot(&backend, 2);
+    let service = SnapshotService::new(&backend);
+
+    let report = service.prune_snapshots(None, 1).expect("prune snapshots");
+
+    assert!(report.deleted().is_empty());
+    assert!(report.delete_outcomes().is_empty());
+    assert_snapshot_ids(report.protected(), &[2]);
+    assert_eq!(report.failed().len(), 1);
+    assert_eq!(report.failed()[0].snapshot().snapshot_id(), 1);
+    assert_eq!(
+        report.failed()[0].delete_error().kind(),
+        DeleteFailureKind::RemovedDurabilityUnconfirmed
+    );
+    assert_missing(&backend, 1);
+    assert_present(&backend, 2);
 }
 
 #[test]
@@ -320,12 +343,22 @@ fn prune_snapshots_reports_delete_failures_without_hiding_successes() {
     let report = service.prune_snapshots(None, 1).expect("prune snapshots");
 
     assert_snapshot_ids(report.deleted(), &[2]);
+    assert_eq!(report.delete_outcomes().len(), 1);
+    assert_eq!(report.delete_outcomes()[0].snapshot().snapshot_id(), 2);
+    assert_eq!(
+        report.delete_outcomes()[0].outcome().object(),
+        &snapshot_object(2)
+    );
     assert_snapshot_ids(report.protected(), &[3]);
     assert_eq!(report.failed().len(), 1);
     assert_eq!(report.failed()[0].snapshot().snapshot_id(), 1);
     assert_eq!(
         report.failed()[0].source().kind(),
         BackendErrorKind::Unavailable
+    );
+    assert_eq!(
+        report.failed()[0].delete_error().object(),
+        &snapshot_object(1)
     );
     assert_eq!(backend.deleted_objects(), vec![snapshot_object(2)]);
 }
@@ -376,6 +409,56 @@ struct ListingBackend {
     reads: Mutex<u64>,
     lists: Mutex<u64>,
     capabilities: BackendCapabilities,
+}
+
+#[derive(Debug, Default)]
+struct DurableMemoryBackend {
+    inner: MemoryBackend,
+}
+
+impl DurableMemoryBackend {
+    fn new() -> Self {
+        Self {
+            inner: MemoryBackend::new(),
+        }
+    }
+}
+
+impl Backend for DurableMemoryBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn read_object(&self, name: &ObjectName) -> BackendResult<Vec<u8>> {
+        self.inner.read_object(name)
+    }
+
+    fn read_range(&self, name: &ObjectName, range: BackendRange) -> BackendResult<Vec<u8>> {
+        self.inner.read_range(name, range)
+    }
+
+    fn write_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendMetadata> {
+        self.inner.write_object(name, bytes)
+    }
+
+    fn delete_object(&self, name: &ObjectName) -> DeleteResult {
+        let outcome = self.inner.delete_object(name)?;
+        match outcome.status() {
+            DeleteStatus::Deleted => Ok(DeleteOutcome::deleted(
+                outcome.object().clone(),
+                DeleteDurability::Durable,
+            )),
+            DeleteStatus::AlreadyMissing => Ok(outcome),
+        }
+    }
+
+    fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
+        self.inner.list_prefix(prefix)
+    }
+
+    fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
+        self.inner.object_metadata(name)
+    }
 }
 
 impl ListingBackend {
@@ -506,19 +589,19 @@ impl Backend for ListingBackend {
     }
 }
 
-fn write_placeholder_snapshot(backend: &MemoryBackend, snapshot_id: u64) {
+fn write_placeholder_snapshot(backend: &dyn Backend, snapshot_id: u64) {
     backend
         .write_object(&snapshot_object(snapshot_id), b"snapshot")
         .expect("write snapshot placeholder");
 }
 
-fn assert_present(backend: &MemoryBackend, snapshot_id: u64) {
+fn assert_present(backend: &dyn Backend, snapshot_id: u64) {
     backend
         .read_object(&snapshot_object(snapshot_id))
         .expect("snapshot should remain");
 }
 
-fn assert_missing(backend: &MemoryBackend, snapshot_id: u64) {
+fn assert_missing(backend: &dyn Backend, snapshot_id: u64) {
     let error = backend
         .read_object(&snapshot_object(snapshot_id))
         .expect_err("snapshot should be deleted");

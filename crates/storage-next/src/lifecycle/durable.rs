@@ -549,11 +549,12 @@ fn durable_policy_for_mode(mode: StorageMode) -> LifecycleResult<DurabilityPolic
     match mode {
         StorageMode::DurableLocalStandard => Ok(DurabilityPolicy::Standard),
         StorageMode::DurableLocalAlways => Ok(DurabilityPolicy::Always),
-        StorageMode::Cache | StorageMode::ObjectDurableCandidate => {
-            Err(LifecycleError::InvalidOpenPlan {
-                reason: "durable local assembly requires durable local storage mode",
-            })
-        }
+        StorageMode::Cache => Err(LifecycleError::InvalidOpenPlan {
+            reason: "durable local assembly requires durable local storage mode",
+        }),
+        StorageMode::ObjectDurableCandidate => Err(LifecycleError::InvalidOpenPlan {
+            reason: "object-durable mode requires L1/L4 fenced publication before runtime assembly",
+        }),
     }
 }
 

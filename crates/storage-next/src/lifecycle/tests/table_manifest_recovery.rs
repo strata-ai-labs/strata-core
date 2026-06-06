@@ -354,7 +354,9 @@ fn recovery_installs_inherited_layers_from_manifest() {
         .expect("install outcome");
     assert_eq!(install.inherited_layer_count(), 1);
     assert_eq!(install.inherited_table_count(), 1);
+    assert_eq!(shell.branch_state().owned_table_count(), 0);
     assert_eq!(shell.branch_state().inherited_layer_count(), 1);
+    assert!(backend.object_bytes(inherited.reference.object()).is_some());
     assert_eq!(
         shell
             .branch_state()
@@ -536,6 +538,32 @@ fn missing_table_manifest_for_empty_branch_is_healthy() {
     assert_eq!(outcome.tables().table_manifest().table_count(), 0);
     assert_eq!(backend.table_list_prefix_calls(), 0);
     assert!(shell.branch_state().is_empty());
+}
+
+#[test]
+fn recovery_ignores_orphan_table_object_when_manifest_is_absent() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x74);
+    let orphan = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "absent-manifest-orphan",
+        &[put_row(branch, 14, b"absent-manifest-orphan", b"ignored")],
+    );
+
+    let (shell, outcome) = recover_shell(&backend, branch, RecoveryStrictness::Strict);
+
+    assert_eq!(outcome.health(), &RecoveryHealth::Healthy);
+    assert_eq!(outcome.tables().table_manifest().table_count(), 0);
+    assert_eq!(backend.table_list_prefix_calls(), 0);
+    assert!(backend.object_bytes(orphan.reference.object()).is_some());
+    assert!(shell.branch_state().is_empty());
+    let view = shell.branch_state().capture_read_view().expect("view");
+    assert!(view
+        .latest(&physical_key(branch, b"absent-manifest-orphan"))
+        .expect("read orphan")
+        .is_none());
 }
 
 #[test]

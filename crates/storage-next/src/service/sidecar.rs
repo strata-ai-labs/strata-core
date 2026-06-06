@@ -9,8 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendError, BackendErrorKind, BackendHandle, DeleteStatus, PublishError,
-    PublishOutcome,
+    Backend, BackendError, BackendErrorKind, BackendHandle, DeleteDurability, DeleteError,
+    DeleteOutcome, DeleteStatus, PublishError, PublishOutcome,
 };
 use crate::format::{
     decode_segment_metadata, encode_segment_metadata, FormatError, SegmentMetadata,
@@ -187,7 +187,8 @@ pub(crate) struct WalSegmentMetadataSidecarDelete {
     segment_id: u64,
     object: ObjectName,
     deleted: bool,
-    failure: Option<BackendError>,
+    outcome: Option<DeleteOutcome>,
+    failure: Option<DeleteError>,
 }
 
 impl WalSegmentMetadataSidecarDelete {
@@ -195,12 +196,14 @@ impl WalSegmentMetadataSidecarDelete {
         segment_id: u64,
         object: ObjectName,
         deleted: bool,
-        failure: Option<BackendError>,
+        outcome: Option<DeleteOutcome>,
+        failure: Option<DeleteError>,
     ) -> Self {
         Self {
             segment_id,
             object,
             deleted,
+            outcome,
             failure,
         }
     }
@@ -217,7 +220,18 @@ impl WalSegmentMetadataSidecarDelete {
         self.deleted
     }
 
+    pub(crate) const fn outcome(&self) -> Option<&DeleteOutcome> {
+        self.outcome.as_ref()
+    }
+
     pub(crate) const fn failure(&self) -> Option<&BackendError> {
+        match self.failure.as_ref() {
+            Some(failure) => Some(failure.source_error()),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn delete_error(&self) -> Option<&DeleteError> {
         self.failure.as_ref()
     }
 }
@@ -310,16 +324,33 @@ impl<'a> WalSegmentMetadataSidecarService<'a> {
         // WAL cleanup, so backend failures are returned as report facts.
         match self.backend.delete_object(&object) {
             Ok(outcome) if outcome.status() == DeleteStatus::Deleted => Ok(
-                WalSegmentMetadataSidecarDelete::new(segment_id, object, true, None),
+                WalSegmentMetadataSidecarDelete::new(segment_id, object, true, Some(outcome), None),
             ),
-            Ok(_) => Ok(WalSegmentMetadataSidecarDelete::new(
-                segment_id, object, false, None,
+            Ok(outcome) => Ok(WalSegmentMetadataSidecarDelete::new(
+                segment_id,
+                object,
+                false,
+                Some(outcome),
+                None,
             )),
+            Err(source) if source.source_error().kind() == BackendErrorKind::NotFound => {
+                Ok(WalSegmentMetadataSidecarDelete::new(
+                    segment_id,
+                    object.clone(),
+                    false,
+                    Some(DeleteOutcome::already_missing(
+                        object,
+                        DeleteDurability::NonDurable,
+                    )),
+                    None,
+                ))
+            }
             Err(source) => Ok(WalSegmentMetadataSidecarDelete::new(
                 segment_id,
                 object,
                 false,
-                Some(source.into()),
+                None,
+                Some(source),
             )),
         }
     }

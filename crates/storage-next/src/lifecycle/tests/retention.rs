@@ -753,6 +753,76 @@ fn table_object_from_materialization_replacement_preserves_source_identity() {
 }
 
 #[test]
+fn table_retention_selection_records_reachability_dependency_reasons() {
+    let owned = ObjectName::new("tables/branch/owned-live").expect("owned object");
+    let inherited = ObjectName::new("tables/branch/inherited-live").expect("inherited object");
+    let materialized = ObjectName::new("tables/branch/materialized-live").expect("materialized");
+    let shared = ObjectName::new("tables/branch/shared-live").expect("shared object");
+    let already_quarantined =
+        ObjectName::new("tables/branch/already-quarantined").expect("quarantined object");
+    let outcome = LifecycleRetentionOutcome::from_decisions(
+        complete_retention_proof(1, 7),
+        vec![
+            LifecycleRetentionDecisionRecord::table(
+                owned.clone(),
+                RetentionDecision::Retain,
+                LifecycleRetentionDecisionReason::ReachableTable,
+            ),
+            LifecycleRetentionDecisionRecord::table(
+                inherited.clone(),
+                RetentionDecision::Retain,
+                LifecycleRetentionDecisionReason::ReachableInheritedTable,
+            ),
+            LifecycleRetentionDecisionRecord::table(
+                materialized.clone(),
+                RetentionDecision::Retain,
+                LifecycleRetentionDecisionReason::ReachableMaterializedTable,
+            ),
+            LifecycleRetentionDecisionRecord::table(
+                shared.clone(),
+                RetentionDecision::Retain,
+                LifecycleRetentionDecisionReason::ReachableSharedTable,
+            ),
+            LifecycleRetentionDecisionRecord::table(
+                already_quarantined.clone(),
+                RetentionDecision::SkipUntilProof,
+                LifecycleRetentionDecisionReason::TableAlreadyQuarantined,
+            ),
+        ],
+        0,
+    )
+    .expect("outcome");
+
+    assert_eq!(outcome.status(), LifecycleRetentionStatus::Completed);
+    assert_eq!(outcome.objects_retained(), 4);
+    assert_eq!(outcome.objects_skipped(), 1);
+    for (object, reason) in [
+        (owned, LifecycleRetentionDecisionReason::ReachableTable),
+        (
+            inherited,
+            LifecycleRetentionDecisionReason::ReachableInheritedTable,
+        ),
+        (
+            materialized,
+            LifecycleRetentionDecisionReason::ReachableMaterializedTable,
+        ),
+        (
+            shared,
+            LifecycleRetentionDecisionReason::ReachableSharedTable,
+        ),
+        (
+            already_quarantined,
+            LifecycleRetentionDecisionReason::TableAlreadyQuarantined,
+        ),
+    ] {
+        assert!(outcome
+            .decisions()
+            .iter()
+            .any(|decision| { decision.object() == Some(&object) && decision.reason() == reason }));
+    }
+}
+
+#[test]
 fn table_object_decision_lists_branch_and_table_identity() {
     let object = ObjectName::new("tables/branch-a/table-b").expect("object");
     let outcome = LifecycleRetentionOutcome::from_decisions(

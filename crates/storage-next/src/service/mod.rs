@@ -1,6 +1,7 @@
 //! Lower storage services for manifests, WAL, snapshots, tables, quarantine, and publication.
 
 mod checkpoint;
+mod cleanup;
 mod manifest;
 mod publish;
 mod quarantine;
@@ -11,6 +12,8 @@ mod wal;
 
 #[cfg(test)]
 mod cache_mode_absence_tests;
+
+pub(crate) use cleanup::{durable_cleanup_failure, durable_cleanup_succeeded};
 
 #[cfg(test)]
 pub(crate) use checkpoint::CheckpointManifestOperation;
@@ -44,8 +47,8 @@ pub(crate) use quarantine::{
 pub(crate) use sidecar::{WalSegmentMetadataSidecarLoad, WalSegmentMetadataSidecarService};
 
 pub(crate) use snapshot::{
-    SnapshotDeleteFailure, SnapshotObject, SnapshotPublishRequest, SnapshotService,
-    SnapshotServiceError,
+    SnapshotDeleteFailure, SnapshotDeleteOutcome, SnapshotDeleteReport, SnapshotObject,
+    SnapshotPublishRequest, SnapshotService, SnapshotServiceError,
 };
 
 pub(crate) use table::{
@@ -62,5 +65,6 @@ pub(crate) use table::{
 )]
 pub(crate) use wal::{
     WalAppend, WalDeleteReport, WalGrowthFacts, WalRepair, WalRetentionProof,
-    WalRetentionProofSource, WalService, WalServiceConfig, WalServiceError, WalTruncation,
+    WalRetentionProofSource, WalSegmentDeleteFailure, WalSegmentDeleteOutcome, WalService,
+    WalServiceConfig, WalServiceError, WalSidecarDeleteOutcome, WalTruncation,
 };

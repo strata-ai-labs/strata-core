@@ -2,11 +2,13 @@ use super::{
     require_capability, QuarantineService, QuarantineServiceError, QuarantineServiceResult,
 };
 use crate::backend::{
-    Backend, BackendCapability, BackendErrorKind, DeleteStatus, PublishFailureKind,
+    Backend, BackendCapability, BackendErrorKind, DeleteDurability, DeleteOutcome, DeleteStatus,
+    PublishFailureKind,
 };
 use crate::format::quarantine::{QuarantineEntry, QuarantineInventory};
 use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
+use crate::service::{durable_cleanup_failure, durable_cleanup_succeeded};
 use strata_core_next::{BranchId, Timestamp};
 
 mod types;
@@ -231,25 +233,44 @@ impl QuarantineService<'_> {
         for entry in inventory.inventory().entries() {
             let object = quarantine_object_name(request.branch_id, entry.object_id())?;
             match self.backend.delete_object(&object) {
-                Ok(outcome) if outcome.status() == DeleteStatus::Deleted => {
+                Ok(outcome)
+                    if durable_cleanup_succeeded(&outcome)
+                        && outcome.status() == DeleteStatus::Deleted =>
+                {
                     report.reclaimed_bytes =
                         report.reclaimed_bytes.saturating_add(entry.byte_count());
                     report
                         .deleted
-                        .push(QuarantineDeleteOutcome::deleted(object));
+                        .push(QuarantineDeleteOutcome::from_outcome(outcome));
                 }
-                Ok(_) => {
+                Ok(outcome) if durable_cleanup_succeeded(&outcome) => {
                     report.reclaimed_bytes =
                         report.reclaimed_bytes.saturating_add(entry.byte_count());
                     report
                         .already_missing
-                        .push(QuarantineDeleteOutcome::missing(object));
+                        .push(QuarantineDeleteOutcome::from_outcome(outcome));
+                }
+                Ok(outcome) => {
+                    report.retained_entries.push(entry.clone());
+                    report.failed.push(QuarantineDeleteOutcome::failed(
+                        object,
+                        durable_cleanup_failure(&outcome),
+                    ));
+                }
+                Err(source) if source.source_error().kind() == BackendErrorKind::NotFound => {
+                    report.reclaimed_bytes =
+                        report.reclaimed_bytes.saturating_add(entry.byte_count());
+                    report
+                        .already_missing
+                        .push(QuarantineDeleteOutcome::from_outcome(
+                            DeleteOutcome::already_missing(object, DeleteDurability::NonDurable),
+                        ));
                 }
                 Err(source) => {
                     report.retained_entries.push(entry.clone());
                     report
                         .failed
-                        .push(QuarantineDeleteOutcome::failed(object, source.into()));
+                        .push(QuarantineDeleteOutcome::failed(object, source));
                 }
             }
         }
@@ -464,14 +485,20 @@ fn delete_source(
     source_object: &ObjectName,
 ) -> QuarantineDeleteOutcome {
     match backend.delete_object(source_object) {
-        Ok(outcome) if outcome.status() == DeleteStatus::Deleted => {
-            QuarantineDeleteOutcome::deleted(source_object.clone())
+        Ok(outcome) if durable_cleanup_succeeded(&outcome) => {
+            QuarantineDeleteOutcome::from_outcome(outcome)
         }
-        Ok(_) => QuarantineDeleteOutcome::missing(source_object.clone()),
+        Ok(outcome) => QuarantineDeleteOutcome::failed(
+            source_object.clone(),
+            durable_cleanup_failure(&outcome),
+        ),
         Err(source) if source.source_error().kind() == BackendErrorKind::NotFound => {
-            QuarantineDeleteOutcome::missing(source_object.clone())
+            QuarantineDeleteOutcome::from_outcome(DeleteOutcome::already_missing(
+                source_object.clone(),
+                DeleteDurability::NonDurable,
+            ))
         }
-        Err(source) => QuarantineDeleteOutcome::failed(source_object.clone(), source.into()),
+        Err(source) => QuarantineDeleteOutcome::failed(source_object.clone(), source),
     }
 }
 

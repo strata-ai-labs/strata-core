@@ -468,8 +468,49 @@ pub struct ServiceFaultWindowHarnessOutcome {
 }
 
 impl ServiceFaultWindowHarnessOutcome {
+    pub const EXPECTED_CASES: usize = 19;
+
     pub const fn cases_executed(self) -> usize {
         self.cases_executed
+    }
+
+    pub const fn case_counts(self) -> [(&'static str, usize); Self::EXPECTED_CASES] {
+        [
+            ("capability_preflight", self.capability_preflight),
+            (
+                "writer_guard_manifest_create",
+                self.writer_guard_manifest_create,
+            ),
+            (
+                "manifest_publish_uncertain",
+                self.manifest_publish_uncertain,
+            ),
+            ("snapshot_orphan", self.snapshot_orphan),
+            (
+                "checkpoint_truncation_debt",
+                self.checkpoint_truncation_debt,
+            ),
+            ("partial_log_strict", self.partial_log_strict),
+            ("partial_log_lossy", self.partial_log_lossy),
+            ("corrupt_log_typed", self.corrupt_log_typed),
+            ("replay_failed_state", self.replay_failed_state),
+            ("replay_visible_debt", self.replay_visible_debt),
+            ("flush_orphan_table", self.flush_orphan_table),
+            ("rewrite_preserved_reads", self.rewrite_preserved_reads),
+            ("retention_blocked_delete", self.retention_blocked_delete),
+            (
+                "quarantine_publish_blocked_purge",
+                self.quarantine_publish_blocked_purge,
+            ),
+            ("purge_delete_debt", self.purge_delete_debt),
+            ("close_quiesce_timeout", self.close_quiesce_timeout),
+            ("close_log_sync_source", self.close_log_sync_source),
+            ("close_manifest_sync_debt", self.close_manifest_sync_debt),
+            (
+                "writer_guard_release_typed",
+                self.writer_guard_release_typed,
+            ),
+        ]
     }
 
     pub const fn capability_preflight_cases(self) -> usize {
@@ -754,7 +795,7 @@ pub fn run_service_fault_window_harness() -> Result<ServiceFaultWindowHarnessOut
     }
     outcome.writer_guard_release_typed = 1;
 
-    outcome.cases_executed = 19;
+    outcome.cases_executed = ServiceFaultWindowHarnessOutcome::EXPECTED_CASES;
     Ok(outcome)
 }
 
@@ -2032,5 +2073,39 @@ fn require(condition: bool, message: &'static str) -> Result<(), TestkitError> {
         Ok(())
     } else {
         Err(TestkitError::new(message))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_fault_window_outcome_names_every_l4_conformance_case() {
+        let cases = ServiceFaultWindowHarnessOutcome::default().case_counts();
+
+        assert_eq!(
+            cases.len(),
+            ServiceFaultWindowHarnessOutcome::EXPECTED_CASES
+        );
+        assert_eq!(cases[0].0, "capability_preflight");
+        assert_eq!(
+            cases[ServiceFaultWindowHarnessOutcome::EXPECTED_CASES - 1].0,
+            "writer_guard_release_typed"
+        );
+    }
+
+    #[cfg(feature = "fault-injection")]
+    #[test]
+    fn service_fault_window_harness_exercises_every_l4_conformance_case() {
+        let outcome = run_service_fault_window_harness().expect("service fault-window harness");
+
+        assert_eq!(
+            outcome.cases_executed(),
+            ServiceFaultWindowHarnessOutcome::EXPECTED_CASES
+        );
+        for (case, count) in outcome.case_counts() {
+            assert!(count > 0, "{case} service fault route did not execute");
+        }
     }
 }

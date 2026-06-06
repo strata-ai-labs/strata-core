@@ -2,9 +2,13 @@ use super::{
     require_capability, validate_snapshot_id, SnapshotService, SnapshotServiceError,
     SnapshotServiceResult,
 };
-use crate::backend::{Backend, BackendCapability, BackendError, BackendErrorKind};
+use crate::backend::{
+    Backend, BackendCapability, BackendError, BackendErrorKind, DeleteDurability, DeleteError,
+    DeleteOutcome,
+};
 use crate::layout::{ObjectLayout, SnapshotObjectClassification};
 use crate::object::ObjectName;
+use crate::service::{durable_cleanup_failure, durable_cleanup_succeeded};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SnapshotObject {
@@ -32,11 +36,11 @@ impl SnapshotObject {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SnapshotDeleteFailure {
     snapshot: SnapshotObject,
-    source: BackendError,
+    source: DeleteError,
 }
 
 impl SnapshotDeleteFailure {
-    const fn new(snapshot: SnapshotObject, source: BackendError) -> Self {
+    const fn new(snapshot: SnapshotObject, source: DeleteError) -> Self {
         Self { snapshot, source }
     }
 
@@ -45,19 +49,46 @@ impl SnapshotDeleteFailure {
     }
 
     pub(crate) const fn source(&self) -> &BackendError {
+        self.source.source_error()
+    }
+
+    pub(crate) const fn delete_error(&self) -> &DeleteError {
         &self.source
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SnapshotDeleteOutcome {
+    snapshot: SnapshotObject,
+    outcome: DeleteOutcome,
+}
+
+impl SnapshotDeleteOutcome {
+    const fn new(snapshot: SnapshotObject, outcome: DeleteOutcome) -> Self {
+        Self { snapshot, outcome }
+    }
+
+    pub(crate) const fn snapshot(&self) -> &SnapshotObject {
+        &self.snapshot
+    }
+
+    pub(crate) const fn outcome(&self) -> &DeleteOutcome {
+        &self.outcome
     }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SnapshotDeleteReport {
     deleted: Vec<SnapshotObject>,
+    delete_outcomes: Vec<SnapshotDeleteOutcome>,
     protected: Vec<SnapshotObject>,
     failed: Vec<SnapshotDeleteFailure>,
 }
 
 impl SnapshotDeleteReport {
-    fn record_deleted(&mut self, snapshot: SnapshotObject) {
+    fn record_deleted(&mut self, snapshot: SnapshotObject, outcome: DeleteOutcome) {
+        self.delete_outcomes
+            .push(SnapshotDeleteOutcome::new(snapshot.clone(), outcome));
         self.deleted.push(snapshot);
     }
 
@@ -65,13 +96,17 @@ impl SnapshotDeleteReport {
         self.protected.push(snapshot);
     }
 
-    fn record_failed(&mut self, snapshot: SnapshotObject, source: BackendError) {
+    fn record_failed(&mut self, snapshot: SnapshotObject, source: DeleteError) {
         self.failed
             .push(SnapshotDeleteFailure::new(snapshot, source));
     }
 
     pub(crate) fn deleted(&self) -> &[SnapshotObject] {
         &self.deleted
+    }
+
+    pub(crate) fn delete_outcomes(&self) -> &[SnapshotDeleteOutcome] {
+        &self.delete_outcomes
     }
 
     pub(crate) fn protected(&self) -> &[SnapshotObject] {
@@ -119,8 +154,18 @@ impl SnapshotService<'_> {
             // delete failure must not hide deletes that already succeeded or
             // snapshots that were explicitly protected.
             match self.backend.delete_object(snapshot.object()) {
-                Ok(_) => report.record_deleted(snapshot),
-                Err(source) => report.record_failed(snapshot, source.into()),
+                Ok(outcome) if durable_cleanup_succeeded(&outcome) => {
+                    report.record_deleted(snapshot, outcome);
+                }
+                Ok(outcome) => report.record_failed(snapshot, durable_cleanup_failure(&outcome)),
+                Err(source) if source.source_error().kind() == BackendErrorKind::NotFound => {
+                    let outcome = DeleteOutcome::already_missing(
+                        snapshot.object().clone(),
+                        DeleteDurability::NonDurable,
+                    );
+                    report.record_deleted(snapshot, outcome);
+                }
+                Err(source) => report.record_failed(snapshot, source),
             }
         }
 
