@@ -53,11 +53,14 @@ fn should_scan_for_filesystem_io(file: &Path, allowed: &Path) -> bool {
 
 fn is_production_source(file: &Path) -> bool {
     !file.components().any(|component| {
-        let name = component.as_os_str();
-        name == "testkit" || name == "tests"
-    }) && file
-        .file_name()
-        .is_some_and(|file_name| file_name != "tests.rs")
+        let name = component.as_os_str().to_string_lossy();
+        name == "testkit" || name == "tests" || name == "test_support" || name.ends_with("_tests")
+    }) && file.file_name().is_some_and(|file_name| {
+        let file_name = file_name.to_string_lossy();
+        file_name != "tests.rs"
+            && file_name != "test_support.rs"
+            && !file_name.ends_with("_tests.rs")
+    })
 }
 
 fn filesystem_marker_violations(root: &Path, file: &Path) -> Vec<String> {
@@ -150,6 +153,18 @@ fn filesystem_boundary_scan_skips_localfs_backend_and_test_sources() {
     ));
     assert!(!should_scan_for_filesystem_io(
         &root.join("src/backend/tests.rs"),
+        &allowed
+    ));
+    assert!(!should_scan_for_filesystem_io(
+        &root.join("src/service/snapshot/publish_fault_tests.rs"),
+        &allowed
+    ));
+    assert!(!should_scan_for_filesystem_io(
+        &root.join("src/service/cache_mode_absence_tests/support.rs"),
+        &allowed
+    ));
+    assert!(!should_scan_for_filesystem_io(
+        &root.join("src/format/table/test_support.rs"),
         &allowed
     ));
     assert!(should_scan_for_filesystem_io(

@@ -266,11 +266,34 @@ fn assert_durable_local_conformance(backend: &dyn Backend) {
     assert_eq!(missing_delete.status(), DeleteStatus::AlreadyMissing);
 }
 
+fn assert_durable_local_writer_lock_exclusion(first: &dyn Backend, second: &dyn Backend) {
+    let lock_name = ObjectLayout::writer_lock().expect("writer lock name");
+    let first_guard = first
+        .acquire_writer_lock(&lock_name)
+        .expect("first writer lock");
+
+    assert_eq!(first_guard.object(), &lock_name);
+    assert_eq!(
+        second
+            .acquire_writer_lock(&lock_name)
+            .expect_err("second writer lock should be unavailable")
+            .kind(),
+        BackendErrorKind::Unavailable
+    );
+
+    drop(first_guard);
+    let second_guard = second
+        .acquire_writer_lock(&lock_name)
+        .expect("released writer lock can be reacquired");
+    assert_eq!(second_guard.object(), &lock_name);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         assert_basic_object_conformance, assert_cache_mode_conformance,
         assert_durable_local_capability_mismatch, assert_durable_local_conformance,
+        assert_durable_local_writer_lock_exclusion,
     };
     use crate::backend::{memory::MemoryBackend, Backend, DeleteDurability};
 
@@ -324,6 +347,16 @@ mod tests {
         let backend = crate::backend::local_fs::LocalFsBackend::new(dir.path());
 
         assert_durable_local_conformance(&backend);
+    }
+
+    #[cfg(all(feature = "localfs", unix))]
+    #[test]
+    fn localfs_backend_satisfies_durable_local_writer_lock_exclusion() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = crate::backend::local_fs::LocalFsBackend::new(dir.path());
+        let second = crate::backend::local_fs::LocalFsBackend::new(dir.path());
+
+        assert_durable_local_writer_lock_exclusion(&first, &second);
     }
 
     #[cfg(all(feature = "localfs", not(unix)))]

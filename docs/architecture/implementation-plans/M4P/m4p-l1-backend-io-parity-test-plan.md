@@ -222,14 +222,16 @@ Required behavior:
 3. localfs satisfies basic object conformance and cache-mode requirements;
 4. localfs satisfies durable-local conformance on supported platforms;
 5. durable conformance covers append, sync, publish, writer lock, and delete;
-6. cache backends continue to report weaker delete durability.
+6. writer-lock conformance uses two backend handles so a dummy lock guard cannot
+   pass by only proving acquisition and release;
+7. cache backends continue to report weaker delete durability.
 
 Assertions:
 
 1. conformance helpers are reusable functions, not one-off localfs tests;
 2. durable conformance runs only on backends that advertise the required
    capabilities;
-3. future backend adapters can call the same helper without knowing localfs
+3. future backend adapters can call the same helpers without knowing localfs
    internals.
 
 ## Downstream Test Requirements
@@ -265,7 +267,8 @@ Required behavior:
 1. production storage code uses direct filesystem IO only in
    `backend/local_fs.rs`;
 2. the guard allows the localfs backend implementation to own filesystem IO;
-3. the guard ignores test fixtures and testkit sources;
+3. the guard ignores test fixtures, `_tests.rs` files, `_tests/` fixture
+   directories, `test_support`, and testkit sources;
 4. seeded guard checks reject `fs::remove_file` outside localfs;
 5. seeded guard checks reject `OpenOptions::new` outside localfs;
 6. seeded guard checks avoid false positives for storage API names such as
