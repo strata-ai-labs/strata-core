@@ -5,7 +5,10 @@ use super::{
 use crate::backend::{Backend, BackendCapability, BackendError, BackendErrorKind};
 use crate::format::quarantine::QuarantineInventory;
 use crate::format::FormatError;
-use crate::layout::{ObjectFamily, ObjectLayout};
+use crate::layout::{
+    ObjectLayout, QuarantineObjectClassification, QuarantineObjectShape,
+    QuarantineObjectShapeReason,
+};
 use crate::object::ObjectName;
 use std::collections::BTreeMap;
 use strata_core_next::BranchId;
@@ -736,74 +739,80 @@ fn policy_rank(kind: QuarantineReconciliationKind) -> u8 {
 fn parse_quarantine_object(
     object: ObjectName,
 ) -> Result<Option<(BranchId, Option<String>, ObjectName)>, QuarantineMalformedObject> {
-    let raw = object.as_str().to_owned();
-    let mut parts = raw.split('/');
-    let Some(family) = parts.next() else {
-        return Ok(None);
-    };
-    if family != ObjectFamily::Quarantine.as_str() {
-        return Ok(None);
-    }
-
-    let Some(branch_text) = parts.next() else {
-        return Err(QuarantineMalformedObject::new(
-            object,
-            None,
-            None,
-            MALFORMED_QUARANTINE_SHAPE,
-        ));
-    };
-    let branch_id = match BranchId::parse_str(branch_text) {
-        Ok(branch_id) if branch_id.to_string() == branch_text => branch_id,
-        _ => {
-            return Err(QuarantineMalformedObject::new(
-                object,
-                None,
-                None,
-                MALFORMED_QUARANTINE_BRANCH,
-            ));
+    match ObjectLayout::classify_quarantine_object(&object) {
+        Ok(None) => Ok(None),
+        Ok(Some(QuarantineObjectClassification::Manifest { branch_id })) => {
+            let branch_id = parse_quarantine_branch(&object, branch_id, None)?;
+            Ok(Some((branch_id, None, object)))
         }
-    };
-
-    let Some(component) = parts.next() else {
-        return Err(QuarantineMalformedObject::new(
-            object,
-            Some(branch_id),
-            None,
-            MALFORMED_QUARANTINE_SHAPE,
-        ));
-    };
-
-    if parts.next().is_some() {
-        return Err(QuarantineMalformedObject::new(
-            object,
-            Some(branch_id),
-            Some(component.to_owned()),
-            MALFORMED_QUARANTINE_OBJECT_ID,
-        ));
+        Ok(Some(QuarantineObjectClassification::Object {
+            branch_id,
+            object_id,
+        })) => {
+            let object_id = object_id.to_owned();
+            let branch_id = parse_quarantine_branch(&object, branch_id, None)?;
+            Ok(Some((branch_id, Some(object_id), object)))
+        }
+        Err(_) => parse_malformed_quarantine_object(object),
     }
+}
 
-    let Some(inventory_id) = reserved_inventory_object_id(branch_id) else {
-        return Err(QuarantineMalformedObject::new(
-            object,
-            Some(branch_id),
-            None,
-            MALFORMED_QUARANTINE_SHAPE,
-        ));
-    };
-    if component == inventory_id {
-        return Ok(Some((branch_id, None, object)));
-    }
-
-    let object_id = component.to_owned();
-    match quarantine_object_name(branch_id, &object_id) {
-        Ok(expected) if expected == object => Ok(Some((branch_id, Some(object_id), object))),
+fn parse_quarantine_branch(
+    object: &ObjectName,
+    branch_text: &str,
+    object_id: Option<String>,
+) -> Result<BranchId, QuarantineMalformedObject> {
+    match BranchId::parse_str(branch_text) {
+        Ok(branch_id) if branch_id.to_string() == branch_text => Ok(branch_id),
         _ => Err(QuarantineMalformedObject::new(
-            object,
-            Some(branch_id),
-            Some(object_id),
-            MALFORMED_QUARANTINE_OBJECT_ID,
+            object.clone(),
+            None,
+            object_id,
+            MALFORMED_QUARANTINE_BRANCH,
         )),
+    }
+}
+
+fn parse_malformed_quarantine_object(
+    object: ObjectName,
+) -> Result<Option<(BranchId, Option<String>, ObjectName)>, QuarantineMalformedObject> {
+    let Some(shape) = ObjectLayout::classify_quarantine_object_shape(&object) else {
+        return Ok(None);
+    };
+    match shape {
+        QuarantineObjectShape::Manifest { branch_id } => {
+            let branch_id = parse_quarantine_branch(&object, branch_id, None)?;
+            Ok(Some((branch_id, None, object)))
+        }
+        QuarantineObjectShape::Object {
+            branch_id,
+            object_id,
+        } => {
+            let object_id = object_id.to_owned();
+            let branch_id = parse_quarantine_branch(&object, branch_id, Some(object_id.clone()))?;
+            Ok(Some((branch_id, Some(object_id), object)))
+        }
+        QuarantineObjectShape::Malformed {
+            branch_id,
+            object_id,
+            reason,
+        } => {
+            let object_id = object_id.map(str::to_owned);
+            let parsed_branch_id = match branch_id {
+                Some(branch_id) => Some(parse_quarantine_branch(&object, branch_id, None)?),
+                None => None,
+            };
+            let reason = match reason {
+                QuarantineObjectShapeReason::Shape => MALFORMED_QUARANTINE_SHAPE,
+                QuarantineObjectShapeReason::ObjectId => MALFORMED_QUARANTINE_OBJECT_ID,
+            };
+            Err(QuarantineMalformedObject::new(
+                object,
+                parsed_branch_id,
+                object_id,
+                reason,
+            ))
+        }
     }
 }
 
@@ -813,11 +822,4 @@ fn quarantine_object_name(
 ) -> QuarantineServiceResult<ObjectName> {
     ObjectLayout::quarantine_object(&branch_id.to_string(), object_id)
         .map_err(|source| QuarantineServiceError::Layout { source })
-}
-
-fn reserved_inventory_object_id(branch_id: BranchId) -> Option<String> {
-    let Ok(object) = ObjectLayout::quarantine_manifest(&branch_id.to_string()) else {
-        return None;
-    };
-    object.as_str().rsplit('/').next().map(str::to_owned)
 }

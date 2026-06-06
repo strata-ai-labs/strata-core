@@ -12,6 +12,7 @@ use crate::object::{ObjectName, ObjectNameError, ObjectPrefix};
 use std::fmt;
 
 const MAX_TABLE_LEVEL: u32 = 9_999;
+const FIXED_U64_COMPONENT_LEN: usize = 16;
 const QUARANTINE_MANIFEST_OBJECT_ID: &str = "manifest";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,6 +80,10 @@ pub(crate) enum LayoutError {
         level: u32,
         max: u32,
     },
+    InvalidObjectShape {
+        family: ObjectFamily,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for LayoutError {
@@ -95,6 +100,9 @@ impl fmt::Display for LayoutError {
             Self::LevelOutOfRange { level, max } => {
                 write!(formatter, "table level {level} exceeds maximum {max}")
             }
+            Self::InvalidObjectShape { family, reason } => {
+                write!(formatter, "invalid {family} object shape: {reason}")
+            }
         }
     }
 }
@@ -104,6 +112,68 @@ impl std::error::Error for LayoutError {}
 pub(crate) type LayoutResult<T> = Result<T, LayoutError>;
 
 pub(crate) struct ObjectLayout;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ManifestObjectClassification {
+    Database,
+    BranchCatalog,
+    PendingReleases,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TableObjectClassification<'a> {
+    Manifest {
+        branch_id: &'a str,
+    },
+    Data {
+        branch_id: &'a str,
+        level: u32,
+        table_id: &'a str,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WalObjectClassification {
+    Segment { segment_id: u64 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SnapshotObjectClassification {
+    Snapshot { snapshot_id: u64 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum QuarantineObjectClassification<'a> {
+    Manifest {
+        branch_id: &'a str,
+    },
+    Object {
+        branch_id: &'a str,
+        object_id: &'a str,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QuarantineObjectShapeReason {
+    Shape,
+    ObjectId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum QuarantineObjectShape<'a> {
+    Manifest {
+        branch_id: &'a str,
+    },
+    Object {
+        branch_id: &'a str,
+        object_id: &'a str,
+    },
+    Malformed {
+        branch_id: Option<&'a str>,
+        object_id: Option<&'a str>,
+        reason: QuarantineObjectShapeReason,
+    },
+}
 
 impl ObjectLayout {
     pub(crate) fn family_prefix(family: ObjectFamily) -> LayoutResult<ObjectPrefix> {
@@ -126,12 +196,55 @@ impl ObjectLayout {
         object_name(&[ObjectFamily::Manifest.as_str(), "pending-releases"])
     }
 
+    pub(crate) fn classify_manifest_object(
+        object: &ObjectName,
+    ) -> LayoutResult<Option<ManifestObjectClassification>> {
+        let Some(components) = components_for_family(object, ObjectFamily::Manifest)? else {
+            return Ok(None);
+        };
+        let [role] = components.as_slice() else {
+            return Err(invalid_shape(
+                ObjectFamily::Manifest,
+                "manifest objects must have one role component",
+            ));
+        };
+
+        let classification = match *role {
+            "current" => ManifestObjectClassification::Database,
+            "branch-catalog" => ManifestObjectClassification::BranchCatalog,
+            "pending-releases" => ManifestObjectClassification::PendingReleases,
+            _ => {
+                return Err(invalid_shape(
+                    ObjectFamily::Manifest,
+                    "unknown manifest role",
+                ));
+            }
+        };
+        Ok(Some(classification))
+    }
+
     pub(crate) fn wal_prefix() -> LayoutResult<ObjectPrefix> {
         Self::family_prefix(ObjectFamily::Wal)
     }
 
     pub(crate) fn wal_segment(segment_id: u64) -> LayoutResult<ObjectName> {
         object_name(&[ObjectFamily::Wal.as_str(), &fixed_u64(segment_id)])
+    }
+
+    pub(crate) fn classify_wal_object(
+        object: &ObjectName,
+    ) -> LayoutResult<Option<WalObjectClassification>> {
+        let Some(components) = components_for_family(object, ObjectFamily::Wal)? else {
+            return Ok(None);
+        };
+        let [segment] = components.as_slice() else {
+            return Err(invalid_shape(
+                ObjectFamily::Wal,
+                "WAL segment objects must have one segment id component",
+            ));
+        };
+        let segment_id = parse_fixed_u64_component(ObjectFamily::Wal, "segment id", segment)?;
+        Ok(Some(WalObjectClassification::Segment { segment_id }))
     }
 
     pub(crate) fn wal_segment_metadata_prefix() -> LayoutResult<ObjectPrefix> {
@@ -171,12 +284,68 @@ impl ObjectLayout {
         object_name(&[ObjectFamily::Tables.as_str(), branch_id, &level, table_id])
     }
 
+    pub(crate) fn classify_table_object(
+        object: &ObjectName,
+    ) -> LayoutResult<Option<TableObjectClassification<'_>>> {
+        let Some(components) = components_for_family(object, ObjectFamily::Tables)? else {
+            return Ok(None);
+        };
+        match components.as_slice() {
+            [branch_id, "manifest"] => {
+                let expected = Self::branch_table_manifest(branch_id)?;
+                if &expected != object {
+                    return Err(invalid_shape(
+                        ObjectFamily::Tables,
+                        "branch table manifest is not canonical",
+                    ));
+                }
+                Ok(Some(TableObjectClassification::Manifest { branch_id }))
+            }
+            [branch_id, level, table_id] => {
+                let level = parse_level_component(level)?;
+                let expected = Self::table_object(branch_id, level, table_id)?;
+                if &expected != object {
+                    return Err(invalid_shape(
+                        ObjectFamily::Tables,
+                        "table data object is not canonical",
+                    ));
+                }
+                Ok(Some(TableObjectClassification::Data {
+                    branch_id,
+                    level,
+                    table_id,
+                }))
+            }
+            _ => Err(invalid_shape(
+                ObjectFamily::Tables,
+                "table objects must be a branch manifest or table data object",
+            )),
+        }
+    }
+
     pub(crate) fn snapshot_prefix() -> LayoutResult<ObjectPrefix> {
         Self::family_prefix(ObjectFamily::Snapshots)
     }
 
     pub(crate) fn snapshot(snapshot_id: u64) -> LayoutResult<ObjectName> {
         object_name(&[ObjectFamily::Snapshots.as_str(), &fixed_u64(snapshot_id)])
+    }
+
+    pub(crate) fn classify_snapshot_object(
+        object: &ObjectName,
+    ) -> LayoutResult<Option<SnapshotObjectClassification>> {
+        let Some(components) = components_for_family(object, ObjectFamily::Snapshots)? else {
+            return Ok(None);
+        };
+        let [snapshot] = components.as_slice() else {
+            return Err(invalid_shape(
+                ObjectFamily::Snapshots,
+                "snapshot objects must have one snapshot id component",
+            ));
+        };
+        let snapshot_id =
+            parse_fixed_u64_component(ObjectFamily::Snapshots, "snapshot id", snapshot)?;
+        Ok(Some(SnapshotObjectClassification::Snapshot { snapshot_id }))
     }
 
     pub(crate) fn temporary_prefix() -> LayoutResult<ObjectPrefix> {
@@ -222,7 +391,77 @@ impl ObjectLayout {
     pub(crate) fn quarantine_object(branch_id: &str, object_id: &str) -> LayoutResult<ObjectName> {
         validate_component("branch", branch_id)?;
         validate_component("quarantine object", object_id)?;
+        if object_id == QUARANTINE_MANIFEST_OBJECT_ID {
+            return Err(invalid_shape(
+                ObjectFamily::Quarantine,
+                "quarantine object id is reserved for inventory manifest",
+            ));
+        }
         object_name(&[ObjectFamily::Quarantine.as_str(), branch_id, object_id])
+    }
+
+    pub(crate) fn classify_quarantine_object(
+        object: &ObjectName,
+    ) -> LayoutResult<Option<QuarantineObjectClassification<'_>>> {
+        let Some(shape) = Self::classify_quarantine_object_shape(object) else {
+            return Ok(None);
+        };
+        match shape {
+            QuarantineObjectShape::Manifest { branch_id } => {
+                Ok(Some(QuarantineObjectClassification::Manifest { branch_id }))
+            }
+            QuarantineObjectShape::Object {
+                branch_id,
+                object_id,
+            } => Ok(Some(QuarantineObjectClassification::Object {
+                branch_id,
+                object_id,
+            })),
+            QuarantineObjectShape::Malformed { .. } => Err(invalid_shape(
+                ObjectFamily::Quarantine,
+                "quarantine objects must have branch and object components",
+            )),
+        }
+    }
+
+    pub(crate) fn classify_quarantine_object_shape(
+        object: &ObjectName,
+    ) -> Option<QuarantineObjectShape<'_>> {
+        let mut components = object.as_str().split('/');
+        let family = components.next()?;
+        if family != ObjectFamily::Quarantine.as_str() {
+            return None;
+        }
+
+        let branch_id = components.next();
+        let object_id = components.next();
+        let extra = components.next();
+        match (branch_id, object_id, extra) {
+            (None, _, _) => Some(QuarantineObjectShape::Malformed {
+                branch_id: None,
+                object_id: None,
+                reason: QuarantineObjectShapeReason::Shape,
+            }),
+            (Some(branch_id), None, _) => Some(QuarantineObjectShape::Malformed {
+                branch_id: Some(branch_id),
+                object_id: None,
+                reason: QuarantineObjectShapeReason::Shape,
+            }),
+            (Some(branch_id), Some(object_id), None)
+                if object_id == QUARANTINE_MANIFEST_OBJECT_ID =>
+            {
+                Some(QuarantineObjectShape::Manifest { branch_id })
+            }
+            (Some(branch_id), Some(object_id), None) => Some(QuarantineObjectShape::Object {
+                branch_id,
+                object_id,
+            }),
+            (Some(branch_id), Some(object_id), Some(_)) => Some(QuarantineObjectShape::Malformed {
+                branch_id: Some(branch_id),
+                object_id: Some(object_id),
+                reason: QuarantineObjectShapeReason::ObjectId,
+            }),
+        }
     }
 
     pub(crate) fn locks_prefix() -> LayoutResult<ObjectPrefix> {
@@ -248,6 +487,22 @@ fn fixed_u64(value: u64) -> String {
     format!("{value:016x}")
 }
 
+fn parse_fixed_u64_component(
+    family: ObjectFamily,
+    role: &'static str,
+    component: &str,
+) -> LayoutResult<u64> {
+    if component.len() != FIXED_U64_COMPONENT_LEN
+        || !component
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid_shape(family, role));
+    }
+
+    u64::from_str_radix(component, 16).map_err(|_| invalid_shape(family, role))
+}
+
 fn level_component(level: u32) -> LayoutResult<String> {
     if level > MAX_TABLE_LEVEL {
         return Err(LayoutError::LevelOutOfRange {
@@ -257,6 +512,50 @@ fn level_component(level: u32) -> LayoutResult<String> {
     }
 
     Ok(format!("l{level:04}"))
+}
+
+fn parse_level_component(component: &str) -> LayoutResult<u32> {
+    if component.len() != 5
+        || component.as_bytes()[0] != b'l'
+        || !component.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return Err(invalid_shape(
+            ObjectFamily::Tables,
+            "table level must use l0000 encoding",
+        ));
+    }
+    let level = component[1..]
+        .parse::<u32>()
+        .map_err(|_| invalid_shape(ObjectFamily::Tables, "table level is invalid"))?;
+    if level > MAX_TABLE_LEVEL {
+        return Err(LayoutError::LevelOutOfRange {
+            level,
+            max: MAX_TABLE_LEVEL,
+        });
+    }
+    Ok(level)
+}
+
+fn components_for_family(
+    object: &ObjectName,
+    family: ObjectFamily,
+) -> LayoutResult<Option<Vec<&str>>> {
+    let mut components = object.as_str().split('/');
+    let Some(actual_family) = components.next() else {
+        return Ok(None);
+    };
+    if actual_family != family.as_str() {
+        return Ok(None);
+    }
+    let components = components.collect::<Vec<_>>();
+    if components.is_empty() {
+        return Err(invalid_shape(family, "missing object role components"));
+    }
+    Ok(Some(components))
+}
+
+const fn invalid_shape(family: ObjectFamily, reason: &'static str) -> LayoutError {
+    LayoutError::InvalidObjectShape { family, reason }
 }
 
 fn object_name(components: &[&str]) -> LayoutResult<ObjectName> {

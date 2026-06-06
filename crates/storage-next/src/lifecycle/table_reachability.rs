@@ -12,6 +12,7 @@ use super::{
     RecoveryFault, RecoveryFaultKind, RecoveryHealth, RetentionDecision,
 };
 use crate::format::{TableManifest, TableManifestTableProvenance};
+use crate::layout::{ObjectLayout, TableObjectClassification};
 use crate::object::ObjectName;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -699,17 +700,21 @@ fn recovery_health_blocks_table_retention(health: &RecoveryHealth, allow_telemet
 }
 
 fn is_non_table_object(object: &ObjectName) -> bool {
-    !object.as_str().starts_with("tables/")
+    matches!(ObjectLayout::classify_table_object(object), Ok(None))
 }
 
 fn is_table_manifest_object(object: &ObjectName) -> bool {
-    let text = object.as_str();
-    text.starts_with("tables/") && text.ends_with("/manifest") && text.matches('/').count() == 2
+    matches!(
+        ObjectLayout::classify_table_object(object),
+        Ok(Some(TableObjectClassification::Manifest { .. }))
+    )
 }
 
 fn is_table_data_object(object: &ObjectName) -> bool {
-    let text = object.as_str();
-    text.starts_with("tables/") && !text.ends_with("/manifest") && text.matches('/').count() == 3
+    matches!(
+        ObjectLayout::classify_table_object(object),
+        Ok(Some(TableObjectClassification::Data { .. }))
+    )
 }
 
 pub(crate) fn table_object_retention_health_debt(

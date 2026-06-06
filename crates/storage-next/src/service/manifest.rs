@@ -17,7 +17,7 @@ use crate::format::{
     encode_pending_releases_manifest, encode_table_manifest, BranchCatalogManifest,
     DatabaseManifest, FormatError, PendingReleasesManifest, TableManifest,
 };
-use crate::layout::{LayoutError, ObjectLayout};
+use crate::layout::{LayoutError, ObjectLayout, TableObjectClassification};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::fmt;
@@ -735,24 +735,25 @@ fn table_manifest_object(branch_id: &str) -> ManifestServiceResult<ObjectName> {
 }
 
 fn is_branch_table_manifest_object(object: &ObjectName) -> bool {
-    let mut parts = object.as_str().split('/');
     matches!(
-        (parts.next(), parts.next(), parts.next(), parts.next()),
-        (Some("tables"), Some(_), Some("manifest"), None)
+        ObjectLayout::classify_table_object(object),
+        Ok(Some(TableObjectClassification::Manifest { .. }))
     )
 }
 
 fn branch_id_from_table_manifest_object(
     object: &ObjectName,
 ) -> ManifestServiceResult<strata_core_next::BranchId> {
-    let Some(branch) = object.as_str().split('/').nth(1) else {
+    let Ok(Some(TableObjectClassification::Manifest { branch_id })) =
+        ObjectLayout::classify_table_object(object)
+    else {
         return Err(ManifestServiceError::InvalidRecoveryFact {
             role: ManifestRole::Table,
             object: object.clone(),
             field: "branch_id",
         });
     };
-    strata_core_next::BranchId::parse_str(branch).map_err(|_| {
+    strata_core_next::BranchId::parse_str(branch_id).map_err(|_| {
         ManifestServiceError::InvalidRecoveryFact {
             role: ManifestRole::Table,
             object: object.clone(),

@@ -468,6 +468,9 @@ fn delete_source(
             QuarantineDeleteOutcome::deleted(source_object.clone())
         }
         Ok(_) => QuarantineDeleteOutcome::missing(source_object.clone()),
+        Err(source) if source.source_error().kind() == BackendErrorKind::NotFound => {
+            QuarantineDeleteOutcome::missing(source_object.clone())
+        }
         Err(source) => QuarantineDeleteOutcome::failed(source_object.clone(), source.into()),
     }
 }

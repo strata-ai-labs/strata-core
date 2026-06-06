@@ -54,6 +54,13 @@ Each slice pair must record:
 If a slice defers an audit finding, the slice must record the owner layer,
 reason, and replacement proof or later slice that will close it.
 
+## Written Slice Plans
+
+1. `m4p-l1-backend-io-parity-implementation-plan.md`
+2. `m4p-l1-backend-io-parity-test-plan.md`
+3. `m4p-l2-object-layout-parity-implementation-plan.md`
+4. `m4p-l2-object-layout-parity-test-plan.md`
+
 ## Initial Slice Queue
 
 The parent plan defines the first executable queue:

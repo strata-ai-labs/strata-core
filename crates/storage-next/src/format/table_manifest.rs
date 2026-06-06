@@ -1,5 +1,6 @@
 use super::{ByteReader, FormatError};
 use crate::branch::facts::BranchLevel;
+use crate::layout::{ObjectLayout, TableObjectClassification};
 use crate::object::{ObjectName, MAX_OBJECT_NAME_BYTES};
 use crate::table::TableIdentity;
 use std::collections::BTreeSet;
@@ -1169,22 +1170,14 @@ fn validate_table_objects_for_branch(
 ) -> Result<(), FormatError> {
     let expected_branch = branch_id.to_string();
     for level in levels {
-        let expected_level = format!("l{:04}", level.level().raw());
         for table in level.tables() {
-            let actual_branch =
-                table_object_branch_component(table.object()).ok_or(FormatError::InvalidValue {
-                    field: "table_object",
-                })?;
+            let (actual_branch, actual_level) = table_object_branch_and_level(table.object())?;
             if actual_branch != expected_branch {
                 return Err(FormatError::InvalidValue {
                     field: "table_object_branch",
                 });
             }
-            let actual_level =
-                table_object_level_component(table.object()).ok_or(FormatError::InvalidValue {
-                    field: "table_object",
-                })?;
-            if actual_level != expected_level {
+            if actual_level != u32::from(level.level().raw()) {
                 return Err(FormatError::InvalidValue {
                     field: "table_object_level",
                 });
@@ -1203,45 +1196,18 @@ fn validate_generation(value: Option<u64>, field: &'static str) -> Result<(), Fo
 }
 
 fn validate_table_object_name(object: &ObjectName) -> Result<(), FormatError> {
-    let Some((_branch, level, _table)) = table_object_components(object) else {
-        return Err(FormatError::InvalidValue {
+    table_object_branch_and_level(object).map(|_| ())
+}
+
+fn table_object_branch_and_level(object: &ObjectName) -> Result<(&str, u32), FormatError> {
+    match ObjectLayout::classify_table_object(object) {
+        Ok(Some(TableObjectClassification::Data {
+            branch_id, level, ..
+        })) => Ok((branch_id, level)),
+        _ => Err(FormatError::InvalidValue {
             field: "table_object",
-        });
-    };
-    if !is_table_level_component(level) {
-        return Err(FormatError::InvalidValue {
-            field: "table_object",
-        });
+        }),
     }
-    Ok(())
-}
-
-fn table_object_branch_component(object: &ObjectName) -> Option<&str> {
-    table_object_components(object).map(|(branch, _level, _table)| branch)
-}
-
-fn table_object_level_component(object: &ObjectName) -> Option<&str> {
-    table_object_components(object).map(|(_branch, level, _table)| level)
-}
-
-fn table_object_components(object: &ObjectName) -> Option<(&str, &str, &str)> {
-    let mut components = object.as_str().split('/');
-    if components.next()? != "tables" {
-        return None;
-    }
-    let branch = components.next()?;
-    let level = components.next()?;
-    let table = components.next()?;
-    if components.next().is_some() {
-        return None;
-    }
-    Some((branch, level, table))
-}
-
-fn is_table_level_component(component: &str) -> bool {
-    component.len() == 5
-        && component.as_bytes()[0] == b'l'
-        && component.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
 fn validate_key_range(first: &[u8], last: &[u8], field: &'static str) -> Result<(), FormatError> {

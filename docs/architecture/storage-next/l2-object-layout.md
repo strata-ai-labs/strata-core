@@ -99,6 +99,8 @@ tests in the same slice.
 
 ```text
 manifest/current
+manifest/branch-catalog
+manifest/pending-releases
 
 wal/<segment-id>
 meta/wal/<segment-id>
@@ -124,6 +126,14 @@ owned by L3/L4.
 `manifest/current` is the database-level durable manifest location. Its bytes
 belong to L3/L4.
 
+`manifest/branch-catalog` names the durable branch-catalog manifest. L2 only
+owns the canonical object name; branch catalog bytes and validation belong to
+L3/L4/L6.
+
+`manifest/pending-releases` names the durable pending-release manifest. L2 only
+owns the canonical object name; release bytes, recovery rules, and policy
+belong to L3/L4/L8.
+
 `wal/<segment-id>` names WAL segment objects. It does not imply appendable
 files. L4 decides how WAL segments are written and published.
 
@@ -141,8 +151,10 @@ the database manifest is an L4/L6 decision.
 `snapshots/<snapshot-id>` names snapshot/checkpoint objects. Snapshot bytes and
 retention behavior are owned by L3/L4/L8.
 
-`tmp/<operation-id>/<object-id>` names temporary objects. L2 defines the
-namespace; L4/L8 define publish and cleanup rules.
+`tmp/<operation-id>/<object-id>` names object-visible temporary objects. L2
+reserves this namespace; L4/L8 define publish and cleanup rules if storage-next
+adds object-visible temporary objects. Local filesystem atomic publish scratch
+files are backend-private L1 paths, not L2 `tmp/` objects.
 
 `quarantine/<branch-id>/<object-id>` and `quarantine/<branch-id>/manifest`
 reserve recovery/repair inventory locations. L8 owns the protocol.
@@ -278,8 +290,9 @@ Property tests:
 The first storage-next implementation needs:
 
 1. A storage-owned `ObjectName` or equivalent validated type.
-2. Constructors for database manifest, WAL segments, table objects, snapshots,
-   temporary objects, quarantine objects, and writer lock/lease object.
+2. Constructors for database manifest, branch catalog manifest, pending release
+   manifest, WAL segments, table objects, snapshots, temporary objects,
+   quarantine objects, and writer lock/lease object.
 3. Prefix constructors for listing WAL, tables, snapshots, tmp, and quarantine.
 4. Tests that no storage layer above L2 constructs object names with raw string
    formatting.
@@ -313,8 +326,8 @@ Deferred decisions:
    for debugging, or use the same object names exactly?
 3. Should `tables/<branch-id>/<level>/<table-id>` include a table generation or
    creation version?
-4. Should temporary objects be operation-scoped, transaction-scoped, or
-   backend-generated?
+4. Should object-visible temporary objects be operation-scoped,
+   transaction-scoped, or backend-generated?
 
 Resolved first-pass decision: object names do not carry a storage format
 version prefix such as `v1/` by default. The manifest and object bytes carry

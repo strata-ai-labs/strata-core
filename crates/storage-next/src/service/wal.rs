@@ -18,7 +18,7 @@ use crate::format::{
     encode_wal_record_envelope, encode_wal_segment_header, FormatError, SegmentMetadata, WalRecord,
     WalRecordEnvelope, WalSegmentHeader, WAL_SEGMENT_HEADER_SIZE,
 };
-use crate::layout::{LayoutError, ObjectFamily, ObjectLayout};
+use crate::layout::{LayoutError, ObjectLayout, WalObjectClassification};
 use crate::object::ObjectName;
 use crate::service::{validate_publish_outcome, ObjectPublisher};
 use std::borrow::Cow;
@@ -27,7 +27,6 @@ use strata_core_next::CommitVersion;
 
 const DEFAULT_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 const MIN_SEGMENT_SIZE: u64 = 1024;
-const WAL_SEGMENT_COMPONENT_LEN: usize = 16;
 const IDENTITY_CODEC_ID: &str = "identity";
 
 pub(crate) type WalServiceResult<T> = Result<T, WalServiceError>;
@@ -967,6 +966,10 @@ impl<'a> WalService<'a> {
                         report.deleted.push(segment_id);
                         self.delete_segment_sidecar_best_effort(segment_id);
                     }
+                    Err(error) if error.source_error().kind() == BackendErrorKind::NotFound => {
+                        report.deleted.push(segment_id);
+                        self.delete_segment_sidecar_best_effort(segment_id);
+                    }
                     Ok(_) | Err(_) => report.failed.push(segment_id),
                 }
             } else {
@@ -1213,52 +1216,26 @@ fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject
 }
 
 fn parse_segment_object(object: ObjectName) -> WalServiceResult<WalSegmentObject> {
-    let raw = object.as_str();
-    let mut parts = raw.split('/');
-    let family = parts.next();
-    let component = parts.next();
-    if parts.next().is_some() || family != Some(ObjectFamily::Wal.as_str()) {
-        return Err(WalServiceError::Backend {
-            operation: WalOperation::List,
-            object,
-            source: BackendError::new(BackendErrorKind::InvalidObjectName, "not a WAL object"),
-        });
-    }
-    let Some(component) = component else {
-        return Err(WalServiceError::Backend {
-            operation: WalOperation::List,
-            object,
-            source: BackendError::new(
-                BackendErrorKind::InvalidObjectName,
-                "WAL segment object is missing segment id",
-            ),
-        });
+    let segment_id = match ObjectLayout::classify_wal_object(&object) {
+        Ok(Some(WalObjectClassification::Segment { segment_id })) => segment_id,
+        Ok(None) => {
+            return Err(WalServiceError::Backend {
+                operation: WalOperation::List,
+                object,
+                source: BackendError::new(BackendErrorKind::InvalidObjectName, "not a WAL object"),
+            });
+        }
+        Err(_) => {
+            return Err(WalServiceError::Backend {
+                operation: WalOperation::List,
+                object,
+                source: BackendError::new(
+                    BackendErrorKind::InvalidObjectName,
+                    "WAL segment object has invalid component",
+                ),
+            });
+        }
     };
-    if component.len() != WAL_SEGMENT_COMPONENT_LEN
-        || !component
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-    {
-        return Err(WalServiceError::Backend {
-            operation: WalOperation::List,
-            object,
-            source: BackendError::new(
-                BackendErrorKind::InvalidObjectName,
-                "WAL segment object has invalid component",
-            ),
-        });
-    }
-    // The alphabet and fixed-width checks above should make parsing
-    // infallible. Keep the fallible branch explicit so later layout changes
-    // fail closed instead of introducing a production panic.
-    let segment_id = u64::from_str_radix(component, 16).map_err(|_| WalServiceError::Backend {
-        operation: WalOperation::List,
-        object: object.clone(),
-        source: BackendError::new(
-            BackendErrorKind::InvalidObjectName,
-            "WAL segment object id is not fixed-width hex",
-        ),
-    })?;
     if segment_id == 0 {
         return Err(WalServiceError::Backend {
             operation: WalOperation::List,

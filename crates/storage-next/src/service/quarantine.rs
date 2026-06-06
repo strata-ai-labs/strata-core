@@ -580,14 +580,9 @@ fn validate_inventory_object_id(branch_id: BranchId, object_id: &str) -> Result<
 }
 
 fn quarantine_inventory_object_id(branch_id: BranchId) -> Result<String, FormatError> {
-    let object = ObjectLayout::quarantine_manifest(&branch_id.to_string())
+    let _ = ObjectLayout::quarantine_manifest(&branch_id.to_string())
         .map_err(|_| FormatError::InvalidValue { field: "branch_id" })?;
-    object
-        .as_str()
-        .rsplit('/')
-        .next()
-        .map(str::to_owned)
-        .ok_or(FormatError::InvalidValue { field: "object_id" })
+    Ok(ObjectLayout::quarantine_inventory_object_id().to_owned())
 }
 
 fn validate_inventory_source_object(source_object: &ObjectName) -> Result<(), FormatError> {

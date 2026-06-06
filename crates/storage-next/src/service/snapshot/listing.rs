@@ -3,7 +3,7 @@ use super::{
     SnapshotServiceResult,
 };
 use crate::backend::{Backend, BackendCapability, BackendError, BackendErrorKind};
-use crate::layout::{ObjectFamily, ObjectLayout};
+use crate::layout::{ObjectLayout, SnapshotObjectClassification};
 use crate::object::ObjectName;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,43 +149,22 @@ fn list_snapshot_objects(backend: &dyn Backend) -> SnapshotServiceResult<Vec<Sna
 }
 
 fn parse_snapshot_object(object: ObjectName) -> SnapshotServiceResult<Option<SnapshotObject>> {
-    let raw = object.as_str();
-    let mut parts = raw.split('/');
-    let Some(family) = parts.next() else {
-        return Ok(None);
-    };
-    if family != ObjectFamily::Snapshots.as_str() {
-        // Some object stores expose weak prefix behavior. Objects outside the
-        // snapshot family are ignored, but malformed names inside the family
-        // fail closed because they can represent ambiguous recovery state.
-        return Ok(None);
-    }
-
-    let Some(component) = parts.next() else {
-        return Err(invalid_listed_snapshot_object(object));
-    };
-    if parts.next().is_some()
-        || component.len() != SNAPSHOT_OBJECT_COMPONENT_LEN
-        || !component
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-    {
-        return Err(invalid_listed_snapshot_object(object));
-    }
-
-    // The alphabet and fixed-width checks above should make parsing infallible.
-    // Keep the fallible branch explicit so later layout changes fail closed
-    // instead of introducing a production panic.
-    let Ok(snapshot_id) = u64::from_str_radix(component, 16) else {
-        return Err(invalid_listed_snapshot_object(object));
+    let snapshot_id = match ObjectLayout::classify_snapshot_object(&object) {
+        Ok(Some(SnapshotObjectClassification::Snapshot { snapshot_id })) => snapshot_id,
+        Ok(None) => {
+            // Some object stores expose weak prefix behavior. Objects outside
+            // the snapshot family are ignored, but malformed names inside the
+            // family fail closed because they can represent ambiguous recovery
+            // state.
+            return Ok(None);
+        }
+        Err(_) => return Err(invalid_listed_snapshot_object(object)),
     };
     if snapshot_id == 0 {
         return Err(invalid_listed_snapshot_object(object));
     }
     Ok(Some(SnapshotObject::new(snapshot_id, object)))
 }
-
-const SNAPSHOT_OBJECT_COMPONENT_LEN: usize = 16;
 
 fn invalid_listed_snapshot_object(object: ObjectName) -> SnapshotServiceError {
     SnapshotServiceError::InvalidListedObject {
