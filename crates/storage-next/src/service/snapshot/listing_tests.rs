@@ -479,18 +479,18 @@ impl Backend for ListingBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         if self.delete_failures.contains(name) {
-            return Err(BackendError::new(
-                BackendErrorKind::Unavailable,
-                "delete failed",
-            ));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(BackendErrorKind::Unavailable, "delete failed"),
+            );
         }
         self.deleted
             .lock()
             .expect("deleted lock")
             .push(name.clone());
-        Ok(())
+        crate::backend::durable_delete_result(name, true)
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

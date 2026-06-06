@@ -1,7 +1,9 @@
 use super::{
     require_capability, QuarantineService, QuarantineServiceError, QuarantineServiceResult,
 };
-use crate::backend::{Backend, BackendCapability, BackendErrorKind, PublishFailureKind};
+use crate::backend::{
+    Backend, BackendCapability, BackendErrorKind, DeleteStatus, PublishFailureKind,
+};
 use crate::format::quarantine::{QuarantineEntry, QuarantineInventory};
 use crate::layout::{ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
@@ -229,14 +231,14 @@ impl QuarantineService<'_> {
         for entry in inventory.inventory().entries() {
             let object = quarantine_object_name(request.branch_id, entry.object_id())?;
             match self.backend.delete_object(&object) {
-                Ok(()) => {
+                Ok(outcome) if outcome.status() == DeleteStatus::Deleted => {
                     report.reclaimed_bytes =
                         report.reclaimed_bytes.saturating_add(entry.byte_count());
                     report
                         .deleted
                         .push(QuarantineDeleteOutcome::deleted(object));
                 }
-                Err(source) if source.kind() == BackendErrorKind::NotFound => {
+                Ok(_) => {
                     report.reclaimed_bytes =
                         report.reclaimed_bytes.saturating_add(entry.byte_count());
                     report
@@ -247,7 +249,7 @@ impl QuarantineService<'_> {
                     report.retained_entries.push(entry.clone());
                     report
                         .failed
-                        .push(QuarantineDeleteOutcome::failed(object, source));
+                        .push(QuarantineDeleteOutcome::failed(object, source.into()));
                 }
             }
         }
@@ -462,11 +464,11 @@ fn delete_source(
     source_object: &ObjectName,
 ) -> QuarantineDeleteOutcome {
     match backend.delete_object(source_object) {
-        Ok(()) => QuarantineDeleteOutcome::deleted(source_object.clone()),
-        Err(source) if source.kind() == BackendErrorKind::NotFound => {
-            QuarantineDeleteOutcome::missing(source_object.clone())
+        Ok(outcome) if outcome.status() == DeleteStatus::Deleted => {
+            QuarantineDeleteOutcome::deleted(source_object.clone())
         }
-        Err(source) => QuarantineDeleteOutcome::failed(source_object.clone(), source),
+        Ok(_) => QuarantineDeleteOutcome::missing(source_object.clone()),
+        Err(source) => QuarantineDeleteOutcome::failed(source_object.clone(), source.into()),
     }
 }
 

@@ -420,8 +420,9 @@ mod fault {
             self.inner.write_object(name, bytes)
         }
 
-        fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-            self.observe(BackendOperation::DeleteObject)?;
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            self.observe(BackendOperation::DeleteObject)
+                .map_err(|error| crate::backend::DeleteError::failed_before_removal(name, error))?;
             self.inner.delete_object(name)
         }
 
@@ -444,7 +445,7 @@ mod fault {
             self.inner.append_object(name, bytes)
         }
 
-        fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+        fn sync_object(&self, name: &ObjectName) -> crate::backend::BackendResult<()> {
             self.observe(BackendOperation::SyncObject)?;
             self.inner.sync_object(name)
         }

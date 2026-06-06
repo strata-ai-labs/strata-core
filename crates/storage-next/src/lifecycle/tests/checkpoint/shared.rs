@@ -549,7 +549,7 @@ impl Backend for CheckpointTestBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.events
             .lock()
             .expect("events")
@@ -566,13 +566,13 @@ impl Backend for CheckpointTestBackend {
             && (self.fail_delete.load(Ordering::SeqCst)
                 || self.fail_delete_call.load(Ordering::SeqCst) == call)
         {
-            return Err(BackendError::new(
-                BackendErrorKind::Unavailable,
-                "injected delete failure",
-            ));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(BackendErrorKind::Unavailable, "injected delete failure"),
+            );
         }
-        self.objects.lock().expect("objects").remove(name);
-        Ok(())
+        let removed = self.objects.lock().expect("objects").remove(name).is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -634,7 +634,7 @@ impl Backend for CheckpointTestBackend {
         ))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Ok(())
     }
 

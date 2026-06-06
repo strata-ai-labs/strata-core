@@ -1238,8 +1238,8 @@ impl Backend for CountingBackend {
         Err(self.unsupported())
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Err(self.unsupported())
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::failed_delete_result(name, self.unsupported())
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -1259,7 +1259,7 @@ impl Backend for CountingBackend {
         Err(self.unsupported())
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Err(self.unsupported())
     }
 

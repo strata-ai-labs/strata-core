@@ -96,7 +96,7 @@ impl Backend for ObservingCacheBackend {
         self.inner.write_object(name, bytes)
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.record(Operation::Delete(name.clone()));
         self.inner.delete_object(name)
     }
@@ -126,7 +126,7 @@ impl Backend for ObservingCacheBackend {
         Err(BackendError::unsupported(BackendCapability::AppendObject))
     }
 
-    fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, name: &ObjectName) -> crate::backend::BackendResult<()> {
         self.record(Operation::Sync(name.clone()));
         Err(BackendError::unsupported(BackendCapability::DurableSync))
     }

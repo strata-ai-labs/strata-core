@@ -47,8 +47,8 @@ impl Backend for SyntheticPublishBackend {
         Ok(BackendMetadata::new(0, None))
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Ok(())
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::durable_delete_result(name, false)
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

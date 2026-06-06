@@ -9,7 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendError, BackendErrorKind, BackendHandle, PublishError, PublishOutcome,
+    Backend, BackendError, BackendErrorKind, BackendHandle, DeleteStatus, PublishError,
+    PublishOutcome,
 };
 use crate::format::{
     decode_segment_metadata, encode_segment_metadata, FormatError, SegmentMetadata,
@@ -308,17 +309,17 @@ impl<'a> WalSegmentMetadataSidecarService<'a> {
         // Deleting an optional sidecar cannot be allowed to fail authoritative
         // WAL cleanup, so backend failures are returned as report facts.
         match self.backend.delete_object(&object) {
-            Ok(()) => Ok(WalSegmentMetadataSidecarDelete::new(
-                segment_id, object, true, None,
-            )),
-            Err(source) if source.kind() == BackendErrorKind::NotFound => Ok(
-                WalSegmentMetadataSidecarDelete::new(segment_id, object, false, None),
+            Ok(outcome) if outcome.status() == DeleteStatus::Deleted => Ok(
+                WalSegmentMetadataSidecarDelete::new(segment_id, object, true, None),
             ),
+            Ok(_) => Ok(WalSegmentMetadataSidecarDelete::new(
+                segment_id, object, false, None,
+            )),
             Err(source) => Ok(WalSegmentMetadataSidecarDelete::new(
                 segment_id,
                 object,
                 false,
-                Some(source),
+                Some(source.into()),
             )),
         }
     }

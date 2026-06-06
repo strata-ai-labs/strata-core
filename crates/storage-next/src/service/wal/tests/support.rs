@@ -260,11 +260,14 @@ impl Backend for CapabilityProbeBackend {
         ))
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Err(BackendError::new(
-            BackendErrorKind::Unknown,
-            "capability probe should not delete",
-        ))
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::failed_delete_result(
+            name,
+            BackendError::new(
+                BackendErrorKind::Unknown,
+                "capability probe should not delete",
+            ),
+        )
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -413,7 +416,7 @@ impl Backend for StoredWalBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         let mut failures = self.delete_failures.lock().expect("delete failures lock");
         if let Some(kind) = failures.remove(name) {
             if kind == BackendErrorKind::NotFound {
@@ -422,15 +425,19 @@ impl Backend for StoredWalBackend {
                     .expect("stored WAL objects lock")
                     .remove(name);
             }
-            return Err(BackendError::new(kind, "injected delete failure"));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(kind, "injected delete failure"),
+            );
         }
 
-        self.objects
+        let removed = self
+            .objects
             .lock()
             .expect("stored WAL objects lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -500,7 +507,7 @@ impl Backend for StoredWalBackend {
         ))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Ok(())
     }
 

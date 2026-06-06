@@ -10,7 +10,7 @@
 
 use crate::backend::{
     Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
-    PublishError,
+    DeleteStatus, PublishError,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
@@ -958,15 +958,16 @@ impl<'a> WalService<'a> {
                 .all(|record| record.commit_version() <= covered_through)
             {
                 match self.backend.delete_object(&object) {
-                    Ok(()) => {
+                    Ok(outcome)
+                        if matches!(
+                            outcome.status(),
+                            DeleteStatus::Deleted | DeleteStatus::AlreadyMissing
+                        ) =>
+                    {
                         report.deleted.push(segment_id);
                         self.delete_segment_sidecar_best_effort(segment_id);
                     }
-                    Err(source) if source.kind() == BackendErrorKind::NotFound => {
-                        report.deleted.push(segment_id);
-                        self.delete_segment_sidecar_best_effort(segment_id);
-                    }
-                    Err(_) => report.failed.push(segment_id),
+                    Ok(_) | Err(_) => report.failed.push(segment_id),
                 }
             } else {
                 report.protected.push(segment_id);

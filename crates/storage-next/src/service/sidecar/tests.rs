@@ -125,20 +125,13 @@ impl Backend for RecordingBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> Result<(), BackendError> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         if let Some(source) = self.delete_failure.lock().expect("delete failure").clone() {
-            return Err(source);
+            return crate::backend::failed_delete_result(name, source);
         }
 
-        let removed = self.objects.lock().expect("objects").remove(name);
-        if removed.is_some() {
-            Ok(())
-        } else {
-            Err(BackendError::new(
-                BackendErrorKind::NotFound,
-                "missing object",
-            ))
-        }
+        let removed = self.objects.lock().expect("objects").remove(name).is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> Result<Vec<ObjectName>, BackendError> {
@@ -176,7 +169,7 @@ impl Backend for RecordingBackend {
         ))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> Result<(), BackendError> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Ok(())
     }
 

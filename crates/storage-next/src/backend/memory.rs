@@ -2,8 +2,9 @@
 
 use super::{
     Backend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata, BackendRange,
-    BackendResult, PublishDurability, PublishError, PublishFailureKind, PublishMode,
-    PublishOutcome, PublishResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
+    BackendResult, DeleteDurability, DeleteError, DeleteOutcome, DeleteResult, PublishDurability,
+    PublishError, PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
+    BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use std::collections::HashMap;
@@ -75,17 +76,16 @@ impl Backend for MemoryBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        let mut objects = self.write_objects()?;
-        objects.remove(name).map_or_else(
-            || {
-                Err(BackendError::new(
-                    BackendErrorKind::NotFound,
-                    format!("object {name} was not found"),
-                ))
-            },
-            |_| Ok(()),
-        )
+    fn delete_object(&self, name: &ObjectName) -> DeleteResult {
+        let mut objects = self
+            .write_objects()
+            .map_err(|error| DeleteError::failed_before_removal(name, error))?;
+        let status = if objects.remove(name).is_some() {
+            DeleteOutcome::deleted(name.clone(), DeleteDurability::NonDurable)
+        } else {
+            DeleteOutcome::already_missing(name.clone(), DeleteDurability::NonDurable)
+        };
+        Ok(status)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -241,13 +241,24 @@ mod tests {
         let backend = MemoryBackend::new();
         let name = ObjectName::new("manifest/current").expect("name");
 
+        let missing = backend.delete_object(&name).expect("missing delete");
         assert_eq!(
-            backend.delete_object(&name).expect_err("missing").kind(),
-            BackendErrorKind::NotFound
+            missing.status(),
+            crate::backend::DeleteStatus::AlreadyMissing
+        );
+        assert_eq!(
+            missing.durability(),
+            crate::backend::DeleteDurability::NonDurable
         );
 
         backend.write_object(&name, b"manifest").expect("write");
-        backend.delete_object(&name).expect("delete");
+        let deleted = backend.delete_object(&name).expect("delete");
+        assert_eq!(deleted.object(), &name);
+        assert_eq!(deleted.status(), crate::backend::DeleteStatus::Deleted);
+        assert_eq!(
+            deleted.durability(),
+            crate::backend::DeleteDurability::NonDurable
+        );
 
         assert_eq!(
             backend.read_object(&name).expect_err("deleted").kind(),

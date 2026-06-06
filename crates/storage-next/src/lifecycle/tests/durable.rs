@@ -2080,10 +2080,10 @@ impl Backend for DurableTestBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.record(Operation::DeleteObject(name.clone()));
-        self.objects.lock().expect("objects").remove(name);
-        Ok(())
+        let removed = self.objects.lock().expect("objects").remove(name).is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -2152,7 +2152,7 @@ impl Backend for DurableTestBackend {
         ))
     }
 
-    fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, name: &ObjectName) -> crate::backend::BackendResult<()> {
         self.record(Operation::SyncObject(name.clone()));
         if self.fail_sync.load(Ordering::SeqCst) {
             return Err(BackendError::new(

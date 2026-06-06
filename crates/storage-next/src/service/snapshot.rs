@@ -677,13 +677,14 @@ mod tests {
             Ok(BackendMetadata::new(bytes.len() as u64, None))
         }
 
-        fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-            self.objects
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            let removed = self
+                .objects
                 .lock()
                 .expect("recording backend lock")
                 .remove(name)
-                .map(|_| ())
-                .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+                .is_some();
+            crate::backend::durable_delete_result(name, removed)
         }
 
         fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -793,8 +794,8 @@ mod tests {
             Ok(BackendMetadata::new(0, None))
         }
 
-        fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-            Ok(())
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            crate::backend::durable_delete_result(name, false)
         }
 
         fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

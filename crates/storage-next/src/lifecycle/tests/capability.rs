@@ -421,9 +421,12 @@ impl Backend for CountingBackend {
         Err(BackendError::unsupported(BackendCapability::WriteObject))
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.record_side_effect();
-        Err(BackendError::unsupported(BackendCapability::DeleteObject))
+        crate::backend::failed_delete_result(
+            name,
+            BackendError::unsupported(BackendCapability::DeleteObject),
+        )
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -448,7 +451,7 @@ impl Backend for CountingBackend {
         Err(BackendError::unsupported(BackendCapability::AppendObject))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         self.record_side_effect();
         Err(BackendError::unsupported(BackendCapability::DurableSync))
     }

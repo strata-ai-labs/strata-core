@@ -163,13 +163,14 @@ impl Backend for RecordingBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        self.objects
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        let removed = self
+            .objects
             .lock()
             .expect("recording backend lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -250,11 +251,11 @@ impl Backend for ReadFailureBackend {
         ))
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Err(BackendError::new(
-            BackendErrorKind::UnsupportedOperation,
-            "delete unsupported",
-        ))
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::failed_delete_result(
+            name,
+            BackendError::new(BackendErrorKind::UnsupportedOperation, "delete unsupported"),
+        )
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -288,7 +289,7 @@ impl Backend for MissingReadCapabilityBackend {
         panic!("write_object should not be called by inventory load")
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, _name: &ObjectName) -> crate::backend::DeleteResult {
         panic!("delete_object should not be called by inventory load")
     }
 
@@ -320,7 +321,7 @@ impl Backend for MissingDurableSyncBackend {
         panic!("write_object should not be called by inventory publish preflight")
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, _name: &ObjectName) -> crate::backend::DeleteResult {
         panic!("delete_object should not be called by inventory publish preflight")
     }
 
@@ -417,13 +418,14 @@ impl Backend for PublishFailureBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        self.objects
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        let removed = self
+            .objects
             .lock()
             .expect("publish failure backend lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

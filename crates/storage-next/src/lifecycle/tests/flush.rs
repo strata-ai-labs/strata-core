@@ -1670,9 +1670,9 @@ impl Backend for FlushBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        self.objects.lock().expect("objects").remove(name);
-        Ok(())
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        let removed = self.objects.lock().expect("objects").remove(name).is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -1725,7 +1725,7 @@ impl Backend for FlushBackend {
         ))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Ok(())
     }
 

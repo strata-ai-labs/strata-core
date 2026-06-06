@@ -973,7 +973,7 @@ impl Backend for QuarantineTestBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.operations
             .lock()
             .expect("backend lock")
@@ -985,14 +985,18 @@ impl Backend for QuarantineTestBackend {
             .get(name)
             .copied()
         {
-            return Err(BackendError::new(kind, "delete failed"));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(kind, "delete failed"),
+            );
         }
-        self.objects
+        let removed = self
+            .objects
             .lock()
             .expect("backend lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

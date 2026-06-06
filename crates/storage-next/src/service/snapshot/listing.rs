@@ -119,8 +119,8 @@ impl SnapshotService<'_> {
             // delete failure must not hide deletes that already succeeded or
             // snapshots that were explicitly protected.
             match self.backend.delete_object(snapshot.object()) {
-                Ok(()) => report.record_deleted(snapshot),
-                Err(source) => report.record_failed(snapshot, source),
+                Ok(_) => report.record_deleted(snapshot),
+                Err(source) => report.record_failed(snapshot, source.into()),
             }
         }
 

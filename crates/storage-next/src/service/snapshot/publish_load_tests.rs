@@ -103,13 +103,14 @@ impl Backend for StoredObjectBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        self.objects
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        let removed = self
+            .objects
             .lock()
             .expect("object lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -199,7 +200,7 @@ impl Backend for MissingCapabilityBackend {
         panic!("write_object is not used by snapshot publish/load tests")
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, _name: &ObjectName) -> crate::backend::DeleteResult {
         panic!("delete_object is not used by snapshot publish/load tests")
     }
 
@@ -251,8 +252,11 @@ impl Backend for ReadFailureBackend {
         Err(BackendError::unsupported(BackendCapability::WriteObject))
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Err(BackendError::unsupported(BackendCapability::DeleteObject))
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::failed_delete_result(
+            name,
+            BackendError::unsupported(BackendCapability::DeleteObject),
+        )
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

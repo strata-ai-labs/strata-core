@@ -503,10 +503,10 @@ impl Backend for DurableScriptBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.record(ScriptOperation::Other);
-        self.objects.lock().expect("objects").remove(name);
-        Ok(())
+        let removed = self.objects.lock().expect("objects").remove(name).is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -568,7 +568,7 @@ impl Backend for DurableScriptBackend {
         ))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         self.record(ScriptOperation::Other);
         Ok(())
     }

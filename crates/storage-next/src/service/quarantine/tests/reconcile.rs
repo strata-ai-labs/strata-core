@@ -121,17 +121,18 @@ impl Backend for ReconcileBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.operations
             .lock()
             .expect("reconcile backend lock")
             .push(ReconcileOperation::Delete(name.clone()));
-        self.objects
+        let removed = self
+            .objects
             .lock()
             .expect("reconcile backend lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

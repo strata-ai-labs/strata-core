@@ -396,8 +396,8 @@ impl Backend for NoCapabilitiesBackend {
         Err(unsupported_backend_call())
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Err(unsupported_backend_call())
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::failed_delete_result(name, unsupported_backend_call())
     }
 
     fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -417,7 +417,7 @@ impl Backend for NoCapabilitiesBackend {
         Err(unsupported_backend_call())
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Err(unsupported_backend_call())
     }
 

@@ -2,9 +2,9 @@
 
 use super::{
     Backend, BackendAppend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata,
-    BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError,
-    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
-    BASIC_OBJECT_BACKEND_CAPABILITIES,
+    BackendRange, BackendResult, BackendWriterGuard, DeleteDurability, DeleteError, DeleteOutcome,
+    DeleteResult, PublishDurability, PublishError, PublishFailureKind, PublishMode, PublishOutcome,
+    PublishResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
@@ -40,11 +40,30 @@ impl LocalFsPublishStep {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalFsDeleteStep {
+    BeforeRemoval,
+    Removal,
+    ParentSync,
+}
+
+impl LocalFsDeleteStep {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::BeforeRemoval => "before_removal",
+            Self::Removal => "removal",
+            Self::ParentSync => "parent_sync",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFsBackend {
     root: PathBuf,
     #[cfg(all(test, unix))]
     publish_fault: Arc<Mutex<Option<LocalFsPublishStep>>>,
+    #[cfg(all(test, unix))]
+    delete_fault: Arc<Mutex<Option<LocalFsDeleteStep>>>,
 }
 
 impl LocalFsBackend {
@@ -53,6 +72,8 @@ impl LocalFsBackend {
             root: root.into(),
             #[cfg(all(test, unix))]
             publish_fault: Arc::new(Mutex::new(None)),
+            #[cfg(all(test, unix))]
+            delete_fault: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -156,6 +177,44 @@ impl LocalFsBackend {
 
     #[cfg(not(all(test, unix)))]
     fn injected_publish_fault(&self, _step: LocalFsPublishStep) -> Option<BackendError> {
+        let _ = &self.root;
+        None
+    }
+
+    #[cfg(all(test, unix))]
+    fn arm_delete_fault(&self, step: LocalFsDeleteStep) -> BackendResult<()> {
+        let mut fault = self.delete_fault.lock().map_err(|_| {
+            BackendError::new(
+                BackendErrorKind::Unknown,
+                "local filesystem delete fault state is poisoned",
+            )
+        })?;
+        *fault = Some(step);
+        Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    fn injected_delete_fault(&self, step: LocalFsDeleteStep) -> Option<BackendError> {
+        let Ok(mut fault) = self.delete_fault.lock() else {
+            return Some(BackendError::new(
+                BackendErrorKind::Unknown,
+                "local filesystem delete fault state is poisoned",
+            ));
+        };
+
+        if *fault == Some(step) {
+            *fault = None;
+            Some(BackendError::new(
+                BackendErrorKind::Interrupted,
+                format!("test fault injected at {}", step.name()),
+            ))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(all(test, unix)))]
+    fn injected_delete_fault(&self, _step: LocalFsDeleteStep) -> Option<BackendError> {
         let _ = &self.root;
         None
     }
@@ -489,6 +548,35 @@ impl LocalFsBackend {
             })
     }
 
+    fn sync_delete_parent(&self, name: &ObjectName, path: &Path) -> DeleteResult {
+        if !cfg!(unix) {
+            return Ok(DeleteOutcome::deleted(
+                name.clone(),
+                DeleteDurability::NonDurable,
+            ));
+        }
+
+        let Some(parent) = path.parent() else {
+            return Ok(DeleteOutcome::deleted(
+                name.clone(),
+                DeleteDurability::Durable,
+            ));
+        };
+
+        if let Some(error) = self.injected_delete_fault(LocalFsDeleteStep::ParentSync) {
+            return Err(DeleteError::removed_durability_unconfirmed(name, error));
+        }
+
+        File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|err| DeleteError::removed_durability_unconfirmed(name, map_io_error(&err)))?;
+
+        Ok(DeleteOutcome::deleted(
+            name.clone(),
+            DeleteDurability::Durable,
+        ))
+    }
+
     fn name_from_path(&self, path: &Path) -> BackendResult<ObjectName> {
         let relative = path.strip_prefix(&self.root).map_err(|_| {
             BackendError::new(
@@ -636,11 +724,67 @@ impl Backend for LocalFsBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        Self::reject_writer_lock_object_mutation(name, "delete")?;
+    fn delete_object(&self, name: &ObjectName) -> DeleteResult {
+        Self::reject_writer_lock_object_mutation(name, "delete")
+            .map_err(|error| DeleteError::failed_before_removal(name, error))?;
         let path = self.path_for(name);
-        self.metadata_for_object_path(&path)?;
-        fs::remove_file(path).map_err(|err| map_io_error(&err))
+        if let Some(parent) = path.parent() {
+            match self.ensure_parent_dirs(parent, false) {
+                Ok(()) => {}
+                Err(error) if error.kind() == BackendErrorKind::NotFound => {
+                    return Ok(DeleteOutcome::already_missing(
+                        name.clone(),
+                        DeleteDurability::NonDurable,
+                    ));
+                }
+                Err(error) => return Err(DeleteError::failed_before_removal(name, error)),
+            }
+        }
+
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(DeleteError::failed_before_removal(
+                    name,
+                    BackendError::new(
+                        BackendErrorKind::Corruption,
+                        format!("object path {} is a symlink", path.display()),
+                    ),
+                ));
+            }
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(DeleteError::failed_before_removal(
+                    name,
+                    BackendError::new(
+                        BackendErrorKind::Corruption,
+                        format!("object path {} is not a file", path.display()),
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DeleteOutcome::already_missing(
+                    name.clone(),
+                    DeleteDurability::NonDurable,
+                ));
+            }
+            Err(error) => {
+                return Err(DeleteError::failed_before_removal(
+                    name,
+                    map_io_error(&error),
+                ))
+            }
+        }
+
+        if let Some(error) = self.injected_delete_fault(LocalFsDeleteStep::BeforeRemoval) {
+            return Err(DeleteError::failed_before_removal(name, error));
+        }
+        if let Some(error) = self.injected_delete_fault(LocalFsDeleteStep::Removal) {
+            return Err(DeleteError::removal_unknown(name, error));
+        }
+
+        fs::remove_file(&path)
+            .map_err(|err| DeleteError::removal_unknown(name, map_io_error(&err)))?;
+        self.sync_delete_parent(name, &path)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -800,12 +944,15 @@ fn map_io_error(error: &std::io::Error) -> BackendError {
 mod tests {
     use super::LocalFsBackend;
     #[cfg(unix)]
+    use super::LocalFsDeleteStep;
+    #[cfg(unix)]
     use super::LocalFsPublishStep;
     #[cfg(unix)]
     use crate::backend::PublishDurability;
     use crate::backend::{
-        Backend, BackendCapability, BackendErrorKind, BackendRange, PublishFailureKind,
-        PublishMode, BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
+        Backend, BackendCapability, BackendErrorKind, BackendRange, DeleteDurability,
+        DeleteFailureKind, DeleteStatus, PublishFailureKind, PublishMode,
+        BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
     };
     use crate::config::mode::{DurabilityPolicy, StorageModeRequest};
     use crate::layout::ObjectLayout;
@@ -940,7 +1087,11 @@ mod tests {
 
         assert_eq!(write_error.kind(), BackendErrorKind::PermissionDenied);
         assert_eq!(append_error.kind(), BackendErrorKind::PermissionDenied);
-        assert_eq!(delete_error.kind(), BackendErrorKind::PermissionDenied);
+        assert_eq!(delete_error.kind(), DeleteFailureKind::FailedBeforeRemoval);
+        assert_eq!(
+            delete_error.source_error().kind(),
+            BackendErrorKind::PermissionDenied
+        );
         assert_eq!(
             publish_error.kind(),
             PublishFailureKind::FailedBeforeVisibility
@@ -1451,12 +1602,155 @@ mod tests {
             backend.read_object(&name).expect_err("missing read").kind(),
             BackendErrorKind::NotFound
         );
+        let missing_delete = backend.delete_object(&name).expect("missing delete");
+        assert_eq!(missing_delete.object(), &name);
+        assert_eq!(missing_delete.status(), DeleteStatus::AlreadyMissing);
+        assert_eq!(missing_delete.durability(), DeleteDurability::NonDurable);
+        assert!(backend
+            .list_prefix(&ObjectPrefix::new("manifest/").expect("prefix"))
+            .expect("list")
+            .is_empty());
+    }
+
+    #[test]
+    fn localfs_backend_delete_removes_object_and_reports_mode_durability() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+
+        backend.write_object(&name, b"manifest").expect("write");
+        let outcome = backend.delete_object(&name).expect("delete");
+
+        assert_eq!(outcome.object(), &name);
+        assert_eq!(outcome.status(), DeleteStatus::Deleted);
         assert_eq!(
-            backend
-                .delete_object(&name)
-                .expect_err("missing delete")
+            outcome.durability(),
+            if cfg!(unix) {
+                DeleteDurability::Durable
+            } else {
+                DeleteDurability::NonDurable
+            }
+        );
+        assert_eq!(
+            backend.read_object(&name).expect_err("deleted").kind(),
+            BackendErrorKind::NotFound
+        );
+
+        let reopened = LocalFsBackend::new(dir.path());
+        assert_eq!(
+            reopened
+                .read_object(&name)
+                .expect_err("delete survives reopen")
                 .kind(),
             BackendErrorKind::NotFound
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_delete_before_removal_fault_leaves_object_visible() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"manifest").expect("write");
+        backend
+            .arm_delete_fault(LocalFsDeleteStep::BeforeRemoval)
+            .expect("arm fault");
+
+        let error = backend.delete_object(&name).expect_err("delete fault");
+
+        assert_eq!(error.kind(), DeleteFailureKind::FailedBeforeRemoval);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(
+            backend.read_object(&name).expect("still visible"),
+            b"manifest"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_delete_removal_fault_reports_unknown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"manifest").expect("write");
+        backend
+            .arm_delete_fault(LocalFsDeleteStep::Removal)
+            .expect("arm fault");
+
+        let error = backend.delete_object(&name).expect_err("delete fault");
+
+        assert_eq!(error.kind(), DeleteFailureKind::RemovalUnknown);
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(
+            backend.read_object(&name).expect("still visible"),
+            b"manifest"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_delete_parent_sync_fault_reports_unconfirmed_and_removes_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        backend.write_object(&name, b"manifest").expect("write");
+        backend
+            .arm_delete_fault(LocalFsDeleteStep::ParentSync)
+            .expect("arm fault");
+
+        let error = backend.delete_object(&name).expect_err("delete fault");
+
+        assert_eq!(
+            error.kind(),
+            DeleteFailureKind::RemovedDurabilityUnconfirmed
+        );
+        assert_eq!(error.source_error().kind(), BackendErrorKind::Interrupted);
+        assert_eq!(
+            backend
+                .read_object(&name)
+                .expect_err("object no longer visible")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+        let reopened = LocalFsBackend::new(dir.path());
+        assert_eq!(
+            reopened
+                .read_object(&name)
+                .expect_err("object remains absent after reopen")
+                .kind(),
+            BackendErrorKind::NotFound
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localfs_backend_delete_ignores_stale_temporary_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        let final_path = backend.path_for(&name);
+        let parent = final_path.parent().expect("parent");
+        std::fs::create_dir_all(parent).expect("parent dirs");
+        let final_file_name = final_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("file name");
+        let stale_temp = parent.join(format!("{final_file_name}.tmp.stale"));
+        std::fs::write(&stale_temp, b"stale").expect("stale temp");
+        backend.write_object(&name, b"manifest").expect("write");
+
+        let outcome = backend.delete_object(&name).expect("delete");
+
+        assert_eq!(outcome.status(), DeleteStatus::Deleted);
+        assert_eq!(outcome.durability(), DeleteDurability::Durable);
+        assert_eq!(
+            backend.read_object(&name).expect_err("deleted").kind(),
+            BackendErrorKind::NotFound
+        );
+        assert_eq!(
+            std::fs::read(&stale_temp).expect("stale temp preserved"),
+            b"stale"
         );
         assert!(backend
             .list_prefix(&ObjectPrefix::new("manifest/").expect("prefix"))
@@ -1488,10 +1782,38 @@ mod tests {
                 .kind(),
             BackendErrorKind::Corruption
         );
+        let delete_error = backend
+            .delete_object(&name)
+            .expect_err("delete symlink should fail before removal");
+        assert_eq!(delete_error.kind(), DeleteFailureKind::FailedBeforeRemoval);
+        assert_eq!(
+            delete_error.source_error().kind(),
+            BackendErrorKind::Corruption
+        );
         assert_eq!(
             std::fs::read(outside.path()).expect("outside read"),
             b"outside"
         );
+    }
+
+    #[test]
+    fn localfs_backend_delete_rejects_non_file_object_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("manifest/current").expect("name");
+        let path = backend.path_for(&name);
+        std::fs::create_dir_all(&path).expect("directory at object path");
+
+        let delete_error = backend
+            .delete_object(&name)
+            .expect_err("delete directory object path should fail before removal");
+
+        assert_eq!(delete_error.kind(), DeleteFailureKind::FailedBeforeRemoval);
+        assert_eq!(
+            delete_error.source_error().kind(),
+            BackendErrorKind::Corruption
+        );
+        assert!(path.is_dir());
     }
 
     #[cfg(unix)]

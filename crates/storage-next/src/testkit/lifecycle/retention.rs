@@ -685,23 +685,19 @@ impl Backend for ScriptSnapshotBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         let call = self
             .delete_calls
             .fetch_add(1, Ordering::SeqCst)
             .saturating_add(1);
         if self.fail_delete_call.load(Ordering::SeqCst) == call {
-            return Err(BackendError::new(
-                BackendErrorKind::Unavailable,
-                "injected delete failure",
-            ));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(BackendErrorKind::Unavailable, "injected delete failure"),
+            );
         }
-        self.objects
-            .lock()
-            .expect("objects")
-            .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "object not found"))
+        let removed = self.objects.lock().expect("objects").remove(name).is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

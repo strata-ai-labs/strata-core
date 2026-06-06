@@ -1361,7 +1361,7 @@ fn checkpoint_snapshot_delete_fault_preserves_object() -> Result<(), TestkitErro
         .delete_object(&layout)
         .expect_err("delete fault must surface as backend error");
     require(
-        delete_error.kind() == crate::backend::BackendErrorKind::Unavailable,
+        delete_error.source_error().kind() == crate::backend::BackendErrorKind::Unavailable,
         "snapshot delete fault was not surfaced as Unavailable",
     )?;
     require(
@@ -1585,7 +1585,7 @@ fn purge_delete_fault_preserves_quarantine_object() -> Result<(), TestkitError> 
         .delete_object(&quarantine_object)
         .expect_err("simulated purge delete must surface fault");
     require(
-        delete_error.kind() == crate::backend::BackendErrorKind::Unavailable,
+        delete_error.source_error().kind() == crate::backend::BackendErrorKind::Unavailable,
         "purge delete fault was not surfaced as Unavailable",
     )?;
     require(
@@ -1876,13 +1876,19 @@ impl crate::backend::Backend for HarnessBackend {
         ))
     }
 
-    fn delete_object(&self, name: &crate::object::ObjectName) -> crate::backend::BackendResult<()> {
-        self.objects
+    fn delete_object(&self, name: &crate::object::ObjectName) -> crate::backend::DeleteResult {
+        let removed = self
+            .objects
             .lock()
-            .map_err(|_| backend_error("object lock poisoned"))?
+            .map_err(|_| {
+                crate::backend::DeleteError::failed_before_removal(
+                    name,
+                    backend_error("object lock poisoned"),
+                )
+            })?
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| not_found("object not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(

@@ -823,16 +823,15 @@ mod tests {
             Ok(BackendMetadata::new(bytes.len() as u64, None))
         }
 
-        fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
             *self.delete_calls.lock().expect("delete calls lock") += 1;
-            self.objects
+            let removed = self
+                .objects
                 .lock()
                 .expect("objects lock")
                 .remove(name)
-                .map_or_else(
-                    || Err(BackendError::new(BackendErrorKind::NotFound, "not found")),
-                    |_| Ok(()),
-                )
+                .is_some();
+            crate::backend::durable_delete_result(name, removed)
         }
 
         fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

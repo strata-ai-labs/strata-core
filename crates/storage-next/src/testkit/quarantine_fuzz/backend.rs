@@ -169,22 +169,37 @@ impl Backend for QuarantineScriptBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        self.record(BackendAccess::Delete)?;
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        self.record(BackendAccess::Delete)
+            .map_err(|error| crate::backend::DeleteError::failed_before_removal(name, error))?;
         if let Some(kind) = self
             .delete_failures
             .lock()
-            .map_err(|_| BackendError::new(BackendErrorKind::Unknown, "delete lock poisoned"))?
+            .map_err(|_| {
+                crate::backend::DeleteError::failed_before_removal(
+                    name,
+                    BackendError::new(BackendErrorKind::Unknown, "delete lock poisoned"),
+                )
+            })?
             .remove(name)
         {
-            return Err(BackendError::new(kind, "delete failed"));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(kind, "delete failed"),
+            );
         }
-        self.objects
+        let removed = self
+            .objects
             .lock()
-            .map_err(|_| BackendError::new(BackendErrorKind::Unknown, "object lock poisoned"))?
+            .map_err(|_| {
+                crate::backend::DeleteError::failed_before_removal(
+                    name,
+                    BackendError::new(BackendErrorKind::Unknown, "object lock poisoned"),
+                )
+            })?
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

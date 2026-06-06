@@ -28,7 +28,7 @@ impl Backend for PublishPreflightBackend {
         panic!("write_object should not be called by inventory publish preflight")
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, _name: &ObjectName) -> crate::backend::DeleteResult {
         panic!("delete_object should not be called by inventory publish preflight")
     }
 

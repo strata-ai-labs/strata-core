@@ -143,13 +143,14 @@ impl Backend for RecordingBackend {
         Ok(BackendMetadata::new(bytes.len() as u64, None))
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-        self.objects
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        let removed = self
+            .objects
             .lock()
             .expect("objects lock")
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+            .is_some();
+        crate::backend::durable_delete_result(name, removed)
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

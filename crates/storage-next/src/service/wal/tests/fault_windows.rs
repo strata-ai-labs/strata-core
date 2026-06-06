@@ -97,14 +97,14 @@ impl Backend for FaultWindowBackend {
         self.inner.write_object(name, bytes)
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         let mut failures = self.delete_failures.lock().expect("delete failures lock");
         if let Some(index) = failures.iter().position(|object| object == name) {
             failures.remove(index);
-            return Err(BackendError::new(
-                BackendErrorKind::Unavailable,
-                "injected delete failure",
-            ));
+            return crate::backend::failed_delete_result(
+                name,
+                BackendError::new(BackendErrorKind::Unavailable, "injected delete failure"),
+            );
         }
         self.inner.delete_object(name)
     }
@@ -158,7 +158,7 @@ impl Backend for FaultWindowBackend {
         self.inner.append_object(name, bytes)
     }
 
-    fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, name: &ObjectName) -> crate::backend::BackendResult<()> {
         self.inner.sync_object(name)
     }
 

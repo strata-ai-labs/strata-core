@@ -1081,13 +1081,14 @@ mod tests {
             Ok(BackendMetadata::new(bytes.len() as u64, None))
         }
 
-        fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-            self.objects
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            let removed = self
+                .objects
                 .lock()
                 .expect("recording backend lock")
                 .remove(name)
-                .map(|_| ())
-                .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+                .is_some();
+            crate::backend::durable_delete_result(name, removed)
         }
 
         fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -1532,11 +1533,14 @@ mod tests {
             ))
         }
 
-        fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-            Err(BackendError::new(
-                BackendErrorKind::UnsupportedOperation,
-                "delete is not supported",
-            ))
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            crate::backend::failed_delete_result(
+                name,
+                BackendError::new(
+                    BackendErrorKind::UnsupportedOperation,
+                    "delete is not supported",
+                ),
+            )
         }
 
         fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -1592,11 +1596,14 @@ mod tests {
             ))
         }
 
-        fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-            Err(BackendError::new(
-                BackendErrorKind::UnsupportedOperation,
-                "delete is not supported",
-            ))
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            crate::backend::failed_delete_result(
+                name,
+                BackendError::new(
+                    BackendErrorKind::UnsupportedOperation,
+                    "delete is not supported",
+                ),
+            )
         }
 
         fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -1686,13 +1693,14 @@ mod tests {
             Ok(BackendMetadata::new(bytes.len() as u64, None))
         }
 
-        fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
-            self.objects
+        fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+            let removed = self
+                .objects
                 .lock()
                 .expect("stored publish backend lock")
                 .remove(name)
-                .map(|_| ())
-                .ok_or_else(|| BackendError::new(BackendErrorKind::NotFound, "not found"))
+                .is_some();
+            crate::backend::durable_delete_result(name, removed)
         }
 
         fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {

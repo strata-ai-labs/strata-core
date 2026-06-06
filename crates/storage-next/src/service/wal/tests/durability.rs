@@ -39,7 +39,7 @@ impl Backend for SyncFaultBackend {
         self.inner.write_object(name, bytes)
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
         self.inner.delete_object(name)
     }
 
@@ -55,7 +55,7 @@ impl Backend for SyncFaultBackend {
         self.inner.append_object(name, bytes)
     }
 
-    fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, name: &ObjectName) -> crate::backend::BackendResult<()> {
         // Calls are recorded before the injected result so tests can prove a
         // failed durability barrier was actually attempted.
         self.sync_calls

@@ -115,8 +115,11 @@ impl Backend for MisreportingAppendBackend {
         Err(BackendError::unsupported(BackendCapability::WriteObject))
     }
 
-    fn delete_object(&self, _name: &ObjectName) -> BackendResult<()> {
-        Err(BackendError::unsupported(BackendCapability::DeleteObject))
+    fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+        crate::backend::failed_delete_result(
+            name,
+            BackendError::unsupported(BackendCapability::DeleteObject),
+        )
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
@@ -171,7 +174,7 @@ impl Backend for MisreportingAppendBackend {
         ))
     }
 
-    fn sync_object(&self, _name: &ObjectName) -> BackendResult<()> {
+    fn sync_object(&self, _name: &ObjectName) -> crate::backend::BackendResult<()> {
         Ok(())
     }
 

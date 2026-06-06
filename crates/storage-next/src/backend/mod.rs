@@ -19,9 +19,15 @@ mod conformance;
 #[cfg(feature = "localfs")]
 pub(crate) mod local_fs;
 
+mod delete;
 pub(crate) mod memory;
 mod publish;
 
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) use delete::{durable_delete_result, failed_delete_result};
+#[cfg(test)]
+pub(crate) use delete::{unsupported_delete, DeleteFailureKind};
+pub(crate) use delete::{DeleteDurability, DeleteError, DeleteOutcome, DeleteResult, DeleteStatus};
 pub(crate) use publish::{
     PublishDurability, PublishError, PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
 };
@@ -376,7 +382,7 @@ pub(crate) trait Backend: Send + Sync {
 
     fn write_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendMetadata>;
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()>;
+    fn delete_object(&self, name: &ObjectName) -> DeleteResult;
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>>;
 
@@ -509,7 +515,7 @@ impl Backend for BackendHandle<'_> {
         self.as_backend().write_object(name, bytes)
     }
 
-    fn delete_object(&self, name: &ObjectName) -> BackendResult<()> {
+    fn delete_object(&self, name: &ObjectName) -> DeleteResult {
         self.as_backend().delete_object(name)
     }
 
@@ -564,7 +570,7 @@ impl Backend for BackendHandle<'_> {
 mod tests {
     use super::{
         Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError,
-        BackendErrorKind, BackendFence, BackendMetadata, BackendRange,
+        BackendErrorKind, BackendFence, BackendMetadata, BackendRange, DeleteResult,
         BASIC_OBJECT_BACKEND_CAPABILITIES, CACHE_MODE_REQUIREMENTS,
         DURABLE_LOCAL_MODE_REQUIREMENTS, OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS,
     };
@@ -606,11 +612,8 @@ mod tests {
             ))
         }
 
-        fn delete_object(&self, _name: &ObjectName) -> Result<(), BackendError> {
-            Err(BackendError::new(
-                BackendErrorKind::UnsupportedOperation,
-                "not implemented",
-            ))
+        fn delete_object(&self, name: &ObjectName) -> DeleteResult {
+            Err(super::unsupported_delete(name))
         }
 
         fn list_prefix(&self, _prefix: &ObjectPrefix) -> Result<Vec<ObjectName>, BackendError> {
@@ -671,6 +674,30 @@ mod tests {
                 BackendCapability::DurableSync,
                 BackendCapability::SingleWriterLock,
             ]
+        );
+    }
+
+    #[test]
+    fn delete_object_is_the_only_delete_capability_requirement() {
+        let delete_capabilities = |capabilities: &[BackendCapability]| {
+            capabilities
+                .iter()
+                .copied()
+                .filter(|capability| capability.name().contains("delete"))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            delete_capabilities(CACHE_MODE_REQUIREMENTS),
+            vec![BackendCapability::DeleteObject]
+        );
+        assert_eq!(
+            delete_capabilities(DURABLE_LOCAL_MODE_REQUIREMENTS),
+            vec![BackendCapability::DeleteObject]
+        );
+        assert_eq!(
+            delete_capabilities(OBJECT_DURABLE_CANDIDATE_BASE_REQUIREMENTS),
+            vec![BackendCapability::DeleteObject]
         );
     }
 
@@ -739,6 +766,9 @@ mod tests {
         let update_error = backend
             .conditional_update(&name, &fence, b"payload")
             .expect_err("conditional update should be unsupported");
+        let delete_error = backend
+            .delete_object(&name)
+            .expect_err("delete should be unsupported");
         let publish_error = backend
             .publish_object(&name, b"payload", super::PublishMode::Replace)
             .expect_err("publish should be unsupported");
@@ -757,6 +787,10 @@ mod tests {
         assert_eq!(update_error.kind(), BackendErrorKind::UnsupportedOperation);
         assert_eq!(append_error.kind(), BackendErrorKind::UnsupportedOperation);
         assert_eq!(sync_error.kind(), BackendErrorKind::UnsupportedOperation);
+        assert_eq!(
+            delete_error.source_error().kind(),
+            BackendErrorKind::UnsupportedOperation
+        );
         assert_eq!(
             writer_lock_error.kind(),
             BackendErrorKind::UnsupportedOperation
@@ -800,6 +834,7 @@ mod tests {
             backend
                 .delete_object(&name)
                 .expect_err("empty backend delete")
+                .source_error()
                 .kind(),
             BackendErrorKind::UnsupportedOperation
         );
