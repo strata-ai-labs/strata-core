@@ -1,6 +1,6 @@
-use crate::format::TableCompression;
 #[cfg(feature = "perf-trace")]
-use crate::format::{MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE};
+use crate::format::{decode_table_footer_metadata, MAX_TABLE_FOOTER_SIZE};
+use crate::format::{TableCompression, MAX_TABLE_HEADER_SIZE};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
@@ -9,9 +9,9 @@ use crate::table::{
     TableKeyBound, TableKeyBounds, TablePhysicalKeyBytes, TableReaderConfig, TableReaderOpenMode,
     TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
 };
-use std::cell::Cell;
 use std::error::Error as _;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 fn branch(byte: u8) -> BranchId {
@@ -106,6 +106,33 @@ fn build_artifact(
     (artifact, table_rows)
 }
 
+#[cfg(feature = "perf-trace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TableMetadataRanges {
+    index_offset: u64,
+    index_len: u32,
+    properties_offset: u64,
+    properties_len: u32,
+}
+
+#[cfg(feature = "perf-trace")]
+fn table_metadata_ranges(bytes: &[u8]) -> TableMetadataRanges {
+    let footer_start = bytes.len() - MAX_TABLE_FOOTER_SIZE;
+    let footer = decode_table_footer_metadata(&bytes[footer_start..], footer_start)
+        .expect("decode table footer metadata");
+    TableMetadataRanges {
+        index_offset: footer.index_block_offset(),
+        index_len: footer.index_block_frame_len(),
+        properties_offset: footer.properties_block_offset(),
+        properties_len: footer.properties_block_frame_len(),
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+fn checked_table_offset(offset: u64) -> usize {
+    usize::try_from(offset).expect("table fixture offset fits usize")
+}
+
 fn collect_keys(cursor: &mut impl TableCursor) -> Vec<Vec<u8>> {
     let mut keys = Vec::new();
     while let Some(row) = cursor.current() {
@@ -155,7 +182,7 @@ struct TestSource {
     short_read: bool,
     long_read: bool,
     fail_read: bool,
-    calls: Rc<Cell<usize>>,
+    calls: Arc<AtomicUsize>,
 }
 
 impl TestSource {
@@ -166,7 +193,7 @@ impl TestSource {
             short_read: false,
             long_read: false,
             fail_read: false,
-            calls: Rc::new(Cell::new(0)),
+            calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -177,7 +204,7 @@ impl TestSource {
             short_read: true,
             long_read: false,
             fail_read: false,
-            calls: Rc::new(Cell::new(0)),
+            calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -188,7 +215,7 @@ impl TestSource {
             short_read: false,
             long_read: true,
             fail_read: false,
-            calls: Rc::new(Cell::new(0)),
+            calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -199,7 +226,7 @@ impl TestSource {
             short_read: false,
             long_read: false,
             fail_read: true,
-            calls: Rc::new(Cell::new(0)),
+            calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -210,12 +237,12 @@ impl TestSource {
             short_read: false,
             long_read: false,
             fail_read: false,
-            calls: Rc::new(Cell::new(0)),
+            calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     fn calls(&self) -> usize {
-        self.calls.get()
+        self.calls.load(Ordering::Relaxed)
     }
 }
 
@@ -225,7 +252,7 @@ impl TableByteSource for TestSource {
     }
 
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
-        self.calls.set(self.calls.get().saturating_add(1));
+        self.calls.fetch_add(1, Ordering::Relaxed);
         if self.fail_read {
             return Err(TableRuntimeError::source_read(
                 "injected table source failure",
@@ -319,6 +346,97 @@ fn immutable_reader_opens_bytes_and_exposes_facts_and_exact_lookup() {
 }
 
 #[test]
+fn immutable_reader_into_materialized_preserves_eager_byte_runtime_facts() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("reader-materialized-bytes"), &rows)
+        .expect("build reader bytes");
+    let reader = ImmutableTableReader::open_bytes(
+        identity("reader-materialized-bytes"),
+        artifact.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("open byte reader");
+
+    let materialized = reader
+        .into_materialized()
+        .expect("materialize eager reader");
+
+    assert_eq!(
+        materialized.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerBytes
+    );
+    assert_eq!(
+        materialized.runtime_facts().data_blocks_loaded(),
+        artifact.facts().data_block_count()
+    );
+    assert_eq!(
+        materialized.runtime_facts().rows_materialized(),
+        artifact.facts().row_count()
+    );
+    assert_eq!(materialized.rows(), rows.as_slice());
+}
+
+#[test]
+fn immutable_reader_into_materialized_converts_lazy_source_runtime_facts() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("reader-materialized-source"), &rows)
+        .expect("build reader source");
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-materialized-source"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open source reader");
+    assert_eq!(
+        reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::LazySource
+    );
+
+    let materialized = reader
+        .into_materialized()
+        .expect("materialize source reader");
+
+    assert_eq!(
+        materialized.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerSource
+    );
+    assert_eq!(
+        materialized.runtime_facts().data_blocks_loaded(),
+        artifact.facts().data_block_count()
+    );
+    assert_eq!(
+        materialized.runtime_facts().rows_materialized(),
+        artifact.facts().row_count()
+    );
+    assert_eq!(materialized.rows(), rows.as_slice());
+}
+
+#[test]
+fn immutable_reader_equality_remains_reflexive_when_lazy_rows_fail() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("reader-corrupt-lazy-reflexive"), &rows)
+        .expect("build reader source");
+    let mut bytes = artifact.bytes().to_vec();
+    let first_data_payload_offset = MAX_TABLE_HEADER_SIZE + 12;
+    bytes[first_data_payload_offset] ^= 0xff;
+
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-corrupt-lazy-reflexive"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("lazy metadata open should not decode corrupt data block");
+    assert!(matches!(
+        reader.try_rows(),
+        Err(TableRuntimeError::DecodeFormat { .. })
+    ));
+    assert_eq!(reader, reader.clone());
+}
+
+#[test]
 fn immutable_reader_opens_table_source_and_maps_source_failures() {
     let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
     let artifact = builder(1, TableCompression::Uncompressed)
@@ -333,25 +451,23 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
         TableReaderConfig::default(),
     )
     .expect("open source");
-    assert!(source_probe.calls() > 1);
+    assert_eq!(source_probe.calls(), 4);
     assert_eq!(
         reader.runtime_facts().open_mode(),
-        TableReaderOpenMode::EagerSource
+        TableReaderOpenMode::LazySource
     );
     assert!(reader.runtime_facts().metadata_loaded());
     assert!(reader.runtime_facts().index_loaded());
-    assert_eq!(
-        reader.runtime_facts().data_blocks_loaded(),
-        artifact.facts().data_block_count()
-    );
-    assert_eq!(
-        reader.runtime_facts().rows_materialized(),
-        artifact.facts().row_count()
-    );
+    assert_eq!(reader.runtime_facts().data_blocks_loaded(), 0);
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
     assert!(!reader.runtime_facts().filter_available());
     assert!(!reader.runtime_facts().cache_enabled());
     assert_eq!(reader.facts(), artifact.facts());
     assert_eq!(reader.rows(), rows.as_slice());
+    assert_eq!(
+        source_probe.calls(),
+        usize::try_from(artifact.facts().data_block_count()).expect("block count fits") + 4
+    );
 
     let failing = ImmutableTableReader::open_source(
         identity("reader-source-fail"),
@@ -414,7 +530,7 @@ fn immutable_reader_opens_table_source_and_maps_source_failures() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn immutable_reader_source_open_perf_counters_prove_current_eager_path() {
+fn immutable_reader_source_open_perf_counters_prove_lazy_metadata_path() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
@@ -423,7 +539,7 @@ fn immutable_reader_source_open_perf_counters_prove_current_eager_path() {
         put_row(b"echo".to_vec(), 5),
     ];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5a-eager-proof",
+        "reader-l5b-lazy-proof",
         &rows,
         2,
         TableCompression::Uncompressed,
@@ -440,25 +556,34 @@ fn immutable_reader_source_open_perf_counters_prove_current_eager_path() {
     assert_eq!(zero.table_rows_decoded(), 0);
 
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5a-eager-proof"),
+        identity("reader-l5b-lazy-proof"),
         source,
         TableReaderConfig::default(),
     )
-    .expect("open eager source reader");
+    .expect("open lazy source reader");
 
-    assert_eq!(reader.rows(), table_rows.as_slice());
     assert_eq!(
         reader.runtime_facts().open_mode(),
-        TableReaderOpenMode::EagerSource
+        TableReaderOpenMode::LazySource
     );
+    assert_eq!(reader.runtime_facts().data_blocks_loaded(), 0);
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+    assert_eq!(source_probe.calls(), 4);
+
+    let open_perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(open_perf.table_reader_opens(), 1);
     assert_eq!(
-        reader.runtime_facts().data_blocks_loaded(),
-        artifact.facts().data_block_count()
+        open_perf.table_metadata_read_bytes(),
+        u64::try_from(MAX_TABLE_HEADER_SIZE + MAX_TABLE_FOOTER_SIZE).expect("metadata bytes fit")
     );
-    assert_eq!(
-        reader.runtime_facts().rows_materialized(),
-        artifact.facts().row_count()
-    );
+    assert!(open_perf.table_index_read_bytes() > 0);
+    assert!(open_perf.table_properties_read_bytes() > 0);
+    assert_eq!(open_perf.table_data_block_reads(), 0);
+    assert_eq!(open_perf.table_data_block_read_bytes(), 0);
+    assert_eq!(open_perf.table_data_block_decodes(), 0);
+    assert_eq!(open_perf.table_rows_decoded(), 0);
+
+    assert_eq!(reader.rows(), table_rows.as_slice());
     assert_eq!(
         source_probe.calls(),
         usize::try_from(artifact.facts().data_block_count()).expect("block count fits") + 4
@@ -468,10 +593,16 @@ fn immutable_reader_source_open_perf_counters_prove_current_eager_path() {
     assert_eq!(perf.table_reader_opens(), 1);
     assert_eq!(
         perf.table_metadata_read_bytes(),
-        u64::try_from(MAX_TABLE_HEADER_SIZE + MAX_TABLE_FOOTER_SIZE).expect("metadata bytes fit")
+        open_perf.table_metadata_read_bytes()
     );
-    assert!(perf.table_index_read_bytes() > 0);
-    assert!(perf.table_properties_read_bytes() > 0);
+    assert_eq!(
+        perf.table_index_read_bytes(),
+        open_perf.table_index_read_bytes()
+    );
+    assert_eq!(
+        perf.table_properties_read_bytes(),
+        open_perf.table_properties_read_bytes()
+    );
     assert_eq!(
         perf.table_data_block_reads(),
         u64::from(artifact.facts().data_block_count())
@@ -482,6 +613,272 @@ fn immutable_reader_source_open_perf_counters_prove_current_eager_path() {
         u64::from(artifact.facts().data_block_count())
     );
     assert_eq!(perf.table_rows_decoded(), artifact.facts().row_count());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_l5b_lazy_one_block_open_reads_metadata_only() {
+    let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
+    let (artifact, _) = build_artifact(
+        "reader-l5b-one-block",
+        &rows,
+        16,
+        TableCompression::Uncompressed,
+    );
+    assert_eq!(artifact.facts().data_block_count(), 1);
+    let eager = ImmutableTableReader::open_bytes(
+        identity("reader-l5b-one-block"),
+        artifact.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager byte reader");
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-l5b-one-block"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy one-block source reader");
+
+    assert_eq!(reader.facts(), eager.facts());
+    assert_eq!(source_probe.calls(), 4);
+    assert_l5b_lazy_open_runtime_facts(&reader);
+    assert_l5b_lazy_open_perf_snapshot(&crate::observability::perf_trace::snapshot(), true);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_l5b_lazy_multi_block_open_reads_metadata_only() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-l5b-multi-block",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    assert!(artifact.facts().data_block_count() > 1);
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-l5b-multi-block"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy multi-block source reader");
+
+    assert_eq!(reader.facts(), artifact.facts());
+    assert_eq!(source_probe.calls(), 4);
+    assert_l5b_lazy_open_runtime_facts(&reader);
+    assert_l5b_lazy_open_perf_snapshot(&crate::observability::perf_trace::snapshot(), true);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_l5b_corrupt_header_and_footer_fail_before_index_or_data_reads() {
+    let (artifact, _) = build_artifact(
+        "reader-l5b-header-footer-corrupt",
+        &[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)],
+        1,
+        TableCompression::Uncompressed,
+    );
+
+    let mut corrupt_header = artifact.bytes().to_vec();
+    corrupt_header[0] ^= 0xff;
+    assert_l5b_lazy_decode_error_before_data_reads(
+        "header-corrupt",
+        corrupt_header,
+        L5bLazyOpenExpectation {
+            source_calls: 2,
+            metadata_frames_read: false,
+        },
+    );
+
+    let mut corrupt_footer = artifact.bytes().to_vec();
+    let footer_magic = corrupt_footer.len() - MAX_TABLE_FOOTER_SIZE + 36;
+    corrupt_footer[footer_magic] ^= 0xff;
+    assert_l5b_lazy_decode_error_before_data_reads(
+        "footer-corrupt",
+        corrupt_footer,
+        L5bLazyOpenExpectation {
+            source_calls: 2,
+            metadata_frames_read: false,
+        },
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_l5b_corrupt_index_and_properties_fail_before_data_reads() {
+    let (artifact, _) = build_artifact(
+        "reader-l5b-index-properties-corrupt",
+        &[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)],
+        1,
+        TableCompression::Uncompressed,
+    );
+    let ranges = table_metadata_ranges(artifact.bytes());
+
+    let mut corrupt_index = artifact.bytes().to_vec();
+    corrupt_index[checked_table_offset(ranges.index_offset)] ^= 0xff;
+    assert_l5b_lazy_decode_error_before_data_reads(
+        "index-corrupt",
+        corrupt_index,
+        L5bLazyOpenExpectation {
+            source_calls: 4,
+            metadata_frames_read: true,
+        },
+    );
+
+    let mut corrupt_properties = artifact.bytes().to_vec();
+    corrupt_properties[checked_table_offset(ranges.properties_offset)] ^= 0xff;
+    assert_l5b_lazy_decode_error_before_data_reads(
+        "properties-corrupt",
+        corrupt_properties,
+        L5bLazyOpenExpectation {
+            source_calls: 4,
+            metadata_frames_read: true,
+        },
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_l5b_index_fact_drift_fails_before_data_reads() {
+    let (artifact, _) = build_artifact(
+        "reader-l5b-index-fact-drift",
+        &[
+            put_row(b"alpha".to_vec(), 1),
+            put_row(b"bravo".to_vec(), 2),
+            put_row(b"charlie".to_vec(), 3),
+        ],
+        1,
+        TableCompression::Uncompressed,
+    );
+    let mut drifted = artifact.bytes().to_vec();
+    increment_first_index_entry_row_count(&mut drifted);
+
+    assert_l5b_lazy_decode_error_before_data_reads(
+        "index-row-count-drift",
+        drifted,
+        L5bLazyOpenExpectation {
+            source_calls: 4,
+            metadata_frames_read: true,
+        },
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[derive(Clone, Copy)]
+struct L5bLazyOpenExpectation {
+    source_calls: usize,
+    metadata_frames_read: bool,
+}
+
+#[cfg(feature = "perf-trace")]
+fn assert_l5b_lazy_open_runtime_facts(reader: &ImmutableTableReader<'_>) {
+    assert_eq!(
+        reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::LazySource
+    );
+    assert!(reader.runtime_facts().metadata_loaded());
+    assert!(reader.runtime_facts().index_loaded());
+    assert_eq!(reader.runtime_facts().data_blocks_loaded(), 0);
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+    assert!(!reader.runtime_facts().filter_available());
+    assert!(!reader.runtime_facts().cache_enabled());
+}
+
+#[cfg(feature = "perf-trace")]
+fn assert_l5b_lazy_open_perf_snapshot(
+    snapshot: &crate::observability::perf_trace::StoragePerfSnapshot,
+    metadata_frames_read: bool,
+) {
+    assert_eq!(snapshot.table_reader_opens(), 1);
+    assert_eq!(
+        snapshot.table_metadata_read_bytes(),
+        u64::try_from(MAX_TABLE_HEADER_SIZE + MAX_TABLE_FOOTER_SIZE).expect("metadata bytes fit")
+    );
+    if metadata_frames_read {
+        assert!(snapshot.table_index_read_bytes() > 0);
+        assert!(snapshot.table_properties_read_bytes() > 0);
+    } else {
+        assert_eq!(snapshot.table_index_read_bytes(), 0);
+        assert_eq!(snapshot.table_properties_read_bytes(), 0);
+    }
+    assert_eq!(snapshot.table_data_block_reads(), 0);
+    assert_eq!(snapshot.table_data_block_read_bytes(), 0);
+    assert_eq!(snapshot.table_data_block_decodes(), 0);
+    assert_eq!(snapshot.table_rows_decoded(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+fn assert_l5b_lazy_decode_error_before_data_reads(
+    label: &'static str,
+    bytes: Vec<u8>,
+    expectation: L5bLazyOpenExpectation,
+) {
+    let source = TestSource::exact(bytes);
+    let source_probe = source.clone();
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+
+    let error = ImmutableTableReader::open_source(
+        TableIdentity::new(format!("reader-l5b-{label}")).expect("identity"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect_err("lazy metadata open should reject malformed metadata");
+
+    assert!(matches!(error, TableRuntimeError::DecodeFormat { .. }));
+    assert_eq!(source_probe.calls(), expectation.source_calls);
+    assert_l5b_lazy_open_perf_snapshot(
+        &crate::observability::perf_trace::snapshot(),
+        expectation.metadata_frames_read,
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+fn increment_first_index_entry_row_count(bytes: &mut [u8]) {
+    let ranges = table_metadata_ranges(bytes);
+    let frame_start = checked_table_offset(ranges.index_offset);
+    let frame_len = usize::try_from(ranges.index_len).expect("index frame len fits usize");
+    assert_eq!(bytes[frame_start], 2);
+    assert_eq!(bytes[frame_start + 1], 0);
+    let encoded_len = read_u32_le_at(bytes, frame_start + 4) as usize;
+    let decoded_len = read_u32_le_at(bytes, frame_start + 8) as usize;
+    assert_eq!(encoded_len, decoded_len);
+    let payload_start = frame_start + 12;
+    let payload_end = payload_start + encoded_len;
+    assert_eq!(payload_end + 4, frame_start + frame_len);
+
+    let first_key_len = read_u32_le_at(bytes, payload_start + 8) as usize;
+    let last_key_len_offset = payload_start + 12 + first_key_len;
+    let last_key_len = read_u32_le_at(bytes, last_key_len_offset) as usize;
+    let row_count_offset = last_key_len_offset + 4 + last_key_len + 8 + 4;
+    let row_count = read_u32_le_at(bytes, row_count_offset);
+    bytes[row_count_offset..row_count_offset + 4]
+        .copy_from_slice(&row_count.saturating_add(1).to_le_bytes());
+
+    let crc_offset = frame_start + frame_len - 4;
+    let crc = crc32fast::hash(&bytes[frame_start..crc_offset]);
+    bytes[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_le_bytes());
+}
+
+#[cfg(feature = "perf-trace")]
+fn read_u32_le_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(
+        bytes[offset..offset + 4]
+            .try_into()
+            .expect("u32 fixture bytes"),
+    )
 }
 
 #[cfg(feature = "perf-trace")]
@@ -820,7 +1217,7 @@ fn immutable_reader_cursor_state_reseek_and_exhaustion_are_stable() {
     assert!(exhaust.current().is_none());
 }
 
-fn bound_shape_reader() -> (ImmutableTableReader, Vec<TableRow>, PhysicalKey) {
+fn bound_shape_reader() -> (ImmutableTableReader<'static>, Vec<TableRow>, PhysicalKey) {
     let prefix_key = physical_key(1, "reader", 0x20, b"prefix".to_vec());
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
@@ -1074,26 +1471,24 @@ fn immutable_reader_bytes_and_source_paths_are_identical_for_queries() {
         ImmutableTableReader::open_source(identity("reader-parity"), source, config)
             .expect("open source reader");
 
-    assert!(source_probe.calls() > 1);
-    assert_eq!(byte_reader, source_reader);
+    assert_eq!(source_probe.calls(), 4);
     assert_eq!(byte_reader.config(), source_reader.config());
     assert_eq!(byte_reader.facts(), source_reader.facts());
-    assert_eq!(byte_reader.rows(), source_reader.rows());
     assert_eq!(
         byte_reader.runtime_facts().open_mode(),
         TableReaderOpenMode::EagerBytes
     );
     assert_eq!(
         source_reader.runtime_facts().open_mode(),
-        TableReaderOpenMode::EagerSource
+        TableReaderOpenMode::LazySource
     );
+    assert_eq!(source_reader.runtime_facts().data_blocks_loaded(), 0);
+    assert_eq!(source_reader.runtime_facts().rows_materialized(), 0);
+    assert_eq!(byte_reader.rows(), source_reader.rows());
+    assert_eq!(byte_reader, source_reader);
     assert_eq!(
-        byte_reader.runtime_facts().data_blocks_loaded(),
-        source_reader.runtime_facts().data_blocks_loaded()
-    );
-    assert_eq!(
-        byte_reader.runtime_facts().rows_materialized(),
-        source_reader.runtime_facts().rows_materialized()
+        source_probe.calls(),
+        usize::try_from(artifact.facts().data_block_count()).expect("block count fits") + 4
     );
     assert_eq!(
         all_reader_keys(&byte_reader),

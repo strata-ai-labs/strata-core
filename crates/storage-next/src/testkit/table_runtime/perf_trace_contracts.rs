@@ -85,19 +85,19 @@ fn assert_l5a_zero_snapshot(
 #[cfg(feature = "perf-trace")]
 fn assert_l5a_reader_facts(
     reader: &ImmutableTableReader,
-    artifact: &BuiltTableArtifact,
+    _artifact: &BuiltTableArtifact,
 ) -> Result<(), TestkitError> {
     let runtime = reader.runtime_facts();
-    if runtime.open_mode() != crate::table::TableReaderOpenMode::EagerSource
+    if runtime.open_mode() != crate::table::TableReaderOpenMode::LazySource
         || !runtime.metadata_loaded()
         || !runtime.index_loaded()
         || runtime.filter_available()
         || runtime.cache_enabled()
-        || runtime.data_blocks_loaded() != artifact.facts().data_block_count()
-        || runtime.rows_materialized() != artifact.facts().row_count()
+        || runtime.data_blocks_loaded() != 0
+        || runtime.rows_materialized() != 0
     {
         return Err(TestkitError::new(
-            "L5A reader runtime facts did not describe the current eager source path",
+            "L5A reader runtime facts did not describe the lazy source open path",
         ));
     }
     Ok(())
@@ -106,19 +106,19 @@ fn assert_l5a_reader_facts(
 #[cfg(feature = "perf-trace")]
 fn assert_l5a_open_snapshot(
     snapshot: &crate::observability::perf_trace::StoragePerfSnapshot,
-    artifact: &BuiltTableArtifact,
+    _artifact: &BuiltTableArtifact,
 ) -> Result<(), TestkitError> {
     if snapshot.table_reader_opens() != 1
         || snapshot.table_metadata_read_bytes() == 0
         || snapshot.table_index_read_bytes() == 0
         || snapshot.table_properties_read_bytes() == 0
-        || snapshot.table_data_block_reads() != u64::from(artifact.facts().data_block_count())
-        || snapshot.table_data_block_read_bytes() == 0
-        || snapshot.table_data_block_decodes() != u64::from(artifact.facts().data_block_count())
-        || snapshot.table_rows_decoded() != artifact.facts().row_count()
+        || snapshot.table_data_block_reads() != 0
+        || snapshot.table_data_block_read_bytes() != 0
+        || snapshot.table_data_block_decodes() != 0
+        || snapshot.table_rows_decoded() != 0
     {
         return Err(TestkitError::new(
-            "L5A eager source reader counters did not match table facts",
+            "L5A source reader open counters did not stay lazy",
         ));
     }
     Ok(())

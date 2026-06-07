@@ -152,7 +152,7 @@ fn branch_table_descriptor(
     .expect("branch table descriptor")
 }
 
-fn immutable_reader(identity: &str, rows: Vec<StorageRow>) -> ImmutableTableReader {
+fn immutable_reader(identity: &str, rows: Vec<StorageRow>) -> ImmutableTableReader<'static> {
     let mut rows = rows.into_iter().map(TableRow::new).collect::<Vec<_>>();
     sort_table_rows_by_key(&mut rows);
     let identity = TableIdentity::new(identity).expect("identity");

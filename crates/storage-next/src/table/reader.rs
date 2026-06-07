@@ -1,5 +1,8 @@
 //! Immutable table reader.
 
+use std::fmt;
+use std::sync::{Arc, OnceLock};
+
 use super::{
     BoundedTableCursor, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyBounds,
     TableKeyRange, TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
@@ -68,25 +71,124 @@ impl<T: TableByteSource + ?Sized> TableByteSource for &T {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ImmutableTableReader {
+pub(crate) struct ImmutableTableReader<'a> {
     config: TableReaderConfig,
     facts: TableRuntimeFacts,
     runtime_facts: TableReaderRuntimeFacts,
-    rows: Vec<TableRow>,
+    rows: TableReaderRows<'a>,
 }
 
-impl PartialEq for ImmutableTableReader {
+impl PartialEq for ImmutableTableReader<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.config == other.config && self.facts == other.facts && self.rows == other.rows
+        if self.config != other.config || self.facts != other.facts {
+            return false;
+        }
+        match (self.try_rows(), other.try_rows()) {
+            (Ok(left), Ok(right)) => left == right,
+            (Err(left), Err(right)) => left == right,
+            _ => false,
+        }
     }
 }
 
-impl Eq for ImmutableTableReader {}
+impl Eq for ImmutableTableReader<'_> {}
+
+#[derive(Clone, Debug)]
+enum TableReaderRows<'a> {
+    Eager(Vec<TableRow>),
+    Lazy(Box<LazyTableRows<'a>>),
+}
+
+impl TableReaderRows<'_> {
+    fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
+        match self {
+            Self::Eager(rows) => Ok(rows),
+            Self::Lazy(rows) => rows.try_rows(),
+        }
+    }
+
+    fn into_materialized(self) -> TableRuntimeResult<(Vec<TableRow>, bool)> {
+        match self {
+            Self::Eager(rows) => Ok((rows, false)),
+            Self::Lazy(rows) => rows.into_materialized().map(|rows| (rows, true)),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LazyTableRows<'a> {
+    state: LazyTableState<'a>,
+    rows: OnceLock<TableRuntimeResult<Vec<TableRow>>>,
+}
+
+impl<'a> LazyTableRows<'a> {
+    fn new(source: SharedTableSource<'a>, metadata: ImmutableTableMetadata) -> Self {
+        Self {
+            state: LazyTableState { source, metadata },
+            rows: OnceLock::new(),
+        }
+    }
+
+    fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
+        let rows = self
+            .rows
+            .get_or_init(|| read_and_validate_rows(&self.state.source, &self.state.metadata));
+        match rows {
+            Ok(rows) => Ok(rows.as_slice()),
+            Err(error) => Err(error.clone()),
+        }
+    }
+
+    fn into_materialized(self) -> TableRuntimeResult<Vec<TableRow>> {
+        match self.rows.into_inner() {
+            Some(rows) => rows,
+            None => read_and_validate_rows(&self.state.source, &self.state.metadata),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LazyTableState<'a> {
+    source: SharedTableSource<'a>,
+    metadata: ImmutableTableMetadata,
+}
+
+#[derive(Clone)]
+struct SharedTableSource<'a> {
+    inner: Arc<dyn TableByteSource + Send + Sync + 'a>,
+}
+
+impl<'a> SharedTableSource<'a> {
+    fn new<S: TableByteSource + Send + Sync + 'a>(source: S) -> Self {
+        Self {
+            inner: Arc::new(source),
+        }
+    }
+}
+
+impl fmt::Debug for SharedTableSource<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SharedTableSource")
+            .finish_non_exhaustive()
+    }
+}
+
+impl TableByteSource for SharedTableSource<'_> {
+    fn byte_count(&self) -> u64 {
+        self.inner.byte_count()
+    }
+
+    fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
+        self.inner.read_at(offset, len)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TableReaderOpenMode {
     EagerBytes,
     EagerSource,
+    LazySource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +215,15 @@ impl TableReaderRuntimeFacts {
             flags: RUNTIME_FACT_METADATA_LOADED | RUNTIME_FACT_INDEX_LOADED,
             data_blocks_loaded,
             rows_materialized,
+        }
+    }
+
+    const fn lazy(open_mode: TableReaderOpenMode) -> Self {
+        Self {
+            open_mode,
+            flags: RUNTIME_FACT_METADATA_LOADED | RUNTIME_FACT_INDEX_LOADED,
+            data_blocks_loaded: 0,
+            rows_materialized: 0,
         }
     }
 
@@ -145,7 +256,7 @@ impl TableReaderRuntimeFacts {
     }
 }
 
-impl ImmutableTableReader {
+impl<'a> ImmutableTableReader<'a> {
     #[expect(
         clippy::needless_pass_by_value,
         reason = "owned Vec preserves the eager-open API symmetry with open_source and lets future implementations cache the buffer without changing call sites"
@@ -167,31 +278,26 @@ impl ImmutableTableReader {
             config,
             facts,
             runtime_facts,
-            rows,
+            rows: TableReaderRows::Eager(rows),
         })
     }
 
-    pub(crate) fn open_source<S: TableByteSource>(
+    pub(crate) fn open_source<S: TableByteSource + Send + Sync + 'a>(
         identity: TableIdentity,
         source: S,
         config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
+        let source = SharedTableSource::new(source);
         let metadata = read_table_metadata(&source)?;
         let facts = table_facts_from_metadata(identity, &metadata)?;
-        let rows = read_rows_from_metadata(&source, &metadata)?;
-        super::validate_strictly_sorted_unique_rows(&rows)?;
-        let runtime_facts = TableReaderRuntimeFacts::eager(
-            TableReaderOpenMode::EagerSource,
-            facts.data_block_count(),
-            facts.row_count(),
-        );
+        let runtime_facts = TableReaderRuntimeFacts::lazy(TableReaderOpenMode::LazySource);
         Ok(Self {
             config,
             facts,
             runtime_facts,
-            rows,
+            rows: TableReaderRows::Lazy(Box::new(LazyTableRows::new(source, metadata))),
         })
     }
 
@@ -212,14 +318,19 @@ impl ImmutableTableReader {
     }
 
     pub(crate) fn rows(&self) -> &[TableRow] {
-        &self.rows
+        self.try_rows()
+            .expect("lazy table row materialization failed")
+    }
+
+    pub(crate) fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
+        self.rows.try_rows()
     }
 
     pub(crate) fn get_exact(&self, key: &TableInternalKeyBytes) -> Option<TableRow> {
-        self.rows
-            .binary_search_by(|row| row.key().cmp(key))
+        let rows = self.rows();
+        rows.binary_search_by(|row| row.key().cmp(key))
             .ok()
-            .map(|index| self.rows[index].clone())
+            .map(|index| rows[index].clone())
     }
 
     pub(crate) fn seek_physical_key(
@@ -228,15 +339,37 @@ impl ImmutableTableReader {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> (Option<&TableRow>, usize) {
-        seek_physical_key_in_slice(&self.rows, key, max_commit_version, max_commit_timestamp)
+        seek_physical_key_in_slice(self.rows(), key, max_commit_version, max_commit_timestamp)
     }
 
     pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_> {
-        ImmutableTableCursor::new(&self.rows)
+        ImmutableTableCursor::new(self.rows())
     }
 
     pub(crate) fn bounded_cursor(&self, bounds: TableKeyBounds) -> BoundedTableCursor<'_> {
         BoundedTableCursor::new(Box::new(self.cursor()), bounds)
+    }
+
+    pub(crate) fn into_materialized(self) -> TableRuntimeResult<ImmutableTableReader<'static>> {
+        let config = self.config;
+        let facts = self.facts;
+        let runtime_facts = self.runtime_facts;
+        let (rows, was_lazy) = self.rows.into_materialized()?;
+        let runtime_facts = if was_lazy {
+            TableReaderRuntimeFacts::eager(
+                TableReaderOpenMode::EagerSource,
+                facts.data_block_count(),
+                facts.row_count(),
+            )
+        } else {
+            runtime_facts
+        };
+        Ok(ImmutableTableReader {
+            config,
+            facts,
+            runtime_facts,
+            rows: TableReaderRows::Eager(rows),
+        })
     }
 }
 
@@ -455,6 +588,15 @@ fn read_rows_from_metadata(
         perf_trace::record_table_data_blocks_decoded(1, block.row_count());
         rows.extend(block.rows().cloned().map(TableRow::new));
     }
+    Ok(rows)
+}
+
+fn read_and_validate_rows(
+    source: &impl TableByteSource,
+    metadata: &ImmutableTableMetadata,
+) -> TableRuntimeResult<Vec<TableRow>> {
+    let rows = read_rows_from_metadata(source, metadata)?;
+    super::validate_strictly_sorted_unique_rows(&rows)?;
     Ok(rows)
 }
 

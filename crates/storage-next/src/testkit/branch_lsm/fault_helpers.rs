@@ -685,7 +685,7 @@ fn branch_table_descriptor(
 fn immutable_reader(
     identity: &str,
     rows: Vec<StorageRow>,
-) -> Result<ImmutableTableReader, TestkitError> {
+) -> Result<ImmutableTableReader<'static>, TestkitError> {
     let mut rows = rows.into_iter().map(TableRow::new).collect::<Vec<_>>();
     sort_table_rows_by_key(&mut rows);
     let identity = TableIdentity::new(identity)

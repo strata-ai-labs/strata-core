@@ -603,7 +603,7 @@ fn branch_table_from_reader(
     branch_id: BranchId,
     level: BranchLevel,
     provenance: &TableManifestTableProvenance,
-    reader: ImmutableTableReader,
+    reader: ImmutableTableReader<'_>,
 ) -> LifecycleResult<BranchOwnedTable> {
     let identity = reader.facts().identity().clone();
     let descriptor = BranchTableDescriptor::new(identity, reader.facts().clone(), level)

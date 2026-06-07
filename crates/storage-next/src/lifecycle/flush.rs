@@ -600,7 +600,7 @@ fn publish_or_load_existing(
 fn branch_owned_table(
     branch_id: BranchId,
     identity: TableIdentity,
-    reader: ImmutableTableReader,
+    reader: ImmutableTableReader<'_>,
 ) -> LifecycleResult<BranchOwnedTable> {
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)

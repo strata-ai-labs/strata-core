@@ -464,7 +464,7 @@ impl BranchHistoryOptions {
 pub(crate) struct BranchOwnedTable {
     branch_id: BranchId,
     descriptor: BranchTableDescriptor,
-    reader: ImmutableTableReader,
+    reader: ImmutableTableReader<'static>,
     materialization_source: Option<BranchMaterializationSource>,
 }
 
@@ -495,7 +495,7 @@ impl BranchOwnedTable {
     pub(crate) fn new(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader,
+        reader: ImmutableTableReader<'_>,
     ) -> BranchRuntimeResult<Self> {
         Self::new_with_materialization_layer(branch_id, descriptor, reader, None)
     }
@@ -503,7 +503,7 @@ impl BranchOwnedTable {
     pub(crate) fn new_materialization_replacement(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader,
+        reader: ImmutableTableReader<'_>,
         materialization_source: BranchMaterializationSource,
     ) -> BranchRuntimeResult<Self> {
         Self::new_with_materialization_layer(
@@ -517,7 +517,7 @@ impl BranchOwnedTable {
     fn new_with_materialization_layer(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader,
+        reader: ImmutableTableReader<'_>,
         materialization_source: Option<BranchMaterializationSource>,
     ) -> BranchRuntimeResult<Self> {
         if descriptor.facts() != reader.facts() {
@@ -525,6 +525,9 @@ impl BranchOwnedTable {
                 reason: "branch-owned table descriptor facts must match reader facts",
             });
         }
+        let reader = reader
+            .into_materialized()
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         if reader.rows().is_empty() {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table must not be empty",
@@ -571,7 +574,7 @@ impl BranchOwnedTable {
         self.reader.rows()
     }
 
-    pub(crate) fn reader(&self) -> &ImmutableTableReader {
+    pub(crate) fn reader(&self) -> &ImmutableTableReader<'static> {
         &self.reader
     }
 }
