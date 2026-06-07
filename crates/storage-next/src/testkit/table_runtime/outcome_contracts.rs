@@ -17,6 +17,7 @@ pub struct TableRuntimeScaffoldOutcome {
     table_block_caches: usize,
     table_bloom_filters: usize,
     table_compactions: usize,
+    l5a_perf_traces: usize,
     error_sources: usize,
 }
 
@@ -101,11 +102,15 @@ impl TableRuntimeScaffoldOutcome {
         self.table_compactions
     }
 
+    /// Number of M4P-L5A table-local perf-trace cases exercised.
+    pub const fn l5a_perf_trace_cases(self) -> usize {
+        self.l5a_perf_traces
+    }
+
     /// Number of error source-chain cases exercised.
     pub const fn error_source_cases(self) -> usize {
         self.error_sources
     }
-
 }
 
 /// Runs one deterministic generated scaffold contract case for the L5 table runtime.
@@ -133,6 +138,7 @@ pub fn check_table_runtime_scaffold_contract(
         table_block_caches: 0,
         table_bloom_filters: 0,
         table_compactions: 0,
+        l5a_perf_traces: 0,
         error_sources: 0,
     };
 
@@ -167,6 +173,11 @@ pub fn check_table_runtime_scaffold_contract(
     outcome.table_bloom_filters += 1;
     check_table_compaction(script)?;
     outcome.table_compactions += 1;
+    #[cfg(feature = "perf-trace")]
+    {
+        check_l5a_perf_trace_contract(script)?;
+        outcome.l5a_perf_traces += 1;
+    }
 
     check_error_source_chain()?;
     outcome.error_sources += 1;

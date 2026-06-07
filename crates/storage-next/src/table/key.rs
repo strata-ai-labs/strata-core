@@ -282,7 +282,7 @@ pub(crate) enum TableKeyBounds {
     },
     Prefix(Vec<u8>),
     PhysicalRange {
-        namespace_prefix: Vec<u8>,
+        physical_prefix: Vec<u8>,
         lower: TablePhysicalKeyBound,
         upper: TablePhysicalKeyBound,
     },
@@ -333,13 +333,13 @@ impl TableKeyBounds {
     }
 
     pub(crate) fn physical_range(
-        namespace_prefix: &TablePhysicalKeyBytes,
+        physical_prefix: &TablePhysicalKeyBytes,
         lower: TablePhysicalKeyBound,
         upper: TablePhysicalKeyBound,
     ) -> TableRuntimeResult<Self> {
         validate_physical_bound_order(&lower, &upper)?;
         Ok(Self::PhysicalRange {
-            namespace_prefix: namespace_prefix.as_slice().to_vec(),
+            physical_prefix: physical_prefix.as_slice().to_vec(),
             lower,
             upper,
         })
@@ -352,12 +352,12 @@ impl TableKeyBounds {
             }
             Self::Prefix(prefix) => key.as_slice().starts_with(prefix),
             Self::PhysicalRange {
-                namespace_prefix,
+                physical_prefix,
                 lower,
                 upper,
             } => {
                 let physical_key = table_internal_physical_key_bytes(key);
-                physical_key.starts_with(namespace_prefix)
+                physical_key.starts_with(physical_prefix)
                     && physical_lower_contains(lower, physical_key)
                     && physical_upper_contains(upper, physical_key)
             }
@@ -372,7 +372,7 @@ impl TableKeyBounds {
                 bytes: prefix.clone(),
             }),
             Self::PhysicalRange {
-                namespace_prefix,
+                physical_prefix,
                 lower,
                 ..
             } => lower
@@ -381,8 +381,8 @@ impl TableKeyBounds {
                     bytes: key.as_slice().to_vec(),
                 })
                 .or_else(|| {
-                    (!namespace_prefix.is_empty()).then(|| TableInternalKeyBytes {
-                        bytes: namespace_prefix.clone(),
+                    (!physical_prefix.is_empty()).then(|| TableInternalKeyBytes {
+                        bytes: physical_prefix.clone(),
                     })
                 }),
         }
@@ -395,13 +395,13 @@ impl TableKeyBounds {
                 !key.as_slice().starts_with(prefix) && key.as_slice() > prefix.as_slice()
             }
             Self::PhysicalRange {
-                namespace_prefix,
+                physical_prefix,
                 upper,
                 ..
             } => {
                 let physical_key = table_internal_physical_key_bytes(key);
-                (!physical_key.starts_with(namespace_prefix)
-                    && physical_key > namespace_prefix.as_slice())
+                (!physical_key.starts_with(physical_prefix)
+                    && physical_key > physical_prefix.as_slice())
                     || physical_upper_excludes_current_and_following(upper, physical_key)
             }
         }

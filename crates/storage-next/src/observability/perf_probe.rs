@@ -344,7 +344,7 @@ fn seek_state_latest(state: &BranchLocalState, key: &PhysicalKey) -> Option<Stor
     let mut rows_visited = 0usize;
     let mut candidates = 0usize;
 
-    let (row, visited) = state.active().perf_seek_physical_key_latest(key);
+    let (row, visited) = state.active().perf_seek_physical_key_unbounded(key);
     rows_visited = rows_visited.saturating_add(visited);
     if let Some(row) = row {
         candidates = candidates.saturating_add(1);
@@ -353,7 +353,7 @@ fn seek_state_latest(state: &BranchLocalState, key: &PhysicalKey) -> Option<Stor
     }
 
     for table in state.frozen() {
-        let (row, visited) = table.perf_seek_physical_key_latest(key);
+        let (row, visited) = table.perf_seek_physical_key_unbounded(key);
         rows_visited = rows_visited.saturating_add(visited);
         if let Some(row) = row {
             candidates = candidates.saturating_add(1);

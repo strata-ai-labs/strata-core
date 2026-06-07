@@ -5,7 +5,7 @@ use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::identity::require_row_branch;
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
-use crate::table::{MutableTableAppendSnapshot, TableInternalKeyBytes, TableRuntimeError};
+use crate::table::{MutableTableAppendBaseline, TableInternalKeyBytes, TableRuntimeError};
 use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -130,7 +130,7 @@ impl BranchLocalState {
         perf_trace::record_append_batch_validate_elapsed(validate_timer);
         let validated_rows = validated_rows?;
         let active_rows_before = self.active.len();
-        let active_snapshot = self.active.append_snapshot();
+        let active_snapshot = self.active.append_baseline();
         let metadata_snapshot = BranchAppendMetadataSnapshot::capture(self);
         let mut inserted_keys = Vec::with_capacity(validated_rows.len());
 
@@ -220,7 +220,7 @@ impl BranchAppendMetadataSnapshot {
 
 fn rollback_direct_append(
     state: &mut BranchLocalState,
-    active_snapshot: MutableTableAppendSnapshot,
+    active_snapshot: MutableTableAppendBaseline,
     metadata_snapshot: BranchAppendMetadataSnapshot,
     inserted_keys: &[TableInternalKeyBytes],
 ) {

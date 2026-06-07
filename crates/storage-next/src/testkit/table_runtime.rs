@@ -36,5 +36,6 @@ include!("table_runtime/mutable_cursor.rs");
 include!("table_runtime/builder_reader.rs");
 include!("table_runtime/cache.rs");
 include!("table_runtime/bloom_compaction.rs");
+include!("table_runtime/perf_trace_contracts.rs");
 include!("table_runtime/helpers.rs");
 include!("table_runtime/tests.rs");

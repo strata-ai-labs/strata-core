@@ -55,7 +55,7 @@ pub(crate) struct MutableTable {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MutableTableAppendSnapshot {
+pub(crate) struct MutableTableAppendBaseline {
     approximate_size_bytes: usize,
     min_commit: Option<CommitVersion>,
     max_commit: Option<CommitVersion>,
@@ -87,8 +87,8 @@ impl MutableTable {
         Ok(())
     }
 
-    pub(crate) const fn append_snapshot(&self) -> MutableTableAppendSnapshot {
-        MutableTableAppendSnapshot {
+    pub(crate) const fn append_baseline(&self) -> MutableTableAppendBaseline {
+        MutableTableAppendBaseline {
             approximate_size_bytes: self.approximate_size_bytes,
             min_commit: self.min_commit,
             max_commit: self.max_commit,
@@ -97,15 +97,15 @@ impl MutableTable {
 
     pub(crate) fn rollback_appended_rows(
         &mut self,
-        snapshot: MutableTableAppendSnapshot,
+        baseline: MutableTableAppendBaseline,
         inserted_keys: &[TableInternalKeyBytes],
     ) {
         for key in inserted_keys {
             self.rows.remove(key);
         }
-        self.approximate_size_bytes = snapshot.approximate_size_bytes;
-        self.min_commit = snapshot.min_commit;
-        self.max_commit = snapshot.max_commit;
+        self.approximate_size_bytes = baseline.approximate_size_bytes;
+        self.min_commit = baseline.min_commit;
+        self.max_commit = baseline.max_commit;
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -181,7 +181,7 @@ impl MutableTable {
     }
 
     #[cfg(feature = "perf-trace")]
-    pub(crate) fn perf_seek_physical_key_latest(
+    pub(crate) fn perf_seek_physical_key_unbounded(
         &self,
         key: &PhysicalKey,
     ) -> (Option<&TableRow>, usize) {
@@ -280,7 +280,7 @@ impl FrozenTable {
     }
 
     #[cfg(feature = "perf-trace")]
-    pub(crate) fn perf_seek_physical_key_latest(
+    pub(crate) fn perf_seek_physical_key_unbounded(
         &self,
         key: &PhysicalKey,
     ) -> (Option<&TableRow>, usize) {

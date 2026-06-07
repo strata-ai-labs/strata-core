@@ -31,6 +31,8 @@ mod tests {
         assert_eq!(outcome.table_block_cache_cases(), 1);
         assert_eq!(outcome.table_bloom_filter_cases(), 1);
         assert_eq!(outcome.table_compaction_cases(), 1);
+        #[cfg(feature = "perf-trace")]
+        assert_eq!(outcome.l5a_perf_trace_cases(), 1);
         assert_eq!(outcome.error_source_cases(), 1);
     }
 
