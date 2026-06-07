@@ -217,9 +217,12 @@ Required tests:
 5. Maybe present point lookup still validates data blocks.
 6. False-positive filter result returns correct empty row result.
 7. Disabled filter returns identical point results with more data-block reads.
-8. Corrupt or mismatched supplied filter is ignored or rejected before it can
-   hide rows.
-9. Durable filter blocks are rejected unless the L3 format amendment is present.
+8. Corrupt or mismatched supplied filter table proof is rejected before the
+   filter can hide rows.
+9. Durable filter blocks stay deferred unless the L3 format amendment is
+   present.
+10. Tables with identical public table facts but different content cannot share
+    a supplied runtime filter.
 
 No-false-negative property:
 
@@ -384,4 +387,3 @@ changes feature-gated imports:
 ```bash
 cargo test -p strata-storage-next --locked --target wasm32-unknown-unknown --no-default-features --lib
 ```
-

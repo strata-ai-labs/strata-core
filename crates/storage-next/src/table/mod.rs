@@ -105,13 +105,13 @@ pub(crate) use key::{
 pub(crate) use mutable::{FrozenTable, MutableTable, MutableTableAppendBaseline, TableMemoryFacts};
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         unused_imports,
         reason = "immutable table reader surfaces are consumed by later M4 table slices"
     )
 )]
 pub(crate) use reader::{
-    BytesTableSource, ImmutableTableReader, TableByteSource, TableReaderOpenMode,
+    BytesTableSource, ImmutableTableReader, TableByteSource, TableReaderFilter, TableReaderOpenMode,
 };
 
 #[cfg(test)]

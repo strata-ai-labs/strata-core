@@ -13,8 +13,8 @@ use crate::table::{
     TableCacheTableId, TableCommitRange, TableCompactionConfig, TableCompactionDecision,
     TableCompactionDropReason, TableCompactionSource, TableCompactionSourceId, TableCompactor,
     TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBound, TableKeyBounds,
-    TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes, TableReaderConfig, TableReaderFilter,
+    TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
     MERGE_HEAP_THRESHOLD,
 };
 use std::collections::{btree_map::Entry, BTreeMap, VecDeque};

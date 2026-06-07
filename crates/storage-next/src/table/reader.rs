@@ -6,9 +6,9 @@ use std::sync::{Arc, OnceLock};
 use super::key::table_internal_physical_key_bytes;
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
-    TableBlockCacheKind, TableCacheTableId, TableCommitRange, TableIdentity, TableInternalKeyBytes,
-    TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
+    TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes,
+    TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
@@ -17,6 +17,7 @@ use crate::format::{
 };
 use crate::observability::perf_trace;
 use crate::row::{InternalKey, PhysicalKey};
+use sha2::{Digest, Sha256};
 use strata_core_next::{CommitVersion, Timestamp};
 
 use super::facts::table_facts_from_decoded;
@@ -24,13 +25,20 @@ use super::facts::table_facts_from_decoded;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BytesTableSource {
     bytes: Vec<u8>,
+    exact_content_digest: Option<[u8; 32]>,
 }
 
 impl BytesTableSource {
     pub(crate) fn new(bytes: impl Into<Vec<u8>>) -> Self {
         Self {
             bytes: bytes.into(),
+            exact_content_digest: None,
         }
+    }
+
+    pub(crate) fn with_exact_content_digest(mut self) -> Self {
+        self.exact_content_digest = Some(table_content_digest(&self.bytes));
+        self
     }
 }
 
@@ -55,11 +63,132 @@ impl TableByteSource for BytesTableSource {
         }
         Ok(self.bytes[start..end].to_vec())
     }
+
+    fn exact_content_digest(&self) -> TableRuntimeResult<Option<[u8; 32]>> {
+        Ok(self.exact_content_digest)
+    }
 }
 
 pub(crate) trait TableByteSource {
     fn byte_count(&self) -> u64;
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>>;
+
+    fn exact_content_digest(&self) -> TableRuntimeResult<Option<[u8; 32]>> {
+        Ok(None)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableReaderFilter {
+    state: TableReaderFilterState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TableContentFingerprint {
+    byte_count: u64,
+    table_crc32: u32,
+    metadata_crc32: u32,
+    content_sha256: Option<[u8; 32]>,
+}
+
+impl TableContentFingerprint {
+    fn matches_exact_content(self, other: Self) -> bool {
+        self.byte_count == other.byte_count
+            && self.table_crc32 == other.table_crc32
+            && self.metadata_crc32 == other.metadata_crc32
+            && matches!(
+                (self.content_sha256, other.content_sha256),
+                (Some(left), Some(right)) if left == right
+            )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TableReaderFilterState {
+    Unavailable,
+    Bloom(Box<TableReaderBloomFilterState>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TableReaderBloomFilterState {
+    facts: TableRuntimeFacts,
+    fingerprint: TableContentFingerprint,
+    filter: TableBloomFilter,
+}
+
+impl TableReaderFilter {
+    pub(crate) const fn unavailable() -> Self {
+        Self {
+            state: TableReaderFilterState::Unavailable,
+        }
+    }
+
+    pub(crate) fn from_table_bytes(
+        identity: TableIdentity,
+        bytes: &[u8],
+        bits_per_key: usize,
+    ) -> TableRuntimeResult<Self> {
+        let decoded = decode_immutable_table(bytes)
+            .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+        let rows = decoded
+            .rows()
+            .iter()
+            .cloned()
+            .map(TableRow::new)
+            .collect::<Vec<_>>();
+        super::validate_strictly_sorted_unique_rows(&rows)?;
+        let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
+        let fingerprint = table_content_fingerprint_from_bytes(bytes)?;
+        build_filter_from_decoded_rows(facts, fingerprint, &rows, bits_per_key)
+    }
+
+    fn from_validated_rows(
+        facts: TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+        rows: &[TableRow],
+        bits_per_key: usize,
+    ) -> TableRuntimeResult<Self> {
+        validate_filter_rows_match_facts(&facts, rows)?;
+        let physical_keys = rows
+            .iter()
+            .map(|row| TablePhysicalKeyBytes::from_physical_key(row.physical_key()))
+            .collect::<Vec<_>>();
+        let filter = TableBloomFilter::build(
+            physical_keys.iter().map(TablePhysicalKeyBytes::as_slice),
+            bits_per_key,
+        )?;
+        Ok(Self {
+            state: TableReaderFilterState::Bloom(Box::new(TableReaderBloomFilterState {
+                facts,
+                fingerprint,
+                filter,
+            })),
+        })
+    }
+
+    pub(crate) fn probe_physical_key(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
+        match &self.state {
+            TableReaderFilterState::Unavailable => TableBloomProbe::Unavailable,
+            TableReaderFilterState::Bloom(state) => state.filter.might_contain(key.as_slice()),
+        }
+    }
+
+    pub(crate) const fn is_available(&self) -> bool {
+        matches!(self.state, TableReaderFilterState::Bloom(_))
+    }
+
+    fn matches_table(
+        &self,
+        facts: &TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+    ) -> bool {
+        match &self.state {
+            TableReaderFilterState::Unavailable => true,
+            TableReaderFilterState::Bloom(state) => {
+                state.facts == *facts && state.fingerprint.matches_exact_content(fingerprint)
+            }
+        }
+    }
 }
 
 impl<T: TableByteSource + ?Sized> TableByteSource for &T {
@@ -70,12 +199,17 @@ impl<T: TableByteSource + ?Sized> TableByteSource for &T {
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
         (**self).read_at(offset, len)
     }
+
+    fn exact_content_digest(&self) -> TableRuntimeResult<Option<[u8; 32]>> {
+        (**self).exact_content_digest()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ImmutableTableReader<'a> {
     config: TableReaderConfig,
     facts: TableRuntimeFacts,
+    fingerprint: TableContentFingerprint,
     runtime_facts: TableReaderRuntimeFacts,
     rows: TableReaderRows<'a>,
 }
@@ -161,6 +295,13 @@ impl<'a> TableReaderRows<'a> {
             }
         }
     }
+
+    fn with_filter(&mut self, filter: TableReaderFilter) -> bool {
+        match self {
+            Self::Eager(_) => false,
+            Self::Lazy(rows) => rows.with_filter(filter),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +317,7 @@ impl<'a> LazyTableRows<'a> {
                 source,
                 metadata,
                 cache: None,
+                filter: None,
             },
             rows: OnceLock::new(),
         }
@@ -250,6 +392,12 @@ impl<'a> LazyTableRows<'a> {
     fn with_block_cache(&mut self, table: TableCacheTableId, cache: Arc<TableBlockCache>) {
         self.state.cache = Some(LazyTableBlockCache { table, cache });
     }
+
+    fn with_filter(&mut self, filter: TableReaderFilter) -> bool {
+        let available = filter.is_available();
+        self.state.filter = Some(filter);
+        available
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -257,6 +405,7 @@ struct LazyTableState<'a> {
     source: SharedTableSource<'a>,
     metadata: ImmutableTableMetadata,
     cache: Option<LazyTableBlockCache>,
+    filter: Option<TableReaderFilter>,
 }
 
 impl LazyTableState<'_> {
@@ -270,6 +419,10 @@ impl LazyTableState<'_> {
         let prefix = TablePhysicalKeyBytes::from_physical_key(key);
         let target_physical_key = prefix.as_slice();
         if !self.contains_physical_key(target_physical_key) {
+            perf_trace::record_table_point_rows_visited(0);
+            return Ok((None, 0));
+        }
+        if self.probe_physical_filter(&prefix) == TableBloomProbe::DefinitelyAbsent {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
@@ -340,6 +493,14 @@ impl LazyTableState<'_> {
         let min_key = table_internal_physical_key_bytes(properties.min_key_bytes());
         let max_key = table_internal_physical_key_bytes(properties.max_key_bytes());
         min_key <= physical_key && physical_key <= max_key
+    }
+
+    fn probe_physical_filter(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
+        self.filter
+            .as_ref()
+            .map_or(TableBloomProbe::Unavailable, |filter| {
+                filter.probe_physical_key(key)
+            })
     }
 
     fn read_data_block_rows(&self, block_index: usize) -> TableRuntimeResult<Vec<TableRow>> {
@@ -442,6 +603,10 @@ impl TableByteSource for SharedTableSource<'_> {
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
         self.inner.read_at(offset, len)
     }
+
+    fn exact_content_digest(&self) -> TableRuntimeResult<Option<[u8; 32]>> {
+        self.inner.exact_content_digest()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -496,6 +661,15 @@ impl TableReaderRuntimeFacts {
         self
     }
 
+    const fn with_filter_available(mut self, available: bool) -> Self {
+        if available {
+            self.flags |= RUNTIME_FACT_FILTER_AVAILABLE;
+        } else {
+            self.flags &= !RUNTIME_FACT_FILTER_AVAILABLE;
+        }
+        self
+    }
+
     pub(crate) const fn open_mode(self) -> TableReaderOpenMode {
         self.open_mode
     }
@@ -537,7 +711,7 @@ impl<'a> ImmutableTableReader<'a> {
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
-        let (facts, rows) = decode_reader_rows(identity, &bytes)?;
+        let (facts, fingerprint, rows) = decode_reader_rows(identity, &bytes)?;
         let runtime_facts = TableReaderRuntimeFacts::eager(
             TableReaderOpenMode::EagerBytes,
             facts.data_block_count(),
@@ -546,6 +720,7 @@ impl<'a> ImmutableTableReader<'a> {
         Ok(Self {
             config,
             facts,
+            fingerprint,
             runtime_facts,
             rows: TableReaderRows::Eager(rows),
         })
@@ -559,12 +734,13 @@ impl<'a> ImmutableTableReader<'a> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
         let source = SharedTableSource::new(source);
-        let metadata = read_table_metadata(&source)?;
+        let (metadata, fingerprint) = read_table_metadata(&source)?;
         let facts = table_facts_from_metadata(identity, &metadata)?;
         let runtime_facts = TableReaderRuntimeFacts::lazy(TableReaderOpenMode::LazySource);
         Ok(Self {
             config,
             facts,
+            fingerprint,
             runtime_facts,
             rows: TableReaderRows::Lazy(Box::new(LazyTableRows::new(source, metadata))),
         })
@@ -652,6 +828,7 @@ impl<'a> ImmutableTableReader<'a> {
         Ok(ImmutableTableReader {
             config,
             facts,
+            fingerprint: self.fingerprint,
             runtime_facts,
             rows: TableReaderRows::Eager(rows),
         })
@@ -664,6 +841,21 @@ impl<'a> ImmutableTableReader<'a> {
         let table = TableCacheTableId::new(self.facts.identity().as_str().as_bytes())?;
         let cache_enabled = self.rows.with_block_cache(table, cache);
         self.runtime_facts = self.runtime_facts.with_cache_enabled(cache_enabled);
+        Ok(self)
+    }
+
+    pub(crate) fn with_table_filter(
+        mut self,
+        filter: TableReaderFilter,
+    ) -> TableRuntimeResult<Self> {
+        if !filter.matches_table(&self.facts, self.fingerprint) {
+            return Err(TableRuntimeError::InvalidConfig {
+                field: "table_filter",
+                reason: "must match table bytes",
+            });
+        }
+        let filter_available = self.rows.with_filter(filter);
+        self.runtime_facts = self.runtime_facts.with_filter_available(filter_available);
         Ok(self)
     }
 }
@@ -933,7 +1125,7 @@ fn require_validate_on_open(config: TableReaderConfig) {
 fn decode_reader_rows(
     identity: TableIdentity,
     bytes: &[u8],
-) -> TableRuntimeResult<(TableRuntimeFacts, Vec<TableRow>)> {
+) -> TableRuntimeResult<(TableRuntimeFacts, TableContentFingerprint, Vec<TableRow>)> {
     let decoded = decode_immutable_table(bytes)
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
     perf_trace::record_table_data_blocks_decoded(decoded.data_blocks().len(), decoded.rows().len());
@@ -945,12 +1137,70 @@ fn decode_reader_rows(
         .collect::<Vec<_>>();
     super::validate_strictly_sorted_unique_rows(&rows)?;
     let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
-    Ok((facts, rows))
+    let fingerprint = table_content_fingerprint_from_bytes(bytes)?;
+    Ok((facts, fingerprint, rows))
+}
+
+fn validate_filter_rows_match_facts(
+    facts: &TableRuntimeFacts,
+    rows: &[TableRow],
+) -> TableRuntimeResult<()> {
+    if u64::try_from(rows.len()).map_err(|_| TableRuntimeError::InvalidRange {
+        field: "table_filter_row_count",
+    })? != facts.row_count()
+    {
+        return Err(TableRuntimeError::InvalidRange {
+            field: "table_filter_row_count",
+        });
+    }
+    super::validate_strictly_sorted_unique_rows(rows)?;
+    let first = rows.first().ok_or(TableRuntimeError::InvalidRange {
+        field: "table_filter_rows",
+    })?;
+    let last = rows.last().ok_or(TableRuntimeError::InvalidRange {
+        field: "table_filter_rows",
+    })?;
+    if first.encoded_key() != facts.key_range().first_key()
+        || last.encoded_key() != facts.key_range().last_key()
+    {
+        return Err(TableRuntimeError::InvalidRange {
+            field: "table_filter_key_range",
+        });
+    }
+    let min_commit =
+        rows.iter()
+            .map(TableRow::commit_version)
+            .min()
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "table_filter_commit_range",
+            })?;
+    let max_commit =
+        rows.iter()
+            .map(TableRow::commit_version)
+            .max()
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "table_filter_commit_range",
+            })?;
+    if TableCommitRange::new(min_commit, max_commit)? != facts.commit_range() {
+        return Err(TableRuntimeError::InvalidRange {
+            field: "table_filter_commit_range",
+        });
+    }
+    Ok(())
+}
+
+fn build_filter_from_decoded_rows(
+    facts: TableRuntimeFacts,
+    fingerprint: TableContentFingerprint,
+    rows: &[TableRow],
+    bits_per_key: usize,
+) -> TableRuntimeResult<TableReaderFilter> {
+    TableReaderFilter::from_validated_rows(facts, fingerprint, rows, bits_per_key)
 }
 
 fn read_table_metadata(
     source: &impl TableByteSource,
-) -> TableRuntimeResult<ImmutableTableMetadata> {
+) -> TableRuntimeResult<(ImmutableTableMetadata, TableContentFingerprint)> {
     let byte_count = source.byte_count();
     let footer_offset = byte_count.checked_sub(MAX_TABLE_FOOTER_SIZE as u64).ok_or(
         TableRuntimeError::InvalidRange {
@@ -1008,14 +1258,134 @@ fn read_table_metadata(
         "short table properties read",
     )?;
     perf_trace::record_table_properties_read(properties_bytes.len());
-    decode_immutable_table_metadata(
+    let mut metadata_fingerprint = table_content_fingerprint_from_parts(
+        byte_count,
+        &header_bytes,
+        &footer_bytes,
+        &index_bytes,
+        &properties_bytes,
+    )?;
+    let metadata = decode_immutable_table_metadata(
         byte_count,
         &header_bytes,
         &footer_bytes,
         &index_bytes,
         &properties_bytes,
     )
-    .map_err(|source| TableRuntimeError::DecodeFormat { source })
+    .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+    metadata_fingerprint.content_sha256 = source.exact_content_digest()?;
+    let fingerprint = metadata_fingerprint;
+    Ok((metadata, fingerprint))
+}
+
+fn table_content_fingerprint_from_bytes(
+    bytes: &[u8],
+) -> TableRuntimeResult<TableContentFingerprint> {
+    let byte_count = u64::try_from(bytes.len()).map_err(|_| TableRuntimeError::InvalidRange {
+        field: "byte_count",
+    })?;
+    let header_bytes =
+        bytes
+            .get(..MAX_TABLE_HEADER_SIZE)
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "table_header",
+            })?;
+    let footer_start =
+        bytes
+            .len()
+            .checked_sub(MAX_TABLE_FOOTER_SIZE)
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "byte_count",
+            })?;
+    let footer_bytes = &bytes[footer_start..];
+    let footer = decode_table_footer_metadata(footer_bytes, footer_start)
+        .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+    let index_bytes = table_fingerprint_range(
+        bytes,
+        footer.index_block_offset(),
+        footer.index_block_frame_len(),
+        "index_block",
+    )?;
+    let properties_bytes = table_fingerprint_range(
+        bytes,
+        footer.properties_block_offset(),
+        footer.properties_block_frame_len(),
+        "properties_block",
+    )?;
+    let mut fingerprint = table_content_fingerprint_from_parts(
+        byte_count,
+        header_bytes,
+        footer_bytes,
+        index_bytes,
+        properties_bytes,
+    )?;
+    fingerprint.content_sha256 = Some(table_content_digest(bytes));
+    Ok(fingerprint)
+}
+
+fn table_content_fingerprint_from_parts(
+    byte_count: u64,
+    header_bytes: &[u8],
+    footer_bytes: &[u8],
+    index_bytes: &[u8],
+    properties_bytes: &[u8],
+) -> TableRuntimeResult<TableContentFingerprint> {
+    let crc_offset =
+        MAX_TABLE_FOOTER_SIZE
+            .checked_sub(4)
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "table_crc32",
+            })?;
+    let crc_end = crc_offset
+        .checked_add(4)
+        .ok_or(TableRuntimeError::InvalidRange {
+            field: "table_crc32",
+        })?;
+    let crc32 = u32::from_le_bytes(
+        footer_bytes
+            .get(crc_offset..crc_end)
+            .ok_or(TableRuntimeError::InvalidRange {
+                field: "table_crc32",
+            })?
+            .try_into()
+            .map_err(|_| TableRuntimeError::InvalidRange {
+                field: "table_crc32",
+            })?,
+    );
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(header_bytes);
+    hasher.update(footer_bytes);
+    hasher.update(index_bytes);
+    hasher.update(properties_bytes);
+    Ok(TableContentFingerprint {
+        byte_count,
+        table_crc32: crc32,
+        metadata_crc32: hasher.finalize(),
+        content_sha256: None,
+    })
+}
+
+fn table_content_digest(bytes: &[u8]) -> [u8; 32] {
+    let digest = Sha256::digest(bytes);
+    let mut output = [0; 32];
+    output.copy_from_slice(&digest);
+    output
+}
+
+fn table_fingerprint_range<'a>(
+    bytes: &'a [u8],
+    offset: u64,
+    len: u32,
+    field: &'static str,
+) -> TableRuntimeResult<&'a [u8]> {
+    let start = usize::try_from(offset).map_err(|_| TableRuntimeError::InvalidRange { field })?;
+    let len = usize::try_from(len).map_err(|_| TableRuntimeError::InvalidRange { field })?;
+    let end = start
+        .checked_add(len)
+        .ok_or(TableRuntimeError::InvalidRange { field })?;
+    bytes
+        .get(start..end)
+        .ok_or(TableRuntimeError::InvalidRange { field })
 }
 
 fn read_rows_from_metadata(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec<TableRow>> {

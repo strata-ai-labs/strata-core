@@ -6,11 +6,13 @@ use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
     ImmutableTableReader, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
-    TableBlockCacheKind, TableBuilderConfig, TableByteSource, TableCacheConfig, TableCacheTableId,
-    TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBound,
-    TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig,
-    TableReaderOpenMode, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
+    TableBlockCacheKind, TableBloomProbe, TableBuilderConfig, TableByteSource, TableCacheConfig,
+    TableCacheTableId, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
+    TableKeyBound, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig,
+    TableReaderFilter, TableReaderOpenMode, TableRow, TableRuntimeConfig, TableRuntimeError,
+    TableRuntimeResult,
 };
+use sha2::{Digest, Sha256};
 use std::error::Error as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -108,6 +110,35 @@ fn build_artifact(
     (artifact, table_rows)
 }
 
+fn reader_filter_for_table_bytes(
+    identity_name: &'static str,
+    bytes: &[u8],
+    bits_per_key: usize,
+) -> TableReaderFilter {
+    TableReaderFilter::from_table_bytes(identity(identity_name), bytes, bits_per_key)
+        .expect("reader filter")
+}
+
+fn filter_probe_for_key(filter: &TableReaderFilter, key: &PhysicalKey) -> TableBloomProbe {
+    let key = TablePhysicalKeyBytes::from_physical_key(key);
+    filter.probe_physical_key(&key)
+}
+
+#[cfg(feature = "perf-trace")]
+fn find_absent_physical_key_with_probe(
+    filter: &TableReaderFilter,
+    candidates: impl IntoIterator<Item = Vec<u8>>,
+    expected: TableBloomProbe,
+) -> PhysicalKey {
+    for candidate in candidates {
+        let key = physical_key(1, "reader", 0x20, candidate);
+        if filter_probe_for_key(filter, &key) == expected {
+            return key;
+        }
+    }
+    panic!("no generated absent physical key produced the requested probe result");
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TableMetadataRanges {
     index_offset: u64,
@@ -146,6 +177,19 @@ fn decode_table_metadata(bytes: &[u8]) -> crate::format::ImmutableTableMetadata 
         &bytes[properties_start..properties_end],
     )
     .expect("decode table metadata")
+}
+
+fn refresh_table_crc(bytes: &mut [u8]) {
+    let crc_offset = bytes.len() - 4;
+    let crc = crc32fast::hash(&bytes[..crc_offset]);
+    bytes[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+}
+
+fn set_footer_filter_block_fields(bytes: &mut [u8], filter_offset: u64, filter_len: u32) {
+    let footer_start = bytes.len() - MAX_TABLE_FOOTER_SIZE;
+    bytes[footer_start + 12..footer_start + 20].copy_from_slice(&filter_offset.to_le_bytes());
+    bytes[footer_start + 20..footer_start + 24].copy_from_slice(&filter_len.to_le_bytes());
+    refresh_table_crc(bytes);
 }
 
 fn corrupt_data_block_payload(bytes: &mut [u8], block_index: usize) {
@@ -321,6 +365,21 @@ impl TableByteSource for TestSource {
             bytes.push(0);
         }
         Ok(bytes)
+    }
+
+    fn exact_content_digest(&self) -> TableRuntimeResult<Option<[u8; 32]>> {
+        if self.advertised_len != self.bytes.len() as u64
+            || self.short_read
+            || self.long_read
+            || self.fail_read
+        {
+            return Ok(None);
+        }
+
+        let digest = Sha256::digest(&self.bytes);
+        let mut output = [0; 32];
+        output.copy_from_slice(&digest);
+        Ok(Some(output))
     }
 }
 
@@ -1599,6 +1658,405 @@ fn immutable_reader_indexed_point_absent_inside_candidate_block_reads_one_block_
     assert_eq!(perf.table_data_block_decodes(), 1);
     assert_eq!(perf.table_rows_decoded(), 2);
     assert_eq!(perf.table_point_rows_visited(), 1);
+}
+
+#[test]
+fn immutable_reader_supplied_filter_is_conservative_for_physical_keys() {
+    let rows = (0..128)
+        .map(|index| {
+            put_row(
+                format!("key-{index:04}").into_bytes(),
+                u64::try_from(index + 1).expect("version fits u64"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let (artifact, table_rows) = build_artifact(
+        "reader-filter-conservative",
+        &rows,
+        8,
+        TableCompression::Uncompressed,
+    );
+    let filter = reader_filter_for_table_bytes("reader-filter-conservative", artifact.bytes(), 10);
+
+    assert_eq!(
+        TableReaderFilter::unavailable().probe_physical_key(
+            &TablePhysicalKeyBytes::from_physical_key(table_rows[0].physical_key())
+        ),
+        TableBloomProbe::Unavailable
+    );
+    for row in &table_rows {
+        assert_eq!(
+            filter_probe_for_key(&filter, row.physical_key()),
+            TableBloomProbe::MaybePresent
+        );
+    }
+
+    let absent = physical_key(1, "reader", 0x20, b"key-0128".to_vec());
+    assert!(matches!(
+        filter_probe_for_key(&filter, &absent),
+        TableBloomProbe::DefinitelyAbsent | TableBloomProbe::MaybePresent
+    ));
+}
+
+#[test]
+fn immutable_reader_rejects_supplied_filter_when_table_content_drift() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+        put_row(b"delta".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-filter-facts",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert!(matches!(
+        TableReaderFilter::from_table_bytes(
+            identity("reader-filter-facts"),
+            &artifact.bytes()[..artifact.bytes().len() - 1],
+            10
+        ),
+        Err(TableRuntimeError::DecodeFormat { .. })
+    ));
+
+    let same_facts_rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bzzzzzz".to_vec(), 2),
+        put_row(b"delta".to_vec(), 3),
+    ];
+    let (same_facts_artifact, same_facts_table_rows) = build_artifact(
+        "reader-filter-facts",
+        &same_facts_rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert_ne!(same_facts_table_rows, table_rows);
+    assert_eq!(same_facts_artifact.facts(), artifact.facts());
+    let mismatched_filter =
+        reader_filter_for_table_bytes("reader-filter-facts", same_facts_artifact.bytes(), 10);
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-filter-facts"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    assert!(matches!(
+        reader.with_table_filter(mismatched_filter),
+        Err(TableRuntimeError::InvalidConfig {
+            field: "table_filter",
+            reason: "must match table bytes"
+        })
+    ));
+}
+
+#[test]
+fn immutable_reader_rejects_available_filter_without_exact_table_proof() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-filter-unproven",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let filter = reader_filter_for_table_bytes("reader-filter-unproven", artifact.bytes(), 10);
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-filter-unproven"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+
+    assert!(matches!(
+        reader.with_table_filter(filter),
+        Err(TableRuntimeError::InvalidConfig {
+            field: "table_filter",
+            reason: "must match table bytes"
+        })
+    ));
+}
+
+#[test]
+fn immutable_reader_rejects_deferred_durable_filter_block_fields() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-filter-deferred-durable",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+
+    for (filter_offset, filter_len) in [(1u64, 0u32), (0, 1), (1, 1)] {
+        let mut bytes = artifact.bytes().to_vec();
+        set_footer_filter_block_fields(&mut bytes, filter_offset, filter_len);
+
+        assert!(matches!(
+            ImmutableTableReader::open_bytes(
+                identity("reader-filter-deferred-durable"),
+                bytes.clone(),
+                TableReaderConfig::default()
+            ),
+            Err(TableRuntimeError::DecodeFormat { .. })
+        ));
+        assert!(matches!(
+            ImmutableTableReader::open_source(
+                identity("reader-filter-deferred-durable"),
+                BytesTableSource::new(bytes),
+                TableReaderConfig::default()
+            ),
+            Err(TableRuntimeError::DecodeFormat { .. })
+        ));
+    }
+}
+
+#[test]
+fn immutable_reader_unavailable_filter_keeps_point_lookup_on_standard_path() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-filter-unavailable",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-filter-unavailable"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_table_filter(TableReaderFilter::unavailable())
+    .expect("attach unavailable filter");
+    assert!(!reader.runtime_facts().filter_available());
+
+    let missing = physical_key(1, "reader", 0x20, b"bravo".to_vec());
+    let (row, visited) = reader.seek_physical_key(&missing, None, None);
+    assert!(row.is_none());
+    assert_eq!(visited, 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_negative_filter_skips_candidate_data_block_for_point_miss() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+        put_row(b"delta".to_vec(), 3),
+        put_row(b"echo".to_vec(), 4),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-filter-negative-point",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let filter =
+        reader_filter_for_table_bytes("reader-filter-negative-point", artifact.bytes(), 12);
+    let missing = find_absent_physical_key_with_probe(
+        &filter,
+        (0..4096).map(|index| format!("bravo-{index:04}").into_bytes()),
+        TableBloomProbe::DefinitelyAbsent,
+    );
+
+    let unfiltered_source = TestSource::exact(artifact.bytes().to_vec());
+    let unfiltered_probe = unfiltered_source.clone();
+    let unfiltered = ImmutableTableReader::open_source(
+        identity("reader-filter-negative-point"),
+        unfiltered_source,
+        TableReaderConfig::default(),
+    )
+    .expect("open unfiltered lazy reader");
+    let unfiltered_reads = {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let (row, visited) = unfiltered.seek_physical_key(&missing, None, None);
+        assert!(row.is_none());
+        assert_eq!(visited, 1);
+        crate::observability::perf_trace::snapshot().table_data_block_reads()
+    };
+    assert_eq!(unfiltered_reads, 1);
+    assert_eq!(unfiltered_probe.calls(), 5);
+
+    let filtered_source = TestSource::exact(artifact.bytes().to_vec());
+    let filtered_probe = filtered_source.clone();
+    let filtered = ImmutableTableReader::open_source(
+        identity("reader-filter-negative-point"),
+        filtered_source,
+        TableReaderConfig::default(),
+    )
+    .expect("open filtered lazy reader")
+    .with_table_filter(filter)
+    .expect("attach reader filter");
+    assert!(filtered.runtime_facts().filter_available());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = filtered.seek_physical_key(&missing, None, None);
+    assert!(row.is_none());
+    assert_eq!(visited, 0);
+    assert_eq!(filtered_probe.calls(), 4);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_data_block_reads(), 0);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_point_rows_visited(), 0);
+    assert_eq!(perf.table_filter_negative_probes(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_disabled_filter_matches_point_result_with_more_block_reads() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+        put_row(b"delta".to_vec(), 3),
+        put_row(b"echo".to_vec(), 4),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-filter-disabled-point",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let filter =
+        reader_filter_for_table_bytes("reader-filter-disabled-point", artifact.bytes(), 12);
+    let missing = find_absent_physical_key_with_probe(
+        &filter,
+        (0..4096).map(|index| format!("bravo-{index:04}").into_bytes()),
+        TableBloomProbe::DefinitelyAbsent,
+    );
+
+    let disabled = ImmutableTableReader::open_source(
+        identity("reader-filter-disabled-point"),
+        TestSource::exact(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open disabled-filter lazy reader")
+    .with_table_filter(TableReaderFilter::unavailable())
+    .expect("attach unavailable filter");
+    assert!(!disabled.runtime_facts().filter_available());
+    let disabled_perf = {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let (row, _) = disabled.seek_physical_key(&missing, None, None);
+        assert!(row.is_none());
+        crate::observability::perf_trace::snapshot()
+    };
+
+    let enabled = ImmutableTableReader::open_source(
+        identity("reader-filter-disabled-point"),
+        TestSource::exact(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open enabled-filter lazy reader")
+    .with_table_filter(filter)
+    .expect("attach available filter");
+    assert!(enabled.runtime_facts().filter_available());
+    let enabled_perf = {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let (row, _) = enabled.seek_physical_key(&missing, None, None);
+        assert!(row.is_none());
+        crate::observability::perf_trace::snapshot()
+    };
+
+    assert!(disabled_perf.table_data_block_reads() > enabled_perf.table_data_block_reads());
+    assert_eq!(enabled_perf.table_data_block_reads(), 0);
+    assert_eq!(enabled_perf.table_filter_negative_probes(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_positive_filter_probe_still_validates_data_block() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+        put_row(b"delta".to_vec(), 3),
+        put_row(b"echo".to_vec(), 4),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-filter-positive-point",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let filter =
+        reader_filter_for_table_bytes("reader-filter-positive-point", artifact.bytes(), 12);
+    let target = table_rows[1].physical_key().clone();
+    assert_eq!(
+        filter_probe_for_key(&filter, &target),
+        TableBloomProbe::MaybePresent
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-filter-positive-point"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open filtered lazy reader")
+    .with_table_filter(filter)
+    .expect("attach reader filter");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = reader.seek_physical_key(&target, None, None);
+    assert_eq!(row, Some(table_rows[1].clone()));
+    assert_eq!(visited, 1);
+    assert_eq!(source_probe.calls(), 5);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_filter_positive_probes(), 1);
+    assert_eq!(perf.table_data_block_reads(), 1);
+    assert_eq!(perf.table_data_block_decodes(), 1);
+    assert_eq!(perf.table_rows_decoded(), 2);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_false_positive_filter_keeps_point_miss_correct() {
+    let rows = (0..96)
+        .map(|index| {
+            put_row(
+                format!("key-{:04}", index * 100).into_bytes(),
+                u64::try_from(index + 1).expect("version fits u64"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let (artifact, _) = build_artifact(
+        "reader-filter-false-positive-point",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let filter =
+        reader_filter_for_table_bytes("reader-filter-false-positive-point", artifact.bytes(), 1);
+    let missing = find_absent_physical_key_with_probe(
+        &filter,
+        (0..96).map(|index| format!("key-{:04}", index * 100 + 1).into_bytes()),
+        TableBloomProbe::MaybePresent,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-filter-false-positive-point"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open filtered lazy reader")
+    .with_table_filter(filter)
+    .expect("attach reader filter");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = reader.seek_physical_key(&missing, None, None);
+    assert!(row.is_none());
+    assert!(visited > 0);
+    assert!(source_probe.calls() > 4);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_filter_positive_probes(), 1);
+    assert!(perf.table_data_block_reads() > 0);
+    assert!(perf.table_data_block_decodes() > 0);
 }
 
 #[cfg(feature = "perf-trace")]

@@ -309,6 +309,14 @@ Steps:
      runtime filter exists.
 6. Do not extend M3G bytes inside this L5 slice without the L3 follow-up.
 
+Decision for this slice: V1 defers durable object-backed filter blocks. L5 may
+build and attach a supplied runtime filter only from canonical table bytes that
+decode to the same table facts and exact table-content digest as the reader.
+Object-backed first-open negative lookups continue to rely on metadata/index
+pruning unless the source can provide an exact content proof without changing the
+lazy read profile. Durable filter bytes require a separate L3 table-format
+amendment with validation, goldens, fuzz coverage, and spec text.
+
 Exit gate:
 
 1. Filter false negatives are impossible in tests.
@@ -488,4 +496,3 @@ cargo run --release --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-
 ```
 
 Record results in `docs/architecture/perf-tuning/` before closing the slice.
-

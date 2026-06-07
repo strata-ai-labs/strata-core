@@ -391,6 +391,12 @@ fn check_immutable_table_reader(script: &[u8]) -> Result<(), TestkitError> {
         &expected_rows,
         config,
     )?;
+    assert_source_reader_filter_matches_model(
+        &identity,
+        artifact.bytes(),
+        &rows,
+        config,
+    )?;
 
     let mut corrupt = artifact.bytes().to_vec();
     corrupt[0] = corrupt[0].wrapping_add(1);
@@ -418,6 +424,50 @@ fn check_immutable_table_reader(script: &[u8]) -> Result<(), TestkitError> {
         Ok(_) => return Err(TestkitError::new("short reader source was accepted")),
     }
 
+    Ok(())
+}
+
+fn assert_source_reader_filter_matches_model(
+    identity: &TableIdentity,
+    bytes: &[u8],
+    rows: &[TableRow],
+    config: TableReaderConfig,
+) -> Result<(), TestkitError> {
+    let filter = TableReaderFilter::from_table_bytes(identity.clone(), bytes, 10)
+        .map_err(|err| TestkitError::new(format!("reader filter build failed: {err}")))?;
+    for row in rows {
+        let key = TablePhysicalKeyBytes::from_physical_key(row.physical_key());
+        if filter.probe_physical_key(&key) == TableBloomProbe::DefinitelyAbsent {
+            return Err(TestkitError::new(
+                "reader filter produced a false negative for a generated physical key",
+            ));
+        }
+    }
+    let filtered = ImmutableTableReader::open_source(
+        identity.clone(),
+        BytesTableSource::new(bytes.to_vec()).with_exact_content_digest(),
+        config,
+    )
+    .map_err(|err| TestkitError::new(format!("filtered reader source open failed: {err}")))?
+    .with_table_filter(filter)
+    .map_err(|err| TestkitError::new(format!("reader filter attach failed: {err}")))?;
+    if !filtered.runtime_facts().filter_available() {
+        return Err(TestkitError::new(
+            "filtered reader runtime facts did not report an available filter",
+        ));
+    }
+
+    let target = rows[rows.len() / 2].physical_key().clone();
+    let expected = rows
+        .iter()
+        .find(|row| row.physical_key() == &target)
+        .cloned();
+    let actual = filtered.seek_physical_key(&target, None, None).0;
+    if actual != expected {
+        return Err(TestkitError::new(
+            "filtered reader physical-key lookup drifted from generated model",
+        ));
+    }
     Ok(())
 }
 
