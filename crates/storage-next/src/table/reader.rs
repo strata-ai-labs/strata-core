@@ -101,7 +101,7 @@ enum TableReaderRows<'a> {
     Lazy(Box<LazyTableRows<'a>>),
 }
 
-impl TableReaderRows<'_> {
+impl<'a> TableReaderRows<'a> {
     fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
         match self {
             Self::Eager(rows) => Ok(rows),
@@ -138,6 +138,16 @@ impl TableReaderRows<'_> {
             Self::Lazy(rows) => {
                 rows.try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
             }
+        }
+    }
+
+    fn cursor<'reader>(
+        &'reader self,
+        bounds_hint: Option<TableKeyBounds>,
+    ) -> ImmutableTableCursor<'reader, 'a> {
+        match self {
+            Self::Eager(rows) => ImmutableTableCursor::eager(rows),
+            Self::Lazy(rows) => rows.cursor(bounds_hint),
         }
     }
 
@@ -223,6 +233,17 @@ impl<'a> LazyTableRows<'a> {
         match self.rows.into_inner() {
             Some(rows) => rows,
             None => read_and_validate_rows(&self.state),
+        }
+    }
+
+    fn cursor<'reader>(
+        &'reader self,
+        bounds_hint: Option<TableKeyBounds>,
+    ) -> ImmutableTableCursor<'reader, 'a> {
+        match self.rows.get() {
+            Some(Ok(rows)) => ImmutableTableCursor::eager(rows),
+            Some(Err(error)) => ImmutableTableCursor::failed(error.clone()),
+            None => ImmutableTableCursor::lazy(self.state.clone(), bounds_hint),
         }
     }
 
@@ -606,12 +627,12 @@ impl<'a> ImmutableTableReader<'a> {
             .try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
     }
 
-    pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_> {
-        ImmutableTableCursor::new(self.rows())
+    pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_, 'a> {
+        self.rows.cursor(None)
     }
 
     pub(crate) fn bounded_cursor(&self, bounds: TableKeyBounds) -> BoundedTableCursor<'_> {
-        BoundedTableCursor::new(Box::new(self.cursor()), bounds)
+        BoundedTableCursor::new(Box::new(self.rows.cursor(Some(bounds.clone()))), bounds)
     }
 
     pub(crate) fn into_materialized(self) -> TableRuntimeResult<ImmutableTableReader<'static>> {
@@ -648,51 +669,209 @@ impl<'a> ImmutableTableReader<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ImmutableTableCursor<'a> {
-    rows: &'a [TableRow],
-    position: Option<usize>,
+pub(crate) struct ImmutableTableCursor<'rows, 'source> {
+    state: ImmutableTableCursorState<'rows, 'source>,
 }
 
-impl<'a> ImmutableTableCursor<'a> {
-    fn new(rows: &'a [TableRow]) -> Self {
+#[derive(Clone, Debug)]
+enum ImmutableTableCursorState<'rows, 'source> {
+    Eager {
+        rows: &'rows [TableRow],
+        position: Option<usize>,
+    },
+    Lazy(Box<LazyImmutableTableCursor<'source>>),
+    Failed(TableRuntimeError),
+}
+
+impl<'rows, 'source> ImmutableTableCursor<'rows, 'source> {
+    fn eager(rows: &'rows [TableRow]) -> Self {
         Self {
-            rows,
-            position: None,
+            state: ImmutableTableCursorState::Eager {
+                rows,
+                position: None,
+            },
         }
     }
 
-    fn seek_index(&self, target: &TableInternalKeyBytes) -> Option<usize> {
-        match self.rows.binary_search_by(|row| row.key().cmp(target)) {
-            Ok(index) | Err(index) if index < self.rows.len() => Some(index),
+    fn lazy(state: LazyTableState<'source>, bounds_hint: Option<TableKeyBounds>) -> Self {
+        Self {
+            state: ImmutableTableCursorState::Lazy(Box::new(LazyImmutableTableCursor::new(
+                state,
+                bounds_hint,
+            ))),
+        }
+    }
+
+    fn failed(error: TableRuntimeError) -> Self {
+        Self {
+            state: ImmutableTableCursorState::Failed(error),
+        }
+    }
+
+    fn eager_seek_index(rows: &[TableRow], target: &TableInternalKeyBytes) -> Option<usize> {
+        match rows.binary_search_by(|row| row.key().cmp(target)) {
+            Ok(index) | Err(index) if index < rows.len() => Some(index),
             Ok(_) | Err(_) => None,
         }
     }
 }
 
-impl super::TableCursor for ImmutableTableCursor<'_> {
+#[derive(Clone, Debug)]
+struct LazyImmutableTableCursor<'source> {
+    state: LazyTableState<'source>,
+    bounds_hint: Option<TableKeyBounds>,
+    block_index: Option<usize>,
+    block_rows: Vec<TableRow>,
+    row_index: Option<usize>,
+}
+
+impl<'source> LazyImmutableTableCursor<'source> {
+    fn new(state: LazyTableState<'source>, bounds_hint: Option<TableKeyBounds>) -> Self {
+        Self {
+            state,
+            bounds_hint,
+            block_index: None,
+            block_rows: Vec::new(),
+            row_index: None,
+        }
+    }
+
     fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
-        self.position = if self.rows.is_empty() { None } else { Some(0) };
-        record_cursor_position(self.position);
-        Ok(())
+        if let Some(lower) = self
+            .bounds_hint
+            .as_ref()
+            .and_then(TableKeyBounds::lower_seek_key)
+        {
+            return self.seek(&lower);
+        }
+        self.position_at_block(0, None)
     }
 
     fn seek(&mut self, target: &TableInternalKeyBytes) -> TableRuntimeResult<()> {
-        self.position = self.seek_index(target);
-        record_cursor_position(self.position);
-        Ok(())
+        let entries = self.state.metadata.index().entries();
+        let Some(block_index) = first_candidate_block_for_key(entries, target) else {
+            self.clear_position();
+            return Ok(());
+        };
+        self.position_at_block(block_index, Some(target))
     }
 
     fn advance(&mut self) -> TableRuntimeResult<()> {
-        self.position = self.position.and_then(|position| {
-            let next = position.saturating_add(1);
-            (next < self.rows.len()).then_some(next)
-        });
-        record_cursor_position(self.position);
-        Ok(())
+        let Some(row_index) = self.row_index else {
+            return Ok(());
+        };
+        let next_row = row_index.saturating_add(1);
+        if next_row < self.block_rows.len() {
+            self.row_index = Some(next_row);
+            record_cursor_position(self.row_index);
+            return Ok(());
+        }
+
+        let Some(block_index) = self.block_index else {
+            self.clear_position();
+            return Ok(());
+        };
+        self.position_at_block(block_index.saturating_add(1), None)
     }
 
     fn current(&self) -> Option<&TableRow> {
-        self.position.and_then(|position| self.rows.get(position))
+        self.row_index
+            .and_then(|row_index| self.block_rows.get(row_index))
+    }
+
+    fn position_at_block(
+        &mut self,
+        mut block_index: usize,
+        target: Option<&TableInternalKeyBytes>,
+    ) -> TableRuntimeResult<()> {
+        while block_index < self.state.metadata.index().entries().len() {
+            if self.entry_is_past_upper_bound(block_index) {
+                self.clear_position();
+                return Ok(());
+            }
+
+            let rows = self.state.read_data_block_rows(block_index)?;
+            let row_index =
+                target.map_or(0, |target| candidate_row_index_for_seek_key(&rows, target));
+            if row_index < rows.len() {
+                self.block_index = Some(block_index);
+                self.block_rows = rows;
+                self.row_index = Some(row_index);
+                record_cursor_position(self.row_index);
+                return Ok(());
+            }
+
+            block_index = block_index.saturating_add(1);
+        }
+        self.clear_position();
+        Ok(())
+    }
+
+    fn entry_is_past_upper_bound(&self, block_index: usize) -> bool {
+        let Some(bounds) = &self.bounds_hint else {
+            return false;
+        };
+        let Some(entry) = self.state.metadata.index().entries().get(block_index) else {
+            return false;
+        };
+        bounds.is_past_upper_bound_bytes(entry.first_key_bytes())
+    }
+
+    fn clear_position(&mut self) {
+        self.block_index = None;
+        self.block_rows.clear();
+        self.row_index = None;
+    }
+}
+
+impl super::TableCursor for ImmutableTableCursor<'_, '_> {
+    fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
+        match &mut self.state {
+            ImmutableTableCursorState::Eager { rows, position } => {
+                *position = if rows.is_empty() { None } else { Some(0) };
+                record_cursor_position(*position);
+                Ok(())
+            }
+            ImmutableTableCursorState::Lazy(cursor) => cursor.seek_to_first(),
+            ImmutableTableCursorState::Failed(error) => Err(error.clone()),
+        }
+    }
+
+    fn seek(&mut self, target: &TableInternalKeyBytes) -> TableRuntimeResult<()> {
+        match &mut self.state {
+            ImmutableTableCursorState::Eager { rows, position } => {
+                *position = Self::eager_seek_index(rows, target);
+                record_cursor_position(*position);
+                Ok(())
+            }
+            ImmutableTableCursorState::Lazy(cursor) => cursor.seek(target),
+            ImmutableTableCursorState::Failed(error) => Err(error.clone()),
+        }
+    }
+
+    fn advance(&mut self) -> TableRuntimeResult<()> {
+        match &mut self.state {
+            ImmutableTableCursorState::Eager { rows, position } => {
+                *position = position.and_then(|position| {
+                    let next = position.saturating_add(1);
+                    (next < rows.len()).then_some(next)
+                });
+                record_cursor_position(*position);
+                Ok(())
+            }
+            ImmutableTableCursorState::Lazy(cursor) => cursor.advance(),
+            ImmutableTableCursorState::Failed(error) => Err(error.clone()),
+        }
+    }
+
+    fn current(&self) -> Option<&TableRow> {
+        match &self.state {
+            ImmutableTableCursorState::Eager { rows, position } => {
+                position.and_then(|position| rows.get(position))
+            }
+            ImmutableTableCursorState::Lazy(cursor) => cursor.current(),
+            ImmutableTableCursorState::Failed(_) => None,
+        }
     }
 }
 

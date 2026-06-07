@@ -410,6 +410,23 @@ impl TableKeyBounds {
             }
         }
     }
+
+    pub(crate) fn is_past_upper_bound_bytes(&self, key: &[u8]) -> bool {
+        match self {
+            Self::Range { upper, .. } => upper_excludes_current_and_following_bytes(upper, key),
+            Self::Prefix(prefix) => !key.starts_with(prefix) && key > prefix.as_slice(),
+            Self::PhysicalRange {
+                physical_prefix,
+                upper,
+                ..
+            } => {
+                let physical_key = table_internal_physical_key_bytes(key);
+                (!physical_key.starts_with(physical_prefix)
+                    && physical_key > physical_prefix.as_slice())
+                    || physical_upper_excludes_current_and_following(upper, physical_key)
+            }
+        }
+    }
 }
 
 pub(crate) fn validate_strictly_sorted_unique_rows(rows: &[TableRow]) -> TableRuntimeResult<()> {
@@ -510,6 +527,14 @@ fn upper_excludes_current_and_following(
         TableKeyBound::Unbounded => false,
         TableKeyBound::Included(upper) => key > upper,
         TableKeyBound::Excluded(upper) => key >= upper,
+    }
+}
+
+fn upper_excludes_current_and_following_bytes(bound: &TableKeyBound, key: &[u8]) -> bool {
+    match bound {
+        TableKeyBound::Unbounded => false,
+        TableKeyBound::Included(upper) => key > upper.as_slice(),
+        TableKeyBound::Excluded(upper) => key >= upper.as_slice(),
     }
 }
 

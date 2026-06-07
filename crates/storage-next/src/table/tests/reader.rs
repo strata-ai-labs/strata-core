@@ -1,13 +1,15 @@
-use crate::format::{decode_table_footer_metadata, MAX_TABLE_FOOTER_SIZE};
+use crate::format::{
+    decode_immutable_table_metadata, decode_table_footer_metadata, MAX_TABLE_FOOTER_SIZE,
+};
 use crate::format::{TableCompression, MAX_TABLE_HEADER_SIZE};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
-    ImmutableTableCursor, ImmutableTableReader, TableBlockAddress, TableBlockCache,
-    TableBlockCacheKey, TableBlockCacheKind, TableBuilderConfig, TableByteSource, TableCacheConfig,
-    TableCacheTableId, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TableKeyBound, TableKeyBounds, TablePhysicalKeyBytes, TableReaderConfig, TableReaderOpenMode,
-    TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
+    ImmutableTableReader, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
+    TableBlockCacheKind, TableBuilderConfig, TableByteSource, TableCacheConfig, TableCacheTableId,
+    TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBound,
+    TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig,
+    TableReaderOpenMode, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
 };
 use std::error::Error as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -124,6 +126,37 @@ fn table_metadata_ranges(bytes: &[u8]) -> TableMetadataRanges {
         properties_offset: footer.properties_block_offset(),
         properties_len: footer.properties_block_frame_len(),
     }
+}
+
+fn decode_table_metadata(bytes: &[u8]) -> crate::format::ImmutableTableMetadata {
+    let ranges = table_metadata_ranges(bytes);
+    let footer_start = bytes.len() - MAX_TABLE_FOOTER_SIZE;
+    let index_start = checked_table_offset(ranges.index_offset);
+    let index_end =
+        index_start + usize::try_from(ranges.index_len).expect("index length fits usize");
+    let properties_start = checked_table_offset(ranges.properties_offset);
+    let properties_end = properties_start
+        + usize::try_from(ranges.properties_len).expect("properties length fits usize");
+
+    decode_immutable_table_metadata(
+        bytes.len() as u64,
+        &bytes[..MAX_TABLE_HEADER_SIZE],
+        &bytes[footer_start..],
+        &bytes[index_start..index_end],
+        &bytes[properties_start..properties_end],
+    )
+    .expect("decode table metadata")
+}
+
+fn corrupt_data_block_payload(bytes: &mut [u8], block_index: usize) {
+    let metadata = decode_table_metadata(bytes);
+    let entry = metadata
+        .index()
+        .entries()
+        .get(block_index)
+        .expect("data block entry");
+    let payload_offset = checked_table_offset(entry.block_offset()) + 12;
+    bytes[payload_offset] ^= 0xff;
 }
 
 fn checked_table_offset(offset: u64) -> usize {
@@ -1835,6 +1868,464 @@ fn immutable_reader_indexed_point_exact_encoded_key_lookup_stays_separate_from_p
     );
 }
 
+#[test]
+fn immutable_reader_lazy_range_cursor_reads_only_overlapping_block() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+        put_row(b"foxtrot".to_vec(), 6),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-range-single-block",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert_eq!(artifact.facts().data_block_count(), 3);
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-range-single-block"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy range reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    let lower = table_rows[2].key().clone();
+    let upper = table_rows[3].key().clone();
+    let bounds = TableKeyBounds::closed(lower, upper).expect("closed bounds");
+    let expected = table_rows[2..4]
+        .iter()
+        .map(|row| row.encoded_key().to_vec())
+        .collect::<Vec<_>>();
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(bounded_reader_keys(&reader, bounds), expected);
+
+    assert_eq!(source_probe.calls(), 5);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 1);
+        assert_eq!(perf.table_data_block_decodes(), 1);
+        assert_eq!(perf.table_rows_decoded(), 2);
+        assert_eq!(perf.table_cursor_rows_visited(), 2);
+        assert_eq!(perf.scan_cursor_rows_yielded(), 2);
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_cursor_can_stop_before_next_block_is_decoded() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-range-limit-stop",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-range-limit-stop"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy cursor reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut cursor = reader.cursor();
+    cursor.seek_to_first().expect("seek first");
+    assert_eq!(cursor.current(), table_rows.first());
+    cursor.advance().expect("advance within first block");
+    assert_eq!(cursor.current(), table_rows.get(1));
+
+    assert_eq!(source_probe.calls(), 5);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 1);
+        assert_eq!(perf.table_data_block_decodes(), 1);
+        assert_eq!(perf.table_rows_decoded(), 2);
+        assert_eq!(perf.table_cursor_rows_visited(), 2);
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_cursor_preserves_current_row_when_next_block_errors() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-range-advance-error",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let mut bytes = artifact.bytes().to_vec();
+    corrupt_data_block_payload(&mut bytes, 1);
+    let source = TestSource::exact(bytes);
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-range-advance-error"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy cursor reader with corrupt later block");
+    assert_eq!(source_probe.calls(), 4);
+
+    let mut cursor = reader.cursor();
+    cursor.seek_to_first().expect("first block should decode");
+    assert_eq!(cursor.current(), table_rows.first());
+    assert_eq!(source_probe.calls(), 5);
+
+    let error = cursor
+        .advance()
+        .expect_err("second block corruption should surface on advance");
+    assert!(matches!(error, TableRuntimeError::DecodeFormat { .. }));
+    assert_eq!(cursor.current(), table_rows.first());
+    assert_eq!(source_probe.calls(), 6);
+}
+
+#[test]
+fn immutable_reader_lazy_prefix_cursor_skips_nonmatching_blocks_and_stops_before_neighbor() {
+    let prefix_key = physical_key(1, "reader", 0x20, b"target".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row_for_key(prefix_key.clone(), 9, b"newer".to_vec()),
+        put_row_for_key(prefix_key.clone(), 3, b"older".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+        put_row_for_key(
+            physical_key(2, "reader", 0x20, b"target".to_vec()),
+            11,
+            b"other branch".to_vec(),
+        ),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-prefix-single-block",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert!(artifact.facts().data_block_count() >= 3);
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-prefix-single-block"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy prefix reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    let prefix = TablePhysicalKeyBytes::from_physical_key(&prefix_key);
+    let expected = table_rows
+        .iter()
+        .filter(|row| row.physical_key() == &prefix_key)
+        .map(|row| row.encoded_key().to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(expected.len(), 2);
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(
+        bounded_reader_keys(&reader, TableKeyBounds::prefix(prefix.as_slice())),
+        expected
+    );
+
+    assert_eq!(source_probe.calls(), 5);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 1);
+        assert_eq!(perf.table_data_block_decodes(), 1);
+        assert_eq!(perf.table_rows_decoded(), 2);
+        assert_eq!(perf.table_cursor_rows_visited(), 2);
+        assert_eq!(perf.scan_cursor_rows_yielded(), 2);
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_cursor_scans_all_blocks_without_materializing_rows() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-cursor-full-scan",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert_eq!(artifact.facts().data_block_count(), 3);
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-cursor-full-scan"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy cursor reader");
+    assert_eq!(source_probe.calls(), 4);
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(all_reader_keys(&reader), encoded_row_keys(&table_rows));
+
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+    assert_eq!(
+        source_probe.calls(),
+        4 + usize::try_from(artifact.facts().data_block_count()).expect("block count fits")
+    );
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(
+            perf.table_data_block_reads(),
+            u64::from(artifact.facts().data_block_count())
+        );
+        assert_eq!(
+            perf.table_data_block_decodes(),
+            u64::from(artifact.facts().data_block_count())
+        );
+        assert_eq!(perf.table_rows_decoded(), artifact.facts().row_count());
+        assert_eq!(
+            perf.table_cursor_rows_visited(),
+            artifact.facts().row_count()
+        );
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_cursor_seek_and_reseek_use_index_without_materializing_rows() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-cursor-seek-reseek",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    assert_eq!(artifact.facts().data_block_count(), 3);
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-cursor-seek-reseek"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy cursor seek reader");
+    assert_eq!(source_probe.calls(), 4);
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut cursor = reader.cursor();
+    cursor
+        .seek(table_rows[3].key())
+        .expect("seek into later block");
+    assert_eq!(cursor.current(), table_rows.get(3));
+    assert_eq!(source_probe.calls(), 5);
+
+    cursor
+        .seek(table_rows[1].key())
+        .expect("reseek earlier block");
+    assert_eq!(cursor.current(), table_rows.get(1));
+    assert_eq!(source_probe.calls(), 6);
+
+    let after_last = TableInternalKeyBytes::from_row(&put_row(b"zulu".to_vec(), 99));
+    cursor.seek(&after_last).expect("seek after table");
+    assert!(cursor.current().is_none());
+    assert_eq!(source_probe.calls(), 6);
+    assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 2);
+        assert_eq!(perf.table_data_block_decodes(), 2);
+        assert_eq!(perf.table_rows_decoded(), 4);
+        assert_eq!(perf.table_cursor_rows_visited(), 2);
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_open_range_cursor_skips_excluded_endpoints_without_upper_block_read() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-cursor-open-range",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-cursor-open-range"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy open-range cursor reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    let lower = table_rows[1].key().clone();
+    let selected = table_rows[2].encoded_key().to_vec();
+    let upper = table_rows[3].key().clone();
+    let bounds = TableKeyBounds::open(lower, upper).expect("open bounds");
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(bounded_reader_keys(&reader, bounds), vec![selected]);
+
+    assert_eq!(
+        source_probe.calls(),
+        6,
+        "lazy open-range cursor should read only the excluded lower block and selected block"
+    );
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 2);
+        assert_eq!(perf.table_data_block_decodes(), 2);
+        assert_eq!(perf.table_rows_decoded(), 2);
+        assert_eq!(perf.scan_cursor_rows_yielded(), 1);
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_exact_cursor_miss_after_table_reads_no_data_blocks() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-lazy-cursor-after-table-miss",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-cursor-after-table-miss"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy exact-miss cursor reader");
+    assert_eq!(source_probe.calls(), 4);
+    let after_last = TableInternalKeyBytes::from_row(&put_row(b"zulu".to_vec(), 99));
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(
+        bounded_reader_keys(&reader, TableKeyBounds::exact(after_last)),
+        Vec::<Vec<u8>>::new()
+    );
+
+    assert_eq!(source_probe.calls(), 4);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 0);
+        assert_eq!(perf.table_data_block_decodes(), 0);
+        assert_eq!(perf.table_rows_decoded(), 0);
+        assert_eq!(perf.scan_cursor_rows_yielded(), 0);
+    }
+}
+
+#[test]
+fn immutable_reader_lazy_physical_range_cursor_reads_only_matching_key_chain() {
+    let target = physical_key(1, "reader", 0x20, b"target".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(target.clone(), 9, b"newer".to_vec()),
+        put_row_for_key(target.clone(), 3, b"older".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+        put_row_for_key(
+            physical_key(2, "reader", 0x20, b"target".to_vec()),
+            11,
+            b"other branch".to_vec(),
+        ),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-lazy-cursor-physical-range",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-lazy-cursor-physical-range"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy physical-range cursor reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    let physical_prefix = TablePhysicalKeyBytes::from_physical_key(&target);
+    let bounds = TableKeyBounds::physical_range(
+        &physical_prefix,
+        TablePhysicalKeyBound::Unbounded,
+        TablePhysicalKeyBound::Unbounded,
+    )
+    .expect("physical range bounds");
+    let expected = table_rows
+        .iter()
+        .filter(|row| row.physical_key() == &target)
+        .map(|row| row.encoded_key().to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(expected.len(), 2);
+
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(bounded_reader_keys(&reader, bounds), expected);
+
+    assert_eq!(
+        source_probe.calls(),
+        6,
+        "lazy physical-range cursor should read only the matching key-chain blocks"
+    );
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_data_block_reads(), 2);
+        assert_eq!(perf.table_data_block_decodes(), 2);
+        assert_eq!(perf.table_rows_decoded(), 2);
+        assert_eq!(perf.scan_cursor_rows_yielded(), 2);
+    }
+}
+
 #[cfg(feature = "perf-trace")]
 #[derive(Clone, Copy)]
 struct LazyOpenExpectation {
@@ -2100,7 +2591,7 @@ fn immutable_reader_cursor_seek_and_bounds_match_sorted_model() {
         .iter()
         .map(|row| row.encoded_key().to_vec())
         .collect::<Vec<_>>();
-    let mut cursor: ImmutableTableCursor<'_> = reader.cursor();
+    let mut cursor = reader.cursor();
     assert!(cursor.current().is_none());
     cursor.seek_to_first().expect("seek first");
     assert_eq!(collect_keys(&mut cursor), expected_keys);
