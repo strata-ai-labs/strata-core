@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// test names, or closeout docstrings.
 ///
 /// Flagged tokens:
-/// - `L[4-9]` standalone (e.g., `L8 owns`, `L5 assigns`).
+/// - standalone milestone-layer labels.
 /// - `L[4-9]` followed by a short uppercase suffix (slice codes:
 ///   `L7M`, `L8Y`, `L8Z`, `L6C`).
 /// - `M[0-9]` standalone (`M3 freeze`, `M4 milestone`).

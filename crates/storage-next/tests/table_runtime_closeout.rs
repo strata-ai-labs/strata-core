@@ -30,7 +30,7 @@ fn table_runtime_closeout_generated_harness_exposes_every_counter() {
         "table_block_cache_cases",
         "table_bloom_filter_cases",
         "table_compaction_cases",
-        "l5a_perf_trace_cases",
+        "table_perf_trace_cases",
         "error_source_cases",
     ];
     assert_contains_all(

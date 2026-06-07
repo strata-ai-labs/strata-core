@@ -3,6 +3,7 @@
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
+use super::key::table_internal_physical_key_bytes;
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableCacheTableId, TableCommitRange, TableIdentity, TableInternalKeyBytes,
@@ -122,6 +123,24 @@ impl TableReaderRows<'_> {
         }
     }
 
+    fn try_seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+        match self {
+            Self::Eager(rows) => {
+                let (row, visited) =
+                    seek_physical_key_in_slice(rows, key, max_commit_version, max_commit_timestamp);
+                Ok((row.cloned(), visited))
+            }
+            Self::Lazy(rows) => {
+                rows.try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
+            }
+        }
+    }
+
     fn with_block_cache(&mut self, table: TableCacheTableId, cache: Arc<TableBlockCache>) -> bool {
         match self {
             Self::Eager(_) => false,
@@ -176,6 +195,30 @@ impl<'a> LazyTableRows<'a> {
         Ok(find_exact_in_rows(&rows, key))
     }
 
+    fn try_seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+        if let Some(rows) = self.rows.get() {
+            return match rows {
+                Ok(rows) => {
+                    let (row, visited) = seek_physical_key_in_slice(
+                        rows,
+                        key,
+                        max_commit_version,
+                        max_commit_timestamp,
+                    );
+                    Ok((row.cloned(), visited))
+                }
+                Err(error) => Err(error.clone()),
+            };
+        }
+        self.state
+            .seek_physical_key(key, max_commit_version, max_commit_timestamp)
+    }
+
     fn into_materialized(self) -> TableRuntimeResult<Vec<TableRow>> {
         match self.rows.into_inner() {
             Some(rows) => rows,
@@ -196,6 +239,88 @@ struct LazyTableState<'a> {
 }
 
 impl LazyTableState<'_> {
+    fn seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+        perf_trace::record_table_seek();
+        let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+        let target_physical_key = prefix.as_slice();
+        if !self.contains_physical_key(target_physical_key) {
+            perf_trace::record_table_point_rows_visited(0);
+            return Ok((None, 0));
+        }
+
+        let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
+        let seek_key =
+            TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
+        let entries = self.metadata.index().entries();
+        let Some(mut block_index) = first_candidate_block_for_key(entries, &seek_key) else {
+            perf_trace::record_table_point_rows_visited(0);
+            return Ok((None, 0));
+        };
+        let first_candidate_block_index = block_index;
+
+        let mut visited = 0usize;
+        while let Some(entry) = entries.get(block_index) {
+            match compare_index_entry_physical_range(entry, target_physical_key) {
+                PhysicalRangeOrdering::Before => {
+                    block_index = block_index.saturating_add(1);
+                    continue;
+                }
+                PhysicalRangeOrdering::After => {
+                    perf_trace::record_table_point_rows_visited(visited);
+                    return Ok((None, visited));
+                }
+                PhysicalRangeOrdering::MayContain => {}
+            }
+
+            let rows = self.read_data_block_rows(block_index)?;
+            let start = if block_index == first_candidate_block_index {
+                candidate_row_index_for_seek_key(&rows, &seek_key)
+            } else {
+                0
+            };
+
+            let mut continue_to_next_block = false;
+            for row in &rows[start..] {
+                visited = visited.saturating_add(1);
+                match row.key().physical_key_bytes().cmp(target_physical_key) {
+                    std::cmp::Ordering::Less => {}
+                    std::cmp::Ordering::Greater => {
+                        perf_trace::record_table_point_rows_visited(visited);
+                        return Ok((None, visited));
+                    }
+                    std::cmp::Ordering::Equal => {
+                        continue_to_next_block = true;
+                        if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
+                            perf_trace::record_table_point_rows_visited(visited);
+                            return Ok((Some(row.clone()), visited));
+                        }
+                    }
+                }
+            }
+
+            if !continue_to_next_block {
+                perf_trace::record_table_point_rows_visited(visited);
+                return Ok((None, visited));
+            }
+            block_index = block_index.saturating_add(1);
+        }
+
+        perf_trace::record_table_point_rows_visited(visited);
+        Ok((None, visited))
+    }
+
+    fn contains_physical_key(&self, physical_key: &[u8]) -> bool {
+        let properties = self.metadata.properties();
+        let min_key = table_internal_physical_key_bytes(properties.min_key_bytes());
+        let max_key = table_internal_physical_key_bytes(properties.max_key_bytes());
+        min_key <= physical_key && physical_key <= max_key
+    }
+
     fn read_data_block_rows(&self, block_index: usize) -> TableRuntimeResult<Vec<TableRow>> {
         let entry = self.metadata.index().entries().get(block_index).ok_or(
             TableRuntimeError::InvalidRange {
@@ -466,8 +591,19 @@ impl<'a> ImmutableTableReader<'a> {
         key: &PhysicalKey,
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
-    ) -> (Option<&TableRow>, usize) {
-        seek_physical_key_in_slice(self.rows(), key, max_commit_version, max_commit_timestamp)
+    ) -> (Option<TableRow>, usize) {
+        self.try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
+            .expect("lazy table physical key seek failed")
+    }
+
+    pub(crate) fn try_seek_physical_key(
+        &self,
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+        self.rows
+            .try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
     }
 
     pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_> {
@@ -732,6 +868,43 @@ fn find_index_entry_for_key(
     let index = entries.partition_point(|entry| entry.last_key_bytes() < key);
     let entry = entries.get(index)?;
     (entry.first_key_bytes() <= key).then_some(index)
+}
+
+fn first_candidate_block_for_key(
+    entries: &[TableIndexEntry],
+    key: &TableInternalKeyBytes,
+) -> Option<usize> {
+    let key = key.as_slice();
+    let index = entries.partition_point(|entry| entry.last_key_bytes() < key);
+    (index < entries.len()).then_some(index)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalRangeOrdering {
+    Before,
+    MayContain,
+    After,
+}
+
+fn compare_index_entry_physical_range(
+    entry: &TableIndexEntry,
+    target_physical_key: &[u8],
+) -> PhysicalRangeOrdering {
+    let first_key = table_internal_physical_key_bytes(entry.first_key_bytes());
+    let last_key = table_internal_physical_key_bytes(entry.last_key_bytes());
+    if last_key < target_physical_key {
+        PhysicalRangeOrdering::Before
+    } else if first_key > target_physical_key {
+        PhysicalRangeOrdering::After
+    } else {
+        PhysicalRangeOrdering::MayContain
+    }
+}
+
+fn candidate_row_index_for_seek_key(rows: &[TableRow], key: &TableInternalKeyBytes) -> usize {
+    match rows.binary_search_by(|row| row.key().cmp(key)) {
+        Ok(index) | Err(index) => index,
+    }
 }
 
 fn cache_key_for_entry(

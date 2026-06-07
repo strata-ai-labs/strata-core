@@ -169,6 +169,10 @@ fn encoded_row_keys(rows: &[TableRow]) -> Vec<Vec<u8>> {
         .collect::<Vec<_>>()
 }
 
+fn optional_table_row_key(row: Option<TableRow>) -> Option<Vec<u8>> {
+    row.map(|row| row.encoded_key().to_vec())
+}
+
 fn assert_decode_format(bytes: Vec<u8>, name: &'static str) {
     let error =
         ImmutableTableReader::open_bytes(identity(name), bytes, TableReaderConfig::default())
@@ -542,7 +546,7 @@ fn immutable_reader_source_open_perf_counters_prove_lazy_metadata_path() {
         put_row(b"echo".to_vec(), 5),
     ];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5b-lazy-proof",
+        "reader-lazy-open-lazy-proof",
         &rows,
         2,
         TableCompression::Uncompressed,
@@ -559,7 +563,7 @@ fn immutable_reader_source_open_perf_counters_prove_lazy_metadata_path() {
     assert_eq!(zero.table_rows_decoded(), 0);
 
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5b-lazy-proof"),
+        identity("reader-lazy-open-lazy-proof"),
         source,
         TableReaderConfig::default(),
     )
@@ -620,17 +624,17 @@ fn immutable_reader_source_open_perf_counters_prove_lazy_metadata_path() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn immutable_reader_l5b_lazy_one_block_open_reads_metadata_only() {
+fn immutable_reader_lazy_source_one_block_open_reads_metadata_only() {
     let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
     let (artifact, _) = build_artifact(
-        "reader-l5b-one-block",
+        "reader-lazy-open-one-block",
         &rows,
         16,
         TableCompression::Uncompressed,
     );
     assert_eq!(artifact.facts().data_block_count(), 1);
     let eager = ImmutableTableReader::open_bytes(
-        identity("reader-l5b-one-block"),
+        identity("reader-lazy-open-one-block"),
         artifact.bytes().to_vec(),
         TableReaderConfig::default(),
     )
@@ -640,7 +644,7 @@ fn immutable_reader_l5b_lazy_one_block_open_reads_metadata_only() {
 
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5b-one-block"),
+        identity("reader-lazy-open-one-block"),
         source,
         TableReaderConfig::default(),
     )
@@ -648,13 +652,13 @@ fn immutable_reader_l5b_lazy_one_block_open_reads_metadata_only() {
 
     assert_eq!(reader.facts(), eager.facts());
     assert_eq!(source_probe.calls(), 4);
-    assert_l5b_lazy_open_runtime_facts(&reader);
-    assert_l5b_lazy_open_perf_snapshot(&crate::observability::perf_trace::snapshot(), true);
+    assert_lazy_open_runtime_facts(&reader);
+    assert_lazy_open_perf_snapshot(&crate::observability::perf_trace::snapshot(), true);
 }
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn immutable_reader_l5b_lazy_multi_block_open_reads_metadata_only() {
+fn immutable_reader_lazy_source_multi_block_open_reads_metadata_only() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
@@ -662,7 +666,7 @@ fn immutable_reader_l5b_lazy_multi_block_open_reads_metadata_only() {
         put_row(b"delta".to_vec(), 4),
     ];
     let (artifact, _) = build_artifact(
-        "reader-l5b-multi-block",
+        "reader-lazy-open-multi-block",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -673,7 +677,7 @@ fn immutable_reader_l5b_lazy_multi_block_open_reads_metadata_only() {
 
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5b-multi-block"),
+        identity("reader-lazy-open-multi-block"),
         source,
         TableReaderConfig::default(),
     )
@@ -681,15 +685,15 @@ fn immutable_reader_l5b_lazy_multi_block_open_reads_metadata_only() {
 
     assert_eq!(reader.facts(), artifact.facts());
     assert_eq!(source_probe.calls(), 4);
-    assert_l5b_lazy_open_runtime_facts(&reader);
-    assert_l5b_lazy_open_perf_snapshot(&crate::observability::perf_trace::snapshot(), true);
+    assert_lazy_open_runtime_facts(&reader);
+    assert_lazy_open_perf_snapshot(&crate::observability::perf_trace::snapshot(), true);
 }
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn immutable_reader_l5b_corrupt_header_and_footer_fail_before_index_or_data_reads() {
+fn immutable_reader_lazy_source_corrupt_header_and_footer_fail_before_index_or_data_reads() {
     let (artifact, _) = build_artifact(
-        "reader-l5b-header-footer-corrupt",
+        "reader-lazy-open-header-footer-corrupt",
         &[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)],
         1,
         TableCompression::Uncompressed,
@@ -697,10 +701,10 @@ fn immutable_reader_l5b_corrupt_header_and_footer_fail_before_index_or_data_read
 
     let mut corrupt_header = artifact.bytes().to_vec();
     corrupt_header[0] ^= 0xff;
-    assert_l5b_lazy_decode_error_before_data_reads(
+    assert_lazy_decode_error_before_data_reads(
         "header-corrupt",
         corrupt_header,
-        L5bLazyOpenExpectation {
+        LazyOpenExpectation {
             source_calls: 2,
             metadata_frames_read: false,
         },
@@ -709,10 +713,10 @@ fn immutable_reader_l5b_corrupt_header_and_footer_fail_before_index_or_data_read
     let mut corrupt_footer = artifact.bytes().to_vec();
     let footer_magic = corrupt_footer.len() - MAX_TABLE_FOOTER_SIZE + 36;
     corrupt_footer[footer_magic] ^= 0xff;
-    assert_l5b_lazy_decode_error_before_data_reads(
+    assert_lazy_decode_error_before_data_reads(
         "footer-corrupt",
         corrupt_footer,
-        L5bLazyOpenExpectation {
+        LazyOpenExpectation {
             source_calls: 2,
             metadata_frames_read: false,
         },
@@ -721,9 +725,9 @@ fn immutable_reader_l5b_corrupt_header_and_footer_fail_before_index_or_data_read
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn immutable_reader_l5b_corrupt_index_and_properties_fail_before_data_reads() {
+fn immutable_reader_lazy_source_corrupt_index_and_properties_fail_before_data_reads() {
     let (artifact, _) = build_artifact(
-        "reader-l5b-index-properties-corrupt",
+        "reader-lazy-open-index-properties-corrupt",
         &[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)],
         1,
         TableCompression::Uncompressed,
@@ -732,10 +736,10 @@ fn immutable_reader_l5b_corrupt_index_and_properties_fail_before_data_reads() {
 
     let mut corrupt_index = artifact.bytes().to_vec();
     corrupt_index[checked_table_offset(ranges.index_offset)] ^= 0xff;
-    assert_l5b_lazy_decode_error_before_data_reads(
+    assert_lazy_decode_error_before_data_reads(
         "index-corrupt",
         corrupt_index,
-        L5bLazyOpenExpectation {
+        LazyOpenExpectation {
             source_calls: 4,
             metadata_frames_read: true,
         },
@@ -743,10 +747,10 @@ fn immutable_reader_l5b_corrupt_index_and_properties_fail_before_data_reads() {
 
     let mut corrupt_properties = artifact.bytes().to_vec();
     corrupt_properties[checked_table_offset(ranges.properties_offset)] ^= 0xff;
-    assert_l5b_lazy_decode_error_before_data_reads(
+    assert_lazy_decode_error_before_data_reads(
         "properties-corrupt",
         corrupt_properties,
-        L5bLazyOpenExpectation {
+        LazyOpenExpectation {
             source_calls: 4,
             metadata_frames_read: true,
         },
@@ -755,9 +759,9 @@ fn immutable_reader_l5b_corrupt_index_and_properties_fail_before_data_reads() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn immutable_reader_l5b_index_fact_drift_fails_before_data_reads() {
+fn immutable_reader_lazy_source_index_fact_drift_fails_before_data_reads() {
     let (artifact, _) = build_artifact(
-        "reader-l5b-index-fact-drift",
+        "reader-lazy-open-index-fact-drift",
         &[
             put_row(b"alpha".to_vec(), 1),
             put_row(b"bravo".to_vec(), 2),
@@ -769,10 +773,10 @@ fn immutable_reader_l5b_index_fact_drift_fails_before_data_reads() {
     let mut drifted = artifact.bytes().to_vec();
     increment_first_index_entry_row_count(&mut drifted);
 
-    assert_l5b_lazy_decode_error_before_data_reads(
+    assert_lazy_decode_error_before_data_reads(
         "index-row-count-drift",
         drifted,
-        L5bLazyOpenExpectation {
+        LazyOpenExpectation {
             source_calls: 4,
             metadata_frames_read: true,
         },
@@ -780,14 +784,14 @@ fn immutable_reader_l5b_index_fact_drift_fails_before_data_reads() {
 }
 
 #[test]
-fn immutable_reader_l5c_exact_lookup_hits_cache_after_cold_block_read() {
+fn immutable_reader_lazy_block_cache_exact_lookup_hits_cache_after_cold_block_read() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
         put_row(b"charlie".to_vec(), 3),
     ];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-cache-hit",
+        "reader-lazy-block-cache-cache-hit",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -798,7 +802,7 @@ fn immutable_reader_l5c_exact_lookup_hits_cache_after_cold_block_read() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-cache-hit"),
+        identity("reader-lazy-block-cache-cache-hit"),
         source,
         TableReaderConfig::default(),
     )
@@ -844,14 +848,14 @@ fn immutable_reader_l5c_exact_lookup_hits_cache_after_cold_block_read() {
 }
 
 #[test]
-fn immutable_reader_l5c_exact_lookup_reads_distinct_blocks_only() {
+fn immutable_reader_lazy_block_cache_exact_lookup_reads_distinct_blocks_only() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
         put_row(b"charlie".to_vec(), 3),
     ];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-distinct-blocks",
+        "reader-lazy-block-cache-distinct-blocks",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -862,7 +866,7 @@ fn immutable_reader_l5c_exact_lookup_reads_distinct_blocks_only() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-distinct-blocks"),
+        identity("reader-lazy-block-cache-distinct-blocks"),
         source,
         TableReaderConfig::default(),
     )
@@ -898,10 +902,10 @@ fn immutable_reader_l5c_exact_lookup_reads_distinct_blocks_only() {
 }
 
 #[test]
-fn immutable_reader_l5c_exact_lookup_uses_already_materialized_rows() {
+fn immutable_reader_lazy_block_cache_exact_lookup_uses_already_materialized_rows() {
     let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-materialized-exact",
+        "reader-lazy-block-cache-materialized-exact",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -912,7 +916,7 @@ fn immutable_reader_l5c_exact_lookup_uses_already_materialized_rows() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-materialized-exact"),
+        identity("reader-lazy-block-cache-materialized-exact"),
         source,
         TableReaderConfig::default(),
     )
@@ -946,10 +950,10 @@ fn immutable_reader_l5c_exact_lookup_uses_already_materialized_rows() {
 }
 
 #[test]
-fn immutable_reader_l5c_disabled_cache_preserves_results_without_storing() {
+fn immutable_reader_disabled_block_cache_preserves_results_without_storing() {
     let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-disabled-cache",
+        "reader-lazy-block-cache-disabled-cache",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -960,7 +964,7 @@ fn immutable_reader_l5c_disabled_cache_preserves_results_without_storing() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-disabled-cache"),
+        identity("reader-lazy-block-cache-disabled-cache"),
         source,
         TableReaderConfig::default(),
     )
@@ -996,10 +1000,10 @@ fn immutable_reader_l5c_disabled_cache_preserves_results_without_storing() {
 }
 
 #[test]
-fn immutable_reader_l5c_oversized_block_is_not_cached_but_reads_correctly() {
+fn immutable_reader_lazy_block_cache_oversized_block_is_not_cached_but_reads_correctly() {
     let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-oversized-cache",
+        "reader-lazy-block-cache-oversized-cache",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -1010,7 +1014,7 @@ fn immutable_reader_l5c_oversized_block_is_not_cached_but_reads_correctly() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-oversized-cache"),
+        identity("reader-lazy-block-cache-oversized-cache"),
         source,
         TableReaderConfig::default(),
     )
@@ -1038,10 +1042,10 @@ fn immutable_reader_l5c_oversized_block_is_not_cached_but_reads_correctly() {
 }
 
 #[test]
-fn immutable_reader_l5c_cache_is_scoped_by_table_identity() {
+fn immutable_reader_block_cache_is_scoped_by_table_identity() {
     let rows = vec![put_row(b"alpha".to_vec(), 1)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-cache-table-a",
+        "reader-lazy-block-cache-cache-table-a",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -1054,7 +1058,7 @@ fn immutable_reader_l5c_cache_is_scoped_by_table_identity() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let left = ImmutableTableReader::open_source(
-        identity("reader-l5c-cache-table-a"),
+        identity("reader-lazy-block-cache-cache-table-a"),
         left_source,
         TableReaderConfig::default(),
     )
@@ -1062,7 +1066,7 @@ fn immutable_reader_l5c_cache_is_scoped_by_table_identity() {
     .with_block_cache(Arc::clone(&cache))
     .expect("attach left cache");
     let right = ImmutableTableReader::open_source(
-        identity("reader-l5c-cache-table-b"),
+        identity("reader-lazy-block-cache-cache-table-b"),
         right_source,
         TableReaderConfig::default(),
     )
@@ -1091,10 +1095,10 @@ fn immutable_reader_l5c_cache_is_scoped_by_table_identity() {
 }
 
 #[test]
-fn immutable_reader_l5c_table_cache_invalidation_forces_source_read() {
+fn immutable_reader_table_cache_invalidation_forces_source_read() {
     let rows = vec![put_row(b"alpha".to_vec(), 1)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-invalidate",
+        "reader-lazy-block-cache-invalidate",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -1103,7 +1107,7 @@ fn immutable_reader_l5c_table_cache_invalidation_forces_source_read() {
     let source_probe = source.clone();
     let cache = enabled_block_cache(4096);
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-invalidate"),
+        identity("reader-lazy-block-cache-invalidate"),
         source,
         TableReaderConfig::default(),
     )
@@ -1116,8 +1120,8 @@ fn immutable_reader_l5c_table_cache_invalidation_forces_source_read() {
         Some(table_rows[0].clone())
     );
     assert_eq!(source_probe.calls(), 5);
-    let table =
-        TableCacheTableId::new(b"reader-l5c-invalidate".as_slice()).expect("cache table id");
+    let table = TableCacheTableId::new(b"reader-lazy-block-cache-invalidate".as_slice())
+        .expect("cache table id");
     assert_eq!(cache.remove_table(&table), 1);
     assert_eq!(
         reader
@@ -1134,10 +1138,10 @@ fn immutable_reader_l5c_table_cache_invalidation_forces_source_read() {
 }
 
 #[test]
-fn immutable_reader_l5c_cached_block_is_validated_before_rows_are_yielded() {
+fn immutable_reader_cached_block_is_validated_before_rows_are_yielded() {
     let rows = vec![put_row(b"alpha".to_vec(), 1)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-corrupt-cache-hit",
+        "reader-lazy-block-cache-corrupt-cache-hit",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -1157,7 +1161,8 @@ fn immutable_reader_l5c_cached_block_is_validated_before_rows_are_yielded() {
 
     let cache = enabled_block_cache(4096);
     let cache_key = TableBlockCacheKey::new(
-        TableCacheTableId::new(b"reader-l5c-corrupt-cache-hit".as_slice()).expect("cache table id"),
+        TableCacheTableId::new(b"reader-lazy-block-cache-corrupt-cache-hit".as_slice())
+            .expect("cache table id"),
         TableBlockAddress::new(TableBlockCacheKind::Data, data_offset, data_len, Some(0))
             .expect("data block cache address"),
     );
@@ -1170,7 +1175,7 @@ fn immutable_reader_l5c_cached_block_is_validated_before_rows_are_yielded() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-corrupt-cache-hit"),
+        identity("reader-lazy-block-cache-corrupt-cache-hit"),
         source,
         TableReaderConfig::default(),
     )
@@ -1200,10 +1205,10 @@ fn immutable_reader_l5c_cached_block_is_validated_before_rows_are_yielded() {
 }
 
 #[test]
-fn immutable_reader_l5c_corrupt_block_is_not_inserted_after_decode_failure() {
+fn immutable_reader_corrupt_block_is_not_inserted_after_decode_failure() {
     let rows = vec![put_row(b"alpha".to_vec(), 1)];
     let (artifact, table_rows) = build_artifact(
-        "reader-l5c-corrupt-uncached",
+        "reader-lazy-block-cache-corrupt-uncached",
         &rows,
         1,
         TableCompression::Uncompressed,
@@ -1216,7 +1221,7 @@ fn immutable_reader_l5c_corrupt_block_is_not_inserted_after_decode_failure() {
     #[cfg(feature = "perf-trace")]
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let reader = ImmutableTableReader::open_source(
-        identity("reader-l5c-corrupt-uncached"),
+        identity("reader-lazy-block-cache-corrupt-uncached"),
         source,
         TableReaderConfig::default(),
     )
@@ -1241,15 +1246,604 @@ fn immutable_reader_l5c_corrupt_block_is_not_inserted_after_decode_failure() {
     }
 }
 
+#[test]
+fn immutable_reader_indexed_point_lookup_matches_eager_for_required_cases() {
+    let multi_key = physical_key(1, "reader", 0x20, b"multi".to_vec());
+    let high_key = physical_key(1, "reader", 0x20, vec![0x00, b'h', 0xff, b'z']);
+    let rows = vec![
+        put_row_for_key(high_key.clone(), 4, b"high".to_vec()),
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        tombstone_row(b"deleted".to_vec(), 6),
+        expired_row(b"expired".to_vec(), 7),
+        put_row_for_key(multi_key.clone(), 9, b"newer".to_vec()),
+        put_row_for_key(multi_key.clone(), 5, b"middle".to_vec()),
+        put_row_for_key(multi_key.clone(), 1, b"older".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+        put_row_for_key(
+            physical_key(2, "reader", 0x20, b"other-branch".to_vec()),
+            11,
+            b"last".to_vec(),
+        ),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-point-parity",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let bytes = artifact.bytes().to_vec();
+    let eager = ImmutableTableReader::open_bytes(
+        identity("reader-indexed-point-point-parity"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager point reader");
+    let bytes_lazy = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-point-parity"),
+        BytesTableSource::new(bytes.clone()),
+        TableReaderConfig::default(),
+    )
+    .expect("open bytes-backed lazy point reader");
+    let object_lazy = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-point-parity"),
+        TestSource::exact(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open object-backed lazy point reader");
+
+    let cases = vec![
+        (
+            "before-table-range",
+            physical_key(0, "reader", 0x20, b"before".to_vec()),
+            None,
+            None,
+        ),
+        (
+            "after-table-range",
+            physical_key(9, "reader", 0x20, b"after".to_vec()),
+            None,
+            None,
+        ),
+        (
+            "absent-inside-candidate-block",
+            physical_key(1, "reader", 0x20, b"charlie".to_vec()),
+            None,
+            None,
+        ),
+        (
+            "present-once",
+            physical_key(1, "reader", 0x20, b"bravo".to_vec()),
+            None,
+            None,
+        ),
+        ("present-multiple-versions", multi_key.clone(), None, None),
+        (
+            "version-bound",
+            multi_key.clone(),
+            Some(CommitVersion::new(5)),
+            None,
+        ),
+        (
+            "timestamp-bound",
+            multi_key.clone(),
+            None,
+            Some(Timestamp::from_micros(106)),
+        ),
+        (
+            "tombstone-row",
+            physical_key(1, "reader", 0x20, b"deleted".to_vec()),
+            None,
+            None,
+        ),
+        (
+            "expired-raw-row",
+            physical_key(1, "reader", 0x20, b"expired".to_vec()),
+            None,
+            None,
+        ),
+        (
+            "first-key-in-table",
+            table_rows
+                .first()
+                .expect("first row")
+                .physical_key()
+                .clone(),
+            None,
+            None,
+        ),
+        (
+            "last-key-in-table",
+            table_rows.last().expect("last row").physical_key().clone(),
+            None,
+            None,
+        ),
+        (
+            "first-key-in-non-first-block",
+            table_rows[2].physical_key().clone(),
+            None,
+            None,
+        ),
+        ("high-bit-and-embedded-zero-user-key", high_key, None, None),
+    ];
+
+    for (case, key, max_version, max_timestamp) in cases {
+        let (expected, _) = eager.seek_physical_key(&key, max_version, max_timestamp);
+        let expected_key = optional_table_row_key(expected);
+        for (reader_name, reader) in [
+            ("bytes-backed", &bytes_lazy),
+            ("object-backed", &object_lazy),
+        ] {
+            let (actual, visited) = reader.seek_physical_key(&key, max_version, max_timestamp);
+            assert_eq!(
+                optional_table_row_key(actual),
+                expected_key,
+                "{reader_name} lazy point case {case} diverged from eager reader"
+            );
+            if expected_key.is_some() {
+                assert!(
+                    visited > 0,
+                    "{reader_name} lazy point case {case} found a row without visiting it"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn immutable_reader_indexed_point_between_block_absent_matches_eager_without_materializing() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+        put_row(b"echo".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-indexed-point-between-blocks",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let bytes = artifact.bytes().to_vec();
+    let eager = ImmutableTableReader::open_bytes(
+        identity("reader-indexed-point-between-blocks"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager reader");
+    let source = TestSource::exact(bytes);
+    let source_probe = source.clone();
+    let lazy = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-between-blocks"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    let missing = physical_key(1, "reader", 0x20, b"bravo".to_vec());
+    let (expected, _) = eager.seek_physical_key(&missing, None, None);
+    let (actual, visited) = lazy
+        .try_seek_physical_key(&missing, None, None)
+        .expect("lazy point lookup");
+
+    assert_eq!(
+        optional_table_row_key(actual),
+        optional_table_row_key(expected)
+    );
+    assert_eq!(visited, 0);
+    assert_eq!(source_probe.calls(), 4);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_indexed_point_out_of_range_miss_reads_zero_data_blocks() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-indexed-point-out-of-range",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-out-of-range"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    assert_eq!(source_probe.calls(), 4);
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    for key in [
+        physical_key(0, "reader", 0x20, b"before".to_vec()),
+        physical_key(9, "reader", 0x20, b"after".to_vec()),
+    ] {
+        let (row, visited) = reader.seek_physical_key(&key, None, None);
+        assert!(row.is_none());
+        assert_eq!(visited, 0);
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(source_probe.calls(), 4);
+    assert_eq!(perf.table_seeks(), 2);
+    assert_eq!(perf.table_data_block_reads(), 0);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_point_rows_visited(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_indexed_point_present_hit_reads_one_block_then_uses_cache() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-present-cache",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let cache = enabled_block_cache(4096);
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-present-cache"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach cache");
+    let target = table_rows[1].physical_key().clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (cold, cold_visited) = reader.seek_physical_key(&target, None, None);
+    assert_eq!(cold, Some(table_rows[1].clone()));
+    assert_eq!(cold_visited, 1);
+    assert_eq!(source_probe.calls(), 5);
+    let (warm, warm_visited) = reader.seek_physical_key(&target, None, None);
+    assert_eq!(warm, Some(table_rows[1].clone()));
+    assert_eq!(warm_visited, 1);
+    assert_eq!(source_probe.calls(), 5);
+
+    let stats = cache.stats();
+    assert_eq!(stats.misses(), 1);
+    assert_eq!(stats.inserts(), 1);
+    assert_eq!(stats.hits(), 1);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_seeks(), 2);
+    assert_eq!(perf.table_data_block_reads(), 1);
+    assert_eq!(perf.table_cache_misses(), 1);
+    assert_eq!(perf.table_cache_inserts(), 1);
+    assert_eq!(perf.table_cache_hits(), 1);
+    assert_eq!(perf.table_data_block_decodes(), 2);
+    assert_eq!(perf.table_rows_decoded(), 2);
+    assert_eq!(perf.table_point_rows_visited(), 2);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_indexed_point_absent_inside_candidate_block_reads_one_block_only() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"charlie".to_vec(), 2),
+        put_row(b"delta".to_vec(), 3),
+        put_row(b"echo".to_vec(), 4),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-indexed-point-absent-candidate",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-absent-candidate"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    assert_eq!(source_probe.calls(), 4);
+    let missing = physical_key(1, "reader", 0x20, b"bravo".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = reader.seek_physical_key(&missing, None, None);
+
+    assert!(row.is_none());
+    assert_eq!(visited, 1);
+    assert_eq!(source_probe.calls(), 5);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_data_block_reads(), 1);
+    assert_eq!(perf.table_data_block_decodes(), 1);
+    assert_eq!(perf.table_rows_decoded(), 2);
+    assert_eq!(perf.table_point_rows_visited(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_indexed_point_rows_visited_are_bounded_to_candidate_key_chain() {
+    let rows = (0..100)
+        .map(|index| {
+            put_row(
+                format!("key-{index:03}").into_bytes(),
+                u64::try_from(index + 1).expect("version fits u64"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-bounded-visits",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-bounded-visits"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    let target = table_rows[50].physical_key().clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = reader.seek_physical_key(&target, None, None);
+    assert_eq!(row, Some(table_rows[50].clone()));
+    assert_eq!(visited, 1);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_data_block_reads(), 1);
+    assert_eq!(perf.table_data_block_decodes(), 1);
+    assert_eq!(perf.table_rows_decoded(), 4);
+    assert_eq!(perf.table_point_rows_visited(), 1);
+}
+
+#[test]
+fn immutable_reader_indexed_point_physical_key_chain_can_cross_block_boundaries() {
+    let split_key = physical_key(1, "reader", 0x20, b"split".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(split_key.clone(), 9, b"v9".to_vec()),
+        put_row_for_key(split_key.clone(), 7, b"v7".to_vec()),
+        put_row_for_key(split_key.clone(), 5, b"v5".to_vec()),
+        put_row_for_key(split_key.clone(), 3, b"v3".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-cross-block-chain",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let bytes = artifact.bytes().to_vec();
+    let eager = ImmutableTableReader::open_bytes(
+        identity("reader-indexed-point-cross-block-chain"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager reader");
+    let lazy = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-cross-block-chain"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    let version_five = table_rows
+        .iter()
+        .find(|row| row.physical_key() == &split_key && row.commit_version().as_u64() == 5)
+        .expect("version five row")
+        .clone();
+    let version_three = table_rows
+        .iter()
+        .find(|row| row.physical_key() == &split_key && row.commit_version().as_u64() == 3)
+        .expect("version three row")
+        .clone();
+
+    for (max_version, max_timestamp, expected) in [
+        (
+            Some(CommitVersion::new(6)),
+            None,
+            Some(version_five.clone()),
+        ),
+        (None, Some(Timestamp::from_micros(104)), Some(version_three)),
+        (Some(CommitVersion::new(2)), None, None),
+    ] {
+        let (eager_row, _) = eager.seek_physical_key(&split_key, max_version, max_timestamp);
+        let (lazy_row, _) = lazy.seek_physical_key(&split_key, max_version, max_timestamp);
+        assert_eq!(eager_row, expected);
+        assert_eq!(lazy_row, expected);
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_indexed_point_timestamp_bound_walks_only_target_chain_blocks() {
+    let split_key = physical_key(1, "reader", 0x20, b"split".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(split_key.clone(), 9, b"v9".to_vec()),
+        put_row_for_key(split_key.clone(), 7, b"v7".to_vec()),
+        put_row_for_key(split_key.clone(), 5, b"v5".to_vec()),
+        put_row_for_key(split_key.clone(), 3, b"v3".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-cross-block-timestamp",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-cross-block-timestamp"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    let expected = table_rows
+        .iter()
+        .find(|row| row.physical_key() == &split_key && row.commit_version().as_u64() == 3)
+        .expect("version three row")
+        .clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) =
+        reader.seek_physical_key(&split_key, None, Some(Timestamp::from_micros(104)));
+
+    assert_eq!(row, Some(expected));
+    assert_eq!(visited, 4);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_data_block_reads(), 3);
+    assert_eq!(perf.table_data_block_decodes(), 3);
+    assert_eq!(perf.table_rows_decoded(), 6);
+    assert_eq!(perf.table_point_rows_visited(), 4);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn immutable_reader_indexed_point_materialized_lazy_rows_are_reused_for_physical_seek() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-materialized",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-materialized"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    assert_eq!(reader.rows(), table_rows.as_slice());
+    assert_eq!(source_probe.calls(), 7);
+    let target = table_rows[1].physical_key().clone();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (row, visited) = reader.seek_physical_key(&target, None, None);
+
+    assert_eq!(row, Some(table_rows[1].clone()));
+    assert_eq!(visited, 1);
+    assert_eq!(source_probe.calls(), 7);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_seeks(), 1);
+    assert_eq!(perf.table_data_block_reads(), 0);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_point_rows_visited(), 1);
+}
+
+#[test]
+fn immutable_reader_indexed_point_corrupt_candidate_block_errors_but_range_miss_does_not_read() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-indexed-point-corrupt-candidate",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let mut bytes = artifact.bytes().to_vec();
+    let first_data_payload_offset = MAX_TABLE_HEADER_SIZE + 12;
+    bytes[first_data_payload_offset] ^= 0xff;
+    let source = TestSource::exact(bytes);
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-corrupt-candidate"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader with corrupt data block");
+    assert_eq!(source_probe.calls(), 4);
+
+    let out_of_range = physical_key(0, "reader", 0x20, b"before".to_vec());
+    assert_eq!(
+        reader.try_seek_physical_key(&out_of_range, None, None),
+        Ok((None, 0))
+    );
+    assert_eq!(source_probe.calls(), 4);
+
+    let target = physical_key(1, "reader", 0x20, b"alpha".to_vec());
+    assert!(matches!(
+        reader.try_seek_physical_key(&target, None, None),
+        Err(TableRuntimeError::DecodeFormat { .. })
+    ));
+    assert_eq!(source_probe.calls(), 5);
+}
+
+#[test]
+fn immutable_reader_indexed_point_exact_encoded_key_lookup_stays_separate_from_physical_seek() {
+    let versioned_key = physical_key(1, "reader", 0x20, b"versioned".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(versioned_key.clone(), 9, b"newer".to_vec()),
+        put_row_for_key(versioned_key.clone(), 2, b"older".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-point-exact-vs-physical",
+        &rows,
+        1,
+        TableCompression::Uncompressed,
+    );
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-exact-vs-physical"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    let newer = table_rows
+        .iter()
+        .find(|row| row.physical_key() == &versioned_key && row.commit_version().as_u64() == 9)
+        .expect("newer row")
+        .clone();
+    let older = table_rows
+        .iter()
+        .find(|row| row.physical_key() == &versioned_key && row.commit_version().as_u64() == 2)
+        .expect("older row")
+        .clone();
+
+    assert_eq!(
+        reader.try_get_exact(older.key()).expect("exact lookup"),
+        Some(older.clone())
+    );
+    assert_eq!(
+        reader.seek_physical_key(&versioned_key, None, None).0,
+        Some(newer)
+    );
+    assert_eq!(
+        reader
+            .seek_physical_key(&versioned_key, Some(CommitVersion::new(2)), None)
+            .0,
+        Some(older)
+    );
+}
+
 #[cfg(feature = "perf-trace")]
 #[derive(Clone, Copy)]
-struct L5bLazyOpenExpectation {
+struct LazyOpenExpectation {
     source_calls: usize,
     metadata_frames_read: bool,
 }
 
 #[cfg(feature = "perf-trace")]
-fn assert_l5b_lazy_open_runtime_facts(reader: &ImmutableTableReader<'_>) {
+fn assert_lazy_open_runtime_facts(reader: &ImmutableTableReader<'_>) {
     assert_eq!(
         reader.runtime_facts().open_mode(),
         TableReaderOpenMode::LazySource
@@ -1263,7 +1857,7 @@ fn assert_l5b_lazy_open_runtime_facts(reader: &ImmutableTableReader<'_>) {
 }
 
 #[cfg(feature = "perf-trace")]
-fn assert_l5b_lazy_open_perf_snapshot(
+fn assert_lazy_open_perf_snapshot(
     snapshot: &crate::observability::perf_trace::StoragePerfSnapshot,
     metadata_frames_read: bool,
 ) {
@@ -1286,17 +1880,17 @@ fn assert_l5b_lazy_open_perf_snapshot(
 }
 
 #[cfg(feature = "perf-trace")]
-fn assert_l5b_lazy_decode_error_before_data_reads(
+fn assert_lazy_decode_error_before_data_reads(
     label: &'static str,
     bytes: Vec<u8>,
-    expectation: L5bLazyOpenExpectation,
+    expectation: LazyOpenExpectation,
 ) {
     let source = TestSource::exact(bytes);
     let source_probe = source.clone();
     let _capture = crate::observability::perf_trace::begin_test_capture();
 
     let error = ImmutableTableReader::open_source(
-        TableIdentity::new(format!("reader-l5b-{label}")).expect("identity"),
+        TableIdentity::new(format!("reader-lazy-open-{label}")).expect("identity"),
         source,
         TableReaderConfig::default(),
     )
@@ -1304,7 +1898,7 @@ fn assert_l5b_lazy_decode_error_before_data_reads(
 
     assert!(matches!(error, TableRuntimeError::DecodeFormat { .. }));
     assert_eq!(source_probe.calls(), expectation.source_calls);
-    assert_l5b_lazy_open_perf_snapshot(
+    assert_lazy_open_perf_snapshot(
         &crate::observability::perf_trace::snapshot(),
         expectation.metadata_frames_read,
     );
@@ -1357,13 +1951,13 @@ fn immutable_reader_query_perf_counters_record_seek_and_cursor_work() {
         put_row(b"zulu".to_vec(), 10),
     ];
     let (artifact, _) = build_artifact(
-        "reader-l5a-query-counters",
+        "reader-query-query-counters",
         &rows,
         2,
         TableCompression::Uncompressed,
     );
     let reader = ImmutableTableReader::open_bytes(
-        identity("reader-l5a-query-counters"),
+        identity("reader-query-query-counters"),
         artifact.into_bytes(),
         TableReaderConfig::default(),
     )

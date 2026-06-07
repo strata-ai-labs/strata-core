@@ -18,7 +18,7 @@ fn table_runtime_property_harness_is_not_a_placeholder() {
     assert!(source.contains("table_block_cache_cases"));
     assert!(source.contains("table_bloom_filter_cases"));
     assert!(source.contains("table_compaction_cases"));
-    assert!(source.contains("l5a_perf_trace_cases"));
+    assert!(source.contains("table_perf_trace_cases"));
     assert!(!source.contains("src/table/mod.rs\").is_file()"));
 }
 
@@ -66,9 +66,9 @@ fn table_runtime_property_harness_runs_scaffold_contract() {
                 ));
             }
             #[cfg(feature = "perf-trace")]
-            if outcome.l5a_perf_trace_cases() == 0 {
+            if outcome.table_perf_trace_cases() == 0 {
                 return Err(TestCaseError::fail(
-                    "table runtime scaffold contract did not exercise L5A perf-trace cases",
+                    "table runtime scaffold contract did not exercise table perf-trace perf-trace cases",
                 ));
             }
             Ok(())

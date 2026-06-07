@@ -62,6 +62,10 @@ impl TableInternalKeyBytes {
         &self.bytes
     }
 
+    pub(crate) fn physical_key_bytes(&self) -> &[u8] {
+        table_internal_physical_key_bytes(&self.bytes)
+    }
+
     pub(crate) fn into_vec(self) -> Vec<u8> {
         self.bytes
     }
@@ -356,7 +360,7 @@ impl TableKeyBounds {
                 lower,
                 upper,
             } => {
-                let physical_key = table_internal_physical_key_bytes(key);
+                let physical_key = key.physical_key_bytes();
                 physical_key.starts_with(physical_prefix)
                     && physical_lower_contains(lower, physical_key)
                     && physical_upper_contains(upper, physical_key)
@@ -399,7 +403,7 @@ impl TableKeyBounds {
                 upper,
                 ..
             } => {
-                let physical_key = table_internal_physical_key_bytes(key);
+                let physical_key = key.physical_key_bytes();
                 (!physical_key.starts_with(physical_prefix)
                     && physical_key > physical_prefix.as_slice())
                     || physical_upper_excludes_current_and_following(upper, physical_key)
@@ -536,10 +540,11 @@ fn physical_upper_excludes_current_and_following(
     }
 }
 
-fn table_internal_physical_key_bytes(key: &TableInternalKeyBytes) -> &[u8] {
-    key.as_slice()
+pub(crate) fn table_internal_physical_key_bytes(encoded_key: &[u8]) -> &[u8] {
+    encoded_key
         .split_at(
-            key.len()
+            encoded_key
+                .len()
                 .saturating_sub(TABLE_INTERNAL_KEY_COMMIT_SUFFIX_BYTES),
         )
         .0
