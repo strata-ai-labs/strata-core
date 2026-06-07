@@ -402,7 +402,8 @@ impl StoragePerfSnapshot {
 #[cfg(feature = "perf-trace")]
 pub(crate) type PerfTraceTimer = Instant;
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) type PerfTraceTimer = ();
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PerfTraceTimer;
 
 #[cfg(feature = "perf-trace")]
 static API_COMMIT_MAP_NS: AtomicU64 = AtomicU64::new(0);
@@ -708,7 +709,9 @@ pub fn snapshot() -> StoragePerfSnapshot {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn start_timer() -> PerfTraceTimer {}
+pub(crate) fn start_timer() -> PerfTraceTimer {
+    PerfTraceTimer
+}
 
 #[cfg(feature = "perf-trace")]
 pub(crate) fn start_timer() -> PerfTraceTimer {

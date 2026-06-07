@@ -164,22 +164,22 @@ fn table_runtime_source_does_not_use_old_table_builder_vocabulary() {
 #[test]
 fn table_runtime_source_does_not_create_process_global_cache_state() {
     let root = common::crate_root();
-    let forbidden = [
-        "lazy_static",
-        "once_cell",
-        "OnceLock",
-        "static mut",
-        "GLOBAL_CACHE",
-        "PROCESS_CACHE",
-    ];
 
     for file in table_runtime_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read table runtime source");
-        for needle in forbidden {
+        let lines = text.lines().collect::<Vec<_>>();
+        for (line_number, line) in lines.iter().enumerate() {
             assert!(
-                !text.contains(needle),
-                "{} creates process-global table cache state via {needle:?}",
-                file.strip_prefix(&root).unwrap_or(&file).display()
+                !contains_process_global_cache_state(line),
+                "{}:{} creates process-global table cache state: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
+            );
+            assert!(
+                !contains_static_cache_declaration(&lines, line_number),
+                "{}:{} creates process-global table cache declaration: {line}",
+                file.strip_prefix(&root).unwrap_or(&file).display(),
+                line_number + 1
             );
         }
     }
@@ -417,6 +417,46 @@ fn table_runtime_dependency_guard_catches_cache_identity_terms() {
             "guard should reject {line:?}"
         );
     }
+
+    for line in [
+        "lazy_static! { static ref CACHE: TableBlockCache = new_cache(); }",
+        "static TABLE_CACHE: OnceLock<TableBlockCache> = OnceLock::new();",
+        "static TABLE_CACHE: LazyLock<TableBlockCache> = LazyLock::new(new_cache);",
+        "static mut GLOBAL_CACHE: Option<TableBlockCache> = None;",
+        "let _ = GLOBAL_CACHE;",
+        "let _ = PROCESS_CACHE;",
+    ] {
+        assert!(
+            contains_process_global_cache_state(line),
+            "guard should reject {line:?}"
+        );
+    }
+
+    for line in [
+        "use std::sync::{Arc, OnceLock};",
+        "rows: OnceLock<TableRuntimeResult<Vec<TableRow>>>,",
+        "let local = OnceLock::new();",
+    ] {
+        assert!(
+            !contains_process_global_cache_state(line),
+            "guard should allow reader-local memoization {line:?}"
+        );
+    }
+
+    let split_static_once_lock = [
+        "static TABLE_CACHE:",
+        "    OnceLock<TableBlockCache> = OnceLock::new();",
+    ];
+    assert!(
+        contains_static_cache_declaration(&split_static_once_lock, 0),
+        "guard should reject split static OnceLock cache declarations"
+    );
+
+    let split_reader_field = ["rows:", "    OnceLock<TableRuntimeResult<Vec<TableRow>>>,"];
+    assert!(
+        !contains_static_cache_declaration(&split_reader_field, 0),
+        "guard should allow split reader-local OnceLock fields"
+    );
 }
 
 #[test]
@@ -612,6 +652,47 @@ fn contains_forbidden_unsafe_or_old_cache_identity(line: &str) -> bool {
     ["unsafe", "file_path_hash", "file_id", "global_cache"]
         .iter()
         .any(|term| normalized.contains(term))
+}
+
+fn contains_process_global_cache_state(line: &str) -> bool {
+    let normalized = line.to_ascii_lowercase();
+    normalized.contains("lazy_static")
+        || normalized.contains("once_cell")
+        || normalized.contains("static mut")
+        || normalized.contains("global_cache")
+        || normalized.contains("process_cache")
+        || (starts_static_declaration(&normalized)
+            && (normalized.contains("oncelock") || normalized.contains("lazylock")))
+}
+
+fn contains_static_cache_declaration(lines: &[&str], line_number: usize) -> bool {
+    let mut declaration = lines[line_number].to_ascii_lowercase();
+    if !starts_static_declaration(&declaration) {
+        return false;
+    }
+
+    for next in lines.iter().skip(line_number + 1).take(4) {
+        declaration.push(' ');
+        declaration.push_str(&next.to_ascii_lowercase());
+        if next.contains(';') || next.contains('{') {
+            break;
+        }
+    }
+
+    declaration.contains("oncelock")
+        || declaration.contains("lazylock")
+        || declaration.contains("once_cell")
+        || declaration.contains("tableblockcache")
+        || declaration.contains("cache")
+}
+
+fn starts_static_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("static ")
+        || trimmed.starts_with("pub static ")
+        || trimmed.starts_with("pub(crate) static ")
+        || trimmed.starts_with("pub(super) static ")
+        || (trimmed.starts_with("pub(in ") && trimmed.contains(") static "))
 }
 
 fn contains_forbidden_compaction_policy_vocabulary(line: &str) -> bool {
