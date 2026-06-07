@@ -62,7 +62,7 @@ pub(crate) use table::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
     decode_table_footer_metadata, decode_table_header, encode_immutable_table,
     encode_immutable_table_with_block_compressions, ImmutableTable, ImmutableTableMetadata,
-    TableCompression, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES,
+    TableCompression, TableIndexEntry, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES,
     MAX_TABLE_DATA_BLOCKS, MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE, MAX_TABLE_KEY_BYTES,
     MAX_TABLE_ROWS, MAX_TABLE_ROW_BYTES,
 };

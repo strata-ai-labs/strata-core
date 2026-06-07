@@ -101,10 +101,15 @@ fn cache_key_and_address_validation_is_structural() {
         table,
         TableBlockAddress::new(TableBlockCacheKind::Data, 9, 4, Some(8)).expect("address"),
     );
+    let same_offset_same_length_different_ordinal = TableBlockCacheKey::new(
+        cache_id("table-a"),
+        TableBlockAddress::new(TableBlockCacheKind::Data, 8, 4, Some(9)).expect("address"),
+    );
     assert_ne!(data, index);
     assert_ne!(data, accelerator);
     assert_ne!(data, different_length);
     assert_ne!(data, different_offset_same_ordinal);
+    assert_ne!(data, same_offset_same_length_different_ordinal);
     assert_ne!(index, accelerator);
     assert_eq!(data.address().kind(), TableBlockCacheKind::Data);
     assert_eq!(data.address().offset(), 8);

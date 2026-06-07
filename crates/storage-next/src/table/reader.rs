@@ -4,13 +4,14 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use super::{
-    BoundedTableCursor, TableCommitRange, TableIdentity, TableInternalKeyBytes, TableKeyBounds,
-    TableKeyRange, TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
-    TableRuntimeFacts, TableRuntimeResult,
+    BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
+    TableBlockCacheKind, TableCacheTableId, TableCommitRange, TableIdentity, TableInternalKeyBytes,
+    TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
+    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
-    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata,
+    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata, TableIndexEntry,
     MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
 use crate::observability::perf_trace;
@@ -113,6 +114,24 @@ impl TableReaderRows<'_> {
             Self::Lazy(rows) => rows.into_materialized().map(|rows| (rows, true)),
         }
     }
+
+    fn try_get_exact(&self, key: &TableInternalKeyBytes) -> TableRuntimeResult<Option<TableRow>> {
+        match self {
+            Self::Eager(rows) => Ok(find_exact_in_rows(rows, key)),
+            Self::Lazy(rows) => rows.try_get_exact(key),
+        }
+    }
+
+    fn with_block_cache(&mut self, table: TableCacheTableId, cache: Arc<TableBlockCache>) -> bool {
+        match self {
+            Self::Eager(_) => false,
+            Self::Lazy(rows) => {
+                let enabled = cache.enabled();
+                rows.with_block_cache(table, cache);
+                enabled
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,7 +143,11 @@ struct LazyTableRows<'a> {
 impl<'a> LazyTableRows<'a> {
     fn new(source: SharedTableSource<'a>, metadata: ImmutableTableMetadata) -> Self {
         Self {
-            state: LazyTableState { source, metadata },
+            state: LazyTableState {
+                source,
+                metadata,
+                cache: None,
+            },
             rows: OnceLock::new(),
         }
     }
@@ -132,18 +155,36 @@ impl<'a> LazyTableRows<'a> {
     fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
         let rows = self
             .rows
-            .get_or_init(|| read_and_validate_rows(&self.state.source, &self.state.metadata));
+            .get_or_init(|| read_and_validate_rows(&self.state));
         match rows {
             Ok(rows) => Ok(rows.as_slice()),
             Err(error) => Err(error.clone()),
         }
     }
 
+    fn try_get_exact(&self, key: &TableInternalKeyBytes) -> TableRuntimeResult<Option<TableRow>> {
+        if let Some(rows) = self.rows.get() {
+            return match rows {
+                Ok(rows) => Ok(find_exact_in_rows(rows, key)),
+                Err(error) => Err(error.clone()),
+            };
+        }
+        let Some(block_index) = find_index_entry_for_key(&self.state.metadata, key) else {
+            return Ok(None);
+        };
+        let rows = self.state.read_data_block_rows(block_index)?;
+        Ok(find_exact_in_rows(&rows, key))
+    }
+
     fn into_materialized(self) -> TableRuntimeResult<Vec<TableRow>> {
         match self.rows.into_inner() {
             Some(rows) => rows,
-            None => read_and_validate_rows(&self.state.source, &self.state.metadata),
+            None => read_and_validate_rows(&self.state),
         }
+    }
+
+    fn with_block_cache(&mut self, table: TableCacheTableId, cache: Arc<TableBlockCache>) {
+        self.state.cache = Some(LazyTableBlockCache { table, cache });
     }
 }
 
@@ -151,6 +192,79 @@ impl<'a> LazyTableRows<'a> {
 struct LazyTableState<'a> {
     source: SharedTableSource<'a>,
     metadata: ImmutableTableMetadata,
+    cache: Option<LazyTableBlockCache>,
+}
+
+impl LazyTableState<'_> {
+    fn read_data_block_rows(&self, block_index: usize) -> TableRuntimeResult<Vec<TableRow>> {
+        let entry = self.metadata.index().entries().get(block_index).ok_or(
+            TableRuntimeError::InvalidRange {
+                field: "data_block_index",
+            },
+        )?;
+        let frame = self.read_data_block_frame(entry, block_index)?;
+        let block = decode_immutable_table_data_block(entry, frame.bytes.as_ref())
+            .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+        perf_trace::record_table_data_blocks_decoded(1, block.row_count());
+        if let Some((cache, key)) = frame.cache_insert {
+            cache.insert(key, Arc::clone(&frame.bytes))?;
+        }
+        Ok(block.rows().cloned().map(TableRow::new).collect())
+    }
+
+    fn read_data_block_frame(
+        &self,
+        entry: &TableIndexEntry,
+        block_index: usize,
+    ) -> TableRuntimeResult<DataBlockFrame> {
+        let cache_key = self
+            .cache
+            .as_ref()
+            .map(|cache| cache_key_for_entry(&cache.table, entry, block_index))
+            .transpose()?;
+        if let (Some(cache), Some(key)) = (&self.cache, &cache_key) {
+            if let Some(bytes) = cache.cache.get(key) {
+                return Ok(DataBlockFrame {
+                    bytes,
+                    cache_insert: None,
+                });
+            }
+        }
+
+        let frame_len = usize::try_from(entry.block_frame_len()).map_err(|_| {
+            TableRuntimeError::InvalidRange {
+                field: "block_frame_len",
+            }
+        })?;
+        let frame_bytes = read_exact_source(
+            &self.source,
+            entry.block_offset(),
+            frame_len,
+            "short table data block read",
+        )?;
+        perf_trace::record_table_data_block_read(frame_bytes.len());
+        let bytes = Arc::<[u8]>::from(frame_bytes);
+        Ok(DataBlockFrame {
+            bytes,
+            cache_insert: self
+                .cache
+                .as_ref()
+                .zip(cache_key)
+                .map(|(cache, key)| (Arc::clone(&cache.cache), key)),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LazyTableBlockCache {
+    table: TableCacheTableId,
+    cache: Arc<TableBlockCache>,
+}
+
+#[derive(Clone, Debug)]
+struct DataBlockFrame {
+    bytes: Arc<[u8]>,
+    cache_insert: Option<(Arc<TableBlockCache>, TableBlockCacheKey)>,
 }
 
 #[derive(Clone)]
@@ -225,6 +339,15 @@ impl TableReaderRuntimeFacts {
             data_blocks_loaded: 0,
             rows_materialized: 0,
         }
+    }
+
+    const fn with_cache_enabled(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.flags |= RUNTIME_FACT_CACHE_ENABLED;
+        } else {
+            self.flags &= !RUNTIME_FACT_CACHE_ENABLED;
+        }
+        self
     }
 
     pub(crate) const fn open_mode(self) -> TableReaderOpenMode {
@@ -327,10 +450,15 @@ impl<'a> ImmutableTableReader<'a> {
     }
 
     pub(crate) fn get_exact(&self, key: &TableInternalKeyBytes) -> Option<TableRow> {
-        let rows = self.rows();
-        rows.binary_search_by(|row| row.key().cmp(key))
-            .ok()
-            .map(|index| rows[index].clone())
+        self.try_get_exact(key)
+            .expect("lazy table exact lookup failed")
+    }
+
+    pub(crate) fn try_get_exact(
+        &self,
+        key: &TableInternalKeyBytes,
+    ) -> TableRuntimeResult<Option<TableRow>> {
+        self.rows.try_get_exact(key)
     }
 
     pub(crate) fn seek_physical_key(
@@ -370,6 +498,16 @@ impl<'a> ImmutableTableReader<'a> {
             runtime_facts,
             rows: TableReaderRows::Eager(rows),
         })
+    }
+
+    pub(crate) fn with_block_cache(
+        mut self,
+        cache: Arc<TableBlockCache>,
+    ) -> TableRuntimeResult<Self> {
+        let table = TableCacheTableId::new(self.facts.identity().as_str().as_bytes())?;
+        let cache_enabled = self.rows.with_block_cache(table, cache);
+        self.runtime_facts = self.runtime_facts.with_cache_enabled(cache_enabled);
+        Ok(self)
     }
 }
 
@@ -565,39 +703,52 @@ fn read_table_metadata(
     .map_err(|source| TableRuntimeError::DecodeFormat { source })
 }
 
-fn read_rows_from_metadata(
-    source: &impl TableByteSource,
-    metadata: &ImmutableTableMetadata,
-) -> TableRuntimeResult<Vec<TableRow>> {
+fn read_rows_from_metadata(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec<TableRow>> {
     let mut rows = Vec::new();
-    for entry in metadata.index().entries() {
-        let frame_len = usize::try_from(entry.block_frame_len()).map_err(|_| {
-            TableRuntimeError::InvalidRange {
-                field: "block_frame_len",
-            }
-        })?;
-        let frame_bytes = read_exact_source(
-            source,
-            entry.block_offset(),
-            frame_len,
-            "short table data block read",
-        )?;
-        perf_trace::record_table_data_block_read(frame_bytes.len());
-        let block = decode_immutable_table_data_block(entry, &frame_bytes)
-            .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
-        perf_trace::record_table_data_blocks_decoded(1, block.row_count());
-        rows.extend(block.rows().cloned().map(TableRow::new));
+    for block_index in 0..state.metadata.index().entries().len() {
+        rows.extend(state.read_data_block_rows(block_index)?);
     }
     Ok(rows)
 }
 
-fn read_and_validate_rows(
-    source: &impl TableByteSource,
-    metadata: &ImmutableTableMetadata,
-) -> TableRuntimeResult<Vec<TableRow>> {
-    let rows = read_rows_from_metadata(source, metadata)?;
+fn read_and_validate_rows(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec<TableRow>> {
+    let rows = read_rows_from_metadata(state)?;
     super::validate_strictly_sorted_unique_rows(&rows)?;
     Ok(rows)
+}
+
+fn find_exact_in_rows(rows: &[TableRow], key: &TableInternalKeyBytes) -> Option<TableRow> {
+    rows.binary_search_by(|row| row.key().cmp(key))
+        .ok()
+        .map(|index| rows[index].clone())
+}
+
+fn find_index_entry_for_key(
+    metadata: &ImmutableTableMetadata,
+    key: &TableInternalKeyBytes,
+) -> Option<usize> {
+    let key = key.as_slice();
+    let entries = metadata.index().entries();
+    let index = entries.partition_point(|entry| entry.last_key_bytes() < key);
+    let entry = entries.get(index)?;
+    (entry.first_key_bytes() <= key).then_some(index)
+}
+
+fn cache_key_for_entry(
+    table: &TableCacheTableId,
+    entry: &TableIndexEntry,
+    block_index: usize,
+) -> TableRuntimeResult<TableBlockCacheKey> {
+    let ordinal = u32::try_from(block_index).map_err(|_| TableRuntimeError::InvalidRange {
+        field: "data_block_index",
+    })?;
+    let address = TableBlockAddress::new(
+        TableBlockCacheKind::Data,
+        entry.block_offset(),
+        entry.block_frame_len(),
+        Some(ordinal),
+    )?;
+    Ok(TableBlockCacheKey::new(table.clone(), address))
 }
 
 fn table_facts_from_metadata(

@@ -884,10 +884,10 @@ fn branch_borrowed_range_scan_applies_visible_limit_like_read_view() {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "single fixture pins source-order ties across active, frozen, L0, and L1"
+    reason = "single fixture pins competing source order across active, frozen, L0, and L1"
 )]
 #[test]
-fn branch_borrowed_scan_preserves_source_order_ties() {
+fn branch_borrowed_scan_preserves_competing_source_order() {
     let branch = branch_id(113);
     let mut state = BranchLocalState::empty(branch);
     let frozen_active_tie = storage_row_with(
@@ -901,8 +901,8 @@ fn branch_borrowed_scan_preserves_source_order_ties() {
     let active_winner = storage_row_with(
         branch,
         b"tie-active".to_vec(),
-        10,
-        10,
+        11,
+        11,
         Timestamp::EPOCH,
         b"active-wins".to_vec(),
     );
@@ -945,16 +945,16 @@ fn branch_borrowed_scan_preserves_source_order_ties() {
                 storage_row_with(
                     branch,
                     b"tie-active".to_vec(),
-                    10,
-                    10,
+                    9,
+                    9,
                     Timestamp::EPOCH,
                     b"l0-loses-active".to_vec(),
                 ),
                 storage_row_with(
                     branch,
                     b"tie-frozen-owned".to_vec(),
-                    8,
-                    8,
+                    7,
+                    7,
                     Timestamp::EPOCH,
                     b"l0-loses-frozen".to_vec(),
                 ),
@@ -972,8 +972,8 @@ fn branch_borrowed_scan_preserves_source_order_ties() {
                 vec![storage_row_with(
                     branch,
                     b"tie-l0-l1".to_vec(),
-                    7,
-                    7,
+                    6,
+                    6,
                     Timestamp::EPOCH,
                     b"l1-loses".to_vec(),
                 )],

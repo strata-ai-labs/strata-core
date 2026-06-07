@@ -253,6 +253,10 @@ impl TableBlockCache {
         Self::new(config)
     }
 
+    pub(crate) fn enabled(&self) -> bool {
+        self.lock_state().enabled
+    }
+
     pub(crate) fn get(&self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
         let mut state = self.lock_state();
         let bytes = state.entries.get(key).cloned();

@@ -11,6 +11,7 @@ pub(crate) use artifact::{
     encode_immutable_table, encode_immutable_table_with_block_compressions, ImmutableTable,
     ImmutableTableMetadata,
 };
+pub(crate) use index::TableIndexEntry;
 pub(crate) const MAX_TABLE_HEADER_SIZE: usize = TABLE_HEADER_SIZE;
 pub(crate) const MAX_TABLE_FOOTER_SIZE: usize = TABLE_FOOTER_SIZE;
 
