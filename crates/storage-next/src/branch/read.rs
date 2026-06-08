@@ -742,6 +742,33 @@ impl BranchReadView {
         })
     }
 
+    pub(in crate::branch) fn new_from_validated_state(
+        branch_id: BranchId,
+        active: MutableTable,
+        frozen: Vec<FrozenTable>,
+        owned_levels: Vec<Vec<BranchOwnedTable>>,
+        inherited_layers: Vec<BranchInheritedLayer>,
+        facts: BranchStateFacts,
+    ) -> BranchRuntimeResult<Self> {
+        validate_read_view_source_counts(
+            branch_id,
+            &active,
+            &frozen,
+            &owned_levels,
+            &inherited_layers,
+            facts,
+        )?;
+        Ok(Self {
+            branch_id,
+            active,
+            frozen,
+            owned_levels,
+            inherited_layers,
+            facts,
+            timestamp_coverage: BranchTimestampCoverage::unknown(),
+        })
+    }
+
     pub(crate) const fn branch_id(&self) -> BranchId {
         self.branch_id
     }
@@ -2718,33 +2745,14 @@ fn validate_read_view_inputs(
     inherited_layers: &[BranchInheritedLayer],
     facts: BranchStateFacts,
 ) -> BranchRuntimeResult<()> {
-    if branch_id != facts.branch_id() {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "read view branch id must match branch facts",
-        });
-    }
-    if facts.active_rows()
-        != u64::try_from(active.len()).expect("active read-view row count fits in u64")
-    {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "read view active row count must match branch facts",
-        });
-    }
-    if facts.frozen_table_count() != frozen.len() {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "read view frozen table count must match branch facts",
-        });
-    }
-    if facts.owned_table_count() != owned_table_count(owned_levels) {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "read view owned table count must match branch facts",
-        });
-    }
-    if facts.inherited_layer_count() != inherited_layers.len() {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "read view inherited layer count must match branch facts",
-        });
-    }
+    validate_read_view_source_counts(
+        branch_id,
+        active,
+        frozen,
+        owned_levels,
+        inherited_layers,
+        facts,
+    )?;
     validate_owned_levels(owned_levels)?;
     validate_inherited_layers(branch_id, inherited_layers)?;
 
@@ -2805,6 +2813,44 @@ fn validate_read_view_inputs(
     {
         return Err(BranchRuntimeError::InvalidBranchState {
             reason: "read view source facts must match branch facts",
+        });
+    }
+    Ok(())
+}
+
+fn validate_read_view_source_counts(
+    branch_id: BranchId,
+    active: &MutableTable,
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    facts: BranchStateFacts,
+) -> BranchRuntimeResult<()> {
+    if branch_id != facts.branch_id() {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view branch id must match branch facts",
+        });
+    }
+    if facts.active_rows()
+        != u64::try_from(active.len()).expect("active read-view row count fits in u64")
+    {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view active row count must match branch facts",
+        });
+    }
+    if facts.frozen_table_count() != frozen.len() {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view frozen table count must match branch facts",
+        });
+    }
+    if facts.owned_table_count() != owned_table_count(owned_levels) {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view owned table count must match branch facts",
+        });
+    }
+    if facts.inherited_layer_count() != inherited_layers.len() {
+        return Err(BranchRuntimeError::InvalidBranchState {
+            reason: "read view inherited layer count must match branch facts",
         });
     }
     Ok(())

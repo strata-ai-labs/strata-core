@@ -460,8 +460,7 @@ fn fork_at_history_child_excludes_rows_after_requested_version() {
     );
 }
 
-// Phase 6 fork-timeline inheritance contract (Option C from L8Z impl plan
-// Open Question §B). The inherited-layer read path uses
+// Fork-timeline inheritance contract. The inherited-layer read path uses
 // `BranchEffectiveReadBound::for_inherited_layer`, which caps
 // `AtTimestamp(T)` reads at `(fork_version, T)`. Per-row commit_timestamp
 // drives timestamp matching. The three tests below pin the contract:

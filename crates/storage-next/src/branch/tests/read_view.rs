@@ -51,6 +51,304 @@ fn branch_read_view_is_pinned_across_append_and_rotation() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_read_view_capture_pins_source_handles_without_row_copies() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(147);
+    let parent = branch_id(148);
+    let inherited_row = storage_row_with(
+        parent,
+        b"capture-parent".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"inherited".to_vec(),
+    );
+    let inherited_layer = branch_inherited_layer(
+        parent,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            parent,
+            BranchLevel::ZERO,
+            "read-view-capture-inherited",
+            vec![inherited_row.clone()],
+        )]],
+    );
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_layer])
+        .expect("attach inherited layer");
+
+    let frozen_row = storage_row_with(
+        branch,
+        b"capture-frozen".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    let active_row = storage_row_with(
+        branch,
+        b"capture-active".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+    let owned_row = storage_row_with(
+        branch,
+        b"capture-owned".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"owned".to_vec(),
+    );
+    state
+        .append_committed_row(frozen_row.clone())
+        .expect("append frozen row");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    state
+        .append_committed_row(active_row.clone())
+        .expect("append active row");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "read-view-capture-owned",
+            vec![owned_row.clone()],
+        ))
+        .expect("install owned table");
+
+    let view = state.capture_read_view().expect("capture read view");
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.read_view_captures(), 1);
+    assert_eq!(perf.read_view_source_handles_cloned(), 5);
+    assert_eq!(perf.read_view_rows_cloned(), 0);
+    assert_eq!(perf.read_view_row_clone_bytes(), 0);
+    assert_eq!(perf.read_view_validation_rows_scanned(), 0);
+
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"capture-active".to_vec()))
+            .expect("active read")
+            .as_ref(),
+        &active_row,
+        BranchRowSource::Active,
+    );
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"capture-frozen".to_vec()))
+            .expect("frozen read")
+            .as_ref(),
+        &frozen_row,
+        BranchRowSource::Frozen { index: 0 },
+    );
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"capture-owned".to_vec()))
+            .expect("owned read")
+            .as_ref(),
+        &owned_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    let inherited_expected =
+        rewrite_row_branch(&inherited_row, parent, branch).expect("rewrite inherited row");
+    assert_visible_row(
+        view.latest(&physical_key(branch, b"capture-parent".to_vec()))
+            .expect("inherited read")
+            .as_ref(),
+        &inherited_expected,
+        BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_read_view_is_pinned_across_table_rewrites_and_inherited_materialization() {
+    let branch = branch_id(149);
+    let source = branch_id(150);
+    let mut state = BranchLocalState::empty(branch);
+
+    let inherited = storage_row_with(
+        source,
+        b"pinned-inherited".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"inherited".to_vec(),
+    );
+    state
+        .attach_inherited_layers(vec![branch_inherited_layer(
+            source,
+            CommitVersion::new(5),
+            InheritedLayerStatus::Active,
+            vec![vec![branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "pinned-inherited-source",
+                vec![inherited.clone()],
+            )]],
+        )])
+        .expect("attach inherited layer");
+
+    let frozen = storage_row_with(
+        branch,
+        b"pinned-flush".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    state
+        .append_committed_row(frozen.clone())
+        .expect("append frozen row");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+
+    let compact_newer = storage_row_with(
+        branch,
+        b"pinned-compact".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"newer".to_vec(),
+    );
+    let compact_older = storage_row_with(
+        branch,
+        b"pinned-compact".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "pinned-compact-newer",
+            vec![compact_newer.clone()],
+        ))
+        .expect("install newer table");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "pinned-compact-older",
+            vec![compact_older],
+        ))
+        .expect("install older table");
+
+    let pinned = state.capture_read_view().expect("capture pinned view");
+
+    state
+        .replace_frozen_with_l0_table(
+            0,
+            branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                "pinned-flush-output",
+                vec![frozen.clone()],
+            ),
+        )
+        .expect("replace frozen table");
+    let compaction = state
+        .compact_branch_owned_tables(
+            &BranchCompactionRequest::new(
+                branch,
+                BranchCompactionKind::CompactL0,
+                "pinned-compaction-output",
+            )
+            .expect("compaction request"),
+        )
+        .expect("compact branch tables");
+    assert!(compaction.installed_replacement_tables());
+    let materialization = state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(branch, 0, "pinned-materialized")
+                .expect("materialization request"),
+        )
+        .expect("materialize inherited layer");
+    assert_eq!(materialization.rows_materialized(), 1);
+    assert_eq!(materialization.tables_created(), 1);
+    assert_eq!(materialization.inherited_layers_remaining(), 0);
+    assert_eq!(state.inherited_layer_count(), 0);
+
+    let frozen_key = physical_key(branch, b"pinned-flush".to_vec());
+    assert_visible_row(
+        pinned
+            .latest(&frozen_key)
+            .expect("pinned frozen latest")
+            .as_ref(),
+        &frozen,
+        BranchRowSource::Frozen { index: 0 },
+    );
+
+    let compact_key = physical_key(branch, b"pinned-compact".to_vec());
+    assert_visible_row(
+        pinned
+            .latest(&compact_key)
+            .expect("pinned compact latest")
+            .as_ref(),
+        &compact_newer,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 1,
+        },
+    );
+
+    let inherited_expected =
+        rewrite_row_branch(&inherited, source, branch).expect("rewrite inherited row");
+    let inherited_key = physical_key(branch, b"pinned-inherited".to_vec());
+    assert_visible_row(
+        pinned
+            .latest(&inherited_key)
+            .expect("pinned inherited latest")
+            .as_ref(),
+        &inherited_expected,
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+
+    let current = state.capture_read_view().expect("current view");
+    assert_eq!(current.frozen_table_count(), 0);
+    assert_eq!(current.inherited_layer_count(), 0);
+    assert_eq!(
+        current
+            .latest(&frozen_key)
+            .expect("current frozen latest")
+            .expect("current frozen row")
+            .row(),
+        &frozen
+    );
+    assert_eq!(
+        current
+            .latest(&compact_key)
+            .expect("current compact latest")
+            .expect("current compact row")
+            .row(),
+        &compact_newer
+    );
+    assert_eq!(
+        current
+            .latest(&inherited_key)
+            .expect("current inherited latest")
+            .expect("current inherited row")
+            .row(),
+        &inherited_expected
+    );
+}
+
 #[test]
 fn branch_read_view_constructor_rejects_stale_facts_and_wrong_branch_sources() {
     let branch = branch_id(43);
@@ -117,6 +415,24 @@ fn branch_read_view_constructor_rejects_stale_facts_and_wrong_branch_sources() {
             unsupported_inherited_facts
         ),
         Err(BranchRuntimeError::InvalidBranchState { .. })
+    ));
+
+    let unavailable = branch_inherited_layer(
+        other,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Unavailable,
+        Vec::new(),
+    );
+    assert!(matches!(
+        BranchReadView::new_with_inherited(
+            branch,
+            MutableTable::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![unavailable],
+            unsupported_inherited_facts
+        ),
+        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
     ));
 
     let wrong_branch_row = storage_row_with(

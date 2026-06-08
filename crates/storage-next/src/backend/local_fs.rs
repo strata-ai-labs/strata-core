@@ -82,9 +82,9 @@ impl LocalFsBackend {
     }
 
     fn writer_lock_object() -> BackendResult<ObjectName> {
-        // L1/L2 bootstrap exception: the writer lock is the one reserved
-        // structural object name the backend must recognize before higher
-        // layers can safely open a durable local runtime.
+        // Backend bootstrap exception: the writer lock is the one reserved
+        // object-layout name the backend must recognize before services can
+        // safely open a durable local runtime.
         ObjectLayout::writer_lock().map_err(|error| {
             BackendError::new(
                 BackendErrorKind::InvalidObjectName,

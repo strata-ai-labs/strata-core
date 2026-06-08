@@ -8,6 +8,7 @@ use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::row::{InternalKey, PhysicalKey};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use strata_core_next::{CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,11 +48,16 @@ impl TableMemoryFacts {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MutableTable {
+struct TableMemoryState {
     rows: BTreeMap<TableInternalKeyBytes, TableRow>,
     approximate_size_bytes: usize,
     min_commit: Option<CommitVersion>,
     max_commit: Option<CommitVersion>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MutableTable {
+    inner: Arc<TableMemoryState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +72,10 @@ impl MutableTable {
         Self::default()
     }
 
+    fn inner_mut(&mut self) -> &mut TableMemoryState {
+        Arc::make_mut(&mut self.inner)
+    }
+
     pub(crate) fn insert_row(&mut self, row: StorageRow) -> TableRuntimeResult<()> {
         self.insert_table_row(TableRow::new(row))
     }
@@ -73,7 +83,7 @@ impl MutableTable {
     pub(crate) fn insert_table_row(&mut self, row: TableRow) -> TableRuntimeResult<()> {
         let key = row.key().clone();
         perf_trace::record_mutable_insert_duplicate_check();
-        if self.rows.contains_key(&key) {
+        if self.inner.rows.contains_key(&key) {
             return Err(TableRuntimeError::DuplicateInternalKey {
                 key: key.as_slice().to_vec(),
             });
@@ -81,17 +91,18 @@ impl MutableTable {
 
         let row_size = row.approximate_size_bytes();
         let commit_version = row.commit_version();
-        self.rows.insert(key, row);
-        self.approximate_size_bytes = self.approximate_size_bytes.saturating_add(row_size);
-        update_commit_range(&mut self.min_commit, &mut self.max_commit, commit_version);
+        let inner = self.inner_mut();
+        inner.rows.insert(key, row);
+        inner.approximate_size_bytes = inner.approximate_size_bytes.saturating_add(row_size);
+        update_commit_range(&mut inner.min_commit, &mut inner.max_commit, commit_version);
         Ok(())
     }
 
-    pub(crate) const fn append_baseline(&self) -> MutableTableAppendBaseline {
+    pub(crate) fn append_baseline(&self) -> MutableTableAppendBaseline {
         MutableTableAppendBaseline {
-            approximate_size_bytes: self.approximate_size_bytes,
-            min_commit: self.min_commit,
-            max_commit: self.max_commit,
+            approximate_size_bytes: self.inner.approximate_size_bytes,
+            min_commit: self.inner.min_commit,
+            max_commit: self.inner.max_commit,
         }
     }
 
@@ -100,49 +111,50 @@ impl MutableTable {
         baseline: MutableTableAppendBaseline,
         inserted_keys: &[TableInternalKeyBytes],
     ) {
+        let inner = self.inner_mut();
         for key in inserted_keys {
-            self.rows.remove(key);
+            inner.rows.remove(key);
         }
-        self.approximate_size_bytes = baseline.approximate_size_bytes;
-        self.min_commit = baseline.min_commit;
-        self.max_commit = baseline.max_commit;
+        inner.approximate_size_bytes = baseline.approximate_size_bytes;
+        inner.min_commit = baseline.min_commit;
+        inner.max_commit = baseline.max_commit;
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.rows.len()
+        self.inner.rows.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.inner.rows.is_empty()
     }
 
-    pub(crate) const fn approximate_size_bytes(&self) -> usize {
-        self.approximate_size_bytes
+    pub(crate) fn approximate_size_bytes(&self) -> usize {
+        self.inner.approximate_size_bytes
     }
 
     pub(crate) fn facts(&self) -> TableMemoryFacts {
         memory_facts(
-            &self.rows,
-            self.approximate_size_bytes,
-            self.min_commit,
-            self.max_commit,
+            &self.inner.rows,
+            self.inner.approximate_size_bytes,
+            self.inner.min_commit,
+            self.inner.max_commit,
         )
     }
 
     pub(crate) fn first_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.rows.first_key_value().map(|(key, _)| key)
+        self.inner.rows.first_key_value().map(|(key, _)| key)
     }
 
     pub(crate) fn last_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.rows.last_key_value().map(|(key, _)| key)
+        self.inner.rows.last_key_value().map(|(key, _)| key)
     }
 
     pub(crate) fn get(&self, key: &TableInternalKeyBytes) -> Option<&TableRow> {
-        self.rows.get(key)
+        self.inner.rows.get(key)
     }
 
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &TableRow> {
-        self.rows.values()
+        self.inner.rows.values()
     }
 
     pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
@@ -150,14 +162,15 @@ impl MutableTable {
     }
 
     pub(super) fn row_map(&self) -> &BTreeMap<TableInternalKeyBytes, TableRow> {
-        &self.rows
+        &self.inner.rows
     }
 
     pub(crate) fn rows_in_bounds<'a>(
         &'a self,
         bounds: &'a TableKeyBounds,
     ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.rows
+        self.inner
+            .rows
             .values()
             .filter(move |row| bounds.contains_key(row.key()))
     }
@@ -166,7 +179,8 @@ impl MutableTable {
         &'a self,
         prefix: &'a TablePhysicalKeyBytes,
     ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.rows
+        self.inner
+            .rows
             .values()
             .filter(move |row| prefix.is_prefix_of(row.key()))
     }
@@ -177,11 +191,16 @@ impl MutableTable {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> (Option<&TableRow>, usize) {
-        seek_physical_key_in_rows(&self.rows, key, max_commit_version, max_commit_timestamp)
+        seek_physical_key_in_rows(
+            &self.inner.rows,
+            key,
+            max_commit_version,
+            max_commit_timestamp,
+        )
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
-        physical_key_rows_in_rows(&self.rows, key)
+        physical_key_rows_in_rows(&self.inner.rows, key)
     }
 
     #[cfg(feature = "perf-trace")]
@@ -193,59 +212,51 @@ impl MutableTable {
     }
 
     pub(crate) fn freeze(self) -> FrozenTable {
-        FrozenTable {
-            rows: self.rows,
-            approximate_size_bytes: self.approximate_size_bytes,
-            min_commit: self.min_commit,
-            max_commit: self.max_commit,
-        }
+        FrozenTable { inner: self.inner }
     }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FrozenTable {
-    rows: BTreeMap<TableInternalKeyBytes, TableRow>,
-    approximate_size_bytes: usize,
-    min_commit: Option<CommitVersion>,
-    max_commit: Option<CommitVersion>,
+    inner: Arc<TableMemoryState>,
 }
 
 impl FrozenTable {
     pub(crate) fn len(&self) -> usize {
-        self.rows.len()
+        self.inner.rows.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.inner.rows.is_empty()
     }
 
-    pub(crate) const fn approximate_size_bytes(&self) -> usize {
-        self.approximate_size_bytes
+    pub(crate) fn approximate_size_bytes(&self) -> usize {
+        self.inner.approximate_size_bytes
     }
 
     pub(crate) fn facts(&self) -> TableMemoryFacts {
         memory_facts(
-            &self.rows,
-            self.approximate_size_bytes,
-            self.min_commit,
-            self.max_commit,
+            &self.inner.rows,
+            self.inner.approximate_size_bytes,
+            self.inner.min_commit,
+            self.inner.max_commit,
         )
     }
 
     pub(crate) fn first_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.rows.first_key_value().map(|(key, _)| key)
+        self.inner.rows.first_key_value().map(|(key, _)| key)
     }
 
     pub(crate) fn last_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.rows.last_key_value().map(|(key, _)| key)
+        self.inner.rows.last_key_value().map(|(key, _)| key)
     }
 
     pub(crate) fn get(&self, key: &TableInternalKeyBytes) -> Option<&TableRow> {
-        self.rows.get(key)
+        self.inner.rows.get(key)
     }
 
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &TableRow> {
-        self.rows.values()
+        self.inner.rows.values()
     }
 
     pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
@@ -253,14 +264,15 @@ impl FrozenTable {
     }
 
     pub(super) fn row_map(&self) -> &BTreeMap<TableInternalKeyBytes, TableRow> {
-        &self.rows
+        &self.inner.rows
     }
 
     pub(crate) fn rows_in_bounds<'a>(
         &'a self,
         bounds: &'a TableKeyBounds,
     ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.rows
+        self.inner
+            .rows
             .values()
             .filter(move |row| bounds.contains_key(row.key()))
     }
@@ -269,7 +281,8 @@ impl FrozenTable {
         &'a self,
         prefix: &'a TablePhysicalKeyBytes,
     ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.rows
+        self.inner
+            .rows
             .values()
             .filter(move |row| prefix.is_prefix_of(row.key()))
     }
@@ -280,11 +293,16 @@ impl FrozenTable {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> (Option<&TableRow>, usize) {
-        seek_physical_key_in_rows(&self.rows, key, max_commit_version, max_commit_timestamp)
+        seek_physical_key_in_rows(
+            &self.inner.rows,
+            key,
+            max_commit_version,
+            max_commit_timestamp,
+        )
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
-        physical_key_rows_in_rows(&self.rows, key)
+        physical_key_rows_in_rows(&self.inner.rows, key)
     }
 
     #[cfg(feature = "perf-trace")]

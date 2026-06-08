@@ -2081,7 +2081,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn service_fault_window_outcome_names_every_l4_conformance_case() {
+    fn service_fault_window_outcome_names_every_conformance_case() {
         let cases = ServiceFaultWindowHarnessOutcome::default().case_counts();
 
         assert_eq!(
@@ -2097,7 +2097,7 @@ mod tests {
 
     #[cfg(feature = "fault-injection")]
     #[test]
-    fn service_fault_window_harness_exercises_every_l4_conformance_case() {
+    fn service_fault_window_harness_exercises_every_conformance_case() {
         let outcome = run_service_fault_window_harness().expect("service fault-window harness");
 
         assert_eq!(

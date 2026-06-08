@@ -231,8 +231,8 @@ impl BranchLocalState {
     }
 
     pub(crate) fn capture_read_view(&self) -> BranchRuntimeResult<BranchReadView> {
-        perf_trace::record_read_view_capture(read_view_clone_row_count(self));
-        BranchReadView::new_with_inherited(
+        perf_trace::record_read_view_capture(read_view_source_handle_count(self), 0, 0);
+        BranchReadView::new_from_validated_state(
             self.branch_id,
             self.active.clone(),
             self.frozen.clone(),
@@ -242,15 +242,26 @@ impl BranchLocalState {
         )
         .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
     }
+
+    pub(crate) fn validate_read_view_sources(&self) -> BranchRuntimeResult<()> {
+        BranchReadView::new_with_inherited(
+            self.branch_id,
+            self.active.clone(),
+            self.frozen.clone(),
+            self.owned_levels.clone(),
+            self.inherited_layers.clone(),
+            self.facts()?,
+        )
+        .map(|_| ())
+    }
 }
 
-fn read_view_clone_row_count(state: &BranchLocalState) -> usize {
-    state
-        .active
-        .len()
-        .saturating_add(state.frozen.iter().map(FrozenTable::len).sum::<usize>())
-        .saturating_add(owned_levels_row_count(&state.owned_levels))
-        .saturating_add(inherited_layers_row_count(&state.inherited_layers))
+fn read_view_source_handle_count(state: &BranchLocalState) -> usize {
+    1usize
+        .saturating_add(state.frozen.len())
+        .saturating_add(state.owned_table_count())
+        .saturating_add(state.inherited_layers.len())
+        .saturating_add(inherited_table_count(&state.inherited_layers))
 }
 
 fn source_row_counts(
@@ -290,19 +301,4 @@ fn source_row_counts(
         }
     }
     counts
-}
-
-fn inherited_layers_row_count(layers: &[BranchInheritedLayer]) -> usize {
-    layers
-        .iter()
-        .map(|layer| owned_levels_row_count(layer.owned_levels()))
-        .sum()
-}
-
-fn owned_levels_row_count(levels: &[Vec<BranchOwnedTable>]) -> usize {
-    levels
-        .iter()
-        .flatten()
-        .map(|table| table.rows().len())
-        .sum()
 }

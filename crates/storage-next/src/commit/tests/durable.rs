@@ -174,8 +174,10 @@ fn durable_cas_commit_still_captures_read_view_and_rejects_before_wal_append() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.conflict_sources_built(), 1);
     assert_eq!(perf.read_view_captures(), 1);
-    assert!(perf.read_view_rows_cloned() > 0);
-    assert!(perf.read_view_validation_rows_scanned() > 0);
+    assert!(perf.read_view_source_handles_cloned() > 0);
+    assert_eq!(perf.read_view_rows_cloned(), 0);
+    assert_eq!(perf.read_view_row_clone_bytes(), 0);
+    assert_eq!(perf.read_view_validation_rows_scanned(), 0);
     assert!(fixture.wal.records.is_empty());
     assert_eq!(
         fixture.allocator.version_allocator().last_allocated(),
@@ -185,7 +187,7 @@ fn durable_cas_commit_still_captures_read_view_and_rejects_before_wal_append() {
 
 #[cfg(all(feature = "localfs", unix))]
 #[test]
-fn durable_standard_commit_appends_through_real_l4_wal_service() {
+fn durable_standard_commit_appends_through_real_wal_service() {
     let dir = tempfile::tempdir().expect("tempdir");
     let backend = crate::backend::local_fs::LocalFsBackend::new(dir.path());
     let branch = branch_id(58);
@@ -269,7 +271,7 @@ fn durable_standard_commit_appends_through_real_l4_wal_service() {
 
 #[cfg(all(feature = "localfs", unix))]
 #[test]
-fn durable_always_commit_appends_through_real_l4_wal_service() {
+fn durable_always_commit_appends_through_real_wal_service() {
     let dir = tempfile::tempdir().expect("tempdir");
     let backend = crate::backend::local_fs::LocalFsBackend::new(dir.path());
     let branch = branch_id(59);

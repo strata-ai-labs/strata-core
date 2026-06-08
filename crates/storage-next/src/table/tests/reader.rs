@@ -456,6 +456,7 @@ fn immutable_reader_into_materialized_preserves_eager_byte_runtime_facts() {
         TableReaderConfig::default(),
     )
     .expect("open byte reader");
+    let row_backing = reader.rows().as_ptr();
 
     let materialized = reader
         .into_materialized()
@@ -474,6 +475,7 @@ fn immutable_reader_into_materialized_preserves_eager_byte_runtime_facts() {
         artifact.facts().row_count()
     );
     assert_eq!(materialized.rows(), rows.as_slice());
+    assert_eq!(materialized.rows().as_ptr(), row_backing);
 }
 
 #[test]

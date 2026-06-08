@@ -142,8 +142,10 @@ fn cache_read_set_commit_still_captures_read_view_and_rejects_stale_fact() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.conflict_sources_built(), 1);
     assert_eq!(perf.read_view_captures(), 1);
-    assert!(perf.read_view_rows_cloned() > 0);
-    assert!(perf.read_view_validation_rows_scanned() > 0);
+    assert!(perf.read_view_source_handles_cloned() > 0);
+    assert_eq!(perf.read_view_rows_cloned(), 0);
+    assert_eq!(perf.read_view_row_clone_bytes(), 0);
+    assert_eq!(perf.read_view_validation_rows_scanned(), 0);
     assert_eq!(
         fixture.allocator.version_allocator().last_allocated(),
         CommitVersion::new(1)

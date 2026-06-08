@@ -57,7 +57,7 @@ impl std::error::Error for ServiceFuzzViolation {}
 /// Runs a bounded snapshot/sidecar service script generated from arbitrary bytes.
 ///
 /// The runner lives behind the hidden testkit feature so fuzz targets can reach
-/// crate-private L4 services without turning those services into product API.
+/// crate-private services without turning those services into product API.
 pub fn run_snapshot_service_script(bytes: &[u8]) -> FuzzResult<SnapshotServiceFuzzOutcome> {
     let backend = DurableScriptBackend::default();
     let mut model = ServiceModel::default();

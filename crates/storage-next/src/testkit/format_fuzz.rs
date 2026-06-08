@@ -69,7 +69,7 @@ pub fn decode_format_bytes(decoder: FormatDecoder, bytes: &[u8]) -> FormatDecode
     }
 }
 
-/// Runs one deterministic generated-table model case through the L3 table bytes.
+/// Runs one deterministic generated-table model case through table-format bytes.
 ///
 /// The input is interpreted as a bounded script, not as durable bytes. This is
 /// the integration-test and fuzz-adjacent route for checking generated table
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn format_fuzz_decoders_accept_valid_l3_seed_bytes() {
+    fn format_fuzz_decoders_accept_valid_table_seed_bytes() {
         for (decoder, bytes) in [
             (
                 FormatDecoder::BranchCatalogManifest,

@@ -1,4 +1,4 @@
-//! Shared L4 cleanup classification helpers.
+//! Shared service cleanup classification helpers.
 
 use crate::backend::{
     BackendError, BackendErrorKind, DeleteDurability, DeleteError, DeleteOutcome, DeleteStatus,

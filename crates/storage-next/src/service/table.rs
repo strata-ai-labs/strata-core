@@ -1802,7 +1802,7 @@ mod tests {
     }
 
     #[test]
-    fn table_object_reader_rejects_all_stale_l4_facts() {
+    fn table_object_reader_rejects_all_stale_object_facts() {
         let branch = branch_id().to_string();
         let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
         let bytes = valid_table_bytes();

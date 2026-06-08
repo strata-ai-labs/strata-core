@@ -160,7 +160,7 @@ impl BranchLocalState {
         )?;
         staged.refresh_observed_row_facts();
         staged.reachability_snapshot()?;
-        staged.capture_read_view()?;
+        staged.validate_read_view_sources()?;
 
         let outcome = BranchTableManifestRecoveryOutcome {
             branch_id: staged.branch_id,

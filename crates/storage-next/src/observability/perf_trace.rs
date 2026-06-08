@@ -72,7 +72,9 @@ pub struct StoragePerfSnapshot {
     append_rows_applied: u64,
     branch_facts_rows_observed: u64,
     read_view_captures: u64,
+    read_view_source_handles_cloned: u64,
     read_view_rows_cloned: u64,
+    read_view_row_clone_bytes: u64,
     read_view_validation_rows_scanned: u64,
     append_staging_clones: u64,
     append_staging_rows_cloned: u64,
@@ -253,9 +255,19 @@ impl StoragePerfSnapshot {
         self.read_view_captures
     }
 
+    /// Number of branch source handles copied into captured read views.
+    pub const fn read_view_source_handles_cloned(self) -> u64 {
+        self.read_view_source_handles_cloned
+    }
+
     /// Number of rows copied into captured branch read views.
     pub const fn read_view_rows_cloned(self) -> u64 {
         self.read_view_rows_cloned
+    }
+
+    /// Approximate bytes copied into captured branch read views.
+    pub const fn read_view_row_clone_bytes(self) -> u64 {
+        self.read_view_row_clone_bytes
     }
 
     /// Number of branch rows scanned while validating captured read-view facts.
@@ -714,7 +726,11 @@ static BRANCH_FACTS_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_CAPTURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static READ_VIEW_SOURCE_HANDLES_CLONED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static READ_VIEW_ROWS_CLONED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static READ_VIEW_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_VALIDATION_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -940,7 +956,9 @@ pub fn reset() {
     APPEND_ROWS_APPLIED.store(0, Ordering::Relaxed);
     BRANCH_FACTS_ROWS_OBSERVED.store(0, Ordering::Relaxed);
     READ_VIEW_CAPTURES.store(0, Ordering::Relaxed);
+    READ_VIEW_SOURCE_HANDLES_CLONED.store(0, Ordering::Relaxed);
     READ_VIEW_ROWS_CLONED.store(0, Ordering::Relaxed);
+    READ_VIEW_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
     READ_VIEW_VALIDATION_ROWS_SCANNED.store(0, Ordering::Relaxed);
     APPEND_STAGING_CLONES.store(0, Ordering::Relaxed);
     APPEND_STAGING_ROWS_CLONED.store(0, Ordering::Relaxed);
@@ -1050,7 +1068,9 @@ pub fn snapshot() -> StoragePerfSnapshot {
         append_rows_applied: APPEND_ROWS_APPLIED.load(Ordering::Relaxed),
         branch_facts_rows_observed: BRANCH_FACTS_ROWS_OBSERVED.load(Ordering::Relaxed),
         read_view_captures: READ_VIEW_CAPTURES.load(Ordering::Relaxed),
+        read_view_source_handles_cloned: READ_VIEW_SOURCE_HANDLES_CLONED.load(Ordering::Relaxed),
         read_view_rows_cloned: READ_VIEW_ROWS_CLONED.load(Ordering::Relaxed),
+        read_view_row_clone_bytes: READ_VIEW_ROW_CLONE_BYTES.load(Ordering::Relaxed),
         read_view_validation_rows_scanned: READ_VIEW_VALIDATION_ROWS_SCANNED
             .load(Ordering::Relaxed),
         append_staging_clones: APPEND_STAGING_CLONES.load(Ordering::Relaxed),
@@ -1312,15 +1332,26 @@ pub(crate) fn record_branch_facts_observed(rows_observed: usize) {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_read_view_capture(_rows_cloned: usize) {}
+pub(crate) fn record_read_view_capture(
+    _source_handles_cloned: usize,
+    _rows_cloned: usize,
+    _row_clone_bytes: usize,
+) {
+}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_read_view_capture(rows_cloned: usize) {
+pub(crate) fn record_read_view_capture(
+    source_handles_cloned: usize,
+    rows_cloned: usize,
+    row_clone_bytes: usize,
+) {
     if !recording_enabled() {
         return;
     }
     READ_VIEW_CAPTURES.fetch_add(1, Ordering::Relaxed);
+    READ_VIEW_SOURCE_HANDLES_CLONED.fetch_add(as_u64(source_handles_cloned), Ordering::Relaxed);
     READ_VIEW_ROWS_CLONED.fetch_add(as_u64(rows_cloned), Ordering::Relaxed);
+    READ_VIEW_ROW_CLONE_BYTES.fetch_add(as_u64(row_clone_bytes), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

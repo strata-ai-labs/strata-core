@@ -231,7 +231,7 @@ impl Eq for ImmutableTableReader<'_> {}
 
 #[derive(Clone, Debug)]
 enum TableReaderRows<'a> {
-    Eager(Vec<TableRow>),
+    Eager(Arc<[TableRow]>),
     Lazy(Box<LazyTableRows<'a>>),
 }
 
@@ -243,10 +243,12 @@ impl<'a> TableReaderRows<'a> {
         }
     }
 
-    fn into_materialized(self) -> TableRuntimeResult<(Vec<TableRow>, bool)> {
+    fn into_materialized(self) -> TableRuntimeResult<(Arc<[TableRow]>, bool)> {
         match self {
             Self::Eager(rows) => Ok((rows, false)),
-            Self::Lazy(rows) => rows.into_materialized().map(|rows| (rows, true)),
+            Self::Lazy(rows) => rows
+                .into_materialized()
+                .map(|rows| (Arc::from(rows.into_boxed_slice()), true)),
         }
     }
 
@@ -813,7 +815,7 @@ impl<'a> ImmutableTableReader<'a> {
             facts,
             fingerprint,
             runtime_facts,
-            rows: TableReaderRows::Eager(rows),
+            rows: TableReaderRows::Eager(Arc::from(rows.into_boxed_slice())),
         })
     }
 

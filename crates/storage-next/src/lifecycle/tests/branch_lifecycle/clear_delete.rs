@@ -38,6 +38,56 @@ fn clear_branch_new_view_empty_and_pinned_view_keeps_old_rows() {
 }
 
 #[test]
+fn pinned_view_survives_snapshot_state_replacement() {
+    let branch = branch_id(5);
+    let key = physical_key(branch, b"snapshot-replace-pin");
+    let mut catalog = catalog_with_branch(branch, generation(1));
+    catalog
+        .replace_active_branch_state(
+            branch,
+            CommitBranchGenerationGuard::exact(generation(1)),
+            owned_state(
+                branch,
+                &[put_row(branch, 2, b"snapshot-replace-pin", b"old")],
+            ),
+        )
+        .expect("seed old state");
+    let pinned = catalog.capture_read_view(branch).expect("pinned view");
+
+    catalog
+        .replace_active_branch_state(
+            branch,
+            CommitBranchGenerationGuard::exact(generation(1)),
+            owned_state(
+                branch,
+                &[put_row(branch, 3, b"snapshot-replace-pin", b"new")],
+            ),
+        )
+        .expect("replace state");
+
+    assert_eq!(
+        pinned
+            .latest(&key)
+            .expect("pinned read")
+            .expect("old row")
+            .row()
+            .value(),
+        b"old"
+    );
+    assert_eq!(
+        catalog
+            .capture_read_view(branch)
+            .expect("current view")
+            .latest(&key)
+            .expect("current read")
+            .expect("new row")
+            .row()
+            .value(),
+        b"new"
+    );
+}
+
+#[test]
 fn clear_branch_keeps_branch_id_and_generation_active() {
     let branch = branch_id(55);
     let mut catalog = catalog_with_branch(branch, generation(3));
@@ -209,6 +259,7 @@ fn delete_branch_new_read_rejects_after_deleted() {
 #[test]
 fn pinned_reachability_protects_removed_tables_from_release() {
     let branch = branch_id(18);
+    let key = physical_key(branch, b"pinned-release");
     let mut catalog = catalog_with_branch(branch, generation(1));
     catalog
         .replace_active_branch_state(
@@ -220,6 +271,7 @@ fn pinned_reachability_protects_removed_tables_from_release() {
             ),
         )
         .expect("replace source");
+    let view = catalog.capture_read_view(branch).expect("read view");
     let pinned = catalog.pin_reachability(branch).expect("pin");
 
     let outcome = catalog
@@ -229,6 +281,14 @@ fn pinned_reachability_protects_removed_tables_from_release() {
     assert_eq!(pinned.table_refs().len(), 1);
     assert!(outcome.release_plan().releasable_tables().is_empty());
     assert_eq!(outcome.release_plan().protected_tables().len(), 1);
+    assert_eq!(
+        view.latest(&key)
+            .expect("pinned read")
+            .expect("protected row")
+            .row()
+            .value(),
+        b"protected"
+    );
 }
 
 #[test]
