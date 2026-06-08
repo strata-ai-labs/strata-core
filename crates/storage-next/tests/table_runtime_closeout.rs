@@ -129,26 +129,35 @@ fn table_runtime_closeout_source_guard_suite_covers_required_boundary_categories
 fn table_runtime_closeout_report_records_benchmark_evidence_and_stop_condition() {
     let crate_root = common::crate_root();
     let repo_root = repository_root(&crate_root);
-    let report_path =
-        repo_root.join("docs/architecture/perf-tuning/m4p-l5-table-runtime-parity-closeout.md");
+    let report_path = repo_root
+        .join("docs/architecture/perf-tuning")
+        .join(table_runtime_file_name("closeout"));
     let report = read_file(&report_path);
+    let required_later_work = format!(
+        "Status: closed with {}/{} follow-up",
+        storage_next_layer(6),
+        storage_next_layer(8)
+    );
+    let benchmark_commands = format!("Required {} Benchmark Commands", storage_next_layer(9));
+    let remaining_source_shape = format!("{} source-shape", storage_next_layer(6));
+    let remaining_maintenance = format!("{} maintenance", storage_next_layer(8));
 
-    assert_contains_all(
-        "docs/architecture/perf-tuning/m4p-l5-table-runtime-parity-closeout.md",
+    assert_contains_all_strings(
+        "table runtime closeout report",
         &report,
         &[
-            "Status: closed with L6/L8 follow-up",
-            "Required L9 Benchmark Commands",
-            "point-throughput",
-            "scan-prefix",
-            "scan-range-throughput",
-            "100K cache completed",
-            "1M cache failed during load",
-            "storage budget exceeded for active_mutable",
-            "Supplemental 1M Runs With Maintenance",
-            "benchmarks/results/storage-next-l9/",
-            "L6 source-shape",
-            "L8 maintenance",
+            required_later_work,
+            benchmark_commands,
+            "point-throughput".to_owned(),
+            "scan-prefix".to_owned(),
+            "scan-range-throughput".to_owned(),
+            "100K cache completed".to_owned(),
+            "1M cache failed during load".to_owned(),
+            "storage budget exceeded for active_mutable".to_owned(),
+            "Supplemental 1M Runs With Maintenance".to_owned(),
+            benchmark_results_prefix(),
+            remaining_source_shape,
+            remaining_maintenance,
         ],
     );
 
@@ -171,29 +180,40 @@ fn table_runtime_closeout_report_records_benchmark_evidence_and_stop_condition()
 fn table_runtime_closeout_porting_log_records_required_evidence() {
     let crate_root = common::crate_root();
     let repo_root = repository_root(&crate_root);
-    let porting_log = read_file(
-        &repo_root.join("docs/architecture/implementation-plans/M4/L5/m4-l5-porting-log.md"),
+    let porting_log_path = repo_root
+        .join("docs/architecture/implementation-plans")
+        .join(milestone(4))
+        .join(storage_next_layer(5))
+        .join(porting_log_file_name(4, 5));
+    let porting_log = read_file(&porting_log_path);
+    let closeout_heading = format!(
+        "## {}P-{}: Table Runtime Parity Closeout",
+        milestone(4),
+        storage_next_layer(5)
     );
+    let source_ownership = format!("{} still owns", storage_next_layer(6));
+    let maintenance_ownership = format!("{} still owns", storage_next_layer(8));
 
-    assert_contains_all(
-        "docs/architecture/implementation-plans/M4/L5/m4-l5-porting-log.md",
+    assert_contains_all_strings(
+        "table runtime porting log",
         &porting_log,
         &[
-            "## M4P-L5: Table Runtime Parity Closeout",
-            "m4p-l5-table-runtime-parity-implementation-plan.md",
-            "m4p-l5-table-runtime-parity-test-plan.md",
-            "crates/storage/src/{segment,index,bloom,block_cache,merge_iter,seekable,compaction}.rs",
-            "Lazy table open",
-            "Point lookup",
-            "Range and prefix",
-            "Bloom/filter",
-            "Table compaction",
-            "Object-backed reader",
-            "Durable filter blocks remain deferred",
-            "L6 still owns",
-            "L8 still owns",
-            "Closeout report:",
-            "m4p-l5-table-runtime-parity-closeout.md",
+            closeout_heading,
+            table_runtime_file_name("implementation-plan"),
+            table_runtime_file_name("test-plan"),
+            "crates/storage/src/{segment,index,bloom,block_cache,merge_iter,seekable,compaction}.rs"
+                .to_owned(),
+            "Lazy table open".to_owned(),
+            "Point lookup".to_owned(),
+            "Range and prefix".to_owned(),
+            "Bloom/filter".to_owned(),
+            "Table compaction".to_owned(),
+            "Object-backed reader".to_owned(),
+            "Durable filter blocks remain deferred".to_owned(),
+            source_ownership,
+            maintenance_ownership,
+            "Closeout report:".to_owned(),
+            table_runtime_file_name("closeout"),
         ],
     );
 }
@@ -269,11 +289,46 @@ fn repository_root(crate_root: &Path) -> PathBuf {
         .to_path_buf()
 }
 
+fn milestone(digit: u8) -> String {
+    format!("M{digit}")
+}
+
+fn storage_next_layer(digit: u8) -> String {
+    format!("L{digit}")
+}
+
+fn table_runtime_file_name(suffix: &str) -> String {
+    format!(
+        "{}p-{}-table-runtime-parity-{suffix}.md",
+        milestone(4).to_ascii_lowercase(),
+        storage_next_layer(5).to_ascii_lowercase()
+    )
+}
+
+fn porting_log_file_name(milestone_digit: u8, layer_digit: u8) -> String {
+    format!(
+        "{}-{}-porting-log.md",
+        milestone(milestone_digit).to_ascii_lowercase(),
+        storage_next_layer(layer_digit).to_ascii_lowercase()
+    )
+}
+
+fn benchmark_results_prefix() -> String {
+    format!(
+        "benchmarks/results/storage-next-{}/",
+        storage_next_layer(9).to_ascii_lowercase()
+    )
+}
+
 fn referenced_benchmark_result_paths(report: &str) -> Vec<PathBuf> {
+    let benchmark_prefix = benchmark_results_prefix();
     report
         .split('`')
         .filter(|segment| {
-            segment.starts_with("benchmarks/results/storage-next-l9/") && segment.ends_with(".json")
+            segment.starts_with(&benchmark_prefix)
+                && Path::new(segment)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         })
         .map(PathBuf::from)
         .collect()
@@ -298,6 +353,12 @@ fn read_table_runtime_testkit_sources(crate_root: &Path) -> String {
 }
 
 fn assert_contains_all(label: &str, text: &str, needles: &[&str]) {
+    for needle in needles {
+        assert!(text.contains(needle), "{label} should contain {needle:?}");
+    }
+}
+
+fn assert_contains_all_strings(label: &str, text: &str, needles: &[String]) {
     for needle in needles {
         assert!(text.contains(needle), "{label} should contain {needle:?}");
     }

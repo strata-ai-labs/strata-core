@@ -322,6 +322,7 @@ fn branch_inherited_scans_and_history_rewrite_before_grouping() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn branch_borrowed_latest_scan_matches_read_view_with_inherited_sources() {
     let source = branch_id(98);
     let child = branch_id(99);
@@ -397,12 +398,12 @@ fn branch_borrowed_latest_scan_matches_read_view_with_inherited_sources() {
     assert_eq!(
         borrowed_rows
             .iter()
-            .map(|row| row.row())
+            .map(BranchHistoryRow::row)
             .collect::<Vec<_>>(),
         read_view_rows
             .iter()
             .take(3)
-            .map(|row| row.row())
+            .map(BranchHistoryRow::row)
             .collect::<Vec<_>>(),
         "borrowed scan keeps the same visible ordering and includes tombstones before the visible limit"
     );

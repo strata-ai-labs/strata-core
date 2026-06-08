@@ -279,6 +279,7 @@ fn table_runtime_public_surface_guard_catches_bare_public_forms() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
     for line in [
         "use crate::api;",

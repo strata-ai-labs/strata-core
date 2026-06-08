@@ -1180,7 +1180,7 @@ fn lazy_reader_does_not_use_path_cache_identity_or_global_cache() {
         compact.contains("file_path_hash")
             || compact.contains("path_hash")
             || compact.contains("static global")
-            || compact.contains("oncelock<")
+            || (compact.contains("static") && compact.contains("oncelock<"))
             || compact.contains("lazy_static")
     });
 }

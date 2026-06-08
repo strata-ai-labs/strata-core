@@ -28,7 +28,7 @@ fn reserved_layout_names_stay_owned_by_layout_module() {
         }
 
         let text = fs::read_to_string(&file).expect("read source file");
-        for violation in reserved_layout_violations(&file, &text) {
+        if let Some(violation) = reserved_layout_violations(&file, &text).into_iter().next() {
             panic!(
                 "{}:{} contains reserved layout fragment {:?}",
                 file.strip_prefix(&root).unwrap_or(&file).display(),
@@ -158,20 +158,20 @@ mod tests {
         reserved_layout_violations(&source_path("service/raw_layout.rs"), test_source).is_empty()
     );
 
-    let object_validation = r#"
+    let object_validation = r"
 fn validate(value: &str) {
     let mut components = value.split('/').peekable();
 }
-"#;
+";
     assert!(
         reserved_layout_violations(&source_path("object/mod.rs"), object_validation).is_empty()
     );
 
-    let backend_mapping = r#"
+    let backend_mapping = r"
 fn to_path(name: &ObjectName) {
     let mut components = name.as_str().split('/').peekable();
 }
-"#;
+";
     assert!(
         reserved_layout_violations(&source_path("backend/local_fs.rs"), backend_mapping).is_empty()
     );
@@ -356,13 +356,12 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
                 // to keep test fixtures from tripping the
                 // reserved-name guard.
                 let dir_name = path.file_name().and_then(|name| name.to_str());
-                if matches!(dir_name, Some("tests" | "testkit")) {
-                    continue;
+                if !matches!(dir_name, Some("tests" | "testkit")) {
+                    pending.push(path);
                 }
-                pending.push(path);
-            } else if is_test_source_file(&path) {
-                continue;
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            } else if !is_test_source_file(&path)
+                && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+            {
                 files.push(path);
             }
         }

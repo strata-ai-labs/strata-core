@@ -113,12 +113,9 @@ fn forbidden_filesystem_marker(line: &str) -> Option<&'static str> {
 }
 
 fn forbidden_delete_contract_marker(line: &str) -> Option<&'static str> {
-    for marker in ["delete_object_durable", "DeleteOptions", "DeleteMode"] {
-        if line.contains(marker) {
-            return Some(marker);
-        }
-    }
-    None
+    ["delete_object_durable", "DeleteOptions", "DeleteMode"]
+        .into_iter()
+        .find(|marker| line.contains(marker))
 }
 
 fn contains_standalone_fs_path(line: &str) -> bool {

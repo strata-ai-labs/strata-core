@@ -7,92 +7,98 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | Metric | Count |
 |---|---|
-| Rust files | 330 |
-| Production Rust files | 144 |
-| All struct/enum definitions | 894 |
-| Production struct/enum definitions | 620 |
-| Cleanup-target production definitions | 479 |
+| Rust files | 337 |
+| Production Rust files | 150 |
+| All struct/enum definitions | 965 |
+| Production struct/enum definitions | 685 |
+| Cleanup-target production definitions | 543 |
 | Public API definitions | 94 |
-| Durable format definitions | 47 |
+| Durable format definitions | 48 |
 
 ## Top Files By Type Count
 
 | File | Types | LOC |
 |---|---|---|
 | api/diagnostics.rs | 23 | 1046 |
+| commit/batch.rs | 18 | 678 |
 | lifecycle/maintenance.rs | 18 | 1213 |
-| commit/batch.rs | 17 | 637 |
+| table/reader.rs | 18 | 1510 |
 | api/read.rs | 16 | 540 |
+| branch/read.rs | 16 | 2359 |
 | branch/facts.rs | 15 | 1014 |
-| branch/read.rs | 13 | 1546 |
+| service/wal.rs | 14 | 1515 |
+| table/compaction.rs | 14 | 775 |
 | lifecycle/branch_lifecycle.rs | 13 | 1210 |
 | testkit/branch_lsm/contracts.rs | 13 | 441 |
+| backend/mod.rs | 12 | 878 |
 | api/maintenance.rs | 11 | 545 |
-| lifecycle/retention.rs | 11 | 979 |
-| service/wal.rs | 11 | 1381 |
+| lifecycle/retention.rs | 11 | 983 |
 | testkit/commit_runtime_model.rs | 11 | 824 |
-| backend/mod.rs | 10 | 713 |
+| layout/mod.rs | 10 | 591 |
 | lifecycle/compaction.rs | 10 | 995 |
 | lifecycle/durable/maintenance.rs | 10 | 1960 |
 | lifecycle/facts.rs | 10 | 257 |
-| lifecycle/quarantine.rs | 10 | 1590 |
-| lifecycle/state.rs | 10 | 357 |
-| service/manifest.rs | 10 | 3320 |
-| table/cache.rs | 10 | 572 |
+| lifecycle/quarantine.rs | 10 | 1614 |
 
 ## Files Over 1,500 LOC
 
 | File | LOC |
 |---|---|
-| service/manifest.rs | 3320 |
-| api/runtime.rs | 3072 |
-| lifecycle/tests/recovery.rs | 2762 |
+| table/tests/reader.rs | 3599 |
+| service/manifest.rs | 3333 |
+| api/runtime.rs | 3232 |
+| lifecycle/tests/recovery.rs | 3007 |
+| service/table.rs | 2929 |
+| branch/read.rs | 2359 |
 | branch/tests/owned_compaction.rs | 2308 |
-| lifecycle/tests/durable.rs | 2220 |
-| service/table.rs | 2145 |
-| testkit/integration_harness.rs | 2026 |
-| lifecycle/tests/table_manifest_recovery.rs | 1986 |
-| commit/tests/durable.rs | 1973 |
+| lifecycle/tests/durable.rs | 2231 |
+| testkit/integration_harness.rs | 2111 |
+| commit/tests/durable.rs | 2066 |
+| lifecycle/tests/table_manifest_recovery.rs | 2014 |
 | lifecycle/durable/maintenance.rs | 1960 |
+| backend/local_fs.rs | 1849 |
+| lifecycle/checkpoint.rs | 1835 |
 | branch/tests/read_view.rs | 1825 |
-| lifecycle/checkpoint.rs | 1816 |
 | lifecycle/tests/flush.rs | 1801 |
+| lifecycle/tests/retention.rs | 1791 |
 | lifecycle/tests/compaction/remaining.rs | 1739 |
-| lifecycle/tests/retention.rs | 1725 |
 | testkit/commit_runtime.rs | 1631 |
-| lifecycle/quarantine.rs | 1590 |
+| lifecycle/quarantine.rs | 1614 |
+| table/tests/compaction.rs | 1601 |
+| commit/tests/cache.rs | 1557 |
 | lifecycle/tests/table_object_retention/plan.rs | 1550 |
-| branch/read.rs | 1546 |
 | lifecycle/tests/budget_runtime.rs | 1546 |
 | commit/tests/replay.rs | 1531 |
-| backend/local_fs.rs | 1527 |
 | lifecycle/tests/compaction/publication_plan.rs | 1527 |
+| service/wal.rs | 1515 |
+| table/reader.rs | 1510 |
 
 ## Parent Module Re-Exports
 
 | File | pub use statements | Approx exported names |
 |---|---|---|
-| lifecycle/mod.rs | 23 | 200 |
+| lifecycle/mod.rs | 23 | 199 |
 | testkit/mod.rs | 15 | 99 |
 | api/mod.rs | 14 | 96 |
-| commit/mod.rs | 16 | 76 |
-| format/mod.rs | 11 | 69 |
-| table/mod.rs | 11 | 56 |
-| service/mod.rs | 9 | 50 |
+| format/mod.rs | 14 | 79 |
+| commit/mod.rs | 16 | 78 |
+| service/mod.rs | 10 | 61 |
+| table/mod.rs | 11 | 60 |
 | testkit/lifecycle/mod.rs | 17 | 36 |
+| backend/mod.rs | 4 | 15 |
 | testkit/api/mod.rs | 5 | 14 |
-| format/table/mod.rs | 1 | 7 |
-| backend/mod.rs | 1 | 6 |
+| format/table/mod.rs | 2 | 8 |
+| lib.rs | 2 | 2 |
 
 ## Operation-Family Suffix Counts
 
 | Suffix | Cleanup-target types |
 |---|---|
-| Outcome | 39 |
+| Outcome | 43 |
 | Request | 22 |
 | Policy | 13 |
-| Report | 10 |
-| Reason | 7 |
+| Report | 11 |
+| Reason | 8 |
 | Proof | 7 |
 | Plan | 3 |
 | Stats | 3 |
@@ -112,6 +118,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/cache.rs | 0 | 12 |
 | table/mod.rs | 9 | 1 |
 | lifecycle/checkpoint.rs | 0 | 10 |
+| service/table.rs | 0 | 7 |
 | lifecycle/durable/bootstrap.rs | 0 | 7 |
 | service/manifest.rs | 0 | 6 |
 | lifecycle/table_manifest.rs | 0 | 6 |
@@ -120,12 +127,11 @@ Counts are conservative text matches, not a Rust AST parse.
 | format/mod.rs | 3 | 1 |
 | format/branch_catalog_manifest.rs | 0 | 4 |
 | backend/mod.rs | 0 | 4 |
+| service/mod.rs | 3 | 0 |
 | branch/error.rs | 0 | 3 |
 | testkit/integration_harness.rs | 0 | 2 |
-| service/mod.rs | 2 | 0 |
 | lifecycle/recovery.rs | 0 | 2 |
 | testkit/lifecycle/fault.rs | 0 | 1 |
-| service/wal.rs | 0 | 1 |
 
 ## Low-Reference Cleanup Candidates
 
@@ -134,6 +140,9 @@ Counts are conservative text matches, not a Rust AST parse.
 | branch/state/read_hooks.rs | BranchStateDescriptor | 2 |
 | branch/state/read_hooks.rs | BranchViewDescriptor | 2 |
 | lifecycle/facts.rs | QuarantineStage | 2 |
+| branch/state/append.rs | ValidatedAppendRow | 3 |
+| commit/batch.rs | PhysicalKeyIdentity | 3 |
+| commit/conflict.rs | UnusedConflictSource | 3 |
 | lifecycle/branch_lifecycle.rs | LifecycleTableRefDedupKey | 3 |
 | lifecycle/cache.rs | CacheCloseRunner | 3 |
 | lifecycle/cache.rs | CacheCompactionMaintenanceRunner | 3 |
@@ -148,7 +157,4 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/durable/maintenance.rs | DurableQuarantineMaintenanceRunner | 3 |
 | lifecycle/durable/maintenance.rs | DurableQuarantineRepairMaintenanceRunner | 3 |
 | lifecycle/durable/maintenance.rs | DurableWalTruncationMaintenanceRunner | 3 |
-| service/snapshot/publish_fault_tests.rs | SyntheticPublishBackend | 3 |
-| table/cache.rs | TableBlockCache | 3 |
-| table/cache.rs | TableBloomFilter | 3 |
 

@@ -437,7 +437,7 @@ fn table_block_frame_round_trips_uncompressed_and_zstd() {
 }
 
 #[test]
-fn table_block_frame_rejects_empty_payloads_for_all_m3g_block_kinds() {
+fn table_block_frame_rejects_empty_payloads_for_all_table_block_kinds() {
     for kind in [
         TableBlockKind::Data,
         TableBlockKind::Index,

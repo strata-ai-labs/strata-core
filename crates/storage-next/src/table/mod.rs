@@ -4,7 +4,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "table runtime scaffolding is consumed by later M4 table slices"
+        reason = "table runtime scaffolding is consumed by later table-runtime work"
     )
 )]
 
@@ -23,7 +23,7 @@ mod reader;
     all(not(test), not(feature = "testkit")),
     allow(
         unused_imports,
-        reason = "immutable table builder surfaces are consumed by later M4 table slices"
+        reason = "immutable table builder surfaces are consumed by later table-runtime work"
     )
 )]
 pub(crate) use builder::{BuiltTableArtifact, ImmutableTableBuilder};
@@ -31,7 +31,7 @@ pub(crate) use builder::{BuiltTableArtifact, ImmutableTableBuilder};
     all(not(test), not(feature = "testkit")),
     expect(
         unused_imports,
-        reason = "table cache and accelerator surfaces are consumed by later M4 table slices"
+        reason = "table cache and accelerator surfaces are consumed by later table-runtime work"
     )
 )]
 pub(crate) use cache::{
@@ -42,7 +42,7 @@ pub(crate) use cache::{
     not(test),
     allow(
         unused_imports,
-        reason = "generic table compaction surfaces are consumed by later M4 table slices"
+        reason = "generic table compaction surfaces are consumed by later table-runtime work"
     )
 )]
 pub(crate) use compaction::{
@@ -65,7 +65,7 @@ pub(crate) use config::{
     all(not(test), not(feature = "testkit")),
     expect(
         unused_imports,
-        reason = "raw cursor surfaces are consumed by later M4 table slices"
+        reason = "raw cursor surfaces are consumed by later table-runtime work"
     )
 )]
 pub(crate) use cursor::{
@@ -78,7 +78,7 @@ pub(crate) use facts::{TableCommitRange, TableIdentity, TableKeyRange, TableRunt
     not(test),
     expect(
         unused_imports,
-        reason = "full row-key helper surface is consumed by later M4 table slices"
+        reason = "full row-key helper surface is consumed by later table-runtime work"
     )
 )]
 pub(crate) use key::{
@@ -99,7 +99,7 @@ pub(crate) use key::{
     all(not(test), not(feature = "testkit")),
     expect(
         unused_imports,
-        reason = "mutable and frozen table surfaces are consumed by later M4 table slices"
+        reason = "mutable and frozen table surfaces are consumed by later table-runtime work"
     )
 )]
 pub(crate) use mutable::{FrozenTable, MutableTable, MutableTableAppendBaseline, TableMemoryFacts};
@@ -107,7 +107,7 @@ pub(crate) use mutable::{FrozenTable, MutableTable, MutableTableAppendBaseline, 
     not(test),
     allow(
         unused_imports,
-        reason = "immutable table reader surfaces are consumed by later M4 table slices"
+        reason = "immutable table reader surfaces are consumed by later table-runtime work"
     )
 )]
 pub(crate) use reader::{

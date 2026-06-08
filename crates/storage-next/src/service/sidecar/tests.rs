@@ -10,8 +10,8 @@ use crate::backend::local_fs::LocalFsBackend;
 use crate::backend::memory::MemoryBackend;
 use crate::backend::{
     Backend, BackendAppend, BackendCapabilities, BackendCapability, BackendError, BackendErrorKind,
-    BackendMetadata, BackendRange, DeleteStatus, PublishDurability, PublishError,
-    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
+    BackendMetadata, BackendRange, DeleteError, DeleteOutcome, DeleteStatus, PublishDurability,
+    PublishError, PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
 };
 use crate::format::{
     decode_segment_metadata, encode_segment_metadata, FormatError, SegmentMetadata,
@@ -521,7 +521,7 @@ fn delete_failure_is_reported_without_touching_wal_segment() {
     );
     assert!(report.outcome().is_none());
     assert_eq!(
-        report.delete_error().map(|error| error.object()),
+        report.delete_error().map(DeleteError::object),
         Some(&sidecar_object(6))
     );
     assert_eq!(
@@ -550,7 +550,7 @@ fn delete_missing_sidecar_is_a_noop_fact() {
     assert!(!report.deleted());
     assert!(report.failure().is_none());
     assert_eq!(
-        report.outcome().map(|outcome| outcome.status()),
+        report.outcome().map(DeleteOutcome::status),
         Some(DeleteStatus::AlreadyMissing)
     );
 }
@@ -571,7 +571,7 @@ fn delete_not_found_sidecar_error_is_a_noop_fact() {
     assert!(!report.deleted());
     assert!(report.failure().is_none());
     assert_eq!(
-        report.outcome().map(|outcome| outcome.status()),
+        report.outcome().map(DeleteOutcome::status),
         Some(DeleteStatus::AlreadyMissing)
     );
 }

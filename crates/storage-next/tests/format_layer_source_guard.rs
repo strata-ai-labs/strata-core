@@ -162,7 +162,7 @@ fn forbidden_l3_codec_marker(line: &str) -> Option<&'static str> {
         return None;
     }
 
-    for marker in [
+    [
         "SNAPSHOT_ROWS_MAGIC",
         "SNAPSHOT_ROWS_VERSION",
         "SNAPSHOT_ROWS_HEADER_SIZE",
@@ -176,12 +176,9 @@ fn forbidden_l3_codec_marker(line: &str) -> Option<&'static str> {
         "retained_history_reserved_bytes",
         "retained_version_floor.as_u64().to_le_bytes()",
         "retained_timestamp_floor.as_micros().to_le_bytes()",
-    ] {
-        if line.contains(marker) {
-            return Some(marker);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|marker| line.contains(marker))
 }
 
 fn is_production_source(file: &Path) -> bool {

@@ -93,7 +93,6 @@ fn table_manifest_format_source_stays_below_service_and_lifecycle_layers() {
         "File::",
         "crate::service",
         "crate::lifecycle",
-        "crate::layout",
         "strata_engine",
         "stratahub",
         "graph",
@@ -118,7 +117,19 @@ fn table_manifest_format_does_not_import_raw_io() {
 
 #[test]
 fn table_manifest_format_does_not_import_backend_services() {
-    assert_table_manifest_source_excludes(&["crate::backend", "crate::service", "crate::layout"]);
+    assert_table_manifest_source_excludes(&["crate::backend", "crate::service"]);
+}
+
+#[test]
+fn table_manifest_format_uses_layout_table_object_classification() {
+    let root = common::crate_root();
+    let file = root.join("src/format/table_manifest.rs");
+    let text = fs::read_to_string(&file).expect("read table manifest format source");
+
+    assert!(
+        text.contains("ObjectLayout::classify_table_object"),
+        "src/format/table_manifest.rs must consume the layout-owned table object classifier"
+    );
 }
 
 #[test]

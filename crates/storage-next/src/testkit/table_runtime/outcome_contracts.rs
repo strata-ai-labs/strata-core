@@ -174,7 +174,7 @@ impl TableRuntimeScaffoldOutcome {
         self.streaming_compaction_outputs
     }
 
-    /// Number of M4P-table-local perf-trace cases exercised.
+    /// Number of table-runtime-local perf-trace cases exercised.
     pub const fn table_perf_trace_cases(self) -> usize {
         self.table_perf_traces
     }

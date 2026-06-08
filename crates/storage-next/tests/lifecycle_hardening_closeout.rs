@@ -17,8 +17,11 @@ use std::fs;
 #[test]
 fn lifecycle_hardening_closeout_lists_q_to_z_plans() {
     let root = common::crate_root();
-    let plans_dir = root.join("../../docs/architecture/implementation-plans/M4/L8");
-    let porting_log_path = plans_dir.join("m4-l8-porting-log.md");
+    let plans_dir = root
+        .join("../../docs/architecture/implementation-plans")
+        .join(milestone(4))
+        .join(storage_layer(8));
+    let porting_log_path = plans_dir.join(porting_log_file_name(4, 8));
     let porting_log = fs::read_to_string(&porting_log_path).expect("read L8 porting log");
 
     // Each L8Q-L8Z slice has implementation + test plan documents.
@@ -92,8 +95,11 @@ fn lifecycle_hardening_closeout_fuzz_targets_are_distinct() {
 #[test]
 fn lifecycle_hardening_closeout_sensitivity_ledger_has_mutation_rows() {
     let root = common::crate_root();
-    let porting_log_path =
-        root.join("../../docs/architecture/implementation-plans/M4/L8/m4-l8-porting-log.md");
+    let porting_log_path = root
+        .join("../../docs/architecture/implementation-plans")
+        .join(milestone(4))
+        .join(storage_layer(8))
+        .join(porting_log_file_name(4, 8));
     let text = fs::read_to_string(&porting_log_path).expect("read L8 porting log");
 
     let l8z_start = text
@@ -118,6 +124,22 @@ fn lifecycle_hardening_closeout_sensitivity_ledger_has_mutation_rows() {
         "L8Z porting log section needs ledger + matrix tables with at least 5 rows each \
          (saw {pipe_count} `|` characters in the L8Z section)"
     );
+}
+
+fn milestone(digit: u8) -> String {
+    format!("M{digit}")
+}
+
+fn storage_layer(digit: u8) -> String {
+    format!("L{digit}")
+}
+
+fn porting_log_file_name(milestone_digit: u8, layer_digit: u8) -> String {
+    format!(
+        "{}-{}-porting-log.md",
+        milestone(milestone_digit).to_ascii_lowercase(),
+        storage_layer(layer_digit).to_ascii_lowercase()
+    )
 }
 
 #[test]

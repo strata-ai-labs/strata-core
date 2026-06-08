@@ -142,9 +142,9 @@ struct RecordingCursor {
 }
 
 impl RecordingCursor {
-    fn new(rows: Vec<StorageRow>, log: Rc<RefCell<RecordingCursorLog>>) -> Self {
+    fn new(rows: &[StorageRow], log: Rc<RefCell<RecordingCursorLog>>) -> Self {
         Self {
-            rows: sorted_table_rows(&rows),
+            rows: sorted_table_rows(rows),
             position: None,
             log,
         }
@@ -501,7 +501,7 @@ fn bounded_cursor_seek_to_first_uses_lower_bound_seek() {
     let lower = model_rows[2].key().clone();
     let upper = model_rows[3].key().clone();
     let log = Rc::new(RefCell::new(RecordingCursorLog::default()));
-    let inner = RecordingCursor::new(rows, Rc::clone(&log));
+    let inner = RecordingCursor::new(&rows, Rc::clone(&log));
     let mut cursor = BoundedTableCursor::new(
         Box::new(inner),
         TableKeyBounds::closed(lower.clone(), upper).expect("closed bounds"),
@@ -528,7 +528,7 @@ fn bounded_cursor_stops_after_upper_bound_without_walking_to_end() {
     let model_rows = sorted_table_rows(&rows);
     let selected = model_rows[1].key().clone();
     let log = Rc::new(RefCell::new(RecordingCursorLog::default()));
-    let inner = RecordingCursor::new(rows, Rc::clone(&log));
+    let inner = RecordingCursor::new(&rows, Rc::clone(&log));
     let mut cursor =
         BoundedTableCursor::new(Box::new(inner), TableKeyBounds::exact(selected.clone()));
 
@@ -557,7 +557,7 @@ fn bounded_cursor_seek_after_last_marks_cursor_done() {
         .key()
         .clone();
     let log = Rc::new(RefCell::new(RecordingCursorLog::default()));
-    let inner = RecordingCursor::new(rows, Rc::clone(&log));
+    let inner = RecordingCursor::new(&rows, Rc::clone(&log));
     let mut cursor =
         BoundedTableCursor::new(Box::new(inner), TableKeyBounds::exact(after_last.clone()));
 

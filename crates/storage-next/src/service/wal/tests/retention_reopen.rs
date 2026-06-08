@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend::{Backend, DeleteDurability, DeleteStatus, PublishFailureKind};
+use crate::backend::{Backend, DeleteDurability, DeleteOutcome, DeleteStatus, PublishFailureKind};
 use crate::format::FormatError;
 use crate::service::wal::WalOperation;
 use strata_core_next::CommitVersion;
@@ -220,7 +220,7 @@ fn retention_reports_missing_sidecar_delete_as_idempotent_cleanup() {
     assert_eq!(
         report.sidecar_deletes()[0]
             .outcome()
-            .map(|outcome| outcome.status()),
+            .map(DeleteOutcome::status),
         Some(DeleteStatus::AlreadyMissing)
     );
     assert!(report.sidecar_deletes()[0].failure().is_none());

@@ -1339,6 +1339,7 @@ fn immutable_reader_corrupt_block_is_not_inserted_after_decode_failure() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn immutable_reader_indexed_point_lookup_matches_eager_for_required_cases() {
     let multi_key = physical_key(1, "reader", 0x20, b"multi".to_vec());
     let high_key = physical_key(1, "reader", 0x20, vec![0x00, b'h', 0xff, b'z']);

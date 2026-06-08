@@ -162,8 +162,8 @@ pub(crate) fn decode_table_index_block(bytes: &[u8]) -> Result<TableIndexBlock, 
         let block_frame_len = reader.read_u32_le()?;
         let row_count = reader.read_u32_le()?;
         // Offset bounds and frame contents require the surrounding table bytes;
-        // M3G2 validates the payload-local shape, and whole-table decode checks
-        // that these facts point at real data-block frames.
+        // payload-local validation checks the entry shape, and whole-table
+        // decode checks that these facts point at real data-block frames.
         entries.push(TableIndexEntry::from_parts(
             first_key_bytes,
             last_key_bytes,

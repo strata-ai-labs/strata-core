@@ -78,7 +78,7 @@ pub(crate) use table_manifest::{
 };
 #[expect(
     unused_imports,
-    reason = "direct payload codec exports are used by M3F fuzz/testkit routing after record integration"
+    reason = "direct payload codec exports are used by payload fuzz/testkit routing after record integration"
 )]
 pub(crate) use wal::{decode_wal_commit_payload, encode_wal_commit_payload, WalCommitPayload};
 pub(crate) use wal::{

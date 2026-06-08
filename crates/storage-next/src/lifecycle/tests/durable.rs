@@ -174,7 +174,8 @@ fn durable_request_rejects_object_durable_candidate_until_fencing_exists() {
     assert_eq!(
         request(StorageMode::ObjectDurableCandidate, branch_id(0x12)),
         Err(LifecycleError::InvalidOpenPlan {
-            reason: "object-durable mode requires L1/L4 fenced publication before runtime assembly",
+            reason:
+                "object-durable mode requires fenced object publication before runtime assembly",
         })
     );
     assert!(backend.operations().is_empty());

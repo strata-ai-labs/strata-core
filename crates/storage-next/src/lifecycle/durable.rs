@@ -553,7 +553,8 @@ fn durable_policy_for_mode(mode: StorageMode) -> LifecycleResult<DurabilityPolic
             reason: "durable local assembly requires durable local storage mode",
         }),
         StorageMode::ObjectDurableCandidate => Err(LifecycleError::InvalidOpenPlan {
-            reason: "object-durable mode requires L1/L4 fenced publication before runtime assembly",
+            reason:
+                "object-durable mode requires fenced object publication before runtime assembly",
         }),
     }
 }

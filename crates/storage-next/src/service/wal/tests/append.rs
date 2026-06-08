@@ -422,9 +422,9 @@ fn append_rejects_backend_wrong_metadata_size_report_without_advancing_state() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn wal_append_model_strategy() -> impl Strategy<Value = (u64, Vec<(u64, Vec<u8>)>)> {
-    // M3F row-native payload framing adds fixed row overhead around the fuzzed
-    // value bytes, so the large arm stays below the minimum 1 KiB segment while
-    // still hitting rotation and near-capacity paths.
+    // Row-native payload framing adds fixed row overhead around the fuzzed value
+    // bytes, so the large arm stays below the minimum 1 KiB segment while still
+    // hitting rotation and near-capacity paths.
     let payload = proptest::prop_oneof![
         4 => vec(any::<u8>(), 0..=256),
         1 => vec(any::<u8>(), 500..=740),

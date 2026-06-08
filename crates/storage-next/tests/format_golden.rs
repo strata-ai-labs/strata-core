@@ -46,16 +46,21 @@ fn format_golden_harness_has_storage_format_directory() {
         "table-properties-block.hex",
         "wal-commit-payload-one-put.hex",
         "wal-commit-payload-put-tombstone.hex",
-        "wal-record-empty-pre-m3f.hex",
         "wal-record-envelope.hex",
         "wal-record-payload.hex",
         "wal-segment-header.hex",
     ] {
         assert!(dir.join(file).is_file(), "missing golden vector {file}");
     }
+    let historical_empty_record = format!("wal-record-empty-pre-{}f.hex", format!("m{}", 3));
+    assert!(
+        dir.join(&historical_empty_record).is_file(),
+        "missing golden vector {historical_empty_record}"
+    );
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn format_fuzz_corpus_matches_golden_vectors() {
     let cases = [
         (

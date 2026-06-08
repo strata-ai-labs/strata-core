@@ -192,6 +192,7 @@ pub(crate) fn unsupported_delete(object: &ObjectName) -> DeleteError {
 }
 
 #[cfg(any(test, feature = "testkit"))]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn durable_delete_result(object: &ObjectName, removed: bool) -> DeleteResult {
     Ok(DeleteOutcome::from_removed(
         object.clone(),

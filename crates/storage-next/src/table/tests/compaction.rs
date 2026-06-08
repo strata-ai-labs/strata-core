@@ -1328,7 +1328,7 @@ fn streaming_compaction_many_disjoint_cursor_sources_merge_in_order() {
         .iter()
         .all(|(_, source_row_index, _)| *source_row_index == 0));
     for input in [&first, &second, &third, &fourth, &fifth] {
-        assert_cursor_input_streaming_is_bounded(&input, 1);
+        assert_cursor_input_streaming_is_bounded(input, 1);
     }
 }
 

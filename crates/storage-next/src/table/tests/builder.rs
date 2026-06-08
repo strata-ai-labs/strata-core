@@ -200,7 +200,7 @@ fn immutable_builder_rejects_oversized_keys_before_format_encoding() {
 }
 
 #[test]
-fn immutable_builder_outputs_m3g_one_block_and_multi_block_bytes() {
+fn immutable_builder_outputs_table_format_one_block_and_multi_block_bytes() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
@@ -241,7 +241,7 @@ fn immutable_builder_outputs_m3g_one_block_and_multi_block_bytes() {
 }
 
 #[test]
-fn immutable_builder_emits_canonical_m3g_header_footer_bytes() {
+fn immutable_builder_emits_canonical_table_header_footer_bytes() {
     const TABLE_HEADER_SIZE: usize = 64;
     const TABLE_FOOTER_SIZE: usize = 64;
 
