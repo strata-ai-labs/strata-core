@@ -51,9 +51,14 @@ pub(crate) use snapshot::{
     SnapshotPublishRequest, SnapshotService, SnapshotServiceError,
 };
 
+#[allow(
+    unused_imports,
+    reason = "object-reader diagnostics are exposed for L6 source-shape reporting before L6 consumes them"
+)]
 pub(crate) use table::{
-    TableObjectFacts, TableObjectReadError, TableObjectReaderService, TableObjectService,
-    TableObjectServiceError,
+    TableObjectFacts, TableObjectReadError, TableObjectReaderDiagnostics, TableObjectReaderOpen,
+    TableObjectReaderOpenShape, TableObjectReaderService, TableObjectReaderSourceShape,
+    TableObjectService, TableObjectServiceError,
 };
 
 #[cfg_attr(

@@ -9,8 +9,8 @@ use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::{validate_publish_outcome, ObjectPublisher};
 use crate::table::{
-    ImmutableTableReader, TableByteSource, TableIdentity, TableReaderConfig, TableRuntimeError,
-    TableRuntimeResult,
+    ImmutableTableReader, TableByteSource, TableIdentity, TableReaderConfig, TableReaderOpenMode,
+    TableRuntimeError, TableRuntimeResult,
 };
 use std::fmt;
 use strata_core_next::CommitVersion;
@@ -249,6 +249,143 @@ impl TableObjectFacts {
 
     pub(crate) const fn commit_max(&self) -> CommitVersion {
         self.commit_max
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+    )
+)]
+pub(crate) enum TableObjectReaderSourceShape {
+    ObjectRangeSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+    )
+)]
+pub(crate) enum TableObjectReaderOpenShape {
+    LazyRangeSource,
+    MaterializedSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+    )
+)]
+pub(crate) struct TableObjectReaderDiagnostics {
+    source_shape: TableObjectReaderSourceShape,
+    open_shape: TableObjectReaderOpenShape,
+    metadata_loaded: bool,
+    index_loaded: bool,
+    data_blocks_loaded: u32,
+    rows_materialized: u64,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+    )
+)]
+impl TableObjectReaderDiagnostics {
+    fn from_object_reader(reader: &ImmutableTableReader) -> Self {
+        let runtime = reader.runtime_facts();
+        Self {
+            source_shape: TableObjectReaderSourceShape::ObjectRangeSource,
+            open_shape: table_object_reader_open_shape(runtime.open_mode()),
+            metadata_loaded: runtime.metadata_loaded(),
+            index_loaded: runtime.index_loaded(),
+            data_blocks_loaded: runtime.data_blocks_loaded(),
+            rows_materialized: runtime.rows_materialized(),
+        }
+    }
+
+    pub(crate) const fn source_shape(self) -> TableObjectReaderSourceShape {
+        self.source_shape
+    }
+
+    pub(crate) const fn open_shape(self) -> TableObjectReaderOpenShape {
+        self.open_shape
+    }
+
+    pub(crate) const fn metadata_loaded(self) -> bool {
+        self.metadata_loaded
+    }
+
+    pub(crate) const fn index_loaded(self) -> bool {
+        self.index_loaded
+    }
+
+    pub(crate) const fn data_blocks_loaded(self) -> u32 {
+        self.data_blocks_loaded
+    }
+
+    pub(crate) const fn rows_materialized(self) -> u64 {
+        self.rows_materialized
+    }
+}
+
+pub(crate) struct TableObjectReaderOpen<'a> {
+    reader: ImmutableTableReader<'a>,
+    diagnostics: TableObjectReaderDiagnostics,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+    )
+)]
+impl<'a> TableObjectReaderOpen<'a> {
+    fn new(reader: ImmutableTableReader<'a>) -> Self {
+        let diagnostics = TableObjectReaderDiagnostics::from_object_reader(&reader);
+        Self {
+            reader,
+            diagnostics,
+        }
+    }
+
+    pub(crate) fn reader(&self) -> &ImmutableTableReader<'a> {
+        &self.reader
+    }
+
+    pub(crate) const fn diagnostics(&self) -> TableObjectReaderDiagnostics {
+        self.diagnostics
+    }
+
+    pub(crate) fn into_reader(self) -> ImmutableTableReader<'a> {
+        self.reader
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+    )
+)]
+fn table_object_reader_open_shape(open_mode: TableReaderOpenMode) -> TableObjectReaderOpenShape {
+    match open_mode {
+        TableReaderOpenMode::LazySource => TableObjectReaderOpenShape::LazyRangeSource,
+        TableReaderOpenMode::EagerSource | TableReaderOpenMode::EagerBytes => {
+            TableObjectReaderOpenShape::MaterializedSource
+        }
     }
 }
 
@@ -496,6 +633,23 @@ impl<'a> TableObjectService<'a> {
         object_facts: &TableObjectFacts,
         config: TableReaderConfig,
     ) -> Result<ImmutableTableReader<'a>, TableObjectReadError> {
+        self.open_reader_with_diagnostics(identity, object_facts, config)
+            .map(TableObjectReaderOpen::into_reader)
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        )
+    )]
+    pub(crate) fn open_reader_with_diagnostics(
+        &self,
+        identity: TableIdentity,
+        object_facts: &TableObjectFacts,
+        config: TableReaderConfig,
+    ) -> Result<TableObjectReaderOpen<'a>, TableObjectReadError> {
         validate_table_object_source(
             &self.backend,
             object_facts.object(),
@@ -509,7 +663,7 @@ impl<'a> TableObjectService<'a> {
         let reader = ImmutableTableReader::open_source(identity, source, config)
             .map_err(|source| table_object_open_error(object_facts.object(), source))?;
         validate_reader_facts(object_facts, &reader)?;
-        Ok(reader)
+        Ok(TableObjectReaderOpen::new(reader))
     }
 
     pub(crate) fn require_exact_bytes(
@@ -638,7 +792,8 @@ fn require_durable_publish_capabilities(
 mod tests {
     use super::{
         read_table_object_exact_at, validate_table_object_source, TableObjectFacts,
-        TableObjectReadError, TableObjectReaderService, TableObjectService,
+        TableObjectReadError, TableObjectReaderDiagnostics, TableObjectReaderOpenShape,
+        TableObjectReaderService, TableObjectReaderSourceShape, TableObjectService,
         TableObjectServiceError,
     };
     use crate::backend::memory::MemoryBackend;
@@ -656,11 +811,13 @@ mod tests {
     use crate::object::{ObjectName, ObjectPrefix};
     use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
     use crate::table::{
-        sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
-        TableByteSource, TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBounds,
-        TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
+        sort_table_rows_by_key, BytesTableSource, ImmutableTableBuilder, ImmutableTableReader,
+        TableBlockCache, TableBuilderConfig, TableByteSource, TableCacheConfig, TableCursor,
+        TableIdentity, TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes,
+        TableReaderConfig, TableRow, TableRuntimeError,
     };
     use std::collections::BTreeMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
     use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -687,6 +844,7 @@ mod tests {
         delete_calls: Mutex<usize>,
         publish_failure: Option<PublishFailureKind>,
         read_range_failure: Option<BackendError>,
+        read_range_failure_on_call: Option<usize>,
         short_read: bool,
         long_read: bool,
         metadata_size_override: Option<u64>,
@@ -707,6 +865,7 @@ mod tests {
                 delete_calls: Mutex::new(0),
                 publish_failure: None,
                 read_range_failure: None,
+                read_range_failure_on_call: None,
                 short_read: false,
                 long_read: false,
                 metadata_size_override: None,
@@ -737,6 +896,16 @@ mod tests {
 
         fn with_read_range_failure(mut self, error: BackendError) -> Self {
             self.read_range_failure = Some(error);
+            self
+        }
+
+        fn with_read_range_failure_on_call(
+            mut self,
+            error: BackendError,
+            call_number: usize,
+        ) -> Self {
+            self.read_range_failure = Some(error);
+            self.read_range_failure_on_call = Some(call_number);
             self
         }
 
@@ -816,12 +985,18 @@ mod tests {
         }
 
         fn read_range(&self, name: &ObjectName, range: BackendRange) -> BackendResult<Vec<u8>> {
-            self.range_reads
-                .lock()
-                .expect("range reads lock")
-                .push((name.clone(), range));
+            let call_number = {
+                let mut range_reads = self.range_reads.lock().expect("range reads lock");
+                range_reads.push((name.clone(), range));
+                range_reads.len()
+            };
             if let Some(error) = &self.read_range_failure {
-                return Err(error.clone());
+                if self
+                    .read_range_failure_on_call
+                    .is_none_or(|expected| expected == call_number)
+                {
+                    return Err(error.clone());
+                }
             }
             let bytes = self.read_object(name)?;
             let end = range.end_offset().ok_or_else(|| {
@@ -1203,29 +1378,160 @@ mod tests {
     }
 
     #[test]
-    fn cache_mode_can_use_eager_reader_without_durable_claim() {
+    fn cache_mode_uses_same_lazy_reader_semantics_without_durable_claim() {
         let backend = MemoryBackend::new();
         let bytes = valid_table_bytes();
         let branch = branch_id().to_string();
         let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
         backend.write_object(&object, &bytes).expect("seed object");
-        let facts = facts_from_bytes(object, &bytes);
+        let facts = facts_from_bytes(object.clone(), &bytes);
         let identity = TableIdentity::new("memory-table").expect("identity");
 
-        let object_reader = TableObjectReaderService::new(&backend)
-            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
+        let memory_service = TableObjectReaderService::new(&backend);
+        let object_open = memory_service
+            .open_reader_with_diagnostics(identity.clone(), &facts, TableReaderConfig::default())
             .expect("open memory object-backed reader");
         let byte_reader =
             ImmutableTableReader::open_bytes(identity, bytes, TableReaderConfig::default())
                 .expect("open byte reader");
 
-        assert_reader_matches(&object_reader, &byte_reader);
+        assert_reader_matches(object_open.reader(), &byte_reader);
+        assert_lazy_object_reader_diagnostics(object_open.diagnostics());
         assert!(!backend
             .capabilities()
             .contains(BackendCapability::DurablePublish));
         assert!(!backend
             .capabilities()
             .contains(BackendCapability::DurableSync));
+    }
+
+    #[test]
+    fn cache_mode_and_durable_mode_report_same_object_reader_shape() {
+        let rows = diverse_rows();
+        let (bytes, table_rows) = built_table_bytes(
+            "object-mode-parity-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object =
+            ObjectLayout::table_object(&branch, 0, "table0001-modes").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+
+        let memory_backend = MemoryBackend::new();
+        memory_backend
+            .write_object(&object, &bytes)
+            .expect("seed memory backend");
+        let memory_service = TableObjectReaderService::new(&memory_backend);
+        let memory_open = memory_service
+            .open_reader_with_diagnostics(
+                TableIdentity::new("memory-mode-reader").expect("memory identity"),
+                &facts,
+                TableReaderConfig::default(),
+            )
+            .expect("open memory reader");
+
+        let durable_backend = RecordingBackend::durable();
+        durable_backend.seed(object.clone(), &bytes);
+        let durable_service = TableObjectReaderService::new(&durable_backend);
+        let durable_open = durable_service
+            .open_reader_with_diagnostics(
+                TableIdentity::new("durable-mode-reader").expect("durable identity"),
+                &facts,
+                TableReaderConfig::default(),
+            )
+            .expect("open durable reader");
+
+        assert_eq!(memory_open.diagnostics(), durable_open.diagnostics());
+        assert_eq!(
+            all_reader_rows(memory_open.reader()),
+            table_rows
+                .iter()
+                .map(|row| row.row().clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            all_reader_rows(memory_open.reader()),
+            all_reader_rows(durable_open.reader())
+        );
+        assert_eq!(
+            recorded_ranges(&durable_backend),
+            expected_materialized_open_ranges(&bytes)
+        );
+    }
+
+    #[test]
+    fn cache_mode_and_durable_mode_match_lazy_point_and_range_semantics() {
+        let rows = diverse_rows();
+        let (bytes, table_rows) = built_table_bytes(
+            "object-mode-query-parity-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object =
+            ObjectLayout::table_object(&branch, 0, "table0001-mode-queries").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let target_index = 2;
+        let lower_index = 1;
+        let upper_index = 3;
+        let target = &table_rows[target_index];
+        let bounds = TableKeyBounds::closed(
+            table_rows[lower_index].key().clone(),
+            table_rows[upper_index].key().clone(),
+        )
+        .expect("closed bounds");
+
+        let memory_backend = MemoryBackend::new();
+        memory_backend
+            .write_object(&object, &bytes)
+            .expect("seed memory backend");
+        let memory_open = TableObjectReaderService::new(&memory_backend)
+            .open_reader_with_diagnostics(
+                TableIdentity::new("memory-mode-query-reader").expect("memory identity"),
+                &facts,
+                TableReaderConfig::default(),
+            )
+            .expect("open memory reader");
+
+        let durable_backend = RecordingBackend::durable();
+        durable_backend.seed(object.clone(), &bytes);
+        let durable_open = TableObjectReaderService::new(&durable_backend)
+            .open_reader_with_diagnostics(
+                TableIdentity::new("durable-mode-query-reader").expect("durable identity"),
+                &facts,
+                TableReaderConfig::default(),
+            )
+            .expect("open durable reader");
+
+        assert_eq!(memory_open.diagnostics(), durable_open.diagnostics());
+        assert_eq!(
+            memory_open
+                .reader()
+                .try_get_exact(target.key())
+                .expect("memory point read"),
+            durable_open
+                .reader()
+                .try_get_exact(target.key())
+                .expect("durable point read")
+        );
+        assert_eq!(
+            bounded_reader_rows(memory_open.reader(), bounds.clone()),
+            bounded_reader_rows(durable_open.reader(), bounds)
+        );
+
+        let mut expected = expected_metadata_ranges(&bytes);
+        expected.extend(expected_data_block_ranges(
+            &bytes,
+            target_index..=target_index,
+        ));
+        expected.extend(expected_data_block_ranges(
+            &bytes,
+            lower_index..=upper_index,
+        ));
+        assert_eq!(recorded_ranges(&durable_backend), expected);
     }
 
     #[test]
@@ -1431,6 +1737,71 @@ mod tests {
     }
 
     #[test]
+    fn table_object_reader_candidate_data_read_preserves_backend_error_source_chain() {
+        let rows = diverse_rows();
+        let (bytes, table_rows) = built_table_bytes(
+            "object-data-read-failure-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object =
+            ObjectLayout::table_object(&branch, 0, "table0001-data-failure").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let target_index = 2;
+        let target = &table_rows[target_index];
+        let data_read_call = expected_metadata_ranges(&bytes).len() + 1;
+        let backend = RecordingBackend::durable().with_read_range_failure_on_call(
+            BackendError::new(BackendErrorKind::Interrupted, "lazy data range failure"),
+            data_read_call,
+        );
+        backend.seed(object.clone(), &bytes);
+        let identity = TableIdentity::new("object-data-read-failure").expect("identity");
+
+        let reader = TableObjectReaderService::new(&backend)
+            .open_reader(identity, &facts, TableReaderConfig::default())
+            .expect("metadata reads should succeed");
+        assert_eq!(recorded_ranges(&backend), expected_metadata_ranges(&bytes));
+
+        let error = reader
+            .try_get_exact(target.key())
+            .expect_err("candidate data-block read should fail");
+        assert!(matches!(
+            &error,
+            TableRuntimeError::SourceRead {
+                reason: "backend table object range read failed",
+                ..
+            }
+        ));
+        let object_error = std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<TableObjectReadError>())
+            .expect("table source error should expose object read error");
+        match object_error {
+            TableObjectReadError::Backend {
+                object: actual,
+                source,
+            } => {
+                assert_eq!(actual, &object);
+                assert_eq!(source.kind(), BackendErrorKind::Interrupted);
+            }
+            other => panic!("expected backend object read error, got {other:?}"),
+        }
+        let backend_source = std::error::Error::source(object_error)
+            .expect("object read error should expose backend source");
+        assert!(backend_source
+            .to_string()
+            .contains("lazy data range failure"));
+
+        let mut expected = expected_metadata_ranges(&bytes);
+        expected.extend(expected_data_block_ranges(
+            &bytes,
+            target_index..=target_index,
+        ));
+        assert_eq!(recorded_ranges(&backend), expected);
+    }
+
+    #[test]
     fn table_object_reader_rejects_all_stale_l4_facts() {
         let branch = branch_id().to_string();
         let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
@@ -1533,6 +1904,41 @@ mod tests {
     }
 
     #[test]
+    fn table_object_reader_fact_mismatch_stops_before_data_block_reads() {
+        let rows = diverse_rows();
+        let (bytes, _) = built_table_bytes(
+            "object-fact-mismatch-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object =
+            ObjectLayout::table_object(&branch, 0, "table0001-facts").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let stale_facts = TableObjectFacts {
+            row_count: facts.row_count() + 1,
+            ..facts
+        };
+        let backend = RecordingBackend::durable();
+        backend.seed(object.clone(), &bytes);
+        let identity = TableIdentity::new("object-fact-mismatch-reader").expect("identity");
+
+        assert_eq!(
+            TableObjectReaderService::new(&backend).open_reader(
+                identity,
+                &stale_facts,
+                TableReaderConfig::default()
+            ),
+            Err(TableObjectReadError::FactMismatch {
+                object,
+                field: "row_count",
+            })
+        );
+        assert_eq!(recorded_ranges(&backend), expected_metadata_ranges(&bytes));
+    }
+
+    #[test]
     fn table_object_reader_matches_byte_reader_for_queries_and_row_shapes() {
         let duplicate_key = physical_key_for(0x41, "object-reader", 0x20, b"multi\0version");
         let rows = vec![
@@ -1580,6 +1986,89 @@ mod tests {
         assert_eq!(backend.list_calls(), 0);
         assert_eq!(backend.write_calls(), 0);
         assert_eq!(backend.delete_calls(), 0);
+    }
+
+    #[test]
+    fn table_object_reader_point_lookup_uses_bounded_object_range_reads() {
+        let rows = diverse_rows();
+        let (bytes, table_rows) = built_table_bytes(
+            "object-point-range-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let backend = RecordingBackend::durable();
+        let branch = branch_id().to_string();
+        let facts = TableObjectService::new(&backend)
+            .publish_create(&branch, 0, "table0001-point", &bytes)
+            .expect("publish point table");
+        let identity = TableIdentity::new("object-point-range-reader").expect("identity");
+        let target_index = 2;
+        let target = &table_rows[target_index];
+
+        let object_open = TableObjectReaderService::new(&backend)
+            .open_reader_with_diagnostics(identity.clone(), &facts, TableReaderConfig::default())
+            .expect("open object-backed point reader");
+        let byte_reader = open_lazy_byte_reader(identity, bytes.clone());
+
+        assert_lazy_object_reader_diagnostics(object_open.diagnostics());
+        assert_eq!(
+            object_open
+                .reader()
+                .try_get_exact(target.key())
+                .expect("point read"),
+            byte_reader.get_exact(target.key())
+        );
+        let mut expected = expected_metadata_ranges(&bytes);
+        expected.extend(expected_data_block_ranges(
+            &bytes,
+            target_index..=target_index,
+        ));
+        assert_eq!(recorded_ranges(&backend), expected);
+        assert_ne!(
+            recorded_ranges(&backend),
+            expected_materialized_open_ranges(&bytes)
+        );
+    }
+
+    #[test]
+    fn table_object_reader_range_cursor_uses_bounded_object_range_reads() {
+        let rows = diverse_rows();
+        let (bytes, table_rows) = built_table_bytes(
+            "object-cursor-range-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let backend = RecordingBackend::durable();
+        let branch = branch_id().to_string();
+        let facts = TableObjectService::new(&backend)
+            .publish_create(&branch, 0, "table0001-range", &bytes)
+            .expect("publish range table");
+        let identity = TableIdentity::new("object-cursor-range-reader").expect("identity");
+        let lower_index = 1;
+        let upper_index = 2;
+        let bounds = TableKeyBounds::closed(
+            table_rows[lower_index].key().clone(),
+            table_rows[upper_index].key().clone(),
+        )
+        .expect("closed bounds");
+
+        let object_reader = TableObjectReaderService::new(&backend)
+            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
+            .expect("open object-backed range reader");
+        let byte_reader = open_lazy_byte_reader(identity, bytes.clone());
+
+        assert_eq!(
+            bounded_reader_rows(&object_reader, bounds.clone()),
+            bounded_reader_rows(&byte_reader, bounds)
+        );
+        let mut expected = expected_metadata_ranges(&bytes);
+        expected.extend(expected_data_block_ranges(
+            &bytes,
+            lower_index..=upper_index,
+        ));
+        assert_eq!(recorded_ranges(&backend), expected);
     }
 
     #[test]
@@ -1853,9 +2342,49 @@ mod tests {
         backend.seed(object.clone(), &bytes);
         let identity = TableIdentity::new("object-lazy-open").expect("identity");
 
-        let reader = TableObjectReaderService::new(&backend)
-            .open_reader(identity, &facts, TableReaderConfig::default())
+        let service = TableObjectReaderService::new(&backend);
+        let open = service
+            .open_reader_with_diagnostics(identity, &facts, TableReaderConfig::default())
             .expect("open lazy object reader");
+        let reader = open.reader();
+        assert_eq!(
+            reader.runtime_facts().open_mode(),
+            crate::table::TableReaderOpenMode::LazySource
+        );
+        assert_eq!(reader.runtime_facts().data_blocks_loaded(), 0);
+        assert_eq!(reader.runtime_facts().rows_materialized(), 0);
+        assert_lazy_object_reader_diagnostics(open.diagnostics());
+        assert_eq!(recorded_ranges(&backend), expected_metadata_ranges(&bytes));
+    }
+
+    #[test]
+    fn table_object_reader_block_cache_preserves_lazy_source_shape() {
+        let rows = diverse_rows();
+        let (bytes, _) = built_table_bytes(
+            "object-cache-diagnostics-source",
+            &rows,
+            2,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object =
+            ObjectLayout::table_object(&branch, 0, "table0008-cache").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let backend = RecordingBackend::durable();
+        backend.seed(object.clone(), &bytes);
+        let identity = TableIdentity::new("object-cache-diagnostics").expect("identity");
+        let service = TableObjectReaderService::new(&backend);
+
+        let open = service
+            .open_reader_with_diagnostics(identity, &facts, TableReaderConfig::default())
+            .expect("open lazy object reader");
+        assert_lazy_object_reader_diagnostics(open.diagnostics());
+
+        let reader = open
+            .into_reader()
+            .with_block_cache(enabled_block_cache(64 * 1024))
+            .expect("attach block cache");
+        assert!(reader.runtime_facts().cache_enabled());
         assert_eq!(
             reader.runtime_facts().open_mode(),
             crate::table::TableReaderOpenMode::LazySource
@@ -1877,6 +2406,33 @@ mod tests {
             BackendRange::new(index_offset, u64::from(index_len)),
             BackendRange::new(properties_offset, u64::from(properties_len)),
         ]
+    }
+
+    fn expected_data_block_ranges(
+        bytes: &[u8],
+        ordinals: impl IntoIterator<Item = usize>,
+    ) -> Vec<BackendRange> {
+        let (index_offset, index_len, properties_offset, properties_len) =
+            table_footer_ranges(bytes);
+        let metadata = decode_immutable_table_metadata(
+            bytes.len() as u64,
+            &bytes[..MAX_TABLE_HEADER_SIZE],
+            &bytes[bytes.len() - MAX_TABLE_FOOTER_SIZE..],
+            table_range(bytes, index_offset, index_len),
+            table_range(bytes, properties_offset, properties_len),
+        )
+        .expect("decode table metadata");
+        ordinals
+            .into_iter()
+            .map(|ordinal| {
+                let entry = metadata
+                    .index()
+                    .entries()
+                    .get(ordinal)
+                    .expect("data block ordinal");
+                BackendRange::new(entry.block_offset(), u64::from(entry.block_frame_len()))
+            })
+            .collect()
     }
 
     #[test]
@@ -1950,6 +2506,27 @@ mod tests {
             .into_iter()
             .map(|(_, range)| range)
             .collect()
+    }
+
+    fn enabled_block_cache(capacity_bytes: usize) -> Arc<TableBlockCache> {
+        Arc::new(TableBlockCache::new(
+            TableCacheConfig::new(true, capacity_bytes).expect("cache config"),
+        ))
+    }
+
+    fn assert_lazy_object_reader_diagnostics(diagnostics: TableObjectReaderDiagnostics) {
+        assert_eq!(
+            diagnostics.source_shape(),
+            TableObjectReaderSourceShape::ObjectRangeSource
+        );
+        assert_eq!(
+            diagnostics.open_shape(),
+            TableObjectReaderOpenShape::LazyRangeSource
+        );
+        assert!(diagnostics.metadata_loaded());
+        assert!(diagnostics.index_loaded());
+        assert_eq!(diagnostics.data_blocks_loaded(), 0);
+        assert_eq!(diagnostics.rows_materialized(), 0);
     }
 
     #[test]
@@ -2026,13 +2603,15 @@ mod tests {
         );
 
         let identity = TableIdentity::new("localfs-table").expect("identity");
-        let object_reader = TableObjectReaderService::new(&backend)
-            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
+        let service = TableObjectReaderService::new(&backend);
+        let object_open = service
+            .open_reader_with_diagnostics(identity.clone(), &facts, TableReaderConfig::default())
             .expect("open localfs object-backed reader");
         let byte_reader =
             ImmutableTableReader::open_bytes(identity, bytes, TableReaderConfig::default())
                 .expect("open byte reader");
-        assert_reader_matches(&object_reader, &byte_reader);
+        assert_reader_matches(object_open.reader(), &byte_reader);
+        assert_lazy_object_reader_diagnostics(object_open.diagnostics());
     }
 
     fn assert_reader_matches(actual: &ImmutableTableReader, expected: &ImmutableTableReader) {
@@ -2196,6 +2775,23 @@ mod tests {
         let rows = vec![row(b"alpha".to_vec(), 9), row(b"beta".to_vec(), 7)];
         encode_immutable_table(&rows, 4096, 8, TableCompression::Uncompressed)
             .expect("encode immutable table")
+    }
+
+    fn open_lazy_byte_reader(
+        identity: TableIdentity,
+        bytes: Vec<u8>,
+    ) -> ImmutableTableReader<'static> {
+        let reader = ImmutableTableReader::open_source(
+            identity,
+            BytesTableSource::new(bytes),
+            TableReaderConfig::default(),
+        )
+        .expect("open lazy byte reader");
+        assert_eq!(
+            reader.runtime_facts().open_mode(),
+            crate::table::TableReaderOpenMode::LazySource
+        );
+        reader
     }
 
     fn built_table_bytes(
