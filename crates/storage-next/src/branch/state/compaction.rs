@@ -11,9 +11,9 @@ use crate::branch::read::{
 };
 use crate::table::{
     BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionConfig,
-    TableCompactionDecision, TableCompactionPolicy, TableCompactionReport,
-    TableCompactionRowContext, TableCompactionSource, TableCompactionSourceId, TableCompactor,
-    TableIdentity, TableInternalKeyBytes, TableReaderConfig, TableRow,
+    TableCompactionDecision, TableCompactionInput, TableCompactionPolicy, TableCompactionReport,
+    TableCompactionRowContext, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
+    TableInternalKeyBytes, TableReaderConfig, TableRow, TableRuntimeResult,
 };
 use std::collections::BTreeSet;
 use strata_core_next::BranchId;
@@ -347,6 +347,27 @@ impl BranchCompactionOutcome {
     }
 }
 
+struct BranchTableCompactionSource<'a> {
+    id: TableCompactionSourceId,
+    table: &'a BranchOwnedTable,
+}
+
+impl<'a> BranchTableCompactionSource<'a> {
+    const fn new(id: TableCompactionSourceId, table: &'a BranchOwnedTable) -> Self {
+        Self { id, table }
+    }
+}
+
+impl TableCompactionInput for BranchTableCompactionSource<'_> {
+    fn id(&self) -> &TableCompactionSourceId {
+        &self.id
+    }
+
+    fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>> {
+        Ok(Box::new(self.table.reader().cursor()))
+    }
+}
+
 impl BranchLocalState {
     pub(crate) fn plan_branch_compaction(
         &self,
@@ -390,6 +411,10 @@ impl BranchLocalState {
         };
         self.require_candidate_current(candidate)?;
         let sources = self.compaction_sources(candidate)?;
+        let source_refs = sources
+            .iter()
+            .map(|source| source as &dyn TableCompactionInput)
+            .collect::<Vec<_>>();
         let compactor = TableCompactor::new(
             request.table_compaction_config(),
             request.table_builder_config(),
@@ -399,7 +424,7 @@ impl BranchLocalState {
             BranchCompactionRetentionPolicy::KeepAll => {
                 let mut policy = keep_all_policy();
                 compactor
-                    .compact(request.output_identity_seed(), &sources, &mut policy)
+                    .compact_inputs(request.output_identity_seed(), &source_refs, &mut policy)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
             BranchCompactionRetentionPolicy::DropOlderVersions
@@ -415,7 +440,7 @@ impl BranchLocalState {
                 let mut policy =
                     BranchCompactionPruningPolicy::new(request.retention_policy(), proof);
                 compactor
-                    .compact(request.output_identity_seed(), &sources, &mut policy)
+                    .compact_inputs(request.output_identity_seed(), &source_refs, &mut policy)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
         };
@@ -870,7 +895,7 @@ impl BranchLocalState {
     fn compaction_sources(
         &self,
         candidate: &BranchCompactionCandidate,
-    ) -> BranchRuntimeResult<Vec<TableCompactionSource>> {
+    ) -> BranchRuntimeResult<Vec<BranchTableCompactionSource<'_>>> {
         candidate
             .input_refs()
             .iter()
@@ -891,8 +916,7 @@ impl BranchLocalState {
                     table_ref.table_index(),
                 ))
                 .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-                TableCompactionSource::from_rows(source_id, table.rows().to_vec())
-                    .map_err(|source| BranchRuntimeError::TableRuntime { source })
+                Ok(BranchTableCompactionSource::new(source_id, table))
             })
             .collect()
     }

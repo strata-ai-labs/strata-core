@@ -4,10 +4,13 @@ use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BuiltTableArtifact,
     ImmutableTableReader, MutableTable, TableBuilderConfig, TableCompactionConfig,
     TableCompactionDecision, TableCompactionDropReason, TableCompactionDropSummary,
-    TableCompactionOutput, TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
-    TableCompactionSource, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
-    TableInternalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
+    TableCompactionInput, TableCompactionOutput, TableCompactionPolicy, TableCompactionReport,
+    TableCompactionRowContext, TableCompactionSource, TableCompactionSourceId, TableCompactor,
+    TableCursor, TableIdentity, TableInternalKeyBytes, TableReaderConfig, TableRow,
+    TableRuntimeError,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 fn keep_all_policy() -> impl TableCompactionPolicy {
@@ -218,6 +221,31 @@ fn assert_artifact_facts_match_rows(output: &TableCompactionOutput, seed: &str) 
         assert_eq!(artifact.facts().commit_range().min(), commit_min);
         assert_eq!(artifact.facts().commit_range().max(), commit_max);
     }
+}
+
+fn assert_output_key_ranges_are_non_overlapping(output: &TableCompactionOutput) {
+    let mut previous_last = None::<Vec<u8>>;
+    for artifact in output.artifacts() {
+        let first = artifact.facts().key_range().first_key();
+        let last = artifact.facts().key_range().last_key();
+        assert!(first <= last);
+        if let Some(previous) = previous_last {
+            assert!(
+                previous.as_slice() < first,
+                "output table key ranges overlapped or were not sorted"
+            );
+        }
+        previous_last = Some(last.to_vec());
+    }
+}
+
+fn drop_summary_rows(output: &TableCompactionOutput, reason: TableCompactionDropReason) -> u64 {
+    output
+        .report()
+        .drop_summaries()
+        .iter()
+        .find(|summary| summary.reason() == reason)
+        .map_or(0, |summary| summary.rows())
 }
 
 #[test]
@@ -1070,6 +1098,107 @@ impl TableCursor for FaultingCursor {
     }
 }
 
+struct TrackedCompactionInput {
+    id: TableCompactionSourceId,
+    rows: Vec<TableRow>,
+    open_calls: Rc<Cell<usize>>,
+    advance_calls: Rc<Cell<usize>>,
+}
+
+impl TrackedCompactionInput {
+    fn new(name: &str, rows: &[StorageRow]) -> Self {
+        Self {
+            id: source_id(name),
+            rows: sorted_table_rows(rows),
+            open_calls: Rc::new(Cell::new(0)),
+            advance_calls: Rc::new(Cell::new(0)),
+        }
+    }
+
+    fn from_table_rows(name: &str, rows: Vec<TableRow>) -> Self {
+        Self {
+            id: source_id(name),
+            rows,
+            open_calls: Rc::new(Cell::new(0)),
+            advance_calls: Rc::new(Cell::new(0)),
+        }
+    }
+
+    fn open_calls(&self) -> usize {
+        self.open_calls.get()
+    }
+
+    fn advance_calls(&self) -> usize {
+        self.advance_calls.get()
+    }
+}
+
+fn assert_cursor_input_streaming_is_bounded(input: &TrackedCompactionInput, logical_rows: usize) {
+    let open_calls = input.open_calls();
+    assert!(
+        (1..=2).contains(&open_calls),
+        "cursor input was opened {open_calls} times"
+    );
+    assert!(
+        input.advance_calls() >= logical_rows,
+        "cursor input advanced fewer times than its logical rows"
+    );
+    assert!(
+        input.advance_calls() <= logical_rows.saturating_mul(open_calls),
+        "cursor input advanced more than once per logical row per pass"
+    );
+}
+
+impl TableCompactionInput for TrackedCompactionInput {
+    fn id(&self) -> &TableCompactionSourceId {
+        &self.id
+    }
+
+    fn open_cursor(&self) -> Result<Box<dyn TableCursor + '_>, TableRuntimeError> {
+        self.open_calls.set(self.open_calls.get().saturating_add(1));
+        Ok(Box::new(TrackedCompactionCursor {
+            rows: &self.rows,
+            position: None,
+            advance_calls: self.advance_calls.clone(),
+        }))
+    }
+}
+
+struct TrackedCompactionCursor<'a> {
+    rows: &'a [TableRow],
+    position: Option<usize>,
+    advance_calls: Rc<Cell<usize>>,
+}
+
+impl TableCursor for TrackedCompactionCursor<'_> {
+    fn seek_to_first(&mut self) -> Result<(), TableRuntimeError> {
+        self.position = (!self.rows.is_empty()).then_some(0);
+        Ok(())
+    }
+
+    fn seek(&mut self, target: &TableInternalKeyBytes) -> Result<(), TableRuntimeError> {
+        let index = match self.rows.binary_search_by(|row| row.key().cmp(target)) {
+            Ok(index) | Err(index) => index,
+        };
+        self.position = (index < self.rows.len()).then_some(index);
+        Ok(())
+    }
+
+    fn advance(&mut self) -> Result<(), TableRuntimeError> {
+        self.advance_calls
+            .set(self.advance_calls.get().saturating_add(1));
+        self.position = self.position.and_then(|position| {
+            let next = position.saturating_add(1);
+            (next < self.rows.len()).then_some(next)
+        });
+        Ok(())
+    }
+
+    fn current(&self) -> Option<&TableRow> {
+        self.position.and_then(|position| self.rows.get(position))
+    }
+}
+
 #[test]
 fn cursor_source_errors_are_preserved_before_compaction() {
     let rows = [put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
@@ -1087,4 +1216,386 @@ fn cursor_source_errors_are_preserved_before_compaction() {
         Err(TableRuntimeError::source_read("advance failed"))
     );
     assert_eq!(advance_failure.advance_calls, 1);
+}
+
+#[test]
+fn compaction_streams_cursor_inputs_without_collecting_sources() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ];
+    let left = TrackedCompactionInput::new("stream-left", &[rows[0].clone(), rows[2].clone()]);
+    let right = TrackedCompactionInput::new("stream-right", &[rows[1].clone(), rows[3].clone()]);
+    let inputs: [&dyn TableCompactionInput; 2] = [&left, &right];
+    let mut observed = Vec::new();
+    let mut policy = |context: &TableCompactionRowContext<'_>, row: &TableRow| {
+        observed.push((
+            context.source_id().as_str().to_owned(),
+            context.source_index(),
+            context.source_row_index(),
+            row.row().clone(),
+        ));
+        Ok(TableCompactionDecision::Keep)
+    };
+
+    let output = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("stream-cursor-input"), &inputs, &mut policy)
+        .expect("stream cursor input compaction");
+
+    assert_eq!(output_storage_rows(&output), sorted_storage_rows(&rows));
+    assert_cursor_input_streaming_is_bounded(&left, 2);
+    assert_cursor_input_streaming_is_bounded(&right, 2);
+    assert_eq!(
+        observed
+            .iter()
+            .map(|(_, _, _, row)| row.clone())
+            .collect::<Vec<_>>(),
+        sorted_storage_rows(&rows)
+    );
+    assert_eq!(observed[0].0, "stream-left");
+    assert_eq!(observed[1].0, "stream-right");
+    assert_eq!(observed[2].2, 1);
+    assert_eq!(observed[3].2, 1);
+}
+
+#[test]
+fn streaming_compaction_zero_cursor_sources_produce_no_outputs() {
+    let inputs: [&dyn TableCompactionInput; 0] = [];
+    let mut calls = 0usize;
+    let mut policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        calls = calls.saturating_add(1);
+        Ok(TableCompactionDecision::Keep)
+    };
+
+    let output = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("stream-empty-inputs"), &inputs, &mut policy)
+        .expect("empty cursor-input compaction");
+
+    assert!(output.artifacts().is_empty());
+    assert_eq!(output.report().input_sources(), 0);
+    assert_eq!(output.report().input_rows(), 0);
+    assert_eq!(output.report().kept_rows(), 0);
+    assert_eq!(output.report().dropped_rows(), 0);
+    assert_eq!(output.report().output_tables(), 0);
+    assert_eq!(output.report().split_count(), 0);
+    assert_eq!(calls, 0);
+}
+
+#[test]
+fn streaming_compaction_many_disjoint_cursor_sources_merge_in_order() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let first = TrackedCompactionInput::new("many-0", std::slice::from_ref(&rows[3]));
+    let second = TrackedCompactionInput::new("many-1", std::slice::from_ref(&rows[1]));
+    let third = TrackedCompactionInput::new("many-2", std::slice::from_ref(&rows[4]));
+    let fourth = TrackedCompactionInput::new("many-3", std::slice::from_ref(&rows[0]));
+    let fifth = TrackedCompactionInput::new("many-4", std::slice::from_ref(&rows[2]));
+    let inputs: [&dyn TableCompactionInput; 5] = [&first, &second, &third, &fourth, &fifth];
+    let mut observed = Vec::new();
+    let mut policy = |context: &TableCompactionRowContext<'_>, row: &TableRow| {
+        observed.push((
+            context.source_index(),
+            context.source_row_index(),
+            row.row().clone(),
+        ));
+        Ok(TableCompactionDecision::Keep)
+    };
+
+    let output = compactor(16 * 1024, 8)
+        .compact_inputs(&identity("stream-many-sources"), &inputs, &mut policy)
+        .expect("many cursor-input compaction");
+
+    assert_eq!(output.report().input_sources(), 5);
+    assert_eq!(output.report().input_rows(), rows.len() as u64);
+    assert_eq!(output.report().kept_rows(), rows.len() as u64);
+    assert_eq!(output.report().dropped_rows(), 0);
+    assert_eq!(output_storage_rows(&output), sorted_storage_rows(&rows));
+    assert_eq!(
+        observed
+            .iter()
+            .map(|(_, _, row)| row.clone())
+            .collect::<Vec<_>>(),
+        sorted_storage_rows(&rows)
+    );
+    assert!(observed
+        .iter()
+        .all(|(_, source_row_index, _)| *source_row_index == 0));
+    for input in [&first, &second, &third, &fourth, &fifth] {
+        assert_cursor_input_streaming_is_bounded(&input, 1);
+    }
+}
+
+#[test]
+fn streaming_compaction_single_cursor_source_copies_rows_when_policy_keeps_all() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        tombstone_row(b"bravo".to_vec(), 2),
+        expired_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ];
+    let input = TrackedCompactionInput::new("single-source", &rows);
+    let inputs: [&dyn TableCompactionInput; 1] = [&input];
+    let mut policy = keep_all_policy();
+
+    let output = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("stream-single-source"), &inputs, &mut policy)
+        .expect("single cursor-input compaction");
+    let kept = output_storage_rows(&output);
+
+    assert_eq!(kept, sorted_storage_rows(&rows));
+    assert_eq!(output.report().input_sources(), 1);
+    assert_eq!(output.report().input_rows(), rows.len() as u64);
+    assert_eq!(output.report().kept_rows(), rows.len() as u64);
+    assert_eq!(output.report().dropped_rows(), 0);
+    assert_eq!(output.report().drop_summaries(), &[]);
+    assert!(kept.iter().any(StorageRow::is_tombstone));
+    assert!(kept
+        .iter()
+        .any(|row| row.expires_at() == Timestamp::from_micros(1)));
+    assert_cursor_input_streaming_is_bounded(&input, rows.len());
+}
+
+#[test]
+fn streaming_compaction_preserves_cross_source_physical_key_versions() {
+    let shared_key = physical_key(1, 0x20, b"shared-across-sources".to_vec());
+    let newer = put_row_for_key(shared_key.clone(), 30, b"newer".to_vec());
+    let older = put_row_for_key(shared_key, 7, b"older".to_vec());
+    let neighbor = put_row(b"neighbor".to_vec(), 11);
+    let left = TrackedCompactionInput::new("version-left", &[older.clone(), neighbor.clone()]);
+    let right = TrackedCompactionInput::new("version-right", std::slice::from_ref(&newer));
+    let inputs: [&dyn TableCompactionInput; 2] = [&left, &right];
+    let mut policy = keep_all_policy();
+
+    let output = compactor(16 * 1024, 4)
+        .compact_inputs(
+            &identity("stream-cross-source-versions"),
+            &inputs,
+            &mut policy,
+        )
+        .expect("cross-source version compaction");
+    let kept = output_storage_rows(&output);
+
+    assert_eq!(
+        kept,
+        sorted_storage_rows(&[newer.clone(), older.clone(), neighbor])
+    );
+    assert_eq!(output.report().input_rows(), 3);
+    assert_eq!(output.report().kept_rows(), 3);
+    assert_eq!(output.report().dropped_rows(), 0);
+    assert!(kept.iter().any(|row| row.value() == b"newer"));
+    assert!(kept.iter().any(|row| row.value() == b"older"));
+}
+
+#[test]
+fn streaming_policy_can_drop_older_physical_key_versions() {
+    let shared_key = physical_key(1, 0x20, b"versioned-stream".to_vec());
+    let newer = put_row_for_key(shared_key.clone(), 30, b"newer".to_vec());
+    let older = put_row_for_key(shared_key, 7, b"older".to_vec());
+    let neighbor = put_row(b"neighbor".to_vec(), 11);
+    let left =
+        TrackedCompactionInput::new("older-version-left", &[older.clone(), neighbor.clone()]);
+    let right = TrackedCompactionInput::new("older-version-right", std::slice::from_ref(&newer));
+    let inputs: [&dyn TableCompactionInput; 2] = [&left, &right];
+    let mut policy = |context: &TableCompactionRowContext<'_>, row: &TableRow| {
+        let Some(previous_key) = context.previous_kept_key() else {
+            return Ok(TableCompactionDecision::Keep);
+        };
+        if previous_key.physical_key()? == row.physical_key().clone() {
+            Ok(TableCompactionDecision::drop(
+                TableCompactionDropReason::OlderVersion,
+            ))
+        } else {
+            Ok(TableCompactionDecision::Keep)
+        }
+    };
+
+    let output = compactor(16 * 1024, 4)
+        .compact_inputs(
+            &identity("stream-older-version-policy"),
+            &inputs,
+            &mut policy,
+        )
+        .expect("older-version cursor-input compaction");
+    let kept = output_storage_rows(&output);
+
+    assert_eq!(kept, sorted_storage_rows(&[newer.clone(), neighbor]));
+    assert!(kept.iter().any(|row| row.value() == b"newer"));
+    assert!(!kept.iter().any(|row| row.value() == b"older"));
+    assert_eq!(output.report().input_rows(), 3);
+    assert_eq!(output.report().kept_rows(), 2);
+    assert_eq!(output.report().dropped_rows(), 1);
+    assert_eq!(
+        drop_summary_rows(&output, TableCompactionDropReason::OlderVersion),
+        1
+    );
+}
+
+#[test]
+fn streaming_policy_controls_tombstone_and_expired_row_drops() {
+    let keep_delete = tombstone_row(b"keep-delete".to_vec(), 10);
+    let drop_delete = tombstone_row(b"drop-delete".to_vec(), 9);
+    let expired = expired_row(b"drop-expired".to_vec(), 8);
+    let live = put_row(b"live".to_vec(), 7);
+    let left = TrackedCompactionInput::new("policy-left", &[keep_delete.clone(), expired.clone()]);
+    let right = TrackedCompactionInput::new("policy-right", &[drop_delete.clone(), live.clone()]);
+    let inputs: [&dyn TableCompactionInput; 2] = [&left, &right];
+    let mut policy = |_: &TableCompactionRowContext<'_>, row: &TableRow| {
+        if row.is_tombstone() && row.row().physical_key().user_key() == b"drop-delete" {
+            Ok(TableCompactionDecision::drop(
+                TableCompactionDropReason::TombstoneElided,
+            ))
+        } else if row.expires_at() != Timestamp::EPOCH {
+            Ok(TableCompactionDecision::drop(
+                TableCompactionDropReason::Expired,
+            ))
+        } else {
+            Ok(TableCompactionDecision::Keep)
+        }
+    };
+
+    let output = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("stream-policy-sensitive"), &inputs, &mut policy)
+        .expect("policy-controlled cursor-input compaction");
+    let kept = output_storage_rows(&output);
+
+    assert_eq!(
+        kept,
+        sorted_storage_rows(&[keep_delete.clone(), live.clone()])
+    );
+    assert!(kept.iter().any(StorageRow::is_tombstone));
+    assert!(!kept
+        .iter()
+        .any(|row| row.physical_key().user_key() == b"drop-delete"));
+    assert!(!kept
+        .iter()
+        .any(|row| row.physical_key().user_key() == b"drop-expired"));
+    assert_eq!(output.report().input_rows(), 4);
+    assert_eq!(output.report().kept_rows(), 2);
+    assert_eq!(output.report().dropped_rows(), 2);
+    assert_eq!(
+        drop_summary_rows(&output, TableCompactionDropReason::TombstoneElided),
+        1
+    );
+    assert_eq!(
+        drop_summary_rows(&output, TableCompactionDropReason::Expired),
+        1
+    );
+}
+
+#[test]
+fn streaming_policy_error_aborts_without_output_success() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let input = TrackedCompactionInput::new("stream-error-source", &rows);
+    let inputs: [&dyn TableCompactionInput; 1] = [&input];
+    let mut calls = 0usize;
+    let mut policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        calls = calls.saturating_add(1);
+        if calls == 1 {
+            Ok(TableCompactionDecision::Keep)
+        } else {
+            Err(TableRuntimeError::CompactionPolicy {
+                reason: "streaming policy failure",
+            })
+        }
+    };
+
+    let err = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("stream-policy-error"), &inputs, &mut policy)
+        .expect_err("streaming policy error aborts compaction");
+
+    assert_eq!(
+        err,
+        TableRuntimeError::CompactionPolicy {
+            reason: "streaming policy failure",
+        }
+    );
+    assert_eq!(calls, 2);
+    assert_cursor_input_streaming_is_bounded(&input, rows.len());
+}
+
+#[test]
+fn cursor_input_duplicate_rejection_runs_before_policy() {
+    let duplicate = put_row(b"same".to_vec(), 7);
+    let left = TrackedCompactionInput::new("dup-left", std::slice::from_ref(&duplicate));
+    let right = TrackedCompactionInput::new("dup-right", &[duplicate]);
+    let inputs: [&dyn TableCompactionInput; 2] = [&left, &right];
+    let mut calls = 0usize;
+    let mut policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        calls = calls.saturating_add(1);
+        Ok(TableCompactionDecision::Keep)
+    };
+
+    let err = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("cursor-duplicate"), &inputs, &mut policy)
+        .expect_err("duplicate cursor input rejected");
+
+    assert!(matches!(
+        err,
+        TableRuntimeError::DuplicateInternalKey { .. }
+    ));
+    assert_eq!(calls, 0);
+    assert_eq!(left.open_calls(), 1);
+    assert_eq!(right.open_calls(), 1);
+}
+
+#[test]
+fn cursor_input_invalid_order_is_rejected_before_policy() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let input = TrackedCompactionInput::from_table_rows(
+        "unsorted-cursor",
+        vec![rows[1].clone(), rows[0].clone()],
+    );
+    let inputs: [&dyn TableCompactionInput; 1] = [&input];
+    let mut calls = 0usize;
+    let mut policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        calls = calls.saturating_add(1);
+        Ok(TableCompactionDecision::Keep)
+    };
+
+    let err = compactor(16 * 1024, 4)
+        .compact_inputs(&identity("cursor-invalid-order"), &inputs, &mut policy)
+        .expect_err("invalid cursor order rejected");
+
+    assert!(matches!(err, TableRuntimeError::InvalidRowOrder { .. }));
+    assert_eq!(calls, 0);
+    assert_eq!(input.open_calls(), 1);
+    assert_eq!(input.advance_calls(), 1);
+}
+
+#[test]
+fn streaming_compaction_output_ranges_are_sorted_and_non_overlapping() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let left = TrackedCompactionInput::new(
+        "range-left",
+        &[rows[0].clone(), rows[2].clone(), rows[4].clone()],
+    );
+    let right = TrackedCompactionInput::new("range-right", &[rows[1].clone(), rows[3].clone()]);
+    let inputs: [&dyn TableCompactionInput; 2] = [&left, &right];
+    let mut policy = keep_all_policy();
+
+    let output = compactor(1, 8)
+        .compact_inputs(&identity("stream-output-ranges"), &inputs, &mut policy)
+        .expect("streaming split compaction");
+
+    assert!(output.artifacts().len() > 1);
+    assert_output_key_ranges_are_non_overlapping(&output);
+    assert_artifact_facts_match_rows(&output, "stream-output-ranges");
+    assert_eq!(output_storage_rows(&output), sorted_storage_rows(&rows));
 }

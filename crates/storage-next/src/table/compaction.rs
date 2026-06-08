@@ -5,6 +5,8 @@ use super::{
     TableBuilderConfig, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
     TablePhysicalKeyBytes, TableRow, TableRuntimeError, TableRuntimeResult,
 };
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 const MAX_SOURCE_ID_BYTES: usize = 128;
 const OUTPUT_IDENTITY_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -35,7 +37,20 @@ impl TableCompactor {
         sources: &[TableCompactionSource],
         policy: &mut P,
     ) -> TableRuntimeResult<TableCompactionOutput> {
-        compact_tables(self, output_identity_seed, sources, policy)
+        let sources = sources
+            .iter()
+            .map(|source| source as &dyn TableCompactionInput)
+            .collect::<Vec<_>>();
+        self.compact_inputs(output_identity_seed, &sources, policy)
+    }
+
+    pub(crate) fn compact_inputs<P: TableCompactionPolicy + ?Sized>(
+        &self,
+        output_identity_seed: &TableIdentity,
+        sources: &[&dyn TableCompactionInput],
+        policy: &mut P,
+    ) -> TableRuntimeResult<TableCompactionOutput> {
+        compact_table_inputs(self, output_identity_seed, sources, policy)
     }
 
     pub(crate) const fn config(&self) -> TableCompactionConfig {
@@ -123,16 +138,76 @@ impl TableCompactionSource {
         &self.id
     }
 
-    pub(crate) fn rows(&self) -> &[TableRow] {
-        &self.rows
-    }
-
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.rows.is_empty()
+    }
+
+    fn cursor(&self) -> Box<dyn TableCursor + '_> {
+        Box::new(TableCompactionRowsCursor::new(&self.rows))
+    }
+}
+
+pub(crate) trait TableCompactionInput {
+    fn id(&self) -> &TableCompactionSourceId;
+    fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>>;
+}
+
+impl TableCompactionInput for TableCompactionSource {
+    fn id(&self) -> &TableCompactionSourceId {
+        self.id()
+    }
+
+    fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>> {
+        Ok(self.cursor())
+    }
+}
+
+struct TableCompactionRowsCursor<'a> {
+    rows: &'a [TableRow],
+    position: Option<usize>,
+}
+
+impl<'a> TableCompactionRowsCursor<'a> {
+    const fn new(rows: &'a [TableRow]) -> Self {
+        Self {
+            rows,
+            position: None,
+        }
+    }
+
+    fn seek_position(&self, target: &TableInternalKeyBytes) -> Option<usize> {
+        let index = match self.rows.binary_search_by(|row| row.key().cmp(target)) {
+            Ok(index) | Err(index) => index,
+        };
+        (index < self.rows.len()).then_some(index)
+    }
+}
+
+impl TableCursor for TableCompactionRowsCursor<'_> {
+    fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
+        self.position = (!self.rows.is_empty()).then_some(0);
+        Ok(())
+    }
+
+    fn seek(&mut self, target: &TableInternalKeyBytes) -> TableRuntimeResult<()> {
+        self.position = self.seek_position(target);
+        Ok(())
+    }
+
+    fn advance(&mut self) -> TableRuntimeResult<()> {
+        self.position = self.position.and_then(|position| {
+            let next = position.saturating_add(1);
+            (next < self.rows.len()).then_some(next)
+        });
+        Ok(())
+    }
+
+    fn current(&self) -> Option<&TableRow> {
+        self.position.and_then(|position| self.rows.get(position))
     }
 }
 
@@ -337,26 +412,17 @@ impl TableCompactionOutput {
     }
 }
 
-fn compact_tables(
+fn compact_table_inputs(
     compactor: &TableCompactor,
     output_identity_seed: &TableIdentity,
-    sources: &[TableCompactionSource],
+    sources: &[&dyn TableCompactionInput],
     policy: &mut (impl TableCompactionPolicy + ?Sized),
 ) -> TableRuntimeResult<TableCompactionOutput> {
+    validate_no_global_duplicate_internal_keys(sources)?;
+
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
-    let mut merged = merged_rows(sources);
-    merged.sort_by(
-        |(left_source_index, left_row_index, left_row),
-         (right_source_index, right_row_index, right_row)| {
-            left_row
-                .key()
-                .cmp(right_row.key())
-                .then_with(|| left_source_index.cmp(right_source_index))
-                .then_with(|| left_row_index.cmp(right_row_index))
-        },
-    );
-    validate_no_global_duplicate_internal_keys(&merged)?;
+    let mut merged = TableCompactionMergeCursor::new(sources)?;
 
     let target_output_bytes = compactor.config.target_output_bytes();
     require_nonzero_target_output_bytes(target_output_bytes)?;
@@ -366,24 +432,32 @@ fn compact_tables(
     let mut artifacts = Vec::new();
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
 
-    for (source_index, source_row_index, row) in merged {
+    while let Some(current) = merged.current().map(|current| {
+        (
+            current.source_id,
+            current.source_index,
+            current.source_row_index,
+            current.row.clone(),
+        )
+    }) {
+        let (source_id, source_index, source_row_index, row) = current;
         report.input_rows = report.input_rows.saturating_add(1);
 
         let context = TableCompactionRowContext {
-            source_id: sources[source_index].id(),
+            source_id,
             source_index,
             source_row_index,
             merged_row_index: report.input_rows.saturating_sub(1),
             previous_kept_key: previous_kept_key.as_ref(),
         };
-        match policy.decide(&context, row)? {
+        match policy.decide(&context, &row)? {
             TableCompactionDecision::Keep => {
                 if should_split_before(
                     &output_rows,
                     output_approximate_bytes,
                     output_last_physical_key.as_deref(),
                     target_output_bytes,
-                    row,
+                    &row,
                 )? {
                     build_pending_output(
                         &builder,
@@ -396,19 +470,21 @@ fn compact_tables(
                         compactor.config.max_output_tables(),
                     )?;
                 }
+                let kept_key = row.key().clone();
                 push_pending_row(
                     &mut output_rows,
                     &mut output_approximate_bytes,
                     &mut output_last_physical_key,
-                    row.clone(),
+                    row,
                 )?;
-                previous_kept_key = Some(row.key().clone());
+                previous_kept_key = Some(kept_key);
                 report.record_keep();
             }
             TableCompactionDecision::Drop { reason } => {
                 report.record_drop(reason);
             }
         }
+        merged.advance()?;
     }
 
     build_pending_output(
@@ -426,31 +502,145 @@ fn compact_tables(
 }
 
 fn validate_no_global_duplicate_internal_keys(
-    merged: &[(usize, usize, &TableRow)],
+    sources: &[&dyn TableCompactionInput],
 ) -> TableRuntimeResult<()> {
-    let mut previous_key: Option<&TableInternalKeyBytes> = None;
-    for (_, _, row) in merged {
-        if let Some(previous) = previous_key {
-            if previous == row.key() {
+    let mut merged = TableCompactionMergeCursor::new(sources)?;
+    let mut previous_key: Option<TableInternalKeyBytes> = None;
+    while let Some(current) = merged.current() {
+        if let Some(previous) = &previous_key {
+            if previous == current.row.key() {
                 return Err(TableRuntimeError::DuplicateInternalKey {
-                    key: row.encoded_key().to_vec(),
+                    key: current.row.encoded_key().to_vec(),
                 });
             }
         }
-        previous_key = Some(row.key());
+        previous_key = Some(current.row.key().clone());
+        merged.advance()?;
     }
     Ok(())
 }
 
-fn merged_rows(sources: &[TableCompactionSource]) -> Vec<(usize, usize, &TableRow)> {
-    let capacity = sources.iter().map(TableCompactionSource::len).sum();
-    let mut merged = Vec::with_capacity(capacity);
-    for (source_index, source) in sources.iter().enumerate() {
-        for (source_row_index, row) in source.rows().iter().enumerate() {
-            merged.push((source_index, source_row_index, row));
-        }
+struct TableCompactionMergeCursor<'a> {
+    sources: Vec<TableCompactionSourceCursor<'a>>,
+    heap: BinaryHeap<TableCompactionHeapItem>,
+}
+
+struct TableCompactionSourceCursor<'a> {
+    source_id: &'a TableCompactionSourceId,
+    source_index: usize,
+    source_row_index: usize,
+    last_key: Option<TableInternalKeyBytes>,
+    cursor: Box<dyn TableCursor + 'a>,
+}
+
+struct TableCompactionMergedRow<'a> {
+    source_id: &'a TableCompactionSourceId,
+    source_index: usize,
+    source_row_index: usize,
+    row: &'a TableRow,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TableCompactionHeapItem {
+    key: TableInternalKeyBytes,
+    source_index: usize,
+}
+
+impl Ord for TableCompactionHeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .key
+            .cmp(&self.key)
+            .then_with(|| other.source_index.cmp(&self.source_index))
     }
-    merged
+}
+
+impl PartialOrd for TableCompactionHeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'a> TableCompactionMergeCursor<'a> {
+    fn new(sources: &'a [&'a dyn TableCompactionInput]) -> TableRuntimeResult<Self> {
+        let mut cursors = Vec::with_capacity(sources.len());
+        let mut heap = BinaryHeap::new();
+        for (source_index, source) in sources.iter().enumerate() {
+            let mut cursor = source.open_cursor()?;
+            cursor.seek_to_first()?;
+            if let Some(key) = cursor.current_key() {
+                heap.push(TableCompactionHeapItem {
+                    key: key.clone(),
+                    source_index,
+                });
+            }
+            cursors.push(TableCompactionSourceCursor {
+                source_id: source.id(),
+                source_index,
+                source_row_index: 0,
+                last_key: cursor.current_key().cloned(),
+                cursor,
+            });
+        }
+        Ok(Self {
+            sources: cursors,
+            heap,
+        })
+    }
+
+    fn current(&self) -> Option<TableCompactionMergedRow<'_>> {
+        let selected = self.heap.peek()?;
+        let source = self.sources.get(selected.source_index)?;
+        let row = source.cursor.current()?;
+        Some(TableCompactionMergedRow {
+            source_id: source.source_id,
+            source_index: source.source_index,
+            source_row_index: source.source_row_index,
+            row,
+        })
+    }
+
+    fn advance(&mut self) -> TableRuntimeResult<()> {
+        let Some(selected) = self.heap.pop() else {
+            return Ok(());
+        };
+        let source =
+            self.sources
+                .get_mut(selected.source_index)
+                .ok_or(TableRuntimeError::InvalidRange {
+                    field: "compaction_source_index",
+                })?;
+        source.cursor.advance()?;
+        source.source_row_index = source.source_row_index.saturating_add(1);
+        if let Some(key) = source.cursor.current_key() {
+            validate_compaction_source_key_order(source.last_key.as_ref(), key)?;
+            source.last_key = Some(key.clone());
+            self.heap.push(TableCompactionHeapItem {
+                key: key.clone(),
+                source_index: selected.source_index,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_compaction_source_key_order(
+    previous: Option<&TableInternalKeyBytes>,
+    current: &TableInternalKeyBytes,
+) -> TableRuntimeResult<()> {
+    let Some(previous) = previous else {
+        return Ok(());
+    };
+    match previous.cmp(current) {
+        Ordering::Less => Ok(()),
+        Ordering::Equal => Err(TableRuntimeError::DuplicateInternalKey {
+            key: current.as_slice().to_vec(),
+        }),
+        Ordering::Greater => Err(TableRuntimeError::InvalidRowOrder {
+            previous: previous.as_slice().to_vec(),
+            current: current.as_slice().to_vec(),
+        }),
+    }
 }
 
 fn require_nonzero_target_output_bytes(target_output_bytes: u64) -> TableRuntimeResult<()> {
