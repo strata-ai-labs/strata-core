@@ -1363,36 +1363,18 @@ fn visible_point_candidates(
         }
     }
 
+    let key_bytes = TablePhysicalKeyBytes::from_physical_key(key);
     for (level_index, tables) in owned_levels.iter().enumerate() {
-        if level_index > 0 && !tables.is_empty() {
-            source_counts.owned_nonzero_level_searches =
-                source_counts.owned_nonzero_level_searches.saturating_add(1);
-        }
-        for (table_index, table) in tables.iter().enumerate() {
-            if level_index == 0 {
-                source_counts.owned_l0_table_probes =
-                    source_counts.owned_l0_table_probes.saturating_add(1);
-            } else {
-                source_counts.owned_nonzero_table_probes =
-                    source_counts.owned_nonzero_table_probes.saturating_add(1);
-            }
-            source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-            let (row, visited) = table.reader().seek_physical_key(
-                key,
-                effective_bound.max_commit_version(),
-                effective_bound.max_commit_timestamp(),
-            );
-            rows_visited = rows_visited.saturating_add(visited);
-            if let Some(row) = row {
-                rows.push(candidate_row(
-                    row.row().clone(),
-                    BranchRowSource::OwnedTable {
-                        level: table.level(),
-                        table_index,
-                    },
-                ));
-            }
-        }
+        collect_owned_level_point_candidates(
+            level_index,
+            tables,
+            key,
+            &key_bytes,
+            effective_bound,
+            &mut rows,
+            &mut rows_visited,
+            &mut source_counts,
+        )?;
     }
 
     collect_visible_inherited_point_candidates(
@@ -1407,6 +1389,210 @@ fn visible_point_candidates(
     perf_trace::record_branch_point_sources(source_counts);
     perf_trace::record_point_candidate_collection(rows_visited, rows.len());
     Ok(rows)
+}
+
+fn collect_owned_level_point_candidates(
+    level_index: usize,
+    tables: &[BranchOwnedTable],
+    key: &PhysicalKey,
+    key_bytes: &TablePhysicalKeyBytes,
+    effective_bound: BranchEffectiveReadBound,
+    rows: &mut Vec<CandidateRow>,
+    rows_visited: &mut usize,
+    source_counts: &mut perf_trace::BranchPointSourceCounts,
+) -> BranchRuntimeResult<()> {
+    if level_index == 0 {
+        for (table_index, table) in tables.iter().enumerate() {
+            source_counts.owned_l0_table_probes =
+                source_counts.owned_l0_table_probes.saturating_add(1);
+            source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
+            let (row, visited) = table.reader().seek_physical_key(
+                key,
+                effective_bound.max_commit_version(),
+                effective_bound.max_commit_timestamp(),
+            );
+            *rows_visited = (*rows_visited).saturating_add(visited);
+            if let Some(row) = row {
+                rows.push(candidate_row(
+                    row.row().clone(),
+                    BranchRowSource::OwnedTable {
+                        level: table.level(),
+                        table_index,
+                    },
+                ));
+            }
+        }
+        return Ok(());
+    }
+
+    if tables.is_empty() {
+        return Ok(());
+    }
+
+    source_counts.owned_nonzero_level_searches =
+        source_counts.owned_nonzero_level_searches.saturating_add(1);
+    let Some(table_index) = select_nonzero_level_point_table(tables, key_bytes)? else {
+        return Ok(());
+    };
+    let table = &tables[table_index];
+    source_counts.owned_nonzero_table_probes =
+        source_counts.owned_nonzero_table_probes.saturating_add(1);
+    source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
+    let (row, visited) = table.reader().seek_physical_key(
+        key,
+        effective_bound.max_commit_version(),
+        effective_bound.max_commit_timestamp(),
+    );
+    *rows_visited = (*rows_visited).saturating_add(visited);
+    if let Some(row) = row {
+        rows.push(candidate_row(
+            row.row().clone(),
+            BranchRowSource::OwnedTable {
+                level: table.level(),
+                table_index,
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn collect_inherited_level_point_candidates(
+    child_branch_id: BranchId,
+    layer: &BranchInheritedLayer,
+    layer_index: usize,
+    level_index: usize,
+    tables: &[BranchOwnedTable],
+    source_key: &PhysicalKey,
+    source_key_bytes: &TablePhysicalKeyBytes,
+    inherited_bound: BranchEffectiveReadBound,
+    rows: &mut Vec<CandidateRow>,
+    rows_visited: &mut usize,
+    source_counts: &mut perf_trace::BranchPointSourceCounts,
+) -> BranchRuntimeResult<()> {
+    if level_index == 0 {
+        for table in tables {
+            source_counts.inherited_l0_table_probes =
+                source_counts.inherited_l0_table_probes.saturating_add(1);
+            append_inherited_point_table_candidate(
+                child_branch_id,
+                layer,
+                layer_index,
+                table,
+                source_key,
+                inherited_bound,
+                rows,
+                rows_visited,
+                source_counts,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if tables.is_empty() {
+        return Ok(());
+    }
+
+    source_counts.inherited_nonzero_level_searches = source_counts
+        .inherited_nonzero_level_searches
+        .saturating_add(1);
+    let Some(table_index) = select_nonzero_level_point_table(tables, source_key_bytes)? else {
+        return Ok(());
+    };
+    source_counts.inherited_nonzero_table_probes = source_counts
+        .inherited_nonzero_table_probes
+        .saturating_add(1);
+    append_inherited_point_table_candidate(
+        child_branch_id,
+        layer,
+        layer_index,
+        &tables[table_index],
+        source_key,
+        inherited_bound,
+        rows,
+        rows_visited,
+        source_counts,
+    )
+}
+
+fn append_inherited_point_table_candidate(
+    child_branch_id: BranchId,
+    layer: &BranchInheritedLayer,
+    layer_index: usize,
+    table: &BranchOwnedTable,
+    source_key: &PhysicalKey,
+    inherited_bound: BranchEffectiveReadBound,
+    rows: &mut Vec<CandidateRow>,
+    rows_visited: &mut usize,
+    source_counts: &mut perf_trace::BranchPointSourceCounts,
+) -> BranchRuntimeResult<()> {
+    source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
+    let (row, visited) = table.reader().seek_physical_key(
+        source_key,
+        inherited_bound.max_commit_version(),
+        inherited_bound.max_commit_timestamp(),
+    );
+    *rows_visited = (*rows_visited).saturating_add(visited);
+    if let Some(row) = row {
+        rows.push(candidate_row(
+            rewrite_row_branch(row.row(), layer.source_branch_id(), child_branch_id).map_err(
+                |_| BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited row branch rewrite failed",
+                },
+            )?,
+            BranchRowSource::Inherited {
+                source_branch_id: layer.source_branch_id(),
+                layer_index,
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn select_nonzero_level_point_table(
+    tables: &[BranchOwnedTable],
+    key: &TablePhysicalKeyBytes,
+) -> BranchRuntimeResult<Option<usize>> {
+    let target = key.as_slice();
+    let mut low = 0usize;
+    let mut high = tables.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        match compare_physical_key_to_table_range(target, &tables[mid])? {
+            Ordering::Less => high = mid,
+            Ordering::Greater => low = mid.saturating_add(1),
+            Ordering::Equal => return Ok(Some(mid)),
+        }
+    }
+    Ok(None)
+}
+
+fn compare_physical_key_to_table_range(
+    key: &[u8],
+    table: &BranchOwnedTable,
+) -> BranchRuntimeResult<Ordering> {
+    let (first, last) = table_fact_physical_key_bounds(table)?;
+    if key < first.as_slice() {
+        Ok(Ordering::Less)
+    } else if key > last.as_slice() {
+        Ok(Ordering::Greater)
+    } else {
+        Ok(Ordering::Equal)
+    }
+}
+
+fn table_fact_physical_key_bounds(
+    table: &BranchOwnedTable,
+) -> BranchRuntimeResult<(Vec<u8>, Vec<u8>)> {
+    let first =
+        TableInternalKeyBytes::from_canonical_bytes(table.facts().key_range().first_key().to_vec())
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+    let last =
+        TableInternalKeyBytes::from_canonical_bytes(table.facts().key_range().last_key().to_vec())
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+    Ok((
+        first.physical_key_bytes().to_vec(),
+        last.physical_key_bytes().to_vec(),
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1933,41 +2119,21 @@ fn collect_visible_inherited_point_candidates(
             })?;
         let inherited_bound =
             BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
+        let source_key_bytes = TablePhysicalKeyBytes::from_physical_key(&source_key);
         for (level_index, tables) in layer.owned_levels().iter().enumerate() {
-            if level_index > 0 && !tables.is_empty() {
-                source_counts.inherited_nonzero_level_searches = source_counts
-                    .inherited_nonzero_level_searches
-                    .saturating_add(1);
-            }
-            for table in tables {
-                if level_index == 0 {
-                    source_counts.inherited_l0_table_probes =
-                        source_counts.inherited_l0_table_probes.saturating_add(1);
-                } else {
-                    source_counts.inherited_nonzero_table_probes = source_counts
-                        .inherited_nonzero_table_probes
-                        .saturating_add(1);
-                }
-                source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-                let (row, visited) = table.reader().seek_physical_key(
-                    &source_key,
-                    inherited_bound.max_commit_version(),
-                    inherited_bound.max_commit_timestamp(),
-                );
-                *rows_visited = (*rows_visited).saturating_add(visited);
-                if let Some(row) = row {
-                    rows.push(candidate_row(
-                        rewrite_row_branch(row.row(), layer.source_branch_id(), branch_id)
-                            .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
-                                reason: "inherited row branch rewrite failed",
-                            })?,
-                        BranchRowSource::Inherited {
-                            source_branch_id: layer.source_branch_id(),
-                            layer_index,
-                        },
-                    ));
-                }
-            }
+            collect_inherited_level_point_candidates(
+                branch_id,
+                layer,
+                layer_index,
+                level_index,
+                tables,
+                &source_key,
+                &source_key_bytes,
+                inherited_bound,
+                rows,
+                rows_visited,
+                source_counts,
+            )?;
         }
     }
     Ok(())

@@ -960,7 +960,7 @@ fn branch_point_perf_trace_splits_source_classes() {
             "point-owned-l1",
             vec![storage_row_with(
                 branch,
-                b"owned-l1".to_vec(),
+                b"target".to_vec(),
                 30,
                 300,
                 Timestamp::EPOCH,
@@ -992,7 +992,7 @@ fn branch_point_perf_trace_splits_source_classes() {
                 "point-parent-l1",
                 vec![storage_row_with(
                     parent,
-                    b"parent-l1".to_vec(),
+                    b"target".to_vec(),
                     41,
                     410,
                     Timestamp::EPOCH,
