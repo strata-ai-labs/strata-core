@@ -15,7 +15,7 @@ use crate::table::{
     TableRuntimeFacts,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeSet, BinaryHeap};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,18 +378,6 @@ impl BranchScanBounds {
                 reason: "scan table key bounds are invalid",
             }
         })
-    }
-
-    fn contains(&self, key: &PhysicalKey) -> bool {
-        key.branch_id() == self.branch_id
-            && key.space() == self.space
-            && key.storage_space_id() == self.storage_space_id
-            && self
-                .user_key_prefix
-                .as_ref()
-                .is_none_or(|prefix| key.user_key().starts_with(prefix))
-            && lower_contains(&self.lower_user_key, key.user_key())
-            && upper_contains(&self.upper_user_key, key.user_key())
     }
 
     fn from_physical_bounds(
@@ -921,17 +909,24 @@ impl BranchReadView {
         self.require_matching_branch(bounds.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
-        let mut grouped: BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>> = BTreeMap::new();
-        self.collect_matching_scan_candidates(bounds, bound, &mut grouped)?;
-
-        let mut visible = Vec::new();
-        for candidates in grouped.into_values() {
-            if let Some(row) = select_visible_row(candidates, effective_bound) {
-                visible.push(row);
-            }
-        }
-        perf_trace::record_branch_scan_rows_returned(visible.len());
-        Ok(visible)
+        let rows = scan_including_tombstones_from_sources(
+            self.branch_id,
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            bounds,
+            bound,
+            None,
+            effective_bound.max_commit_timestamp(),
+            false,
+        )?;
+        let rows = rows
+            .into_iter()
+            .filter_map(|row| history_row_into_visible(row, effective_bound.max_commit_timestamp()))
+            .collect::<Vec<_>>();
+        perf_trace::record_branch_scan_rows_returned(rows.len());
+        Ok(rows)
     }
 
     fn scan_including_tombstones(
@@ -940,19 +935,19 @@ impl BranchReadView {
         bound: BranchReadBound,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(bounds.branch_id())?;
-        let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
-        let mut grouped: BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>> = BTreeMap::new();
-        self.collect_matching_scan_candidates(bounds, bound, &mut grouped)?;
-
-        let mut visible = Vec::new();
-        for candidates in grouped.into_values() {
-            if let Some(row) = select_visible_row_or_tombstone(candidates, effective_bound) {
-                visible.push(row);
-            }
-        }
-        perf_trace::record_branch_scan_rows_returned(visible.len());
-        Ok(visible)
+        scan_including_tombstones_from_sources(
+            self.branch_id,
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            bounds,
+            bound,
+            None,
+            effective_own_read_bound(bound).max_commit_timestamp(),
+            true,
+        )
     }
 
     fn point_candidates(
@@ -1014,86 +1009,6 @@ impl BranchReadView {
         Ok(rows)
     }
 
-    fn collect_matching_scan_candidates(
-        &self,
-        bounds: &BranchScanBounds,
-        bound: BranchReadBound,
-        grouped: &mut BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>>,
-    ) -> BranchRuntimeResult<()> {
-        let mut rows_visited = self.active.len();
-        let mut candidates_materialized = 0usize;
-        let mut source_counts = perf_trace::BranchScanSourceCounts {
-            active_cursors: 1,
-            frozen_cursors: self.frozen.len(),
-            ..Default::default()
-        };
-        for row in self
-            .active
-            .iter()
-            .filter(|row| bounds.contains(row.physical_key()))
-        {
-            grouped
-                .entry(TablePhysicalKeyBytes::from_row(row.row()))
-                .or_default()
-                .push(candidate_row(row.row().clone(), BranchRowSource::Active));
-            candidates_materialized = candidates_materialized.saturating_add(1);
-        }
-        for (index, table) in self.frozen.iter().enumerate() {
-            rows_visited = rows_visited.saturating_add(table.len());
-            for row in table
-                .iter()
-                .filter(|row| bounds.contains(row.physical_key()))
-            {
-                grouped
-                    .entry(TablePhysicalKeyBytes::from_row(row.row()))
-                    .or_default()
-                    .push(candidate_row(
-                        row.row().clone(),
-                        BranchRowSource::Frozen { index },
-                    ));
-                candidates_materialized = candidates_materialized.saturating_add(1);
-            }
-        }
-        for (level_index, tables) in self.owned_levels.iter().enumerate() {
-            if level_index > 0 && !tables.is_empty() {
-                source_counts.owned_nonzero_level_cursors =
-                    source_counts.owned_nonzero_level_cursors.saturating_add(1);
-            }
-            for (table_index, table) in tables.iter().enumerate() {
-                rows_visited = rows_visited.saturating_add(table.rows().len());
-                if level_index == 0 {
-                    source_counts.owned_l0_cursors =
-                        source_counts.owned_l0_cursors.saturating_add(1);
-                } else {
-                    source_counts.owned_nonzero_table_cursors_opened = source_counts
-                        .owned_nonzero_table_cursors_opened
-                        .saturating_add(1);
-                }
-                for row in table
-                    .rows()
-                    .iter()
-                    .filter(|row| bounds.contains(row.physical_key()))
-                {
-                    grouped
-                        .entry(TablePhysicalKeyBytes::from_row(row.row()))
-                        .or_default()
-                        .push(candidate_row(
-                            row.row().clone(),
-                            BranchRowSource::OwnedTable {
-                                level: table.level(),
-                                table_index,
-                            },
-                        ));
-                    candidates_materialized = candidates_materialized.saturating_add(1);
-                }
-            }
-        }
-        perf_trace::record_branch_scan_sources(source_counts);
-        perf_trace::record_scan_candidate_collection(rows_visited, candidates_materialized);
-        self.collect_inherited_scan_candidates(bounds, bound, grouped)?;
-        Ok(())
-    }
-
     fn collect_inherited_point_candidates(
         &self,
         key: &PhysicalKey,
@@ -1152,69 +1067,6 @@ impl BranchReadView {
             history_counts,
             rows.len().saturating_sub(initial_candidates),
         );
-        Ok(())
-    }
-
-    fn collect_inherited_scan_candidates(
-        &self,
-        bounds: &BranchScanBounds,
-        bound: BranchReadBound,
-        grouped: &mut BTreeMap<TablePhysicalKeyBytes, Vec<CandidateRow>>,
-    ) -> BranchRuntimeResult<()> {
-        let mut rows_visited = 0usize;
-        let mut candidates_materialized = 0usize;
-        let mut source_counts = perf_trace::BranchScanSourceCounts::default();
-        for (layer_index, layer) in self.inherited_layers.iter().enumerate() {
-            if !layer.is_readable() {
-                continue;
-            }
-            let inherited_bound =
-                BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
-            for (level_index, tables) in layer.owned_levels().iter().enumerate() {
-                if level_index > 0 && !tables.is_empty() {
-                    source_counts.inherited_nonzero_level_cursors = source_counts
-                        .inherited_nonzero_level_cursors
-                        .saturating_add(1);
-                }
-                for table in tables {
-                    rows_visited = rows_visited.saturating_add(table.rows().len());
-                    if level_index == 0 {
-                        source_counts.inherited_l0_cursors =
-                            source_counts.inherited_l0_cursors.saturating_add(1);
-                    } else {
-                        source_counts.inherited_nonzero_table_cursors_opened = source_counts
-                            .inherited_nonzero_table_cursors_opened
-                            .saturating_add(1);
-                    }
-                    for row in table
-                        .rows()
-                        .iter()
-                        .filter(|row| inherited_bound.matches_row(row.row()))
-                    {
-                        let rewritten =
-                            rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
-                                .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
-                                    reason: "inherited row branch rewrite failed",
-                                })?;
-                        if bounds.contains(rewritten.physical_key()) {
-                            grouped
-                                .entry(TablePhysicalKeyBytes::from_row(&rewritten))
-                                .or_default()
-                                .push(candidate_row(
-                                    rewritten,
-                                    BranchRowSource::Inherited {
-                                        source_branch_id: layer.source_branch_id(),
-                                        layer_index,
-                                    },
-                                ));
-                            candidates_materialized = candidates_materialized.saturating_add(1);
-                        }
-                    }
-                }
-            }
-        }
-        perf_trace::record_branch_scan_sources(source_counts);
-        perf_trace::record_scan_candidate_collection(rows_visited, candidates_materialized);
         Ok(())
     }
 
@@ -1283,6 +1135,7 @@ impl BranchLocalState {
             bound,
             visible_limit,
             visible_limit_timestamp,
+            true,
         )
     }
 }
@@ -1314,6 +1167,14 @@ fn candidate_into_visible_row(
 
 fn candidate_into_history_row((row, source): CandidateRow) -> BranchHistoryRow {
     BranchHistoryRow::new(row, source)
+}
+
+fn history_row_into_visible(
+    row: BranchHistoryRow,
+    read_timestamp: Option<Timestamp>,
+) -> Option<BranchVisibleRow> {
+    let BranchHistoryRow { row, source } = row;
+    candidate_into_visible_row((row, source), read_timestamp)
 }
 
 fn effective_own_read_bound(bound: BranchReadBound) -> BranchEffectiveReadBound {
@@ -1595,6 +1456,115 @@ fn table_fact_physical_key_bounds(
     ))
 }
 
+fn first_nonzero_level_scan_table_index(
+    tables: &[BranchOwnedTable],
+    bounds: &TableKeyBounds,
+) -> BranchRuntimeResult<Option<usize>> {
+    if tables.is_empty() {
+        return Ok(None);
+    }
+
+    let mut low = 0usize;
+    let mut high = tables.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if nonzero_table_is_before_scan_bounds(&tables[mid], bounds)? {
+            low = mid.saturating_add(1);
+        } else {
+            high = mid;
+        }
+    }
+    if low >= tables.len() || nonzero_table_is_after_scan_bounds(&tables[low], bounds)? {
+        return Ok(None);
+    }
+    Ok(Some(low))
+}
+
+fn nonzero_table_overlaps_scan_bounds(
+    table: &BranchOwnedTable,
+    bounds: &TableKeyBounds,
+) -> BranchRuntimeResult<bool> {
+    Ok(!nonzero_table_is_before_scan_bounds(table, bounds)?
+        && !nonzero_table_is_after_scan_bounds(table, bounds)?)
+}
+
+fn nonzero_table_is_before_scan_bounds(
+    table: &BranchOwnedTable,
+    bounds: &TableKeyBounds,
+) -> BranchRuntimeResult<bool> {
+    let (_, last) = table_fact_physical_key_bounds(table)?;
+    Ok(match bounds {
+        TableKeyBounds::Range { .. } => false,
+        TableKeyBounds::Prefix(prefix) => last.as_slice() < prefix.as_slice(),
+        TableKeyBounds::PhysicalRange {
+            physical_prefix,
+            lower,
+            ..
+        } => {
+            physical_key_is_below_prefix_lower(&last, physical_prefix)
+                || physical_key_is_below_lower_bound(&last, lower)
+        }
+    })
+}
+
+fn nonzero_table_is_after_scan_bounds(
+    table: &BranchOwnedTable,
+    bounds: &TableKeyBounds,
+) -> BranchRuntimeResult<bool> {
+    let (first, _) = table_fact_physical_key_bounds(table)?;
+    Ok(match bounds {
+        TableKeyBounds::Range { .. } => false,
+        TableKeyBounds::Prefix(prefix) => {
+            prefix_upper_bound(prefix).is_some_and(|upper| first.as_slice() >= upper.as_slice())
+        }
+        TableKeyBounds::PhysicalRange {
+            physical_prefix,
+            upper,
+            ..
+        } => {
+            physical_key_is_above_prefix_upper(&first, physical_prefix)
+                || physical_key_is_above_upper_bound(&first, upper)
+        }
+    })
+}
+
+fn physical_key_is_below_prefix_lower(key: &[u8], prefix: &[u8]) -> bool {
+    !prefix.is_empty() && key < prefix
+}
+
+fn physical_key_is_above_prefix_upper(key: &[u8], prefix: &[u8]) -> bool {
+    prefix_upper_bound(prefix).is_some_and(|upper| key >= upper.as_slice())
+}
+
+fn physical_key_is_below_lower_bound(key: &[u8], lower: &TablePhysicalKeyBound) -> bool {
+    match lower {
+        TablePhysicalKeyBound::Unbounded => false,
+        TablePhysicalKeyBound::Included(lower) => key < lower.as_slice(),
+        TablePhysicalKeyBound::Excluded(lower) => key <= lower.as_slice(),
+    }
+}
+
+fn physical_key_is_above_upper_bound(key: &[u8], upper: &TablePhysicalKeyBound) -> bool {
+    match upper {
+        TablePhysicalKeyBound::Unbounded => false,
+        TablePhysicalKeyBound::Included(upper) => key > upper.as_slice(),
+        TablePhysicalKeyBound::Excluded(upper) => key >= upper.as_slice(),
+    }
+}
+
+fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    while let Some(last) = upper.last_mut() {
+        if *last == u8::MAX {
+            upper.pop();
+            continue;
+        }
+        *last = last.saturating_add(1);
+        return Some(upper);
+    }
+    None
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BranchScanCursorSource {
     Active,
@@ -1613,10 +1583,17 @@ enum BranchScanCursorSource {
 }
 
 struct BranchScanCursor<'a> {
-    cursor: Box<dyn TableCursor + 'a>,
-    source: BranchScanCursorSource,
+    kind: BranchScanCursorKind<'a>,
     effective_bound: BranchEffectiveReadBound,
     current_logical_key: Option<TablePhysicalKeyBytes>,
+}
+
+enum BranchScanCursorKind<'a> {
+    SingleTable {
+        cursor: Box<dyn TableCursor + 'a>,
+        source: BranchScanCursorSource,
+    },
+    NonzeroLevel(Box<BranchNonzeroLevelScanCursor<'a>>),
 }
 
 impl<'a> BranchScanCursor<'a> {
@@ -1626,28 +1603,56 @@ impl<'a> BranchScanCursor<'a> {
         effective_bound: BranchEffectiveReadBound,
     ) -> Self {
         Self {
-            cursor,
-            source,
+            kind: BranchScanCursorKind::SingleTable { cursor, source },
+            effective_bound,
+            current_logical_key: None,
+        }
+    }
+
+    fn nonzero_level(
+        tables: &'a [BranchOwnedTable],
+        bounds: TableKeyBounds,
+        source: BranchNonzeroLevelScanSource,
+        first_table_index: usize,
+        effective_bound: BranchEffectiveReadBound,
+    ) -> Self {
+        Self {
+            kind: BranchScanCursorKind::NonzeroLevel(Box::new(BranchNonzeroLevelScanCursor::new(
+                tables,
+                bounds,
+                source,
+                first_table_index,
+            ))),
             effective_bound,
             current_logical_key: None,
         }
     }
 
     fn seek_to_first(&mut self) -> BranchRuntimeResult<()> {
-        self.cursor
-            .seek_to_first()
-            .map_err(|_| BranchRuntimeError::InvalidBranchState {
-                reason: "branch scan cursor seek failed",
-            })?;
+        match &mut self.kind {
+            BranchScanCursorKind::SingleTable { cursor, .. } => {
+                cursor
+                    .seek_to_first()
+                    .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                        reason: "branch scan cursor seek failed",
+                    })?;
+            }
+            BranchScanCursorKind::NonzeroLevel(cursor) => cursor.seek_to_first()?,
+        }
         self.refresh_current_logical_key()
     }
 
     fn advance(&mut self) -> BranchRuntimeResult<()> {
-        self.cursor
-            .advance()
-            .map_err(|_| BranchRuntimeError::InvalidBranchState {
-                reason: "branch scan cursor advance failed",
-            })?;
+        match &mut self.kind {
+            BranchScanCursorKind::SingleTable { cursor, .. } => {
+                cursor
+                    .advance()
+                    .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                        reason: "branch scan cursor advance failed",
+                    })?;
+            }
+            BranchScanCursorKind::NonzeroLevel(cursor) => cursor.advance()?,
+        }
         self.refresh_current_logical_key()
     }
 
@@ -1661,10 +1666,13 @@ impl<'a> BranchScanCursor<'a> {
     }
 
     fn compute_current_logical_key(&self) -> BranchRuntimeResult<Option<TablePhysicalKeyBytes>> {
-        let Some(row) = self.cursor.current() else {
+        let Some(row) = self.current_row() else {
             return Ok(None);
         };
-        match self.source {
+        let Some(source) = self.current_source() else {
+            return Ok(None);
+        };
+        match source {
             BranchScanCursorSource::Inherited {
                 source_branch_id,
                 child_branch_id,
@@ -1692,13 +1700,16 @@ impl<'a> BranchScanCursor<'a> {
     }
 
     fn current_candidate(&self) -> BranchRuntimeResult<Option<CandidateRow>> {
-        let Some(row) = self.cursor.current() else {
+        let Some(row) = self.current_row() else {
+            return Ok(None);
+        };
+        let Some(source) = self.current_source() else {
             return Ok(None);
         };
         if !self.effective_bound.matches_row(row.row()) {
             return Ok(None);
         }
-        match self.source {
+        match source {
             BranchScanCursorSource::Active => {
                 record_scan_candidate_clone(row.row());
                 Ok(Some(candidate_row(
@@ -1740,6 +1751,149 @@ impl<'a> BranchScanCursor<'a> {
             }
         }
     }
+
+    fn current_row(&self) -> Option<&TableRow> {
+        match &self.kind {
+            BranchScanCursorKind::SingleTable { cursor, .. } => cursor.current(),
+            BranchScanCursorKind::NonzeroLevel(cursor) => cursor.current_row(),
+        }
+    }
+
+    fn current_source(&self) -> Option<BranchScanCursorSource> {
+        match &self.kind {
+            BranchScanCursorKind::SingleTable { source, .. } => Some(*source),
+            BranchScanCursorKind::NonzeroLevel(cursor) => cursor.current_source(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BranchNonzeroLevelScanSource {
+    Owned {
+        level: BranchLevel,
+    },
+    Inherited {
+        source_branch_id: BranchId,
+        layer_index: usize,
+        child_branch_id: BranchId,
+    },
+}
+
+struct BranchNonzeroLevelScanCursor<'a> {
+    tables: &'a [BranchOwnedTable],
+    bounds: TableKeyBounds,
+    source: BranchNonzeroLevelScanSource,
+    first_table_index: usize,
+    next_table_index: usize,
+    current_table_index: Option<usize>,
+    current_cursor: Option<BoundedTableCursor<'a>>,
+}
+
+impl<'a> BranchNonzeroLevelScanCursor<'a> {
+    fn new(
+        tables: &'a [BranchOwnedTable],
+        bounds: TableKeyBounds,
+        source: BranchNonzeroLevelScanSource,
+        first_table_index: usize,
+    ) -> Self {
+        Self {
+            tables,
+            bounds,
+            source,
+            first_table_index,
+            next_table_index: first_table_index,
+            current_table_index: None,
+            current_cursor: None,
+        }
+    }
+
+    fn seek_to_first(&mut self) -> BranchRuntimeResult<()> {
+        self.next_table_index = self.first_table_index;
+        self.current_table_index = None;
+        self.current_cursor = None;
+        self.open_next_table()
+    }
+
+    fn advance(&mut self) -> BranchRuntimeResult<()> {
+        let Some(cursor) = &mut self.current_cursor else {
+            return Ok(());
+        };
+        cursor
+            .advance()
+            .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                reason: "branch nonzero level scan cursor advance failed",
+            })?;
+        if cursor.current().is_some() {
+            return Ok(());
+        }
+        self.open_next_table()
+    }
+
+    fn current_row(&self) -> Option<&TableRow> {
+        self.current_cursor.as_ref()?.current()
+    }
+
+    fn current_source(&self) -> Option<BranchScanCursorSource> {
+        let table_index = self.current_table_index?;
+        match self.source {
+            BranchNonzeroLevelScanSource::Owned { level } => {
+                Some(BranchScanCursorSource::OwnedTable { level, table_index })
+            }
+            BranchNonzeroLevelScanSource::Inherited {
+                source_branch_id,
+                layer_index,
+                child_branch_id,
+            } => Some(BranchScanCursorSource::Inherited {
+                source_branch_id,
+                layer_index,
+                child_branch_id,
+            }),
+        }
+    }
+
+    fn open_next_table(&mut self) -> BranchRuntimeResult<()> {
+        self.current_table_index = None;
+        self.current_cursor = None;
+        while self.next_table_index < self.tables.len() {
+            let table_index = self.next_table_index;
+            let table = &self.tables[table_index];
+            if nonzero_table_is_after_scan_bounds(table, &self.bounds)? {
+                self.next_table_index = self.tables.len();
+                return Ok(());
+            }
+            self.next_table_index = self.next_table_index.saturating_add(1);
+            if !nonzero_table_overlaps_scan_bounds(table, &self.bounds)? {
+                continue;
+            }
+
+            self.record_table_cursor_opened();
+            let mut cursor = table.reader().bounded_cursor(self.bounds.clone());
+            cursor
+                .seek_to_first()
+                .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                    reason: "branch nonzero level scan cursor seek failed",
+                })?;
+            if cursor.current().is_some() {
+                self.current_table_index = Some(table_index);
+                self.current_cursor = Some(cursor);
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn record_table_cursor_opened(&self) {
+        let mut counts = perf_trace::BranchScanSourceCounts::default();
+        match self.source {
+            BranchNonzeroLevelScanSource::Owned { .. } => {
+                counts.owned_nonzero_table_cursors_opened = 1;
+            }
+            BranchNonzeroLevelScanSource::Inherited { .. } => {
+                counts.inherited_nonzero_table_cursors_opened = 1;
+            }
+        }
+        perf_trace::record_branch_scan_sources(counts);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1777,7 +1931,15 @@ fn scan_including_tombstones_from_sources(
     bound: BranchReadBound,
     visible_limit: Option<usize>,
     visible_limit_timestamp: Option<Timestamp>,
+    record_rows_returned: bool,
 ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+    if visible_limit == Some(0) {
+        if record_rows_returned {
+            perf_trace::record_branch_scan_rows_returned(0);
+        }
+        return Ok(Vec::new());
+    }
+
     let effective_bound = effective_own_read_bound(bound);
     let source_setup_timer = perf_trace::start_timer();
     let mut cursors = scan_cursors_for_sources(
@@ -1803,7 +1965,9 @@ fn scan_including_tombstones_from_sources(
             visible_limit,
             visible_limit_timestamp,
         )?;
-        perf_trace::record_branch_scan_rows_returned(rows.len());
+        if record_rows_returned {
+            perf_trace::record_branch_scan_rows_returned(rows.len());
+        }
         perf_trace::record_branch_scan_merge_elapsed(merge_timer);
         return Ok(rows);
     }
@@ -1814,7 +1978,9 @@ fn scan_including_tombstones_from_sources(
         visible_limit,
         visible_limit_timestamp,
     )?;
-    perf_trace::record_branch_scan_rows_returned(rows.len());
+    if record_rows_returned {
+        perf_trace::record_branch_scan_rows_returned(rows.len());
+    }
     perf_trace::record_branch_scan_merge_elapsed(merge_timer);
     Ok(rows)
 }
@@ -2009,52 +2175,129 @@ fn scan_cursors_for_sources<'a>(
     let own_bound = BranchEffectiveReadBound::for_own_branch(bound);
     let mut cursors = Vec::new();
     let mut source_counts = perf_trace::BranchScanSourceCounts::default();
+    push_active_scan_cursor(
+        active,
+        &own_bounds,
+        own_bound,
+        &mut cursors,
+        &mut source_counts,
+    );
+    push_frozen_scan_cursors(
+        frozen,
+        &own_bounds,
+        own_bound,
+        &mut cursors,
+        &mut source_counts,
+    );
+    push_owned_level_scan_cursors(
+        owned_levels,
+        &own_bounds,
+        own_bound,
+        &mut cursors,
+        &mut source_counts,
+    )?;
+    push_inherited_level_scan_cursors(
+        branch_id,
+        inherited_layers,
+        bounds,
+        bound,
+        &mut cursors,
+        &mut source_counts,
+    )?;
+    perf_trace::record_branch_scan_sources(source_counts);
+    Ok(cursors)
+}
+
+fn push_active_scan_cursor<'a>(
+    active: &'a MutableTable,
+    bounds: &TableKeyBounds,
+    effective_bound: BranchEffectiveReadBound,
+    cursors: &mut Vec<BranchScanCursor<'a>>,
+    source_counts: &mut perf_trace::BranchScanSourceCounts,
+) {
     cursors.push(BranchScanCursor::new(
         Box::new(BoundedTableCursor::new(
             Box::new(active.cursor()),
-            own_bounds.clone(),
+            bounds.clone(),
         )),
         BranchScanCursorSource::Active,
-        own_bound,
+        effective_bound,
     ));
     source_counts.active_cursors = source_counts.active_cursors.saturating_add(1);
+}
+
+fn push_frozen_scan_cursors<'a>(
+    frozen: &'a [FrozenTable],
+    bounds: &TableKeyBounds,
+    effective_bound: BranchEffectiveReadBound,
+    cursors: &mut Vec<BranchScanCursor<'a>>,
+    source_counts: &mut perf_trace::BranchScanSourceCounts,
+) {
     for (index, table) in frozen.iter().enumerate() {
         cursors.push(BranchScanCursor::new(
             Box::new(BoundedTableCursor::new(
                 Box::new(table.cursor()),
-                own_bounds.clone(),
+                bounds.clone(),
             )),
             BranchScanCursorSource::Frozen { index },
-            own_bound,
+            effective_bound,
         ));
         source_counts.frozen_cursors = source_counts.frozen_cursors.saturating_add(1);
     }
+}
+
+fn push_owned_level_scan_cursors<'a>(
+    owned_levels: &'a [Vec<BranchOwnedTable>],
+    bounds: &TableKeyBounds,
+    effective_bound: BranchEffectiveReadBound,
+    cursors: &mut Vec<BranchScanCursor<'a>>,
+    source_counts: &mut perf_trace::BranchScanSourceCounts,
+) -> BranchRuntimeResult<()> {
     for (level_index, tables) in owned_levels.iter().enumerate() {
-        if level_index > 0 && !tables.is_empty() {
-            source_counts.owned_nonzero_level_cursors =
-                source_counts.owned_nonzero_level_cursors.saturating_add(1);
-        }
-        for (table_index, table) in tables.iter().enumerate() {
-            cursors.push(BranchScanCursor::new(
-                Box::new(BoundedTableCursor::new(
-                    Box::new(table.reader().cursor()),
-                    own_bounds.clone(),
-                )),
-                BranchScanCursorSource::OwnedTable {
-                    level: table.level(),
-                    table_index,
-                },
-                own_bound,
-            ));
-            if level_index == 0 {
+        if level_index == 0 {
+            for (table_index, table) in tables.iter().enumerate() {
+                cursors.push(BranchScanCursor::new(
+                    Box::new(table.reader().bounded_cursor(bounds.clone())),
+                    BranchScanCursorSource::OwnedTable {
+                        level: table.level(),
+                        table_index,
+                    },
+                    effective_bound,
+                ));
                 source_counts.owned_l0_cursors = source_counts.owned_l0_cursors.saturating_add(1);
-            } else {
-                source_counts.owned_nonzero_table_cursors_opened = source_counts
-                    .owned_nonzero_table_cursors_opened
-                    .saturating_add(1);
             }
+            continue;
         }
+
+        let Some(first_table_index) = first_nonzero_level_scan_table_index(tables, bounds)? else {
+            continue;
+        };
+        let level = BranchLevel::new(u8::try_from(level_index).map_err(|_| {
+            BranchRuntimeError::InvalidBranchState {
+                reason: "branch scan level index exceeds branch level range",
+            }
+        })?);
+        cursors.push(BranchScanCursor::nonzero_level(
+            tables,
+            bounds.clone(),
+            BranchNonzeroLevelScanSource::Owned { level },
+            first_table_index,
+            effective_bound,
+        ));
+        source_counts.owned_nonzero_level_cursors =
+            source_counts.owned_nonzero_level_cursors.saturating_add(1);
     }
+    Ok(())
+}
+
+fn push_inherited_level_scan_cursors<'a>(
+    branch_id: BranchId,
+    inherited_layers: &'a [BranchInheritedLayer],
+    bounds: &BranchScanBounds,
+    bound: BranchReadBound,
+    cursors: &mut Vec<BranchScanCursor<'a>>,
+    source_counts: &mut perf_trace::BranchScanSourceCounts,
+) -> BranchRuntimeResult<()> {
     for (layer_index, layer) in inherited_layers.iter().enumerate() {
         if !layer.is_readable() {
             continue;
@@ -2063,37 +2306,45 @@ fn scan_cursors_for_sources<'a>(
             BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
         let source_bounds = bounds.table_key_bounds_for_branch(layer.source_branch_id())?;
         for (level_index, tables) in layer.owned_levels().iter().enumerate() {
-            if level_index > 0 && !tables.is_empty() {
-                source_counts.inherited_nonzero_level_cursors = source_counts
-                    .inherited_nonzero_level_cursors
-                    .saturating_add(1);
-            }
-            for table in tables {
-                cursors.push(BranchScanCursor::new(
-                    Box::new(BoundedTableCursor::new(
-                        Box::new(table.reader().cursor()),
-                        source_bounds.clone(),
-                    )),
-                    BranchScanCursorSource::Inherited {
-                        source_branch_id: layer.source_branch_id(),
-                        layer_index,
-                        child_branch_id: branch_id,
-                    },
-                    inherited_bound,
-                ));
-                if level_index == 0 {
+            if level_index == 0 {
+                for table in tables {
+                    cursors.push(BranchScanCursor::new(
+                        Box::new(table.reader().bounded_cursor(source_bounds.clone())),
+                        BranchScanCursorSource::Inherited {
+                            source_branch_id: layer.source_branch_id(),
+                            layer_index,
+                            child_branch_id: branch_id,
+                        },
+                        inherited_bound,
+                    ));
                     source_counts.inherited_l0_cursors =
                         source_counts.inherited_l0_cursors.saturating_add(1);
-                } else {
-                    source_counts.inherited_nonzero_table_cursors_opened = source_counts
-                        .inherited_nonzero_table_cursors_opened
-                        .saturating_add(1);
                 }
+                continue;
             }
+
+            let Some(first_table_index) =
+                first_nonzero_level_scan_table_index(tables, &source_bounds)?
+            else {
+                continue;
+            };
+            cursors.push(BranchScanCursor::nonzero_level(
+                tables,
+                source_bounds.clone(),
+                BranchNonzeroLevelScanSource::Inherited {
+                    source_branch_id: layer.source_branch_id(),
+                    layer_index,
+                    child_branch_id: branch_id,
+                },
+                first_table_index,
+                inherited_bound,
+            ));
+            source_counts.inherited_nonzero_level_cursors = source_counts
+                .inherited_nonzero_level_cursors
+                .saturating_add(1);
         }
     }
-    perf_trace::record_branch_scan_sources(source_counts);
-    Ok(cursors)
+    Ok(())
 }
 
 fn collect_visible_inherited_point_candidates(
@@ -2313,22 +2564,6 @@ fn table_physical_bound_for_user_key(
                 TablePhysicalKeyBytes::from_physical_key(&key),
             ))
         }
-    }
-}
-
-fn lower_contains(bound: &BranchUserKeyBound, user_key: &[u8]) -> bool {
-    match bound {
-        BranchUserKeyBound::Unbounded => true,
-        BranchUserKeyBound::Included(lower) => user_key >= lower.as_slice(),
-        BranchUserKeyBound::Excluded(lower) => user_key > lower.as_slice(),
-    }
-}
-
-fn upper_contains(bound: &BranchUserKeyBound, user_key: &[u8]) -> bool {
-    match bound {
-        BranchUserKeyBound::Unbounded => true,
-        BranchUserKeyBound::Included(upper) => user_key <= upper.as_slice(),
-        BranchUserKeyBound::Excluded(upper) => user_key < upper.as_slice(),
     }
 }
 

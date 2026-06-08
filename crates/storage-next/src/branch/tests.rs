@@ -62,6 +62,9 @@ mod owned_compaction;
 mod point_pruning;
 mod read_view;
 mod row_pruning;
+#[cfg(feature = "perf-trace")]
+mod scan_pruning;
+mod scan_runtime;
 mod snapshot_install;
 mod source_layout;
 
