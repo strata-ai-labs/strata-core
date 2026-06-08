@@ -55,6 +55,8 @@ fn keep_all_policy() -> impl TableCompactionPolicy {
 }
 
 mod facts_reachability;
+#[cfg(feature = "perf-trace")]
+mod history_pruning;
 mod identity_state;
 mod immutable_reads;
 mod inheritance_materialization;

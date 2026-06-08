@@ -275,6 +275,16 @@ impl<'a> TableReaderRows<'a> {
         }
     }
 
+    fn try_physical_key_rows(
+        &self,
+        key: &PhysicalKey,
+    ) -> TableRuntimeResult<(Vec<TableRow>, usize)> {
+        match self {
+            Self::Eager(rows) => Ok(physical_key_rows_in_slice(rows, key)),
+            Self::Lazy(rows) => rows.try_physical_key_rows(key),
+        }
+    }
+
     fn cursor<'reader>(
         &'reader self,
         bounds_hint: Option<TableKeyBounds>,
@@ -369,6 +379,19 @@ impl<'a> LazyTableRows<'a> {
         }
         self.state
             .seek_physical_key(key, max_commit_version, max_commit_timestamp)
+    }
+
+    fn try_physical_key_rows(
+        &self,
+        key: &PhysicalKey,
+    ) -> TableRuntimeResult<(Vec<TableRow>, usize)> {
+        if let Some(rows) = self.rows.get() {
+            return match rows {
+                Ok(rows) => Ok(physical_key_rows_in_slice(rows, key)),
+                Err(error) => Err(error.clone()),
+            };
+        }
+        self.state.physical_key_rows(key)
     }
 
     fn into_materialized(self) -> TableRuntimeResult<Vec<TableRow>> {
@@ -486,6 +509,74 @@ impl LazyTableState<'_> {
 
         perf_trace::record_table_point_rows_visited(visited);
         Ok((None, visited))
+    }
+
+    fn physical_key_rows(&self, key: &PhysicalKey) -> TableRuntimeResult<(Vec<TableRow>, usize)> {
+        perf_trace::record_table_seek();
+        let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+        let target_physical_key = prefix.as_slice();
+        if !self.contains_physical_key(target_physical_key) {
+            perf_trace::record_table_point_rows_visited(0);
+            return Ok((Vec::new(), 0));
+        }
+        if self.probe_physical_filter(&prefix) == TableBloomProbe::DefinitelyAbsent {
+            perf_trace::record_table_point_rows_visited(0);
+            return Ok((Vec::new(), 0));
+        }
+
+        let seek_key = TableInternalKeyBytes::from_internal_key(&InternalKey::new(
+            key.clone(),
+            CommitVersion::MAX,
+        ));
+        let entries = self.metadata.index().entries();
+        let Some(mut block_index) = first_candidate_block_for_key(entries, &seek_key) else {
+            perf_trace::record_table_point_rows_visited(0);
+            return Ok((Vec::new(), 0));
+        };
+        let first_candidate_block_index = block_index;
+
+        let mut rows_out = Vec::new();
+        while let Some(entry) = entries.get(block_index) {
+            match compare_index_entry_physical_range(entry, target_physical_key) {
+                PhysicalRangeOrdering::Before => {
+                    block_index = block_index.saturating_add(1);
+                    continue;
+                }
+                PhysicalRangeOrdering::After => break,
+                PhysicalRangeOrdering::MayContain => {}
+            }
+
+            let rows = self.read_data_block_rows(block_index)?;
+            let start = if block_index == first_candidate_block_index {
+                candidate_row_index_for_seek_key(&rows, &seek_key)
+            } else {
+                0
+            };
+            if start >= rows.len() {
+                block_index = block_index.saturating_add(1);
+                continue;
+            }
+
+            for row in &rows[start..] {
+                match row.key().physical_key_bytes().cmp(target_physical_key) {
+                    std::cmp::Ordering::Less => {}
+                    std::cmp::Ordering::Greater => {
+                        let visited = rows_out.len();
+                        perf_trace::record_table_point_rows_visited(visited);
+                        return Ok((rows_out, visited));
+                    }
+                    std::cmp::Ordering::Equal => {
+                        rows_out.push(row.clone());
+                    }
+                }
+            }
+
+            block_index = block_index.saturating_add(1);
+        }
+
+        let visited = rows_out.len();
+        perf_trace::record_table_point_rows_visited(visited);
+        Ok((rows_out, visited))
     }
 
     fn contains_physical_key(&self, physical_key: &[u8]) -> bool {
@@ -803,6 +894,18 @@ impl<'a> ImmutableTableReader<'a> {
             .try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
     }
 
+    pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
+        self.try_physical_key_rows(key)
+            .expect("lazy table physical key history failed")
+    }
+
+    pub(crate) fn try_physical_key_rows(
+        &self,
+        key: &PhysicalKey,
+    ) -> TableRuntimeResult<(Vec<TableRow>, usize)> {
+        self.rows.try_physical_key_rows(key)
+    }
+
     pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_, 'a> {
         self.rows.cursor(None)
     }
@@ -1099,6 +1202,33 @@ fn seek_physical_key_in_slice<'a>(
     }
     perf_trace::record_table_point_rows_visited(visited);
     (None, visited)
+}
+
+fn physical_key_rows_in_slice(rows: &[TableRow], key: &PhysicalKey) -> (Vec<TableRow>, usize) {
+    perf_trace::record_table_seek();
+    let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+    let seek_key = TableInternalKeyBytes::from_internal_key(&InternalKey::new(
+        key.clone(),
+        CommitVersion::MAX,
+    ));
+    let start = match rows.binary_search_by(|row| row.key().cmp(&seek_key)) {
+        Ok(index) | Err(index) if index < rows.len() => index,
+        Ok(_) | Err(_) => {
+            perf_trace::record_table_point_rows_visited(0);
+            return (Vec::new(), 0);
+        }
+    };
+
+    let mut matching = Vec::new();
+    for row in &rows[start..] {
+        if !prefix.is_prefix_of(row.key()) {
+            break;
+        }
+        matching.push(row.clone());
+    }
+    let visited = matching.len();
+    perf_trace::record_table_point_rows_visited(visited);
+    (matching, visited)
 }
 
 fn record_cursor_position(position: Option<usize>) {

@@ -3,7 +3,7 @@
 use super::BranchLocalState;
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
-use crate::branch::facts::{BranchSourceLayout, BranchStateFacts, InheritedLayerStatus};
+use crate::branch::facts::{BranchSourceLayout, BranchStateFacts};
 use crate::branch::read::{
     inherited_table_count, source_layout_from_sources, BranchInheritedLayer, BranchOwnedTable,
     BranchReadView, BranchTimestampCoverage,
@@ -216,29 +216,17 @@ impl BranchLocalState {
     }
 
     pub(crate) fn facts(&self) -> BranchRuntimeResult<BranchStateFacts> {
-        perf_trace::record_branch_facts_observed(read_view_clone_row_count(self));
-        perf_trace::record_branch_fact_source_rows(source_row_counts(
-            &self.active,
-            &self.frozen,
-            &self.owned_levels,
-            &self.inherited_layers,
-            |layer| {
-                matches!(
-                    layer.status(),
-                    InheritedLayerStatus::Active | InheritedLayerStatus::Materializing
-                )
-            },
-        ));
-        let observed = self.observe_rows();
+        perf_trace::record_branch_facts_observed(0);
+        perf_trace::record_branch_fact_source_rows(perf_trace::BranchSourceRowCounts::default());
         BranchStateFacts::new(
             self.branch_id,
             u64::try_from(self.active.len()).expect("active row count fits in u64"),
             self.frozen.len(),
             self.owned_table_count(),
             self.inherited_layers.len(),
-            observed.max_commit_version,
-            observed.timestamp_min,
-            observed.timestamp_max,
+            self.max_commit_version,
+            self.timestamp_min,
+            self.timestamp_max,
         )
     }
 

@@ -180,6 +180,10 @@ impl MutableTable {
         seek_physical_key_in_rows(&self.rows, key, max_commit_version, max_commit_timestamp)
     }
 
+    pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
+        physical_key_rows_in_rows(&self.rows, key)
+    }
+
     #[cfg(feature = "perf-trace")]
     pub(crate) fn perf_seek_physical_key_unbounded(
         &self,
@@ -279,6 +283,10 @@ impl FrozenTable {
         seek_physical_key_in_rows(&self.rows, key, max_commit_version, max_commit_timestamp)
     }
 
+    pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
+        physical_key_rows_in_rows(&self.rows, key)
+    }
+
     #[cfg(feature = "perf-trace")]
     pub(crate) fn perf_seek_physical_key_unbounded(
         &self,
@@ -310,6 +318,26 @@ fn seek_physical_key_in_rows<'a>(
         }
     }
     (None, visited)
+}
+
+fn physical_key_rows_in_rows(
+    rows: &BTreeMap<TableInternalKeyBytes, TableRow>,
+    key: &PhysicalKey,
+) -> (Vec<TableRow>, usize) {
+    let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+    let seek_key = TableInternalKeyBytes::from_internal_key(&InternalKey::new(
+        key.clone(),
+        CommitVersion::MAX,
+    ));
+    let mut matching = Vec::new();
+    for (_, row) in rows.range(seek_key..) {
+        if !prefix.is_prefix_of(row.key()) {
+            break;
+        }
+        matching.push(row.clone());
+    }
+    let visited = matching.len();
+    (matching, visited)
 }
 
 fn row_matches_point_bound(

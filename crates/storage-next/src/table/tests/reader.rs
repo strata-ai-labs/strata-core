@@ -2157,6 +2157,55 @@ fn immutable_reader_indexed_point_physical_key_chain_can_cross_block_boundaries(
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn immutable_reader_physical_key_rows_reads_split_chain_without_materializing() {
+    let split_key = physical_key(1, "reader", 0x20, b"history-split".to_vec());
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(split_key.clone(), 9, b"v9".to_vec()),
+        put_row_for_key(split_key.clone(), 7, b"v7".to_vec()),
+        put_row_for_key(split_key.clone(), 5, b"v5".to_vec()),
+        put_row_for_key(split_key.clone(), 3, b"v3".to_vec()),
+        put_row(b"zulu".to_vec(), 10),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-physical-key-rows-split-chain",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-physical-key-rows-split-chain"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader");
+    let metadata_calls = source_probe.calls();
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let (history_rows, visited) = reader
+        .try_physical_key_rows(&split_key)
+        .expect("physical key rows");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(
+        history_rows
+            .iter()
+            .map(|row| row.commit_version().as_u64())
+            .collect::<Vec<_>>(),
+        vec![9, 7, 5, 3]
+    );
+    assert_eq!(visited, 4);
+    assert_eq!(source_probe.calls(), metadata_calls + 3);
+    assert_eq!(perf.table_data_block_reads(), 3);
+    assert_eq!(perf.table_data_block_decodes(), 3);
+    assert_eq!(perf.table_rows_decoded(), 6);
+    assert_eq!(perf.table_point_rows_visited(), 4);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn immutable_reader_indexed_point_timestamp_bound_walks_only_target_chain_blocks() {
     let split_key = physical_key(1, "reader", 0x20, b"split".to_vec());
     let rows = vec![

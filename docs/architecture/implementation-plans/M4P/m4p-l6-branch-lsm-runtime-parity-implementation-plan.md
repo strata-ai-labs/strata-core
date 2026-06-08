@@ -349,6 +349,18 @@ Steps:
 6. Reserve full row scans for explicit validation/debug/rebuild paths, and
    ensure those paths are named and measured separately.
 
+Implementation note:
+
+- Branch-local history and normal branch facts are restored in this slice.
+- Timestamp-to-version lookup still uses the branch row scan in
+  `BranchLocalState::resolve_timestamp_to_commit_version` because the branch
+  runtime does not yet own a branch timeline/facts lookup surface.
+- Deferral owner: L7 commit timeline integration.
+- Counter proof while deferred: `timestamp_*_rows_scanned` remains nonzero for
+  timestamp lookups that touch retained branch rows.
+- Closure slice: the L7 timeline/facts restoration must replace this row scan
+  and update these counters to zero for the normal lookup path.
+
 Exit gate:
 
 1. History for one key does not scan unrelated physical keys.

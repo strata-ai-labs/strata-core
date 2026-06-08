@@ -1115,7 +1115,7 @@ fn branch_read_view_scan_perf_trace_splits_source_classes() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn branch_facts_perf_trace_counts_only_readable_inherited_rows() {
+fn branch_facts_perf_trace_does_not_scan_rows_on_hot_path() {
     let branch = branch_id(239);
     let active_parent = branch_id(240);
     let materializing_parent = branch_id(241);
@@ -1166,8 +1166,13 @@ fn branch_facts_perf_trace_counts_only_readable_inherited_rows() {
     let _ = state.facts().expect("branch facts");
     let perf = crate::observability::perf_trace::snapshot();
 
-    assert_eq!(perf.branch_facts_inherited_l0_rows_observed(), 1);
-    assert_eq!(perf.branch_facts_inherited_nonzero_rows_observed(), 1);
+    assert_eq!(perf.branch_facts_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_active_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_frozen_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_owned_l0_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_owned_nonzero_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_inherited_l0_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_inherited_nonzero_rows_observed(), 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1320,23 +1325,23 @@ fn branch_scan_history_timestamp_and_facts_perf_trace_split_source_classes() {
         (own_rows.len() + inherited_rows.len()) as u64
     );
     assert_eq!(perf.history_active_rows_visited(), 0);
-    assert_eq!(perf.history_frozen_rows_visited(), 2);
-    assert_eq!(perf.history_owned_l0_rows_visited(), 1);
-    assert_eq!(perf.history_owned_nonzero_rows_visited(), 1);
+    assert_eq!(perf.history_frozen_rows_visited(), 1);
+    assert_eq!(perf.history_owned_l0_rows_visited(), 0);
+    assert_eq!(perf.history_owned_nonzero_rows_visited(), 0);
     assert_eq!(perf.history_inherited_l0_rows_visited(), 1);
-    assert_eq!(perf.history_inherited_nonzero_rows_visited(), 1);
-    assert!(perf.history_candidates_materialized() >= 1);
+    assert_eq!(perf.history_inherited_nonzero_rows_visited(), 0);
+    assert_eq!(perf.history_candidates_materialized(), 2);
     assert_eq!(perf.timestamp_active_rows_scanned(), 0);
     assert_eq!(perf.timestamp_frozen_rows_scanned(), 2);
     assert_eq!(perf.timestamp_owned_l0_rows_scanned(), 1);
     assert_eq!(perf.timestamp_owned_nonzero_rows_scanned(), 1);
     assert_eq!(perf.timestamp_inherited_l0_rows_scanned(), 1);
     assert_eq!(perf.timestamp_inherited_nonzero_rows_scanned(), 1);
-    assert!(perf.branch_facts_rows_observed() > 0);
+    assert_eq!(perf.branch_facts_rows_observed(), 0);
     assert_eq!(perf.branch_facts_active_rows_observed(), 0);
-    assert_eq!(perf.branch_facts_frozen_rows_observed(), 4);
-    assert_eq!(perf.branch_facts_owned_l0_rows_observed(), 2);
-    assert_eq!(perf.branch_facts_owned_nonzero_rows_observed(), 2);
-    assert_eq!(perf.branch_facts_inherited_l0_rows_observed(), 2);
-    assert_eq!(perf.branch_facts_inherited_nonzero_rows_observed(), 2);
+    assert_eq!(perf.branch_facts_frozen_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_owned_l0_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_owned_nonzero_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_inherited_l0_rows_observed(), 0);
+    assert_eq!(perf.branch_facts_inherited_nonzero_rows_observed(), 0);
 }
