@@ -9,6 +9,7 @@ use crate::branch::read::{
     require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
     BranchMaterializationSource, BranchOwnedTable, BranchTimestampCoverage,
 };
+use crate::observability::perf_trace;
 use crate::table::{
     BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionConfig,
     TableCompactionDecision, TableCompactionInput, TableCompactionPolicy, TableCompactionReport,
@@ -364,6 +365,7 @@ impl TableCompactionInput for BranchTableCompactionSource<'_> {
     }
 
     fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>> {
+        perf_trace::record_branch_compaction_source_opens(1);
         Ok(Box::new(self.table.reader().cursor()))
     }
 }
@@ -445,6 +447,7 @@ impl BranchLocalState {
             }
         };
         let (artifacts, report) = output.into_parts();
+        perf_trace::record_branch_compaction_peak_buffered_rows(report.peak_buffered_rows());
         Ok(Some((artifacts, report)))
     }
 

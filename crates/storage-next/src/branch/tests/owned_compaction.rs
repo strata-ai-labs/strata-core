@@ -867,6 +867,344 @@ fn branch_compaction_l0_keep_all_installs_replacement_and_preserves_pinned_view(
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_compaction_streams_candidate_sources_with_bounded_output_buffer() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(189);
+    let mut state = BranchLocalState::empty(branch);
+    for (index, key) in [b"stream-a", b"stream-b", b"stream-c", b"stream-d"]
+        .into_iter()
+        .enumerate()
+    {
+        let version = u64::try_from(index)
+            .expect("index fits in u64")
+            .saturating_add(1);
+        let identity = format!("stream-source-{index}");
+        state
+            .install_l0_table(branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                identity.as_str(),
+                vec![storage_row_with(
+                    branch,
+                    key.to_vec(),
+                    version,
+                    version.saturating_mul(10),
+                    Timestamp::EPOCH,
+                    key.to_vec(),
+                )],
+            ))
+            .expect("install source table");
+    }
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0,
+        "stream-compaction-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("split config"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.source_count(), 4);
+    assert_eq!(candidate.input_row_count(), 4);
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact sources");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), candidate.source_count());
+    assert_eq!(report.input_rows(), candidate.input_row_count());
+    assert_eq!(report.kept_rows(), candidate.input_row_count());
+    assert!(report.split_count() > 0);
+    assert_eq!(report.peak_buffered_rows(), 1);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(
+        perf.branch_compaction_source_opens(),
+        u64::try_from(candidate.source_count()).expect("source count fits in u64")
+    );
+    assert_eq!(
+        perf.branch_compaction_peak_buffered_rows(),
+        u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
+    );
+    assert_eq!(
+        perf.table_compaction_peak_buffered_rows(),
+        u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
+    );
+    assert!(perf.branch_compaction_peak_buffered_rows() < candidate.input_row_count());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_compaction_streams_l0_to_nonzero_overlap_sources_once() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(243);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let first_input = storage_row_with(
+        branch,
+        b"stream-target-a".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"a".to_vec(),
+    );
+    let last_input = storage_row_with(
+        branch,
+        b"stream-target-z".to_vec(),
+        6,
+        60,
+        Timestamp::EPOCH,
+        b"z".to_vec(),
+    );
+    let overlapping_target = storage_row_with(
+        branch,
+        b"stream-target-m".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"m".to_vec(),
+    );
+    let preserved_target = storage_row_with(
+        branch,
+        b"stream-target-zz".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"zz".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "stream-target-overlap",
+                vec![overlapping_target.clone()],
+            ),
+        )
+        .expect("install overlap target");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "stream-target-preserved",
+                vec![preserved_target.clone()],
+            ),
+        )
+        .expect("install preserved target");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "stream-input-range",
+            vec![first_input.clone(), last_input.clone()],
+        ))
+        .expect("install input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "stream-l0-target-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("split config"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(candidate.source_count(), 2);
+    assert_eq!(candidate.input_row_count(), 3);
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact input with overlap");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), candidate.source_count());
+    assert_eq!(report.input_rows(), candidate.input_row_count());
+    assert_eq!(report.kept_rows(), candidate.input_row_count());
+    assert_eq!(report.peak_buffered_rows(), 1);
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 4);
+
+    let after = state.capture_read_view().expect("after view");
+    for row in [
+        &first_input,
+        &overlapping_target,
+        &last_input,
+        &preserved_target,
+    ] {
+        assert!(after
+            .latest(row.physical_key())
+            .expect("latest")
+            .is_some_and(|visible| visible.row() == row));
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(
+        perf.branch_compaction_source_opens(),
+        u64::try_from(candidate.source_count()).expect("source count fits in u64")
+    );
+    assert_eq!(
+        perf.branch_compaction_peak_buffered_rows(),
+        u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
+    );
+    assert_eq!(
+        perf.table_compaction_peak_buffered_rows(),
+        u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
+    );
+    assert!(perf.branch_compaction_peak_buffered_rows() < candidate.input_row_count());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_compaction_streams_nonzero_overlap_sources_once() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(244);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let first_input = storage_row_with(
+        branch,
+        b"stream-promote-a".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"a".to_vec(),
+    );
+    let last_input = storage_row_with(
+        branch,
+        b"stream-promote-z".to_vec(),
+        8,
+        80,
+        Timestamp::EPOCH,
+        b"z".to_vec(),
+    );
+    let overlapping_target = storage_row_with(
+        branch,
+        b"stream-promote-m".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"m".to_vec(),
+    );
+    let preserved_target = storage_row_with(
+        branch,
+        b"stream-promote-zz".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"zz".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(2),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(2),
+                "stream-promote-overlap",
+                vec![overlapping_target.clone()],
+            ),
+        )
+        .expect("install overlap target");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(2),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(2),
+                "stream-promote-preserved",
+                vec![preserved_target.clone()],
+            ),
+        )
+        .expect("install preserved target");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "stream-promote-input",
+                vec![first_input.clone(), last_input.clone()],
+            ),
+        )
+        .expect("install input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "stream-promote-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("split config"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(candidate.output_level(), BranchLevel::new(2));
+    assert_eq!(candidate.source_count(), 2);
+    assert_eq!(candidate.input_row_count(), 3);
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact promoted input");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), candidate.source_count());
+    assert_eq!(report.input_rows(), candidate.input_row_count());
+    assert_eq!(report.kept_rows(), candidate.input_row_count());
+    assert_eq!(report.peak_buffered_rows(), 1);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 4);
+
+    let level_key_ranges = state.owned_levels()[2]
+        .iter()
+        .map(|table| table.facts().key_range())
+        .collect::<Vec<_>>();
+    for adjacent in level_key_ranges.windows(2) {
+        assert!(adjacent[0].last_key() < adjacent[1].first_key());
+    }
+
+    let after = state.capture_read_view().expect("after view");
+    for row in [
+        &first_input,
+        &overlapping_target,
+        &last_input,
+        &preserved_target,
+    ] {
+        assert!(after
+            .latest(row.physical_key())
+            .expect("latest")
+            .is_some_and(|visible| visible.row() == row));
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(
+        perf.branch_compaction_source_opens(),
+        u64::try_from(candidate.source_count()).expect("source count fits in u64")
+    );
+    assert_eq!(
+        perf.branch_compaction_peak_buffered_rows(),
+        u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
+    );
+    assert_eq!(
+        perf.table_compaction_peak_buffered_rows(),
+        u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
+    );
+    assert!(perf.branch_compaction_peak_buffered_rows() < candidate.input_row_count());
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn branch_compaction_l0_to_level_one_includes_overlaps_and_preserves_non_overlaps() {
@@ -1308,6 +1646,137 @@ fn branch_compaction_install_revalidates_stale_plan_before_mutation() {
         BranchRuntimeError::InvalidCompaction { .. }
     ));
     assert_eq!(state, before_install);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_compaction_rejects_stale_plan_before_source_open() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(245);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "stale-open-a",
+            vec![storage_row_with(
+                branch,
+                b"stale-open-a".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                b"a".to_vec(),
+            )],
+        ))
+        .expect("install a");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "stale-open-b",
+            vec![storage_row_with(
+                branch,
+                b"stale-open-b".to_vec(),
+                2,
+                20,
+                Timestamp::EPOCH,
+                b"b".to_vec(),
+            )],
+        ))
+        .expect("install b");
+    let request =
+        BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "stale-open-output")
+            .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "stale-open-c",
+            vec![storage_row_with(
+                branch,
+                b"stale-open-c".to_vec(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                b"c".to_vec(),
+            )],
+        ))
+        .expect("mutate after plan");
+    let before_install = state.clone();
+
+    let error = state
+        .install_branch_compaction_plan(&request, &plan)
+        .expect_err("stale plan rejected");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidCompaction { .. }
+    ));
+    assert_eq!(state, before_install);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.branch_compaction_source_opens(), 0);
+    assert_eq!(perf.branch_compaction_peak_buffered_rows(), 0);
+    assert_eq!(perf.table_compaction_peak_buffered_rows(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_compaction_rejects_missing_pruning_proof_before_source_open() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(246);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "prune-open-a",
+            vec![storage_row_with(
+                branch,
+                b"prune-open-a".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                b"a".to_vec(),
+            )],
+        ))
+        .expect("install a");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "prune-open-b",
+            vec![storage_row_with(
+                branch,
+                b"prune-open-b".to_vec(),
+                2,
+                20,
+                Timestamp::EPOCH,
+                b"b".to_vec(),
+            )],
+        ))
+        .expect("install b");
+    let before = state.clone();
+    let request =
+        BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "prune-open-output")
+            .expect("request")
+            .with_retention_policy(BranchCompactionRetentionPolicy::DropOlderVersions);
+
+    let error = state
+        .compact_branch_owned_tables(&request)
+        .expect_err("missing proof rejected");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::ProofMissing
+        }
+    ));
+    assert_eq!(state, before);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.branch_compaction_source_opens(), 0);
+    assert_eq!(perf.branch_compaction_peak_buffered_rows(), 0);
+    assert_eq!(perf.table_compaction_peak_buffered_rows(), 0);
 }
 
 #[test]

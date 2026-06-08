@@ -76,6 +76,9 @@ pub struct StoragePerfSnapshot {
     read_view_rows_cloned: u64,
     read_view_row_clone_bytes: u64,
     read_view_validation_rows_scanned: u64,
+    branch_compaction_source_opens: u64,
+    branch_compaction_peak_buffered_rows: u64,
+    table_compaction_peak_buffered_rows: u64,
     append_staging_clones: u64,
     append_staging_rows_cloned: u64,
     conflict_sources_built: u64,
@@ -273,6 +276,21 @@ impl StoragePerfSnapshot {
     /// Number of branch rows scanned while validating captured read-view facts.
     pub const fn read_view_validation_rows_scanned(self) -> u64 {
         self.read_view_validation_rows_scanned
+    }
+
+    /// Number of branch compaction source handles selected for table compaction.
+    pub const fn branch_compaction_source_opens(self) -> u64 {
+        self.branch_compaction_source_opens
+    }
+
+    /// Peak rows buffered by branch-owned compaction output construction.
+    pub const fn branch_compaction_peak_buffered_rows(self) -> u64 {
+        self.branch_compaction_peak_buffered_rows
+    }
+
+    /// Peak rows buffered by table compaction output construction.
+    pub const fn table_compaction_peak_buffered_rows(self) -> u64 {
+        self.table_compaction_peak_buffered_rows
     }
 
     /// Number of whole-branch append staging clones performed.
@@ -734,6 +752,12 @@ static READ_VIEW_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_VALIDATION_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static BRANCH_COMPACTION_SOURCE_OPENS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_COMPACTION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static APPEND_STAGING_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static APPEND_STAGING_ROWS_CLONED: AtomicU64 = AtomicU64::new(0);
@@ -960,6 +984,9 @@ pub fn reset() {
     READ_VIEW_ROWS_CLONED.store(0, Ordering::Relaxed);
     READ_VIEW_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
     READ_VIEW_VALIDATION_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    BRANCH_COMPACTION_SOURCE_OPENS.store(0, Ordering::Relaxed);
+    BRANCH_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
     APPEND_STAGING_CLONES.store(0, Ordering::Relaxed);
     APPEND_STAGING_ROWS_CLONED.store(0, Ordering::Relaxed);
     CONFLICT_SOURCES_BUILT.store(0, Ordering::Relaxed);
@@ -1072,6 +1099,11 @@ pub fn snapshot() -> StoragePerfSnapshot {
         read_view_rows_cloned: READ_VIEW_ROWS_CLONED.load(Ordering::Relaxed),
         read_view_row_clone_bytes: READ_VIEW_ROW_CLONE_BYTES.load(Ordering::Relaxed),
         read_view_validation_rows_scanned: READ_VIEW_VALIDATION_ROWS_SCANNED
+            .load(Ordering::Relaxed),
+        branch_compaction_source_opens: BRANCH_COMPACTION_SOURCE_OPENS.load(Ordering::Relaxed),
+        branch_compaction_peak_buffered_rows: BRANCH_COMPACTION_PEAK_BUFFERED_ROWS
+            .load(Ordering::Relaxed),
+        table_compaction_peak_buffered_rows: TABLE_COMPACTION_PEAK_BUFFERED_ROWS
             .load(Ordering::Relaxed),
         append_staging_clones: APPEND_STAGING_CLONES.load(Ordering::Relaxed),
         append_staging_rows_cloned: APPEND_STAGING_ROWS_CLONED.load(Ordering::Relaxed),
@@ -1363,6 +1395,39 @@ pub(crate) fn record_read_view_validation_scan(rows_scanned: usize) {
         return;
     }
     READ_VIEW_VALIDATION_ROWS_SCANNED.fetch_add(as_u64(rows_scanned), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_compaction_source_opens(_sources: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_compaction_source_opens(sources: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_COMPACTION_SOURCE_OPENS.fetch_add(as_u64(sources), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_compaction_peak_buffered_rows(_rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_compaction_peak_buffered_rows(rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_COMPACTION_PEAK_BUFFERED_ROWS.fetch_max(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_peak_buffered_rows(_rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_peak_buffered_rows(rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_PEAK_BUFFERED_ROWS.fetch_max(as_u64(rows), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

@@ -5,6 +5,7 @@ use super::{
     TableBuilderConfig, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
     TablePhysicalKeyBytes, TableRow, TableRuntimeError, TableRuntimeResult,
 };
+use crate::observability::perf_trace;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -319,6 +320,7 @@ pub(crate) struct TableCompactionReport {
     output_tables: usize,
     output_bytes: u64,
     split_count: u64,
+    peak_buffered_rows: usize,
     drop_summaries: Vec<TableCompactionDropSummary>,
 }
 
@@ -332,6 +334,7 @@ impl TableCompactionReport {
             output_tables: 0,
             output_bytes: 0,
             split_count: 0,
+            peak_buffered_rows: 0,
             drop_summaries: Vec::new(),
         }
     }
@@ -364,8 +367,16 @@ impl TableCompactionReport {
         self.split_count
     }
 
+    pub(crate) const fn peak_buffered_rows(&self) -> usize {
+        self.peak_buffered_rows
+    }
+
     pub(crate) fn drop_summaries(&self) -> &[TableCompactionDropSummary] {
         &self.drop_summaries
+    }
+
+    fn record_peak_buffered_rows(&mut self, rows: usize) {
+        self.peak_buffered_rows = self.peak_buffered_rows.max(rows);
     }
 
     fn record_keep(&mut self) {
@@ -418,11 +429,11 @@ fn compact_table_inputs(
     sources: &[&dyn TableCompactionInput],
     policy: &mut (impl TableCompactionPolicy + ?Sized),
 ) -> TableRuntimeResult<TableCompactionOutput> {
-    validate_no_global_duplicate_internal_keys(sources)?;
-
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
     let mut merged = TableCompactionMergeCursor::new(sources)?;
+    validate_no_global_duplicate_internal_keys(&mut merged)?;
+    merged.seek_to_first()?;
 
     let target_output_bytes = compactor.config.target_output_bytes();
     require_nonzero_target_output_bytes(target_output_bytes)?;
@@ -477,6 +488,7 @@ fn compact_table_inputs(
                     &mut output_last_physical_key,
                     row,
                 )?;
+                report.record_peak_buffered_rows(output_rows.len());
                 previous_kept_key = Some(kept_key);
                 report.record_keep();
             }
@@ -498,13 +510,14 @@ fn compact_table_inputs(
         compactor.config.max_output_tables(),
     )?;
 
+    perf_trace::record_table_compaction_peak_buffered_rows(report.peak_buffered_rows());
+
     Ok(TableCompactionOutput::new(artifacts, report))
 }
 
 fn validate_no_global_duplicate_internal_keys(
-    sources: &[&dyn TableCompactionInput],
+    merged: &mut TableCompactionMergeCursor<'_>,
 ) -> TableRuntimeResult<()> {
-    let mut merged = TableCompactionMergeCursor::new(sources)?;
     let mut previous_key: Option<TableInternalKeyBytes> = None;
     while let Some(current) = merged.current() {
         if let Some(previous) = &previous_key {
@@ -586,6 +599,22 @@ impl<'a> TableCompactionMergeCursor<'a> {
             sources: cursors,
             heap,
         })
+    }
+
+    fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
+        self.heap.clear();
+        for (source_index, source) in self.sources.iter_mut().enumerate() {
+            source.cursor.seek_to_first()?;
+            source.source_row_index = 0;
+            source.last_key = source.cursor.current_key().cloned();
+            if let Some(key) = &source.last_key {
+                self.heap.push(TableCompactionHeapItem {
+                    key: key.clone(),
+                    source_index,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn current(&self) -> Option<TableCompactionMergedRow<'_>> {

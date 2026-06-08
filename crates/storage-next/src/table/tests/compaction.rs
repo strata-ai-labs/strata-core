@@ -1135,17 +1135,14 @@ impl TrackedCompactionInput {
 
 fn assert_cursor_input_streaming_is_bounded(input: &TrackedCompactionInput, logical_rows: usize) {
     let open_calls = input.open_calls();
-    assert!(
-        (1..=2).contains(&open_calls),
-        "cursor input was opened {open_calls} times"
-    );
+    assert_eq!(open_calls, 1, "cursor input was opened {open_calls} times");
     assert!(
         input.advance_calls() >= logical_rows,
         "cursor input advanced fewer times than its logical rows"
     );
     assert!(
-        input.advance_calls() <= logical_rows.saturating_mul(open_calls),
-        "cursor input advanced more than once per logical row per pass"
+        input.advance_calls() <= logical_rows.saturating_mul(2),
+        "cursor input advanced more than once per logical row per validation/build pass"
     );
 }
 
