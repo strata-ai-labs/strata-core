@@ -14,9 +14,21 @@ pub struct TableRuntimeScaffoldOutcome {
     immutable_builder_artifacts: usize,
     immutable_table_readers: usize,
     object_backed_table_readers: usize,
+    lazy_reader_opens: usize,
+    lazy_point_hits: usize,
+    lazy_point_misses: usize,
+    lazy_range_cursors: usize,
+    object_backed_reader_parity: usize,
     table_block_caches: usize,
+    cache_hits: usize,
+    cache_misses: usize,
     table_bloom_filters: usize,
+    filter_available_paths: usize,
+    filter_absent_paths: usize,
+    filter_negative_probes: usize,
+    filter_false_positive_paths: usize,
     table_compactions: usize,
+    streaming_compaction_outputs: usize,
     table_perf_traces: usize,
     error_sources: usize,
 }
@@ -87,9 +99,44 @@ impl TableRuntimeScaffoldOutcome {
         self.object_backed_table_readers
     }
 
+    /// Number of lazy reader open cases exercised.
+    pub const fn lazy_reader_open_cases(self) -> usize {
+        self.lazy_reader_opens
+    }
+
+    /// Number of lazy point-hit cases exercised.
+    pub const fn lazy_point_hit_cases(self) -> usize {
+        self.lazy_point_hits
+    }
+
+    /// Number of lazy point-miss cases exercised.
+    pub const fn lazy_point_miss_cases(self) -> usize {
+        self.lazy_point_misses
+    }
+
+    /// Number of lazy bounded range-cursor cases exercised.
+    pub const fn lazy_range_cursor_cases(self) -> usize {
+        self.lazy_range_cursors
+    }
+
+    /// Number of object-backed reader parity cases exercised.
+    pub const fn object_backed_reader_parity_cases(self) -> usize {
+        self.object_backed_reader_parity
+    }
+
     /// Number of table block-cache cases exercised.
     pub const fn table_block_cache_cases(self) -> usize {
         self.table_block_caches
+    }
+
+    /// Number of table block-cache hit cases exercised.
+    pub const fn cache_hit_cases(self) -> usize {
+        self.cache_hits
+    }
+
+    /// Number of table block-cache miss cases exercised.
+    pub const fn cache_miss_cases(self) -> usize {
+        self.cache_misses
     }
 
     /// Number of table bloom/filter accelerator cases exercised.
@@ -97,9 +144,34 @@ impl TableRuntimeScaffoldOutcome {
         self.table_bloom_filters
     }
 
+    /// Number of available table-filter paths exercised.
+    pub const fn filter_available_cases(self) -> usize {
+        self.filter_available_paths
+    }
+
+    /// Number of unavailable table-filter paths exercised.
+    pub const fn filter_absent_cases(self) -> usize {
+        self.filter_absent_paths
+    }
+
+    /// Number of negative table-filter probe cases exercised.
+    pub const fn filter_negative_probe_cases(self) -> usize {
+        self.filter_negative_probes
+    }
+
+    /// Number of table-filter false-positive cases exercised.
+    pub const fn filter_false_positive_cases(self) -> usize {
+        self.filter_false_positive_paths
+    }
+
     /// Number of generic table compaction cases exercised.
     pub const fn table_compaction_cases(self) -> usize {
         self.table_compactions
+    }
+
+    /// Number of streaming table compaction output cases exercised.
+    pub const fn streaming_compaction_output_cases(self) -> usize {
+        self.streaming_compaction_outputs
     }
 
     /// Number of M4P-table-local perf-trace cases exercised.
@@ -135,9 +207,21 @@ pub fn check_table_runtime_scaffold_contract(
         immutable_builder_artifacts: 0,
         immutable_table_readers: 0,
         object_backed_table_readers: 0,
+        lazy_reader_opens: 0,
+        lazy_point_hits: 0,
+        lazy_point_misses: 0,
+        lazy_range_cursors: 0,
+        object_backed_reader_parity: 0,
         table_block_caches: 0,
+        cache_hits: 0,
+        cache_misses: 0,
         table_bloom_filters: 0,
+        filter_available_paths: 0,
+        filter_absent_paths: 0,
+        filter_negative_probes: 0,
+        filter_false_positive_paths: 0,
         table_compactions: 0,
+        streaming_compaction_outputs: 0,
         table_perf_traces: 0,
         error_sources: 0,
     };
@@ -165,14 +249,27 @@ pub fn check_table_runtime_scaffold_contract(
     outcome.immutable_builder_artifacts += 1;
     check_immutable_table_reader(script)?;
     outcome.immutable_table_readers += 1;
+    outcome.lazy_reader_opens += 1;
+    outcome.lazy_point_hits += 1;
+    outcome.lazy_point_misses += 1;
+    outcome.lazy_range_cursors += 1;
+    outcome.filter_available_paths += 1;
+    outcome.filter_absent_paths += 1;
     check_object_backed_table_reader(script)?;
     outcome.object_backed_table_readers += 1;
+    outcome.lazy_reader_opens += 1;
+    outcome.object_backed_reader_parity += 1;
     check_table_block_cache(script)?;
     outcome.table_block_caches += 1;
+    outcome.cache_hits += 1;
+    outcome.cache_misses += 1;
     check_table_bloom_filter(script)?;
     outcome.table_bloom_filters += 1;
+    outcome.filter_negative_probes += 1;
+    outcome.filter_false_positive_paths += 1;
     check_table_compaction(script)?;
     outcome.table_compactions += 1;
+    outcome.streaming_compaction_outputs += 1;
     #[cfg(feature = "perf-trace")]
     {
         check_table_perf_trace_contract(script)?;

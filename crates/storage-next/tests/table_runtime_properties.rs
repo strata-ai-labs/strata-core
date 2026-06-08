@@ -15,9 +15,21 @@ fn table_runtime_property_harness_is_not_a_placeholder() {
     assert!(source.contains("check_table_runtime_scaffold_contract"));
     assert!(source.contains("immutable_table_reader_cases"));
     assert!(source.contains("object_backed_table_reader_cases"));
+    assert!(source.contains("lazy_reader_open_cases"));
+    assert!(source.contains("lazy_point_hit_cases"));
+    assert!(source.contains("lazy_point_miss_cases"));
+    assert!(source.contains("lazy_range_cursor_cases"));
+    assert!(source.contains("object_backed_reader_parity_cases"));
     assert!(source.contains("table_block_cache_cases"));
+    assert!(source.contains("cache_hit_cases"));
+    assert!(source.contains("cache_miss_cases"));
     assert!(source.contains("table_bloom_filter_cases"));
+    assert!(source.contains("filter_available_cases"));
+    assert!(source.contains("filter_absent_cases"));
+    assert!(source.contains("filter_negative_probe_cases"));
+    assert!(source.contains("filter_false_positive_cases"));
     assert!(source.contains("table_compaction_cases"));
+    assert!(source.contains("streaming_compaction_output_cases"));
     assert!(source.contains("table_perf_trace_cases"));
     assert!(!source.contains("src/table/mod.rs\").is_file()"));
 }
@@ -56,9 +68,21 @@ fn table_runtime_property_harness_runs_scaffold_contract() {
                 || outcome.immutable_builder_artifact_cases() == 0
                 || outcome.immutable_table_reader_cases() == 0
                 || outcome.object_backed_table_reader_cases() == 0
+                || outcome.lazy_reader_open_cases() == 0
+                || outcome.lazy_point_hit_cases() == 0
+                || outcome.lazy_point_miss_cases() == 0
+                || outcome.lazy_range_cursor_cases() == 0
+                || outcome.object_backed_reader_parity_cases() == 0
                 || outcome.table_block_cache_cases() == 0
+                || outcome.cache_hit_cases() == 0
+                || outcome.cache_miss_cases() == 0
                 || outcome.table_bloom_filter_cases() == 0
+                || outcome.filter_available_cases() == 0
+                || outcome.filter_absent_cases() == 0
+                || outcome.filter_negative_probe_cases() == 0
+                || outcome.filter_false_positive_cases() == 0
                 || outcome.table_compaction_cases() == 0
+                || outcome.streaming_compaction_output_cases() == 0
                 || outcome.error_source_cases() == 0
             {
                 return Err(TestCaseError::fail(

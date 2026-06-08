@@ -383,6 +383,7 @@ fn check_immutable_table_reader(script: &[u8]) -> Result<(), TestkitError> {
         config,
     )
     .map_err(|err| TestkitError::new(format!("reader source open failed: {err}")))?;
+    assert_lazy_reader_point_and_bounds_match_model("generated source reader", &source_reader, &rows)?;
     assert_immutable_reader_matches_model(
         "generated source reader",
         &source_reader,
@@ -468,6 +469,39 @@ fn assert_source_reader_filter_matches_model(
             "filtered reader physical-key lookup drifted from generated model",
         ));
     }
+
+    let unavailable = ImmutableTableReader::open_source(
+        identity.clone(),
+        BytesTableSource::new(bytes.to_vec()),
+        config,
+    )
+    .map_err(|err| TestkitError::new(format!("unfiltered reader source open failed: {err}")))?
+    .with_table_filter(TableReaderFilter::unavailable())
+    .map_err(|err| TestkitError::new(format!("unavailable reader filter attach failed: {err}")))?;
+    if unavailable.runtime_facts().filter_available() {
+        return Err(TestkitError::new(
+            "unavailable reader filter reported an available filter",
+        ));
+    }
+    let absent_probe_key = TablePhysicalKeyBytes::from_physical_key(&deterministic_physical_key(
+        0xfa,
+        "reader-filter",
+        0xfd,
+        b"unavailable".to_vec(),
+    )?);
+    if TableReaderFilter::unavailable().probe_physical_key(&absent_probe_key)
+        != TableBloomProbe::Unavailable
+    {
+        return Err(TestkitError::new(
+            "unavailable reader filter did not report unavailable probes",
+        ));
+    }
+    let actual = unavailable.seek_physical_key(&target, None, None).0;
+    if actual != expected {
+        return Err(TestkitError::new(
+            "unavailable-filter reader lookup drifted from generated model",
+        ));
+    }
     Ok(())
 }
 
@@ -507,6 +541,11 @@ fn check_object_backed_table_reader(script: &[u8]) -> Result<(), TestkitError> {
     let object_reader = TableObjectReaderService::new(&backend)
         .open_reader(identity.clone(), &object_facts, config)
         .map_err(|err| TestkitError::new(format!("object-backed reader open failed: {err}")))?;
+    assert_lazy_reader_point_and_bounds_match_model(
+        "generated object-backed reader",
+        &object_reader,
+        &rows,
+    )?;
     assert_immutable_reader_matches_model(
         "generated object-backed reader",
         &object_reader,

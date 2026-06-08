@@ -1032,3 +1032,102 @@ cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_compaction 
   storage consumers until the storage-next stack replaces them.
 - Follow-up: M4-L6 can start branch table state on top of L5 mechanics without
   adding new L5 conformance work.
+
+## M4P-L5: Table Runtime Parity Closeout
+
+### Current Files Read
+
+- `docs/architecture/implementation-plans/M4P/m4p-l5-table-runtime-parity-implementation-plan.md`
+- `docs/architecture/implementation-plans/M4P/m4p-l5-table-runtime-parity-test-plan.md`
+- `docs/architecture/storage-next/l5-table-runtime.md`
+- `crates/storage-next/src/table/`
+- `crates/storage-next/src/service/table.rs`
+- `crates/storage-next/src/testkit/table_runtime.rs`
+- `crates/storage-next/src/testkit/table_runtime/{builder_reader,cache,bloom_compaction,helpers,outcome_contracts}.rs`
+- `crates/storage-next/tests/table_runtime_properties.rs`
+- `crates/storage-next/tests/table_runtime_closeout.rs`
+- `crates/storage-next/tests/table_runtime_source_guard.rs`
+- `crates/storage/src/{segment,index,bloom,block_cache,merge_iter,seekable,compaction}.rs`
+
+### Behavior Preserved
+
+- Lazy table open remains a table-local reader mode with metadata and index
+  loaded while data blocks and rows stay unloaded until point/range access.
+- Point lookup uses L5 table facts, index entries, optional filter probes, and
+  candidate data-block reads without requiring branch or MVCC policy.
+- Range and prefix readers use the normal bounded cursor machinery and compare
+  to the eager sorted-row model for correctness.
+- Cache checks preserve hit, miss, eviction, duplicate-insert, table-removal,
+  disabled, and oversized-entry behavior from the old block-cache mechanics.
+- Bloom/filter checks preserve non-authoritative acceleration: no false
+  negatives for generated keys, definitely-absent probes may skip data blocks,
+  and maybe-present/false-positive paths still require table validation.
+- Table compaction remains streaming/cursor-oriented and policy-injected, with
+  output artifacts validated as normal M3G tables.
+- Object-backed reader tests continue to prove L4 service handoff into the lazy
+  L5 reader without moving object names, layout, or backend reads into
+  production `src/table/`.
+
+### Intentional V1 Changes
+
+- Durable filter blocks remain deferred. Runtime filters may be supplied only
+  when they match canonical table bytes and exact content proof; L5 does not
+  extend M3G bytes in this parity slice.
+- The generated closeout coverage is expressed as table-runtime outcome
+  counters rather than benchmark-specific fast paths.
+- The M4P closeout entry coexists with the older M4-L5 slice history because
+  M4P restored performance-shape parity after the original architecture audit.
+
+### Deferred
+
+- L6 still owns branch table manifests, source pruning, MVCC/latest-visible
+  source selection, inherited table lookup, and branch-level scan planning.
+- L8 still owns table install, compaction scheduling, retention, quarantine,
+  checkpoint coordination, and maintenance policy.
+- Durable object-backed filter blocks still require an L3 table-format
+  amendment before L5 can read filter bytes from table objects.
+- Any remaining L9 benchmark gap after L5 counters pass should be diagnosed in
+  L6 source fanout or L8 maintenance/compaction, not by adding L5 fast paths.
+
+### Tests Ported Or Added
+
+- Extended `TableRuntimeScaffoldOutcome` with generated closeout counters for
+  lazy reader opens, lazy point hits, lazy point misses, lazy range cursors,
+  cache hits, cache misses, filter available/absent/negative/false-positive
+  paths, streaming compaction outputs, and object-backed reader parity.
+- Added generated lazy-reader checks that assert lazy open runtime facts before
+  materialization, then compare point-hit, point-miss, and bounded range-cursor
+  results to the generated sorted model.
+- Added generated unavailable-filter proof alongside the available supplied
+  filter path.
+- Added deterministic generated bloom false-positive coverage without treating
+  the filter as authoritative.
+- Extended `table_runtime_properties` to require every closeout counter to be
+  nonzero in generated runs.
+- Extended `table_runtime_closeout` to inventory the closeout counters and
+  existing source-guard categories.
+- Extended `table_runtime_closeout` to require the perf closeout report,
+  referenced benchmark result files, and this M4P-L5 porting-log entry.
+- Re-ran the source guard suite confirming production `src/table/` still
+  rejects backend/object/layout/service imports, old `KVSegment`/`STRAKV`/
+  path-hash/global-cache vocabulary, and branch/MVCC/retention policy terms in
+  table compaction.
+
+### Benchmark And Perf Evidence
+
+- Closeout report:
+  `docs/architecture/perf-tuning/m4p-l5-table-runtime-parity-closeout.md`.
+- Required benchmark commands cover L9 100K and 1M point-throughput and
+  range/prefix scans for `cache` and `standard` engines.
+- Benchmark output is recorded in the closeout report, including any remaining
+  stop-condition diagnosis when table-local counters pass but L9 throughput is
+  still bottlenecked above L5.
+
+### Retirement
+
+- Deleted: none.
+- Legacy-retained: old `crates/storage` table files remain until storage-next
+  replaces current storage consumers.
+- Follow-up: start L6 source-shape work only after the L5 closeout report shows
+  table-local lazy point/range/cache/filter counters are passing and benchmark
+  gaps are attributable above L5.

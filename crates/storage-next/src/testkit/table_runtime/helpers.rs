@@ -198,6 +198,76 @@ fn assert_reader_bounds_match_model(
     assert_cursor_keys(label, &mut cursor, &expected)
 }
 
+fn assert_lazy_reader_open_state(
+    label: &'static str,
+    reader: &ImmutableTableReader,
+) -> Result<(), TestkitError> {
+    let facts = reader.runtime_facts();
+    if facts.open_mode() != TableReaderOpenMode::LazySource
+        || !facts.metadata_loaded()
+        || !facts.index_loaded()
+        || facts.data_blocks_loaded() != 0
+        || facts.rows_materialized() != 0
+    {
+        return Err(TestkitError::new(format!(
+            "{label} did not preserve lazy open runtime facts"
+        )));
+    }
+    Ok(())
+}
+
+fn assert_lazy_reader_point_and_bounds_match_model(
+    label: &'static str,
+    reader: &ImmutableTableReader,
+    rows: &[TableRow],
+) -> Result<(), TestkitError> {
+    assert_lazy_reader_open_state(label, reader)?;
+
+    let target = rows[rows.len() / 2].physical_key().clone();
+    let expected = rows
+        .iter()
+        .find(|row| row.physical_key() == &target)
+        .cloned();
+    let (actual, visited) = reader
+        .try_seek_physical_key(&target, None, None)
+        .map_err(|err| TestkitError::new(format!("{label} lazy point hit failed: {err}")))?;
+    if actual != expected || visited == 0 {
+        return Err(TestkitError::new(format!(
+            "{label} lazy point hit did not match generated model"
+        )));
+    }
+
+    let missing = deterministic_physical_key(
+        0xfb,
+        "reader-miss",
+        0xfe,
+        b"generated-absent".to_vec(),
+    )?;
+    let (missing_row, _) = reader
+        .try_seek_physical_key(&missing, None, None)
+        .map_err(|err| TestkitError::new(format!("{label} lazy point miss failed: {err}")))?;
+    if missing_row.is_some() {
+        return Err(TestkitError::new(format!(
+            "{label} lazy point miss returned a generated row"
+        )));
+    }
+
+    let lower = rows[rows.len() / 3].key().clone();
+    let upper = rows[(rows.len() * 2) / 3].key().clone();
+    let expected = rows
+        .iter()
+        .filter(|row| row.key() >= &lower && row.key() <= &upper)
+        .map(table_row_key_bytes)
+        .collect::<Vec<_>>();
+    let bounds = TableKeyBounds::closed(lower, upper)
+        .map_err(|err| TestkitError::new(format!("{label} lazy bounds setup failed: {err}")))?;
+    let mut cursor = reader.bounded_cursor(bounds);
+    cursor
+        .seek_to_first()
+        .map_err(|err| TestkitError::new(format!("{label} lazy range seek failed: {err}")))?;
+    assert_cursor_keys(label, &mut cursor, &expected)
+}
+
 struct ShortTableSource {
     bytes: Vec<u8>,
 }
@@ -395,4 +465,3 @@ fn generated_model_row(script: &[u8], index: usize) -> Result<StorageRow, Testki
         ))
     }
 }
-

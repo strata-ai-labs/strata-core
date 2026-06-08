@@ -14,8 +14,8 @@ use crate::table::{
     TableCompactionDropReason, TableCompactionSource, TableCompactionSourceId, TableCompactor,
     TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBound, TableKeyBounds,
     TableKeyRange, TableMemoryFacts, TablePhysicalKeyBytes, TableReaderConfig, TableReaderFilter,
-    TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
-    MERGE_HEAP_THRESHOLD,
+    TableReaderOpenMode, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts,
+    TableRuntimeResult, MERGE_HEAP_THRESHOLD,
 };
 use std::collections::{btree_map::Entry, BTreeMap, VecDeque};
 use std::error::Error;

@@ -371,7 +371,9 @@ fn table_runtime_dependency_guard_catches_required_forbidden_terms() {
 
     for line in [
         "let _ = b\"STRAKV\";",
+        "let _: KVSegment;",
         "let _: SegmentBuilder;",
+        "let _: SegmentId;",
         "use crate::segment_builder;",
         "use crate::layout::ObjectLayout;",
         "service::table::TableObjectService::new();",
@@ -409,6 +411,7 @@ fn table_runtime_dependency_guard_catches_cache_identity_terms() {
         "unsafe { do_work(); }",
         "unsafe fn open() {}",
         "let _ = file_path_hash(path);",
+        "let _ = path_hash(path);",
         "let file_id = 7;",
         "global_cache().get();",
     ] {
@@ -470,6 +473,10 @@ fn table_runtime_dependency_guard_catches_compaction_policy_terms() {
         "let branch_retention = policy;",
         "let inherited_table = table;",
         "let fork_gate = version;",
+        "let materialization_policy = policy;",
+        "retention_policy.apply();",
+        "quarantine_table(table);",
+        "checkpoint_table(table);",
         "let visible_row = row;",
         "install_manifest();",
         "lifecycle_cleanup();",
@@ -619,7 +626,9 @@ fn contains_forbidden_old_table_builder_vocabulary(line: &str) -> bool {
     let normalized = line.to_ascii_lowercase();
     [
         "strakv",
+        "kvsegment",
         "segmentbuilder",
+        "segmentid",
         "segment_builder",
         "crate::layout",
         "objectlayout",
@@ -649,9 +658,15 @@ fn contains_forbidden_object_layout_literal(line: &str) -> bool {
 
 fn contains_forbidden_unsafe_or_old_cache_identity(line: &str) -> bool {
     let normalized = line.to_ascii_lowercase();
-    ["unsafe", "file_path_hash", "file_id", "global_cache"]
-        .iter()
-        .any(|term| normalized.contains(term))
+    [
+        "unsafe",
+        "file_path_hash",
+        "path_hash",
+        "file_id",
+        "global_cache",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
 }
 
 fn contains_process_global_cache_state(line: &str) -> bool {
@@ -706,6 +721,10 @@ fn contains_forbidden_compaction_policy_vocabulary(line: &str) -> bool {
         "branch_retention",
         "inherited_table",
         "fork_gate",
+        "materialization",
+        "retention",
+        "quarantine",
+        "checkpoint",
         "visible_row",
         "install_manifest",
         "lifecycle_cleanup",

@@ -5,7 +5,7 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn table_runtime_closeout_generated_harness_exposes_every_counter() {
@@ -27,9 +27,21 @@ fn table_runtime_closeout_generated_harness_exposes_every_counter() {
         "immutable_builder_artifact_cases",
         "immutable_table_reader_cases",
         "object_backed_table_reader_cases",
+        "lazy_reader_open_cases",
+        "lazy_point_hit_cases",
+        "lazy_point_miss_cases",
+        "lazy_range_cursor_cases",
+        "object_backed_reader_parity_cases",
         "table_block_cache_cases",
+        "cache_hit_cases",
+        "cache_miss_cases",
         "table_bloom_filter_cases",
+        "filter_available_cases",
+        "filter_absent_cases",
+        "filter_negative_probe_cases",
+        "filter_false_positive_cases",
         "table_compaction_cases",
+        "streaming_compaction_output_cases",
         "table_perf_trace_cases",
         "error_source_cases",
     ];
@@ -93,8 +105,15 @@ fn table_runtime_closeout_source_guard_suite_covers_required_boundary_categories
             "snapshots/",
             "manifest/current",
             "STRAKV",
+            "KVSegment",
             "SegmentBuilder",
+            "SegmentId",
+            "path_hash",
             "global_cache",
+            "materialization",
+            "retention",
+            "quarantine",
+            "checkpoint",
             "branch_retention",
             "inherited_table",
             "install_manifest",
@@ -102,6 +121,79 @@ fn table_runtime_closeout_source_guard_suite_covers_required_boundary_categories
             "garbage_collect",
             "testkit::",
             "pub mod table;",
+        ],
+    );
+}
+
+#[test]
+fn table_runtime_closeout_report_records_benchmark_evidence_and_stop_condition() {
+    let crate_root = common::crate_root();
+    let repo_root = repository_root(&crate_root);
+    let report_path =
+        repo_root.join("docs/architecture/perf-tuning/m4p-l5-table-runtime-parity-closeout.md");
+    let report = read_file(&report_path);
+
+    assert_contains_all(
+        "docs/architecture/perf-tuning/m4p-l5-table-runtime-parity-closeout.md",
+        &report,
+        &[
+            "Status: closed with L6/L8 follow-up",
+            "Required L9 Benchmark Commands",
+            "point-throughput",
+            "scan-prefix",
+            "scan-range-throughput",
+            "100K cache completed",
+            "1M cache failed during load",
+            "storage budget exceeded for active_mutable",
+            "Supplemental 1M Runs With Maintenance",
+            "benchmarks/results/storage-next-l9/",
+            "L6 source-shape",
+            "L8 maintenance",
+        ],
+    );
+
+    let result_paths = referenced_benchmark_result_paths(&report);
+    assert!(
+        result_paths.len() >= 2,
+        "closeout report should reference point and scan benchmark result files"
+    );
+    for result_path in result_paths {
+        let absolute_path = repo_root.join(&result_path);
+        assert!(
+            absolute_path.is_file(),
+            "closeout report references missing benchmark result {}",
+            result_path.display()
+        );
+    }
+}
+
+#[test]
+fn table_runtime_closeout_porting_log_records_required_evidence() {
+    let crate_root = common::crate_root();
+    let repo_root = repository_root(&crate_root);
+    let porting_log = read_file(
+        &repo_root.join("docs/architecture/implementation-plans/M4/L5/m4-l5-porting-log.md"),
+    );
+
+    assert_contains_all(
+        "docs/architecture/implementation-plans/M4/L5/m4-l5-porting-log.md",
+        &porting_log,
+        &[
+            "## M4P-L5: Table Runtime Parity Closeout",
+            "m4p-l5-table-runtime-parity-implementation-plan.md",
+            "m4p-l5-table-runtime-parity-test-plan.md",
+            "crates/storage/src/{segment,index,bloom,block_cache,merge_iter,seekable,compaction}.rs",
+            "Lazy table open",
+            "Point lookup",
+            "Range and prefix",
+            "Bloom/filter",
+            "Table compaction",
+            "Object-backed reader",
+            "Durable filter blocks remain deferred",
+            "L6 still owns",
+            "L8 still owns",
+            "Closeout report:",
+            "m4p-l5-table-runtime-parity-closeout.md",
         ],
     );
 }
@@ -167,6 +259,24 @@ fn table_runtime_closeout_fuzz_inventory_matches_existing_table_targets() {
 
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+fn repository_root(crate_root: &Path) -> PathBuf {
+    crate_root
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| panic!("derive repository root from {}", crate_root.display()))
+        .to_path_buf()
+}
+
+fn referenced_benchmark_result_paths(report: &str) -> Vec<PathBuf> {
+    report
+        .split('`')
+        .filter(|segment| {
+            segment.starts_with("benchmarks/results/storage-next-l9/") && segment.ends_with(".json")
+        })
+        .map(PathBuf::from)
+        .collect()
 }
 
 fn read_table_runtime_testkit_sources(crate_root: &Path) -> String {

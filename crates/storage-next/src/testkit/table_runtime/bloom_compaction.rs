@@ -38,6 +38,24 @@ fn check_table_bloom_filter(script: &[u8]) -> Result<(), TestkitError> {
     if !empty.is_empty() || empty.might_contain(b"anything") != TableBloomProbe::DefinitelyAbsent {
         return Err(TestkitError::new("empty bloom filter facts drifted"));
     }
+    let dense = TableBloomFilter::build(
+        [
+            b"false-positive-source-a".as_slice(),
+            b"false-positive-source-b".as_slice(),
+            b"false-positive-source-c".as_slice(),
+        ],
+        1,
+    )
+    .map_err(|err| TestkitError::new(format!("dense bloom build failed: {err}")))?;
+    let false_positive_found = (0u8..=u8::MAX).any(|byte| {
+        let candidate = [byte];
+        dense.might_contain(candidate.as_slice()) == TableBloomProbe::MaybePresent
+    });
+    if !false_positive_found {
+        return Err(TestkitError::new(
+            "dense bloom filter did not expose a deterministic false-positive path",
+        ));
+    }
     expect_invalid_config(TableBloomFilter::build([b"key".as_slice()], 0))?;
     Ok(())
 }
