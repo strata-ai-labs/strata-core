@@ -59,7 +59,6 @@ mod identity_state;
 mod immutable_reads;
 mod inheritance_materialization;
 mod owned_compaction;
-#[cfg(feature = "perf-trace")]
 mod point_pruning;
 mod read_view;
 mod row_pruning;

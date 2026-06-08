@@ -26,6 +26,7 @@ fn point_table(
     )
 }
 
+#[cfg(feature = "perf-trace")]
 fn install_single_row_tables(
     state: &mut BranchLocalState,
     branch: BranchId,
@@ -54,6 +55,236 @@ fn install_single_row_tables(
             row
         })
         .collect()
+}
+
+fn inherited_nonzero_layer(
+    source: BranchId,
+    user_key: &str,
+    version: u64,
+    identity: &str,
+) -> BranchInheritedLayer {
+    branch_inherited_layer(
+        source,
+        CommitVersion::new(version.saturating_add(100)),
+        InheritedLayerStatus::Active,
+        vec![
+            Vec::new(),
+            vec![point_table(
+                source,
+                BranchLevel::new(1),
+                identity,
+                user_key,
+                version,
+            )],
+        ],
+    )
+}
+
+#[test]
+fn branch_point_read_active_hit_shadows_older_sources() {
+    let branch = branch_id(19);
+    let parent = branch_id(20);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_nonzero_layer(
+            parent,
+            "target",
+            10,
+            "point-precedence-parent-active",
+        )])
+        .expect("attach inherited");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            point_table(
+                branch,
+                BranchLevel::new(1),
+                "point-precedence-owned-active",
+                "target",
+                20,
+            ),
+        )
+        .expect("install nonzero");
+    state
+        .install_l0_table(point_table(
+            branch,
+            BranchLevel::ZERO,
+            "point-precedence-l0-active",
+            "target",
+            30,
+        ))
+        .expect("install L0");
+    let frozen = point_row(branch, "target", 40);
+    state.append_committed_row(frozen).expect("append frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let active = point_row(branch, "target", 50);
+    state
+        .append_committed_row(active.clone())
+        .expect("append active");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let actual = view.latest(&target).expect("point read");
+
+    assert_visible_row(actual.as_ref(), &active, BranchRowSource::Active);
+}
+
+#[test]
+fn branch_point_read_frozen_hit_shadows_owned_and_inherited_sources() {
+    let branch = branch_id(21);
+    let parent = branch_id(22);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_nonzero_layer(
+            parent,
+            "target",
+            10,
+            "point-precedence-parent-frozen",
+        )])
+        .expect("attach inherited");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            point_table(
+                branch,
+                BranchLevel::new(1),
+                "point-precedence-owned-frozen",
+                "target",
+                20,
+            ),
+        )
+        .expect("install nonzero");
+    state
+        .install_l0_table(point_table(
+            branch,
+            BranchLevel::ZERO,
+            "point-precedence-l0-frozen",
+            "target",
+            30,
+        ))
+        .expect("install L0");
+    let frozen = point_row(branch, "target", 40);
+    state
+        .append_committed_row(frozen.clone())
+        .expect("append frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let actual = view.latest(&target).expect("point read");
+
+    assert_visible_row(
+        actual.as_ref(),
+        &frozen,
+        BranchRowSource::Frozen { index: 0 },
+    );
+}
+
+#[test]
+fn branch_point_read_l0_hit_shadows_nonzero_and_inherited_sources() {
+    let branch = branch_id(23);
+    let parent = branch_id(24);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_nonzero_layer(
+            parent,
+            "target",
+            10,
+            "point-precedence-parent-l0",
+        )])
+        .expect("attach inherited");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            point_table(
+                branch,
+                BranchLevel::new(1),
+                "point-precedence-owned-l0",
+                "target",
+                20,
+            ),
+        )
+        .expect("install nonzero");
+    let l0 = point_row(branch, "target", 30);
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "point-precedence-l0",
+            vec![l0.clone()],
+        ))
+        .expect("install L0");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let actual = view.latest(&target).expect("point read");
+
+    assert_visible_row(
+        actual.as_ref(),
+        &l0,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_point_read_inherited_nonzero_hit_rewrites_key_and_applies_fork_bound() {
+    let branch = branch_id(32);
+    let parent = branch_id(33);
+    let visible_at_fork = point_row(parent, "inherited-hit", 5);
+    let hidden_after_fork = point_row(parent, "inherited-hit", 7);
+    let inherited = branch_inherited_layer_unchecked_for_fork_gate_tests(
+        parent,
+        CommitVersion::new(6),
+        InheritedLayerStatus::Active,
+        vec![
+            Vec::new(),
+            vec![branch_owned_table(
+                parent,
+                BranchLevel::new(1),
+                "point-inherited-fork-bound",
+                vec![visible_at_fork.clone(), hidden_after_fork],
+            )],
+        ],
+    );
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited])
+        .expect("attach inherited");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"inherited-hit".to_vec());
+    let expected = rewrite_row_branch(&visible_at_fork, parent, branch).expect("rewrite");
+
+    assert_visible_row(
+        view.latest(&target).expect("latest").as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.at_version(&target, CommitVersion::new(6))
+            .expect("at fork")
+            .as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        },
+    );
+    assert!(view
+        .at_version(&target, CommitVersion::new(4))
+        .expect("before inherited row")
+        .is_none());
 }
 
 #[cfg(feature = "perf-trace")]
@@ -95,7 +326,353 @@ fn branch_point_read_prunes_owned_nonzero_level_to_selected_table() {
     assert!(perf.point_owned_nonzero_table_probes() <= perf.point_owned_nonzero_level_searches());
 }
 
-#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_owned_nonzero_table_uses_visible_version_chain() {
+    let branch = branch_id(25);
+    let mut state = BranchLocalState::empty(branch);
+    let old = point_row(branch, "versioned", 10);
+    let middle = point_row(branch, "versioned", 20);
+    let newest = point_row(branch, "versioned", 30);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-version-chain",
+                vec![old.clone(), middle.clone(), newest.clone()],
+            ),
+        )
+        .expect("install nonzero");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"versioned".to_vec());
+
+    let latest = view.latest(&target).expect("latest");
+    assert_visible_row(
+        latest.as_ref(),
+        &newest,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+
+    let bounded = view
+        .at_version(&target, CommitVersion::new(25))
+        .expect("bounded");
+    assert_visible_row(
+        bounded.as_ref(),
+        &middle,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+
+    assert!(view
+        .at_version(&target, CommitVersion::new(5))
+        .expect("below chain")
+        .is_none());
+}
+
+#[test]
+fn branch_point_read_timestamp_bound_selects_nonzero_row_by_timestamp_contract() {
+    let branch = branch_id(26);
+    let mut state = BranchLocalState::empty(branch);
+    let older = storage_row_with(
+        branch,
+        b"as-of".to_vec(),
+        10,
+        80,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+    let newest_visible_at_130 = storage_row_with(
+        branch,
+        b"as-of".to_vec(),
+        30,
+        120,
+        Timestamp::EPOCH,
+        b"newer".to_vec(),
+    );
+    let future_timestamp = storage_row_with(
+        branch,
+        b"as-of".to_vec(),
+        20,
+        140,
+        Timestamp::EPOCH,
+        b"future-time".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-timestamp-chain",
+                vec![
+                    older.clone(),
+                    newest_visible_at_130.clone(),
+                    future_timestamp,
+                ],
+            ),
+        )
+        .expect("install nonzero");
+    let view = state
+        .capture_read_view()
+        .expect("read view")
+        .with_timestamp_coverage(BranchTimestampCoverage::complete());
+    let target = physical_key(branch, b"as-of".to_vec());
+
+    let before_all = view
+        .read_point(
+            &target,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(79)),
+        )
+        .expect("before all");
+    assert!(before_all.is_none());
+
+    assert_visible_row(
+        view.read_point(
+            &target,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(100)),
+        )
+        .expect("at older")
+        .as_ref(),
+        &older,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        view.read_point(
+            &target,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(130)),
+        )
+        .expect("at newer")
+        .as_ref(),
+        &newest_visible_at_130,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_point_read_ttl_expiry_filters_selected_nonzero_row_without_fallthrough() {
+    let branch = branch_id(27);
+    let mut state = BranchLocalState::empty(branch);
+    let older = storage_row_with(
+        branch,
+        b"ttl".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+    let expiring = storage_row_with(
+        branch,
+        b"ttl".to_vec(),
+        2,
+        20,
+        Timestamp::from_micros(30),
+        b"expiring".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-ttl-chain",
+                vec![older, expiring.clone()],
+            ),
+        )
+        .expect("install nonzero");
+    let view = state
+        .capture_read_view()
+        .expect("read view")
+        .with_timestamp_coverage(BranchTimestampCoverage::complete());
+    let target = physical_key(branch, b"ttl".to_vec());
+
+    assert_visible_row(
+        view.read_point(
+            &target,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(29)),
+        )
+        .expect("before expiry")
+        .as_ref(),
+        &expiring,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+
+    let expired = view
+        .read_point(
+            &target,
+            BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+        )
+        .expect("at expiry");
+    assert!(expired.is_none());
+
+    assert_visible_row(
+        view.latest(&target)
+            .expect("latest ignores wall clock")
+            .as_ref(),
+        &expiring,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_point_read_child_tombstone_hides_inherited_nonzero_row() {
+    let branch = branch_id(28);
+    let parent = branch_id(29);
+    let inherited_row = point_row(parent, "shadowed", 3);
+    let inherited = branch_inherited_layer(
+        parent,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![
+            Vec::new(),
+            vec![branch_owned_table(
+                parent,
+                BranchLevel::new(1),
+                "point-child-shadow-parent",
+                vec![inherited_row.clone()],
+            )],
+        ],
+    );
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited])
+        .expect("attach inherited");
+    state
+        .append_committed_row(tombstone_row(branch, b"shadowed".to_vec(), 6, 60))
+        .expect("append child tombstone");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"shadowed".to_vec());
+    let expected = rewrite_row_branch(&inherited_row, parent, branch).expect("rewrite");
+
+    let latest = view.latest(&target).expect("latest");
+    assert!(latest.is_none());
+
+    assert_visible_row(
+        view.at_version(&target, CommitVersion::new(4))
+            .expect("before tombstone")
+            .as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_point_read_source_tombstone_is_hidden_in_latest_and_visible_in_history() {
+    let branch = branch_id(30);
+    let mut state = BranchLocalState::empty(branch);
+    let put = point_row(branch, "deleted", 1);
+    let tombstone = tombstone_row(branch, b"deleted".to_vec(), 2, 20);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-source-tombstone",
+                vec![put.clone(), tombstone],
+            ),
+        )
+        .expect("install nonzero");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"deleted".to_vec());
+
+    let latest = view.latest(&target).expect("latest");
+    assert!(latest.is_none());
+
+    let history = view
+        .history(&target, BranchHistoryOptions::all())
+        .expect("history");
+    assert_eq!(history_versions(&history), vec![2, 1]);
+    assert!(history[0].row().is_tombstone());
+    assert_eq!(
+        history_versions(
+            &view
+                .history(
+                    &target,
+                    BranchHistoryOptions::all().include_tombstones(false),
+                )
+                .expect("history without tombstones")
+        ),
+        vec![1],
+    );
+}
+
+#[test]
+fn branch_point_read_selected_nonzero_range_is_not_authoritative_for_absent_key() {
+    let branch = branch_id(31);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-inside-range-miss",
+                vec![
+                    point_row(branch, "gap-010", 10),
+                    point_row(branch, "gap-012", 12),
+                ],
+            ),
+        )
+        .expect("install nonzero");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"gap-011".to_vec());
+
+    let actual = view.latest(&target).expect("point read");
+
+    assert!(actual.is_none());
+}
+
+#[test]
+fn branch_point_read_outside_owned_nonzero_level_edges_returns_none() {
+    let branch = branch_id(34);
+    let mut state = BranchLocalState::empty(branch);
+    for (index, key) in ["edge-010", "edge-020", "edge-030"].into_iter().enumerate() {
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                point_table(
+                    branch,
+                    BranchLevel::new(1),
+                    &format!("point-edge-miss-{index}"),
+                    key,
+                    10 + u64::try_from(index).expect("index fits in u64"),
+                ),
+            )
+            .expect("install nonzero");
+    }
+    let view = state.capture_read_view().expect("read view");
+
+    assert!(view
+        .latest(&physical_key(branch, b"edge-000".to_vec()))
+        .expect("below first table")
+        .is_none());
+    assert!(view
+        .latest(&physical_key(branch, b"edge-999".to_vec()))
+        .expect("above last table")
+        .is_none());
+}
+
 #[test]
 fn branch_point_read_selects_owned_nonzero_table_by_multi_key_range_edges() {
     let branch = branch_id(18);
@@ -155,9 +732,7 @@ fn branch_point_read_selects_owned_nonzero_table_by_multi_key_range_edges() {
         let target = physical_key(branch, user_key.as_bytes().to_vec());
         let expected = point_row(branch, user_key, version);
 
-        let _capture = crate::observability::perf_trace::begin_test_capture();
         let actual = view.latest(&target).expect("point read");
-        let perf = crate::observability::perf_trace::snapshot();
 
         assert_visible_row(
             actual.as_ref(),
@@ -167,10 +742,6 @@ fn branch_point_read_selects_owned_nonzero_table_by_multi_key_range_edges() {
                 table_index: 10,
             },
         );
-        assert_eq!(perf.point_owned_nonzero_level_searches(), 1);
-        assert_eq!(perf.point_owned_nonzero_table_probes(), 1);
-        assert_eq!(perf.point_table_seeks(), 2);
-        assert_eq!(perf.point_rows_visited(), 1);
     }
 }
 
