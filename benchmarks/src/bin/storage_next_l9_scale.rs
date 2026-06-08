@@ -601,7 +601,7 @@ fn print_result(result: &RunResult) {
     }
     if let Some(perf_trace) = result.perf_trace {
         eprintln!(
-            "    perf-trace api_map_ns={} api_runtime_ns={} api_scan_runtime_ns={} api_scan_map_ns={} api_scan_bounds_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} branch_scan_source_setup_ns={} branch_scan_merge_ns={} branch_scan_min_key_ns={} branch_scan_group_key_ns={} branch_scan_candidate_ns={} branch_scan_advance_ns={} branch_scan_select_ns={} branch_scan_emit_ns={} scan_logical_key_encodes={} scan_candidate_row_clones={} scan_candidate_row_clone_bytes={} table_seeks={} table_bound_checks={} table_bound_check_ns={}",
+            "    perf-trace api_map_ns={} api_runtime_ns={} api_scan_runtime_ns={} api_scan_map_ns={} api_scan_bounds_ns={} validate_ns={} duplicate_key_checks={} prepare_ns={} append_validate_ns={} append_insert_ns={} absent_key_checks={} mutable_insert_checks={} commit_batches={} user_rows={} timeline_rows={} prepared_rows={} append_rows={} branch_fact_rows={} read_views={} read_view_rows={} read_view_validation_rows={} append_clones={} append_clone_rows={} conflict_sources={} point_rows_visited={} point_candidates={} point_active_probes={} point_frozen_probes={} point_owned_l0_table_probes={} point_owned_nonzero_level_searches={} point_owned_nonzero_table_probes={} point_inherited_layer_searches={} point_inherited_l0_table_probes={} point_inherited_nonzero_level_searches={} point_inherited_nonzero_table_probes={} point_table_seeks={} scan_rows_visited={} scan_candidates={} scan_cursor_seeks={} scan_cursor_rows={} scan_active_cursors={} scan_frozen_cursors={} scan_owned_l0_cursors={} scan_owned_nonzero_level_cursors={} scan_owned_nonzero_table_cursors_opened={} scan_inherited_l0_cursors={} scan_inherited_nonzero_level_cursors={} scan_inherited_nonzero_table_cursors_opened={} scan_source_cursor_seeks={} scan_rows_returned={} history_active_rows_visited={} history_frozen_rows_visited={} history_owned_l0_rows_visited={} history_owned_nonzero_rows_visited={} history_inherited_l0_rows_visited={} history_inherited_nonzero_rows_visited={} history_candidates={} timestamp_active_rows_scanned={} timestamp_frozen_rows_scanned={} timestamp_owned_l0_rows_scanned={} timestamp_owned_nonzero_rows_scanned={} timestamp_inherited_l0_rows_scanned={} timestamp_inherited_nonzero_rows_scanned={} branch_facts_active_rows={} branch_facts_frozen_rows={} branch_facts_owned_l0_rows={} branch_facts_owned_nonzero_rows={} branch_facts_inherited_l0_rows={} branch_facts_inherited_nonzero_rows={} branch_scan_source_setup_ns={} branch_scan_merge_ns={} branch_scan_min_key_ns={} branch_scan_group_key_ns={} branch_scan_candidate_ns={} branch_scan_advance_ns={} branch_scan_select_ns={} branch_scan_emit_ns={} scan_logical_key_encodes={} scan_candidate_row_clones={} scan_candidate_row_clone_bytes={} table_seeks={} table_bound_checks={} table_bound_check_ns={}",
             perf_trace.api_commit_map_ns(),
             perf_trace.api_commit_runtime_ns(),
             perf_trace.api_scan_runtime_ns(),
@@ -628,10 +628,49 @@ fn print_result(result: &RunResult) {
             perf_trace.conflict_sources_built(),
             perf_trace.point_rows_visited(),
             perf_trace.point_candidates_materialized(),
+            perf_trace.point_active_probes(),
+            perf_trace.point_frozen_probes(),
+            perf_trace.point_owned_l0_table_probes(),
+            perf_trace.point_owned_nonzero_level_searches(),
+            perf_trace.point_owned_nonzero_table_probes(),
+            perf_trace.point_inherited_layer_searches(),
+            perf_trace.point_inherited_l0_table_probes(),
+            perf_trace.point_inherited_nonzero_level_searches(),
+            perf_trace.point_inherited_nonzero_table_probes(),
+            perf_trace.point_table_seeks(),
             perf_trace.scan_rows_visited(),
             perf_trace.scan_candidates_materialized(),
             perf_trace.scan_cursor_seeks(),
             perf_trace.scan_cursor_rows_yielded(),
+            perf_trace.scan_active_cursors(),
+            perf_trace.scan_frozen_cursors(),
+            perf_trace.scan_owned_l0_cursors(),
+            perf_trace.scan_owned_nonzero_level_cursors(),
+            perf_trace.scan_owned_nonzero_table_cursors_opened(),
+            perf_trace.scan_inherited_l0_cursors(),
+            perf_trace.scan_inherited_nonzero_level_cursors(),
+            perf_trace.scan_inherited_nonzero_table_cursors_opened(),
+            perf_trace.scan_source_cursor_seeks(),
+            perf_trace.scan_rows_returned(),
+            perf_trace.history_active_rows_visited(),
+            perf_trace.history_frozen_rows_visited(),
+            perf_trace.history_owned_l0_rows_visited(),
+            perf_trace.history_owned_nonzero_rows_visited(),
+            perf_trace.history_inherited_l0_rows_visited(),
+            perf_trace.history_inherited_nonzero_rows_visited(),
+            perf_trace.history_candidates_materialized(),
+            perf_trace.timestamp_active_rows_scanned(),
+            perf_trace.timestamp_frozen_rows_scanned(),
+            perf_trace.timestamp_owned_l0_rows_scanned(),
+            perf_trace.timestamp_owned_nonzero_rows_scanned(),
+            perf_trace.timestamp_inherited_l0_rows_scanned(),
+            perf_trace.timestamp_inherited_nonzero_rows_scanned(),
+            perf_trace.branch_facts_active_rows_observed(),
+            perf_trace.branch_facts_frozen_rows_observed(),
+            perf_trace.branch_facts_owned_l0_rows_observed(),
+            perf_trace.branch_facts_owned_nonzero_rows_observed(),
+            perf_trace.branch_facts_inherited_l0_rows_observed(),
+            perf_trace.branch_facts_inherited_nonzero_rows_observed(),
             perf_trace.branch_scan_source_setup_ns(),
             perf_trace.branch_scan_merge_ns(),
             perf_trace.branch_scan_min_key_ns(),
@@ -1123,13 +1162,22 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!("api_scan_runtime_ns", perf_trace.api_scan_runtime_ns());
     field!("api_scan_map_ns", perf_trace.api_scan_map_ns());
     field!("api_scan_bounds_ns", perf_trace.api_scan_bounds_ns());
-    field!("runtime_batch_validate_ns", perf_trace.runtime_batch_validate_ns());
+    field!(
+        "runtime_batch_validate_ns",
+        perf_trace.runtime_batch_validate_ns()
+    );
     field!(
         "runtime_duplicate_mutation_key_checks",
         perf_trace.runtime_duplicate_mutation_key_checks()
     );
-    field!("commit_prepare_rows_ns", perf_trace.commit_prepare_rows_ns());
-    field!("append_batch_validate_ns", perf_trace.append_batch_validate_ns());
+    field!(
+        "commit_prepare_rows_ns",
+        perf_trace.commit_prepare_rows_ns()
+    );
+    field!(
+        "append_batch_validate_ns",
+        perf_trace.append_batch_validate_ns()
+    );
     field!("append_insert_rows_ns", perf_trace.append_insert_rows_ns());
     field!(
         "append_absent_internal_key_checks",
@@ -1139,15 +1187,24 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         "mutable_insert_duplicate_checks",
         perf_trace.mutable_insert_duplicate_checks()
     );
-    field!("commit_batches_prepared", perf_trace.commit_batches_prepared());
-    field!("commit_user_mutation_rows", perf_trace.commit_user_mutation_rows());
+    field!(
+        "commit_batches_prepared",
+        perf_trace.commit_batches_prepared()
+    );
+    field!(
+        "commit_user_mutation_rows",
+        perf_trace.commit_user_mutation_rows()
+    );
     field!(
         "commit_timeline_rows_prepared",
         perf_trace.commit_timeline_rows_prepared()
     );
     field!("commit_rows_prepared", perf_trace.commit_rows_prepared());
     field!("append_rows_applied", perf_trace.append_rows_applied());
-    field!("branch_facts_rows_observed", perf_trace.branch_facts_rows_observed());
+    field!(
+        "branch_facts_rows_observed",
+        perf_trace.branch_facts_rows_observed()
+    );
     field!("read_view_captures", perf_trace.read_view_captures());
     field!("read_view_rows_cloned", perf_trace.read_view_rows_cloned());
     field!(
@@ -1159,12 +1216,46 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         "append_staging_rows_cloned",
         perf_trace.append_staging_rows_cloned()
     );
-    field!("conflict_sources_built", perf_trace.conflict_sources_built());
+    field!(
+        "conflict_sources_built",
+        perf_trace.conflict_sources_built()
+    );
     field!("point_rows_visited", perf_trace.point_rows_visited());
     field!(
         "point_candidates_materialized",
         perf_trace.point_candidates_materialized()
     );
+    field!("point_active_probes", perf_trace.point_active_probes());
+    field!("point_frozen_probes", perf_trace.point_frozen_probes());
+    field!(
+        "point_owned_l0_table_probes",
+        perf_trace.point_owned_l0_table_probes()
+    );
+    field!(
+        "point_owned_nonzero_level_searches",
+        perf_trace.point_owned_nonzero_level_searches()
+    );
+    field!(
+        "point_owned_nonzero_table_probes",
+        perf_trace.point_owned_nonzero_table_probes()
+    );
+    field!(
+        "point_inherited_layer_searches",
+        perf_trace.point_inherited_layer_searches()
+    );
+    field!(
+        "point_inherited_l0_table_probes",
+        perf_trace.point_inherited_l0_table_probes()
+    );
+    field!(
+        "point_inherited_nonzero_level_searches",
+        perf_trace.point_inherited_nonzero_level_searches()
+    );
+    field!(
+        "point_inherited_nonzero_table_probes",
+        perf_trace.point_inherited_nonzero_table_probes()
+    );
+    field!("point_table_seeks", perf_trace.point_table_seeks());
     field!("scan_rows_visited", perf_trace.scan_rows_visited());
     field!(
         "scan_candidates_materialized",
@@ -1175,15 +1266,131 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         "scan_cursor_rows_yielded",
         perf_trace.scan_cursor_rows_yielded()
     );
+    field!("scan_active_cursors", perf_trace.scan_active_cursors());
+    field!("scan_frozen_cursors", perf_trace.scan_frozen_cursors());
+    field!("scan_owned_l0_cursors", perf_trace.scan_owned_l0_cursors());
+    field!(
+        "scan_owned_nonzero_level_cursors",
+        perf_trace.scan_owned_nonzero_level_cursors()
+    );
+    field!(
+        "scan_owned_nonzero_table_cursors_opened",
+        perf_trace.scan_owned_nonzero_table_cursors_opened()
+    );
+    field!(
+        "scan_inherited_l0_cursors",
+        perf_trace.scan_inherited_l0_cursors()
+    );
+    field!(
+        "scan_inherited_nonzero_level_cursors",
+        perf_trace.scan_inherited_nonzero_level_cursors()
+    );
+    field!(
+        "scan_inherited_nonzero_table_cursors_opened",
+        perf_trace.scan_inherited_nonzero_table_cursors_opened()
+    );
+    field!(
+        "scan_source_cursor_seeks",
+        perf_trace.scan_source_cursor_seeks()
+    );
+    field!("scan_rows_returned", perf_trace.scan_rows_returned());
+    field!(
+        "history_active_rows_visited",
+        perf_trace.history_active_rows_visited()
+    );
+    field!(
+        "history_frozen_rows_visited",
+        perf_trace.history_frozen_rows_visited()
+    );
+    field!(
+        "history_owned_l0_rows_visited",
+        perf_trace.history_owned_l0_rows_visited()
+    );
+    field!(
+        "history_owned_nonzero_rows_visited",
+        perf_trace.history_owned_nonzero_rows_visited()
+    );
+    field!(
+        "history_inherited_l0_rows_visited",
+        perf_trace.history_inherited_l0_rows_visited()
+    );
+    field!(
+        "history_inherited_nonzero_rows_visited",
+        perf_trace.history_inherited_nonzero_rows_visited()
+    );
+    field!(
+        "history_candidates_materialized",
+        perf_trace.history_candidates_materialized()
+    );
+    field!(
+        "timestamp_active_rows_scanned",
+        perf_trace.timestamp_active_rows_scanned()
+    );
+    field!(
+        "timestamp_frozen_rows_scanned",
+        perf_trace.timestamp_frozen_rows_scanned()
+    );
+    field!(
+        "timestamp_owned_l0_rows_scanned",
+        perf_trace.timestamp_owned_l0_rows_scanned()
+    );
+    field!(
+        "timestamp_owned_nonzero_rows_scanned",
+        perf_trace.timestamp_owned_nonzero_rows_scanned()
+    );
+    field!(
+        "timestamp_inherited_l0_rows_scanned",
+        perf_trace.timestamp_inherited_l0_rows_scanned()
+    );
+    field!(
+        "timestamp_inherited_nonzero_rows_scanned",
+        perf_trace.timestamp_inherited_nonzero_rows_scanned()
+    );
+    field!(
+        "branch_facts_active_rows_observed",
+        perf_trace.branch_facts_active_rows_observed()
+    );
+    field!(
+        "branch_facts_frozen_rows_observed",
+        perf_trace.branch_facts_frozen_rows_observed()
+    );
+    field!(
+        "branch_facts_owned_l0_rows_observed",
+        perf_trace.branch_facts_owned_l0_rows_observed()
+    );
+    field!(
+        "branch_facts_owned_nonzero_rows_observed",
+        perf_trace.branch_facts_owned_nonzero_rows_observed()
+    );
+    field!(
+        "branch_facts_inherited_l0_rows_observed",
+        perf_trace.branch_facts_inherited_l0_rows_observed()
+    );
+    field!(
+        "branch_facts_inherited_nonzero_rows_observed",
+        perf_trace.branch_facts_inherited_nonzero_rows_observed()
+    );
     field!(
         "branch_scan_source_setup_ns",
         perf_trace.branch_scan_source_setup_ns()
     );
     field!("branch_scan_merge_ns", perf_trace.branch_scan_merge_ns());
-    field!("branch_scan_min_key_ns", perf_trace.branch_scan_min_key_ns());
-    field!("branch_scan_group_key_ns", perf_trace.branch_scan_group_key_ns());
-    field!("branch_scan_candidate_ns", perf_trace.branch_scan_candidate_ns());
-    field!("branch_scan_advance_ns", perf_trace.branch_scan_advance_ns());
+    field!(
+        "branch_scan_min_key_ns",
+        perf_trace.branch_scan_min_key_ns()
+    );
+    field!(
+        "branch_scan_group_key_ns",
+        perf_trace.branch_scan_group_key_ns()
+    );
+    field!(
+        "branch_scan_candidate_ns",
+        perf_trace.branch_scan_candidate_ns()
+    );
+    field!(
+        "branch_scan_advance_ns",
+        perf_trace.branch_scan_advance_ns()
+    );
     field!("branch_scan_select_ns", perf_trace.branch_scan_select_ns());
     field!("branch_scan_emit_ns", perf_trace.branch_scan_emit_ns());
     field!(

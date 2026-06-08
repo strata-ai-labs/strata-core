@@ -257,7 +257,7 @@ impl TableObjectFacts {
     not(test),
     allow(
         dead_code,
-        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
     )
 )]
 pub(crate) enum TableObjectReaderSourceShape {
@@ -269,7 +269,7 @@ pub(crate) enum TableObjectReaderSourceShape {
     not(test),
     allow(
         dead_code,
-        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
     )
 )]
 pub(crate) enum TableObjectReaderOpenShape {
@@ -282,7 +282,7 @@ pub(crate) enum TableObjectReaderOpenShape {
     not(test),
     allow(
         dead_code,
-        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
     )
 )]
 pub(crate) struct TableObjectReaderDiagnostics {
@@ -298,7 +298,7 @@ pub(crate) struct TableObjectReaderDiagnostics {
     not(test),
     allow(
         dead_code,
-        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
     )
 )]
 impl TableObjectReaderDiagnostics {
@@ -348,7 +348,7 @@ pub(crate) struct TableObjectReaderOpen<'a> {
     not(test),
     allow(
         dead_code,
-        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
     )
 )]
 impl<'a> TableObjectReaderOpen<'a> {
@@ -377,7 +377,7 @@ impl<'a> TableObjectReaderOpen<'a> {
     not(test),
     allow(
         dead_code,
-        reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+        reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
     )
 )]
 fn table_object_reader_open_shape(open_mode: TableReaderOpenMode) -> TableObjectReaderOpenShape {
@@ -641,7 +641,7 @@ impl<'a> TableObjectService<'a> {
         not(test),
         allow(
             dead_code,
-            reason = "object-reader source-shape diagnostics are exposed for L6 before L6 consumes them"
+            reason = "object-reader source-shape diagnostics are exposed before branch runtime consumes them"
         )
     )]
     pub(crate) fn open_reader_with_diagnostics(

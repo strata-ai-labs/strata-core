@@ -53,7 +53,7 @@ pub(crate) use snapshot::{
 
 #[allow(
     unused_imports,
-    reason = "object-reader diagnostics are exposed for L6 source-shape reporting before L6 consumes them"
+    reason = "object-reader diagnostics are exposed before branch runtime source-shape reporting consumes them"
 )]
 pub(crate) use table::{
     TableObjectFacts, TableObjectReadError, TableObjectReaderDiagnostics, TableObjectReaderOpen,

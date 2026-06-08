@@ -62,6 +62,7 @@ mod owned_compaction;
 mod read_view;
 mod row_pruning;
 mod snapshot_install;
+mod source_layout;
 
 fn assert_invalid_config_field(
     result: BranchRuntimeResult<BranchRuntimeConfig>,

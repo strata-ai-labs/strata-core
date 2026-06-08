@@ -13,6 +13,42 @@ use std::sync::{Mutex, MutexGuard};
 #[cfg(feature = "perf-trace")]
 use std::time::Instant;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BranchPointSourceCounts {
+    pub(crate) active_probes: usize,
+    pub(crate) frozen_probes: usize,
+    pub(crate) owned_l0_table_probes: usize,
+    pub(crate) owned_nonzero_level_searches: usize,
+    pub(crate) owned_nonzero_table_probes: usize,
+    pub(crate) inherited_layer_searches: usize,
+    pub(crate) inherited_l0_table_probes: usize,
+    pub(crate) inherited_nonzero_level_searches: usize,
+    pub(crate) inherited_nonzero_table_probes: usize,
+    pub(crate) table_seeks: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BranchScanSourceCounts {
+    pub(crate) active_cursors: usize,
+    pub(crate) frozen_cursors: usize,
+    pub(crate) owned_l0_cursors: usize,
+    pub(crate) owned_nonzero_level_cursors: usize,
+    pub(crate) owned_nonzero_table_cursors_opened: usize,
+    pub(crate) inherited_l0_cursors: usize,
+    pub(crate) inherited_nonzero_level_cursors: usize,
+    pub(crate) inherited_nonzero_table_cursors_opened: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BranchSourceRowCounts {
+    pub(crate) active: usize,
+    pub(crate) frozen: usize,
+    pub(crate) owned_l0: usize,
+    pub(crate) owned_nonzero: usize,
+    pub(crate) inherited_l0: usize,
+    pub(crate) inherited_nonzero: usize,
+}
+
 /// Point-in-time storage hot-path counter snapshot.
 #[cfg(feature = "perf-trace")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -43,10 +79,49 @@ pub struct StoragePerfSnapshot {
     conflict_sources_built: u64,
     point_rows_visited: u64,
     point_candidates_materialized: u64,
+    point_active_probes: u64,
+    point_frozen_probes: u64,
+    point_owned_l0_table_probes: u64,
+    point_owned_nonzero_level_searches: u64,
+    point_owned_nonzero_table_probes: u64,
+    point_inherited_layer_searches: u64,
+    point_inherited_l0_table_probes: u64,
+    point_inherited_nonzero_level_searches: u64,
+    point_inherited_nonzero_table_probes: u64,
+    point_table_seeks: u64,
     scan_rows_visited: u64,
     scan_candidates_materialized: u64,
     scan_cursor_seeks: u64,
     scan_cursor_rows_yielded: u64,
+    scan_active_cursors: u64,
+    scan_frozen_cursors: u64,
+    scan_owned_l0_cursors: u64,
+    scan_owned_nonzero_level_cursors: u64,
+    scan_owned_nonzero_table_cursors_opened: u64,
+    scan_inherited_l0_cursors: u64,
+    scan_inherited_nonzero_level_cursors: u64,
+    scan_inherited_nonzero_table_cursors_opened: u64,
+    scan_source_cursor_seeks: u64,
+    scan_rows_returned: u64,
+    history_active_rows_visited: u64,
+    history_frozen_rows_visited: u64,
+    history_owned_l0_rows_visited: u64,
+    history_owned_nonzero_rows_visited: u64,
+    history_inherited_l0_rows_visited: u64,
+    history_inherited_nonzero_rows_visited: u64,
+    history_candidates_materialized: u64,
+    timestamp_active_rows_scanned: u64,
+    timestamp_frozen_rows_scanned: u64,
+    timestamp_owned_l0_rows_scanned: u64,
+    timestamp_owned_nonzero_rows_scanned: u64,
+    timestamp_inherited_l0_rows_scanned: u64,
+    timestamp_inherited_nonzero_rows_scanned: u64,
+    branch_facts_active_rows_observed: u64,
+    branch_facts_frozen_rows_observed: u64,
+    branch_facts_owned_l0_rows_observed: u64,
+    branch_facts_owned_nonzero_rows_observed: u64,
+    branch_facts_inherited_l0_rows_observed: u64,
+    branch_facts_inherited_nonzero_rows_observed: u64,
     branch_scan_source_setup_ns: u64,
     branch_scan_merge_ns: u64,
     branch_scan_min_key_ns: u64,
@@ -218,6 +293,56 @@ impl StoragePerfSnapshot {
         self.point_candidates_materialized
     }
 
+    /// Branch active-table probes performed by point reads.
+    pub const fn point_active_probes(self) -> u64 {
+        self.point_active_probes
+    }
+
+    /// Branch frozen-table probes performed by point reads.
+    pub const fn point_frozen_probes(self) -> u64 {
+        self.point_frozen_probes
+    }
+
+    /// Branch-owned L0 table probes performed by point reads.
+    pub const fn point_owned_l0_table_probes(self) -> u64 {
+        self.point_owned_l0_table_probes
+    }
+
+    /// Branch-owned nonzero level searches performed by point reads.
+    pub const fn point_owned_nonzero_level_searches(self) -> u64 {
+        self.point_owned_nonzero_level_searches
+    }
+
+    /// Branch-owned nonzero table probes performed by point reads.
+    pub const fn point_owned_nonzero_table_probes(self) -> u64 {
+        self.point_owned_nonzero_table_probes
+    }
+
+    /// Inherited layers searched by point reads.
+    pub const fn point_inherited_layer_searches(self) -> u64 {
+        self.point_inherited_layer_searches
+    }
+
+    /// Inherited L0 table probes performed by point reads.
+    pub const fn point_inherited_l0_table_probes(self) -> u64 {
+        self.point_inherited_l0_table_probes
+    }
+
+    /// Inherited nonzero level searches performed by point reads.
+    pub const fn point_inherited_nonzero_level_searches(self) -> u64 {
+        self.point_inherited_nonzero_level_searches
+    }
+
+    /// Inherited nonzero table probes performed by point reads.
+    pub const fn point_inherited_nonzero_table_probes(self) -> u64 {
+        self.point_inherited_nonzero_table_probes
+    }
+
+    /// Branch-level seek/probe calls performed by point reads.
+    pub const fn point_table_seeks(self) -> u64 {
+        self.point_table_seeks
+    }
+
     /// Number of table rows visited during scan candidate collection.
     pub const fn scan_rows_visited(self) -> u64 {
         self.scan_rows_visited
@@ -236,6 +361,151 @@ impl StoragePerfSnapshot {
     /// Number of rows reached by bounded scan cursors.
     pub const fn scan_cursor_rows_yielded(self) -> u64 {
         self.scan_cursor_rows_yielded
+    }
+
+    /// Active table cursors opened by branch scans.
+    pub const fn scan_active_cursors(self) -> u64 {
+        self.scan_active_cursors
+    }
+
+    /// Frozen table cursors opened by branch scans.
+    pub const fn scan_frozen_cursors(self) -> u64 {
+        self.scan_frozen_cursors
+    }
+
+    /// Owned L0 table cursors opened by branch scans.
+    pub const fn scan_owned_l0_cursors(self) -> u64 {
+        self.scan_owned_l0_cursors
+    }
+
+    /// Owned nonzero level cursors opened by branch scans.
+    pub const fn scan_owned_nonzero_level_cursors(self) -> u64 {
+        self.scan_owned_nonzero_level_cursors
+    }
+
+    /// Owned nonzero table cursors opened by branch scans.
+    pub const fn scan_owned_nonzero_table_cursors_opened(self) -> u64 {
+        self.scan_owned_nonzero_table_cursors_opened
+    }
+
+    /// Inherited L0 table cursors opened by branch scans.
+    pub const fn scan_inherited_l0_cursors(self) -> u64 {
+        self.scan_inherited_l0_cursors
+    }
+
+    /// Inherited nonzero level cursors opened by branch scans.
+    pub const fn scan_inherited_nonzero_level_cursors(self) -> u64 {
+        self.scan_inherited_nonzero_level_cursors
+    }
+
+    /// Inherited nonzero table cursors opened by branch scans.
+    pub const fn scan_inherited_nonzero_table_cursors_opened(self) -> u64 {
+        self.scan_inherited_nonzero_table_cursors_opened
+    }
+
+    /// Branch scan source cursors seeked during setup.
+    pub const fn scan_source_cursor_seeks(self) -> u64 {
+        self.scan_source_cursor_seeks
+    }
+
+    /// Rows returned by branch scan calls.
+    pub const fn scan_rows_returned(self) -> u64 {
+        self.scan_rows_returned
+    }
+
+    /// Active rows visited by single-key history collection.
+    pub const fn history_active_rows_visited(self) -> u64 {
+        self.history_active_rows_visited
+    }
+
+    /// Frozen rows visited by single-key history collection.
+    pub const fn history_frozen_rows_visited(self) -> u64 {
+        self.history_frozen_rows_visited
+    }
+
+    /// Owned L0 rows visited by single-key history collection.
+    pub const fn history_owned_l0_rows_visited(self) -> u64 {
+        self.history_owned_l0_rows_visited
+    }
+
+    /// Owned nonzero rows visited by single-key history collection.
+    pub const fn history_owned_nonzero_rows_visited(self) -> u64 {
+        self.history_owned_nonzero_rows_visited
+    }
+
+    /// Inherited L0 rows visited by single-key history collection.
+    pub const fn history_inherited_l0_rows_visited(self) -> u64 {
+        self.history_inherited_l0_rows_visited
+    }
+
+    /// Inherited nonzero rows visited by single-key history collection.
+    pub const fn history_inherited_nonzero_rows_visited(self) -> u64 {
+        self.history_inherited_nonzero_rows_visited
+    }
+
+    /// Candidate rows materialized by single-key history collection.
+    pub const fn history_candidates_materialized(self) -> u64 {
+        self.history_candidates_materialized
+    }
+
+    /// Active rows scanned while resolving timestamps to commit versions.
+    pub const fn timestamp_active_rows_scanned(self) -> u64 {
+        self.timestamp_active_rows_scanned
+    }
+
+    /// Frozen rows scanned while resolving timestamps to commit versions.
+    pub const fn timestamp_frozen_rows_scanned(self) -> u64 {
+        self.timestamp_frozen_rows_scanned
+    }
+
+    /// Owned L0 rows scanned while resolving timestamps to commit versions.
+    pub const fn timestamp_owned_l0_rows_scanned(self) -> u64 {
+        self.timestamp_owned_l0_rows_scanned
+    }
+
+    /// Owned nonzero rows scanned while resolving timestamps to commit versions.
+    pub const fn timestamp_owned_nonzero_rows_scanned(self) -> u64 {
+        self.timestamp_owned_nonzero_rows_scanned
+    }
+
+    /// Inherited L0 rows scanned while resolving timestamps to commit versions.
+    pub const fn timestamp_inherited_l0_rows_scanned(self) -> u64 {
+        self.timestamp_inherited_l0_rows_scanned
+    }
+
+    /// Inherited nonzero rows scanned while resolving timestamps to commit versions.
+    pub const fn timestamp_inherited_nonzero_rows_scanned(self) -> u64 {
+        self.timestamp_inherited_nonzero_rows_scanned
+    }
+
+    /// Active rows observed while deriving branch facts.
+    pub const fn branch_facts_active_rows_observed(self) -> u64 {
+        self.branch_facts_active_rows_observed
+    }
+
+    /// Frozen rows observed while deriving branch facts.
+    pub const fn branch_facts_frozen_rows_observed(self) -> u64 {
+        self.branch_facts_frozen_rows_observed
+    }
+
+    /// Owned L0 rows observed while deriving branch facts.
+    pub const fn branch_facts_owned_l0_rows_observed(self) -> u64 {
+        self.branch_facts_owned_l0_rows_observed
+    }
+
+    /// Owned nonzero rows observed while deriving branch facts.
+    pub const fn branch_facts_owned_nonzero_rows_observed(self) -> u64 {
+        self.branch_facts_owned_nonzero_rows_observed
+    }
+
+    /// Inherited L0 rows observed while deriving branch facts.
+    pub const fn branch_facts_inherited_l0_rows_observed(self) -> u64 {
+        self.branch_facts_inherited_l0_rows_observed
+    }
+
+    /// Inherited nonzero rows observed while deriving branch facts.
+    pub const fn branch_facts_inherited_nonzero_rows_observed(self) -> u64 {
+        self.branch_facts_inherited_nonzero_rows_observed
     }
 
     /// Nanoseconds spent building/seeking branch scan sources.
@@ -458,6 +728,26 @@ static POINT_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static POINT_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static POINT_ACTIVE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_FROZEN_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_OWNED_L0_TABLE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_OWNED_NONZERO_LEVEL_SEARCHES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_OWNED_NONZERO_TABLE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_INHERITED_LAYER_SEARCHES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_INHERITED_L0_TABLE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_INHERITED_NONZERO_LEVEL_SEARCHES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_INHERITED_NONZERO_TABLE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_TABLE_SEEKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static SCAN_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static SCAN_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
@@ -465,6 +755,64 @@ static SCAN_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
 static SCAN_CURSOR_SEEKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static SCAN_CURSOR_ROWS_YIELDED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_ACTIVE_CURSORS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_FROZEN_CURSORS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_OWNED_L0_CURSORS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_OWNED_NONZERO_LEVEL_CURSORS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_OWNED_NONZERO_TABLE_CURSORS_OPENED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_INHERITED_L0_CURSORS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_INHERITED_NONZERO_LEVEL_CURSORS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_INHERITED_NONZERO_TABLE_CURSORS_OPENED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_SOURCE_CURSOR_SEEKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static SCAN_ROWS_RETURNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_ACTIVE_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_FROZEN_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_OWNED_L0_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_OWNED_NONZERO_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_INHERITED_L0_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_INHERITED_NONZERO_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static HISTORY_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TIMESTAMP_ACTIVE_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TIMESTAMP_FROZEN_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TIMESTAMP_OWNED_L0_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TIMESTAMP_OWNED_NONZERO_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TIMESTAMP_INHERITED_L0_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TIMESTAMP_INHERITED_NONZERO_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_FACTS_ACTIVE_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_FACTS_FROZEN_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_FACTS_OWNED_L0_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_FACTS_OWNED_NONZERO_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_FACTS_INHERITED_L0_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_FACTS_INHERITED_NONZERO_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static BRANCH_SCAN_SOURCE_SETUP_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -571,6 +919,7 @@ pub(crate) fn begin_test_capture() -> PerfTraceTestGuard {
 
 /// Reset all performance proof counters.
 #[cfg(feature = "perf-trace")]
+#[allow(clippy::too_many_lines)]
 pub fn reset() {
     API_COMMIT_MAP_NS.store(0, Ordering::Relaxed);
     API_COMMIT_RUNTIME_NS.store(0, Ordering::Relaxed);
@@ -598,10 +947,49 @@ pub fn reset() {
     CONFLICT_SOURCES_BUILT.store(0, Ordering::Relaxed);
     POINT_ROWS_VISITED.store(0, Ordering::Relaxed);
     POINT_CANDIDATES_MATERIALIZED.store(0, Ordering::Relaxed);
+    POINT_ACTIVE_PROBES.store(0, Ordering::Relaxed);
+    POINT_FROZEN_PROBES.store(0, Ordering::Relaxed);
+    POINT_OWNED_L0_TABLE_PROBES.store(0, Ordering::Relaxed);
+    POINT_OWNED_NONZERO_LEVEL_SEARCHES.store(0, Ordering::Relaxed);
+    POINT_OWNED_NONZERO_TABLE_PROBES.store(0, Ordering::Relaxed);
+    POINT_INHERITED_LAYER_SEARCHES.store(0, Ordering::Relaxed);
+    POINT_INHERITED_L0_TABLE_PROBES.store(0, Ordering::Relaxed);
+    POINT_INHERITED_NONZERO_LEVEL_SEARCHES.store(0, Ordering::Relaxed);
+    POINT_INHERITED_NONZERO_TABLE_PROBES.store(0, Ordering::Relaxed);
+    POINT_TABLE_SEEKS.store(0, Ordering::Relaxed);
     SCAN_ROWS_VISITED.store(0, Ordering::Relaxed);
     SCAN_CANDIDATES_MATERIALIZED.store(0, Ordering::Relaxed);
     SCAN_CURSOR_SEEKS.store(0, Ordering::Relaxed);
     SCAN_CURSOR_ROWS_YIELDED.store(0, Ordering::Relaxed);
+    SCAN_ACTIVE_CURSORS.store(0, Ordering::Relaxed);
+    SCAN_FROZEN_CURSORS.store(0, Ordering::Relaxed);
+    SCAN_OWNED_L0_CURSORS.store(0, Ordering::Relaxed);
+    SCAN_OWNED_NONZERO_LEVEL_CURSORS.store(0, Ordering::Relaxed);
+    SCAN_OWNED_NONZERO_TABLE_CURSORS_OPENED.store(0, Ordering::Relaxed);
+    SCAN_INHERITED_L0_CURSORS.store(0, Ordering::Relaxed);
+    SCAN_INHERITED_NONZERO_LEVEL_CURSORS.store(0, Ordering::Relaxed);
+    SCAN_INHERITED_NONZERO_TABLE_CURSORS_OPENED.store(0, Ordering::Relaxed);
+    SCAN_SOURCE_CURSOR_SEEKS.store(0, Ordering::Relaxed);
+    SCAN_ROWS_RETURNED.store(0, Ordering::Relaxed);
+    HISTORY_ACTIVE_ROWS_VISITED.store(0, Ordering::Relaxed);
+    HISTORY_FROZEN_ROWS_VISITED.store(0, Ordering::Relaxed);
+    HISTORY_OWNED_L0_ROWS_VISITED.store(0, Ordering::Relaxed);
+    HISTORY_OWNED_NONZERO_ROWS_VISITED.store(0, Ordering::Relaxed);
+    HISTORY_INHERITED_L0_ROWS_VISITED.store(0, Ordering::Relaxed);
+    HISTORY_INHERITED_NONZERO_ROWS_VISITED.store(0, Ordering::Relaxed);
+    HISTORY_CANDIDATES_MATERIALIZED.store(0, Ordering::Relaxed);
+    TIMESTAMP_ACTIVE_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    TIMESTAMP_FROZEN_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    TIMESTAMP_OWNED_L0_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    TIMESTAMP_OWNED_NONZERO_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    TIMESTAMP_INHERITED_L0_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    TIMESTAMP_INHERITED_NONZERO_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    BRANCH_FACTS_ACTIVE_ROWS_OBSERVED.store(0, Ordering::Relaxed);
+    BRANCH_FACTS_FROZEN_ROWS_OBSERVED.store(0, Ordering::Relaxed);
+    BRANCH_FACTS_OWNED_L0_ROWS_OBSERVED.store(0, Ordering::Relaxed);
+    BRANCH_FACTS_OWNED_NONZERO_ROWS_OBSERVED.store(0, Ordering::Relaxed);
+    BRANCH_FACTS_INHERITED_L0_ROWS_OBSERVED.store(0, Ordering::Relaxed);
+    BRANCH_FACTS_INHERITED_NONZERO_ROWS_OBSERVED.store(0, Ordering::Relaxed);
     BRANCH_SCAN_SOURCE_SETUP_NS.store(0, Ordering::Relaxed);
     BRANCH_SCAN_MERGE_NS.store(0, Ordering::Relaxed);
     BRANCH_SCAN_MIN_KEY_NS.store(0, Ordering::Relaxed);
@@ -638,6 +1026,7 @@ pub fn reset() {
 
 /// Capture all performance proof counters.
 #[cfg(feature = "perf-trace")]
+#[allow(clippy::too_many_lines)]
 pub fn snapshot() -> StoragePerfSnapshot {
     StoragePerfSnapshot {
         api_commit_map_ns: API_COMMIT_MAP_NS.load(Ordering::Relaxed),
@@ -669,10 +1058,67 @@ pub fn snapshot() -> StoragePerfSnapshot {
         conflict_sources_built: CONFLICT_SOURCES_BUILT.load(Ordering::Relaxed),
         point_rows_visited: POINT_ROWS_VISITED.load(Ordering::Relaxed),
         point_candidates_materialized: POINT_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
+        point_active_probes: POINT_ACTIVE_PROBES.load(Ordering::Relaxed),
+        point_frozen_probes: POINT_FROZEN_PROBES.load(Ordering::Relaxed),
+        point_owned_l0_table_probes: POINT_OWNED_L0_TABLE_PROBES.load(Ordering::Relaxed),
+        point_owned_nonzero_level_searches: POINT_OWNED_NONZERO_LEVEL_SEARCHES
+            .load(Ordering::Relaxed),
+        point_owned_nonzero_table_probes: POINT_OWNED_NONZERO_TABLE_PROBES.load(Ordering::Relaxed),
+        point_inherited_layer_searches: POINT_INHERITED_LAYER_SEARCHES.load(Ordering::Relaxed),
+        point_inherited_l0_table_probes: POINT_INHERITED_L0_TABLE_PROBES.load(Ordering::Relaxed),
+        point_inherited_nonzero_level_searches: POINT_INHERITED_NONZERO_LEVEL_SEARCHES
+            .load(Ordering::Relaxed),
+        point_inherited_nonzero_table_probes: POINT_INHERITED_NONZERO_TABLE_PROBES
+            .load(Ordering::Relaxed),
+        point_table_seeks: POINT_TABLE_SEEKS.load(Ordering::Relaxed),
         scan_rows_visited: SCAN_ROWS_VISITED.load(Ordering::Relaxed),
         scan_candidates_materialized: SCAN_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
         scan_cursor_seeks: SCAN_CURSOR_SEEKS.load(Ordering::Relaxed),
         scan_cursor_rows_yielded: SCAN_CURSOR_ROWS_YIELDED.load(Ordering::Relaxed),
+        scan_active_cursors: SCAN_ACTIVE_CURSORS.load(Ordering::Relaxed),
+        scan_frozen_cursors: SCAN_FROZEN_CURSORS.load(Ordering::Relaxed),
+        scan_owned_l0_cursors: SCAN_OWNED_L0_CURSORS.load(Ordering::Relaxed),
+        scan_owned_nonzero_level_cursors: SCAN_OWNED_NONZERO_LEVEL_CURSORS.load(Ordering::Relaxed),
+        scan_owned_nonzero_table_cursors_opened: SCAN_OWNED_NONZERO_TABLE_CURSORS_OPENED
+            .load(Ordering::Relaxed),
+        scan_inherited_l0_cursors: SCAN_INHERITED_L0_CURSORS.load(Ordering::Relaxed),
+        scan_inherited_nonzero_level_cursors: SCAN_INHERITED_NONZERO_LEVEL_CURSORS
+            .load(Ordering::Relaxed),
+        scan_inherited_nonzero_table_cursors_opened: SCAN_INHERITED_NONZERO_TABLE_CURSORS_OPENED
+            .load(Ordering::Relaxed),
+        scan_source_cursor_seeks: SCAN_SOURCE_CURSOR_SEEKS.load(Ordering::Relaxed),
+        scan_rows_returned: SCAN_ROWS_RETURNED.load(Ordering::Relaxed),
+        history_active_rows_visited: HISTORY_ACTIVE_ROWS_VISITED.load(Ordering::Relaxed),
+        history_frozen_rows_visited: HISTORY_FROZEN_ROWS_VISITED.load(Ordering::Relaxed),
+        history_owned_l0_rows_visited: HISTORY_OWNED_L0_ROWS_VISITED.load(Ordering::Relaxed),
+        history_owned_nonzero_rows_visited: HISTORY_OWNED_NONZERO_ROWS_VISITED
+            .load(Ordering::Relaxed),
+        history_inherited_l0_rows_visited: HISTORY_INHERITED_L0_ROWS_VISITED
+            .load(Ordering::Relaxed),
+        history_inherited_nonzero_rows_visited: HISTORY_INHERITED_NONZERO_ROWS_VISITED
+            .load(Ordering::Relaxed),
+        history_candidates_materialized: HISTORY_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
+        timestamp_active_rows_scanned: TIMESTAMP_ACTIVE_ROWS_SCANNED.load(Ordering::Relaxed),
+        timestamp_frozen_rows_scanned: TIMESTAMP_FROZEN_ROWS_SCANNED.load(Ordering::Relaxed),
+        timestamp_owned_l0_rows_scanned: TIMESTAMP_OWNED_L0_ROWS_SCANNED.load(Ordering::Relaxed),
+        timestamp_owned_nonzero_rows_scanned: TIMESTAMP_OWNED_NONZERO_ROWS_SCANNED
+            .load(Ordering::Relaxed),
+        timestamp_inherited_l0_rows_scanned: TIMESTAMP_INHERITED_L0_ROWS_SCANNED
+            .load(Ordering::Relaxed),
+        timestamp_inherited_nonzero_rows_scanned: TIMESTAMP_INHERITED_NONZERO_ROWS_SCANNED
+            .load(Ordering::Relaxed),
+        branch_facts_active_rows_observed: BRANCH_FACTS_ACTIVE_ROWS_OBSERVED
+            .load(Ordering::Relaxed),
+        branch_facts_frozen_rows_observed: BRANCH_FACTS_FROZEN_ROWS_OBSERVED
+            .load(Ordering::Relaxed),
+        branch_facts_owned_l0_rows_observed: BRANCH_FACTS_OWNED_L0_ROWS_OBSERVED
+            .load(Ordering::Relaxed),
+        branch_facts_owned_nonzero_rows_observed: BRANCH_FACTS_OWNED_NONZERO_ROWS_OBSERVED
+            .load(Ordering::Relaxed),
+        branch_facts_inherited_l0_rows_observed: BRANCH_FACTS_INHERITED_L0_ROWS_OBSERVED
+            .load(Ordering::Relaxed),
+        branch_facts_inherited_nonzero_rows_observed: BRANCH_FACTS_INHERITED_NONZERO_ROWS_OBSERVED
+            .load(Ordering::Relaxed),
         branch_scan_source_setup_ns: BRANCH_SCAN_SOURCE_SETUP_NS.load(Ordering::Relaxed),
         branch_scan_merge_ns: BRANCH_SCAN_MERGE_NS.load(Ordering::Relaxed),
         branch_scan_min_key_ns: BRANCH_SCAN_MIN_KEY_NS.load(Ordering::Relaxed),
@@ -912,6 +1358,38 @@ pub(crate) fn record_point_candidate_collection(rows_visited: usize, candidates:
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_point_sources(_counts: BranchPointSourceCounts) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_point_sources(counts: BranchPointSourceCounts) {
+    if !recording_enabled() {
+        return;
+    }
+    POINT_ACTIVE_PROBES.fetch_add(as_u64(counts.active_probes), Ordering::Relaxed);
+    POINT_FROZEN_PROBES.fetch_add(as_u64(counts.frozen_probes), Ordering::Relaxed);
+    POINT_OWNED_L0_TABLE_PROBES.fetch_add(as_u64(counts.owned_l0_table_probes), Ordering::Relaxed);
+    POINT_OWNED_NONZERO_LEVEL_SEARCHES.fetch_add(
+        as_u64(counts.owned_nonzero_level_searches),
+        Ordering::Relaxed,
+    );
+    POINT_OWNED_NONZERO_TABLE_PROBES
+        .fetch_add(as_u64(counts.owned_nonzero_table_probes), Ordering::Relaxed);
+    POINT_INHERITED_LAYER_SEARCHES
+        .fetch_add(as_u64(counts.inherited_layer_searches), Ordering::Relaxed);
+    POINT_INHERITED_L0_TABLE_PROBES
+        .fetch_add(as_u64(counts.inherited_l0_table_probes), Ordering::Relaxed);
+    POINT_INHERITED_NONZERO_LEVEL_SEARCHES.fetch_add(
+        as_u64(counts.inherited_nonzero_level_searches),
+        Ordering::Relaxed,
+    );
+    POINT_INHERITED_NONZERO_TABLE_PROBES.fetch_add(
+        as_u64(counts.inherited_nonzero_table_probes),
+        Ordering::Relaxed,
+    );
+    POINT_TABLE_SEEKS.fetch_add(as_u64(counts.table_seeks), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_scan_candidate_collection(_rows_visited: usize, _candidates: usize) {}
 
 #[cfg(feature = "perf-trace")]
@@ -921,6 +1399,112 @@ pub(crate) fn record_scan_candidate_collection(rows_visited: usize, candidates: 
     }
     SCAN_ROWS_VISITED.fetch_add(as_u64(rows_visited), Ordering::Relaxed);
     SCAN_CANDIDATES_MATERIALIZED.fetch_add(as_u64(candidates), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_scan_sources(_counts: BranchScanSourceCounts) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_scan_sources(counts: BranchScanSourceCounts) {
+    if !recording_enabled() {
+        return;
+    }
+    SCAN_ACTIVE_CURSORS.fetch_add(as_u64(counts.active_cursors), Ordering::Relaxed);
+    SCAN_FROZEN_CURSORS.fetch_add(as_u64(counts.frozen_cursors), Ordering::Relaxed);
+    SCAN_OWNED_L0_CURSORS.fetch_add(as_u64(counts.owned_l0_cursors), Ordering::Relaxed);
+    SCAN_OWNED_NONZERO_LEVEL_CURSORS.fetch_add(
+        as_u64(counts.owned_nonzero_level_cursors),
+        Ordering::Relaxed,
+    );
+    SCAN_OWNED_NONZERO_TABLE_CURSORS_OPENED.fetch_add(
+        as_u64(counts.owned_nonzero_table_cursors_opened),
+        Ordering::Relaxed,
+    );
+    SCAN_INHERITED_L0_CURSORS.fetch_add(as_u64(counts.inherited_l0_cursors), Ordering::Relaxed);
+    SCAN_INHERITED_NONZERO_LEVEL_CURSORS.fetch_add(
+        as_u64(counts.inherited_nonzero_level_cursors),
+        Ordering::Relaxed,
+    );
+    SCAN_INHERITED_NONZERO_TABLE_CURSORS_OPENED.fetch_add(
+        as_u64(counts.inherited_nonzero_table_cursors_opened),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_scan_source_cursor_seeks(_seeks: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_scan_source_cursor_seeks(seeks: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    SCAN_SOURCE_CURSOR_SEEKS.fetch_add(as_u64(seeks), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_scan_rows_returned(_rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_scan_rows_returned(rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    SCAN_ROWS_RETURNED.fetch_add(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_history_rows(_counts: BranchSourceRowCounts, _candidates: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_history_rows(counts: BranchSourceRowCounts, candidates: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    HISTORY_ACTIVE_ROWS_VISITED.fetch_add(as_u64(counts.active), Ordering::Relaxed);
+    HISTORY_FROZEN_ROWS_VISITED.fetch_add(as_u64(counts.frozen), Ordering::Relaxed);
+    HISTORY_OWNED_L0_ROWS_VISITED.fetch_add(as_u64(counts.owned_l0), Ordering::Relaxed);
+    HISTORY_OWNED_NONZERO_ROWS_VISITED.fetch_add(as_u64(counts.owned_nonzero), Ordering::Relaxed);
+    HISTORY_INHERITED_L0_ROWS_VISITED.fetch_add(as_u64(counts.inherited_l0), Ordering::Relaxed);
+    HISTORY_INHERITED_NONZERO_ROWS_VISITED
+        .fetch_add(as_u64(counts.inherited_nonzero), Ordering::Relaxed);
+    HISTORY_CANDIDATES_MATERIALIZED.fetch_add(as_u64(candidates), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_timestamp_rows(_counts: BranchSourceRowCounts) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_timestamp_rows(counts: BranchSourceRowCounts) {
+    if !recording_enabled() {
+        return;
+    }
+    TIMESTAMP_ACTIVE_ROWS_SCANNED.fetch_add(as_u64(counts.active), Ordering::Relaxed);
+    TIMESTAMP_FROZEN_ROWS_SCANNED.fetch_add(as_u64(counts.frozen), Ordering::Relaxed);
+    TIMESTAMP_OWNED_L0_ROWS_SCANNED.fetch_add(as_u64(counts.owned_l0), Ordering::Relaxed);
+    TIMESTAMP_OWNED_NONZERO_ROWS_SCANNED.fetch_add(as_u64(counts.owned_nonzero), Ordering::Relaxed);
+    TIMESTAMP_INHERITED_L0_ROWS_SCANNED.fetch_add(as_u64(counts.inherited_l0), Ordering::Relaxed);
+    TIMESTAMP_INHERITED_NONZERO_ROWS_SCANNED
+        .fetch_add(as_u64(counts.inherited_nonzero), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_fact_source_rows(_counts: BranchSourceRowCounts) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_fact_source_rows(counts: BranchSourceRowCounts) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_FACTS_ACTIVE_ROWS_OBSERVED.fetch_add(as_u64(counts.active), Ordering::Relaxed);
+    BRANCH_FACTS_FROZEN_ROWS_OBSERVED.fetch_add(as_u64(counts.frozen), Ordering::Relaxed);
+    BRANCH_FACTS_OWNED_L0_ROWS_OBSERVED.fetch_add(as_u64(counts.owned_l0), Ordering::Relaxed);
+    BRANCH_FACTS_OWNED_NONZERO_ROWS_OBSERVED
+        .fetch_add(as_u64(counts.owned_nonzero), Ordering::Relaxed);
+    BRANCH_FACTS_INHERITED_L0_ROWS_OBSERVED
+        .fetch_add(as_u64(counts.inherited_l0), Ordering::Relaxed);
+    BRANCH_FACTS_INHERITED_NONZERO_ROWS_OBSERVED
+        .fetch_add(as_u64(counts.inherited_nonzero), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

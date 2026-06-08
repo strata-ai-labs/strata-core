@@ -411,7 +411,7 @@ fn check_unforced_always_rejection(script: &[u8]) -> Result<usize, TestkitError>
                 } if *failed_branch == branch && *commit_version == CommitVersion::new(1)
             )
         },
-        "unforced always append was not rejected before L6 apply",
+        "unforced always append was not rejected before durable branch apply",
     )?;
     if fixture.wal.records.len() != 1 || fixture.state.active_row_count() != 0 {
         return Err(TestkitError::new(

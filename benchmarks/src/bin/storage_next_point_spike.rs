@@ -82,11 +82,21 @@ fn print_case(case: &strata_storage_next::perf_probe::PointReadProbeCase) {
         case.found_rows()
     );
     eprintln!(
-        "      read_views={} cloned_rows={} point_rows={} candidates={} seeks={}",
+        "      read_views={} cloned_rows={} point_rows={} candidates={} active_probes={} frozen_probes={} owned_l0_probes={} owned_nonzero_level_searches={} owned_nonzero_table_probes={} inherited_layers={} inherited_l0_probes={} inherited_nonzero_level_searches={} inherited_nonzero_table_probes={} point_table_seeks={} seeks={}",
         perf.read_view_captures(),
         perf.read_view_rows_cloned(),
         perf.point_rows_visited(),
         perf.point_candidates_materialized(),
+        perf.point_active_probes(),
+        perf.point_frozen_probes(),
+        perf.point_owned_l0_table_probes(),
+        perf.point_owned_nonzero_level_searches(),
+        perf.point_owned_nonzero_table_probes(),
+        perf.point_inherited_layer_searches(),
+        perf.point_inherited_l0_table_probes(),
+        perf.point_inherited_nonzero_level_searches(),
+        perf.point_inherited_nonzero_table_probes(),
+        perf.point_table_seeks(),
         perf.table_seeks()
     );
 }
@@ -143,6 +153,16 @@ fn parameters(
             "conflict_sources_built": perf.conflict_sources_built(),
             "point_rows_visited": perf.point_rows_visited(),
             "point_candidates_materialized": perf.point_candidates_materialized(),
+            "point_active_probes": perf.point_active_probes(),
+            "point_frozen_probes": perf.point_frozen_probes(),
+            "point_owned_l0_table_probes": perf.point_owned_l0_table_probes(),
+            "point_owned_nonzero_level_searches": perf.point_owned_nonzero_level_searches(),
+            "point_owned_nonzero_table_probes": perf.point_owned_nonzero_table_probes(),
+            "point_inherited_layer_searches": perf.point_inherited_layer_searches(),
+            "point_inherited_l0_table_probes": perf.point_inherited_l0_table_probes(),
+            "point_inherited_nonzero_level_searches": perf.point_inherited_nonzero_level_searches(),
+            "point_inherited_nonzero_table_probes": perf.point_inherited_nonzero_table_probes(),
+            "point_table_seeks": perf.point_table_seeks(),
             "scan_rows_visited": perf.scan_rows_visited(),
             "scan_candidates_materialized": perf.scan_candidates_materialized(),
             "scan_cursor_seeks": perf.scan_cursor_seeks(),

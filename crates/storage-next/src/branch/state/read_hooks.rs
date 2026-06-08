@@ -3,10 +3,10 @@
 use super::BranchLocalState;
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
-use crate::branch::facts::BranchStateFacts;
+use crate::branch::facts::{BranchSourceLayout, BranchStateFacts, InheritedLayerStatus};
 use crate::branch::read::{
-    inherited_table_count, BranchInheritedLayer, BranchOwnedTable, BranchReadView,
-    BranchTimestampCoverage,
+    inherited_table_count, source_layout_from_sources, BranchInheritedLayer, BranchOwnedTable,
+    BranchReadView, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::table::{FrozenTable, MutableTable};
@@ -107,6 +107,15 @@ impl BranchLocalState {
         inherited_table_count(&self.inherited_layers)
     }
 
+    pub(crate) fn source_layout(&self) -> BranchSourceLayout {
+        source_layout_from_sources(
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+        )
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.active.is_empty()
             && self.frozen.is_empty()
@@ -130,6 +139,13 @@ impl BranchLocalState {
         &self,
         timestamp: Timestamp,
     ) -> Option<CommitVersion> {
+        perf_trace::record_branch_timestamp_rows(source_row_counts(
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            |_| true,
+        ));
         let mut best: Option<CommitVersion> = None;
         let mut consider = |version: CommitVersion| {
             best = match best {
@@ -201,6 +217,18 @@ impl BranchLocalState {
 
     pub(crate) fn facts(&self) -> BranchRuntimeResult<BranchStateFacts> {
         perf_trace::record_branch_facts_observed(read_view_clone_row_count(self));
+        perf_trace::record_branch_fact_source_rows(source_row_counts(
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            |layer| {
+                matches!(
+                    layer.status(),
+                    InheritedLayerStatus::Active | InheritedLayerStatus::Materializing
+                )
+            },
+        ));
         let observed = self.observe_rows();
         BranchStateFacts::new(
             self.branch_id,
@@ -235,6 +263,45 @@ fn read_view_clone_row_count(state: &BranchLocalState) -> usize {
         .saturating_add(state.frozen.iter().map(FrozenTable::len).sum::<usize>())
         .saturating_add(owned_levels_row_count(&state.owned_levels))
         .saturating_add(inherited_layers_row_count(&state.inherited_layers))
+}
+
+fn source_row_counts(
+    active: &MutableTable,
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    include_inherited_layer: impl Fn(&BranchInheritedLayer) -> bool,
+) -> perf_trace::BranchSourceRowCounts {
+    let mut counts = perf_trace::BranchSourceRowCounts {
+        active: active.len(),
+        frozen: frozen.iter().map(FrozenTable::len).sum(),
+        ..Default::default()
+    };
+    for (level_index, tables) in owned_levels.iter().enumerate() {
+        for table in tables {
+            if level_index == 0 {
+                counts.owned_l0 = counts.owned_l0.saturating_add(table.rows().len());
+            } else {
+                counts.owned_nonzero = counts.owned_nonzero.saturating_add(table.rows().len());
+            }
+        }
+    }
+    for layer in inherited_layers {
+        if !include_inherited_layer(layer) {
+            continue;
+        }
+        for (level_index, tables) in layer.owned_levels().iter().enumerate() {
+            for table in tables {
+                if level_index == 0 {
+                    counts.inherited_l0 = counts.inherited_l0.saturating_add(table.rows().len());
+                } else {
+                    counts.inherited_nonzero =
+                        counts.inherited_nonzero.saturating_add(table.rows().len());
+                }
+            }
+        }
+    }
+    counts
 }
 
 fn inherited_layers_row_count(layers: &[BranchInheritedLayer]) -> usize {

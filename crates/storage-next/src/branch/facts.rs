@@ -131,6 +131,152 @@ impl BranchStateFacts {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BranchLevelTableCount {
+    level: BranchLevel,
+    table_count: usize,
+}
+
+impl BranchLevelTableCount {
+    pub(crate) const fn new(level: BranchLevel, table_count: usize) -> Self {
+        Self { level, table_count }
+    }
+
+    pub(crate) const fn level(self) -> BranchLevel {
+        self.level
+    }
+
+    pub(crate) const fn table_count(self) -> usize {
+        self.table_count
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BranchSourceLayout {
+    active_rows: usize,
+    frozen_table_count: usize,
+    frozen_rows: usize,
+    owned_l0_tables: usize,
+    owned_nonzero_level_table_counts: Vec<BranchLevelTableCount>,
+    owned_total_tables: usize,
+    inherited_layers: usize,
+    inherited_readable_layers: usize,
+    inherited_active_layers: usize,
+    inherited_materializing_layers: usize,
+    inherited_materialized_layers: usize,
+    inherited_unavailable_layers: usize,
+    inherited_l0_tables: usize,
+    inherited_nonzero_level_table_counts: Vec<BranchLevelTableCount>,
+    inherited_total_tables: usize,
+}
+
+impl BranchSourceLayout {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        active_rows: usize,
+        frozen_table_count: usize,
+        frozen_rows: usize,
+        owned_l0_tables: usize,
+        owned_nonzero_level_table_counts: Vec<BranchLevelTableCount>,
+        owned_total_tables: usize,
+        inherited_layers: usize,
+        inherited_readable_layers: usize,
+        inherited_active_layers: usize,
+        inherited_materializing_layers: usize,
+        inherited_materialized_layers: usize,
+        inherited_unavailable_layers: usize,
+        inherited_l0_tables: usize,
+        inherited_nonzero_level_table_counts: Vec<BranchLevelTableCount>,
+        inherited_total_tables: usize,
+    ) -> Self {
+        Self {
+            active_rows,
+            frozen_table_count,
+            frozen_rows,
+            owned_l0_tables,
+            owned_nonzero_level_table_counts,
+            owned_total_tables,
+            inherited_layers,
+            inherited_readable_layers,
+            inherited_active_layers,
+            inherited_materializing_layers,
+            inherited_materialized_layers,
+            inherited_unavailable_layers,
+            inherited_l0_tables,
+            inherited_nonzero_level_table_counts,
+            inherited_total_tables,
+        }
+    }
+
+    pub(crate) const fn active_rows(&self) -> usize {
+        self.active_rows
+    }
+
+    pub(crate) const fn frozen_table_count(&self) -> usize {
+        self.frozen_table_count
+    }
+
+    pub(crate) const fn frozen_rows(&self) -> usize {
+        self.frozen_rows
+    }
+
+    pub(crate) const fn owned_l0_tables(&self) -> usize {
+        self.owned_l0_tables
+    }
+
+    pub(crate) fn owned_nonzero_level_table_counts(&self) -> &[BranchLevelTableCount] {
+        &self.owned_nonzero_level_table_counts
+    }
+
+    pub(crate) fn owned_nonzero_level_count(&self) -> usize {
+        self.owned_nonzero_level_table_counts.len()
+    }
+
+    pub(crate) const fn owned_total_tables(&self) -> usize {
+        self.owned_total_tables
+    }
+
+    pub(crate) const fn inherited_layers(&self) -> usize {
+        self.inherited_layers
+    }
+
+    pub(crate) const fn inherited_readable_layers(&self) -> usize {
+        self.inherited_readable_layers
+    }
+
+    pub(crate) const fn inherited_active_layers(&self) -> usize {
+        self.inherited_active_layers
+    }
+
+    pub(crate) const fn inherited_materializing_layers(&self) -> usize {
+        self.inherited_materializing_layers
+    }
+
+    pub(crate) const fn inherited_materialized_layers(&self) -> usize {
+        self.inherited_materialized_layers
+    }
+
+    pub(crate) const fn inherited_unavailable_layers(&self) -> usize {
+        self.inherited_unavailable_layers
+    }
+
+    pub(crate) const fn inherited_l0_tables(&self) -> usize {
+        self.inherited_l0_tables
+    }
+
+    pub(crate) fn inherited_nonzero_level_table_counts(&self) -> &[BranchLevelTableCount] {
+        &self.inherited_nonzero_level_table_counts
+    }
+
+    pub(crate) fn inherited_nonzero_level_count(&self) -> usize {
+        self.inherited_nonzero_level_table_counts.len()
+    }
+
+    pub(crate) const fn inherited_total_tables(&self) -> usize {
+        self.inherited_total_tables
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchTableDescriptor {
     identity: TableIdentity,
