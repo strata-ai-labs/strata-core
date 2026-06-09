@@ -332,10 +332,16 @@ fn branch_inherited_layer_status_and_count_edges_are_enforced() {
         Vec::new(),
     );
     let mut unavailable_child = BranchLocalState::empty(child);
-    assert!(matches!(
-        unavailable_child.attach_inherited_layers(vec![unavailable]),
-        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
-    ));
+    let unavailable_child_before = unavailable_child.clone();
+    assert_eq!(
+        unavailable_child
+            .attach_inherited_layers(vec![unavailable])
+            .expect_err("unavailable layer attach rejected"),
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "unavailable inherited layers cannot attach",
+        },
+    );
+    assert_eq!(unavailable_child, unavailable_child_before);
 
     let config = BranchRuntimeConfig::new(7, 1, 32).expect("one inherited layer config");
     let mut limited_child = BranchLocalState::new(child, config).expect("limited child");
@@ -512,10 +518,14 @@ fn branch_fork_and_attach_rejections_do_not_mutate_state() {
 
     let source_state = BranchLocalState::empty(branch);
     let source_before = source_state.clone();
-    assert!(matches!(
-        source_state.fork_into_empty_child(branch),
-        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
-    ));
+    assert_eq!(
+        source_state
+            .fork_into_empty_child(branch)
+            .expect_err("self-fork rejected"),
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "fork source and destination branches must differ",
+        },
+    );
     assert_eq!(source_state, source_before);
 
     let unavailable = branch_inherited_layer(
@@ -524,10 +534,14 @@ fn branch_fork_and_attach_rejections_do_not_mutate_state() {
         InheritedLayerStatus::Unavailable,
         Vec::new(),
     );
-    assert!(matches!(
-        unavailable.clone_active_for_fork(),
-        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
-    ));
+    assert_eq!(
+        unavailable
+            .clone_active_for_fork()
+            .expect_err("unavailable layer cannot be forked"),
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "unavailable inherited layers cannot be forked",
+        },
+    );
 }
 
 #[test]
@@ -543,6 +557,14 @@ fn branch_fork_into_empty_child_captures_inherited_layers_without_copying_rows()
         Timestamp::EPOCH,
         b"parent".to_vec(),
     );
+    let l1_row = storage_row_with(
+        source,
+        b"shared-l1".to_vec(),
+        6,
+        60,
+        Timestamp::EPOCH,
+        b"parent-l1".to_vec(),
+    );
     let table = branch_owned_table(
         source,
         BranchLevel::ZERO,
@@ -552,23 +574,34 @@ fn branch_fork_into_empty_child_captures_inherited_layers_without_copying_rows()
     source_state
         .install_l0_table(table)
         .expect("source install");
+    source_state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                source,
+                BranchLevel::new(1),
+                "fork-source-owned-l1",
+                vec![l1_row.clone()],
+            ),
+        )
+        .expect("source install L1");
     let (child_state, outcome): (BranchLocalState, BranchForkOutcome) = source_state
         .fork_into_empty_child(child)
         .expect("fork child");
     assert_eq!(outcome.source_branch_id(), source);
     assert_eq!(outcome.destination_branch_id(), child);
-    assert_eq!(outcome.fork_version(), CommitVersion::new(5));
+    assert_eq!(outcome.fork_version(), CommitVersion::new(6));
     assert_eq!(outcome.inherited_layer_count(), 1);
-    assert_eq!(outcome.inherited_table_count(), 1);
+    assert_eq!(outcome.inherited_table_count(), 2);
     assert!(child_state.active().is_empty());
     assert!(child_state.frozen().is_empty());
     assert_eq!(child_state.owned_table_count(), 0);
     assert_eq!(child_state.inherited_layer_count(), 1);
-    assert_eq!(child_state.inherited_table_count(), 1);
+    assert_eq!(child_state.inherited_table_count(), 2);
     assert_eq!(child_state.inherited_layers()[0].source_branch_id(), source);
     assert_eq!(
         child_state.max_commit_version(),
-        Some(CommitVersion::new(5))
+        Some(CommitVersion::new(6))
     );
     assert_eq!(child_state.put_rows(), 0);
 
@@ -576,7 +609,23 @@ fn branch_fork_into_empty_child_captures_inherited_layers_without_copying_rows()
     assert_eq!(view.inherited_layer_count(), 1);
     assert_eq!(
         view.inherited_layers()[0].fork_version(),
-        CommitVersion::new(5)
+        CommitVersion::new(6)
+    );
+    let layout = view.source_layout();
+    assert_eq!(layout.active_rows(), 0);
+    assert_eq!(layout.frozen_table_count(), 0);
+    assert_eq!(layout.owned_total_tables(), 0);
+    assert_eq!(layout.inherited_layers(), 1);
+    assert_eq!(layout.inherited_readable_layers(), 1);
+    assert_eq!(layout.inherited_active_layers(), 1);
+    assert_eq!(layout.inherited_l0_tables(), 1);
+    assert_eq!(layout.inherited_total_tables(), 2);
+    assert_eq!(
+        layout.inherited_nonzero_level_table_counts(),
+        &[super::super::facts::BranchLevelTableCount::new(
+            BranchLevel::new(1),
+            1
+        )]
     );
     let expected = rewrite_row_branch(&inherited_row, source, child).expect("expected rewrite");
     let visible = view
@@ -590,6 +639,16 @@ fn branch_fork_into_empty_child_captures_inherited_layers_without_copying_rows()
             source_branch_id: source,
             layer_index: 0,
         }
+    );
+    assert_visible_row(
+        view.latest(&physical_key(child, b"shared-l1".to_vec()))
+            .expect("L1 latest")
+            .as_ref(),
+        &rewrite_row_branch(&l1_row, source, child).expect("expected L1 rewrite"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
     );
 }
 
@@ -608,16 +667,28 @@ fn branch_fork_rejects_unflushed_active_and_frozen_source_rows() {
             b"must-flush".to_vec(),
         ))
         .expect("source active append");
-    assert!(matches!(
-        source_state.fork_into_empty_child(child),
-        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
-    ));
+    let before_active_rejection = source_state.clone();
+    assert_eq!(
+        source_state
+            .fork_into_empty_child(child)
+            .expect_err("active rows block fork capture"),
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "fork source must flush active and frozen rows before inheritance capture",
+        },
+    );
+    assert_eq!(source_state, before_active_rejection);
 
     source_state.rotate_active();
-    assert!(matches!(
-        source_state.fork_into_empty_child(child),
-        Err(BranchRuntimeError::InvalidInheritedLayer { .. })
-    ));
+    let before_frozen_rejection = source_state.clone();
+    assert_eq!(
+        source_state
+            .fork_into_empty_child(child)
+            .expect_err("frozen rows block fork capture"),
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "fork source must flush active and frozen rows before inheritance capture",
+        },
+    );
+    assert_eq!(source_state, before_frozen_rejection);
 }
 
 #[test]
@@ -689,3 +760,344 @@ fn branch_fork_uses_inherited_rows_when_source_has_no_own_rows() {
     );
 }
 
+#[test]
+fn branch_fork_child_local_rows_shadow_inherited_parent_rows() {
+    let source = branch_id(91);
+    let child_with_put = branch_id(92);
+    let child_with_tombstone = branch_id(93);
+    let parent_row = storage_row_with(
+        source,
+        b"fork-shadow".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"parent".to_vec(),
+    );
+    let mut source_state = BranchLocalState::empty(source);
+    source_state
+        .install_l0_table(branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fork-shadow-source",
+            vec![parent_row.clone()],
+        ))
+        .expect("install source row");
+
+    let (mut put_child_state, _) = source_state
+        .fork_into_empty_child(child_with_put)
+        .expect("fork child for put shadow");
+    let child_put = storage_row_with(
+        child_with_put,
+        b"fork-shadow".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"child".to_vec(),
+    );
+    put_child_state
+        .append_committed_row(child_put.clone())
+        .expect("append child put");
+    let put_child_key = physical_key(child_with_put, b"fork-shadow".to_vec());
+    let put_view = put_child_state
+        .capture_read_view()
+        .expect("put child view");
+    assert_visible_row(
+        put_view
+            .latest(&put_child_key)
+            .expect("put child latest")
+            .as_ref(),
+        &child_put,
+        BranchRowSource::Active,
+    );
+    assert_visible_row(
+        put_view
+            .at_version(&put_child_key, CommitVersion::new(4))
+            .expect("put child inherited version")
+            .as_ref(),
+        &rewrite_row_branch(&parent_row, source, child_with_put).expect("rewrite parent row"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    let put_history = put_view
+        .history(
+            &put_child_key,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .expect("put child history");
+    assert_eq!(history_versions(&put_history), vec![5, 4]);
+    assert_eq!(put_history[0].source(), BranchRowSource::Active);
+    assert_eq!(
+        put_history[1].source(),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        }
+    );
+
+    let (mut tombstone_child_state, _) = source_state
+        .fork_into_empty_child(child_with_tombstone)
+        .expect("fork child for tombstone shadow");
+    let child_tombstone = tombstone_row(child_with_tombstone, b"fork-shadow".to_vec(), 5, 50);
+    tombstone_child_state
+        .append_committed_row(child_tombstone)
+        .expect("append child tombstone");
+    let tombstone_child_key = physical_key(child_with_tombstone, b"fork-shadow".to_vec());
+    let tombstone_view = tombstone_child_state
+        .capture_read_view()
+        .expect("tombstone child view");
+    assert!(
+        tombstone_view
+            .latest(&tombstone_child_key)
+            .expect("tombstone child latest")
+            .is_none(),
+        "child tombstone must hide inherited parent row"
+    );
+    assert_visible_row(
+        tombstone_view
+            .at_version(&tombstone_child_key, CommitVersion::new(4))
+            .expect("tombstone child inherited version")
+            .as_ref(),
+        &rewrite_row_branch(&parent_row, source, child_with_tombstone)
+            .expect("rewrite parent row for tombstone child"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_eq!(
+        history_versions(
+            &tombstone_view
+                .history(
+                    &tombstone_child_key,
+                    BranchHistoryOptions::all().include_tombstones(true),
+                )
+                .expect("tombstone child history"),
+        ),
+        vec![5, 4],
+    );
+    assert_eq!(
+        history_versions(
+            &tombstone_view
+                .history(
+                    &tombstone_child_key,
+                    BranchHistoryOptions::all().include_tombstones(false),
+                )
+                .expect("tombstone child visible history"),
+        ),
+        vec![4],
+    );
+}
+
+#[test]
+fn branch_fork_frontier_survives_parent_compaction() {
+    let source = branch_id(86);
+    let child = branch_id(87);
+    let compacted_new = storage_row_with(
+        source,
+        b"fork-parent-compact".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"new".to_vec(),
+    );
+    let compacted_old = storage_row_with(
+        source,
+        b"fork-parent-compact".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    );
+    let mut source_state = BranchLocalState::empty(source);
+    source_state
+        .install_l0_table(branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fork-parent-compact-new",
+            vec![compacted_new.clone()],
+        ))
+        .expect("install new L0");
+    source_state
+        .install_l0_table(branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "fork-parent-compact-old",
+            vec![compacted_old.clone()],
+        ))
+        .expect("install old L0");
+
+    let (child_state, outcome) = source_state
+        .fork_into_empty_child(child)
+        .expect("fork before parent compaction");
+    assert_eq!(outcome.fork_version(), CommitVersion::new(5));
+    let child_key = physical_key(child, b"fork-parent-compact".to_vec());
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("child before parent compaction")
+            .latest(&child_key)
+            .expect("child latest before parent compaction")
+            .as_ref(),
+        &rewrite_row_branch(&compacted_new, source, child).expect("rewrite compacted row"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+
+    let request = BranchCompactionRequest::new(
+        source,
+        BranchCompactionKind::CompactL0,
+        "fork-parent-compact-output",
+    )
+    .expect("parent compaction request");
+    source_state
+        .compact_branch_owned_tables(&request)
+        .expect("compact parent after fork");
+    assert_eq!(source_state.owned_levels()[0].len(), 1);
+
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("child after parent compaction")
+            .latest(&child_key)
+            .expect("child latest after parent compaction")
+            .as_ref(),
+        &rewrite_row_branch(&compacted_new, source, child).expect("rewrite compacted row"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_eq!(
+        history_versions(
+            &child_state
+                .capture_read_view()
+                .expect("child history after parent compaction")
+                .history(
+                    &child_key,
+                    BranchHistoryOptions::all().include_tombstones(true),
+                )
+                .expect("child history after parent compaction"),
+        ),
+        vec![5, 2],
+    );
+}
+
+#[test]
+fn branch_fork_frontier_survives_parent_materialization() {
+    let grandparent = branch_id(88);
+    let parent = branch_id(89);
+    let child = branch_id(90);
+    let row = storage_row_with(
+        grandparent,
+        b"fork-parent-materialize".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"grandparent".to_vec(),
+    );
+    let old_row = storage_row_with(
+        grandparent,
+        b"fork-parent-materialize".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"grandparent-old".to_vec(),
+    );
+    let mut grandparent_state = BranchLocalState::empty(grandparent);
+    grandparent_state
+        .install_l0_table(branch_owned_table(
+            grandparent,
+            BranchLevel::ZERO,
+            "fork-parent-materialize-grandparent",
+            vec![old_row.clone(), row.clone()],
+        ))
+        .expect("install grandparent row");
+    let (mut parent_state, _) = grandparent_state
+        .fork_into_empty_child(parent)
+        .expect("fork parent");
+    let (child_state, child_outcome) = parent_state
+        .fork_into_empty_child(child)
+        .expect("fork child");
+    assert_eq!(child_outcome.inherited_layer_count(), 2);
+    let child_key = physical_key(child, b"fork-parent-materialize".to_vec());
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("child before parent materialization")
+            .latest(&child_key)
+            .expect("child latest before parent materialization")
+            .as_ref(),
+        &rewrite_row_branch(&row, grandparent, child).expect("rewrite grandparent row"),
+        BranchRowSource::Inherited {
+            source_branch_id: grandparent,
+            layer_index: 1,
+        },
+    );
+    assert_eq!(
+        history_versions(
+            &child_state
+                .capture_read_view()
+                .expect("child history before parent materialization")
+                .history(
+                    &child_key,
+                    BranchHistoryOptions::all().include_tombstones(true),
+                )
+                .expect("child history before parent materialization"),
+        ),
+        vec![4, 1],
+    );
+
+    parent_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(parent, 0, "fork-parent-materialize")
+                .expect("parent materialization request"),
+        )
+        .expect("parent materializes inherited layer");
+    assert_eq!(parent_state.inherited_layer_count(), 0);
+    assert_eq!(parent_state.owned_table_count(), 1);
+
+    assert_visible_row(
+        child_state
+            .capture_read_view()
+            .expect("child after parent materialization")
+            .latest(&child_key)
+            .expect("child latest after parent materialization")
+            .as_ref(),
+        &rewrite_row_branch(&row, grandparent, child).expect("rewrite grandparent row"),
+        BranchRowSource::Inherited {
+            source_branch_id: grandparent,
+            layer_index: 1,
+        },
+    );
+    let after_materialization_view = child_state
+        .capture_read_view()
+        .expect("child after parent materialization history view");
+    assert_eq!(
+        history_versions(
+            &after_materialization_view
+                .history(
+                    &child_key,
+                    BranchHistoryOptions::all().include_tombstones(true),
+                )
+                .expect("child history after parent materialization"),
+        ),
+        vec![4, 1],
+    );
+    assert_visible_row(
+        after_materialization_view
+            .at_version(&child_key, CommitVersion::new(1))
+            .expect("child old version after parent materialization")
+            .as_ref(),
+        &rewrite_row_branch(&old_row, grandparent, child).expect("rewrite old grandparent row"),
+        BranchRowSource::Inherited {
+            source_branch_id: grandparent,
+            layer_index: 1,
+        },
+    );
+    assert_eq!(child_state.inherited_layer_count(), 2);
+    assert_eq!(child_state.owned_table_count(), 0);
+}

@@ -515,6 +515,42 @@ Steps:
 4. Add tests that prove L6 reports typed precondition failures without losing
    fork-frontier correctness.
 
+Current L6 fork contract:
+
+1. `fork_into_empty_child` is branch-local source capture only. It requires the
+   destination branch id to differ from the source branch id.
+2. The source branch must have no active or frozen rows. L6 rejects that shape
+   with a typed `InvalidInheritedLayer` error instead of flushing or waiting.
+3. The source branch must have at least one retained row across owned or
+   inherited sources, so the fork frontier is a real retained version rather
+   than an ambiguous zero-version fork.
+4. The child receives an inherited layer for the source branch's owned table
+   topology and then receives forkable inherited layers from the source in
+   nearest-first order.
+5. Active and materializing inherited layers are forkable. Materialized layers
+   are skipped because their replacement rows are already expected to be
+   visible through the source branch. Unavailable layers are rejected.
+6. Inherited read bounds cap source visibility at the captured fork version.
+   Parent commits, compaction, or materialization after the fork must not change
+   child-visible latest, historical, or bounded-version rows.
+7. Child-local puts and tombstones remain higher precedence than inherited
+   source rows.
+
+Higher-layer handoff:
+
+1. L7 owns commit ordering, pending-commit quiesce, version allocation, and
+   typed retry/failure if the source branch changes while a public fork request
+   is being prepared.
+2. L8 owns maintenance orchestration needed to make the source forkable, such
+   as flushing active/frozen rows or scheduling/retrying the operation when
+   branch pressure allows it.
+3. L9 owns public API wording and old-style ergonomic behavior. It may expose a
+   convenient fork call, but it must drive L7/L8 work before invoking this L6
+   capture primitive.
+4. L6 must not wait for commits, trigger flushes, publish durable objects, or
+   reinterpret public fork modes. Those are explicit deferrals, not branch-local
+   mechanics.
+
 Exit gate:
 
 1. L6 fork behavior is explicit and tested.
