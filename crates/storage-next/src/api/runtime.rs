@@ -48,6 +48,7 @@ use super::{
     DiagnosticsQuarantineReport, DiagnosticsReadActivityReport, DiagnosticsRecoveryClass,
     DiagnosticsRecoveryFault, DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport,
     DiagnosticsRequest, DiagnosticsRetentionReport, DiagnosticsScope,
+    DiagnosticsSourceLayoutReport, DiagnosticsSourceLevelTableCount,
     DiagnosticsStoragePressureReason, DiagnosticsStoragePressureReport,
     DiagnosticsStoragePressureSeverity, DiagnosticsTableReachabilityReport,
     DiagnosticsTimelineReport, DiagnosticsWalGrowthReport, HistoryReadOutcome, HistoryReadRequest,
@@ -404,6 +405,7 @@ impl<'a> StorageRuntime<'a> {
                 None,
                 DiagnosticsBudgetReport::unknown(),
                 DiagnosticsStoragePressureReport::unknown(),
+                DiagnosticsSourceLayoutReport::unknown(),
                 DiagnosticsReadActivityReport::unknown(),
                 DiagnosticsTableReachabilityReport::unknown(),
                 DiagnosticsRetentionReport::unknown(),
@@ -440,6 +442,7 @@ impl<'a> StorageRuntime<'a> {
                 branch_id,
                 runtime.maintenance_status(),
             ),
+            diagnostics_source_layout_report(runtime.branch_catalog(), branch_id),
             DiagnosticsReadActivityReport::unknown(),
             DiagnosticsTableReachabilityReport::unsupported(),
             DiagnosticsRetentionReport::unsupported(),
@@ -478,6 +481,7 @@ impl<'a> StorageRuntime<'a> {
                 branch_id,
                 runtime.maintenance_status(),
             ),
+            diagnostics_source_layout_report(runtime.branch_catalog(), branch_id),
             DiagnosticsReadActivityReport::unknown(),
             DiagnosticsTableReachabilityReport::known(
                 table_catalog.entry_count(),
@@ -2598,6 +2602,39 @@ fn diagnostics_pressure_report(
         pressure.inherited_layers(),
         pressure.pending_maintenance(),
     )
+}
+
+fn diagnostics_source_layout_report(
+    catalog: &LifecycleBranchCatalog,
+    branch_id: BranchId,
+) -> DiagnosticsSourceLayoutReport {
+    let Ok(branch) = catalog.branch_state(branch_id) else {
+        return DiagnosticsSourceLayoutReport::unknown();
+    };
+    let layout = branch.source_layout();
+    DiagnosticsSourceLayoutReport::known(
+        layout.active_rows(),
+        layout.frozen_table_count(),
+        layout.frozen_rows(),
+        layout.owned_l0_tables(),
+        map_source_level_table_counts(layout.owned_nonzero_level_table_counts()),
+        layout.owned_total_tables(),
+        layout.inherited_layers(),
+        layout.inherited_l0_tables(),
+        map_source_level_table_counts(layout.inherited_nonzero_level_table_counts()),
+        layout.inherited_total_tables(),
+    )
+}
+
+fn map_source_level_table_counts(
+    counts: &[crate::branch::facts::BranchLevelTableCount],
+) -> Vec<DiagnosticsSourceLevelTableCount> {
+    counts
+        .iter()
+        .map(|count| {
+            DiagnosticsSourceLevelTableCount::new(count.level().raw(), count.table_count())
+        })
+        .collect()
 }
 
 const fn map_storage_pressure_severity(

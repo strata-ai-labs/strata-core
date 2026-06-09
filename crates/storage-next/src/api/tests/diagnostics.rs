@@ -331,6 +331,49 @@ fn diagnostics_reports_pressure_facts() {
 }
 
 #[test]
+fn diagnostics_reports_source_layout_after_flush_and_compact() {
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"layout-key", b"layout-value"))
+        .expect("commit");
+    let active = diagnostics(&runtime);
+
+    runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch()),
+        ))
+        .expect("flush");
+    let flushed = diagnostics(&runtime);
+
+    runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Compact,
+            MaintenanceScope::Branch(branch()),
+        ))
+        .expect("compact");
+    let compacted = diagnostics(&runtime);
+
+    assert_eq!(active.source_layout().state(), DiagnosticsFactState::Known);
+    assert!(active.source_layout().active_rows() > 0);
+    assert_eq!(active.source_layout().owned_l0_tables(), 0);
+    assert_eq!(flushed.source_layout().active_rows(), 0);
+    assert_eq!(flushed.source_layout().frozen_rows(), 0);
+    assert_eq!(flushed.source_layout().owned_l0_tables(), 1);
+    assert_eq!(compacted.source_layout().active_rows(), 0);
+    assert_eq!(compacted.source_layout().owned_l0_tables(), 0);
+    assert_eq!(compacted.source_layout().owned_total_tables(), 1);
+    assert_eq!(
+        compacted
+            .source_layout()
+            .owned_nonzero_level_table_counts()
+            .last()
+            .map(|count| (count.level(), count.table_count())),
+        Some((7, 1))
+    );
+}
+
+#[test]
 fn diagnostics_branch_scope_reports_requested_branch_pressure() {
     let mut runtime = open_runtime();
     let child = branch_id(0x45);

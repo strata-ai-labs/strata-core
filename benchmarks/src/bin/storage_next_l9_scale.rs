@@ -16,10 +16,12 @@ use strata_benchmarks::schema::{
 };
 use strata_storage_next::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
-    CommitOptions, MaintenanceRequest, MaintenanceScope, MaintenanceSummaryStatus, MaintenanceTask,
-    PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome,
-    ScanReadRequest, StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey,
-    StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
+    CommitOptions, DiagnosticsFactState, DiagnosticsRequest, DiagnosticsScope,
+    DiagnosticsSourceLayoutReport, MaintenanceRequest, MaintenanceScope, MaintenanceSummary,
+    MaintenanceSummaryStatus, MaintenanceTask, PointReadRequest, PrefixScanReadRequest, ReadBound,
+    ReadLimit, ScanRange, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiResult,
+    StorageDurabilityPolicy, StorageKey, StorageOpenOutcome, StorageRuntime, StorageSpaceId,
+    StorageValue,
 };
 use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
@@ -92,6 +94,7 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
 
             let mut loaded = false;
             let mut load_phase_context = None;
+            let mut source_shape_context = None;
             if config.workloads.contains(&Workload::LoadSeq) || config.needs_loaded_data() {
                 let result = run_load_seq(&mut open.runtime, branch_id, scale, engine, &config)?;
                 loaded = true;
@@ -102,62 +105,57 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
                 }
             }
 
+            if loaded && config.needs_loaded_data() {
+                source_shape_context =
+                    Some(prepare_loaded_source_shape(&mut open.runtime, branch_id, scale)?);
+            }
+
             if config.workloads.contains(&Workload::PointLatest) {
                 ensure_loaded(loaded, Workload::PointLatest);
-                let result = run_point_latest(&open.runtime, branch_id, scale, engine, &config)?;
+                let result = run_point_latest(&open.runtime, branch_id, scale, engine, &config)?
+                    .with_load_phase_context(load_phase_context)
+                    .with_source_shape_context(source_shape_context.clone());
                 print_result(&result);
-                results.push(
-                    result
-                        .with_load_phase_context(load_phase_context)
-                        .into_benchmark_result(&config),
-                );
+                results.push(result.into_benchmark_result(&config));
             }
 
             if config.workloads.contains(&Workload::PointLatestThroughput) {
                 ensure_loaded(loaded, Workload::PointLatestThroughput);
                 let result =
-                    run_point_latest_throughput(&open.runtime, branch_id, scale, engine, &config)?;
-                print_result(&result);
-                results.push(
-                    result
+                    run_point_latest_throughput(&open.runtime, branch_id, scale, engine, &config)?
                         .with_load_phase_context(load_phase_context)
-                        .into_benchmark_result(&config),
-                );
+                        .with_source_shape_context(source_shape_context.clone());
+                print_result(&result);
+                results.push(result.into_benchmark_result(&config));
             }
 
             if config.workloads.contains(&Workload::ScanPrefix) {
                 ensure_loaded(loaded, Workload::ScanPrefix);
-                let result = run_scan_prefix(&open.runtime, branch_id, scale, engine, &config)?;
+                let result = run_scan_prefix(&open.runtime, branch_id, scale, engine, &config)?
+                    .with_load_phase_context(load_phase_context)
+                    .with_source_shape_context(source_shape_context.clone());
                 print_result(&result);
-                results.push(
-                    result
-                        .with_load_phase_context(load_phase_context)
-                        .into_benchmark_result(&config),
-                );
+                results.push(result.into_benchmark_result(&config));
             }
 
             if config.workloads.contains(&Workload::ScanRangeThroughput) {
                 ensure_loaded(loaded, Workload::ScanRangeThroughput);
                 let result =
-                    run_scan_range_throughput(&open.runtime, branch_id, scale, engine, &config)?;
-                print_result(&result);
-                results.push(
-                    result
+                    run_scan_range_throughput(&open.runtime, branch_id, scale, engine, &config)?
                         .with_load_phase_context(load_phase_context)
-                        .into_benchmark_result(&config),
-                );
+                        .with_source_shape_context(source_shape_context.clone());
+                print_result(&result);
+                results.push(result.into_benchmark_result(&config));
             }
 
             if config.workloads.contains(&Workload::BranchForkCurrent) {
                 ensure_loaded(loaded, Workload::BranchForkCurrent);
                 let result =
-                    run_branch_fork_current(&mut open.runtime, branch_id, scale, engine, &config)?;
-                print_result(&result);
-                results.push(
-                    result
+                    run_branch_fork_current(&mut open.runtime, branch_id, scale, engine, &config)?
                         .with_load_phase_context(load_phase_context)
-                        .into_benchmark_result(&config),
-                );
+                        .with_source_shape_context(source_shape_context.clone());
+                print_result(&result);
+                results.push(result.into_benchmark_result(&config));
             }
 
             let close_start = Instant::now();
@@ -251,6 +249,62 @@ fn run_load_seq(
             .with_load_phase_trace(load_phase)
             .with_perf_trace(perf_trace::snapshot()),
     )
+}
+
+fn prepare_loaded_source_shape(
+    runtime: &mut StorageRuntime<'_>,
+    branch_id: BranchId,
+    scale: usize,
+) -> Result<SourceShapeContext, BenchmarkError> {
+    let flush_start = Instant::now();
+    let flush = runtime.maintenance(&MaintenanceRequest::new(
+        MaintenanceTask::Flush,
+        MaintenanceScope::Branch(branch_id),
+    ))?;
+    let flush_elapsed = flush_start.elapsed();
+    require_maintenance_finished(MaintenanceTask::Flush, scale, &flush)?;
+
+    let compact_start = Instant::now();
+    let compact = runtime.maintenance(&MaintenanceRequest::new(
+        MaintenanceTask::Compact,
+        MaintenanceScope::Branch(branch_id),
+    ))?;
+    let compact_elapsed = compact_start.elapsed();
+    require_maintenance_finished(MaintenanceTask::Compact, scale, &compact)?;
+
+    let diagnostics = runtime.diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Branch(
+        branch_id,
+    )))?;
+    let layout = diagnostics.source_layout();
+    if layout.state() != DiagnosticsFactState::Known {
+        return Err(BenchmarkError::SourceLayoutUnavailable);
+    }
+
+    let context =
+        SourceShapeContext::from_report(scale, flush, flush_elapsed, compact, compact_elapsed, layout);
+    print_source_shape_context(&context);
+    if !context.source_shape_passed {
+        return Err(BenchmarkError::SourceShapeDidNotPass {
+            failures: context.failures.clone(),
+        });
+    }
+    Ok(context)
+}
+
+fn require_maintenance_finished(
+    task: MaintenanceTask,
+    after_rows: usize,
+    summary: &MaintenanceSummary,
+) -> Result<(), BenchmarkError> {
+    match summary.status() {
+        MaintenanceSummaryStatus::Completed | MaintenanceSummaryStatus::Deferred => Ok(()),
+        status => Err(BenchmarkError::MaintenanceTaskDidNotFinish {
+            task,
+            after_rows,
+            status,
+            reason: summary.reason(),
+        }),
+    }
 }
 
 fn run_point_latest(
@@ -708,6 +762,27 @@ fn print_result(result: &RunResult) {
             perf_trace.table_bound_checks(),
             perf_trace.table_bound_check_ns(),
         );
+        eprintln!(
+            "    table-io readers={} metadata_bytes={} index_bytes={} properties_bytes={} data_block_reads={} data_block_read_bytes={} data_block_decodes={} rows_decoded={} point_rows_visited={} cursor_rows_visited={} cache_hits={} cache_misses={} cache_inserts={} cache_skipped_inserts={} filter_probes={} filter_negative={} filter_positive={} filter_absent={}",
+            perf_trace.table_reader_opens(),
+            perf_trace.table_metadata_read_bytes(),
+            perf_trace.table_index_read_bytes(),
+            perf_trace.table_properties_read_bytes(),
+            perf_trace.table_data_block_reads(),
+            perf_trace.table_data_block_read_bytes(),
+            perf_trace.table_data_block_decodes(),
+            perf_trace.table_rows_decoded(),
+            perf_trace.table_point_rows_visited(),
+            perf_trace.table_cursor_rows_visited(),
+            perf_trace.table_cache_hits(),
+            perf_trace.table_cache_misses(),
+            perf_trace.table_cache_inserts(),
+            perf_trace.table_cache_skipped_inserts(),
+            perf_trace.table_filter_probes(),
+            perf_trace.table_filter_negative_probes(),
+            perf_trace.table_filter_positive_probes(),
+            perf_trace.table_filter_absent_probes(),
+        );
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
@@ -717,6 +792,20 @@ fn print_result(result: &RunResult) {
             load_phase.maintenance_call_ns,
             load_phase.maintenance_runs,
             load_phase.maintenance_rows,
+        );
+    }
+    if let Some(source_shape) = result.source_shape_context.as_ref() {
+        eprintln!(
+            "    post-load-source-shape passed={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} interpretation={}",
+            source_shape.source_shape_passed,
+            source_shape.final_layout.owned_l0_tables,
+            format_level_counts(&source_shape.final_layout.owned_nonzero_level_table_counts),
+            source_shape.final_layout.inherited_l0_tables,
+            format_level_counts(&source_shape.final_layout.inherited_nonzero_level_table_counts),
+            source_shape
+                .source_shape_passed
+                .then_some("source-shape-passed-evaluate-filter-cache")
+                .unwrap_or("source-shape-failed"),
         );
     }
 }
@@ -1071,6 +1160,7 @@ struct RunResult {
     measurement: Measurement,
     perf_trace: Option<StoragePerfSnapshot>,
     load_phase_trace: Option<LoadPhaseTrace>,
+    source_shape_context: Option<SourceShapeContext>,
 }
 
 impl RunResult {
@@ -1088,6 +1178,7 @@ impl RunResult {
             measurement: Measurement::Throughput { elapsed, ops },
             perf_trace: None,
             load_phase_trace: None,
+            source_shape_context: None,
         }
     }
 
@@ -1104,6 +1195,7 @@ impl RunResult {
             measurement: Measurement::Latency(samples),
             perf_trace: None,
             load_phase_trace: None,
+            source_shape_context: None,
         }
     }
 
@@ -1124,10 +1216,16 @@ impl RunResult {
         self
     }
 
+    fn with_source_shape_context(mut self, source_shape_context: Option<SourceShapeContext>) -> Self {
+        self.source_shape_context = source_shape_context;
+        self
+    }
+
     fn into_benchmark_result(self, config: &Config) -> BenchmarkResult {
         let mut parameters = HashMap::new();
         let operation_count = self.measurement.operation_count();
         let load_phase_trace = self.load_phase_trace;
+        let source_shape_context = self.source_shape_context;
         parameters.insert(
             "engine".to_string(),
             serde_json::json!(self.engine.to_string()),
@@ -1176,7 +1274,14 @@ impl RunResult {
                     operation_count,
                     perf_trace,
                     load_phase_trace,
+                    source_shape_context.as_ref(),
                 ),
+            );
+        }
+        if let Some(source_shape) = source_shape_context.as_ref() {
+            parameters.insert(
+                "post_load_source_shape".to_string(),
+                source_shape_context_json(source_shape),
             );
         }
 
@@ -1445,6 +1550,57 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         "scan_candidate_row_clone_bytes",
         perf_trace.scan_candidate_row_clone_bytes()
     );
+    field!("table_reader_opens", perf_trace.table_reader_opens());
+    field!(
+        "table_metadata_read_bytes",
+        perf_trace.table_metadata_read_bytes()
+    );
+    field!("table_index_read_bytes", perf_trace.table_index_read_bytes());
+    field!(
+        "table_properties_read_bytes",
+        perf_trace.table_properties_read_bytes()
+    );
+    field!(
+        "table_data_block_reads",
+        perf_trace.table_data_block_reads()
+    );
+    field!(
+        "table_data_block_read_bytes",
+        perf_trace.table_data_block_read_bytes()
+    );
+    field!(
+        "table_data_block_decodes",
+        perf_trace.table_data_block_decodes()
+    );
+    field!("table_rows_decoded", perf_trace.table_rows_decoded());
+    field!(
+        "table_point_rows_visited",
+        perf_trace.table_point_rows_visited()
+    );
+    field!(
+        "table_cursor_rows_visited",
+        perf_trace.table_cursor_rows_visited()
+    );
+    field!("table_cache_hits", perf_trace.table_cache_hits());
+    field!("table_cache_misses", perf_trace.table_cache_misses());
+    field!("table_cache_inserts", perf_trace.table_cache_inserts());
+    field!(
+        "table_cache_skipped_inserts",
+        perf_trace.table_cache_skipped_inserts()
+    );
+    field!("table_filter_probes", perf_trace.table_filter_probes());
+    field!(
+        "table_filter_negative_probes",
+        perf_trace.table_filter_negative_probes()
+    );
+    field!(
+        "table_filter_positive_probes",
+        perf_trace.table_filter_positive_probes()
+    );
+    field!(
+        "table_filter_absent_probes",
+        perf_trace.table_filter_absent_probes()
+    );
     field!("table_seeks", perf_trace.table_seeks());
     field!("table_bound_checks", perf_trace.table_bound_checks());
     field!("table_bound_check_ns", perf_trace.table_bound_check_ns());
@@ -1456,7 +1612,8 @@ fn source_shape_metrics_json(
     scale: usize,
     operation_count: u64,
     perf_trace: StoragePerfSnapshot,
-    load_phase_trace: Option<LoadPhaseTrace>,
+    _load_phase_trace: Option<LoadPhaseTrace>,
+    source_shape_context: Option<&SourceShapeContext>,
 ) -> serde_json::Value {
     let point_source_probes = perf_trace
         .point_active_probes()
@@ -1482,16 +1639,44 @@ fn source_shape_metrics_json(
         .saturating_add(perf_trace.scan_inherited_l0_cursors())
         .saturating_add(perf_trace.scan_inherited_nonzero_table_cursors_opened());
     let l0_tables_per_million_rows_after_load =
-        load_phase_trace.map_or(serde_json::Value::Null, |trace| {
+        source_shape_context.map_or(serde_json::Value::Null, |context| {
             ratio_json(
-                trace.maintenance_runs.saturating_mul(1_000_000),
+                (context.final_layout.owned_l0_tables as u64).saturating_mul(1_000_000),
                 scale as u64,
             )
         });
+    let point_shape = source_shape_context.map(|context| {
+        point_probe_shape_json(
+            operation_count,
+            perf_trace,
+            context.final_layout.owned_nonzero_level_count(),
+            context.final_layout.inherited_layers as u64,
+            context.final_layout.inherited_nonzero_level_count(),
+        )
+    });
+    let throughput_interpretation = source_shape_context.map_or("source-shape-unavailable", |context| {
+        if !context.source_shape_passed {
+            "source-shape-failed"
+        } else if point_shape
+            .as_ref()
+            .and_then(|shape| shape.get("passed"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
+            "point-probe-shape-failed"
+        } else {
+            "source-shape-passed-evaluate-filter-cache"
+        }
+    });
 
     serde_json::json!({
         "point_source_probes_per_read": ratio_json(point_source_probes, operation_count),
         "point_nonzero_table_probes_per_read": ratio_json(point_nonzero_table_probes, operation_count),
+        "point_owned_l0_table_probes": perf_trace.point_owned_l0_table_probes(),
+        "point_owned_nonzero_level_searches": perf_trace.point_owned_nonzero_level_searches(),
+        "point_owned_nonzero_table_probes": perf_trace.point_owned_nonzero_table_probes(),
+        "point_table_seeks": perf_trace.point_table_seeks(),
+        "point_rows_visited": perf_trace.point_rows_visited(),
         "scan_source_cursors_per_call": ratio_json(scan_source_cursors, operation_count),
         "scan_table_cursors_opened_per_call": ratio_json(scan_table_cursors_opened, operation_count),
         "scan_rows_visited_per_row_returned": ratio_json(
@@ -1499,11 +1684,113 @@ fn source_shape_metrics_json(
             perf_trace.scan_rows_returned(),
         ),
         "l0_tables_per_million_rows_after_load": l0_tables_per_million_rows_after_load,
+        "post_load_source_shape": source_shape_context.map(source_shape_context_json),
+        "point_probe_shape": point_shape,
+        "throughput_interpretation": throughput_interpretation,
+        "point_read_acceleration_gaps": {
+            "table_data_block_reads": perf_trace.table_data_block_reads(),
+            "table_data_block_decodes": perf_trace.table_data_block_decodes(),
+            "table_rows_decoded": perf_trace.table_rows_decoded(),
+            "table_filter_probes": perf_trace.table_filter_probes(),
+            "table_filter_negative_probes": perf_trace.table_filter_negative_probes(),
+            "table_filter_positive_probes": perf_trace.table_filter_positive_probes(),
+            "table_filter_absent_probes": perf_trace.table_filter_absent_probes(),
+            "table_cache_hits": perf_trace.table_cache_hits(),
+            "table_cache_misses": perf_trace.table_cache_misses(),
+        },
         "assumptions": {
             "operation_count": operation_count,
-            "l0_tables_after_load": "completed branch flush maintenance runs",
+            "l0_tables_after_load": "diagnostics source layout after final flush and compact drain",
         },
     })
+}
+
+fn point_probe_shape_json(
+    operation_count: u64,
+    perf_trace: StoragePerfSnapshot,
+    owned_nonzero_level_count: u64,
+    inherited_layers: u64,
+    inherited_nonzero_level_count: u64,
+) -> serde_json::Value {
+    point_probe_shape_json_from_counts(
+        operation_count,
+        PointProbeShapeCounters::from_perf_trace(perf_trace),
+        owned_nonzero_level_count,
+        inherited_layers,
+        inherited_nonzero_level_count,
+    )
+}
+
+fn point_probe_shape_json_from_counts(
+    operation_count: u64,
+    counters: PointProbeShapeCounters,
+    owned_nonzero_level_count: u64,
+    inherited_layers: u64,
+    inherited_nonzero_level_count: u64,
+) -> serde_json::Value {
+    if operation_count == 0 {
+        return serde_json::Value::Null;
+    }
+
+    let max_owned_nonzero_level_searches = operation_count.saturating_mul(owned_nonzero_level_count);
+    let inherited_level_bound = inherited_nonzero_level_count.saturating_mul(
+        if inherited_nonzero_level_count == 0 {
+            0
+        } else {
+            inherited_layers.max(1)
+        },
+    );
+    let max_inherited_nonzero_level_searches =
+        operation_count.saturating_mul(inherited_level_bound);
+    let mut failures = Vec::new();
+    if counters.owned_l0_table_probes != 0 {
+        failures.push("owned_l0_table_probes_nonzero");
+    }
+    if counters.inherited_l0_table_probes != 0 {
+        failures.push("inherited_l0_table_probes_nonzero");
+    }
+    if counters.owned_nonzero_level_searches > max_owned_nonzero_level_searches {
+        failures.push("owned_nonzero_level_searches_exceed_layout_bound");
+    }
+    if counters.inherited_nonzero_level_searches > max_inherited_nonzero_level_searches {
+        failures.push("inherited_nonzero_level_searches_exceed_layout_bound");
+    }
+    if counters.owned_nonzero_table_probes > counters.owned_nonzero_level_searches {
+        failures.push("owned_nonzero_table_probes_exceed_level_searches");
+    }
+    if counters.inherited_nonzero_table_probes > counters.inherited_nonzero_level_searches {
+        failures.push("inherited_nonzero_table_probes_exceed_level_searches");
+    }
+
+    serde_json::json!({
+        "passed": failures.is_empty(),
+        "failures": failures,
+        "owned_nonzero_level_bound": max_owned_nonzero_level_searches,
+        "inherited_nonzero_level_bound": max_inherited_nonzero_level_searches,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PointProbeShapeCounters {
+    owned_l0_table_probes: u64,
+    owned_nonzero_level_searches: u64,
+    owned_nonzero_table_probes: u64,
+    inherited_l0_table_probes: u64,
+    inherited_nonzero_level_searches: u64,
+    inherited_nonzero_table_probes: u64,
+}
+
+impl PointProbeShapeCounters {
+    fn from_perf_trace(perf_trace: StoragePerfSnapshot) -> Self {
+        Self {
+            owned_l0_table_probes: perf_trace.point_owned_l0_table_probes(),
+            owned_nonzero_level_searches: perf_trace.point_owned_nonzero_level_searches(),
+            owned_nonzero_table_probes: perf_trace.point_owned_nonzero_table_probes(),
+            inherited_l0_table_probes: perf_trace.point_inherited_l0_table_probes(),
+            inherited_nonzero_level_searches: perf_trace.point_inherited_nonzero_level_searches(),
+            inherited_nonzero_table_probes: perf_trace.point_inherited_nonzero_table_probes(),
+        }
+    }
 }
 
 fn ratio_json(numerator: u64, denominator: u64) -> serde_json::Value {
@@ -1512,6 +1799,223 @@ fn ratio_json(numerator: u64, denominator: u64) -> serde_json::Value {
     } else {
         serde_json::json!(numerator as f64 / denominator as f64)
     }
+}
+
+#[derive(Clone, Debug)]
+struct SourceShapeContext {
+    scale: usize,
+    flush_status: MaintenanceSummaryStatus,
+    flush_rows: u64,
+    flush_maintenance_ns: u64,
+    compact_status: MaintenanceSummaryStatus,
+    compact_state_changes: usize,
+    compact_maintenance_ns: u64,
+    final_layout: SourceLayoutSnapshot,
+    source_shape_passed: bool,
+    failures: Vec<String>,
+}
+
+impl SourceShapeContext {
+    fn from_report(
+        scale: usize,
+        flush: MaintenanceSummary,
+        flush_elapsed: Duration,
+        compact: MaintenanceSummary,
+        compact_elapsed: Duration,
+        report: &DiagnosticsSourceLayoutReport,
+    ) -> Self {
+        let final_layout = SourceLayoutSnapshot::from_report(report);
+        let failures = final_layout.compacted_shape_failures();
+        Self {
+            scale,
+            flush_status: flush.status(),
+            flush_rows: flush.rows_processed(),
+            flush_maintenance_ns: nanos_u64(flush_elapsed),
+            compact_status: compact.status(),
+            compact_state_changes: compact.state_changes(),
+            compact_maintenance_ns: nanos_u64(compact_elapsed),
+            final_layout,
+            source_shape_passed: failures.is_empty(),
+            failures,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SourceLayoutSnapshot {
+    active_rows: usize,
+    frozen_table_count: usize,
+    frozen_rows: usize,
+    owned_l0_tables: usize,
+    owned_nonzero_level_table_counts: Vec<LevelTableCountSnapshot>,
+    owned_total_tables: usize,
+    inherited_layers: usize,
+    inherited_l0_tables: usize,
+    inherited_nonzero_level_table_counts: Vec<LevelTableCountSnapshot>,
+    inherited_total_tables: usize,
+}
+
+impl SourceLayoutSnapshot {
+    fn from_report(report: &DiagnosticsSourceLayoutReport) -> Self {
+        Self {
+            active_rows: report.active_rows(),
+            frozen_table_count: report.frozen_table_count(),
+            frozen_rows: report.frozen_rows(),
+            owned_l0_tables: report.owned_l0_tables(),
+            owned_nonzero_level_table_counts: report
+                .owned_nonzero_level_table_counts()
+                .iter()
+                .map(|count| LevelTableCountSnapshot {
+                    level: count.level(),
+                    table_count: count.table_count(),
+                })
+                .collect(),
+            owned_total_tables: report.owned_total_tables(),
+            inherited_layers: report.inherited_layers(),
+            inherited_l0_tables: report.inherited_l0_tables(),
+            inherited_nonzero_level_table_counts: report
+                .inherited_nonzero_level_table_counts()
+                .iter()
+                .map(|count| LevelTableCountSnapshot {
+                    level: count.level(),
+                    table_count: count.table_count(),
+                })
+                .collect(),
+            inherited_total_tables: report.inherited_total_tables(),
+        }
+    }
+
+    fn compacted_shape_failures(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        if self.active_rows != 0 {
+            failures.push("active_rows_nonzero".to_string());
+        }
+        if self.frozen_table_count != 0 {
+            failures.push("frozen_table_count_nonzero".to_string());
+        }
+        if self.frozen_rows != 0 {
+            failures.push("frozen_rows_nonzero".to_string());
+        }
+        if self.owned_l0_tables != 0 {
+            failures.push("owned_l0_tables_nonzero".to_string());
+        }
+        if self.inherited_l0_tables != 0 {
+            failures.push("inherited_l0_tables_nonzero".to_string());
+        }
+        failures
+    }
+
+    fn owned_nonzero_level_count(&self) -> u64 {
+        self.owned_nonzero_level_table_counts.len() as u64
+    }
+
+    fn inherited_nonzero_level_count(&self) -> u64 {
+        self.inherited_nonzero_level_table_counts.len() as u64
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LevelTableCountSnapshot {
+    level: u8,
+    table_count: usize,
+}
+
+fn print_source_shape_context(context: &SourceShapeContext) {
+    eprintln!(
+        "  source-shape         passed={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} flush_status={} compact_status={} compact_changes={}",
+        context.source_shape_passed,
+        context.final_layout.owned_l0_tables,
+        format_level_counts(&context.final_layout.owned_nonzero_level_table_counts),
+        context.final_layout.inherited_l0_tables,
+        format_level_counts(&context.final_layout.inherited_nonzero_level_table_counts),
+        format_maintenance_status(context.flush_status),
+        format_maintenance_status(context.compact_status),
+        context.compact_state_changes,
+    );
+    if !context.failures.is_empty() {
+        eprintln!("    source-shape failures={}", context.failures.join(","));
+    }
+}
+
+fn source_shape_context_json(context: &SourceShapeContext) -> serde_json::Value {
+    serde_json::json!({
+        "scale_keys": context.scale,
+        "passed": context.source_shape_passed,
+        "failures": &context.failures,
+        "final_layout": source_layout_json(&context.final_layout),
+        "final_owned_l0_tables": context.final_layout.owned_l0_tables,
+        "final_owned_nonzero_level_table_counts": level_counts_json(
+            &context.final_layout.owned_nonzero_level_table_counts,
+        ),
+        "flush": {
+            "status": format_maintenance_status(context.flush_status),
+            "rows_processed": context.flush_rows,
+            "maintenance_ns": context.flush_maintenance_ns,
+        },
+        "compact": {
+            "status": format_maintenance_status(context.compact_status),
+            "state_changes": context.compact_state_changes,
+            "maintenance_ns": context.compact_maintenance_ns,
+        },
+    })
+}
+
+fn source_layout_json(layout: &SourceLayoutSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "active_rows": layout.active_rows,
+        "frozen_table_count": layout.frozen_table_count,
+        "frozen_rows": layout.frozen_rows,
+        "owned_l0_tables": layout.owned_l0_tables,
+        "owned_nonzero_level_table_counts": level_counts_json(
+            &layout.owned_nonzero_level_table_counts,
+        ),
+        "owned_total_tables": layout.owned_total_tables,
+        "inherited_layers": layout.inherited_layers,
+        "inherited_l0_tables": layout.inherited_l0_tables,
+        "inherited_nonzero_level_table_counts": level_counts_json(
+            &layout.inherited_nonzero_level_table_counts,
+        ),
+        "inherited_total_tables": layout.inherited_total_tables,
+    })
+}
+
+fn level_counts_json(counts: &[LevelTableCountSnapshot]) -> serde_json::Value {
+    serde_json::json!(
+        counts
+            .iter()
+            .map(|count| {
+                serde_json::json!({
+                    "level": count.level,
+                    "table_count": count.table_count,
+                })
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+fn format_level_counts(counts: &[LevelTableCountSnapshot]) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts
+        .iter()
+        .map(|count| format!("L{}={}", count.level, count.table_count))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_maintenance_status(status: MaintenanceSummaryStatus) -> &'static str {
+    match status {
+        MaintenanceSummaryStatus::Completed => "completed",
+        MaintenanceSummaryStatus::Deferred => "deferred",
+        MaintenanceSummaryStatus::Failed => "failed",
+        MaintenanceSummaryStatus::Canceled => "canceled",
+        _ => "unknown",
+    }
+}
+
+fn nanos_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1744,6 +2248,16 @@ enum BenchmarkError {
         status: MaintenanceSummaryStatus,
         reason: Option<&'static str>,
     },
+    MaintenanceTaskDidNotFinish {
+        task: MaintenanceTask,
+        after_rows: usize,
+        status: MaintenanceSummaryStatus,
+        reason: Option<&'static str>,
+    },
+    SourceLayoutUnavailable,
+    SourceShapeDidNotPass {
+        failures: Vec<String>,
+    },
     MissingInitialBranch,
     MissingRow,
 }
@@ -1781,6 +2295,24 @@ impl fmt::Display for BenchmarkError {
                 "flush maintenance after {after_rows} loaded rows did not complete: status={status:?} reason={}",
                 reason.unwrap_or("none")
             ),
+            Self::MaintenanceTaskDidNotFinish {
+                task,
+                after_rows,
+                status,
+                reason,
+            } => write!(
+                f,
+                "{task:?} maintenance after {after_rows} loaded rows did not finish: status={status:?} reason={}",
+                reason.unwrap_or("none")
+            ),
+            Self::SourceLayoutUnavailable => {
+                f.write_str("diagnostics did not report a known branch source layout")
+            }
+            Self::SourceShapeDidNotPass { failures } => write!(
+                f,
+                "post-load source shape did not pass: {}",
+                failures.join(",")
+            ),
             Self::MissingInitialBranch => {
                 f.write_str("storage runtime did not list an active branch")
             }
@@ -1796,6 +2328,9 @@ impl std::error::Error for BenchmarkError {
             Self::Json(error) => Some(error),
             Self::Storage(error) => Some(error),
             Self::MaintenanceDidNotComplete { .. }
+            | Self::MaintenanceTaskDidNotFinish { .. }
+            | Self::SourceLayoutUnavailable
+            | Self::SourceShapeDidNotPass { .. }
             | Self::MissingInitialBranch
             | Self::MissingRow => None,
         }
@@ -1849,17 +2384,14 @@ mod tests {
             Some(0.0)
         );
         assert!(metrics["scan_rows_visited_per_row_returned"].is_null());
-        assert_eq!(
-            metrics["l0_tables_per_million_rows_after_load"].as_f64(),
-            Some(2_000.0)
-        );
+        assert!(metrics["l0_tables_per_million_rows_after_load"].is_null());
         assert_eq!(metrics["assumptions"]["operation_count"].as_u64(), Some(5));
     }
 
     #[test]
     fn source_shape_metrics_use_null_for_unavailable_denominators() {
         perf_trace::reset();
-        let metrics = source_shape_metrics_json(0, 0, perf_trace::snapshot(), None);
+        let metrics = source_shape_metrics_json(0, 0, perf_trace::snapshot(), None, None);
 
         assert!(metrics["point_source_probes_per_read"].is_null());
         assert!(metrics["point_nonzero_table_probes_per_read"].is_null());
@@ -1876,7 +2408,127 @@ mod tests {
                 maintenance_runs: 1,
                 ..LoadPhaseTrace::default()
             }),
+            None,
         );
         assert!(load_metrics["l0_tables_per_million_rows_after_load"].is_null());
+    }
+
+    #[test]
+    fn source_shape_metrics_use_final_layout_for_l0_density() {
+        perf_trace::reset();
+        let source_shape = SourceShapeContext {
+            scale: 1_000,
+            flush_status: MaintenanceSummaryStatus::Completed,
+            flush_rows: 1_000,
+            flush_maintenance_ns: 1,
+            compact_status: MaintenanceSummaryStatus::Completed,
+            compact_state_changes: 1,
+            compact_maintenance_ns: 1,
+            final_layout: SourceLayoutSnapshot {
+                active_rows: 0,
+                frozen_table_count: 0,
+                frozen_rows: 0,
+                owned_l0_tables: 2,
+                owned_nonzero_level_table_counts: Vec::new(),
+                owned_total_tables: 2,
+                inherited_layers: 0,
+                inherited_l0_tables: 0,
+                inherited_nonzero_level_table_counts: Vec::new(),
+                inherited_total_tables: 0,
+            },
+            source_shape_passed: false,
+            failures: vec!["owned_l0_tables_nonzero".to_string()],
+        };
+
+        let metrics = source_shape_metrics_json(
+            1_000,
+            1,
+            perf_trace::snapshot(),
+            None,
+            Some(&source_shape),
+        );
+
+        assert_eq!(
+            metrics["l0_tables_per_million_rows_after_load"].as_f64(),
+            Some(2_000.0)
+        );
+        assert_eq!(
+            metrics["throughput_interpretation"].as_str(),
+            Some("source-shape-failed")
+        );
+    }
+
+    #[test]
+    fn source_layout_snapshot_marks_uncompacted_sources_as_failed() {
+        let layout = SourceLayoutSnapshot {
+            active_rows: 1,
+            frozen_table_count: 1,
+            frozen_rows: 1,
+            owned_l0_tables: 1,
+            owned_nonzero_level_table_counts: vec![LevelTableCountSnapshot {
+                level: 7,
+                table_count: 1,
+            }],
+            owned_total_tables: 2,
+            inherited_layers: 0,
+            inherited_l0_tables: 0,
+            inherited_nonzero_level_table_counts: Vec::new(),
+            inherited_total_tables: 0,
+        };
+
+        let failures = layout.compacted_shape_failures();
+
+        assert!(failures.contains(&"active_rows_nonzero".to_string()));
+        assert!(failures.contains(&"frozen_table_count_nonzero".to_string()));
+        assert!(failures.contains(&"owned_l0_tables_nonzero".to_string()));
+    }
+
+    #[test]
+    fn point_probe_shape_uses_layout_bound() {
+        perf_trace::reset();
+        let shape = point_probe_shape_json(10, perf_trace::snapshot(), 1, 0, 0);
+
+        assert_eq!(shape["passed"].as_bool(), Some(true));
+        assert_eq!(shape["owned_nonzero_level_bound"].as_u64(), Some(10));
+    }
+
+    #[test]
+    fn point_probe_shape_allows_inherited_search_per_layer() {
+        let shape = point_probe_shape_json_from_counts(
+            10,
+            PointProbeShapeCounters {
+                inherited_nonzero_level_searches: 20,
+                inherited_nonzero_table_probes: 20,
+                ..PointProbeShapeCounters::default()
+            },
+            0,
+            2,
+            1,
+        );
+
+        assert_eq!(shape["passed"].as_bool(), Some(true));
+        assert_eq!(shape["inherited_nonzero_level_bound"].as_u64(), Some(20));
+
+        let failed = point_probe_shape_json_from_counts(
+            10,
+            PointProbeShapeCounters {
+                inherited_nonzero_level_searches: 21,
+                inherited_nonzero_table_probes: 21,
+                ..PointProbeShapeCounters::default()
+            },
+            0,
+            2,
+            1,
+        );
+
+        assert_eq!(failed["passed"].as_bool(), Some(false));
+        assert!(
+            failed["failures"]
+                .as_array()
+                .expect("failures")
+                .iter()
+                .any(|failure| failure.as_str()
+                    == Some("inherited_nonzero_level_searches_exceed_layout_bound"))
+        );
     }
 }

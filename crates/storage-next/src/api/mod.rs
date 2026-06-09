@@ -59,7 +59,8 @@ pub use diagnostics::{
     DiagnosticsFactState, DiagnosticsOutcome, DiagnosticsQuarantineReport,
     DiagnosticsReadActivityReport, DiagnosticsRecoveryClass, DiagnosticsRecoveryFault,
     DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport, DiagnosticsRequest,
-    DiagnosticsRetentionReport, DiagnosticsScope, DiagnosticsStoragePressureReason,
+    DiagnosticsRetentionReport, DiagnosticsScope, DiagnosticsSourceLayoutReport,
+    DiagnosticsSourceLevelTableCount, DiagnosticsStoragePressureReason,
     DiagnosticsStoragePressureReport, DiagnosticsStoragePressureSeverity,
     DiagnosticsTableReachabilityReport, DiagnosticsTimelineReport, DiagnosticsWalGrowthReport,
 };

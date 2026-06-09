@@ -141,6 +141,27 @@ pub struct DiagnosticsStoragePressureReport {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticsSourceLevelTableCount {
+    level: u8,
+    table_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticsSourceLayoutReport {
+    state: DiagnosticsFactState,
+    active_rows: usize,
+    frozen_table_count: usize,
+    frozen_rows: usize,
+    owned_l0_tables: usize,
+    owned_nonzero_level_table_counts: Vec<DiagnosticsSourceLevelTableCount>,
+    owned_total_tables: usize,
+    inherited_layers: usize,
+    inherited_l0_tables: usize,
+    inherited_nonzero_level_table_counts: Vec<DiagnosticsSourceLevelTableCount>,
+    inherited_total_tables: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiagnosticsReadActivityReport {
     state: DiagnosticsFactState,
     block_hits: Option<u64>,
@@ -218,6 +239,7 @@ pub struct DiagnosticsOutcome {
     maintenance: Option<MaintenanceQueueSummary>,
     budget: DiagnosticsBudgetReport,
     pressure: DiagnosticsStoragePressureReport,
+    source_layout: DiagnosticsSourceLayoutReport,
     read_activity: DiagnosticsReadActivityReport,
     table_manifest: DiagnosticsTableReachabilityReport,
     retention: DiagnosticsRetentionReport,
@@ -502,6 +524,129 @@ impl DiagnosticsStoragePressureReport {
     #[must_use]
     pub const fn pending_maintenance(self) -> usize {
         self.pending_maintenance
+    }
+}
+
+impl DiagnosticsSourceLevelTableCount {
+    #[must_use]
+    pub(crate) const fn new(level: u8, table_count: usize) -> Self {
+        Self { level, table_count }
+    }
+
+    #[must_use]
+    pub const fn level(self) -> u8 {
+        self.level
+    }
+
+    #[must_use]
+    pub const fn table_count(self) -> usize {
+        self.table_count
+    }
+}
+
+impl DiagnosticsSourceLayoutReport {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source layout reports are flat serving-source counters"
+    )]
+    #[must_use]
+    pub(crate) fn known(
+        active_rows: usize,
+        frozen_table_count: usize,
+        frozen_rows: usize,
+        owned_l0_tables: usize,
+        owned_nonzero_level_table_counts: Vec<DiagnosticsSourceLevelTableCount>,
+        owned_total_tables: usize,
+        inherited_layers: usize,
+        inherited_l0_tables: usize,
+        inherited_nonzero_level_table_counts: Vec<DiagnosticsSourceLevelTableCount>,
+        inherited_total_tables: usize,
+    ) -> Self {
+        Self {
+            state: DiagnosticsFactState::Known,
+            active_rows,
+            frozen_table_count,
+            frozen_rows,
+            owned_l0_tables,
+            owned_nonzero_level_table_counts,
+            owned_total_tables,
+            inherited_layers,
+            inherited_l0_tables,
+            inherited_nonzero_level_table_counts,
+            inherited_total_tables,
+        }
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            state: DiagnosticsFactState::Unknown,
+            active_rows: 0,
+            frozen_table_count: 0,
+            frozen_rows: 0,
+            owned_l0_tables: 0,
+            owned_nonzero_level_table_counts: Vec::new(),
+            owned_total_tables: 0,
+            inherited_layers: 0,
+            inherited_l0_tables: 0,
+            inherited_nonzero_level_table_counts: Vec::new(),
+            inherited_total_tables: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> DiagnosticsFactState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn active_rows(&self) -> usize {
+        self.active_rows
+    }
+
+    #[must_use]
+    pub const fn frozen_table_count(&self) -> usize {
+        self.frozen_table_count
+    }
+
+    #[must_use]
+    pub const fn frozen_rows(&self) -> usize {
+        self.frozen_rows
+    }
+
+    #[must_use]
+    pub const fn owned_l0_tables(&self) -> usize {
+        self.owned_l0_tables
+    }
+
+    #[must_use]
+    pub fn owned_nonzero_level_table_counts(&self) -> &[DiagnosticsSourceLevelTableCount] {
+        &self.owned_nonzero_level_table_counts
+    }
+
+    #[must_use]
+    pub const fn owned_total_tables(&self) -> usize {
+        self.owned_total_tables
+    }
+
+    #[must_use]
+    pub const fn inherited_layers(&self) -> usize {
+        self.inherited_layers
+    }
+
+    #[must_use]
+    pub const fn inherited_l0_tables(&self) -> usize {
+        self.inherited_l0_tables
+    }
+
+    #[must_use]
+    pub fn inherited_nonzero_level_table_counts(&self) -> &[DiagnosticsSourceLevelTableCount] {
+        &self.inherited_nonzero_level_table_counts
+    }
+
+    #[must_use]
+    pub const fn inherited_total_tables(&self) -> usize {
+        self.inherited_total_tables
     }
 }
 
@@ -925,6 +1070,7 @@ impl DiagnosticsOutcome {
         maintenance: Option<MaintenanceQueueSummary>,
         budget: DiagnosticsBudgetReport,
         pressure: DiagnosticsStoragePressureReport,
+        source_layout: DiagnosticsSourceLayoutReport,
         read_activity: DiagnosticsReadActivityReport,
         table_manifest: DiagnosticsTableReachabilityReport,
         retention: DiagnosticsRetentionReport,
@@ -948,6 +1094,7 @@ impl DiagnosticsOutcome {
             maintenance,
             budget,
             pressure,
+            source_layout,
             read_activity,
             table_manifest,
             retention,
@@ -1002,6 +1149,11 @@ impl DiagnosticsOutcome {
     #[must_use]
     pub const fn pressure(&self) -> DiagnosticsStoragePressureReport {
         self.pressure
+    }
+
+    #[must_use]
+    pub const fn source_layout(&self) -> &DiagnosticsSourceLayoutReport {
+        &self.source_layout
     }
 
     #[must_use]
