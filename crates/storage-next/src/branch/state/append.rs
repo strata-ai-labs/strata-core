@@ -5,7 +5,9 @@ use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::identity::require_row_branch;
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
-use crate::table::{MutableTableAppendBaseline, TableInternalKeyBytes, TableRuntimeError};
+use crate::table::{
+    MutableTableAppendBaseline, TableInternalKeyBytes, TableRow, TableRuntimeError,
+};
 use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -39,7 +41,7 @@ struct BranchAppendMetadataSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ValidatedAppendRow {
-    key: TableInternalKeyBytes,
+    table_row: TableRow,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
     is_tombstone: bool,
@@ -124,7 +126,7 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<BranchAppendBatchOutcome> {
         let rows = rows.into_iter().collect::<Vec<_>>();
         let validate_timer = perf_trace::start_timer();
-        let validated_rows = self.validate_committed_row_batch(&rows);
+        let validated_rows = self.validate_committed_row_batch(rows);
         perf_trace::record_append_batch_validate_elapsed(validate_timer);
         let validated_rows = validated_rows?;
         let active_rows_before = self.active.len();
@@ -136,13 +138,14 @@ impl BranchLocalState {
         // condition before mutation. The rollback guard below handles any
         // unexpected table insertion rejection without cloning the full branch.
         let insert_timer = perf_trace::start_timer();
-        for (row, validated) in rows.into_iter().zip(validated_rows.iter()) {
-            if let Err(source) = self.active.insert_row(row) {
+        for validated in validated_rows {
+            let rollback_key = validated.table_row.key().clone();
+            if let Err(source) = self.active.insert_table_row(validated.table_row) {
                 perf_trace::record_append_insert_rows_elapsed(insert_timer);
                 rollback_direct_append(self, active_snapshot, metadata_snapshot, &inserted_keys);
                 return Err(BranchRuntimeError::TableRuntime { source });
             }
-            inserted_keys.push(validated.key.clone());
+            inserted_keys.push(rollback_key);
             self.track_committed_row(
                 validated.commit_version,
                 validated.commit_timestamp,
@@ -168,7 +171,7 @@ impl BranchLocalState {
 
     fn validate_committed_row_batch(
         &self,
-        rows: &[StorageRow],
+        rows: Vec<StorageRow>,
     ) -> BranchRuntimeResult<Vec<ValidatedAppendRow>> {
         if rows.is_empty() {
             return Err(BranchRuntimeError::InvalidBranchState {
@@ -179,16 +182,18 @@ impl BranchLocalState {
         let mut seen = BTreeSet::new();
         let mut validated = Vec::with_capacity(rows.len());
         for row in rows {
-            let identity = require_row_branch(self.branch_id, row)?;
-            let key = TableInternalKeyBytes::from_row(row);
-            if !seen.insert(key.clone()) {
-                return Err(duplicate_internal_key_error(&key));
+            let identity = require_row_branch(self.branch_id, &row)?;
+            let table_row = TableRow::new(row);
+            let is_tombstone = table_row.is_tombstone();
+            let key = table_row.key().clone();
+            if !seen.insert(key) {
+                return Err(duplicate_internal_key_error(table_row.key()));
             }
             validated.push(ValidatedAppendRow {
-                key,
+                table_row,
                 commit_version: identity.commit_version(),
                 commit_timestamp: identity.commit_timestamp(),
-                is_tombstone: row.is_tombstone(),
+                is_tombstone,
             });
         }
         Ok(validated)
