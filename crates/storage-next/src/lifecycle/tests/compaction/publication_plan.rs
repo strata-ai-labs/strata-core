@@ -366,9 +366,30 @@ fn durable_compaction_metadata_promotion_updates_manifest_without_table_publish(
         branch_outcome.output_refs()[0].table_identity()
     );
 
+    let promoted_object = manifest.levels()[0].tables()[0].object().clone();
+    let retention = runtime
+        .prove_retention(&LifecycleRetentionRequest::new(
+            LifecycleRetentionScope::TableObjects { branch_id: branch },
+            1,
+        ))
+        .expect("table object retention proof");
+    let table_decisions = retention
+        .decisions()
+        .iter()
+        .filter(|decision| decision.object().is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(retention.status(), LifecycleRetentionStatus::Completed);
+    assert_eq!(table_decisions.len(), 1);
+    assert_eq!(table_decisions[0].object(), Some(&promoted_object));
+    assert_eq!(table_decisions[0].decision(), RetentionDecision::Retain);
+    assert_eq!(
+        table_decisions[0].reason(),
+        LifecycleRetentionDecisionReason::ReachableTable
+    );
+
     let promoted_identity = branch_outcome.output_refs()[0].table_identity().clone();
     drop(runtime);
-    let reopened = open_runtime(branch, &backend);
+    let mut reopened = open_runtime(branch, &backend);
     assert!(
         reopened.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].is_empty()
     );
@@ -385,6 +406,32 @@ fn durable_compaction_metadata_promotion_updates_manifest_without_table_publish(
     assert_eq!(
         latest_value_from_state(reopened.branch_state(), branch, b"right"),
         Some(b"right".to_vec())
+    );
+
+    let reopened_retention = reopened
+        .prove_retention(&LifecycleRetentionRequest::new(
+            LifecycleRetentionScope::TableObjects { branch_id: branch },
+            1,
+        ))
+        .expect("reopened table object retention proof");
+    let reopened_table_decisions = reopened_retention
+        .decisions()
+        .iter()
+        .filter(|decision| decision.object().is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reopened_retention.status(),
+        LifecycleRetentionStatus::Completed
+    );
+    assert_eq!(reopened_table_decisions.len(), 1);
+    assert_eq!(reopened_table_decisions[0].object(), Some(&promoted_object));
+    assert_eq!(
+        reopened_table_decisions[0].decision(),
+        RetentionDecision::Retain
+    );
+    assert_eq!(
+        reopened_table_decisions[0].reason(),
+        LifecycleRetentionDecisionReason::ReachableTable
     );
 }
 
