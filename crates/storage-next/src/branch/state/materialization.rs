@@ -640,7 +640,7 @@ impl BranchLocalState {
         // child branch.
         let level_index = usize::from(BranchLevel::ZERO.raw());
         for table in replacement_tables {
-            self.validate_install(BranchLevel::ZERO, &table, None)?;
+            self.validate_install(BranchLevel::ZERO, &table)?;
             self.owned_levels[level_index].push(table);
         }
         self.refresh_observed_row_facts();

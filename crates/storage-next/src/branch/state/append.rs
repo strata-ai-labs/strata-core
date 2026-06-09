@@ -99,8 +99,6 @@ impl BranchLocalState {
         row: StorageRow,
     ) -> BranchRuntimeResult<BranchAppendOutcome> {
         let identity = require_row_branch(self.branch_id, &row)?;
-        let key = TableInternalKeyBytes::from_row(&row);
-        self.require_absent_internal_key(&key)?;
 
         let commit_version = identity.commit_version();
         let commit_timestamp = identity.commit_timestamp();
@@ -186,7 +184,6 @@ impl BranchLocalState {
             if !seen.insert(key.clone()) {
                 return Err(duplicate_internal_key_error(&key));
             }
-            self.require_absent_internal_key(&key)?;
             validated.push(ValidatedAppendRow {
                 key,
                 commit_version: identity.commit_version(),

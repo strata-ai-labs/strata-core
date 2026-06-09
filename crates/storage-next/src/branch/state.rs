@@ -183,7 +183,7 @@ impl BranchLocalState {
         level: BranchLevel,
         table: BranchOwnedTable,
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
-        let level_index = self.validate_install(level, &table, None)?;
+        let level_index = self.validate_install(level, &table)?;
         let table_index = if level == BranchLevel::ZERO {
             self.owned_levels[level_index].insert(0, table);
             0
@@ -212,7 +212,7 @@ impl BranchLocalState {
                 reason: "frozen replacement index must exist",
             });
         }
-        let level_index = self.validate_install(BranchLevel::ZERO, &table, Some(frozen_index))?;
+        let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
         require_rows_match_frozen(&table, &self.frozen[frozen_index])?;
 
         self.owned_levels[level_index].insert(0, table);
@@ -222,21 +222,9 @@ impl BranchLocalState {
     }
 
     fn require_absent_internal_key(&self, key: &TableInternalKeyBytes) -> BranchRuntimeResult<()> {
-        self.require_absent_internal_key_except_frozen(key, None)
-    }
-
-    fn require_absent_internal_key_except_frozen(
-        &self,
-        key: &TableInternalKeyBytes,
-        skip_frozen_index: Option<usize>,
-    ) -> BranchRuntimeResult<()> {
         perf_trace::record_append_absent_internal_key_check();
         if self.active.get(key).is_some()
-            || self
-                .frozen
-                .iter()
-                .enumerate()
-                .any(|(index, table)| skip_frozen_index != Some(index) && table.get(key).is_some())
+            || self.frozen.iter().any(|table| table.get(key).is_some())
             || self
                 .owned_levels
                 .iter()
@@ -256,7 +244,18 @@ impl BranchLocalState {
         &self,
         level: BranchLevel,
         table: &BranchOwnedTable,
-        skip_frozen_index: Option<usize>,
+    ) -> BranchRuntimeResult<usize> {
+        let level_index = self.validate_install_identity_and_range(level, table)?;
+        for row in table.rows() {
+            self.require_absent_internal_key(row.key())?;
+        }
+        Ok(level_index)
+    }
+
+    fn validate_install_identity_and_range(
+        &self,
+        level: BranchLevel,
+        table: &BranchOwnedTable,
     ) -> BranchRuntimeResult<usize> {
         if table.branch_id() != self.branch_id {
             return Err(BranchRuntimeError::InvalidBranchRow {
@@ -282,9 +281,6 @@ impl BranchLocalState {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table identity must not collide with reachable table",
             });
-        }
-        for row in table.rows() {
-            self.require_absent_internal_key_except_frozen(row.key(), skip_frozen_index)?;
         }
         if level != BranchLevel::ZERO {
             self.require_non_overlapping_level(level_index, table)?;

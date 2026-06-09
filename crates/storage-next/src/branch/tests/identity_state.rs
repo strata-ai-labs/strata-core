@@ -909,7 +909,7 @@ fn branch_local_state_rejects_wrong_branch_rows_without_mutation() {
 }
 
 #[test]
-fn branch_local_state_rejects_active_and_frozen_duplicates_without_mutation() {
+fn branch_local_state_rejects_active_duplicates_and_defers_frozen_duplicate_resolution() {
     let branch = branch_id(34);
     let mut state = BranchLocalState::empty(branch);
     let row = storage_row_with(
@@ -943,16 +943,11 @@ fn branch_local_state_rejects_active_and_frozen_duplicates_without_mutation() {
             frozen_tables: 1,
         }
     ));
-    let facts_after_rotation = state.facts().expect("rotation facts");
     let frozen_duplicate = state
         .append_committed_row(row)
-        .expect_err("frozen duplicate rejected");
-    assert_duplicate_internal_key(&frozen_duplicate);
-    assert_eq!(
-        state.facts().expect("after frozen duplicate"),
-        facts_after_rotation
-    );
-    assert_eq!(state.active_row_count(), 0);
+        .expect("frozen duplicate append is resolved by source ordering");
+    assert_eq!(frozen_duplicate.active_rows(), 1);
+    assert_eq!(state.active_row_count(), 1);
     assert_eq!(state.frozen_table_count(), 1);
 }
 
@@ -1024,20 +1019,11 @@ fn branch_local_state_atomic_batch_append_rejects_invalid_rows_without_mutation(
         frozen_duplicate_state.rotate_active(),
         BranchRotationOutcome::Rotated { .. }
     ));
-    let frozen_duplicate_facts = frozen_duplicate_state
-        .facts()
-        .expect("frozen duplicate baseline");
     let frozen_duplicate = frozen_duplicate_state
         .append_committed_rows_atomically(vec![row.clone()])
-        .expect_err("frozen duplicate rejected");
-    assert_duplicate_internal_key(&frozen_duplicate);
-    assert_eq!(
-        frozen_duplicate_state
-            .facts()
-            .expect("after frozen duplicate"),
-        frozen_duplicate_facts
-    );
-    assert_eq!(frozen_duplicate_state.active_row_count(), 0);
+        .expect("frozen duplicate append is resolved by source ordering");
+    assert_eq!(frozen_duplicate.appended_rows(), 1);
+    assert_eq!(frozen_duplicate_state.active_row_count(), 1);
     assert_eq!(frozen_duplicate_state.frozen_table_count(), 1);
 
     let mut batch_duplicate_state = BranchLocalState::empty(branch);
