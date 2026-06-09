@@ -178,19 +178,91 @@ fn immutable_reader(identity: &str, rows: Vec<StorageRow>) -> ImmutableTableRead
 
 fn expected_keep_all_compaction_output_identity(
     output_seed: &TableIdentity,
-    rows: &[StorageRow],
+    sources: Vec<(TableCompactionSourceId, Vec<StorageRow>)>,
 ) -> TableIdentity {
-    let source_id =
-        TableCompactionSourceId::new("expected-branch-compaction-source").expect("source id");
-    let mut table_rows = rows.iter().cloned().map(TableRow::new).collect::<Vec<_>>();
-    sort_table_rows_by_key(&mut table_rows);
-    let source = TableCompactionSource::from_rows(source_id, table_rows).expect("source rows");
+    let sources = sources
+        .into_iter()
+        .map(|(source_id, rows)| {
+            let mut table_rows = rows.into_iter().map(TableRow::new).collect::<Vec<_>>();
+            sort_table_rows_by_key(&mut table_rows);
+            TableCompactionSource::from_rows(source_id, table_rows).expect("source rows")
+        })
+        .collect::<Vec<_>>();
     let compactor = TableCompactor::default();
     let mut policy = keep_all_policy();
     let output = compactor
-        .compact(output_seed, &[source], &mut policy)
+        .compact(output_seed, &sources, &mut policy)
         .expect("expected compaction");
     output.artifacts()[0].facts().identity().clone()
+}
+
+fn branch_compaction_source_id(
+    source_index: usize,
+    level: BranchLevel,
+    table_index: usize,
+    table_identity: &str,
+    rows: &[StorageRow],
+) -> TableCompactionSourceId {
+    let row_count = rows.len();
+    let min_commit = rows
+        .iter()
+        .map(StorageRow::commit_version)
+        .min()
+        .expect("source rows are not empty");
+    let max_commit = rows
+        .iter()
+        .map(StorageRow::commit_version)
+        .max()
+        .expect("source rows are not empty");
+    let source_hash = test_branch_source_metadata_hash(
+        level,
+        table_index,
+        table_identity,
+        row_count as u64,
+        min_commit.as_u64(),
+        max_commit.as_u64(),
+    );
+    TableCompactionSourceId::new(format!("s{source_index}-h{source_hash:016x}",))
+        .expect("source id")
+}
+
+fn test_branch_source_metadata_hash(
+    level: BranchLevel,
+    table_index: usize,
+    table_identity: &str,
+    row_count: u64,
+    commit_min: u64,
+    commit_max: u64,
+) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    test_hash_source_metadata_u64(&mut hash, u64::from(level.raw()), PRIME);
+    test_hash_source_metadata_u64(&mut hash, table_index as u64, PRIME);
+    test_hash_source_metadata_bytes(&mut hash, table_identity.as_bytes(), PRIME);
+    test_hash_source_metadata_u64(&mut hash, row_count, PRIME);
+    test_hash_source_metadata_u64(&mut hash, commit_min, PRIME);
+    test_hash_source_metadata_u64(&mut hash, commit_max, PRIME);
+    hash
+}
+
+fn test_hash_source_metadata_u64(hash: &mut u64, value: u64, prime: u64) {
+    test_hash_source_metadata_bytes(hash, &value.to_le_bytes(), prime);
+}
+
+fn test_hash_source_metadata_bytes(hash: &mut u64, bytes: &[u8], prime: u64) {
+    test_hash_source_metadata_u64_raw(hash, bytes.len() as u64, prime);
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(prime);
+    }
+}
+
+fn test_hash_source_metadata_u64_raw(hash: &mut u64, value: u64, prime: u64) {
+    for byte in value.to_le_bytes() {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(prime);
+    }
 }
 
 fn sorted_storage_rows(mut rows: Vec<StorageRow>) -> Vec<StorageRow> {

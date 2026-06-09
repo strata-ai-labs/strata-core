@@ -1220,7 +1220,7 @@ fn durable_flush_retries_existing_matching_object() {
 }
 
 #[test]
-fn flush_identity_is_deterministic_and_changes_with_storage_facts() {
+fn flush_identity_is_deterministic_and_tracks_commit_facts() {
     let branch = branch_id(0x73);
     let request = flush_request(branch, None);
     let row = put_row(branch, b"identity", 16, 16_000, b"value");
@@ -1242,6 +1242,14 @@ fn flush_identity_is_deterministic_and_changes_with_storage_facts() {
     .table_identity()
     .expect("changed identity")
     .clone();
+    let changed_value = flush_cache_branch(
+        &mut frozen_branch(branch, put_row(branch, b"identity", 16, 16_000, b"other")),
+        &request,
+    )
+    .expect("changed value")
+    .table_identity()
+    .expect("value identity")
+    .clone();
     let other_branch = branch_id(0x74);
     let changed_branch = flush_cache_branch(
         &mut frozen_branch(
@@ -1256,18 +1264,17 @@ fn flush_identity_is_deterministic_and_changes_with_storage_facts() {
     .clone();
 
     assert_eq!(first, second);
+    assert_eq!(first, changed_value);
     assert_ne!(first, changed_commit);
     assert_ne!(first, changed_branch);
-    assert!(!first.as_str().contains('/'));
     assert_eq!(
-        first
-            .as_str()
-            .rsplit('-')
-            .next()
-            .expect("identity digest")
-            .len(),
-        64
+        first.as_str(),
+        format!(
+            "{request_seed}-{branch}-frozen-1-16-16",
+            request_seed = "flush-seed"
+        )
     );
+    assert!(!first.as_str().contains('/'));
 }
 
 #[test]

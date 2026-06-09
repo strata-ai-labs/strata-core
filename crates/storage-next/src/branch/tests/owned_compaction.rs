@@ -2634,7 +2634,28 @@ fn branch_compaction_rejects_output_identity_collision_without_mutation() {
     let output_seed = TableIdentity::new("collision-output").expect("identity");
     let colliding_identity = expected_keep_all_compaction_output_identity(
         &output_seed,
-        &[first.clone(), second.clone()],
+        vec![
+            (
+                branch_compaction_source_id(
+                    0,
+                    BranchLevel::ZERO,
+                    0,
+                    "collision-l0-b",
+                    std::slice::from_ref(&second),
+                ),
+                vec![second.clone()],
+            ),
+            (
+                branch_compaction_source_id(
+                    1,
+                    BranchLevel::ZERO,
+                    1,
+                    "collision-l0-a",
+                    std::slice::from_ref(&first),
+                ),
+                vec![first.clone()],
+            ),
+        ],
     );
 
     state
@@ -2712,7 +2733,28 @@ fn branch_compaction_rejects_inherited_output_identity_collision_without_mutatio
     let output_seed = TableIdentity::new("collision-inherited-output").expect("identity");
     let colliding_identity = expected_keep_all_compaction_output_identity(
         &output_seed,
-        &[first.clone(), second.clone()],
+        vec![
+            (
+                branch_compaction_source_id(
+                    0,
+                    BranchLevel::ZERO,
+                    0,
+                    "collision-inherited-l0-b",
+                    std::slice::from_ref(&second),
+                ),
+                vec![second.clone()],
+            ),
+            (
+                branch_compaction_source_id(
+                    1,
+                    BranchLevel::ZERO,
+                    1,
+                    "collision-inherited-l0-a",
+                    std::slice::from_ref(&first),
+                ),
+                vec![first.clone()],
+            ),
+        ],
     );
 
     let mut source_state = BranchLocalState::empty(source);

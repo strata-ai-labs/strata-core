@@ -162,9 +162,11 @@ fn assert_artifact_facts_match_rows(output: &TableCompactionOutput, seed: &str) 
         let suffix = format!("-{index:08x}");
         assert!(identity.starts_with(&prefix));
         assert!(identity.ends_with(&suffix));
-        let fingerprint = &identity[prefix.len()..identity.len() - suffix.len()];
-        assert_eq!(fingerprint.len(), 16);
-        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let source_component = &identity[prefix.len()..identity.len() - suffix.len()];
+        assert_eq!(source_component.len(), 16);
+        assert!(source_component
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(artifact.byte_count(), artifact.bytes().len() as u64);
         assert_eq!(&artifact.bytes()[..4], b"STTB");
         assert_ne!(&artifact.bytes()[..6], b"STRAKV");
@@ -990,13 +992,18 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
     let changed_rows = [
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
         put_row(b"echo".to_vec(), 5),
+    ];
+    let changed_grouping = [
+        source("left", &[changed_rows[0].clone(), changed_rows[2].clone()]),
+        source("right", &[changed_rows[1].clone(), changed_rows[3].clone()]),
     ];
     let mut changed_policy = keep_all_policy();
     let changed = compactor(1, 8)
         .compact(
             &identity("deterministic-output"),
-            &[source("changed", &changed_rows)],
+            &changed_grouping,
             &mut changed_policy,
         )
         .expect("changed compaction");
@@ -1010,7 +1017,11 @@ fn compaction_output_is_deterministic_across_runs_and_source_groupings() {
         .iter()
         .map(|artifact| artifact.facts().identity().as_str().to_owned())
         .collect::<Vec<_>>();
-    assert_ne!(first_identities, changed_identities);
+    assert_eq!(first_identities, changed_identities);
+    assert_ne!(
+        output_artifact_bytes(&first),
+        output_artifact_bytes(&changed)
+    );
 }
 
 #[test]

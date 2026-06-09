@@ -19,7 +19,6 @@ use crate::table::{
     FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
     TableReaderConfig, TableRuntimeFacts,
 };
-use sha2::{Digest, Sha256};
 use strata_core_next::BranchId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -400,7 +399,7 @@ pub(crate) fn flush_durable_branch_with_budget(
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
     let branch_component = request.branch_id().to_string();
-    let object_id = derived_object_id(request, &table_facts, artifact.bytes());
+    let object_id = derived_object_id(request, &table_facts);
     let object_facts = publish_or_load_existing(
         table_service,
         &branch_component,
@@ -529,52 +528,21 @@ fn derived_table_identity(
         request.branch_id(),
         facts.row_count(),
         facts
+            .min_commit()
+            .map_or(0, strata_core_next::CommitVersion::as_u64),
+        facts
             .max_commit()
             .map_or(0, strata_core_next::CommitVersion::as_u64),
-        frozen_digest(frozen),
     ))
     .map_err(table_error)
 }
 
-fn derived_object_id(
-    request: &FlushFrozenRequest,
-    table_facts: &TableRuntimeFacts,
-    bytes: &[u8],
-) -> String {
+fn derived_object_id(request: &FlushFrozenRequest, table_facts: &TableRuntimeFacts) -> String {
     format!(
-        "{}-frozen-{}-{}-{}",
+        "{}-{}",
         request.table_object_id().as_str(),
-        table_facts.row_count(),
-        table_facts.commit_range().max().as_u64(),
-        digest_hex(bytes),
+        table_facts.identity().as_str(),
     )
-}
-
-fn frozen_digest(frozen: &FrozenTable) -> String {
-    let mut hasher = Sha256::new();
-    for row in frozen.iter() {
-        hasher.update(row.key().as_slice());
-        hasher.update(row.row().value());
-        hasher.update(row.commit_version().as_u64().to_be_bytes());
-        hasher.update(row.row().commit_timestamp().as_micros().to_be_bytes());
-        hasher.update(row.row().expires_at().as_micros().to_be_bytes());
-        hasher.update([u8::from(row.row().is_tombstone())]);
-    }
-    digest_to_hex(hasher.finalize().as_slice())
-}
-
-fn digest_hex(bytes: &[u8]) -> String {
-    digest_to_hex(Sha256::digest(bytes).as_slice())
-}
-
-fn digest_to_hex(digest: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut text = String::with_capacity(digest.len() * 2);
-    for byte in digest.iter().copied() {
-        text.push(char::from(HEX[usize::from(byte >> 4)]));
-        text.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    text
 }
 
 fn publish_or_load_existing(

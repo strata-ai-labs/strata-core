@@ -19,6 +19,9 @@ use crate::table::{
 use std::collections::BTreeSet;
 use strata_core_next::BranchId;
 
+const BRANCH_COMPACTION_SOURCE_METADATA_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const BRANCH_COMPACTION_SOURCE_METADATA_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 fn keep_all_policy() -> impl TableCompactionPolicy {
     |_: &TableCompactionRowContext<'_>, _: &TableRow| Ok(TableCompactionDecision::Keep)
 }
@@ -1025,13 +1028,10 @@ impl BranchLocalState {
                                 "compaction candidate source table must exist",
                             ),
                         })?;
-                let source_id = TableCompactionSourceId::new(format!(
-                    "branch-{}-level-{}-table-{}-source-{source_index}",
-                    self.branch_id,
-                    table_ref.level().raw(),
-                    table_ref.table_index(),
-                ))
-                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+                let source_hash = table_source_metadata_hash(table_ref, table.facts());
+                let source_id =
+                    TableCompactionSourceId::new(format!("s{source_index}-h{source_hash:016x}",))
+                        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
                 Ok(BranchTableCompactionSource::new(source_id, table))
             })
             .collect()
@@ -1162,6 +1162,39 @@ impl BranchLocalState {
                 branch_table_ref_for_owned(self.branch_id, output_level, table_index, table)
             })
             .collect()
+    }
+}
+
+fn table_source_metadata_hash(
+    table_ref: &BranchTableRef,
+    facts: &crate::table::TableRuntimeFacts,
+) -> u64 {
+    let mut hash = BRANCH_COMPACTION_SOURCE_METADATA_HASH_OFFSET;
+    hash_source_metadata_u64(&mut hash, u64::from(table_ref.level().raw()));
+    hash_source_metadata_u64(&mut hash, table_ref.table_index() as u64);
+    hash_source_metadata_bytes(&mut hash, table_ref.table_identity().as_str().as_bytes());
+    hash_source_metadata_u64(&mut hash, facts.row_count());
+    hash_source_metadata_u64(&mut hash, facts.commit_range().min().as_u64());
+    hash_source_metadata_u64(&mut hash, facts.commit_range().max().as_u64());
+    hash
+}
+
+fn hash_source_metadata_u64(hash: &mut u64, value: u64) {
+    hash_source_metadata_bytes(hash, &value.to_le_bytes());
+}
+
+fn hash_source_metadata_bytes(hash: &mut u64, bytes: &[u8]) {
+    hash_source_metadata_u64_raw(hash, bytes.len() as u64);
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(BRANCH_COMPACTION_SOURCE_METADATA_HASH_PRIME);
+    }
+}
+
+fn hash_source_metadata_u64_raw(hash: &mut u64, value: u64) {
+    for byte in value.to_le_bytes() {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(BRANCH_COMPACTION_SOURCE_METADATA_HASH_PRIME);
     }
 }
 

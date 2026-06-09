@@ -10,8 +10,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 const MAX_SOURCE_ID_BYTES: usize = 128;
-const OUTPUT_IDENTITY_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const OUTPUT_IDENTITY_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+const OUTPUT_IDENTITY_METADATA_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const OUTPUT_IDENTITY_METADATA_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableCompactor {
@@ -521,6 +521,7 @@ fn compact_table_inputs(
 ) -> TableRuntimeResult<TableCompactionOutput> {
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
+    let source_identity = output_source_identity(sources);
     let mut merged = TableCompactionMergeCursor::new(sources)?;
     validate_no_global_duplicate_internal_keys(&mut merged)?;
     merged.seek_to_first()?;
@@ -563,6 +564,7 @@ fn compact_table_inputs(
                     build_pending_output(
                         &builder,
                         output_identity_seed,
+                        source_identity,
                         &mut output_rows,
                         &mut output_approximate_bytes,
                         &mut output_last_physical_key,
@@ -592,6 +594,7 @@ fn compact_table_inputs(
     build_pending_output(
         &builder,
         output_identity_seed,
+        source_identity,
         &mut output_rows,
         &mut output_approximate_bytes,
         &mut output_last_physical_key,
@@ -821,6 +824,7 @@ fn push_pending_row(
 fn build_pending_output(
     builder: &ImmutableTableBuilder,
     output_identity_seed: &TableIdentity,
+    source_identity: u64,
     pending_rows: &mut Vec<TableRow>,
     pending_approximate_bytes: &mut u64,
     pending_last_physical_key: &mut Option<Vec<u8>>,
@@ -840,7 +844,7 @@ fn build_pending_output(
     let rows = std::mem::take(pending_rows);
     *pending_approximate_bytes = 0;
     *pending_last_physical_key = None;
-    let identity = output_identity(output_identity_seed, output_index, &rows)?;
+    let identity = output_identity(output_identity_seed, source_identity, output_index)?;
     let artifact = build_table_artifact_from_rows(builder, identity, &rows)?;
     report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
     artifacts.push(artifact);
@@ -859,45 +863,40 @@ fn build_table_artifact_from_rows(
 
 fn output_identity(
     seed: &TableIdentity,
+    source_identity: u64,
     output_index: usize,
-    rows: &[TableRow],
 ) -> TableRuntimeResult<TableIdentity> {
-    let fingerprint = output_rows_fingerprint(rows);
     TableIdentity::new(format!(
-        "{}-{fingerprint:016x}-{output_index:08x}",
+        "{}-{source_identity:016x}-{output_index:08x}",
         seed.as_str()
     ))
 }
 
-fn output_rows_fingerprint(rows: &[TableRow]) -> u64 {
-    let mut hash = OUTPUT_IDENTITY_HASH_OFFSET;
-    hash_u64(&mut hash, rows.len() as u64);
-    for row in rows {
-        hash_bytes(&mut hash, row.encoded_key());
-        hash_u64(&mut hash, row.commit_timestamp().as_micros());
-        hash_u64(&mut hash, row.expires_at().as_micros());
-        hash_bytes(&mut hash, &[u8::from(row.is_tombstone())]);
-        hash_bytes(&mut hash, row.value());
+fn output_source_identity(sources: &[&dyn TableCompactionInput]) -> u64 {
+    let mut hash = OUTPUT_IDENTITY_METADATA_HASH_OFFSET;
+    hash_metadata_u64(&mut hash, sources.len() as u64);
+    for source in sources {
+        hash_metadata_bytes(&mut hash, source.id().as_str().as_bytes());
     }
     hash
 }
 
-fn hash_u64(hash: &mut u64, value: u64) {
-    hash_bytes(hash, &value.to_le_bytes());
+fn hash_metadata_u64(hash: &mut u64, value: u64) {
+    hash_metadata_bytes(hash, &value.to_le_bytes());
 }
 
-fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
-    hash_u64_raw(hash, bytes.len() as u64);
+fn hash_metadata_bytes(hash: &mut u64, bytes: &[u8]) {
+    hash_metadata_u64_raw(hash, bytes.len() as u64);
     for byte in bytes {
         *hash ^= u64::from(*byte);
-        *hash = hash.wrapping_mul(OUTPUT_IDENTITY_HASH_PRIME);
+        *hash = hash.wrapping_mul(OUTPUT_IDENTITY_METADATA_HASH_PRIME);
     }
 }
 
-fn hash_u64_raw(hash: &mut u64, value: u64) {
+fn hash_metadata_u64_raw(hash: &mut u64, value: u64) {
     for byte in value.to_le_bytes() {
         *hash ^= u64::from(byte);
-        *hash = hash.wrapping_mul(OUTPUT_IDENTITY_HASH_PRIME);
+        *hash = hash.wrapping_mul(OUTPUT_IDENTITY_METADATA_HASH_PRIME);
     }
 }
 
