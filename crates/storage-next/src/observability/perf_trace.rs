@@ -90,7 +90,7 @@ pub struct StoragePerfSnapshot {
     table_compaction_row_clones: u64,
     table_compaction_heap_key_clones: u64,
     table_compaction_source_order_key_clones: u64,
-    table_compaction_physical_key_materializations: u64,
+    table_compaction_boundary_key_allocations: u64,
     table_compaction_kept_rows: u64,
     table_compaction_dropped_rows: u64,
     table_compaction_peak_buffered_rows: u64,
@@ -364,9 +364,9 @@ impl StoragePerfSnapshot {
         self.table_compaction_source_order_key_clones
     }
 
-    /// Physical-key byte materializations performed by table compaction.
-    pub const fn table_compaction_physical_key_materializations(self) -> u64 {
-        self.table_compaction_physical_key_materializations
+    /// Boundary-key byte allocations performed by table compaction.
+    pub const fn table_compaction_boundary_key_allocations(self) -> u64 {
+        self.table_compaction_boundary_key_allocations
     }
 
     /// Rows kept by table compaction policy decisions.
@@ -876,7 +876,7 @@ static TABLE_COMPACTION_HEAP_KEY_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS: AtomicU64 = AtomicU64::new(0);
+static TABLE_COMPACTION_BOUNDARY_KEY_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_KEPT_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -1126,7 +1126,7 @@ pub fn reset() {
     TABLE_COMPACTION_ROW_CLONES.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_HEAP_KEY_CLONES.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES.store(0, Ordering::Relaxed);
-    TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_BOUNDARY_KEY_ALLOCATIONS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_KEPT_ROWS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_DROPPED_ROWS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
@@ -1268,8 +1268,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
         table_compaction_heap_key_clones: TABLE_COMPACTION_HEAP_KEY_CLONES.load(Ordering::Relaxed),
         table_compaction_source_order_key_clones: TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES
             .load(Ordering::Relaxed),
-        table_compaction_physical_key_materializations:
-            TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS.load(Ordering::Relaxed),
+        table_compaction_boundary_key_allocations: TABLE_COMPACTION_BOUNDARY_KEY_ALLOCATIONS
+            .load(Ordering::Relaxed),
         table_compaction_kept_rows: TABLE_COMPACTION_KEPT_ROWS.load(Ordering::Relaxed),
         table_compaction_dropped_rows: TABLE_COMPACTION_DROPPED_ROWS.load(Ordering::Relaxed),
         table_compaction_peak_buffered_rows: TABLE_COMPACTION_PEAK_BUFFERED_ROWS
@@ -1723,14 +1723,14 @@ pub(crate) fn record_table_compaction_source_order_key_clone() {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_table_compaction_physical_key_materialization() {}
+pub(crate) fn record_table_compaction_boundary_key_allocation() {}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_table_compaction_physical_key_materialization() {
+pub(crate) fn record_table_compaction_boundary_key_allocation() {
     if !recording_enabled() {
         return;
     }
-    TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS.fetch_add(1, Ordering::Relaxed);
+    TABLE_COMPACTION_BOUNDARY_KEY_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

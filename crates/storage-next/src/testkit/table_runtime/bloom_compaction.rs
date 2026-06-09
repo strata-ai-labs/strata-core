@@ -544,7 +544,7 @@ fn assert_compaction_rejects_duplicate_and_output_limit(script: &[u8]) -> Result
         .map_err(|err| TestkitError::new(format!("right duplicate setup failed: {err}")))?,
     ];
     let mut keep_all = keep_all_policy();
-    match generated_compactor(script, 96, 4)?.compact(
+    match generated_compactor(script, 96, 4)?.compact_validating_global_duplicates(
         &TableIdentity::new("compact-duplicate")
             .map_err(|err| TestkitError::new(format!("duplicate identity failed: {err}")))?,
         &sources,

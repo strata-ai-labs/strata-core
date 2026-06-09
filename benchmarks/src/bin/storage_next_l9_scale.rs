@@ -784,14 +784,14 @@ fn print_result(result: &RunResult) {
             perf_trace.table_filter_absent_probes(),
         );
         eprintln!(
-            "    table-compaction merge_cursor_opens={} merge_advances={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} physical_key_materializations={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={}",
+            "    table-compaction merge_cursor_opens={} merge_advances={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} boundary_key_allocations={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={}",
             perf_trace.table_compaction_merge_cursor_opens(),
             perf_trace.table_compaction_merge_advances(),
             perf_trace.table_compaction_pre_validation_rows_scanned(),
             perf_trace.table_compaction_row_clones(),
             perf_trace.table_compaction_heap_key_clones(),
             perf_trace.table_compaction_source_order_key_clones(),
-            perf_trace.table_compaction_physical_key_materializations(),
+            perf_trace.table_compaction_boundary_key_allocations(),
             perf_trace.table_compaction_kept_rows(),
             perf_trace.table_compaction_dropped_rows(),
             perf_trace.table_compaction_peak_buffered_rows(),
@@ -1435,8 +1435,8 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.table_compaction_source_order_key_clones()
     );
     field!(
-        "table_compaction_physical_key_materializations",
-        perf_trace.table_compaction_physical_key_materializations()
+        "table_compaction_boundary_key_allocations",
+        perf_trace.table_compaction_boundary_key_allocations()
     );
     field!(
         "table_compaction_kept_rows",

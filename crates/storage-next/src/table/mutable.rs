@@ -72,7 +72,7 @@ impl MutableTable {
         Self::default()
     }
 
-    pub(crate) fn snapshot(&self) -> Self {
+    pub(crate) fn clone_for_read_view(&self) -> Self {
         self.clone()
     }
 

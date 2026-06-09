@@ -423,7 +423,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(zero.table_compaction_row_clones(), 0);
     assert_eq!(zero.table_compaction_heap_key_clones(), 0);
     assert_eq!(zero.table_compaction_source_order_key_clones(), 0);
-    assert_eq!(zero.table_compaction_physical_key_materializations(), 0);
+    assert_eq!(zero.table_compaction_boundary_key_allocations(), 0);
     assert_eq!(zero.table_compaction_kept_rows(), 0);
     assert_eq!(zero.table_compaction_dropped_rows(), 0);
     assert_eq!(zero.table_compaction_peak_buffered_rows(), 0);
@@ -459,16 +459,16 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_compaction_merge_cursor_opens(), 2);
-    assert_eq!(perf.table_compaction_pre_validation_rows_scanned(), 4);
+    assert_eq!(perf.table_compaction_pre_validation_rows_scanned(), 0);
     assert_eq!(perf.table_compaction_row_clones(), 4);
     assert_eq!(perf.table_compaction_kept_rows(), 3);
     assert_eq!(perf.table_compaction_dropped_rows(), 1);
-    assert_eq!(perf.table_compaction_physical_key_materializations(), 3);
+    assert_eq!(perf.table_compaction_boundary_key_allocations(), 3);
     assert_eq!(perf.table_compaction_peak_buffered_rows(), 3);
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
-    assert_eq!(perf.table_compaction_merge_advances(), 8);
-    assert_eq!(perf.table_compaction_heap_key_clones(), 8);
-    assert_eq!(perf.table_compaction_source_order_key_clones(), 8);
+    assert_eq!(perf.table_compaction_merge_advances(), 4);
+    assert_eq!(perf.table_compaction_heap_key_clones(), 4);
+    assert_eq!(perf.table_compaction_source_order_key_clones(), 4);
 
     crate::observability::perf_trace::reset();
     let reset = crate::observability::perf_trace::snapshot();
@@ -478,11 +478,46 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(reset.table_compaction_row_clones(), 0);
     assert_eq!(reset.table_compaction_heap_key_clones(), 0);
     assert_eq!(reset.table_compaction_source_order_key_clones(), 0);
-    assert_eq!(reset.table_compaction_physical_key_materializations(), 0);
+    assert_eq!(reset.table_compaction_boundary_key_allocations(), 0);
     assert_eq!(reset.table_compaction_kept_rows(), 0);
     assert_eq!(reset.table_compaction_dropped_rows(), 0);
     assert_eq!(reset.table_compaction_peak_buffered_rows(), 0);
     assert_eq!(reset.table_compaction_output_tables_built(), 0);
+
+    let strict_left = source("counter-strict-left", &[rows[0].clone(), rows[2].clone()]);
+    let strict_right = source("counter-strict-right", &[rows[1].clone(), rows[3].clone()]);
+    let mut strict_policy = |_: &TableCompactionRowContext<'_>, row: &TableRow| {
+        if row.row().physical_key().user_key() == b"charlie" {
+            Ok(TableCompactionDecision::drop(
+                TableCompactionDropReason::CallerSelected,
+            ))
+        } else {
+            Ok(TableCompactionDecision::Keep)
+        }
+    };
+
+    let strict_output = compactor(64 * 1024, 4)
+        .compact_validating_global_duplicates(
+            &identity("mechanical-counters-strict"),
+            &[strict_left, strict_right],
+            &mut strict_policy,
+        )
+        .expect("counter compaction with explicit validation");
+    assert_eq!(strict_output.report().kept_rows(), 3);
+    assert_eq!(strict_output.report().dropped_rows(), 1);
+
+    let strict = crate::observability::perf_trace::snapshot();
+    assert_eq!(strict.table_compaction_merge_cursor_opens(), 2);
+    assert_eq!(strict.table_compaction_pre_validation_rows_scanned(), 4);
+    assert_eq!(strict.table_compaction_row_clones(), 4);
+    assert_eq!(strict.table_compaction_kept_rows(), 3);
+    assert_eq!(strict.table_compaction_dropped_rows(), 1);
+    assert_eq!(strict.table_compaction_boundary_key_allocations(), 3);
+    assert_eq!(strict.table_compaction_peak_buffered_rows(), 3);
+    assert_eq!(strict.table_compaction_output_tables_built(), 1);
+    assert_eq!(strict.table_compaction_merge_advances(), 8);
+    assert_eq!(strict.table_compaction_heap_key_clones(), 8);
+    assert_eq!(strict.table_compaction_source_order_key_clones(), 8);
 }
 
 #[test]
@@ -781,7 +816,7 @@ fn all_drop_and_policy_error_paths_do_not_return_partial_outputs() {
 }
 
 #[test]
-fn source_validation_and_global_duplicate_rejection_are_typed() {
+fn source_validation_and_explicit_global_duplicate_rejection_are_typed() {
     let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
     let unsorted = vec![rows[1].clone(), rows[0].clone()];
     assert!(matches!(
@@ -800,7 +835,7 @@ fn source_validation_and_global_duplicate_rejection_are_typed() {
     let duplicate = put_row(b"same".to_vec(), 7);
     let duplicate_again = duplicate.clone();
     let err = compactor(16 * 1024, 4)
-        .compact(
+        .compact_validating_global_duplicates(
             &identity("duplicate-global"),
             &[
                 source("left", std::slice::from_ref(&duplicate)),
@@ -816,7 +851,7 @@ fn source_validation_and_global_duplicate_rejection_are_typed() {
 }
 
 #[test]
-fn global_duplicate_rejection_runs_before_policy() {
+fn explicit_global_duplicate_validation_runs_before_policy() {
     let duplicate = put_row(b"same".to_vec(), 7);
     let rows = [put_row(b"alpha".to_vec(), 1), duplicate.clone()];
     let mut calls = 0_u64;
@@ -828,7 +863,7 @@ fn global_duplicate_rejection_runs_before_policy() {
     };
 
     let err = compactor(16 * 1024, 4)
-        .compact(
+        .compact_validating_global_duplicates(
             &identity("duplicate-before-policy"),
             &[
                 source("left", &rows),
@@ -1602,11 +1637,12 @@ fn streaming_policy_error_aborts_without_output_success() {
         }
     );
     assert_eq!(calls, 2);
-    assert_cursor_input_streaming_is_bounded(&input, rows.len());
+    assert_eq!(input.open_calls(), 1);
+    assert_eq!(input.advance_calls(), 1);
 }
 
 #[test]
-fn cursor_input_duplicate_rejection_runs_before_policy() {
+fn explicit_cursor_input_duplicate_validation_runs_before_policy() {
     let duplicate = put_row(b"same".to_vec(), 7);
     let left = TrackedCompactionInput::new("dup-left", std::slice::from_ref(&duplicate));
     let right = TrackedCompactionInput::new("dup-right", &[duplicate]);
@@ -1618,7 +1654,11 @@ fn cursor_input_duplicate_rejection_runs_before_policy() {
     };
 
     let err = compactor(16 * 1024, 4)
-        .compact_inputs(&identity("cursor-duplicate"), &inputs, &mut policy)
+        .compact_inputs_validating_global_duplicates(
+            &identity("cursor-duplicate"),
+            &inputs,
+            &mut policy,
+        )
         .expect_err("duplicate cursor input rejected");
 
     assert!(matches!(
@@ -1631,7 +1671,7 @@ fn cursor_input_duplicate_rejection_runs_before_policy() {
 }
 
 #[test]
-fn cursor_input_invalid_order_is_rejected_before_policy() {
+fn cursor_input_invalid_order_is_rejected_by_source_order_validation() {
     let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
     let input = TrackedCompactionInput::from_table_rows(
         "unsorted-cursor",
@@ -1649,7 +1689,7 @@ fn cursor_input_invalid_order_is_rejected_before_policy() {
         .expect_err("invalid cursor order rejected");
 
     assert!(matches!(err, TableRuntimeError::InvalidRowOrder { .. }));
-    assert_eq!(calls, 0);
+    assert_eq!(calls, 1);
     assert_eq!(input.open_calls(), 1);
     assert_eq!(input.advance_calls(), 1);
 }

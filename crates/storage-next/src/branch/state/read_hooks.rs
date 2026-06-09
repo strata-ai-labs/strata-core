@@ -234,7 +234,7 @@ impl BranchLocalState {
         perf_trace::record_read_view_capture(read_view_source_handle_count(self), 0, 0);
         BranchReadView::new_from_validated_state(
             self.branch_id,
-            self.active.snapshot(),
+            self.active.clone_for_read_view(),
             self.frozen.clone(),
             self.owned_levels.clone(),
             self.inherited_layers.clone(),
@@ -246,7 +246,7 @@ impl BranchLocalState {
     pub(crate) fn validate_read_view_sources(&self) -> BranchRuntimeResult<()> {
         BranchReadView::new_with_inherited(
             self.branch_id,
-            self.active.snapshot(),
+            self.active.clone_for_read_view(),
             self.frozen.clone(),
             self.owned_levels.clone(),
             self.inherited_layers.clone(),

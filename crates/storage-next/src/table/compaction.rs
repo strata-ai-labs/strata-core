@@ -45,13 +45,52 @@ impl TableCompactor {
         self.compact_inputs(output_identity_seed, &sources, policy)
     }
 
+    /// Run compaction with an explicit cross-source duplicate-key validation pass.
+    ///
+    /// Default compaction treats exact internal-key duplication across sources as
+    /// corrupt input rather than a release-mode row-resolution feature.
+    pub(crate) fn compact_validating_global_duplicates<P: TableCompactionPolicy + ?Sized>(
+        &self,
+        output_identity_seed: &TableIdentity,
+        sources: &[TableCompactionSource],
+        policy: &mut P,
+    ) -> TableRuntimeResult<TableCompactionOutput> {
+        let sources = sources
+            .iter()
+            .map(|source| source as &dyn TableCompactionInput)
+            .collect::<Vec<_>>();
+        self.compact_inputs_validating_global_duplicates(output_identity_seed, &sources, policy)
+    }
+
     pub(crate) fn compact_inputs<P: TableCompactionPolicy + ?Sized>(
         &self,
         output_identity_seed: &TableIdentity,
         sources: &[&dyn TableCompactionInput],
         policy: &mut P,
     ) -> TableRuntimeResult<TableCompactionOutput> {
-        compact_table_inputs(self, output_identity_seed, sources, policy)
+        compact_table_inputs(
+            self,
+            output_identity_seed,
+            sources,
+            policy,
+            GlobalDuplicateValidation::Skip,
+        )
+    }
+
+    /// Run cursor-input compaction with an explicit cross-source duplicate-key validation pass.
+    pub(crate) fn compact_inputs_validating_global_duplicates<P: TableCompactionPolicy + ?Sized>(
+        &self,
+        output_identity_seed: &TableIdentity,
+        sources: &[&dyn TableCompactionInput],
+        policy: &mut P,
+    ) -> TableRuntimeResult<TableCompactionOutput> {
+        compact_table_inputs(
+            self,
+            output_identity_seed,
+            sources,
+            policy,
+            GlobalDuplicateValidation::Run,
+        )
     }
 
     pub(crate) const fn config(&self) -> TableCompactionConfig {
@@ -71,6 +110,12 @@ impl Default for TableCompactor {
         )
         .expect("default table compactor configuration is valid")
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobalDuplicateValidation {
+    Skip,
+    Run,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -518,13 +563,16 @@ fn compact_table_inputs(
     output_identity_seed: &TableIdentity,
     sources: &[&dyn TableCompactionInput],
     policy: &mut (impl TableCompactionPolicy + ?Sized),
+    global_duplicate_validation: GlobalDuplicateValidation,
 ) -> TableRuntimeResult<TableCompactionOutput> {
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
     let source_identity = output_source_identity(sources);
     let mut merged = TableCompactionMergeCursor::new(sources)?;
-    validate_no_global_duplicate_internal_keys(&mut merged)?;
-    merged.seek_to_first()?;
+    if global_duplicate_validation == GlobalDuplicateValidation::Run {
+        validate_no_global_duplicate_internal_keys(&mut merged)?;
+        merged.seek_to_first()?;
+    }
 
     let target_output_bytes = compactor.config.target_output_bytes();
     require_nonzero_target_output_bytes(target_output_bytes)?;
@@ -921,7 +969,7 @@ fn hash_metadata_u64_raw(hash: &mut u64, value: u64) {
 }
 
 fn physical_key_bytes(row: &TableRow) -> Vec<u8> {
-    perf_trace::record_table_compaction_physical_key_materialization();
+    perf_trace::record_table_compaction_boundary_key_allocation();
     TablePhysicalKeyBytes::from_row(row.row())
         .as_slice()
         .to_vec()
