@@ -4,10 +4,10 @@ use super::error::{
     BranchTimestampHistorySource,
 };
 use super::facts::{
-    BranchLevel, BranchProtectedTable, BranchProtectionReason, BranchReachabilityAggregate,
-    BranchReachabilityFacts, BranchReachabilitySnapshot, BranchReleasePlan, BranchStateFacts,
-    BranchTableDescriptor, BranchTableRef, BranchTableReferenceKind, InheritedLayerDescriptor,
-    InheritedLayerStatus, SharedTableRegistry,
+    BranchLevel, BranchLevelTableCount, BranchProtectedTable, BranchProtectionReason,
+    BranchReachabilityAggregate, BranchReachabilityFacts, BranchReachabilitySnapshot,
+    BranchReleasePlan, BranchStateFacts, BranchTableDescriptor, BranchTableRef,
+    BranchTableReferenceKind, InheritedLayerDescriptor, InheritedLayerStatus, SharedTableRegistry,
 };
 use super::identity::{
     require_physical_key_branch, require_row_branch, rewrite_physical_key_branch,
@@ -28,6 +28,7 @@ use super::state::compaction::{
     BranchCompactionRetentionPolicy,
 };
 use super::state::fork::BranchForkOutcome;
+use super::state::manifest_recovery::BranchTableManifestRecoveryRequest;
 use super::state::materialization::{
     BranchMaterializationOutcome, BranchMaterializationRecovery, BranchMaterializationRequest,
 };

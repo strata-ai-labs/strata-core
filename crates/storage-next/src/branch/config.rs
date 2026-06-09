@@ -2,7 +2,7 @@
 
 use super::error::{BranchRuntimeError, BranchRuntimeResult};
 
-const DEFAULT_MAX_LEVEL_COUNT: usize = 7;
+const DEFAULT_MAX_LEVEL_COUNT: usize = 8;
 const DEFAULT_MAX_INHERITED_LAYERS: usize = 64;
 const DEFAULT_MAX_FROZEN_TABLES: usize = 32;
 

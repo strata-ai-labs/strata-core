@@ -243,7 +243,7 @@ fn compaction_no_candidate_reasons_are_deferred() {
         &LifecycleCompactionRequest::new(
             branch,
             BranchCompactionKind::CompactLevel {
-                level: BranchLevel::new(6),
+                level: BranchLevel::new(7),
                 table_index: 0,
             },
             "last-rewrite",

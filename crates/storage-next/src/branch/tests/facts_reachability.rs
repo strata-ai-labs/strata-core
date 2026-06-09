@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn branch_runtime_config_rejects_unusable_zero_limits() {
     let default_config = BranchRuntimeConfig::default();
-    assert_eq!(default_config.max_level_count(), 7);
+    assert_eq!(default_config.max_level_count(), 8);
     assert_eq!(default_config.max_inherited_layers(), 64);
     assert_eq!(default_config.max_frozen_tables(), 32);
 
@@ -19,6 +19,186 @@ fn branch_runtime_config_rejects_unusable_zero_limits() {
     );
     assert_invalid_config_field(BranchRuntimeConfig::new(3, 0, 8), "max_inherited_layers");
     assert_invalid_config_field(BranchRuntimeConfig::new(3, 2, 0), "max_frozen_tables");
+}
+
+#[test]
+fn branch_runtime_config_default_allocates_eight_lsm_levels() {
+    let branch = branch_id(2);
+    let state = BranchLocalState::empty(branch);
+    let view = state.capture_read_view().expect("read view");
+
+    assert_eq!(view.owned_levels().len(), 8);
+}
+
+#[test]
+fn branch_runtime_config_default_accepts_terminal_lsm_level_tables() {
+    let branch = branch_id(3);
+    let mut state = BranchLocalState::empty(branch);
+    let terminal_level = BranchLevel::new(7);
+    let row = storage_row_with(
+        branch,
+        b"terminal-level".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+
+    let outcome = state
+        .install_owned_table_at_level(
+            terminal_level,
+            branch_owned_table(
+                branch,
+                terminal_level,
+                "terminal-level-table",
+                vec![row.clone()],
+            ),
+        )
+        .expect("install terminal-level table");
+
+    assert_eq!(outcome.level(), terminal_level);
+    assert_eq!(outcome.table_index(), 0);
+    let view = state.capture_read_view().expect("read view");
+    assert_eq!(view.owned_levels().len(), 8);
+    assert_eq!(
+        view.owned_levels()[usize::from(terminal_level.raw())].len(),
+        1
+    );
+    assert_eq!(
+        view.source_layout().owned_nonzero_level_table_counts(),
+        &[BranchLevelTableCount::new(terminal_level, 1)]
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"terminal-level".to_vec()))
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &row
+    );
+}
+
+#[test]
+fn branch_runtime_config_default_recovers_terminal_lsm_level_tables() {
+    let branch = branch_id(4);
+    let terminal_level = BranchLevel::new(7);
+    let row = storage_row_with(
+        branch,
+        b"recovered-terminal-level".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    let mut owned_levels = vec![Vec::new(); 8];
+    owned_levels[usize::from(terminal_level.raw())].push(branch_owned_table(
+        branch,
+        terminal_level,
+        "recovered-terminal-level-table",
+        vec![row.clone()],
+    ));
+    let request = BranchTableManifestRecoveryRequest::new(branch, owned_levels, Vec::new())
+        .expect("recovery request");
+    let mut state = BranchLocalState::empty(branch);
+
+    let outcome = state
+        .install_table_manifest_recovery(request)
+        .expect("manifest recovery install");
+
+    assert_eq!(outcome.total_table_count(), 1);
+    let view = state.capture_read_view().expect("read view");
+    assert_eq!(view.owned_levels().len(), 8);
+    assert_eq!(
+        view.owned_levels()[usize::from(terminal_level.raw())].len(),
+        1
+    );
+    assert_eq!(
+        view.source_layout().owned_nonzero_level_table_counts(),
+        &[BranchLevelTableCount::new(terminal_level, 1)]
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"recovered-terminal-level".to_vec()))
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &row
+    );
+}
+
+#[test]
+fn branch_runtime_config_preserves_custom_compaction_bounds() {
+    let branch = branch_id(5);
+    let two_level_config = BranchRuntimeConfig::new(2, 64, 32).expect("two-level config");
+    let two_level_state = BranchLocalState::new(branch, two_level_config).expect("state");
+    let terminal_plan = two_level_state
+        .plan_branch_compaction(
+            &BranchCompactionRequest::new(
+                branch,
+                BranchCompactionKind::CompactLevel {
+                    level: BranchLevel::new(1),
+                    table_index: 0,
+                },
+                "two-level-terminal",
+            )
+            .expect("request"),
+        )
+        .expect("terminal plan");
+    assert_eq!(
+        terminal_plan.noop_reason(),
+        Some(BranchCompactionNoopReason::LastLevel)
+    );
+    assert!(matches!(
+        two_level_state.plan_branch_compaction(
+            &BranchCompactionRequest::new(
+                branch,
+                BranchCompactionKind::CompactLevel {
+                    level: BranchLevel::new(2),
+                    table_index: 0,
+                },
+                "two-level-outside",
+            )
+            .expect("request"),
+        ),
+        Err(BranchRuntimeError::InvalidCompaction { .. })
+    ));
+
+    let three_level_branch = branch_id(6);
+    let three_level_config = BranchRuntimeConfig::new(3, 64, 32).expect("three-level config");
+    let three_level_state =
+        BranchLocalState::new(three_level_branch, three_level_config).expect("state");
+    let compactable_empty_plan = three_level_state
+        .plan_branch_compaction(
+            &BranchCompactionRequest::new(
+                three_level_branch,
+                BranchCompactionKind::CompactLevel {
+                    level: BranchLevel::new(1),
+                    table_index: 0,
+                },
+                "three-level-empty",
+            )
+            .expect("request"),
+        )
+        .expect("compactable empty plan");
+    assert_eq!(
+        compactable_empty_plan.noop_reason(),
+        Some(BranchCompactionNoopReason::EmptyInputLevel)
+    );
+    let terminal_plan = three_level_state
+        .plan_branch_compaction(
+            &BranchCompactionRequest::new(
+                three_level_branch,
+                BranchCompactionKind::CompactLevel {
+                    level: BranchLevel::new(2),
+                    table_index: 0,
+                },
+                "three-level-terminal",
+            )
+            .expect("request"),
+        )
+        .expect("terminal plan");
+    assert_eq!(
+        terminal_plan.noop_reason(),
+        Some(BranchCompactionNoopReason::LastLevel)
+    );
 }
 
 #[test]
