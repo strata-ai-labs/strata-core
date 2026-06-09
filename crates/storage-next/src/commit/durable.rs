@@ -172,14 +172,15 @@ where
     ) -> CommitRuntimeResult<CommitOutcome> {
         let batch = batch.validate(self.config)?;
         let (required_policy, durability) = require_durable_mutating_batch(&batch)?;
+        let branch_id = batch.batch().branch_id();
         if self.wal.durability_policy() != required_policy {
             return Err(CommitRuntimeError::DurabilityUnavailable {
                 reason: "durable commit executor requires matching WAL durability policy",
             });
         }
-        if batch.batch().branch_id() != self.branch.branch_id() {
+        if branch_id != self.branch.branch_id() {
             return Err(CommitRuntimeError::BranchMismatch {
-                expected: batch.batch().branch_id(),
+                expected: branch_id,
                 actual: self.branch.branch_id(),
             });
         }
@@ -213,27 +214,29 @@ where
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
         require_allocated_after_visible(stamp, current_visible_version)?;
-        let (combined_rows, mutation_counts) = prepare_commit_rows(&batch, stamp, self.config)?;
+        let (combined_rows, mutation_counts) = prepare_commit_rows(batch, stamp, self.config)?;
         self.branch
             .validate_committed_rows_before_apply(&combined_rows)?;
-        let record = build_wal_record(stamp, combined_rows.clone())?;
-        let append = self.wal.append_commit_record(&record).map_err(|error| {
-            error.into_commit_error(batch.batch().branch_id(), stamp.commit_version())
-        })?;
+        let record = build_wal_record(stamp, combined_rows)?;
+        let append = self
+            .wal
+            .append_commit_record(&record)
+            .map_err(|error| error.into_commit_error(branch_id, stamp.commit_version()))?;
         require_append_satisfies_policy(
             required_policy,
             append,
-            batch.batch().branch_id(),
+            branch_id,
             stamp.commit_version(),
         )?;
 
+        let combined_rows = record.into_commit_payload().into_rows();
         if let Err(source) = self.branch.append_committed_rows_atomically(combined_rows) {
             let reason = "branch state rejected durable commit rows after WAL append";
             unresolved_admission.record_unresolved(
                 CommitUnresolvedDurable::durable_not_applied_with_facts(stamp, durability, reason)?,
             )?;
             return Err(CommitRuntimeError::durable_but_not_visible_with(
-                batch.batch().branch_id(),
+                branch_id,
                 stamp.commit_version(),
                 reason,
                 source,
@@ -247,20 +250,14 @@ where
                 CommitUnresolvedDurable::applied_not_visible(stamp, durability, reason)?,
             )?;
             return Err(CommitRuntimeError::durable_but_not_visible_with(
-                batch.batch().branch_id(),
+                branch_id,
                 stamp.commit_version(),
                 reason,
                 error,
             ));
         }
 
-        CommitOutcome::visible(
-            batch.batch().branch_id(),
-            stamp,
-            durability,
-            mutation_counts,
-            facts,
-        )
+        CommitOutcome::visible(branch_id, stamp, durability, mutation_counts, facts)
     }
 }
 

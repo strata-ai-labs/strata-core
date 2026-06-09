@@ -60,9 +60,10 @@ where
     ) -> CommitRuntimeResult<CommitOutcome> {
         let batch = batch.validate(self.config)?;
         require_cache_mutating_batch(&batch)?;
-        if batch.batch().branch_id() != self.branch.branch_id() {
+        let branch_id = batch.batch().branch_id();
+        if branch_id != self.branch.branch_id() {
             return Err(CommitRuntimeError::BranchMismatch {
-                expected: batch.batch().branch_id(),
+                expected: branch_id,
                 actual: self.branch.branch_id(),
             });
         }
@@ -96,7 +97,7 @@ where
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
         require_allocated_after_visible(stamp, current_visible_version)?;
-        let (combined_rows, mutation_counts) = prepare_commit_rows(&batch, stamp, self.config)?;
+        let (combined_rows, mutation_counts) = prepare_commit_rows(batch, stamp, self.config)?;
         let facts = visible_cache_facts(stamp)?;
         self.branch
             .validate_committed_rows_before_apply(&combined_rows)?;
@@ -126,14 +127,14 @@ where
             )?;
             unresolved_admission.record_unresolved(unresolved)?;
             return Err(CommitRuntimeError::AppliedButNotVisible {
-                branch_id: batch.batch().branch_id(),
+                branch_id,
                 commit_version: stamp.commit_version(),
                 reason,
             });
         }
 
         CommitOutcome::visible(
-            batch.batch().branch_id(),
+            branch_id,
             stamp,
             CommitDurabilityClass::NotDurable,
             mutation_counts,
@@ -143,16 +144,17 @@ where
 }
 
 pub(crate) fn prepare_commit_rows(
-    batch: &ValidatedCommitBatch,
+    batch: ValidatedCommitBatch,
     stamp: CommitStamp,
     config: &CommitRuntimeConfig,
 ) -> CommitRuntimeResult<(Vec<StorageRow>, CommitMutationCounts)> {
     let timer = perf_trace::start_timer();
     let result = (|| {
-        let user_rows = batch.stamp_user_rows(stamp)?;
+        let user_row_count = batch.batch().mutations().len();
+        let user_counts = CommitMutationCounts::from_validated_batch(&batch)?;
+        let user_rows = batch.into_stamped_user_rows(stamp)?;
         let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
         let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
-        let user_counts = CommitMutationCounts::from_validated_batch(batch)?;
         let mutation_counts = CommitMutationCounts::new(
             user_counts.puts(),
             user_counts.deletes(),
@@ -168,11 +170,7 @@ pub(crate) fn prepare_commit_rows(
         rows.extend(user_rows);
         let timeline_row_count = CommitTimelineRows::timeline_row_count();
         rows.extend(timeline_rows.into_rows());
-        perf_trace::record_commit_rows_prepared(
-            batch.batch().mutations().len(),
-            timeline_row_count,
-            rows.len(),
-        );
+        perf_trace::record_commit_rows_prepared(user_row_count, timeline_row_count, rows.len());
         Ok((rows, mutation_counts))
     })();
     perf_trace::record_commit_prepare_rows_elapsed(timer);

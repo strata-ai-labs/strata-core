@@ -170,6 +170,10 @@ impl WalRecord {
     pub(crate) fn commit_payload(&self) -> &WalCommitPayload {
         &self.commit_payload
     }
+
+    pub(crate) fn into_commit_payload(self) -> WalCommitPayload {
+        self.commit_payload
+    }
 }
 
 pub(crate) fn encode_wal_record(record: &WalRecord) -> Result<Vec<u8>, FormatError> {

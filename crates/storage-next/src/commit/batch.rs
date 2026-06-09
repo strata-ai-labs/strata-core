@@ -467,6 +467,31 @@ impl ValidatedCommitBatch {
 
         Ok(rows)
     }
+
+    pub(crate) fn into_stamped_user_rows(
+        self,
+        stamp: CommitStamp,
+    ) -> CommitRuntimeResult<Vec<StorageRow>> {
+        let batch = self.batch;
+        if batch.kind != CommitBatchKind::Mutating {
+            return Err(CommitRuntimeError::InvalidBatch {
+                reason: "read-only diagnostic batch cannot stamp rows",
+            });
+        }
+        if stamp.branch_id() != batch.branch_id {
+            return Err(CommitRuntimeError::BranchMismatch {
+                expected: batch.branch_id,
+                actual: stamp.branch_id(),
+            });
+        }
+
+        let mut rows = Vec::with_capacity(batch.mutations.len());
+        for mutation in batch.mutations {
+            rows.push(stamp_mutation_owned(mutation, stamp)?);
+        }
+
+        Ok(rows)
+    }
 }
 
 fn validate_batch_shape(
@@ -671,6 +696,31 @@ fn stamp_mutation(
         )),
         CommitMutation::Delete { key } => Ok(StorageRow::tombstone(
             key.clone(),
+            stamp.commit_version(),
+            stamp.commit_timestamp(),
+        )),
+    }
+}
+
+fn stamp_mutation_owned(
+    mutation: CommitMutation,
+    stamp: CommitStamp,
+) -> CommitRuntimeResult<StorageRow> {
+    match mutation {
+        CommitMutation::Put {
+            key,
+            value,
+            expires_at,
+            ..
+        } => Ok(StorageRow::put(
+            key,
+            stamp.commit_version(),
+            stamp.commit_timestamp(),
+            expires_at.to_storage_timestamp()?,
+            value,
+        )),
+        CommitMutation::Delete { key } => Ok(StorageRow::tombstone(
+            key,
             stamp.commit_version(),
             stamp.commit_timestamp(),
         )),

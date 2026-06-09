@@ -27,6 +27,10 @@ impl WalCommitPayload {
         &self.rows
     }
 
+    pub(crate) fn into_rows(self) -> Vec<StorageRow> {
+        self.rows
+    }
+
     pub(crate) fn validate_outer_facts(
         &self,
         commit_version: CommitVersion,
