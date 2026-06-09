@@ -582,33 +582,24 @@ fn compact_table_inputs(
     let mut artifacts = Vec::new();
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
 
-    while let Some(current) = merged.current().map(|current| {
-        perf_trace::record_table_compaction_row_clone();
-        (
-            current.source_id,
-            current.source_index,
-            current.source_row_index,
-            current.row.clone(),
-        )
-    }) {
-        let (source_id, source_index, source_row_index, row) = current;
+    while let Some(current) = merged.current() {
         report.input_rows = report.input_rows.saturating_add(1);
 
         let context = TableCompactionRowContext {
-            source_id,
-            source_index,
-            source_row_index,
+            source_id: current.source_id,
+            source_index: current.source_index,
+            source_row_index: current.source_row_index,
             merged_row_index: report.input_rows.saturating_sub(1),
             previous_kept_key: previous_kept_key.as_ref(),
         };
-        match policy.decide(&context, &row)? {
+        match policy.decide(&context, current.row)? {
             TableCompactionDecision::Keep => {
                 if should_split_before(
                     &output_rows,
                     output_approximate_bytes,
                     output_last_physical_key.as_deref(),
                     target_output_bytes,
-                    &row,
+                    current.row,
                 )? {
                     build_pending_output(
                         &builder,
@@ -622,7 +613,8 @@ fn compact_table_inputs(
                         compactor.config.max_output_tables(),
                     )?;
                 }
-                let kept_key = row.key().clone();
+                let kept_key = current.row.key().clone();
+                let row = clone_row_for_output(current.row);
                 push_pending_row(
                     &mut output_rows,
                     &mut output_approximate_bytes,
@@ -676,6 +668,11 @@ fn validate_no_global_duplicate_internal_keys(
         merged.advance()?;
     }
     Ok(())
+}
+
+fn clone_row_for_output(row: &TableRow) -> TableRow {
+    perf_trace::record_table_compaction_row_clone();
+    row.clone()
 }
 
 pub(crate) struct TableCompactionMergeCursor<'a> {

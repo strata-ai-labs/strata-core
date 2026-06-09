@@ -460,7 +460,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_compaction_merge_cursor_opens(), 2);
     assert_eq!(perf.table_compaction_pre_validation_rows_scanned(), 0);
-    assert_eq!(perf.table_compaction_row_clones(), 4);
+    assert_eq!(perf.table_compaction_row_clones(), 3);
     assert_eq!(perf.table_compaction_kept_rows(), 3);
     assert_eq!(perf.table_compaction_dropped_rows(), 1);
     assert_eq!(perf.table_compaction_boundary_key_allocations(), 3);
@@ -509,7 +509,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     let strict = crate::observability::perf_trace::snapshot();
     assert_eq!(strict.table_compaction_merge_cursor_opens(), 2);
     assert_eq!(strict.table_compaction_pre_validation_rows_scanned(), 4);
-    assert_eq!(strict.table_compaction_row_clones(), 4);
+    assert_eq!(strict.table_compaction_row_clones(), 3);
     assert_eq!(strict.table_compaction_kept_rows(), 3);
     assert_eq!(strict.table_compaction_dropped_rows(), 1);
     assert_eq!(strict.table_compaction_boundary_key_allocations(), 3);
@@ -518,6 +518,58 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(strict.table_compaction_merge_advances(), 8);
     assert_eq!(strict.table_compaction_heap_key_clones(), 0);
     assert_eq!(strict.table_compaction_source_order_key_clones(), 8);
+
+    let drop_left = source("counter-drop-left", &[rows[0].clone(), rows[2].clone()]);
+    let drop_right = source("counter-drop-right", &[rows[1].clone(), rows[3].clone()]);
+    let mut drop_all_policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        Ok(TableCompactionDecision::drop(
+            TableCompactionDropReason::CallerSelected,
+        ))
+    };
+    crate::observability::perf_trace::reset();
+
+    let drop_output = compactor(64 * 1024, 4)
+        .compact(
+            &identity("mechanical-counters-drop-all"),
+            &[drop_left, drop_right],
+            &mut drop_all_policy,
+        )
+        .expect("all-drop counter compaction");
+
+    assert_eq!(drop_output.report().kept_rows(), 0);
+    assert_eq!(drop_output.report().dropped_rows(), rows.len() as u64);
+    assert_eq!(drop_output.report().output_tables(), 0);
+    let dropped = crate::observability::perf_trace::snapshot();
+    assert_eq!(dropped.table_compaction_row_clones(), 0);
+    assert_eq!(dropped.table_compaction_kept_rows(), 0);
+    assert_eq!(dropped.table_compaction_dropped_rows(), rows.len() as u64);
+
+    let error_source = source("counter-error-source", &[rows[0].clone(), rows[1].clone()]);
+    let mut error_policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
+        Err(TableRuntimeError::CompactionPolicy {
+            reason: "counter policy failure",
+        })
+    };
+    crate::observability::perf_trace::reset();
+
+    let error = compactor(64 * 1024, 4)
+        .compact(
+            &identity("mechanical-counters-policy-error"),
+            &[error_source],
+            &mut error_policy,
+        )
+        .expect_err("policy error aborts counter compaction");
+
+    assert_eq!(
+        error,
+        TableRuntimeError::CompactionPolicy {
+            reason: "counter policy failure",
+        }
+    );
+    let policy_error = crate::observability::perf_trace::snapshot();
+    assert_eq!(policy_error.table_compaction_row_clones(), 0);
+    assert_eq!(policy_error.table_compaction_kept_rows(), 0);
+    assert_eq!(policy_error.table_compaction_dropped_rows(), 0);
 
     for source_count in 1..=crate::table::MERGE_HEAP_THRESHOLD {
         crate::observability::perf_trace::reset();

@@ -349,7 +349,7 @@ impl StoragePerfSnapshot {
         self.table_compaction_pre_validation_rows_scanned
     }
 
-    /// Rows cloned by table compaction for policy/output ownership.
+    /// Rows cloned by table compaction for output ownership.
     pub const fn table_compaction_row_clones(self) -> u64 {
         self.table_compaction_row_clones
     }
