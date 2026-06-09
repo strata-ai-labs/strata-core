@@ -783,6 +783,20 @@ fn print_result(result: &RunResult) {
             perf_trace.table_filter_positive_probes(),
             perf_trace.table_filter_absent_probes(),
         );
+        eprintln!(
+            "    table-compaction merge_cursor_opens={} merge_advances={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} physical_key_materializations={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={}",
+            perf_trace.table_compaction_merge_cursor_opens(),
+            perf_trace.table_compaction_merge_advances(),
+            perf_trace.table_compaction_pre_validation_rows_scanned(),
+            perf_trace.table_compaction_row_clones(),
+            perf_trace.table_compaction_heap_key_clones(),
+            perf_trace.table_compaction_source_order_key_clones(),
+            perf_trace.table_compaction_physical_key_materializations(),
+            perf_trace.table_compaction_kept_rows(),
+            perf_trace.table_compaction_dropped_rows(),
+            perf_trace.table_compaction_peak_buffered_rows(),
+            perf_trace.table_compaction_output_tables_built(),
+        );
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
@@ -1351,10 +1365,94 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.branch_facts_rows_observed()
     );
     field!("read_view_captures", perf_trace.read_view_captures());
+    field!(
+        "read_view_source_handles_cloned",
+        perf_trace.read_view_source_handles_cloned()
+    );
     field!("read_view_rows_cloned", perf_trace.read_view_rows_cloned());
+    field!(
+        "read_view_row_clone_bytes",
+        perf_trace.read_view_row_clone_bytes()
+    );
     field!(
         "read_view_validation_rows_scanned",
         perf_trace.read_view_validation_rows_scanned()
+    );
+    field!(
+        "branch_compaction_source_opens",
+        perf_trace.branch_compaction_source_opens()
+    );
+    field!(
+        "branch_compaction_peak_buffered_rows",
+        perf_trace.branch_compaction_peak_buffered_rows()
+    );
+    field!(
+        "branch_materialization_source_opens",
+        perf_trace.branch_materialization_source_opens()
+    );
+    field!(
+        "branch_materialization_rows_rewritten",
+        perf_trace.branch_materialization_rows_rewritten()
+    );
+    field!(
+        "branch_materialization_rows_skipped_by_fork",
+        perf_trace.branch_materialization_rows_skipped_by_fork()
+    );
+    field!(
+        "branch_materialization_rows_skipped_by_shadowing",
+        perf_trace.branch_materialization_rows_skipped_by_shadowing()
+    );
+    field!(
+        "branch_materialization_output_tables",
+        perf_trace.branch_materialization_output_tables()
+    );
+    field!(
+        "branch_materialization_peak_buffered_rows",
+        perf_trace.branch_materialization_peak_buffered_rows()
+    );
+    field!(
+        "table_compaction_merge_cursor_opens",
+        perf_trace.table_compaction_merge_cursor_opens()
+    );
+    field!(
+        "table_compaction_merge_advances",
+        perf_trace.table_compaction_merge_advances()
+    );
+    field!(
+        "table_compaction_pre_validation_rows_scanned",
+        perf_trace.table_compaction_pre_validation_rows_scanned()
+    );
+    field!(
+        "table_compaction_row_clones",
+        perf_trace.table_compaction_row_clones()
+    );
+    field!(
+        "table_compaction_heap_key_clones",
+        perf_trace.table_compaction_heap_key_clones()
+    );
+    field!(
+        "table_compaction_source_order_key_clones",
+        perf_trace.table_compaction_source_order_key_clones()
+    );
+    field!(
+        "table_compaction_physical_key_materializations",
+        perf_trace.table_compaction_physical_key_materializations()
+    );
+    field!(
+        "table_compaction_kept_rows",
+        perf_trace.table_compaction_kept_rows()
+    );
+    field!(
+        "table_compaction_dropped_rows",
+        perf_trace.table_compaction_dropped_rows()
+    );
+    field!(
+        "table_compaction_peak_buffered_rows",
+        perf_trace.table_compaction_peak_buffered_rows()
+    );
+    field!(
+        "table_compaction_output_tables_built",
+        perf_trace.table_compaction_output_tables_built()
     );
     field!("append_staging_clones", perf_trace.append_staging_clones());
     field!(

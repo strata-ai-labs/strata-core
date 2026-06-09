@@ -412,6 +412,79 @@ fn keep_all_policy_merges_sources_and_preserves_row_facts() {
         .any(|row| row.expires_at() == Timestamp::from_micros(1)));
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn table_compaction_mechanical_counters_capture_hot_path_work() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let zero = crate::observability::perf_trace::snapshot();
+    assert_eq!(zero.table_compaction_merge_cursor_opens(), 0);
+    assert_eq!(zero.table_compaction_merge_advances(), 0);
+    assert_eq!(zero.table_compaction_pre_validation_rows_scanned(), 0);
+    assert_eq!(zero.table_compaction_row_clones(), 0);
+    assert_eq!(zero.table_compaction_heap_key_clones(), 0);
+    assert_eq!(zero.table_compaction_source_order_key_clones(), 0);
+    assert_eq!(zero.table_compaction_physical_key_materializations(), 0);
+    assert_eq!(zero.table_compaction_kept_rows(), 0);
+    assert_eq!(zero.table_compaction_dropped_rows(), 0);
+    assert_eq!(zero.table_compaction_peak_buffered_rows(), 0);
+    assert_eq!(zero.table_compaction_output_tables_built(), 0);
+
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ];
+    let left = source("counter-left", &[rows[0].clone(), rows[2].clone()]);
+    let right = source("counter-right", &[rows[1].clone(), rows[3].clone()]);
+    let mut policy = |_: &TableCompactionRowContext<'_>, row: &TableRow| {
+        if row.row().physical_key().user_key() == b"charlie" {
+            Ok(TableCompactionDecision::drop(
+                TableCompactionDropReason::CallerSelected,
+            ))
+        } else {
+            Ok(TableCompactionDecision::Keep)
+        }
+    };
+
+    let output = compactor(64 * 1024, 4)
+        .compact(
+            &identity("mechanical-counters"),
+            &[left, right],
+            &mut policy,
+        )
+        .expect("counter compaction");
+    assert_eq!(output.report().kept_rows(), 3);
+    assert_eq!(output.report().dropped_rows(), 1);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_compaction_merge_cursor_opens(), 2);
+    assert_eq!(perf.table_compaction_pre_validation_rows_scanned(), 4);
+    assert_eq!(perf.table_compaction_row_clones(), 4);
+    assert_eq!(perf.table_compaction_kept_rows(), 3);
+    assert_eq!(perf.table_compaction_dropped_rows(), 1);
+    assert_eq!(perf.table_compaction_physical_key_materializations(), 3);
+    assert_eq!(perf.table_compaction_peak_buffered_rows(), 3);
+    assert_eq!(perf.table_compaction_output_tables_built(), 1);
+    assert_eq!(perf.table_compaction_merge_advances(), 8);
+    assert_eq!(perf.table_compaction_heap_key_clones(), 8);
+    assert_eq!(perf.table_compaction_source_order_key_clones(), 8);
+
+    crate::observability::perf_trace::reset();
+    let reset = crate::observability::perf_trace::snapshot();
+    assert_eq!(reset.table_compaction_merge_cursor_opens(), 0);
+    assert_eq!(reset.table_compaction_merge_advances(), 0);
+    assert_eq!(reset.table_compaction_pre_validation_rows_scanned(), 0);
+    assert_eq!(reset.table_compaction_row_clones(), 0);
+    assert_eq!(reset.table_compaction_heap_key_clones(), 0);
+    assert_eq!(reset.table_compaction_source_order_key_clones(), 0);
+    assert_eq!(reset.table_compaction_physical_key_materializations(), 0);
+    assert_eq!(reset.table_compaction_kept_rows(), 0);
+    assert_eq!(reset.table_compaction_dropped_rows(), 0);
+    assert_eq!(reset.table_compaction_peak_buffered_rows(), 0);
+    assert_eq!(reset.table_compaction_output_tables_built(), 0);
+}
+
 #[test]
 fn policy_context_reports_merged_source_and_previous_kept_rows() {
     let rows = [

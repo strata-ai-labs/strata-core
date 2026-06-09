@@ -535,6 +535,7 @@ fn compact_table_inputs(
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
 
     while let Some(current) = merged.current().map(|current| {
+        perf_trace::record_table_compaction_row_clone();
         (
             current.source_id,
             current.source_index,
@@ -583,9 +584,11 @@ fn compact_table_inputs(
                 report.record_peak_buffered_rows(output_rows.len());
                 previous_kept_key = Some(kept_key);
                 report.record_keep();
+                perf_trace::record_table_compaction_keep();
             }
             TableCompactionDecision::Drop { reason } => {
                 report.record_drop(reason);
+                perf_trace::record_table_compaction_drop();
             }
         }
         merged.advance()?;
@@ -613,6 +616,7 @@ fn validate_no_global_duplicate_internal_keys(
 ) -> TableRuntimeResult<()> {
     let mut previous_key: Option<TableInternalKeyBytes> = None;
     while let Some(current) = merged.current() {
+        perf_trace::record_table_compaction_pre_validation_row();
         if let Some(previous) = &previous_key {
             if previous == current.row().key() {
                 return Err(TableRuntimeError::DuplicateInternalKey {
@@ -679,18 +683,22 @@ impl<'a> TableCompactionMergeCursor<'a> {
         let mut heap = BinaryHeap::new();
         for (source_index, source) in sources.iter().enumerate() {
             let mut cursor = source.open_cursor()?;
+            perf_trace::record_table_compaction_merge_cursor_opens(1);
             cursor.seek_to_first()?;
-            if let Some(key) = cursor.current_key() {
+            let last_key = if let Some(key) = cursor.current_key() {
                 heap.push(TableCompactionHeapItem {
-                    key: key.clone(),
+                    key: clone_heap_key(key),
                     source_index,
                 });
-            }
+                Some(clone_source_order_key(key))
+            } else {
+                None
+            };
             cursors.push(TableCompactionSourceCursor {
                 source_id: source.id(),
                 source_index,
                 source_row_index: 0,
-                last_key: cursor.current_key().cloned(),
+                last_key,
                 cursor,
             });
         }
@@ -705,10 +713,10 @@ impl<'a> TableCompactionMergeCursor<'a> {
         for (source_index, source) in self.sources.iter_mut().enumerate() {
             source.cursor.seek_to_first()?;
             source.source_row_index = 0;
-            source.last_key = source.cursor.current_key().cloned();
+            source.last_key = source.cursor.current_key().map(clone_source_order_key);
             if let Some(key) = &source.last_key {
                 self.heap.push(TableCompactionHeapItem {
-                    key: key.clone(),
+                    key: clone_heap_key(key),
                     source_index,
                 });
             }
@@ -732,6 +740,7 @@ impl<'a> TableCompactionMergeCursor<'a> {
         let Some(selected) = self.heap.pop() else {
             return Ok(());
         };
+        perf_trace::record_table_compaction_merge_advance();
         let source =
             self.sources
                 .get_mut(selected.source_index)
@@ -742,14 +751,24 @@ impl<'a> TableCompactionMergeCursor<'a> {
         source.source_row_index = source.source_row_index.saturating_add(1);
         if let Some(key) = source.cursor.current_key() {
             validate_compaction_source_key_order(source.last_key.as_ref(), key)?;
-            source.last_key = Some(key.clone());
+            source.last_key = Some(clone_source_order_key(key));
             self.heap.push(TableCompactionHeapItem {
-                key: key.clone(),
+                key: clone_heap_key(key),
                 source_index: selected.source_index,
             });
         }
         Ok(())
     }
+}
+
+fn clone_heap_key(key: &TableInternalKeyBytes) -> TableInternalKeyBytes {
+    perf_trace::record_table_compaction_heap_key_clone();
+    key.clone()
+}
+
+fn clone_source_order_key(key: &TableInternalKeyBytes) -> TableInternalKeyBytes {
+    perf_trace::record_table_compaction_source_order_key_clone();
+    key.clone()
 }
 
 fn validate_compaction_source_key_order(
@@ -846,6 +865,7 @@ fn build_pending_output(
     *pending_last_physical_key = None;
     let identity = output_identity(output_identity_seed, source_identity, output_index)?;
     let artifact = build_table_artifact_from_rows(builder, identity, &rows)?;
+    perf_trace::record_table_compaction_output_table_built();
     report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
     artifacts.push(artifact);
     report.output_tables = artifacts.len();
@@ -901,6 +921,7 @@ fn hash_metadata_u64_raw(hash: &mut u64, value: u64) {
 }
 
 fn physical_key_bytes(row: &TableRow) -> Vec<u8> {
+    perf_trace::record_table_compaction_physical_key_materialization();
     TablePhysicalKeyBytes::from_row(row.row())
         .as_slice()
         .to_vec()

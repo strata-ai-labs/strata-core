@@ -84,7 +84,17 @@ pub struct StoragePerfSnapshot {
     branch_materialization_rows_skipped_by_shadowing: u64,
     branch_materialization_output_tables: u64,
     branch_materialization_peak_buffered_rows: u64,
+    table_compaction_merge_cursor_opens: u64,
+    table_compaction_merge_advances: u64,
+    table_compaction_pre_validation_rows_scanned: u64,
+    table_compaction_row_clones: u64,
+    table_compaction_heap_key_clones: u64,
+    table_compaction_source_order_key_clones: u64,
+    table_compaction_physical_key_materializations: u64,
+    table_compaction_kept_rows: u64,
+    table_compaction_dropped_rows: u64,
     table_compaction_peak_buffered_rows: u64,
+    table_compaction_output_tables_built: u64,
     append_staging_clones: u64,
     append_staging_rows_cloned: u64,
     conflict_sources_built: u64,
@@ -324,9 +334,59 @@ impl StoragePerfSnapshot {
         self.branch_materialization_peak_buffered_rows
     }
 
+    /// Number of table-compaction source cursors opened by merge cursors.
+    pub const fn table_compaction_merge_cursor_opens(self) -> u64 {
+        self.table_compaction_merge_cursor_opens
+    }
+
+    /// Number of merge-cursor advances performed by table compaction.
+    pub const fn table_compaction_merge_advances(self) -> u64 {
+        self.table_compaction_merge_advances
+    }
+
+    /// Rows scanned by table compaction's pre-merge validation pass.
+    pub const fn table_compaction_pre_validation_rows_scanned(self) -> u64 {
+        self.table_compaction_pre_validation_rows_scanned
+    }
+
+    /// Rows cloned by table compaction for policy/output ownership.
+    pub const fn table_compaction_row_clones(self) -> u64 {
+        self.table_compaction_row_clones
+    }
+
+    /// Internal keys cloned into table compaction heap items.
+    pub const fn table_compaction_heap_key_clones(self) -> u64 {
+        self.table_compaction_heap_key_clones
+    }
+
+    /// Internal keys cloned for table compaction source-order validation.
+    pub const fn table_compaction_source_order_key_clones(self) -> u64 {
+        self.table_compaction_source_order_key_clones
+    }
+
+    /// Physical-key byte materializations performed by table compaction.
+    pub const fn table_compaction_physical_key_materializations(self) -> u64 {
+        self.table_compaction_physical_key_materializations
+    }
+
+    /// Rows kept by table compaction policy decisions.
+    pub const fn table_compaction_kept_rows(self) -> u64 {
+        self.table_compaction_kept_rows
+    }
+
+    /// Rows dropped by table compaction policy decisions.
+    pub const fn table_compaction_dropped_rows(self) -> u64 {
+        self.table_compaction_dropped_rows
+    }
+
     /// Peak rows buffered by table compaction output construction.
     pub const fn table_compaction_peak_buffered_rows(self) -> u64 {
         self.table_compaction_peak_buffered_rows
+    }
+
+    /// Output table artifacts built by table compaction.
+    pub const fn table_compaction_output_tables_built(self) -> u64 {
+        self.table_compaction_output_tables_built
     }
 
     /// Number of whole-branch append staging clones performed.
@@ -804,7 +864,27 @@ static BRANCH_MATERIALIZATION_OUTPUT_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_MERGE_CURSOR_OPENS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_MERGE_ADVANCES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_PRE_VALIDATION_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_ROW_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_HEAP_KEY_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_KEPT_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_DROPPED_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_OUTPUT_TABLES_BUILT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static APPEND_STAGING_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -1040,7 +1120,17 @@ pub fn reset() {
     BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_SHADOWING.store(0, Ordering::Relaxed);
     BRANCH_MATERIALIZATION_OUTPUT_TABLES.store(0, Ordering::Relaxed);
     BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_MERGE_CURSOR_OPENS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_MERGE_ADVANCES.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_PRE_VALIDATION_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_ROW_CLONES.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_HEAP_KEY_CLONES.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_KEPT_ROWS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_DROPPED_ROWS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_OUTPUT_TABLES_BUILT.store(0, Ordering::Relaxed);
     APPEND_STAGING_CLONES.store(0, Ordering::Relaxed);
     APPEND_STAGING_ROWS_CLONED.store(0, Ordering::Relaxed);
     CONFLICT_SOURCES_BUILT.store(0, Ordering::Relaxed);
@@ -1169,7 +1259,22 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         branch_materialization_peak_buffered_rows: BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS
             .load(Ordering::Relaxed),
+        table_compaction_merge_cursor_opens: TABLE_COMPACTION_MERGE_CURSOR_OPENS
+            .load(Ordering::Relaxed),
+        table_compaction_merge_advances: TABLE_COMPACTION_MERGE_ADVANCES.load(Ordering::Relaxed),
+        table_compaction_pre_validation_rows_scanned: TABLE_COMPACTION_PRE_VALIDATION_ROWS_SCANNED
+            .load(Ordering::Relaxed),
+        table_compaction_row_clones: TABLE_COMPACTION_ROW_CLONES.load(Ordering::Relaxed),
+        table_compaction_heap_key_clones: TABLE_COMPACTION_HEAP_KEY_CLONES.load(Ordering::Relaxed),
+        table_compaction_source_order_key_clones: TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES
+            .load(Ordering::Relaxed),
+        table_compaction_physical_key_materializations:
+            TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS.load(Ordering::Relaxed),
+        table_compaction_kept_rows: TABLE_COMPACTION_KEPT_ROWS.load(Ordering::Relaxed),
+        table_compaction_dropped_rows: TABLE_COMPACTION_DROPPED_ROWS.load(Ordering::Relaxed),
         table_compaction_peak_buffered_rows: TABLE_COMPACTION_PEAK_BUFFERED_ROWS
+            .load(Ordering::Relaxed),
+        table_compaction_output_tables_built: TABLE_COMPACTION_OUTPUT_TABLES_BUILT
             .load(Ordering::Relaxed),
         append_staging_clones: APPEND_STAGING_CLONES.load(Ordering::Relaxed),
         append_staging_rows_cloned: APPEND_STAGING_ROWS_CLONED.load(Ordering::Relaxed),
@@ -1552,6 +1657,105 @@ pub(crate) fn record_branch_materialization_peak_buffered_rows(rows: usize) {
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_merge_cursor_opens(_cursors: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_merge_cursor_opens(cursors: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_MERGE_CURSOR_OPENS.fetch_add(as_u64(cursors), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_merge_advance() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_merge_advance() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_MERGE_ADVANCES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_pre_validation_row() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_pre_validation_row() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_PRE_VALIDATION_ROWS_SCANNED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_row_clone() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_row_clone() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_ROW_CLONES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_heap_key_clone() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_heap_key_clone() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_HEAP_KEY_CLONES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_source_order_key_clone() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_source_order_key_clone() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_SOURCE_ORDER_KEY_CLONES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_physical_key_materialization() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_physical_key_materialization() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_PHYSICAL_KEY_MATERIALIZATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_keep() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_keep() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_KEPT_ROWS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_drop() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_drop() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_DROPPED_ROWS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_table_compaction_peak_buffered_rows(_rows: usize) {}
 
 #[cfg(feature = "perf-trace")]
@@ -1560,6 +1764,17 @@ pub(crate) fn record_table_compaction_peak_buffered_rows(rows: usize) {
         return;
     }
     TABLE_COMPACTION_PEAK_BUFFERED_ROWS.fetch_max(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_output_table_built() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_output_table_built() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_OUTPUT_TABLES_BUILT.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
