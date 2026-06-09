@@ -3,7 +3,7 @@
 use super::{
     validate_strictly_sorted_unique_rows, BuiltTableArtifact, ImmutableTableBuilder,
     TableBuilderConfig, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TablePhysicalKeyBytes, TableRow, TableRuntimeError, TableRuntimeResult, MERGE_HEAP_THRESHOLD,
+    TableRow, TableRuntimeError, TableRuntimeResult, MERGE_HEAP_THRESHOLD,
 };
 use crate::observability::perf_trace;
 use std::cmp::Ordering;
@@ -594,13 +594,16 @@ fn compact_table_inputs(
         };
         match policy.decide(&context, current.row)? {
             TableCompactionDecision::Keep => {
+                let row_approximate_bytes = row_approximate_size_bytes(current.row)?;
+                let current_physical_key = current.row.key().physical_key_bytes();
                 if should_split_before(
                     &output_rows,
                     output_approximate_bytes,
                     output_last_physical_key.as_deref(),
                     target_output_bytes,
-                    current.row,
-                )? {
+                    row_approximate_bytes,
+                    current_physical_key,
+                ) {
                     build_pending_output(
                         &builder,
                         output_identity_seed,
@@ -619,8 +622,10 @@ fn compact_table_inputs(
                     &mut output_rows,
                     &mut output_approximate_bytes,
                     &mut output_last_physical_key,
+                    row_approximate_bytes,
+                    current_physical_key,
                     row,
-                )?;
+                );
                 report.record_peak_buffered_rows(output_rows.len());
                 previous_kept_key = Some(kept_key);
                 report.record_keep();
@@ -918,39 +923,48 @@ fn should_split_before(
     pending_approximate_bytes: u64,
     pending_last_physical_key: Option<&[u8]>,
     target_output_bytes: u64,
-    row: &TableRow,
-) -> TableRuntimeResult<bool> {
+    row_approximate_bytes: u64,
+    row_physical_key: &[u8],
+) -> bool {
     if pending_rows.is_empty() {
-        return Ok(false);
+        return false;
     }
-    let next_size = u64::try_from(row.approximate_size_bytes()).map_err(|_| {
-        TableRuntimeError::InvalidRange {
-            field: "row_approximate_size",
-        }
-    })?;
     let would_cross_target =
-        pending_approximate_bytes.saturating_add(next_size) > target_output_bytes;
+        pending_approximate_bytes.saturating_add(row_approximate_bytes) > target_output_bytes;
     if !would_cross_target {
-        return Ok(false);
+        return false;
     }
-    Ok(pending_last_physical_key != Some(physical_key_bytes(row).as_slice()))
+    pending_last_physical_key != Some(row_physical_key)
 }
 
 fn push_pending_row(
     pending_rows: &mut Vec<TableRow>,
     pending_approximate_bytes: &mut u64,
     pending_last_physical_key: &mut Option<Vec<u8>>,
+    row_approximate_bytes: u64,
+    row_physical_key: &[u8],
     row: TableRow,
-) -> TableRuntimeResult<()> {
-    let row_size = u64::try_from(row.approximate_size_bytes()).map_err(|_| {
-        TableRuntimeError::InvalidRange {
-            field: "row_approximate_size",
-        }
-    })?;
-    *pending_approximate_bytes = pending_approximate_bytes.saturating_add(row_size);
-    *pending_last_physical_key = Some(physical_key_bytes(&row));
+) {
+    *pending_approximate_bytes = pending_approximate_bytes.saturating_add(row_approximate_bytes);
+    update_pending_last_physical_key(pending_last_physical_key, row_physical_key);
     pending_rows.push(row);
-    Ok(())
+}
+
+fn row_approximate_size_bytes(row: &TableRow) -> TableRuntimeResult<u64> {
+    u64::try_from(row.approximate_size_bytes()).map_err(|_| TableRuntimeError::InvalidRange {
+        field: "row_approximate_size",
+    })
+}
+
+fn update_pending_last_physical_key(
+    pending_last_physical_key: &mut Option<Vec<u8>>,
+    row_physical_key: &[u8],
+) {
+    if pending_last_physical_key.as_deref() == Some(row_physical_key) {
+        return;
+    }
+    perf_trace::record_table_compaction_boundary_key_allocation();
+    *pending_last_physical_key = Some(row_physical_key.to_vec());
 }
 
 fn build_pending_output(
@@ -1031,11 +1045,4 @@ fn hash_metadata_u64_raw(hash: &mut u64, value: u64) {
         *hash ^= u64::from(byte);
         *hash = hash.wrapping_mul(OUTPUT_IDENTITY_METADATA_HASH_PRIME);
     }
-}
-
-fn physical_key_bytes(row: &TableRow) -> Vec<u8> {
-    perf_trace::record_table_compaction_boundary_key_allocation();
-    TablePhysicalKeyBytes::from_row(row.row())
-        .as_slice()
-        .to_vec()
 }

@@ -519,6 +519,32 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(strict.table_compaction_heap_key_clones(), 0);
     assert_eq!(strict.table_compaction_source_order_key_clones(), 8);
 
+    let shared_key = physical_key(1, 0x20, b"counter-version-chain".to_vec());
+    let version_chain_rows = [
+        put_row_for_key(shared_key.clone(), 3, vec![3; 256]),
+        put_row_for_key(shared_key.clone(), 2, vec![2; 256]),
+        put_row_for_key(shared_key, 1, vec![1; 256]),
+    ];
+    let mut version_chain_policy = keep_all_policy();
+    crate::observability::perf_trace::reset();
+
+    let version_chain_output = compactor(1, 4)
+        .compact(
+            &identity("mechanical-counters-version-chain"),
+            &[source("counter-version-chain", &version_chain_rows)],
+            &mut version_chain_policy,
+        )
+        .expect("version chain counter compaction");
+
+    assert_eq!(version_chain_output.report().kept_rows(), 3);
+    assert_eq!(version_chain_output.report().output_tables(), 1);
+    let version_chain = crate::observability::perf_trace::snapshot();
+    assert_eq!(version_chain.table_compaction_boundary_key_allocations(), 1);
+    assert!(
+        version_chain.table_compaction_boundary_key_allocations()
+            < version_chain.table_compaction_kept_rows()
+    );
+
     let drop_left = source("counter-drop-left", &[rows[0].clone(), rows[2].clone()]);
     let drop_right = source("counter-drop-right", &[rows[1].clone(), rows[3].clone()]);
     let mut drop_all_policy = |_: &TableCompactionRowContext<'_>, _: &TableRow| {
