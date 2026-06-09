@@ -632,6 +632,315 @@ fn branch_materialization_preserves_scans_tombstones_ttl_and_pinned_views() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn branch_materialization_preserves_reads_across_inherited_lsm_sources() {
+    let source = branch_id(119);
+    let child = branch_id(120);
+    let l0_new = storage_row_with(
+        source,
+        b"materialized-level-a".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"l0-new".to_vec(),
+    );
+    let l0_old = storage_row_with(
+        source,
+        b"materialized-level-a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"l0-old".to_vec(),
+    );
+    let l1_row = storage_row_with(
+        source,
+        b"materialized-level-b".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"l1".to_vec(),
+    );
+    let l2_row = storage_row_with(
+        source,
+        b"materialized-level-c".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"l2".to_vec(),
+    );
+    let deleted_put = storage_row_with(
+        source,
+        b"materialized-level-deleted".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"deleted-put".to_vec(),
+    );
+    let deleted_tombstone = tombstone_row(source, b"materialized-level-deleted".to_vec(), 4, 40);
+    let exact_duplicate = storage_row_with(
+        source,
+        b"materialized-level-shadow".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"shadowed".to_vec(),
+    );
+    let post_fork = storage_row_with(
+        source,
+        b"materialized-level-post-fork".to_vec(),
+        8,
+        80,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    );
+    let layer = branch_inherited_layer_unchecked_for_fork_gate_tests(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![
+            vec![
+                branch_owned_table(
+                    source,
+                    BranchLevel::ZERO,
+                    "materialize-level-l0-new",
+                    vec![l0_new.clone(), post_fork],
+                ),
+                branch_owned_table(
+                    source,
+                    BranchLevel::ZERO,
+                    "materialize-level-l0-old",
+                    vec![l0_old.clone()],
+                ),
+            ],
+            vec![branch_owned_table(
+                source,
+                BranchLevel::new(1),
+                "materialize-level-l1",
+                vec![
+                    l1_row.clone(),
+                    deleted_put.clone(),
+                    deleted_tombstone.clone(),
+                    exact_duplicate.clone(),
+                ],
+            )],
+            vec![branch_owned_table(
+                source,
+                BranchLevel::new(2),
+                "materialize-level-l2",
+                vec![l2_row.clone()],
+            )],
+        ],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited levels");
+    let child_l1_newer = storage_row_with(
+        child,
+        b"materialized-level-b".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"child-newer".to_vec(),
+    );
+    child_state
+        .append_committed_row(child_l1_newer.clone())
+        .expect("append child newer row");
+    child_state
+        .append_committed_row(
+            rewrite_row_branch(&exact_duplicate, source, child).expect("rewrite duplicate"),
+        )
+        .expect("append exact duplicate");
+
+    let key_a = physical_key(child, b"materialized-level-a".to_vec());
+    let key_b = physical_key(child, b"materialized-level-b".to_vec());
+    let key_c = physical_key(child, b"materialized-level-c".to_vec());
+    let key_deleted = physical_key(child, b"materialized-level-deleted".to_vec());
+    let key_post_fork = physical_key(child, b"materialized-level-post-fork".to_vec());
+    let prefix = BranchScanBounds::prefix(&physical_key(child, b"materialized-level-".to_vec()));
+    let range = BranchScanBounds::closed(
+        &physical_key(child, b"materialized-level-a".to_vec()),
+        &physical_key(child, b"materialized-level-c".to_vec()),
+    )
+    .expect("closed source-level range");
+
+    let before = child_state.capture_read_view().expect("before view");
+    let before_latest_a = visible_storage_row(before.latest(&key_a).expect("before a"));
+    let before_latest_b = visible_storage_row(before.latest(&key_b).expect("before b"));
+    let before_l1_history = before
+        .history(
+            &key_b,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .expect("before l1 history");
+    let before_l1_versions = history_versions(&before_l1_history);
+    let before_latest_c = visible_storage_row(before.latest(&key_c).expect("before c"));
+    let before_deleted_history = before
+        .history(
+            &key_deleted,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .expect("before deleted history");
+    let before_deleted_versions = history_versions(&before_deleted_history);
+    let before_prefix_rows = visible_rows(
+        &before
+            .scan_prefix(&prefix, BranchReadBound::latest())
+            .expect("before prefix scan"),
+    );
+    let before_range_rows = visible_rows(
+        &before
+            .scan_range(&range, BranchReadBound::latest())
+            .expect("before range scan"),
+    );
+
+    assert_visible_row(
+        before.latest(&key_a).expect("before inherited a").as_ref(),
+        &rewrite_row_branch(&l0_new, source, child).expect("rewrite l0"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_eq!(before_l1_versions, vec![7, 3]);
+    assert_eq!(
+        before_l1_history[1].source(),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_eq!(before_deleted_versions, vec![4, 1]);
+    assert_eq!(
+        before_deleted_history[0].source(),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert!(
+        before
+            .latest(&key_deleted)
+            .expect("before deleted latest")
+            .is_none(),
+        "source tombstone must hide older source put before materialization",
+    );
+    assert!(
+        before
+            .latest(&key_post_fork)
+            .expect("before post-fork latest")
+            .is_none(),
+        "post-fork source row must be filtered before materialization",
+    );
+
+    let pinned = before;
+    let outcome = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "materialized-level")
+                .expect("request"),
+        )
+        .expect("materialize inherited levels");
+    assert_eq!(outcome.rows_materialized(), 6);
+    assert_eq!(outcome.tables_created(), 1);
+    assert_eq!(outcome.skipped_post_fork_rows(), 1);
+    assert_eq!(outcome.skipped_exact_duplicate_rows(), 1);
+    assert_eq!(child_state.inherited_layer_count(), 0);
+
+    assert_visible_row(
+        pinned.latest(&key_c).expect("pinned c").as_ref(),
+        &rewrite_row_branch(&l2_row, source, child).expect("rewrite l2 pinned"),
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+
+    let after = child_state.capture_read_view().expect("after view");
+    assert_eq!(
+        visible_storage_row(after.latest(&key_a).expect("after a")),
+        before_latest_a,
+    );
+    assert_eq!(
+        visible_storage_row(after.latest(&key_b).expect("after b")),
+        before_latest_b,
+    );
+    assert_eq!(
+        visible_storage_row(after.latest(&key_c).expect("after c")),
+        before_latest_c,
+    );
+    let after_l1_history = after
+        .history(
+            &key_b,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .expect("after l1 history");
+    assert_eq!(history_versions(&after_l1_history), before_l1_versions);
+    assert_eq!(
+        after_l1_history[1].row(),
+        &rewrite_row_branch(&l1_row, source, child).expect("rewrite l1 after"),
+    );
+    assert_eq!(
+        after_l1_history[1].source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    let after_deleted_history = after
+        .history(
+            &key_deleted,
+            BranchHistoryOptions::all().include_tombstones(true),
+        )
+        .expect("after deleted history");
+    assert_eq!(
+        history_versions(&after_deleted_history),
+        before_deleted_versions,
+    );
+    assert_eq!(
+        after_deleted_history[0].row(),
+        &rewrite_row_branch(&deleted_tombstone, source, child).expect("rewrite tombstone after"),
+    );
+    assert_eq!(
+        after_deleted_history[0].source(),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert_eq!(
+        visible_rows(
+            &after
+                .scan_prefix(&prefix, BranchReadBound::latest())
+                .expect("after prefix scan"),
+        ),
+        before_prefix_rows,
+    );
+    assert_eq!(
+        visible_rows(
+            &after
+                .scan_range(&range, BranchReadBound::latest())
+                .expect("after range scan"),
+        ),
+        before_range_rows,
+    );
+    assert_visible_row(
+        after.latest(&key_a).expect("after owned a").as_ref(),
+        &rewrite_row_branch(&l0_new, source, child).expect("rewrite l0 after"),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after.latest(&key_c).expect("after owned c").as_ref(),
+        &rewrite_row_branch(&l2_row, source, child).expect("rewrite l2 after"),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
 fn branch_materialization_splits_large_outputs_and_validates_identity_prefixes() {
     let source = branch_id(101);
     let child = branch_id(102);
@@ -701,6 +1010,217 @@ fn branch_materialization_splits_large_outputs_and_validates_identity_prefixes()
     ));
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_materialization_prepare_records_streaming_source_counters() {
+    let source = branch_id(107);
+    let child = branch_id(108);
+    let retained_rows = (0_u64..4_097)
+        .map(|index| {
+            storage_row_with(
+                source,
+                format!("materialized-counter-{index:04}").into_bytes(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                index.to_le_bytes().to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let exact_duplicate = storage_row_with(
+        source,
+        b"materialized-counter-shadow".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"shadowed".to_vec(),
+    );
+    let post_fork = storage_row_with(
+        source,
+        b"materialized-counter-post-fork".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    );
+    let mut first_table_rows = retained_rows[..2_049].to_vec();
+    first_table_rows.push(post_fork);
+    let mut second_table_rows = retained_rows[2_049..].to_vec();
+    second_table_rows.push(exact_duplicate.clone());
+    let layer = branch_inherited_layer_unchecked_for_fork_gate_tests(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![
+            vec![branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "materialize-counter-source-a",
+                first_table_rows,
+            )],
+            vec![branch_owned_table(
+                source,
+                BranchLevel::new(1),
+                "materialize-counter-source-b",
+                second_table_rows,
+            )],
+        ],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+    child_state
+        .append_committed_row(
+            rewrite_row_branch(&exact_duplicate, source, child).expect("rewrite duplicate"),
+        )
+        .expect("append exact duplicate");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let prepared = child_state
+        .prepare_materialization_output(
+            &BranchMaterializationRequest::new(child, 0, "materialized-counter")
+                .expect("request"),
+        )
+        .expect("prepare materialization")
+        .expect("prepared output");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(prepared.artifacts().len(), 2);
+    assert_eq!(perf.branch_materialization_source_opens(), 2);
+    assert_eq!(perf.branch_materialization_rows_rewritten(), 4_098);
+    assert_eq!(perf.branch_materialization_rows_skipped_by_fork(), 1);
+    assert_eq!(perf.branch_materialization_rows_skipped_by_shadowing(), 1);
+    assert_eq!(perf.branch_materialization_output_tables(), 2);
+    assert_eq!(perf.branch_materialization_peak_buffered_rows(), 4_096);
+}
+
+#[test]
+fn branch_materialization_rejects_prepared_output_with_changed_artifact_rows() {
+    let source = branch_id(109);
+    let child = branch_id(110);
+    let source_row = storage_row_with(
+        source,
+        b"materialized-stale-artifact".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"prepared".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "materialize-stale-artifact-source",
+            vec![source_row.clone()],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+    let request =
+        BranchMaterializationRequest::new(child, 0, "materialized-stale").expect("request");
+    let prepared = child_state
+        .prepare_materialization_output(&request)
+        .expect("prepare materialization")
+        .expect("prepared output");
+    let wrong_row = storage_row_with(
+        child,
+        b"materialized-stale-artifact".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"changed".to_vec(),
+    );
+    let wrong_table = branch_owned_table(
+        child,
+        BranchLevel::ZERO,
+        "materialized-stale-layer-0-table-0",
+        vec![wrong_row],
+    );
+
+    let error = child_state
+        .install_materialization_prepared_output(&request, &prepared, vec![wrong_table])
+        .expect_err("changed prepared artifact rejected");
+    assert_eq!(
+        error,
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "materialization replacement tables must match prepared output",
+        },
+    );
+    assert_eq!(child_state.inherited_layer_count(), 1);
+    assert_eq!(child_state.owned_table_count(), 0);
+}
+
+#[test]
+fn branch_materialization_rejects_prepared_output_with_wrong_replacement_source() {
+    let source = branch_id(121);
+    let child = branch_id(122);
+    let wrong_source = branch_id(123);
+    let source_row = storage_row_with(
+        source,
+        b"materialized-wrong-source-replacement".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"prepared".to_vec(),
+    );
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(3),
+        InheritedLayerStatus::Active,
+        vec![vec![branch_owned_table(
+            source,
+            BranchLevel::ZERO,
+            "materialize-wrong-source-replacement-source",
+            vec![source_row],
+        )]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+    let request =
+        BranchMaterializationRequest::new(child, 0, "materialized-wrong-source").expect("request");
+    let prepared = child_state
+        .prepare_materialization_output(&request)
+        .expect("prepare materialization")
+        .expect("prepared output");
+    let artifact = prepared.artifacts()[0].clone();
+    let identity = artifact.facts().identity().clone();
+    let reader = ImmutableTableReader::open_bytes(
+        identity.clone(),
+        artifact.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("replacement reader");
+    let descriptor = BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
+        .expect("replacement descriptor");
+    let wrong_replacement = BranchOwnedTable::new_materialization_replacement(
+        child,
+        descriptor,
+        reader,
+        BranchMaterializationSource::new(wrong_source, CommitVersion::new(3)),
+    )
+    .expect("replacement with wrong source");
+
+    let error = child_state
+        .install_materialization_prepared_output(&request, &prepared, vec![wrong_replacement])
+        .expect_err("wrong replacement source rejected");
+    assert_eq!(
+        error,
+        BranchRuntimeError::InvalidInheritedLayer {
+            reason: "materialization replacement tables must match prepared output",
+        },
+    );
+    assert_eq!(child_state.inherited_layer_count(), 1);
+    assert_eq!(child_state.owned_table_count(), 0);
+}
+
 #[test]
 fn branch_materialization_rejects_output_identity_collision_without_mutation() {
     let source = branch_id(101);
@@ -764,3 +1284,6 @@ fn branch_materialization_rejects_output_identity_collision_without_mutation() {
     assert_eq!(child_state, before);
 }
 
+fn visible_rows(rows: &[BranchVisibleRow]) -> Vec<StorageRow> {
+    rows.iter().map(|row| row.row().clone()).collect()
+}

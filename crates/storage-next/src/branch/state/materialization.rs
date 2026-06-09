@@ -7,16 +7,23 @@ use crate::branch::facts::{
 };
 use crate::branch::identity::rewrite_row_branch;
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
-    BuiltTableArtifact, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
-    TableIdentity, TableInternalKeyBytes, TableReaderConfig,
+    BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionInput,
+    TableCompactionMergeCursor, TableCompactionSourceId, TableCursor, TableIdentity,
+    TableInternalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeResult,
+    TableStreamingArtifactBuilder, TableStreamingArtifactReport,
 };
+use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use strata_core_next::{BranchId, CommitVersion};
 
 const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
 const _: () = assert!(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE > 0);
+const MATERIALIZATION_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const MATERIALIZATION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BranchMaterializationRecovery {
@@ -196,7 +203,7 @@ pub(crate) struct BranchMaterializationPreparedOutput {
     source_branch_id: BranchId,
     fork_version: CommitVersion,
     layer_index: usize,
-    rows: Vec<StorageRow>,
+    materialized_rows: MaterializedRowsSummary,
     artifacts: Vec<BuiltTableArtifact>,
     skipped_post_fork_rows: u64,
     skipped_exact_duplicate_rows: u64,
@@ -378,7 +385,7 @@ impl BranchLocalState {
                     source_branch_id: layer.source_branch_id(),
                     fork_version: layer.fork_version(),
                     layer_index: request.layer_index(),
-                    rows: Vec::new(),
+                    materialized_rows: MaterializedRowsSummary::default(),
                     artifacts: Vec::new(),
                     skipped_post_fork_rows: 0,
                     skipped_exact_duplicate_rows: 0,
@@ -393,27 +400,27 @@ impl BranchLocalState {
                 });
             }
         }
-        let materialized = self.collect_materialization_rows(request.layer_index())?;
         let existing_summary = self.existing_materialization_replacement_summary(
             materialization_source,
             request.output_identity_prefix(),
             request.layer_index(),
         );
-        let artifacts = Self::build_materialized_l0_artifacts(
+        let materialized = self.stream_materialization_rows(
             request.layer_index(),
-            request.output_identity_prefix(),
-            existing_summary.map_or(0, |summary| summary.next_output_index),
-            &materialized.rows,
+            MaterializationOutputMode::Build {
+                output_identity_prefix: request.output_identity_prefix(),
+                output_index_start: existing_summary.map_or(0, |summary| summary.next_output_index),
+            },
         )?;
         Ok(Some(BranchMaterializationPreparedOutput {
             child_branch_id: self.branch_id,
             source_branch_id: layer.source_branch_id(),
             fork_version: layer.fork_version(),
             layer_index: request.layer_index(),
-            rows: materialized.rows,
-            artifacts,
-            skipped_post_fork_rows: materialized.skipped_post_fork_rows,
-            skipped_exact_duplicate_rows: materialized.skipped_exact_duplicate_rows,
+            materialized_rows: materialized.summary,
+            artifacts: materialized.artifacts,
+            skipped_post_fork_rows: materialized.summary.skipped_post_fork_rows,
+            skipped_exact_duplicate_rows: materialized.summary.skipped_exact_duplicate_rows,
             existing_rows: existing_summary.map_or(0, |summary| summary.rows),
             existing_tables: existing_summary.map_or(0, |summary| summary.tables),
             materialization_source,
@@ -466,8 +473,14 @@ impl BranchLocalState {
                 });
             }
         }
-        let materialized = self.collect_materialization_rows(request.layer_index())?;
-        if materialized.rows != prepared.rows {
+        validate_prepared_materialization_replacement_tables(prepared, &replacement_tables)?;
+        let materialized = self.stream_materialization_rows(
+            request.layer_index(),
+            MaterializationOutputMode::Verify {
+                artifacts: &prepared.artifacts,
+            },
+        )?;
+        if materialized.summary != prepared.materialized_rows {
             return Err(BranchRuntimeError::InvalidInheritedLayer {
                 reason: "materialization candidate changed after output publication",
             });
@@ -475,7 +488,7 @@ impl BranchLocalState {
         if let Some(outcome) = self.try_finish_existing_materialization_retry(
             request,
             prepared.materialization_source,
-            &materialized,
+            &materialized.summary,
             self.existing_materialization_replacement_summary(
                 prepared.materialization_source,
                 request.output_identity_prefix(),
@@ -488,12 +501,9 @@ impl BranchLocalState {
             .iter()
             .map(|table| table.facts().identity().clone())
             .collect();
-        let new_rows_materialized = u64::try_from(prepared.rows.len()).map_err(|_| {
-            BranchRuntimeError::InvalidBranchState {
-                reason: "materialized row count must fit in u64",
-            }
-        })?;
-        let rows_materialized = prepared.existing_rows.saturating_add(new_rows_materialized);
+        let rows_materialized = prepared
+            .existing_rows
+            .saturating_add(prepared.materialized_rows.rows);
         let tables_created = replacement_tables.len();
         let replacement_owned_table_count = prepared.existing_tables.saturating_add(tables_created);
 
@@ -523,10 +533,10 @@ impl BranchLocalState {
         &mut self,
         request: &BranchMaterializationRequest,
         source: BranchMaterializationSource,
-        materialized: &MaterializedRows,
+        materialized: &MaterializedRowsSummary,
         existing_summary: Option<ExistingMaterializationReplacementSummary>,
     ) -> BranchRuntimeResult<Option<BranchMaterializationOutcome>> {
-        if !materialized.rows.is_empty() {
+        if materialized.rows != 0 {
             return Ok(None);
         }
         let Some(summary) = existing_summary else {
@@ -688,9 +698,10 @@ impl BranchLocalState {
         }
     }
 
-    fn collect_materialization_rows(
+    fn stream_materialization_rows(
         &self,
         layer_index: usize,
+        output_mode: MaterializationOutputMode<'_>,
     ) -> BranchRuntimeResult<MaterializedRows> {
         let layer = self.inherited_layers.get(layer_index).ok_or(
             BranchRuntimeError::InvalidInheritedLayer {
@@ -698,23 +709,28 @@ impl BranchLocalState {
             },
         )?;
         let higher_precedence_rows = self.higher_precedence_materialization_rows(layer_index)?;
+        let stats = MaterializationStreamStats::default();
+        let sources = materialization_table_sources(
+            layer.owned_levels().iter().flatten(),
+            layer.source_branch_id(),
+            self.branch_id,
+            layer.fork_version(),
+            &stats,
+        )?;
+        let source_refs = sources
+            .iter()
+            .map(|source| source as &dyn TableCompactionInput)
+            .collect::<Vec<_>>();
         let mut target_keys = BTreeSet::<TableInternalKeyBytes>::new();
-        let mut rows = Vec::new();
-        let mut skipped_post_fork_rows = 0u64;
-        let mut skipped_exact_duplicate_rows = 0u64;
+        let mut summary = MaterializedRowsSummary::default();
+        let mut artifact_builder = materialization_artifact_builder(output_mode, layer_index)?;
+        let mut artifact_verifier = materialization_artifact_verifier(output_mode);
 
-        for table in layer.owned_levels().iter().flatten() {
-            for row in table.rows() {
-                if row.commit_version().as_u64() > layer.fork_version().as_u64() {
-                    skipped_post_fork_rows = skipped_post_fork_rows.saturating_add(1);
-                    continue;
-                }
-                let rewritten =
-                    rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
-                        .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
-                            reason: "materialization row branch rewrite failed",
-                        })?;
-                let key = TableInternalKeyBytes::from_row(&rewritten);
+        {
+            let mut merged = TableCompactionMergeCursor::new(&source_refs)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            while let Some(row) = merged.current().map(|current| current.row().clone()) {
+                let key = row.key().clone();
                 if !target_keys.insert(key.clone()) {
                     return Err(BranchRuntimeError::InvalidInheritedLayer {
                         reason:
@@ -722,28 +738,34 @@ impl BranchLocalState {
                     });
                 }
                 if let Some(rows) = higher_precedence_rows.get(&key) {
-                    if rows.iter().any(|existing| existing == &rewritten) {
-                        skipped_exact_duplicate_rows =
-                            skipped_exact_duplicate_rows.saturating_add(1);
+                    if rows.iter().any(|existing| existing == row.row()) {
+                        summary.record_shadow_skip();
+                        stats.record_shadow_skip();
+                        merged
+                            .advance()
+                            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
                         continue;
                     }
                     return Err(BranchRuntimeError::InvalidInheritedLayer {
                         reason: "materialized inherited rows must not collide with higher-precedence rows",
                     });
                 }
-                rows.push(rewritten);
+                summary.record_row(&row);
+                if let Some(verifier) = artifact_verifier.as_mut() {
+                    verifier.verify_row(&row)?;
+                }
+                if let Some(builder) = artifact_builder.as_mut() {
+                    builder
+                        .push(row)
+                        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+                }
+                merged
+                    .advance()
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             }
         }
 
-        rows.sort_by(|left, right| {
-            TableInternalKeyBytes::from_row(left).cmp(&TableInternalKeyBytes::from_row(right))
-        });
-
-        Ok(MaterializedRows {
-            rows,
-            skipped_post_fork_rows,
-            skipped_exact_duplicate_rows,
-        })
+        finish_materialization_stream(summary, artifact_builder, artifact_verifier, &stats)
     }
 
     fn higher_precedence_materialization_rows(
@@ -804,36 +826,6 @@ impl BranchLocalState {
         Ok(rows_by_key)
     }
 
-    fn build_materialized_l0_artifacts(
-        layer_index: usize,
-        output_identity_prefix: &str,
-        output_index_start: usize,
-        rows: &[StorageRow],
-    ) -> BranchRuntimeResult<Vec<BuiltTableArtifact>> {
-        if rows.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let builder = ImmutableTableBuilder::new(TableBuilderConfig::default())
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        let mut artifacts = Vec::new();
-        for (output_index, chunk) in rows
-            .chunks(MATERIALIZATION_ROWS_PER_OUTPUT_TABLE)
-            .enumerate()
-        {
-            let identity = materialized_table_identity(
-                output_identity_prefix,
-                layer_index,
-                output_index_start.saturating_add(output_index),
-            )?;
-            let artifact = builder
-                .build_from_storage_rows(identity.clone(), chunk)
-                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-            artifacts.push(artifact);
-        }
-        Ok(artifacts)
-    }
-
     pub(crate) fn materialization_tables_from_artifacts(
         &self,
         layer_index: usize,
@@ -869,9 +861,447 @@ impl BranchLocalState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MaterializedRows {
-    rows: Vec<StorageRow>,
+    summary: MaterializedRowsSummary,
+    artifacts: Vec<BuiltTableArtifact>,
+}
+
+type MaterializationArtifactBuilder<'a> =
+    TableStreamingArtifactBuilder<BoxedMaterializationIdentityFn<'a>>;
+type BoxedMaterializationIdentityFn<'a> =
+    Box<dyn FnMut(usize, &[TableRow]) -> TableRuntimeResult<TableIdentity> + 'a>;
+
+#[derive(Clone, Copy)]
+enum MaterializationOutputMode<'a> {
+    Build {
+        output_identity_prefix: &'a str,
+        output_index_start: usize,
+    },
+    Verify {
+        artifacts: &'a [BuiltTableArtifact],
+    },
+}
+
+fn materialization_artifact_builder<'a>(
+    output_mode: MaterializationOutputMode<'a>,
+    layer_index: usize,
+) -> BranchRuntimeResult<Option<MaterializationArtifactBuilder<'a>>> {
+    let MaterializationOutputMode::Build {
+        output_identity_prefix,
+        output_index_start,
+    } = output_mode
+    else {
+        return Ok(None);
+    };
+    let identity_for_output: BoxedMaterializationIdentityFn<'a> =
+        Box::new(move |output_index, _rows| {
+            TableIdentity::new(format!(
+                "{output_identity_prefix}-layer-{layer_index}-table-{}",
+                output_index_start.saturating_add(output_index)
+            ))
+        });
+    TableStreamingArtifactBuilder::new(
+        TableBuilderConfig::default(),
+        MATERIALIZATION_ROWS_PER_OUTPUT_TABLE,
+        identity_for_output,
+    )
+    .map(Some)
+    .map_err(|source| BranchRuntimeError::TableRuntime { source })
+}
+
+fn materialization_artifact_verifier(
+    output_mode: MaterializationOutputMode<'_>,
+) -> Option<PreparedMaterializationArtifactVerifier<'_>> {
+    let MaterializationOutputMode::Verify { artifacts } = output_mode else {
+        return None;
+    };
+    Some(PreparedMaterializationArtifactVerifier::new(artifacts))
+}
+
+fn finish_materialization_stream(
+    mut summary: MaterializedRowsSummary,
+    artifact_builder: Option<MaterializationArtifactBuilder<'_>>,
+    mut artifact_verifier: Option<PreparedMaterializationArtifactVerifier<'_>>,
+    stats: &MaterializationStreamStats,
+) -> BranchRuntimeResult<MaterializedRows> {
+    if let Some(verifier) = artifact_verifier.as_mut() {
+        verifier.finish()?;
+    }
+    summary.skipped_post_fork_rows = stats.rows_skipped_by_fork();
+    let (artifacts, output_report) = match artifact_builder {
+        Some(builder) => builder
+            .finish()
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?,
+        None => (Vec::new(), TableStreamingArtifactReport::default()),
+    };
+    record_materialization_stream_stats(stats, &output_report);
+    Ok(MaterializedRows { summary, artifacts })
+}
+
+fn record_materialization_stream_stats(
+    stats: &MaterializationStreamStats,
+    output_report: &TableStreamingArtifactReport,
+) {
+    perf_trace::record_branch_materialization_source_opens(stats.source_table_opens());
+    perf_trace::record_branch_materialization_rows_rewritten(stats.rows_rewritten());
+    perf_trace::record_branch_materialization_rows_skipped_by_fork(stats.rows_skipped_by_fork());
+    perf_trace::record_branch_materialization_rows_skipped_by_shadowing(
+        stats.rows_skipped_by_shadowing(),
+    );
+    perf_trace::record_branch_materialization_output_tables(output_report.output_tables());
+    perf_trace::record_branch_materialization_peak_buffered_rows(
+        output_report.peak_buffered_rows(),
+    );
+}
+
+struct PreparedMaterializationArtifactVerifier<'a> {
+    artifacts: &'a [BuiltTableArtifact],
+    artifact_index: usize,
+    rows: Vec<TableRow>,
+    row_index: usize,
+}
+
+impl<'a> PreparedMaterializationArtifactVerifier<'a> {
+    const fn new(artifacts: &'a [BuiltTableArtifact]) -> Self {
+        Self {
+            artifacts,
+            artifact_index: 0,
+            rows: Vec::new(),
+            row_index: 0,
+        }
+    }
+
+    fn verify_row(&mut self, row: &TableRow) -> BranchRuntimeResult<()> {
+        while self.row_index >= self.rows.len() {
+            if self.artifact_index >= self.artifacts.len() {
+                return Err(materialization_candidate_changed());
+            }
+            self.load_next_artifact()?;
+        }
+        let expected = self
+            .rows
+            .get(self.row_index)
+            .ok_or_else(materialization_candidate_changed)?;
+        if expected.row() != row.row() {
+            return Err(materialization_candidate_changed());
+        }
+        self.row_index = self.row_index.saturating_add(1);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> BranchRuntimeResult<()> {
+        loop {
+            if self.row_index < self.rows.len() {
+                return Err(materialization_candidate_changed());
+            }
+            if self.artifact_index >= self.artifacts.len() {
+                return Ok(());
+            }
+            self.load_next_artifact()?;
+        }
+    }
+
+    fn load_next_artifact(&mut self) -> BranchRuntimeResult<()> {
+        let artifact = self
+            .artifacts
+            .get(self.artifact_index)
+            .ok_or_else(materialization_candidate_changed)?;
+        let reader = ImmutableTableReader::open_bytes(
+            artifact.facts().identity().clone(),
+            artifact.bytes().to_vec(),
+            TableReaderConfig::default(),
+        )
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        self.rows = reader.rows().to_vec();
+        self.row_index = 0;
+        self.artifact_index = self.artifact_index.saturating_add(1);
+        Ok(())
+    }
+}
+
+fn materialization_candidate_changed() -> BranchRuntimeError {
+    BranchRuntimeError::InvalidInheritedLayer {
+        reason: "materialization candidate changed after output publication",
+    }
+}
+
+fn materialization_replacement_mismatch() -> BranchRuntimeError {
+    BranchRuntimeError::InvalidInheritedLayer {
+        reason: "materialization replacement tables must match prepared output",
+    }
+}
+
+fn validate_prepared_materialization_replacement_tables(
+    prepared: &BranchMaterializationPreparedOutput,
+    replacement_tables: &[BranchOwnedTable],
+) -> BranchRuntimeResult<()> {
+    if replacement_tables.len() != prepared.artifacts.len() {
+        return Err(materialization_replacement_mismatch());
+    }
+    for (artifact, table) in prepared.artifacts.iter().zip(replacement_tables) {
+        if table.branch_id() != prepared.child_branch_id
+            || table.level() != BranchLevel::ZERO
+            || table.materialization_source() != Some(prepared.materialization_source)
+            || table.facts() != artifact.facts()
+        {
+            return Err(materialization_replacement_mismatch());
+        }
+        let reader = ImmutableTableReader::open_bytes(
+            artifact.facts().identity().clone(),
+            artifact.bytes().to_vec(),
+            TableReaderConfig::default(),
+        )
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        if reader.rows().len() != table.rows().len() {
+            return Err(materialization_replacement_mismatch());
+        }
+        for (expected, actual) in reader.rows().iter().zip(table.rows()) {
+            if expected.row() != actual.row() {
+                return Err(materialization_replacement_mismatch());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MaterializedRowsSummary {
+    rows: u64,
+    fingerprint: u64,
     skipped_post_fork_rows: u64,
     skipped_exact_duplicate_rows: u64,
+}
+
+impl MaterializedRowsSummary {
+    fn record_row(&mut self, row: &TableRow) {
+        if self.rows == 0 {
+            self.fingerprint = MATERIALIZATION_HASH_OFFSET;
+        }
+        hash_materialized_row(&mut self.fingerprint, row);
+        self.rows = self.rows.saturating_add(1);
+    }
+
+    fn record_shadow_skip(&mut self) {
+        self.skipped_exact_duplicate_rows = self.skipped_exact_duplicate_rows.saturating_add(1);
+    }
+}
+
+#[derive(Debug, Default)]
+struct MaterializationStreamStats {
+    source_table_opens: Cell<u64>,
+    rows_rewritten: Cell<u64>,
+    rows_skipped_by_fork: Cell<u64>,
+    rows_skipped_by_shadowing: Cell<u64>,
+}
+
+impl MaterializationStreamStats {
+    fn record_source_table_open(&self) {
+        self.source_table_opens
+            .set(self.source_table_opens.get().saturating_add(1));
+    }
+
+    fn record_row_rewritten(&self) {
+        self.rows_rewritten
+            .set(self.rows_rewritten.get().saturating_add(1));
+    }
+
+    fn record_fork_skip(&self) {
+        self.rows_skipped_by_fork
+            .set(self.rows_skipped_by_fork.get().saturating_add(1));
+    }
+
+    fn record_shadow_skip(&self) {
+        self.rows_skipped_by_shadowing
+            .set(self.rows_skipped_by_shadowing.get().saturating_add(1));
+    }
+
+    fn source_table_opens(&self) -> u64 {
+        self.source_table_opens.get()
+    }
+
+    fn rows_rewritten(&self) -> u64 {
+        self.rows_rewritten.get()
+    }
+
+    fn rows_skipped_by_fork(&self) -> u64 {
+        self.rows_skipped_by_fork.get()
+    }
+
+    fn rows_skipped_by_shadowing(&self) -> u64 {
+        self.rows_skipped_by_shadowing.get()
+    }
+}
+
+struct MaterializationTableSource<'a> {
+    id: TableCompactionSourceId,
+    table: &'a BranchOwnedTable,
+    source_branch_id: BranchId,
+    target_branch_id: BranchId,
+    fork_version: CommitVersion,
+    stats: &'a MaterializationStreamStats,
+}
+
+impl<'a> MaterializationTableSource<'a> {
+    fn new(
+        source_index: usize,
+        table: &'a BranchOwnedTable,
+        source_branch_id: BranchId,
+        target_branch_id: BranchId,
+        fork_version: CommitVersion,
+        stats: &'a MaterializationStreamStats,
+    ) -> BranchRuntimeResult<Self> {
+        let id = TableCompactionSourceId::new(format!("materialization-source-{source_index}"))
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        Ok(Self {
+            id,
+            table,
+            source_branch_id,
+            target_branch_id,
+            fork_version,
+            stats,
+        })
+    }
+}
+
+impl TableCompactionInput for MaterializationTableSource<'_> {
+    fn id(&self) -> &TableCompactionSourceId {
+        &self.id
+    }
+
+    fn open_cursor(&self) -> crate::table::TableRuntimeResult<Box<dyn TableCursor + '_>> {
+        self.stats.record_source_table_open();
+        Ok(Box::new(MaterializationRewriteCursor::new(
+            Box::new(self.table.reader().cursor()),
+            self.source_branch_id,
+            self.target_branch_id,
+            self.fork_version,
+            self.stats,
+        )))
+    }
+}
+
+struct MaterializationRewriteCursor<'a> {
+    inner: Box<dyn TableCursor + 'a>,
+    source_branch_id: BranchId,
+    target_branch_id: BranchId,
+    fork_version: CommitVersion,
+    stats: &'a MaterializationStreamStats,
+    current: Option<TableRow>,
+}
+
+impl<'a> MaterializationRewriteCursor<'a> {
+    fn new(
+        inner: Box<dyn TableCursor + 'a>,
+        source_branch_id: BranchId,
+        target_branch_id: BranchId,
+        fork_version: CommitVersion,
+        stats: &'a MaterializationStreamStats,
+    ) -> Self {
+        Self {
+            inner,
+            source_branch_id,
+            target_branch_id,
+            fork_version,
+            stats,
+            current: None,
+        }
+    }
+
+    fn position_at_next_rewritten_row(&mut self) -> crate::table::TableRuntimeResult<()> {
+        self.current = None;
+        while let Some(row) = self.inner.current() {
+            if row.commit_version().as_u64() > self.fork_version.as_u64() {
+                self.stats.record_fork_skip();
+                self.inner.advance()?;
+                continue;
+            }
+            let rewritten =
+                rewrite_row_branch(row.row(), self.source_branch_id, self.target_branch_id)
+                    .map_err(|_| TableRuntimeError::InvalidConfig {
+                        field: "materialization_row_branch",
+                        reason: "rewrite failed",
+                    })?;
+            self.stats.record_row_rewritten();
+            self.current = Some(TableRow::new(rewritten));
+            return Ok(());
+        }
+        Ok(())
+    }
+}
+
+impl TableCursor for MaterializationRewriteCursor<'_> {
+    fn seek_to_first(&mut self) -> crate::table::TableRuntimeResult<()> {
+        self.inner.seek_to_first()?;
+        self.position_at_next_rewritten_row()
+    }
+
+    fn seek(&mut self, target: &TableInternalKeyBytes) -> crate::table::TableRuntimeResult<()> {
+        self.seek_to_first()?;
+        while let Some(row) = &self.current {
+            match row.key().cmp(target) {
+                Ordering::Less => self.advance()?,
+                Ordering::Equal | Ordering::Greater => return Ok(()),
+            }
+        }
+        Ok(())
+    }
+
+    fn advance(&mut self) -> crate::table::TableRuntimeResult<()> {
+        self.inner.advance()?;
+        self.position_at_next_rewritten_row()
+    }
+
+    fn current(&self) -> Option<&TableRow> {
+        self.current.as_ref()
+    }
+}
+
+fn materialization_table_sources<'a>(
+    tables: impl Iterator<Item = &'a BranchOwnedTable>,
+    source_branch_id: BranchId,
+    target_branch_id: BranchId,
+    fork_version: CommitVersion,
+    stats: &'a MaterializationStreamStats,
+) -> BranchRuntimeResult<Vec<MaterializationTableSource<'a>>> {
+    tables
+        .enumerate()
+        .map(|(source_index, table)| {
+            MaterializationTableSource::new(
+                source_index,
+                table,
+                source_branch_id,
+                target_branch_id,
+                fork_version,
+                stats,
+            )
+        })
+        .collect()
+}
+
+fn hash_materialized_row(hash: &mut u64, row: &TableRow) {
+    hash_bytes(hash, row.encoded_key());
+    hash_u64(hash, row.commit_timestamp().as_micros());
+    hash_u64(hash, row.expires_at().as_micros());
+    hash_bytes(hash, &[u8::from(row.is_tombstone())]);
+    hash_bytes(hash, row.value());
+}
+
+fn hash_u64(hash: &mut u64, value: u64) {
+    hash_bytes(hash, &value.to_le_bytes());
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    hash_u64_raw(hash, bytes.len() as u64);
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(MATERIALIZATION_HASH_PRIME);
+    }
+}
+
+fn hash_u64_raw(hash: &mut u64, value: u64) {
+    for byte in value.to_le_bytes() {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(MATERIALIZATION_HASH_PRIME);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -901,17 +1331,6 @@ fn validate_materialization_output_identities(
         }
     }
     Ok(())
-}
-
-fn materialized_table_identity(
-    output_identity_prefix: &str,
-    layer_index: usize,
-    output_index: usize,
-) -> BranchRuntimeResult<TableIdentity> {
-    TableIdentity::new(format!(
-        "{output_identity_prefix}-layer-{layer_index}-table-{output_index}"
-    ))
-    .map_err(|source| BranchRuntimeError::TableRuntime { source })
 }
 
 fn materialized_table_output_index(

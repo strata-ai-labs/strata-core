@@ -1207,7 +1207,7 @@ fn branch_compaction_streams_nonzero_overlap_sources_once() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn branch_compaction_l0_to_level_one_includes_overlaps_and_preserves_non_overlaps() {
+fn branch_compaction_l0_to_l1_includes_overlaps_and_preserves_non_overlaps() {
     let branch = branch_id(123);
     let mut state = BranchLocalState::new(
         branch,
@@ -1330,7 +1330,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
     .expect("state");
     let compacted_key = physical_key(branch, b"compact-l2-b".to_vec());
     let preserved_key = physical_key(branch, b"compact-l2-z".to_vec());
-    let level_one_row = storage_row_with(
+    let l1_row = storage_row_with(
         branch,
         b"compact-l2-b".to_vec(),
         4,
@@ -1338,7 +1338,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
         Timestamp::EPOCH,
         b"l1".to_vec(),
     );
-    let overlapping_level_two = storage_row_with(
+    let overlapping_l2 = storage_row_with(
         branch,
         b"compact-l2-b".to_vec(),
         2,
@@ -1346,7 +1346,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
         Timestamp::EPOCH,
         b"l2".to_vec(),
     );
-    let non_overlapping_level_two = storage_row_with(
+    let non_overlapping_l2 = storage_row_with(
         branch,
         b"compact-l2-z".to_vec(),
         3,
@@ -1361,7 +1361,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
                 branch,
                 BranchLevel::new(2),
                 "compact-l2-overlap",
-                vec![overlapping_level_two.clone()],
+                vec![overlapping_l2.clone()],
             ),
         )
         .expect("install overlapping l2");
@@ -1372,7 +1372,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
                 branch,
                 BranchLevel::new(2),
                 "compact-l2-preserved",
-                vec![non_overlapping_level_two.clone()],
+                vec![non_overlapping_l2.clone()],
             ),
         )
         .expect("install non-overlapping l2");
@@ -1383,7 +1383,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
                 branch,
                 BranchLevel::new(1),
                 "compact-l1-input",
-                vec![level_one_row.clone()],
+                vec![l1_row.clone()],
             ),
         )
         .expect("install l1 input");
@@ -1418,7 +1418,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
             .latest(&compacted_key)
             .expect("compacted latest")
             .as_ref(),
-        &level_one_row,
+        &l1_row,
         BranchRowSource::OwnedTable {
             level: BranchLevel::new(2),
             table_index: 0,
@@ -1429,7 +1429,7 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
             .latest(&preserved_key)
             .expect("preserved latest")
             .as_ref(),
-        &non_overlapping_level_two,
+        &non_overlapping_l2,
         BranchRowSource::OwnedTable {
             level: BranchLevel::new(2),
             table_index: 1,

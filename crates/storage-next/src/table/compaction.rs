@@ -423,6 +423,96 @@ impl TableCompactionOutput {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TableStreamingArtifactReport {
+    output_tables: usize,
+    output_bytes: u64,
+    peak_buffered_rows: usize,
+}
+
+impl TableStreamingArtifactReport {
+    pub(crate) const fn output_tables(&self) -> usize {
+        self.output_tables
+    }
+
+    pub(crate) const fn peak_buffered_rows(&self) -> usize {
+        self.peak_buffered_rows
+    }
+
+    fn record_peak_buffered_rows(&mut self, rows: usize) {
+        self.peak_buffered_rows = self.peak_buffered_rows.max(rows);
+    }
+}
+
+pub(crate) struct TableStreamingArtifactBuilder<F> {
+    builder: ImmutableTableBuilder,
+    max_rows_per_output: usize,
+    pending_rows: Vec<TableRow>,
+    artifacts: Vec<BuiltTableArtifact>,
+    report: TableStreamingArtifactReport,
+    identity_for_output: F,
+}
+
+impl<F> TableStreamingArtifactBuilder<F>
+where
+    F: FnMut(usize, &[TableRow]) -> TableRuntimeResult<TableIdentity>,
+{
+    pub(crate) fn new(
+        builder_config: TableBuilderConfig,
+        max_rows_per_output: usize,
+        identity_for_output: F,
+    ) -> TableRuntimeResult<Self> {
+        if max_rows_per_output == 0 {
+            return Err(TableRuntimeError::InvalidConfig {
+                field: "max_rows_per_output",
+                reason: "must be nonzero",
+            });
+        }
+        Ok(Self {
+            builder: ImmutableTableBuilder::new(builder_config)?,
+            max_rows_per_output,
+            pending_rows: Vec::new(),
+            artifacts: Vec::new(),
+            report: TableStreamingArtifactReport::default(),
+            identity_for_output,
+        })
+    }
+
+    pub(crate) fn push(&mut self, row: TableRow) -> TableRuntimeResult<()> {
+        if self.pending_rows.len() >= self.max_rows_per_output {
+            self.flush()?;
+        }
+        self.pending_rows.push(row);
+        self.report
+            .record_peak_buffered_rows(self.pending_rows.len());
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        mut self,
+    ) -> TableRuntimeResult<(Vec<BuiltTableArtifact>, TableStreamingArtifactReport)> {
+        self.flush()?;
+        Ok((self.artifacts, self.report))
+    }
+
+    fn flush(&mut self) -> TableRuntimeResult<()> {
+        if self.pending_rows.is_empty() {
+            return Ok(());
+        }
+        let output_index = self.artifacts.len();
+        let rows = std::mem::take(&mut self.pending_rows);
+        let identity = (self.identity_for_output)(output_index, &rows)?;
+        let artifact = build_table_artifact_from_rows(&self.builder, identity, &rows)?;
+        self.report.output_bytes = self
+            .report
+            .output_bytes
+            .saturating_add(artifact.byte_count());
+        self.artifacts.push(artifact);
+        self.report.output_tables = self.artifacts.len();
+        Ok(())
+    }
+}
+
 fn compact_table_inputs(
     compactor: &TableCompactor,
     output_identity_seed: &TableIdentity,
@@ -521,19 +611,19 @@ fn validate_no_global_duplicate_internal_keys(
     let mut previous_key: Option<TableInternalKeyBytes> = None;
     while let Some(current) = merged.current() {
         if let Some(previous) = &previous_key {
-            if previous == current.row.key() {
+            if previous == current.row().key() {
                 return Err(TableRuntimeError::DuplicateInternalKey {
-                    key: current.row.encoded_key().to_vec(),
+                    key: current.row().encoded_key().to_vec(),
                 });
             }
         }
-        previous_key = Some(current.row.key().clone());
+        previous_key = Some(current.row().key().clone());
         merged.advance()?;
     }
     Ok(())
 }
 
-struct TableCompactionMergeCursor<'a> {
+pub(crate) struct TableCompactionMergeCursor<'a> {
     sources: Vec<TableCompactionSourceCursor<'a>>,
     heap: BinaryHeap<TableCompactionHeapItem>,
 }
@@ -546,11 +636,17 @@ struct TableCompactionSourceCursor<'a> {
     cursor: Box<dyn TableCursor + 'a>,
 }
 
-struct TableCompactionMergedRow<'a> {
+pub(crate) struct TableCompactionMergedRow<'a> {
     source_id: &'a TableCompactionSourceId,
     source_index: usize,
     source_row_index: usize,
     row: &'a TableRow,
+}
+
+impl<'a> TableCompactionMergedRow<'a> {
+    pub(crate) const fn row(&self) -> &'a TableRow {
+        self.row
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -575,7 +671,7 @@ impl PartialOrd for TableCompactionHeapItem {
 }
 
 impl<'a> TableCompactionMergeCursor<'a> {
-    fn new(sources: &'a [&'a dyn TableCompactionInput]) -> TableRuntimeResult<Self> {
+    pub(crate) fn new(sources: &'a [&'a dyn TableCompactionInput]) -> TableRuntimeResult<Self> {
         let mut cursors = Vec::with_capacity(sources.len());
         let mut heap = BinaryHeap::new();
         for (source_index, source) in sources.iter().enumerate() {
@@ -601,7 +697,7 @@ impl<'a> TableCompactionMergeCursor<'a> {
         })
     }
 
-    fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
+    pub(crate) fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
         self.heap.clear();
         for (source_index, source) in self.sources.iter_mut().enumerate() {
             source.cursor.seek_to_first()?;
@@ -617,7 +713,7 @@ impl<'a> TableCompactionMergeCursor<'a> {
         Ok(())
     }
 
-    fn current(&self) -> Option<TableCompactionMergedRow<'_>> {
+    pub(crate) fn current(&self) -> Option<TableCompactionMergedRow<'_>> {
         let selected = self.heap.peek()?;
         let source = self.sources.get(selected.source_index)?;
         let row = source.cursor.current()?;
@@ -629,7 +725,7 @@ impl<'a> TableCompactionMergeCursor<'a> {
         })
     }
 
-    fn advance(&mut self) -> TableRuntimeResult<()> {
+    pub(crate) fn advance(&mut self) -> TableRuntimeResult<()> {
         let Some(selected) = self.heap.pop() else {
             return Ok(());
         };
@@ -745,12 +841,20 @@ fn build_pending_output(
     *pending_approximate_bytes = 0;
     *pending_last_physical_key = None;
     let identity = output_identity(output_identity_seed, output_index, &rows)?;
-    let artifact = builder.build_from_rows(identity, &rows)?;
+    let artifact = build_table_artifact_from_rows(builder, identity, &rows)?;
     report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
     artifacts.push(artifact);
     report.output_tables = artifacts.len();
     report.split_count = report.output_tables.saturating_sub(1) as u64;
     Ok(())
+}
+
+fn build_table_artifact_from_rows(
+    builder: &ImmutableTableBuilder,
+    identity: TableIdentity,
+    rows: &[TableRow],
+) -> TableRuntimeResult<BuiltTableArtifact> {
+    builder.build_from_rows(identity, rows)
 }
 
 fn output_identity(

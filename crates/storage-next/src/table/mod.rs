@@ -47,8 +47,10 @@ pub(crate) use cache::{
 )]
 pub(crate) use compaction::{
     TableCompactionDecision, TableCompactionDropReason, TableCompactionDropSummary,
-    TableCompactionInput, TableCompactionOutput, TableCompactionPolicy, TableCompactionReport,
-    TableCompactionRowContext, TableCompactionSource, TableCompactionSourceId, TableCompactor,
+    TableCompactionInput, TableCompactionMergeCursor, TableCompactionOutput, TableCompactionPolicy,
+    TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
+    TableCompactionSourceId, TableCompactor, TableStreamingArtifactBuilder,
+    TableStreamingArtifactReport,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

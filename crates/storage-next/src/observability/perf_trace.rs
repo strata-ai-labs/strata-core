@@ -78,6 +78,12 @@ pub struct StoragePerfSnapshot {
     read_view_validation_rows_scanned: u64,
     branch_compaction_source_opens: u64,
     branch_compaction_peak_buffered_rows: u64,
+    branch_materialization_source_opens: u64,
+    branch_materialization_rows_rewritten: u64,
+    branch_materialization_rows_skipped_by_fork: u64,
+    branch_materialization_rows_skipped_by_shadowing: u64,
+    branch_materialization_output_tables: u64,
+    branch_materialization_peak_buffered_rows: u64,
     table_compaction_peak_buffered_rows: u64,
     append_staging_clones: u64,
     append_staging_rows_cloned: u64,
@@ -286,6 +292,36 @@ impl StoragePerfSnapshot {
     /// Peak rows buffered by branch-owned compaction output construction.
     pub const fn branch_compaction_peak_buffered_rows(self) -> u64 {
         self.branch_compaction_peak_buffered_rows
+    }
+
+    /// Number of inherited tables opened while streaming branch materialization.
+    pub const fn branch_materialization_source_opens(self) -> u64 {
+        self.branch_materialization_source_opens
+    }
+
+    /// Number of inherited rows rewritten into the child branch during materialization.
+    pub const fn branch_materialization_rows_rewritten(self) -> u64 {
+        self.branch_materialization_rows_rewritten
+    }
+
+    /// Number of inherited materialization rows skipped because they are after the fork.
+    pub const fn branch_materialization_rows_skipped_by_fork(self) -> u64 {
+        self.branch_materialization_rows_skipped_by_fork
+    }
+
+    /// Number of inherited materialization rows skipped because child state already shadows them.
+    pub const fn branch_materialization_rows_skipped_by_shadowing(self) -> u64 {
+        self.branch_materialization_rows_skipped_by_shadowing
+    }
+
+    /// Number of replacement tables produced by branch materialization.
+    pub const fn branch_materialization_output_tables(self) -> u64 {
+        self.branch_materialization_output_tables
+    }
+
+    /// Peak rows buffered while building branch materialization replacement tables.
+    pub const fn branch_materialization_peak_buffered_rows(self) -> u64 {
+        self.branch_materialization_peak_buffered_rows
     }
 
     /// Peak rows buffered by table compaction output construction.
@@ -756,6 +792,18 @@ static BRANCH_COMPACTION_SOURCE_OPENS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static BRANCH_COMPACTION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static BRANCH_MATERIALIZATION_SOURCE_OPENS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_MATERIALIZATION_ROWS_REWRITTEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_FORK: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_SHADOWING: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_MATERIALIZATION_OUTPUT_TABLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static APPEND_STAGING_CLONES: AtomicU64 = AtomicU64::new(0);
@@ -986,6 +1034,12 @@ pub fn reset() {
     READ_VIEW_VALIDATION_ROWS_SCANNED.store(0, Ordering::Relaxed);
     BRANCH_COMPACTION_SOURCE_OPENS.store(0, Ordering::Relaxed);
     BRANCH_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
+    BRANCH_MATERIALIZATION_SOURCE_OPENS.store(0, Ordering::Relaxed);
+    BRANCH_MATERIALIZATION_ROWS_REWRITTEN.store(0, Ordering::Relaxed);
+    BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_FORK.store(0, Ordering::Relaxed);
+    BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_SHADOWING.store(0, Ordering::Relaxed);
+    BRANCH_MATERIALIZATION_OUTPUT_TABLES.store(0, Ordering::Relaxed);
+    BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
     APPEND_STAGING_CLONES.store(0, Ordering::Relaxed);
     APPEND_STAGING_ROWS_CLONED.store(0, Ordering::Relaxed);
@@ -1102,6 +1156,18 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         branch_compaction_source_opens: BRANCH_COMPACTION_SOURCE_OPENS.load(Ordering::Relaxed),
         branch_compaction_peak_buffered_rows: BRANCH_COMPACTION_PEAK_BUFFERED_ROWS
+            .load(Ordering::Relaxed),
+        branch_materialization_source_opens: BRANCH_MATERIALIZATION_SOURCE_OPENS
+            .load(Ordering::Relaxed),
+        branch_materialization_rows_rewritten: BRANCH_MATERIALIZATION_ROWS_REWRITTEN
+            .load(Ordering::Relaxed),
+        branch_materialization_rows_skipped_by_fork: BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_FORK
+            .load(Ordering::Relaxed),
+        branch_materialization_rows_skipped_by_shadowing:
+            BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_SHADOWING.load(Ordering::Relaxed),
+        branch_materialization_output_tables: BRANCH_MATERIALIZATION_OUTPUT_TABLES
+            .load(Ordering::Relaxed),
+        branch_materialization_peak_buffered_rows: BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS
             .load(Ordering::Relaxed),
         table_compaction_peak_buffered_rows: TABLE_COMPACTION_PEAK_BUFFERED_ROWS
             .load(Ordering::Relaxed),
@@ -1417,6 +1483,72 @@ pub(crate) fn record_branch_compaction_peak_buffered_rows(rows: usize) {
         return;
     }
     BRANCH_COMPACTION_PEAK_BUFFERED_ROWS.fetch_max(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_materialization_source_opens(_sources: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_materialization_source_opens(sources: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_MATERIALIZATION_SOURCE_OPENS.fetch_add(sources, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_materialization_rows_rewritten(_rows: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_materialization_rows_rewritten(rows: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_MATERIALIZATION_ROWS_REWRITTEN.fetch_add(rows, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_materialization_rows_skipped_by_fork(_rows: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_materialization_rows_skipped_by_fork(rows: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_FORK.fetch_add(rows, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_materialization_rows_skipped_by_shadowing(_rows: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_materialization_rows_skipped_by_shadowing(rows: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_MATERIALIZATION_ROWS_SKIPPED_BY_SHADOWING.fetch_add(rows, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_materialization_output_tables(_tables: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_materialization_output_tables(tables: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_MATERIALIZATION_OUTPUT_TABLES.fetch_add(as_u64(tables), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_materialization_peak_buffered_rows(_rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_materialization_peak_buffered_rows(rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    BRANCH_MATERIALIZATION_PEAK_BUFFERED_ROWS.fetch_max(as_u64(rows), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

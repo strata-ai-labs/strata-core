@@ -379,7 +379,7 @@ impl BranchLocalState {
         match request.kind() {
             BranchCompactionKind::CompactL0 => self.plan_l0_compaction(request.kind()),
             BranchCompactionKind::CompactL0ToLevelOne => {
-                self.plan_l0_to_level_one_compaction(request.kind())
+                self.plan_l0_to_l1_compaction(request.kind())
             }
             BranchCompactionKind::CompactLevel { level, table_index } => {
                 self.plan_nonzero_level_compaction(request.kind(), level, table_index)
@@ -635,7 +635,7 @@ impl BranchLocalState {
         ))
     }
 
-    fn plan_l0_to_level_one_compaction(
+    fn plan_l0_to_l1_compaction(
         &self,
         kind: BranchCompactionKind,
     ) -> BranchRuntimeResult<BranchCompactionPlan> {
