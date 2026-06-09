@@ -467,7 +467,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(perf.table_compaction_peak_buffered_rows(), 3);
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
     assert_eq!(perf.table_compaction_merge_advances(), 4);
-    assert_eq!(perf.table_compaction_heap_key_clones(), 4);
+    assert_eq!(perf.table_compaction_heap_key_clones(), 0);
     assert_eq!(perf.table_compaction_source_order_key_clones(), 4);
 
     crate::observability::perf_trace::reset();
@@ -516,8 +516,66 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(strict.table_compaction_peak_buffered_rows(), 3);
     assert_eq!(strict.table_compaction_output_tables_built(), 1);
     assert_eq!(strict.table_compaction_merge_advances(), 8);
-    assert_eq!(strict.table_compaction_heap_key_clones(), 8);
+    assert_eq!(strict.table_compaction_heap_key_clones(), 0);
     assert_eq!(strict.table_compaction_source_order_key_clones(), 8);
+
+    for source_count in 1..=crate::table::MERGE_HEAP_THRESHOLD {
+        crate::observability::perf_trace::reset();
+        let sources = (0..source_count)
+            .map(|source_index| {
+                let user_key = vec![b'a'.saturating_add(source_index as u8)];
+                source(
+                    &format!("small-merge-{source_count}-{source_index}"),
+                    &[put_row(user_key, source_index as u64 + 10)],
+                )
+            })
+            .collect::<Vec<_>>();
+        let identity = TableIdentity::new(format!("small-merge-{source_count}"))
+            .expect("small merge identity");
+        let mut policy = keep_all_policy();
+
+        let output = compactor(64 * 1024, source_count)
+            .compact(&identity, &sources, &mut policy)
+            .expect("small-source merge compaction");
+
+        assert_eq!(output.report().input_sources(), source_count);
+        assert_eq!(output.report().kept_rows(), source_count as u64);
+        let small = crate::observability::perf_trace::snapshot();
+        assert_eq!(small.table_compaction_merge_advances(), source_count as u64);
+        assert_eq!(small.table_compaction_heap_key_clones(), 0);
+    }
+
+    crate::observability::perf_trace::reset();
+    let heap_source_count = crate::table::MERGE_HEAP_THRESHOLD + 1;
+    let heap_sources = (0..heap_source_count)
+        .map(|source_index| {
+            source(
+                &format!("heap-merge-{source_index}"),
+                &[put_row(
+                    format!("heap-merge-key-{source_index:02}").into_bytes(),
+                    source_index as u64 + 20,
+                )],
+            )
+        })
+        .collect::<Vec<_>>();
+    let heap_identity = TableIdentity::new("heap-merge-fallback").expect("heap fallback identity");
+    let mut heap_policy = keep_all_policy();
+
+    let heap_output = compactor(64 * 1024, heap_source_count)
+        .compact(&heap_identity, &heap_sources, &mut heap_policy)
+        .expect("heap fallback compaction");
+
+    assert_eq!(heap_output.report().input_sources(), heap_source_count);
+    assert_eq!(heap_output.report().kept_rows(), heap_source_count as u64);
+    let heap = crate::observability::perf_trace::snapshot();
+    assert_eq!(
+        heap.table_compaction_merge_advances(),
+        heap_source_count as u64
+    );
+    assert_eq!(
+        heap.table_compaction_heap_key_clones(),
+        heap_source_count as u64
+    );
 }
 
 #[test]

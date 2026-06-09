@@ -3,7 +3,7 @@
 use super::{
     validate_strictly_sorted_unique_rows, BuiltTableArtifact, ImmutableTableBuilder,
     TableBuilderConfig, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TablePhysicalKeyBytes, TableRow, TableRuntimeError, TableRuntimeResult,
+    TablePhysicalKeyBytes, TableRow, TableRuntimeError, TableRuntimeResult, MERGE_HEAP_THRESHOLD,
 };
 use crate::observability::perf_trace;
 use std::cmp::Ordering;
@@ -680,7 +680,7 @@ fn validate_no_global_duplicate_internal_keys(
 
 pub(crate) struct TableCompactionMergeCursor<'a> {
     sources: Vec<TableCompactionSourceCursor<'a>>,
-    heap: BinaryHeap<TableCompactionHeapItem>,
+    selection: TableCompactionMergeSelection,
 }
 
 struct TableCompactionSourceCursor<'a> {
@@ -689,6 +689,11 @@ struct TableCompactionSourceCursor<'a> {
     source_row_index: usize,
     last_key: Option<TableInternalKeyBytes>,
     cursor: Box<dyn TableCursor + 'a>,
+}
+
+enum TableCompactionMergeSelection {
+    Linear { current_source: Option<usize> },
+    Heap(BinaryHeap<TableCompactionHeapItem>),
 }
 
 pub(crate) struct TableCompactionMergedRow<'a> {
@@ -728,16 +733,13 @@ impl PartialOrd for TableCompactionHeapItem {
 impl<'a> TableCompactionMergeCursor<'a> {
     pub(crate) fn new(sources: &'a [&'a dyn TableCompactionInput]) -> TableRuntimeResult<Self> {
         let mut cursors = Vec::with_capacity(sources.len());
-        let mut heap = BinaryHeap::new();
+        let mut selection = TableCompactionMergeSelection::for_source_count(sources.len());
         for (source_index, source) in sources.iter().enumerate() {
             let mut cursor = source.open_cursor()?;
             perf_trace::record_table_compaction_merge_cursor_opens(1);
             cursor.seek_to_first()?;
             let last_key = if let Some(key) = cursor.current_key() {
-                heap.push(TableCompactionHeapItem {
-                    key: clone_heap_key(key),
-                    source_index,
-                });
+                selection.push_current_key(key, source_index);
                 Some(clone_source_order_key(key))
             } else {
                 None
@@ -750,31 +752,30 @@ impl<'a> TableCompactionMergeCursor<'a> {
                 cursor,
             });
         }
+        selection.refresh_current_source(&cursors);
         Ok(Self {
             sources: cursors,
-            heap,
+            selection,
         })
     }
 
     pub(crate) fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
-        self.heap.clear();
+        self.selection.clear();
         for (source_index, source) in self.sources.iter_mut().enumerate() {
             source.cursor.seek_to_first()?;
             source.source_row_index = 0;
             source.last_key = source.cursor.current_key().map(clone_source_order_key);
             if let Some(key) = &source.last_key {
-                self.heap.push(TableCompactionHeapItem {
-                    key: clone_heap_key(key),
-                    source_index,
-                });
+                self.selection.push_current_key(key, source_index);
             }
         }
+        self.selection.refresh_current_source(&self.sources);
         Ok(())
     }
 
     pub(crate) fn current(&self) -> Option<TableCompactionMergedRow<'_>> {
-        let selected = self.heap.peek()?;
-        let source = self.sources.get(selected.source_index)?;
+        let source_index = self.selection.current_source_index(&self.sources)?;
+        let source = self.sources.get(source_index)?;
         let row = source.cursor.current()?;
         Some(TableCompactionMergedRow {
             source_id: source.source_id,
@@ -785,28 +786,95 @@ impl<'a> TableCompactionMergeCursor<'a> {
     }
 
     pub(crate) fn advance(&mut self) -> TableRuntimeResult<()> {
-        let Some(selected) = self.heap.pop() else {
+        let Some(source_index) = self.selection.take_current_source_index() else {
             return Ok(());
         };
         perf_trace::record_table_compaction_merge_advance();
-        let source =
-            self.sources
-                .get_mut(selected.source_index)
-                .ok_or(TableRuntimeError::InvalidRange {
-                    field: "compaction_source_index",
-                })?;
-        source.cursor.advance()?;
-        source.source_row_index = source.source_row_index.saturating_add(1);
-        if let Some(key) = source.cursor.current_key() {
-            validate_compaction_source_key_order(source.last_key.as_ref(), key)?;
-            source.last_key = Some(clone_source_order_key(key));
-            self.heap.push(TableCompactionHeapItem {
-                key: clone_heap_key(key),
-                source_index: selected.source_index,
-            });
+        {
+            let source =
+                self.sources
+                    .get_mut(source_index)
+                    .ok_or(TableRuntimeError::InvalidRange {
+                        field: "compaction_source_index",
+                    })?;
+            source.cursor.advance()?;
+            source.source_row_index = source.source_row_index.saturating_add(1);
+            if let Some(key) = source.cursor.current_key() {
+                validate_compaction_source_key_order(source.last_key.as_ref(), key)?;
+                source.last_key = Some(clone_source_order_key(key));
+                self.selection.push_current_key(key, source_index);
+            }
         }
+        self.selection.refresh_current_source(&self.sources);
         Ok(())
     }
+}
+
+impl TableCompactionMergeSelection {
+    fn for_source_count(source_count: usize) -> Self {
+        if source_count <= MERGE_HEAP_THRESHOLD {
+            Self::Linear {
+                current_source: None,
+            }
+        } else {
+            Self::Heap(BinaryHeap::new())
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Linear { current_source } => *current_source = None,
+            Self::Heap(heap) => heap.clear(),
+        }
+    }
+
+    fn push_current_key(&mut self, key: &TableInternalKeyBytes, source_index: usize) {
+        if let Self::Heap(heap) = self {
+            heap.push(TableCompactionHeapItem {
+                key: clone_heap_key(key),
+                source_index,
+            });
+        }
+    }
+
+    fn current_source_index(&self, _sources: &[TableCompactionSourceCursor<'_>]) -> Option<usize> {
+        match self {
+            Self::Linear { current_source } => *current_source,
+            Self::Heap(heap) => heap.peek().map(|selected| selected.source_index),
+        }
+    }
+
+    fn take_current_source_index(&mut self) -> Option<usize> {
+        match self {
+            Self::Linear { current_source } => *current_source,
+            Self::Heap(heap) => heap.pop().map(|selected| selected.source_index),
+        }
+    }
+
+    fn refresh_current_source(&mut self, sources: &[TableCompactionSourceCursor<'_>]) {
+        if let Self::Linear { current_source } = self {
+            *current_source = select_linear_compaction_source(sources);
+        }
+    }
+}
+
+fn select_linear_compaction_source(sources: &[TableCompactionSourceCursor<'_>]) -> Option<usize> {
+    let mut selected: Option<(usize, &TableInternalKeyBytes)> = None;
+    for (source_index, source) in sources.iter().enumerate() {
+        let Some(key) = source.cursor.current_key() else {
+            continue;
+        };
+        let replace = match selected {
+            None => true,
+            Some((selected_source, selected_key)) => {
+                key < selected_key || (key == selected_key && source_index < selected_source)
+            }
+        };
+        if replace {
+            selected = Some((source_index, key));
+        }
+    }
+    selected.map(|(source_index, _)| source_index)
 }
 
 fn clone_heap_key(key: &TableInternalKeyBytes) -> TableInternalKeyBytes {
