@@ -47,7 +47,10 @@ pub fn check_lifecycle_fault_contract(
     // own counter from the resulting outcome — counter-presence here means
     // the route's specific fault case actually executed, not just that some
     // contract's pre-existing fixture incremented an unrelated counter.
+    #[cfg(any(test, feature = "fault-injection"))]
     let service_faults = collect_service_fault_harness()?;
+    #[cfg(not(any(test, feature = "fault-injection")))]
+    let service_faults = collect_service_fault_harness();
     match FaultRoute::from_script(script) {
         FaultRoute::CapabilityPreflight => {
             let scaffold = check_lifecycle_scaffold_contract(script)?;
@@ -137,21 +140,25 @@ pub fn check_lifecycle_fault_contract(
 #[cfg(any(test, feature = "fault-injection"))]
 type ServiceFaultHarnessOutcome = crate::testkit::ServiceFaultWindowHarnessOutcome;
 #[cfg(not(any(test, feature = "fault-injection")))]
-type ServiceFaultHarnessOutcome = ();
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ServiceFaultHarnessOutcome {
+    _fault_injection_disabled: bool,
+}
 
+#[cfg(any(test, feature = "fault-injection"))]
 fn collect_service_fault_harness() -> Result<ServiceFaultHarnessOutcome, TestkitError> {
-    #[cfg(any(test, feature = "fault-injection"))]
-    {
-        let outcome = run_service_fault_window_harness()?;
-        ensure(
-            outcome.cases_executed() >= 19,
-            "service fault harness did not execute all 19 routes",
-        )?;
-        Ok(outcome)
-    }
-    #[cfg(not(any(test, feature = "fault-injection")))]
-    {
-        Ok(())
+    let outcome = run_service_fault_window_harness()?;
+    ensure(
+        outcome.cases_executed() >= 19,
+        "service fault harness did not execute all 19 routes",
+    )?;
+    Ok(outcome)
+}
+
+#[cfg(not(any(test, feature = "fault-injection")))]
+fn collect_service_fault_harness() -> ServiceFaultHarnessOutcome {
+    ServiceFaultHarnessOutcome {
+        _fault_injection_disabled: true,
     }
 }
 
@@ -210,17 +217,7 @@ fn require_service_fault_route(
 }
 
 #[cfg(not(any(test, feature = "fault-injection")))]
-#[allow(
-    dead_code,
-    reason = "fault-injection-disabled builds route to the no-op `let _ = service;` arms in each check_X_route; this helper exists only to keep the cfg branches symmetric"
-)]
-fn require_service_fault_route(
-    _outcome: &ServiceFaultHarnessOutcome,
-    _cases: usize,
-    _route: &'static str,
-) -> Result<(), TestkitError> {
-    Ok(())
-}
+fn ignore_service_fault_harness(_outcome: &ServiceFaultHarnessOutcome) {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FaultRoute {
@@ -341,7 +338,7 @@ fn check_capability_preflight_route(
         "capability_preflight",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         scaffold.capability_preflight_cases() > 0 && scaffold.missing_capability_cases() > 0,
         "capability preflight fault route not covered",
@@ -362,7 +359,7 @@ fn check_writer_guard_manifest_create_route(
         "writer_guard_manifest_create",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         scaffold.durable_writer_lock_failure_cases() > 0
             && scaffold.durable_manifest_create_cases() > 0,
@@ -384,7 +381,7 @@ fn check_manifest_publish_uncertain_route(
         "manifest_publish_uncertain",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         scaffold.durable_manifest_publish_fault_cases() > 0,
         "manifest publish uncertainty route not covered",
@@ -401,7 +398,7 @@ fn check_snapshot_orphan_route(
     #[cfg(any(test, feature = "fault-injection"))]
     require_service_fault_route(service, service.snapshot_orphan_cases(), "snapshot_orphan")?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         checkpoint.partial_window_cases() > 0,
         "checkpoint partial publication window not covered",
@@ -422,7 +419,7 @@ fn check_checkpoint_truncation_debt_route(
         "checkpoint_truncation_debt",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         checkpoint.delete_failure_cases() > 0,
         "checkpoint truncation health debt not covered",
@@ -443,7 +440,7 @@ fn check_partial_log_strict_route(
         "partial_log_strict",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         recovery.strict_failure_cases() > 0,
         "strict partial log fault route not covered",
@@ -464,7 +461,7 @@ fn check_partial_log_lossy_route(
         "partial_log_lossy",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         recovery.lossy_degradation_cases() > 0,
         "lossy partial log fault route not covered",
@@ -486,7 +483,7 @@ fn check_corrupt_log_typed_route(
         "corrupt_log_typed",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         recovery.strict_failure_cases() > 0 && bootstrap.replay_rejection_cases() > 0,
         "typed corrupt recovery route not covered",
@@ -507,7 +504,7 @@ fn check_replay_failed_state_route(
         "replay_failed_state",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         bootstrap.replay_rejection_cases() > 0,
         "replay failure route not covered",
@@ -528,7 +525,7 @@ fn check_replay_visible_debt_route(
         "replay_visible_debt",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         bootstrap.degraded_bootstrap_cases() > 0,
         "replay visible-debt route not covered",
@@ -549,7 +546,7 @@ fn check_flush_orphan_table_route(
         "flush_orphan_table",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         flush.publish_failure_cases() > 0 && flush.reopen_failure_cases() > 0,
         "flush orphan table route not covered",
@@ -570,7 +567,7 @@ fn check_rewrite_preserved_reads_route(
         "rewrite_preserved_reads",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         rewrite.cache_compaction_cases() > 0 && rewrite.materialization_cases() > 0,
         "table rewrite read-preservation route not covered",
@@ -591,7 +588,7 @@ fn check_retention_blocked_delete_route(
         "retention_blocked_delete",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         retention.incomplete_proof_cases() > 0 && retention.blocked_recovery_cases() > 0,
         "retention proof did not block unsafe delete",
@@ -612,7 +609,7 @@ fn check_quarantine_publish_blocked_purge_route(
         "quarantine_publish_blocked_purge",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         quarantine.inventory_publish_failure_cases() > 0
             && quarantine.stale_purge_proof_cases() > 0,
@@ -634,7 +631,7 @@ fn check_purge_delete_debt_route(
         "purge_delete_debt",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         quarantine.purge_delete_failure_cases() > 0,
         "purge delete debt route not covered",
@@ -655,7 +652,7 @@ fn check_close_quiesce_timeout_route(
         "close_quiesce_timeout",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         close.commit_quiesce_blocked_cases() > 0 && close.retryable_timeout_cases() > 0,
         "close quiesce timeout route not covered",
@@ -676,7 +673,7 @@ fn check_close_log_sync_source_route(
         "close_log_sync_source",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         close.wal_sync_failure_cases() > 0 && close.source_chain_preserved_cases() > 0,
         "close log sync source route not covered",
@@ -697,7 +694,7 @@ fn check_close_manifest_sync_debt_route(
         "close_manifest_sync_debt",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         close.manifest_sync_failure_cases() > 0,
         "close manifest sync debt route not covered",
@@ -718,7 +715,7 @@ fn check_writer_guard_release_typed_route(
         "writer_guard_release_typed",
     )?;
     #[cfg(not(any(test, feature = "fault-injection")))]
-    let _ = service;
+    ignore_service_fault_harness(service);
     ensure(
         close.guard_release_observed_cases() > 0,
         "writer guard release route not covered",

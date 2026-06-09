@@ -68,6 +68,8 @@ reason, and replacement proof or later slice that will close it.
 10. `m4p-l5-table-runtime-parity-test-plan.md`
 11. `m4p-l6-branch-lsm-runtime-parity-implementation-plan.md`
 12. `m4p-l6-branch-lsm-runtime-parity-test-plan.md`
+13. `m4p-l6j-l0-l7-compaction-closure-implementation-plan.md`
+14. `m4p-l6j-l0-l7-compaction-closure-test-plan.md`
 
 ## Initial Slice Queue
 

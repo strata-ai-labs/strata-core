@@ -817,10 +817,52 @@ impl<'a> StorageRuntime<'a> {
             }
         }
         .map_err(map_lifecycle_error)?;
+        self.run_flush_followup_compaction(branch_id)?;
         Ok(
             map_maintenance_summary(*request, &outcome.maintenance_outcome())
                 .with_rows_processed(outcome.rows_flushed()),
         )
+    }
+
+    fn run_flush_followup_compaction(&mut self, branch_id: BranchId) -> StorageApiResult<()> {
+        if !self.storage_pressure_suggests_compaction(branch_id)? {
+            return Ok(());
+        }
+        let request = MaintenanceRequest::new(
+            MaintenanceTask::Compact,
+            MaintenanceScope::Branch(branch_id),
+        );
+        let summary = self.compaction_maintenance(&request)?;
+        match summary.status() {
+            MaintenanceSummaryStatus::Completed | MaintenanceSummaryStatus::Deferred => Ok(()),
+            MaintenanceSummaryStatus::Failed | MaintenanceSummaryStatus::Canceled => {
+                Err(StorageApiError::InvalidRuntimeState {
+                    reason: "flush follow-up compaction did not complete",
+                })
+            }
+        }
+    }
+
+    fn storage_pressure_suggests_compaction(&self, branch_id: BranchId) -> StorageApiResult<bool> {
+        let suggested_task = match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.storage_pressure().suggested_task(),
+            StorageRuntimeInner::Durable(runtime) => runtime.storage_pressure().suggested_task(),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "flush follow-up compaction requires an open runtime",
+                });
+            }
+        };
+        Ok(suggested_task.is_some_and(|task| {
+            task.kind() == LifecycleMaintenanceTaskKind::Compaction
+                && matches!(
+                    task.scope(),
+                    LifecycleMaintenanceTaskScope::TableLevel {
+                        branch_id: task_branch_id,
+                        level: 0,
+                    } if task_branch_id == branch_id
+                )
+        }))
     }
 
     fn compaction_maintenance(
