@@ -360,7 +360,7 @@ pub fn json_document(i: u64) -> Value {
     map.insert("id".to_string(), Value::Int(i as i64));
     map.insert("name".to_string(), Value::String(format!("doc_{}", i)));
     map.insert("score".to_string(), Value::Float((i as f64) * 0.1));
-    map.insert("active".to_string(), Value::Bool(i % 2 == 0));
+    map.insert("active".to_string(), Value::Bool(i.is_multiple_of(2)));
     map.insert(
         "tags".to_string(),
         Value::array(vec![

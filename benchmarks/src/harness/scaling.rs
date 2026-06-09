@@ -157,6 +157,12 @@ impl ReservoirSampler {
     }
 }
 
+impl Default for ReservoirSampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core experiment runner
 // ---------------------------------------------------------------------------

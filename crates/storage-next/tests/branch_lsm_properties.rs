@@ -8,10 +8,17 @@ use std::fs;
 
 const REQUIRED_HARNESS_TOKENS: &[&str] = &[
     "branch_lsm_property_harness_runs_scaffold_contract",
+    "branch_lsm_property_harness_runs_seeded_source_topologies",
     "check_branch_lsm_scaffold_contract",
+    "check_branch_lsm_reads_contract",
+    "check_branch_lsm_inheritance_contract",
+    "check_branch_lsm_install_contract",
+    "check_branch_lsm_fault_window_contract",
     "check_branch_lsm_reference_model_contract",
     "check_branch_lsm_inheritance_model_contract",
     "check_branch_lsm_install_model_contract",
+    "runtime_topology_scripts",
+    "assert_seeded_source_topology_outcome",
     "ModelBranchStore",
     "ModelInheritedLayer",
     "assert_model_store_read_surface",
@@ -468,4 +475,258 @@ fn branch_lsm_property_harness_runs_independent_reference_model() {
             Ok(())
         })
         .expect("generated branch LSM reference model property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn branch_lsm_property_harness_runs_seeded_source_topologies() {
+    use strata_storage_next::testkit::{
+        check_branch_lsm_fault_window_contract, check_branch_lsm_inheritance_contract,
+        check_branch_lsm_install_contract, check_branch_lsm_reads_contract,
+        check_branch_lsm_reference_model_contract, check_branch_lsm_scaffold_contract,
+    };
+
+    for script in runtime_topology_scripts() {
+        let outcome =
+            check_branch_lsm_scaffold_contract(&script).expect("seeded branch LSM scaffold");
+        assert_seeded_source_topology_outcome(outcome);
+        check_branch_lsm_reference_model_contract(&script)
+            .expect("seeded branch LSM reference model");
+        check_branch_lsm_fault_window_contract(&script).expect("seeded branch LSM fault windows");
+        check_branch_lsm_reads_contract(&script).expect("seeded branch LSM reads");
+        check_branch_lsm_inheritance_contract(&script).expect("seeded branch LSM inheritance");
+        check_branch_lsm_install_contract(&script).expect("seeded branch LSM install");
+    }
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn runtime_topology_scripts() -> [Vec<u8>; 3] {
+    [
+        (0_u8..=255).collect(),
+        (0_u8..=255)
+            .map(|byte| byte.wrapping_mul(37).wrapping_add(11))
+            .collect(),
+        b"active frozen owned inherited l0 nonzero fork shadow tombstone ttl materialization compaction scan range history timestamp"
+            .repeat(3),
+    ]
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn assert_seeded_source_topology_outcome(
+    outcome: strata_storage_next::testkit::BranchLsmScaffoldOutcome,
+) {
+    let required = [
+        ("active append", outcome.committed_put_append_cases()),
+        (
+            "active tombstone",
+            outcome.committed_tombstone_append_cases(),
+        ),
+        ("frozen rotation", outcome.active_rotation_cases()),
+        ("read view", outcome.read_view_capture_cases()),
+        ("latest point read", outcome.latest_point_read_cases()),
+        (
+            "version bounded point read",
+            outcome.version_bounded_point_read_cases(),
+        ),
+        ("timestamp point read", outcome.timestamp_point_read_cases()),
+        ("history read", outcome.history_read_cases()),
+        ("history tombstone", outcome.history_tombstone_cases()),
+        ("prefix scan", outcome.prefix_scan_cases()),
+        ("range scan", outcome.range_scan_cases()),
+        (
+            "scan tombstone suppression",
+            outcome.scan_tombstone_suppression_cases(),
+        ),
+        ("TTL before expiry", outcome.ttl_before_expiry_read_cases()),
+        (
+            "TTL exact expiry",
+            outcome.ttl_exact_expiry_suppression_cases(),
+        ),
+        (
+            "TTL after expiry",
+            outcome.ttl_after_expiry_suppression_cases(),
+        ),
+        ("owned L0 install", outcome.immutable_l0_install_cases()),
+        ("owned L1 install", outcome.immutable_l1_install_cases()),
+        (
+            "owned L1 overlap rejection",
+            outcome.immutable_l1_overlap_rejection_cases(),
+        ),
+        (
+            "owned source attribution",
+            outcome.immutable_source_attribution_cases(),
+        ),
+        (
+            "inherited fork capture",
+            outcome.inherited_fork_capture_cases(),
+        ),
+        (
+            "inherited layer validation",
+            outcome.inherited_layer_validation_cases(),
+        ),
+        (
+            "inherited latest read",
+            outcome.inherited_latest_read_cases(),
+        ),
+        (
+            "inherited version read",
+            outcome.inherited_version_bounded_read_cases(),
+        ),
+        (
+            "inherited history read",
+            outcome.inherited_history_read_cases(),
+        ),
+        (
+            "inherited prefix scan",
+            outcome.inherited_prefix_scan_cases(),
+        ),
+        ("inherited range scan", outcome.inherited_range_scan_cases()),
+        (
+            "inherited key rewrite",
+            outcome.inherited_key_rewrite_cases(),
+        ),
+        (
+            "inherited child put shadow",
+            outcome.inherited_child_put_shadow_cases(),
+        ),
+        (
+            "inherited child tombstone shadow",
+            outcome.inherited_child_tombstone_shadow_cases(),
+        ),
+        (
+            "inherited post-fork invisibility",
+            outcome.inherited_post_fork_invisibility_cases(),
+        ),
+        (
+            "inherited chain",
+            outcome.inherited_chained_ancestry_cases(),
+        ),
+        (
+            "inherited timestamp read",
+            outcome.inherited_timestamp_read_cases(),
+        ),
+        (
+            "inherited timestamp point read",
+            outcome.inherited_timestamp_point_read_cases(),
+        ),
+        (
+            "inherited timestamp scan",
+            outcome.inherited_timestamp_scan_read_cases(),
+        ),
+        (
+            "inherited timestamp fork gate",
+            outcome.inherited_timestamp_fork_gate_cases(),
+        ),
+        (
+            "inherited timestamp child put shadow",
+            outcome.inherited_timestamp_child_put_shadow_cases(),
+        ),
+        (
+            "inherited timestamp child tombstone shadow",
+            outcome.inherited_timestamp_child_tombstone_shadow_cases(),
+        ),
+        ("inheritance model", outcome.inheritance_model_cases()),
+        (
+            "materialization attempt",
+            outcome.materialization_attempt_cases(),
+        ),
+        (
+            "successful materialization",
+            outcome.successful_materialization_cases(),
+        ),
+        (
+            "materialization latest parity",
+            outcome.materialization_latest_read_parity_cases(),
+        ),
+        (
+            "materialization timestamp parity",
+            outcome.materialization_timestamp_read_parity_cases(),
+        ),
+        (
+            "materialization history parity",
+            outcome.materialization_history_read_parity_cases(),
+        ),
+        (
+            "materialization prefix parity",
+            outcome.materialization_prefix_scan_parity_cases(),
+        ),
+        (
+            "materialization range parity",
+            outcome.materialization_range_scan_parity_cases(),
+        ),
+        (
+            "materialization tombstone preservation",
+            outcome.materialization_tombstone_preservation_cases(),
+        ),
+        (
+            "materialization TTL preservation",
+            outcome.materialization_ttl_preservation_cases(),
+        ),
+        ("L0 compaction", outcome.l0_compaction_candidate_cases()),
+        (
+            "L0 to L1 compaction",
+            outcome.l0_to_l1_compaction_candidate_cases(),
+        ),
+        (
+            "nonzero compaction",
+            outcome.nonzero_level_compaction_candidate_cases(),
+        ),
+        (
+            "compaction latest parity",
+            outcome.compaction_latest_parity_cases(),
+        ),
+        (
+            "compaction timestamp parity",
+            outcome.compaction_timestamp_parity_cases(),
+        ),
+        (
+            "compaction history parity",
+            outcome.compaction_history_parity_cases(),
+        ),
+        (
+            "compaction prefix parity",
+            outcome.compaction_prefix_scan_parity_cases(),
+        ),
+        (
+            "compaction range parity",
+            outcome.compaction_range_scan_parity_cases(),
+        ),
+        (
+            "snapshot install",
+            outcome.snapshot_single_branch_install_cases(),
+        ),
+        (
+            "snapshot latest parity",
+            outcome.snapshot_latest_parity_cases(),
+        ),
+        (
+            "snapshot timestamp parity",
+            outcome.snapshot_timestamp_parity_cases(),
+        ),
+        (
+            "snapshot history parity",
+            outcome.snapshot_history_parity_cases(),
+        ),
+        (
+            "snapshot prefix parity",
+            outcome.snapshot_prefix_scan_parity_cases(),
+        ),
+        (
+            "snapshot range parity",
+            outcome.snapshot_range_scan_parity_cases(),
+        ),
+        (
+            "snapshot tombstone preservation",
+            outcome.snapshot_tombstone_preservation_cases(),
+        ),
+        (
+            "snapshot TTL preservation",
+            outcome.snapshot_ttl_preservation_cases(),
+        ),
+        ("install model", outcome.install_model_cases()),
+    ];
+
+    for (label, count) in required {
+        assert!(count != 0, "seeded branch LSM script missed {label}");
+    }
 }

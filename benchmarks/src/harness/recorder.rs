@@ -99,8 +99,7 @@ impl ResultRecorder {
         std::fs::create_dir_all(&results_dir)?;
         let path = results_dir.join(&filename);
 
-        let json = serde_json::to_string_pretty(&report)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(&report).map_err(io::Error::other)?;
         std::fs::write(&path, json)?;
 
         eprintln!("Results saved to {}", path.display());

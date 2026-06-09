@@ -5,7 +5,7 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn branch_lsm_closeout_generated_harness_exposes_every_counter() {
@@ -81,6 +81,10 @@ fn branch_lsm_closeout_generated_harness_covers_required_category_groups() {
             "check_branch_reachability",
             "check_branch_compaction",
             "check_branch_snapshot_install",
+            "check_branch_lsm_reads_contract",
+            "check_branch_lsm_inheritance_contract",
+            "check_branch_lsm_install_contract",
+            "check_branch_lsm_fault_window_contract",
         ],
     );
 
@@ -107,6 +111,14 @@ fn branch_lsm_closeout_generated_harness_covers_required_category_groups() {
             "reachability_release_candidate_cases",
             "compaction_output_install_cases",
             "snapshot_single_branch_install_cases",
+            "branch_lsm_property_harness_runs_seeded_source_topologies",
+            "runtime_topology_scripts",
+            "assert_seeded_source_topology_outcome",
+            "inherited_timestamp_fork_gate_cases",
+            "materialization_tombstone_preservation_cases",
+            "materialization_ttl_preservation_cases",
+            "compaction_timestamp_parity_cases",
+            "snapshot_ttl_preservation_cases",
         ],
     );
 }
@@ -185,6 +197,7 @@ fn branch_lsm_closeout_source_guard_suite_covers_required_boundary_categories() 
             "branch_lsm_source_does_not_import_upper_layers_or_engines",
             "branch_lsm_source_does_not_use_product_dtos_or_payload_vocabulary",
             "branch_lsm_source_does_not_use_io_backend_or_lifecycle_apis",
+            "branch_lsm_implementation_avoids_architecture_labels",
             "branch_lsm_runtime_stays_crate_private",
             "branch_lsm_source_has_no_premature_behavior_entrypoints",
             "branch_lsm_source_guard_catches_required_forbidden_terms",
@@ -281,8 +294,103 @@ fn branch_lsm_closeout_fuzz_inventory_matches_branch_targets() {
     }
 }
 
+#[test]
+fn branch_lsm_closeout_benchmark_runner_records_source_shape_metrics() {
+    let crate_root = common::crate_root();
+    let repo_root = repository_root(&crate_root);
+    let runner_name = format!("storage_next_{}{}_scale.rs", 'l', 9);
+    let runner = read_file(&repo_root.join("benchmarks/src/bin").join(runner_name));
+
+    assert_contains_all(
+        "storage-next scale runner",
+        &runner,
+        &[
+            "source_shape_metrics",
+            "source_shape_metrics_json",
+            "point_source_probes_per_read",
+            "point_nonzero_table_probes_per_read",
+            "scan_source_cursors_per_call",
+            "scan_table_cursors_opened_per_call",
+            "scan_rows_visited_per_row_returned",
+            "l0_tables_per_million_rows_after_load",
+            "point_owned_nonzero_table_probes",
+            "scan_owned_nonzero_table_cursors_opened",
+            "scan_rows_returned",
+            "load_phase_trace",
+            "with_load_phase_context",
+            "benchmark_result_records_source_shape_metrics_with_load_context",
+            "source_shape_metrics_use_null_for_unavailable_denominators",
+            "git_commit",
+            "git_branch",
+            "git_dirty",
+            "hardware",
+        ],
+    );
+}
+
+#[test]
+fn branch_lsm_closeout_report_records_benchmark_and_deferral_evidence() {
+    let crate_root = common::crate_root();
+    let repo_root = repository_root(&crate_root);
+    let report =
+        read_file(&repo_root.join(
+            "docs/architecture/perf-tuning/storage-next-branch-lsm-runtime-parity-closeout.md",
+        ));
+
+    assert_contains_all(
+        "branch runtime parity closeout report",
+        &report,
+        &[
+            "Status: implementation guards complete; benchmark rerun required",
+            "storage-next-mechanics-parity-audit.md",
+            "storage-next-serving-path-parity-plan.md",
+            "Required Benchmark Commands",
+            "100K",
+            "1M",
+            "5M",
+            "10M",
+            "50M",
+            "100M",
+            "source-shape counters before throughput",
+            "source_shape_metrics",
+            "point_source_probes_per_read",
+            "point_nonzero_table_probes_per_read",
+            "scan_source_cursors_per_call",
+            "scan_table_cursors_opened_per_call",
+            "scan_rows_visited_per_row_returned",
+            "l0_tables_per_million_rows_after_load",
+            "Historical Benchmark Anchors",
+            "Source-Counter-Aware Rerun Gate",
+            "Deferred Findings",
+            "Owner",
+            "Replacement Proof",
+        ],
+    );
+
+    let referenced_reports = referenced_benchmark_result_paths(&report);
+    assert!(
+        referenced_reports.len() >= 4,
+        "branch runtime closeout should reference old and new historical benchmark anchors"
+    );
+    for report_path in referenced_reports {
+        assert!(
+            repo_root.join(&report_path).is_file(),
+            "referenced benchmark report should exist: {}",
+            report_path.display()
+        );
+    }
+}
+
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+fn repository_root(crate_root: &Path) -> PathBuf {
+    crate_root
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| panic!("locate repository root from {}", crate_root.display()))
+        .to_path_buf()
 }
 
 fn read_branch_test_sources(crate_root: &Path) -> String {
@@ -365,6 +473,20 @@ fn branch_lsm_counter_methods(testkit: &str) -> Vec<String> {
     counters.sort();
     counters.dedup();
     counters
+}
+
+fn referenced_benchmark_result_paths(report: &str) -> Vec<PathBuf> {
+    report
+        .split('`')
+        .filter(|segment| {
+            segment.starts_with("benchmarks/results/")
+                && Path::new(segment)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == Some("json")
+        })
+        .map(PathBuf::from)
+        .collect()
 }
 
 fn assert_enriched_corpus(crate_root: &Path, target: &str) {

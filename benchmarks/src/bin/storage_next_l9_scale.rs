@@ -91,9 +91,11 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
             let branch_id = discover_initial_branch(&mut open.runtime)?;
 
             let mut loaded = false;
+            let mut load_phase_context = None;
             if config.workloads.contains(&Workload::LoadSeq) || config.needs_loaded_data() {
                 let result = run_load_seq(&mut open.runtime, branch_id, scale, engine, &config)?;
                 loaded = true;
+                load_phase_context = result.load_phase_trace;
                 print_result(&result);
                 if config.workloads.contains(&Workload::LoadSeq) {
                     results.push(result.into_benchmark_result(&config));
@@ -104,7 +106,11 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
                 ensure_loaded(loaded, Workload::PointLatest);
                 let result = run_point_latest(&open.runtime, branch_id, scale, engine, &config)?;
                 print_result(&result);
-                results.push(result.into_benchmark_result(&config));
+                results.push(
+                    result
+                        .with_load_phase_context(load_phase_context)
+                        .into_benchmark_result(&config),
+                );
             }
 
             if config.workloads.contains(&Workload::PointLatestThroughput) {
@@ -112,14 +118,22 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
                 let result =
                     run_point_latest_throughput(&open.runtime, branch_id, scale, engine, &config)?;
                 print_result(&result);
-                results.push(result.into_benchmark_result(&config));
+                results.push(
+                    result
+                        .with_load_phase_context(load_phase_context)
+                        .into_benchmark_result(&config),
+                );
             }
 
             if config.workloads.contains(&Workload::ScanPrefix) {
                 ensure_loaded(loaded, Workload::ScanPrefix);
                 let result = run_scan_prefix(&open.runtime, branch_id, scale, engine, &config)?;
                 print_result(&result);
-                results.push(result.into_benchmark_result(&config));
+                results.push(
+                    result
+                        .with_load_phase_context(load_phase_context)
+                        .into_benchmark_result(&config),
+                );
             }
 
             if config.workloads.contains(&Workload::ScanRangeThroughput) {
@@ -127,7 +141,11 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
                 let result =
                     run_scan_range_throughput(&open.runtime, branch_id, scale, engine, &config)?;
                 print_result(&result);
-                results.push(result.into_benchmark_result(&config));
+                results.push(
+                    result
+                        .with_load_phase_context(load_phase_context)
+                        .into_benchmark_result(&config),
+                );
             }
 
             if config.workloads.contains(&Workload::BranchForkCurrent) {
@@ -135,7 +153,11 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
                 let result =
                     run_branch_fork_current(&mut open.runtime, branch_id, scale, engine, &config)?;
                 print_result(&result);
-                results.push(result.into_benchmark_result(&config));
+                results.push(
+                    result
+                        .with_load_phase_context(load_phase_context)
+                        .into_benchmark_result(&config),
+                );
             }
 
             let close_start = Instant::now();
@@ -218,7 +240,7 @@ fn run_load_seq(
                 .flush_every
                 .and_then(|flush_every| flush_at.checked_add(flush_every));
         }
-        if config.progress && written % progress_step(scale) == 0 {
+        if config.progress && written.is_multiple_of(progress_step(scale)) {
             eprintln!("  load progress: {}/{}", written, scale);
         }
     }
@@ -1095,8 +1117,17 @@ impl RunResult {
         self
     }
 
+    fn with_load_phase_context(mut self, load_phase_trace: Option<LoadPhaseTrace>) -> Self {
+        if self.load_phase_trace.is_none() {
+            self.load_phase_trace = load_phase_trace;
+        }
+        self
+    }
+
     fn into_benchmark_result(self, config: &Config) -> BenchmarkResult {
         let mut parameters = HashMap::new();
+        let operation_count = self.measurement.operation_count();
+        let load_phase_trace = self.load_phase_trace;
         parameters.insert(
             "engine".to_string(),
             serde_json::json!(self.engine.to_string()),
@@ -1124,7 +1155,7 @@ impl RunResult {
             serde_json::json!(config.scan_limit),
         );
         parameters.insert("seed".to_string(), serde_json::json!(config.seed));
-        if let Some(load_phase) = self.load_phase_trace {
+        if let Some(load_phase) = load_phase_trace {
             parameters.insert(
                 "load_phase_trace".to_string(),
                 serde_json::json!({
@@ -1138,6 +1169,15 @@ impl RunResult {
         }
         if let Some(perf_trace) = self.perf_trace {
             parameters.insert("perf_trace".to_string(), perf_trace_json(perf_trace));
+            parameters.insert(
+                "source_shape_metrics".to_string(),
+                source_shape_metrics_json(
+                    self.scale,
+                    operation_count,
+                    perf_trace,
+                    load_phase_trace,
+                ),
+            );
         }
 
         BenchmarkResult {
@@ -1412,6 +1452,68 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     serde_json::Value::Object(trace)
 }
 
+fn source_shape_metrics_json(
+    scale: usize,
+    operation_count: u64,
+    perf_trace: StoragePerfSnapshot,
+    load_phase_trace: Option<LoadPhaseTrace>,
+) -> serde_json::Value {
+    let point_source_probes = perf_trace
+        .point_active_probes()
+        .saturating_add(perf_trace.point_frozen_probes())
+        .saturating_add(perf_trace.point_owned_l0_table_probes())
+        .saturating_add(perf_trace.point_owned_nonzero_level_searches())
+        .saturating_add(perf_trace.point_inherited_layer_searches())
+        .saturating_add(perf_trace.point_inherited_l0_table_probes())
+        .saturating_add(perf_trace.point_inherited_nonzero_level_searches());
+    let point_nonzero_table_probes = perf_trace
+        .point_owned_nonzero_table_probes()
+        .saturating_add(perf_trace.point_inherited_nonzero_table_probes());
+    let scan_source_cursors = perf_trace
+        .scan_active_cursors()
+        .saturating_add(perf_trace.scan_frozen_cursors())
+        .saturating_add(perf_trace.scan_owned_l0_cursors())
+        .saturating_add(perf_trace.scan_owned_nonzero_level_cursors())
+        .saturating_add(perf_trace.scan_inherited_l0_cursors())
+        .saturating_add(perf_trace.scan_inherited_nonzero_level_cursors());
+    let scan_table_cursors_opened = perf_trace
+        .scan_owned_l0_cursors()
+        .saturating_add(perf_trace.scan_owned_nonzero_table_cursors_opened())
+        .saturating_add(perf_trace.scan_inherited_l0_cursors())
+        .saturating_add(perf_trace.scan_inherited_nonzero_table_cursors_opened());
+    let l0_tables_per_million_rows_after_load =
+        load_phase_trace.map_or(serde_json::Value::Null, |trace| {
+            ratio_json(
+                trace.maintenance_runs.saturating_mul(1_000_000),
+                scale as u64,
+            )
+        });
+
+    serde_json::json!({
+        "point_source_probes_per_read": ratio_json(point_source_probes, operation_count),
+        "point_nonzero_table_probes_per_read": ratio_json(point_nonzero_table_probes, operation_count),
+        "scan_source_cursors_per_call": ratio_json(scan_source_cursors, operation_count),
+        "scan_table_cursors_opened_per_call": ratio_json(scan_table_cursors_opened, operation_count),
+        "scan_rows_visited_per_row_returned": ratio_json(
+            perf_trace.scan_rows_visited(),
+            perf_trace.scan_rows_returned(),
+        ),
+        "l0_tables_per_million_rows_after_load": l0_tables_per_million_rows_after_load,
+        "assumptions": {
+            "operation_count": operation_count,
+            "l0_tables_after_load": "completed branch flush maintenance runs",
+        },
+    })
+}
+
+fn ratio_json(numerator: u64, denominator: u64) -> serde_json::Value {
+    if denominator == 0 {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(numerator as f64 / denominator as f64)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct LoadPhaseTrace {
     batch_build_ns: u64,
@@ -1450,6 +1552,13 @@ enum Measurement {
 }
 
 impl Measurement {
+    const fn operation_count(&self) -> u64 {
+        match self {
+            Self::Throughput { ops, .. } => *ops as u64,
+            Self::Latency(samples) => samples.samples as u64,
+        }
+    }
+
     fn into_metrics(self) -> BenchmarkMetrics {
         match self {
             Self::Throughput { elapsed, ops } => BenchmarkMetrics {
@@ -1516,7 +1625,7 @@ struct FastRng {
 impl FastRng {
     const fn new(seed: u64) -> Self {
         Self {
-            state: seed ^ 0x5DEE_CE66_D,
+            state: seed ^ 0x0005_DEEC_E66D,
         }
     }
 
@@ -1690,5 +1799,84 @@ impl std::error::Error for BenchmarkError {
             | Self::MissingInitialBranch
             | Self::MissingRow => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_result_records_source_shape_metrics_with_load_context() {
+        perf_trace::reset();
+        let config = Config::parse(std::iter::empty()).expect("default config");
+        let load_phase = LoadPhaseTrace {
+            maintenance_runs: 2,
+            maintenance_rows: 1_000,
+            ..LoadPhaseTrace::default()
+        };
+
+        let result = RunResult::throughput(
+            Workload::PointLatestThroughput,
+            Engine::Cache,
+            1_000,
+            5,
+            Duration::from_secs(1),
+        )
+        .with_load_phase_context(Some(load_phase))
+        .with_perf_trace(perf_trace::snapshot())
+        .into_benchmark_result(&config);
+
+        let load_trace = result
+            .parameters
+            .get("load_phase_trace")
+            .expect("load phase trace");
+        assert_eq!(load_trace["maintenance_runs"].as_u64(), Some(2));
+        assert_eq!(load_trace["maintenance_rows"].as_u64(), Some(1_000));
+
+        let metrics = result
+            .parameters
+            .get("source_shape_metrics")
+            .expect("source shape metrics");
+        assert_eq!(metrics["point_source_probes_per_read"].as_f64(), Some(0.0));
+        assert_eq!(
+            metrics["point_nonzero_table_probes_per_read"].as_f64(),
+            Some(0.0)
+        );
+        assert_eq!(metrics["scan_source_cursors_per_call"].as_f64(), Some(0.0));
+        assert_eq!(
+            metrics["scan_table_cursors_opened_per_call"].as_f64(),
+            Some(0.0)
+        );
+        assert!(metrics["scan_rows_visited_per_row_returned"].is_null());
+        assert_eq!(
+            metrics["l0_tables_per_million_rows_after_load"].as_f64(),
+            Some(2_000.0)
+        );
+        assert_eq!(metrics["assumptions"]["operation_count"].as_u64(), Some(5));
+    }
+
+    #[test]
+    fn source_shape_metrics_use_null_for_unavailable_denominators() {
+        perf_trace::reset();
+        let metrics = source_shape_metrics_json(0, 0, perf_trace::snapshot(), None);
+
+        assert!(metrics["point_source_probes_per_read"].is_null());
+        assert!(metrics["point_nonzero_table_probes_per_read"].is_null());
+        assert!(metrics["scan_source_cursors_per_call"].is_null());
+        assert!(metrics["scan_table_cursors_opened_per_call"].is_null());
+        assert!(metrics["scan_rows_visited_per_row_returned"].is_null());
+        assert!(metrics["l0_tables_per_million_rows_after_load"].is_null());
+
+        let load_metrics = source_shape_metrics_json(
+            0,
+            0,
+            perf_trace::snapshot(),
+            Some(LoadPhaseTrace {
+                maintenance_runs: 1,
+                ..LoadPhaseTrace::default()
+            }),
+        );
+        assert!(load_metrics["l0_tables_per_million_rows_after_load"].is_null());
     }
 }
