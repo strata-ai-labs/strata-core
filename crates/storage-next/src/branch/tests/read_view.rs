@@ -53,7 +53,7 @@ fn branch_read_view_is_pinned_across_append_and_rotation() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn branch_read_view_capture_pins_source_handles_without_row_copies() {
+fn branch_read_view_capture_pins_sources_across_later_mutations() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(147);
     let parent = branch_id(148);

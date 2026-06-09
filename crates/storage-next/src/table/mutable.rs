@@ -57,7 +57,7 @@ struct TableMemoryState {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MutableTable {
-    inner: Arc<TableMemoryState>,
+    inner: TableMemoryState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,8 +72,8 @@ impl MutableTable {
         Self::default()
     }
 
-    fn inner_mut(&mut self) -> &mut TableMemoryState {
-        Arc::make_mut(&mut self.inner)
+    pub(crate) fn snapshot(&self) -> Self {
+        self.clone()
     }
 
     pub(crate) fn insert_row(&mut self, row: StorageRow) -> TableRuntimeResult<()> {
@@ -91,7 +91,7 @@ impl MutableTable {
 
         let row_size = row.approximate_size_bytes();
         let commit_version = row.commit_version();
-        let inner = self.inner_mut();
+        let inner = &mut self.inner;
         inner.rows.insert(key, row);
         inner.approximate_size_bytes = inner.approximate_size_bytes.saturating_add(row_size);
         update_commit_range(&mut inner.min_commit, &mut inner.max_commit, commit_version);
@@ -111,7 +111,7 @@ impl MutableTable {
         baseline: MutableTableAppendBaseline,
         inserted_keys: &[TableInternalKeyBytes],
     ) {
-        let inner = self.inner_mut();
+        let inner = &mut self.inner;
         for key in inserted_keys {
             inner.rows.remove(key);
         }
@@ -212,7 +212,9 @@ impl MutableTable {
     }
 
     pub(crate) fn freeze(self) -> FrozenTable {
-        FrozenTable { inner: self.inner }
+        FrozenTable {
+            inner: Arc::new(self.inner),
+        }
     }
 }
 
