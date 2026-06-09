@@ -70,6 +70,7 @@ reason, and replacement proof or later slice that will close it.
 12. `m4p-l6-branch-lsm-runtime-parity-test-plan.md`
 13. `m4p-l6j-l0-l7-compaction-closure-implementation-plan.md`
 14. `m4p-l6j-l0-l7-compaction-closure-test-plan.md`
+15. `m4p-l6k-table-compaction-hot-path-implementation-and-test-plan.md`
 
 ## Initial Slice Queue
 
