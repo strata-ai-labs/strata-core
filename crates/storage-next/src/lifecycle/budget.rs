@@ -35,7 +35,8 @@
 //! admission ordering and would need synchronized reservations to hold
 //! under multi-threaded admission.
 
-use super::{LifecycleError, LifecycleResult, MaintenanceExecutorStatus};
+use super::{LifecycleError, LifecycleLowerLayer, LifecycleResult, MaintenanceExecutorStatus};
+use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBranchApplyTarget, CommitLowerLayer, CommitRuntimeError, CommitRuntimeResult,
@@ -145,6 +146,21 @@ pub(crate) struct StorageBudgetReservation {
 pub(crate) struct BudgetedCommitBranch<'a> {
     branch: &'a mut BranchLocalState,
     ledger: &'a StorageBudgetLedger,
+}
+
+pub(crate) fn branch_config_with_storage_budget(
+    branch_config: BranchRuntimeConfig,
+    budget: StorageRuntimeBudget,
+) -> LifecycleResult<BranchRuntimeConfig> {
+    branch_config
+        .with_active_rotation_bytes(active_rotation_bytes_from_budget(budget))
+        .map_err(|source| {
+            LifecycleError::lower_layer_with(
+                LifecycleLowerLayer::BranchRuntime,
+                "branch configuration rejected active mutable budget",
+                source,
+            )
+        })
 }
 
 impl StorageRuntimeBudget {
@@ -620,6 +636,26 @@ fn require_active_rows_budget(
 ) -> LifecycleResult<()> {
     let requested = estimate_rows_active_bytes(rows)?;
     let current = branch.active().approximate_size_bytes() as u64;
+    let projected =
+        current
+            .checked_add(requested)
+            .ok_or(LifecycleError::StorageBudgetExceeded {
+                pool: StorageBudgetPool::ActiveMutable,
+                requested_bytes: requested,
+                used_bytes: current,
+                limit_bytes: ledger
+                    .budget()
+                    .pool_limit_bytes(StorageBudgetPool::ActiveMutable),
+                requested_count: 0,
+                used_count: 0,
+                limit_count: None,
+                reason: "active mutable byte accounting overflowed",
+            })?;
+    if projected >= branch.config().active_rotation_bytes() as u64
+        && branch.frozen().len() < branch.config().max_frozen_tables()
+    {
+        return require_projected_rotation_budget(ledger, branch, projected);
+    }
     require_projected_usage(
         ledger.budget(),
         StorageBudgetPool::ActiveMutable,
@@ -628,6 +664,24 @@ fn require_active_rows_budget(
         requested,
         0,
         "commit would exceed active mutable storage budget",
+    )
+}
+
+fn require_projected_rotation_budget(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+    projected_active_bytes: u64,
+) -> LifecycleResult<()> {
+    let frozen_bytes = frozen_bytes(branch)?;
+    let frozen_count = u64::try_from(branch.frozen().len()).unwrap_or(u64::MAX);
+    require_projected_usage(
+        ledger.budget(),
+        StorageBudgetPool::FrozenMutable,
+        frozen_bytes,
+        frozen_count,
+        projected_active_bytes,
+        1,
+        "rotation after commit would exceed frozen mutable storage budget",
     )
 }
 
@@ -848,6 +902,10 @@ fn check_available(
         });
     }
     Ok(())
+}
+
+fn active_rotation_bytes_from_budget(budget: StorageRuntimeBudget) -> usize {
+    usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable)).unwrap_or(usize::MAX)
 }
 
 const fn empty_budget_counters() -> StorageBudgetCounters {

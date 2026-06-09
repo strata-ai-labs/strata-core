@@ -332,17 +332,17 @@ fn active_append_under_budget_succeeds() {
 }
 
 #[test]
-fn active_append_over_budget_rejects_before_mutation() {
+fn rotation_budget_rejects_before_mutation() {
     let branch = branch_id(0x21);
-    let mut runtime = open_cache_runtime(branch, storage_budget_with_active(128));
+    let mut runtime = open_cache_runtime(branch, storage_budget_with_active_and_frozen(128, 64));
     let key = physical_key(branch, b"large-active");
     let batch = put_batch(branch, key.clone(), vec![0x55; 1024]);
 
     let error = runtime
         .execute_cache_commit(batch, CommitBranchGenerationGuard::not_supplied())
-        .expect_err("active budget rejects");
+        .expect_err("rotation budget rejects");
 
-    assert_budget_error(&error, StorageBudgetPool::ActiveMutable);
+    assert_budget_error(&error, StorageBudgetPool::FrozenMutable);
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
     assert!(runtime.branch_state().is_empty());
     assert!(runtime
@@ -704,7 +704,15 @@ fn flush_request(branch: BranchId, suffix: &str) -> FlushFrozenRequest {
 }
 
 fn storage_budget_with_active(active_bytes: u64) -> StorageRuntimeBudget {
+    storage_budget_with_active_and_frozen(active_bytes, 8 * 1024)
+}
+
+fn storage_budget_with_active_and_frozen(
+    active_bytes: u64,
+    frozen_bytes: u64,
+) -> StorageRuntimeBudget {
     let mut parts = budget_parts_with_active(active_bytes);
+    parts.frozen_mutable_bytes = frozen_bytes;
     parts.total_bytes = pool_sum(parts);
     StorageRuntimeBudget::from_parts(parts).expect("budget")
 }

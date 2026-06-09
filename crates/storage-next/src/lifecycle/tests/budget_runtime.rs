@@ -385,6 +385,43 @@ fn rotate_active_under_frozen_budget_succeeds() {
 }
 
 #[test]
+fn active_budget_crossing_rotates_after_commit() {
+    let branch = branch_id(0x63);
+    let mut runtime = open_cache_runtime(branch, storage_budget(128));
+    let key = physical_key(branch, b"inline-rotate");
+
+    runtime
+        .execute_cache_commit(
+            put_batch(branch, key.clone(), vec![0x11; 1024]),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit rotates active table");
+
+    assert!(runtime
+        .read_view()
+        .expect("view")
+        .latest(&key)
+        .expect("read")
+        .is_some());
+    assert_eq!(runtime.branch_state().active_row_count(), 0);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 1);
+    assert_eq!(
+        runtime
+            .budget_snapshot()
+            .usage(StorageBudgetPool::ActiveMutable)
+            .used_bytes(),
+        0
+    );
+    assert_eq!(
+        runtime
+            .budget_snapshot()
+            .usage(StorageBudgetPool::FrozenMutable)
+            .used_count(),
+        1
+    );
+}
+
+#[test]
 fn flush_releases_frozen_budget_after_install() {
     let branch = branch_id(0x42);
     let mut runtime = frozen_cache_runtime(branch, 16 * 1024);
@@ -1174,17 +1211,17 @@ fn low_memory_profile_defers_large_compaction_artifact() {
 }
 
 #[test]
-fn active_append_failure_does_not_advance_commit_visibility() {
+fn rotation_budget_failure_does_not_advance_commit_visibility() {
     let branch = branch_id(0x60);
-    let mut runtime = open_cache_runtime(branch, storage_budget(128));
+    let mut runtime = open_cache_runtime(branch, storage_budget_with_frozen(128, 64));
     let key = physical_key(branch, b"visibility-stays");
     let batch = put_batch(branch, key.clone(), vec![0xaa; 1024]);
 
     let error = runtime
         .execute_cache_commit(batch, CommitBranchGenerationGuard::not_supplied())
-        .expect_err("active budget rejects oversize commit");
+        .expect_err("rotation budget rejects oversize commit");
 
-    assert_budget_error(&error, StorageBudgetPool::ActiveMutable);
+    assert_budget_error(&error, StorageBudgetPool::FrozenMutable);
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
     assert!(runtime.branch_state().is_empty());
     assert!(runtime
@@ -1200,12 +1237,10 @@ fn active_append_failure_does_not_advance_commit_visibility() {
 }
 
 #[test]
-fn cache_and_durable_active_budget_behavior_match() {
+fn cache_and_durable_rotation_budget_behavior_match() {
     let cache_branch = branch_id(0x61);
     let durable_branch = branch_id(0x62);
-    let mut parts = budget_parts(128);
-    parts.total_bytes = pool_sum(parts);
-    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+    let budget = storage_budget_with_frozen(128, 64);
     let mut cache = open_cache_runtime(cache_branch, budget);
     let backend = super::checkpoint::shared::CheckpointTestBackend::new();
     let mut durable = open_durable_runtime(durable_branch, &backend, budget);
@@ -1219,7 +1254,7 @@ fn cache_and_durable_active_budget_behavior_match() {
             ),
             CommitBranchGenerationGuard::not_supplied(),
         )
-        .expect_err("cache active budget rejects oversize commit");
+        .expect_err("cache rotation budget rejects oversize commit");
     let durable_error = durable
         .execute_durable_commit(
             durable_put_batch(
@@ -1229,10 +1264,10 @@ fn cache_and_durable_active_budget_behavior_match() {
             ),
             CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
         )
-        .expect_err("durable active budget rejects oversize commit");
+        .expect_err("durable rotation budget rejects oversize commit");
 
-    assert_budget_error(&cache_error, StorageBudgetPool::ActiveMutable);
-    assert_budget_error(&durable_error, StorageBudgetPool::ActiveMutable);
+    assert_budget_error(&cache_error, StorageBudgetPool::FrozenMutable);
+    assert_budget_error(&durable_error, StorageBudgetPool::FrozenMutable);
     assert_eq!(cache.visible_version(), CommitVersion::ZERO);
     assert_eq!(durable.visible_version(), CommitVersion::ZERO);
     assert!(cache.branch_state().is_empty());
@@ -1458,7 +1493,12 @@ impl std::fmt::Display for BudgetRuntimeFailure {
 impl Error for BudgetRuntimeFailure {}
 
 fn storage_budget(active_bytes: u64) -> StorageRuntimeBudget {
+    storage_budget_with_frozen(active_bytes, 8 * 1024)
+}
+
+fn storage_budget_with_frozen(active_bytes: u64, frozen_bytes: u64) -> StorageRuntimeBudget {
     let mut parts = budget_parts(active_bytes);
+    parts.frozen_mutable_bytes = frozen_bytes;
     parts.total_bytes = pool_sum(parts);
     StorageRuntimeBudget::from_parts(parts).expect("budget")
 }

@@ -1,6 +1,7 @@
 //! Cache-mode lifecycle runtime.
 
 use super::{
+    branch_config_with_storage_budget,
     compaction::{
         bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
         compact_cache_branch_to_fixed_point, compaction_request_from_maintenance_task,
@@ -121,6 +122,8 @@ impl<S> LifecycleCacheRuntime<S> {
         state.transition(LifecycleTransitionTrigger::OpenRequested)?;
 
         let capability_outcome = validate_backend_capabilities_for_open(request.plan(), backend)?;
+        let budget = StorageBudgetLedger::new(request.plan.lifecycle_config().storage_budget())?;
+        let branch_config = branch_config_with_storage_budget(branch_config, budget.budget())?;
         let branch = BranchLocalState::new(request.initial_branch_id(), branch_config)
             .map_err(branch_error)?;
         let branch_catalog = LifecycleBranchCatalog::with_existing_branch(
@@ -129,7 +132,6 @@ impl<S> LifecycleCacheRuntime<S> {
             None,
         )?;
         commit_config.validate().map_err(commit_error)?;
-        let budget = StorageBudgetLedger::new(request.plan.lifecycle_config().storage_budget())?;
         let open_outcome = StorageOpenOutcome::new(
             StorageMode::Cache,
             StorageOpenDisposition::Created,

@@ -1088,6 +1088,147 @@ fn branch_local_state_atomic_batch_append_reports_batch_state_after_success() {
 }
 
 #[test]
+fn branch_local_state_rotates_active_after_single_append_crosses_size_threshold() {
+    let branch = branch_id(35);
+    let config = BranchRuntimeConfig::new(7, 64, 4)
+        .expect("config")
+        .with_active_rotation_bytes(1)
+        .expect("rotation threshold");
+    let mut state = BranchLocalState::new(branch, config).expect("state");
+    let row = storage_row_with(
+        branch,
+        b"auto-rotate-single".to_vec(),
+        1,
+        100,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+
+    let outcome = state
+        .append_committed_row(row.clone())
+        .expect("append triggers rotation");
+
+    assert_eq!(outcome.active_rows(), 0);
+    assert_eq!(state.active_row_count(), 0);
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(
+        state
+            .capture_read_view()
+            .expect("read view")
+            .latest(&physical_key(branch, b"auto-rotate-single".to_vec()))
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &row
+    );
+}
+
+#[test]
+fn branch_local_state_rotates_active_after_batch_append_crosses_size_threshold() {
+    let branch = branch_id(35);
+    let config = BranchRuntimeConfig::new(7, 64, 4)
+        .expect("config")
+        .with_active_rotation_bytes(1)
+        .expect("rotation threshold");
+    let mut state = BranchLocalState::new(branch, config).expect("state");
+    let first = storage_row_with(
+        branch,
+        b"auto-rotate-batch-first".to_vec(),
+        1,
+        100,
+        Timestamp::EPOCH,
+        b"first".to_vec(),
+    );
+    let second = storage_row_with(
+        branch,
+        b"auto-rotate-batch-second".to_vec(),
+        2,
+        200,
+        Timestamp::EPOCH,
+        b"second".to_vec(),
+    );
+
+    let outcome = state
+        .append_committed_rows_atomically(vec![first.clone(), second.clone()])
+        .expect("batch append triggers rotation");
+
+    assert_eq!(outcome.appended_rows(), 2);
+    assert_eq!(outcome.active_rows(), 0);
+    assert_eq!(state.active_row_count(), 0);
+    assert_eq!(state.frozen_table_count(), 1);
+    let view = state.capture_read_view().expect("read view");
+    assert_eq!(
+        view.latest(&physical_key(branch, b"auto-rotate-batch-first".to_vec()))
+            .expect("latest first")
+            .expect("visible first")
+            .row(),
+        &first
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"auto-rotate-batch-second".to_vec()))
+            .expect("latest second")
+            .expect("visible second")
+            .row(),
+        &second
+    );
+}
+
+#[test]
+fn branch_local_state_keeps_active_rows_when_inline_rotation_hits_frozen_limit() {
+    let branch = branch_id(35);
+    let config = BranchRuntimeConfig::new(7, 64, 1)
+        .expect("config")
+        .with_active_rotation_bytes(1)
+        .expect("rotation threshold");
+    let mut state = BranchLocalState::new(branch, config).expect("state");
+    let frozen_row = storage_row_with(
+        branch,
+        b"already-frozen".to_vec(),
+        1,
+        100,
+        Timestamp::EPOCH,
+        b"frozen".to_vec(),
+    );
+    let active_row = storage_row_with(
+        branch,
+        b"stays-active".to_vec(),
+        2,
+        200,
+        Timestamp::EPOCH,
+        b"active".to_vec(),
+    );
+
+    state
+        .append_committed_row(frozen_row.clone())
+        .expect("first append rotates");
+    assert_eq!(state.active_row_count(), 0);
+    assert_eq!(state.frozen_table_count(), 1);
+
+    let outcome = state
+        .append_committed_row(active_row.clone())
+        .expect("append preserves active after rotation skip");
+
+    assert_eq!(outcome.active_rows(), 1);
+    assert_eq!(state.active_row_count(), 1);
+    assert_eq!(state.frozen_table_count(), 1);
+    let view = state.capture_read_view().expect("read view");
+    assert_eq!(
+        view.latest(&physical_key(branch, b"already-frozen".to_vec()))
+            .expect("latest frozen")
+            .expect("visible frozen")
+            .row(),
+        &frozen_row
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"stays-active".to_vec()))
+            .expect("latest active")
+            .expect("visible active")
+            .row(),
+        &active_row
+    );
+}
+
+#[test]
 fn branch_local_state_rotation_preserves_rows_and_newest_first_order() {
     let branch = branch_id(35);
     let mut state =

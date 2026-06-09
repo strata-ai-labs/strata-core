@@ -109,6 +109,7 @@ impl BranchLocalState {
             .insert_row(row)
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         self.track_committed_row(commit_version, commit_timestamp, is_tombstone);
+        self.rotate_active_if_size_threshold_reached();
 
         Ok(BranchAppendOutcome {
             branch_id: self.branch_id,
@@ -129,7 +130,6 @@ impl BranchLocalState {
         let validated_rows = self.validate_committed_row_batch(rows);
         perf_trace::record_append_batch_validate_elapsed(validate_timer);
         let validated_rows = validated_rows?;
-        let active_rows_before = self.active.len();
         let active_snapshot = self.active.append_baseline();
         let metadata_snapshot = BranchAppendMetadataSnapshot::capture(self);
         let mut inserted_keys = Vec::with_capacity(validated_rows.len());
@@ -155,13 +155,11 @@ impl BranchLocalState {
         perf_trace::record_append_insert_rows_elapsed(insert_timer);
 
         perf_trace::record_append_rows_applied(inserted_keys.len());
+        let appended_rows = inserted_keys.len();
+        self.rotate_active_if_size_threshold_reached();
         let outcome = BranchAppendBatchOutcome {
             branch_id: self.branch_id,
-            appended_rows: self.active.len().checked_sub(active_rows_before).ok_or(
-                BranchRuntimeError::InvalidBranchState {
-                    reason: "active row count regressed during append",
-                },
-            )?,
+            appended_rows,
             active_rows: self.active.len(),
             approximate_active_bytes: self.active.approximate_size_bytes(),
             max_commit_version: self.max_commit_version,

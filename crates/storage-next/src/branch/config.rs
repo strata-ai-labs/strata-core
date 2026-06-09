@@ -5,12 +5,14 @@ use super::error::{BranchRuntimeError, BranchRuntimeResult};
 const DEFAULT_MAX_LEVEL_COUNT: usize = 8;
 const DEFAULT_MAX_INHERITED_LAYERS: usize = 64;
 const DEFAULT_MAX_FROZEN_TABLES: usize = 32;
+const DEFAULT_ACTIVE_ROTATION_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BranchRuntimeConfig {
     level_count: usize,
     inherited_layers: usize,
     frozen_tables: usize,
+    active_rotation_bytes: usize,
 }
 
 impl BranchRuntimeConfig {
@@ -23,9 +25,19 @@ impl BranchRuntimeConfig {
             level_count: max_level_count,
             inherited_layers: max_inherited_layers,
             frozen_tables: max_frozen_tables,
+            active_rotation_bytes: DEFAULT_ACTIVE_ROTATION_BYTES,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    pub(crate) fn with_active_rotation_bytes(
+        mut self,
+        active_rotation_bytes: usize,
+    ) -> BranchRuntimeResult<Self> {
+        self.active_rotation_bytes = active_rotation_bytes;
+        self.validate()?;
+        Ok(self)
     }
 
     pub(crate) const fn max_level_count(self) -> usize {
@@ -38,6 +50,10 @@ impl BranchRuntimeConfig {
 
     pub(crate) const fn max_frozen_tables(self) -> usize {
         self.frozen_tables
+    }
+
+    pub(crate) const fn active_rotation_bytes(self) -> usize {
+        self.active_rotation_bytes
     }
 
     pub(crate) fn validate(self) -> BranchRuntimeResult<()> {
@@ -62,6 +78,12 @@ impl BranchRuntimeConfig {
         if self.frozen_tables == 0 {
             return Err(BranchRuntimeError::InvalidConfig {
                 field: "max_frozen_tables",
+                reason: "must be nonzero",
+            });
+        }
+        if self.active_rotation_bytes == 0 {
+            return Err(BranchRuntimeError::InvalidConfig {
+                field: "active_rotation_bytes",
                 reason: "must be nonzero",
             });
         }

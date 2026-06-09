@@ -44,4 +44,13 @@ impl BranchLocalState {
             frozen_tables: self.frozen.len(),
         }
     }
+
+    pub(crate) fn rotate_active_if_size_threshold_reached(
+        &mut self,
+    ) -> Option<BranchRotationOutcome> {
+        if self.active.approximate_size_bytes() < self.config.active_rotation_bytes() {
+            return None;
+        }
+        Some(self.rotate_active())
+    }
 }

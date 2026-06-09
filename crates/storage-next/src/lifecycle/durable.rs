@@ -1,11 +1,12 @@
 //! Durable-local lifecycle service assembly.
 
 use super::{
-    stage_table_manifest_for_branch, validate_backend_capabilities_for_open,
-    LifecycleCapabilityOutcome, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
-    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine,
-    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageBudgetLedger,
-    StorageMode, StorageOpenDisposition, StorageOpenPlan,
+    branch_config_with_storage_budget, stage_table_manifest_for_branch,
+    validate_backend_capabilities_for_open, LifecycleCapabilityOutcome,
+    LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer, LifecycleOperationKind,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleTableManifestRecoveryStage,
+    LifecycleTransitionTrigger, StorageBudgetLedger, StorageMode, StorageOpenDisposition,
+    StorageOpenPlan,
 };
 use crate::backend::{
     Backend, BackendError, BackendHandle, BackendWriterGuard, PublishFailureKind,
@@ -326,9 +327,11 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         )
         .map_err(wal_error)?;
 
-        let branch = BranchLocalState::new(request.initial_branch_id(), request.branch_config())
-            .map_err(branch_error)?;
         let budget = StorageBudgetLedger::new(request.plan().lifecycle_config().storage_budget())?;
+        let branch_config =
+            branch_config_with_storage_budget(request.branch_config(), budget.budget())?;
+        let branch = BranchLocalState::new(request.initial_branch_id(), branch_config)
+            .map_err(branch_error)?;
         let mut registry = CommitBranchRegistry::new();
         registry
             .register_active(request.initial_branch_id(), request.branch_generation())

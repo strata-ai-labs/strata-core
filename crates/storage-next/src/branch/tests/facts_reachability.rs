@@ -6,11 +6,16 @@ fn branch_runtime_config_rejects_unusable_zero_limits() {
     assert_eq!(default_config.max_level_count(), 8);
     assert_eq!(default_config.max_inherited_layers(), 64);
     assert_eq!(default_config.max_frozen_tables(), 32);
+    assert_eq!(default_config.active_rotation_bytes(), 64 * 1024 * 1024);
 
-    let explicit = BranchRuntimeConfig::new(3, 2, 8).expect("valid branch config");
+    let explicit = BranchRuntimeConfig::new(3, 2, 8)
+        .expect("valid branch config")
+        .with_active_rotation_bytes(4096)
+        .expect("active rotation config");
     assert_eq!(explicit.max_level_count(), 3);
     assert_eq!(explicit.max_inherited_layers(), 2);
     assert_eq!(explicit.max_frozen_tables(), 8);
+    assert_eq!(explicit.active_rotation_bytes(), 4096);
 
     assert_invalid_config_field(BranchRuntimeConfig::new(0, 2, 8), "max_level_count");
     assert_invalid_config_field(
@@ -19,6 +24,12 @@ fn branch_runtime_config_rejects_unusable_zero_limits() {
     );
     assert_invalid_config_field(BranchRuntimeConfig::new(3, 0, 8), "max_inherited_layers");
     assert_invalid_config_field(BranchRuntimeConfig::new(3, 2, 0), "max_frozen_tables");
+    assert_invalid_config_field(
+        BranchRuntimeConfig::new(3, 2, 8)
+            .expect("base config")
+            .with_active_rotation_bytes(0),
+        "active_rotation_bytes",
+    );
 }
 
 #[test]
