@@ -275,6 +275,201 @@ fn durable_compaction_manifest_excludes_replaced_inputs() {
 }
 
 #[test]
+fn durable_compaction_metadata_promotion_updates_manifest_without_table_publish() {
+    let branch = branch_id(0x6b);
+    let backend = CheckpointTestBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    install_l0_table(
+        runtime.branch_state_mut(),
+        branch,
+        "durable-promote-left",
+        vec![put_row(branch, b"left", 1, 1_000, b"left")],
+    );
+    install_l0_table(
+        runtime.branch_state_mut(),
+        branch,
+        "durable-promote-right",
+        vec![put_row(branch, b"right", 2, 2_000, b"right")],
+    );
+    let first_nonzero_level = BranchLevel::new(1);
+    let target_level = BranchLevel::new(2);
+
+    let rewrite_request = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "durable-promote-rewrite",
+    )
+    .expect("rewrite request");
+    let rewrite_outcome = runtime
+        .compact_branch_tables(&rewrite_request)
+        .expect("durable rewrite");
+    let table_object_calls_before_promotion = backend.table_object_create_calls();
+    let manifest_calls_before_promotion = backend.table_manifest_replace_calls();
+
+    let promotion_request = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: first_nonzero_level,
+            table_index: 0,
+        },
+        "durable-promote",
+    )
+    .expect("promotion request");
+    let outcome = runtime
+        .compact_branch_tables(&promotion_request)
+        .expect("metadata promotion");
+    let manifest = runtime
+        .services()
+        .table_manifest()
+        .load_current(branch)
+        .expect("load manifest")
+        .expect("manifest");
+    let branch_outcome = outcome.branch_outcome();
+
+    assert_eq!(
+        rewrite_outcome.status(),
+        LifecycleCompactionStatus::CompletedDurable
+    );
+    assert_eq!(
+        outcome.status(),
+        LifecycleCompactionStatus::CompletedDurable
+    );
+    assert!(outcome.plan().is_metadata_promotion());
+    assert!(outcome.durable_output_objects().is_empty());
+    assert!(branch_outcome.table_report().is_none());
+    assert_eq!(branch_outcome.removed_refs().len(), 1);
+    assert_eq!(branch_outcome.output_refs().len(), 1);
+    assert_eq!(
+        branch_outcome.removed_refs()[0].table_identity(),
+        branch_outcome.output_refs()[0].table_identity()
+    );
+    assert_eq!(
+        backend.table_object_create_calls(),
+        table_object_calls_before_promotion
+    );
+    assert_eq!(
+        backend.table_manifest_replace_calls(),
+        manifest_calls_before_promotion + 1
+    );
+    assert!(
+        runtime.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].is_empty()
+    );
+    assert_eq!(
+        runtime.branch_state().owned_levels()[usize::from(target_level.raw())].len(),
+        1
+    );
+    assert_eq!(manifest.levels().len(), 1);
+    assert_eq!(manifest.levels()[0].level(), target_level);
+    assert_eq!(manifest.levels()[0].tables().len(), 1);
+    assert_eq!(
+        manifest.levels()[0].tables()[0].table_identity(),
+        branch_outcome.output_refs()[0].table_identity()
+    );
+
+    let promoted_identity = branch_outcome.output_refs()[0].table_identity().clone();
+    drop(runtime);
+    let reopened = open_runtime(branch, &backend);
+    assert!(
+        reopened.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].is_empty()
+    );
+    assert_eq!(
+        reopened.branch_state().owned_levels()[usize::from(target_level.raw())].len(),
+        1
+    );
+    assert_eq!(
+        reopened.branch_state().owned_levels()[usize::from(target_level.raw())][0]
+            .descriptor()
+            .identity(),
+        &promoted_identity
+    );
+    assert_eq!(
+        latest_value_from_state(reopened.branch_state(), branch, b"right"),
+        Some(b"right".to_vec())
+    );
+}
+
+#[test]
+fn durable_compaction_metadata_promotion_manifest_failure_uses_previous_manifest_on_reopen() {
+    let branch = branch_id(0x6c);
+    let backend = CheckpointTestBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    install_l0_table(
+        runtime.branch_state_mut(),
+        branch,
+        "promotion-debt-left",
+        vec![put_row(branch, b"left", 1, 1_000, b"left")],
+    );
+    install_l0_table(
+        runtime.branch_state_mut(),
+        branch,
+        "promotion-debt-right",
+        vec![put_row(branch, b"right", 2, 2_000, b"right")],
+    );
+    let first_nonzero_level = BranchLevel::new(1);
+    let target_level = BranchLevel::new(2);
+
+    let rewrite_request = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "promotion-debt-rewrite",
+    )
+    .expect("rewrite request");
+    runtime
+        .compact_branch_tables(&rewrite_request)
+        .expect("durable rewrite");
+    assert_eq!(backend.table_manifest_replace_calls(), 1);
+    let table_object_calls_before_promotion = backend.table_object_create_calls();
+    backend.fail_table_manifest_replacement_on_call(2);
+
+    let promotion_request = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: first_nonzero_level,
+            table_index: 0,
+        },
+        "promotion-debt",
+    )
+    .expect("promotion request");
+    let outcome = runtime
+        .compact_branch_tables(&promotion_request)
+        .expect("manifest debt");
+
+    assert_eq!(
+        outcome.status(),
+        LifecycleCompactionStatus::CompletedManifestDebt
+    );
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(
+        backend.table_object_create_calls(),
+        table_object_calls_before_promotion
+    );
+    assert_eq!(backend.table_manifest_replace_calls(), 2);
+    assert!(
+        runtime.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].is_empty()
+    );
+    assert_eq!(
+        runtime.branch_state().owned_levels()[usize::from(target_level.raw())].len(),
+        1
+    );
+    assert_eq!(
+        latest_value_from_state(runtime.branch_state(), branch, b"right"),
+        Some(b"right".to_vec())
+    );
+
+    drop(runtime);
+    let reopened = open_runtime(branch, &backend);
+    assert_eq!(
+        reopened.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].len(),
+        1
+    );
+    assert!(reopened.branch_state().owned_levels()[usize::from(target_level.raw())].is_empty());
+    assert_eq!(
+        latest_value_from_state(reopened.branch_state(), branch, b"right"),
+        Some(b"right".to_vec())
+    );
+}
+
+#[test]
 fn durable_compaction_catalog_marks_replaced_inputs_retained() {
     let branch = branch_id(0xbe);
     let (_, outcome) = successful_compaction(branch, "retained-inputs");

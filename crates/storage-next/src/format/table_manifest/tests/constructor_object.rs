@@ -403,7 +403,7 @@ fn table_manifest_rejects_cross_branch_table_objects() {
 }
 
 #[test]
-fn table_manifest_rejects_wrong_table_object_shape_or_level() {
+fn table_manifest_rejects_wrong_table_object_shape() {
     let branch = branch(0x11);
     let branch_text = branch.to_string();
     for object in [
@@ -425,23 +425,28 @@ fn table_manifest_rejects_wrong_table_object_shape_or_level() {
             })
         ));
     }
+}
 
-    let result = TableManifest::new(
+#[test]
+fn table_manifest_accepts_table_object_from_different_storage_level() {
+    let branch = branch(0x11);
+    let manifest = TableManifest::new(
         branch,
         None,
         1,
         vec![TableManifestLevel::new(
             BranchLevel::new(1),
-            vec![table_ref(branch, "wrong_level", 0, b"k0", b"k1")],
+            vec![table_ref(branch, "promoted", 0, b"k0", b"k1")],
         )
         .expect("level")],
         vec![],
         vec![],
+    )
+    .expect("manifest");
+
+    assert_eq!(manifest.levels()[0].level(), BranchLevel::new(1));
+    assert_eq!(
+        manifest.levels()[0].tables()[0].table_identity().as_str(),
+        "promoted"
     );
-    assert!(matches!(
-        result,
-        Err(FormatError::InvalidValue {
-            field: "table_object_level"
-        })
-    ));
 }

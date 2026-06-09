@@ -1171,15 +1171,10 @@ fn validate_table_objects_for_branch(
     let expected_branch = branch_id.to_string();
     for level in levels {
         for table in level.tables() {
-            let (actual_branch, actual_level) = table_object_branch_and_level(table.object())?;
+            let (actual_branch, _) = table_object_branch_and_level(table.object())?;
             if actual_branch != expected_branch {
                 return Err(FormatError::InvalidValue {
                     field: "table_object_branch",
-                });
-            }
-            if actual_level != u32::from(level.level().raw()) {
-                return Err(FormatError::InvalidValue {
-                    field: "table_object_level",
                 });
             }
         }

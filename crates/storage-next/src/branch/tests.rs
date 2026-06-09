@@ -24,8 +24,8 @@ use super::read::{
 };
 use super::state::compaction::{
     BranchCompactionCandidate, BranchCompactionKind, BranchCompactionNoopReason,
-    BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
-    BranchCompactionRetentionPolicy,
+    BranchCompactionOperation, BranchCompactionOutcome, BranchCompactionPlan,
+    BranchCompactionRequest, BranchCompactionRetentionPolicy,
 };
 use super::state::fork::BranchForkOutcome;
 use super::state::manifest_recovery::BranchTableManifestRecoveryRequest;

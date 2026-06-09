@@ -1438,6 +1438,307 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
 }
 
 #[test]
+fn branch_compaction_nonzero_no_overlap_promotes_table_metadata() {
+    let branch = branch_id(166);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let row = storage_row_with(
+        branch,
+        b"promote-empty-target".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "promote-empty-target",
+                vec![row.clone()],
+            ),
+        )
+        .expect("install input");
+    let input_facts = state.owned_levels()[1][0].facts().clone();
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "promote-empty-target-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::MetadataPromotion
+    );
+    assert!(candidate.is_metadata_promotion());
+    assert!(!candidate.requires_table_rewrite());
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(2));
+    assert!(state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("prepare promotion")
+        .is_none());
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("promote table");
+
+    assert_eq!(outcome.output_refs().len(), 1);
+    assert_eq!(outcome.removed_refs().len(), 1);
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(outcome.removed_refs()[0].level(), BranchLevel::new(1));
+    assert_eq!(outcome.output_refs()[0].level(), BranchLevel::new(2));
+    assert_eq!(
+        outcome.removed_refs()[0].table_identity(),
+        outcome.output_refs()[0].table_identity()
+    );
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+    let promoted = &state.owned_levels()[2][0];
+    assert_eq!(promoted.level(), BranchLevel::new(2));
+    assert_eq!(promoted.facts(), &input_facts);
+    assert_eq!(promoted.rows(), &[TableRow::new(row.clone())]);
+    assert_eq!(
+        state
+            .capture_read_view()
+            .expect("view")
+            .latest(&physical_key(branch, b"promote-empty-target".to_vec()))
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &row
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_promotion_inserts_sorted() {
+    let branch = branch_id(167);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let promoted_row = storage_row_with(
+        branch,
+        b"promote-m".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"middle".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(2),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(2),
+                "promote-existing-a",
+                vec![storage_row_with(
+                    branch,
+                    b"promote-a".to_vec(),
+                    1,
+                    10,
+                    Timestamp::EPOCH,
+                    b"first".to_vec(),
+                )],
+            ),
+        )
+        .expect("install first target table");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(2),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(2),
+                "promote-existing-z",
+                vec![storage_row_with(
+                    branch,
+                    b"promote-z".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"last".to_vec(),
+                )],
+            ),
+        )
+        .expect("install last target table");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "promote-middle",
+                vec![promoted_row],
+            ),
+        )
+        .expect("install input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "promote-middle-output",
+    )
+    .expect("request");
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("promote table");
+
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(
+        state.owned_levels()[2]
+            .iter()
+            .map(|table| table.descriptor().identity().as_str())
+            .collect::<Vec<_>>(),
+        vec!["promote-existing-a", "promote-middle", "promote-existing-z"]
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_promotion_reaches_terminal_level() {
+    let branch = branch_id(168);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "promote-to-terminal",
+                vec![storage_row_with(
+                    branch,
+                    b"promote-to-terminal".to_vec(),
+                    1,
+                    10,
+                    Timestamp::EPOCH,
+                    b"value".to_vec(),
+                )],
+            ),
+        )
+        .expect("install input");
+
+    for (level, seed) in [
+        (BranchLevel::new(1), "promote-terminal-first"),
+        (BranchLevel::new(2), "promote-terminal-second"),
+    ] {
+        let request = BranchCompactionRequest::new(
+            branch,
+            BranchCompactionKind::CompactLevel {
+                level,
+                table_index: 0,
+            },
+            seed,
+        )
+        .expect("request");
+        let outcome = state
+            .compact_branch_owned_tables(&request)
+            .expect("promote table");
+        assert_eq!(outcome.table_report(), None);
+    }
+
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 0);
+    assert_eq!(state.owned_levels()[3].len(), 1);
+    assert_eq!(
+        state.owned_levels()[3][0].descriptor().identity().as_str(),
+        "promote-to-terminal"
+    );
+
+    let terminal_request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(3),
+            table_index: 0,
+        },
+        "promote-terminal-noop",
+    )
+    .expect("request");
+    assert_eq!(
+        state
+            .plan_branch_compaction(&terminal_request)
+            .expect("terminal plan")
+            .noop_reason(),
+        Some(BranchCompactionNoopReason::LastLevel)
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_promotion_preserves_materialization_source() {
+    let source = branch_id(169);
+    let child = branch_id(170);
+    let materialization_source = BranchMaterializationSource::new(source, CommitVersion::new(7));
+    let mut state = BranchLocalState::new(
+        child,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let row = storage_row_with(
+        child,
+        b"promote-replacement".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    let reader = immutable_reader("promote-replacement", vec![row.clone()]);
+    let descriptor = branch_table_descriptor(BranchLevel::new(1), &reader);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            BranchOwnedTable::new_materialization_replacement(
+                child,
+                descriptor,
+                reader,
+                materialization_source,
+            )
+            .expect("replacement table"),
+        )
+        .expect("install replacement input");
+
+    let request = BranchCompactionRequest::new(
+        child,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "promote-replacement-output",
+    )
+    .expect("request");
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("promote replacement");
+
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+    assert_eq!(
+        state.owned_levels()[2][0].materialization_source(),
+        Some(materialization_source)
+    );
+    assert_eq!(state.owned_levels()[2][0].rows(), &[TableRow::new(row)]);
+}
+
+#[test]
 fn branch_compaction_noop_plans_are_explicit() {
     let branch = branch_id(125);
     let mut state = BranchLocalState::new(

@@ -50,6 +50,28 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         let branch_outcome = branch
             .install_branch_compaction_plan(&branch_request, &plan)
             .map_err(branch_error)?;
+        if plan.is_metadata_promotion() {
+            let retained_input_objects = branch_outcome
+                .removed_refs()
+                .iter()
+                .map(|table_ref| table_ref.table_identity().as_str().to_owned())
+                .collect::<Vec<_>>();
+            let outcome = LifecycleCompactionOutcome::completed_durable(
+                plan,
+                branch_outcome,
+                Vec::new(),
+                retained_input_objects,
+            );
+            return match publish_table_manifest_for_branch_with_budget(
+                branch,
+                manifest_service,
+                catalog,
+                budget,
+            ) {
+                Ok(_) => Ok(outcome),
+                Err(error) => Ok(outcome.manifest_debt(error)),
+            };
+        }
         return Ok(LifecycleCompactionOutcome::new(
             &request,
             plan,

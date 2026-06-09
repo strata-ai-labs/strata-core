@@ -136,9 +136,16 @@ pub(crate) enum BranchCompactionNoopReason {
     LastLevel,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchCompactionOperation {
+    TableRewrite,
+    MetadataPromotion,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchCompactionCandidate {
     branch_id: BranchId,
+    operation: BranchCompactionOperation,
     input_refs: Vec<BranchTableRef>,
     overlap_refs: Vec<BranchTableRef>,
     output_level: BranchLevel,
@@ -148,7 +155,7 @@ pub(crate) struct BranchCompactionCandidate {
 }
 
 impl BranchCompactionCandidate {
-    fn new(
+    fn table_rewrite(
         branch_id: BranchId,
         input_refs: Vec<BranchTableRef>,
         overlap_refs: Vec<BranchTableRef>,
@@ -159,6 +166,7 @@ impl BranchCompactionCandidate {
         let source_count = input_refs.len().saturating_add(overlap_refs.len());
         Self {
             branch_id,
+            operation: BranchCompactionOperation::TableRewrite,
             input_refs,
             overlap_refs,
             output_level,
@@ -168,8 +176,39 @@ impl BranchCompactionCandidate {
         }
     }
 
+    fn metadata_promotion(
+        branch_id: BranchId,
+        input_refs: Vec<BranchTableRef>,
+        output_level: BranchLevel,
+        bottommost_for_branch: bool,
+        input_row_count: u64,
+    ) -> Self {
+        Self {
+            branch_id,
+            operation: BranchCompactionOperation::MetadataPromotion,
+            source_count: input_refs.len(),
+            input_refs,
+            overlap_refs: Vec::new(),
+            output_level,
+            bottommost_for_branch,
+            input_row_count,
+        }
+    }
+
     pub(crate) const fn branch_id(&self) -> BranchId {
         self.branch_id
+    }
+
+    pub(crate) const fn operation(&self) -> BranchCompactionOperation {
+        self.operation
+    }
+
+    pub(crate) const fn requires_table_rewrite(&self) -> bool {
+        matches!(self.operation, BranchCompactionOperation::TableRewrite)
+    }
+
+    pub(crate) const fn is_metadata_promotion(&self) -> bool {
+        matches!(self.operation, BranchCompactionOperation::MetadataPromotion)
     }
 
     pub(crate) fn input_refs(&self) -> &[BranchTableRef] {
@@ -265,6 +304,12 @@ impl BranchCompactionPlan {
             .as_ref()
             .and_then(BranchLocalState::compaction_output_materialization_source)
     }
+
+    pub(crate) fn is_metadata_promotion(&self) -> bool {
+        self.candidate
+            .as_ref()
+            .is_some_and(BranchCompactionCandidate::is_metadata_promotion)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -301,7 +346,7 @@ impl BranchCompactionOutcome {
         candidate: BranchCompactionCandidate,
         output_refs: Vec<BranchTableRef>,
         removed_refs: Vec<BranchTableRef>,
-        table_report: TableCompactionReport,
+        table_report: Option<TableCompactionReport>,
         owned_table_count: usize,
     ) -> Self {
         Self {
@@ -310,7 +355,7 @@ impl BranchCompactionOutcome {
             candidate: Some(candidate),
             output_refs,
             removed_refs,
-            table_report: Some(table_report),
+            table_report,
             owned_table_count,
         }
     }
@@ -382,7 +427,7 @@ impl BranchLocalState {
                 self.plan_l0_to_l1_compaction(request.kind())
             }
             BranchCompactionKind::CompactLevel { level, table_index } => {
-                self.plan_nonzero_level_compaction(request.kind(), level, table_index)
+                self.plan_nonzero_level_compaction(request, level, table_index)
             }
         }
     }
@@ -411,6 +456,10 @@ impl BranchLocalState {
         let Some(candidate) = plan.candidate() else {
             return Ok(None);
         };
+        if candidate.is_metadata_promotion() {
+            validate_metadata_promotion_request(request)?;
+            return Ok(None);
+        }
         self.require_candidate_current(candidate)?;
         let sources = self.compaction_sources(candidate)?;
         let source_refs = sources
@@ -472,6 +521,9 @@ impl BranchLocalState {
                 self.owned_table_count(),
             ));
         };
+        if candidate.is_metadata_promotion() {
+            return self.install_branch_compaction_metadata_promotion(request, plan, candidate);
+        }
         let (artifacts, report) = self.prepare_branch_compaction_plan(request, plan)?.ok_or(
             BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
@@ -555,7 +607,52 @@ impl BranchLocalState {
             candidate.clone(),
             output_refs,
             candidate.removed_refs(),
-            report,
+            Some(report),
+            self.owned_table_count(),
+        ))
+    }
+
+    fn install_branch_compaction_metadata_promotion(
+        &mut self,
+        request: &BranchCompactionRequest,
+        plan: &BranchCompactionPlan,
+        candidate: &BranchCompactionCandidate,
+    ) -> BranchRuntimeResult<BranchCompactionOutcome> {
+        self.validate_compaction_request(request)?;
+        validate_metadata_promotion_request(request)?;
+        if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "compaction plan must match request branch and kind",
+                ),
+            });
+        }
+        validate_metadata_promotion_candidate(candidate)?;
+        self.require_candidate_current(candidate)?;
+
+        let promoted_table = self.promoted_compaction_table(candidate)?;
+        let output_identity = promoted_table.descriptor().identity().clone();
+        let mut replacement_levels = self.owned_levels.clone();
+        remove_compacted_tables(&mut replacement_levels, candidate)?;
+        validate_promoted_table_identity(
+            &output_identity,
+            &replacement_levels,
+            &self.inherited_layers,
+        )?;
+        insert_compaction_outputs(&mut replacement_levels, candidate, vec![promoted_table])?;
+        validate_compaction_levels(&replacement_levels)?;
+
+        self.owned_levels = replacement_levels;
+        self.refresh_observed_row_facts();
+
+        let output_refs =
+            self.compaction_output_refs(candidate.output_level(), &[output_identity])?;
+        Ok(BranchCompactionOutcome::installed(
+            self.branch_id,
+            candidate.clone(),
+            output_refs,
+            candidate.removed_refs(),
+            None,
             self.owned_table_count(),
         ))
     }
@@ -620,7 +717,7 @@ impl BranchLocalState {
         }
         let input_refs = self.table_refs_at_level(level_index, 0..input_count)?;
         let input_row_count = self.table_ref_row_count(&input_refs)?;
-        let candidate = BranchCompactionCandidate::new(
+        let candidate = BranchCompactionCandidate::table_rewrite(
             self.branch_id,
             input_refs,
             Vec::new(),
@@ -666,7 +763,7 @@ impl BranchLocalState {
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
-        let candidate = BranchCompactionCandidate::new(
+        let candidate = BranchCompactionCandidate::table_rewrite(
             self.branch_id,
             input_refs,
             overlap_refs,
@@ -683,10 +780,11 @@ impl BranchLocalState {
 
     fn plan_nonzero_level_compaction(
         &self,
-        kind: BranchCompactionKind,
+        request: &BranchCompactionRequest,
         level: BranchLevel,
         table_index: usize,
     ) -> BranchRuntimeResult<BranchCompactionPlan> {
+        let kind = request.kind();
         let level_index = usize::from(level.raw());
         if level_index == 0 {
             return Err(BranchRuntimeError::InvalidCompaction {
@@ -725,13 +823,6 @@ impl BranchLocalState {
         }
         let input_refs = self.table_refs_at_level(level_index, table_index..table_index + 1)?;
         let overlap_refs = self.overlapping_refs_for_input_range(&input_refs, level_index + 1)?;
-        if input_refs.len().saturating_add(overlap_refs.len()) < 2 {
-            return Ok(BranchCompactionPlan::no_candidate(
-                self.branch_id,
-                kind,
-                BranchCompactionNoopReason::NotEnoughInputTables,
-            ));
-        }
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
@@ -742,7 +833,25 @@ impl BranchLocalState {
                 ),
             }
         })?);
-        let candidate = BranchCompactionCandidate::new(
+        if input_refs.len().saturating_add(overlap_refs.len()) < 2 {
+            validate_metadata_promotion_request(request)?;
+            let candidate = BranchCompactionCandidate::metadata_promotion(
+                self.branch_id,
+                input_refs,
+                output_level,
+                self.is_bottommost_output_level(level_index + 1),
+                input_row_count,
+            );
+            return Ok(BranchCompactionPlan::with_candidate(
+                self.branch_id,
+                kind,
+                candidate,
+            ));
+        }
+        let input_row_count = self
+            .table_ref_row_count(&input_refs)?
+            .saturating_add(self.table_ref_row_count(&overlap_refs)?);
+        let candidate = BranchCompactionCandidate::table_rewrite(
             self.branch_id,
             input_refs,
             overlap_refs,
@@ -957,6 +1066,44 @@ impl BranchLocalState {
         Ok(tables)
     }
 
+    fn promoted_compaction_table(
+        &self,
+        candidate: &BranchCompactionCandidate,
+    ) -> BranchRuntimeResult<BranchOwnedTable> {
+        validate_metadata_promotion_candidate(candidate)?;
+        let input_ref =
+            candidate
+                .input_refs()
+                .first()
+                .ok_or(BranchRuntimeError::InvalidCompaction {
+                    reason: BranchCompactionInvalidity::Generic(
+                        "metadata promotion requires one input table",
+                    ),
+                })?;
+        let table = self
+            .table_for_ref(input_ref)
+            .ok_or(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "metadata promotion input table must exist",
+                ),
+            })?;
+        let descriptor = BranchTableDescriptor::new(
+            table.descriptor().identity().clone(),
+            table.facts().clone(),
+            candidate.output_level(),
+        )?;
+        if let Some(source) = table.materialization_source() {
+            BranchOwnedTable::new_materialization_replacement(
+                self.branch_id,
+                descriptor,
+                table.reader().clone(),
+                source,
+            )
+        } else {
+            BranchOwnedTable::new(self.branch_id, descriptor, table.reader().clone())
+        }
+    }
+
     fn compaction_output_materialization_source(
         candidate: &BranchCompactionCandidate,
     ) -> Option<BranchMaterializationSource> {
@@ -1144,6 +1291,74 @@ fn validate_compaction_output_identities(
                 ),
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_metadata_promotion_request(
+    request: &BranchCompactionRequest,
+) -> BranchRuntimeResult<()> {
+    if request.retention_policy() != BranchCompactionRetentionPolicy::KeepAll {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion cannot apply row-retention pruning",
+            ),
+        });
+    }
+    if request.pruning_proof().is_some() {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion cannot carry a pruning proof",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_metadata_promotion_candidate(
+    candidate: &BranchCompactionCandidate,
+) -> BranchRuntimeResult<()> {
+    if !candidate.is_metadata_promotion() {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion candidate must use metadata promotion operation",
+            ),
+        });
+    }
+    if candidate.input_refs().len() != 1 || !candidate.overlap_refs().is_empty() {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion requires one input table and no overlap tables",
+            ),
+        });
+    }
+    let input_level = usize::from(candidate.input_refs()[0].level().raw());
+    let output_level = usize::from(candidate.output_level().raw());
+    if input_level == 0 || output_level != input_level + 1 {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion must move one nonzero level forward",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_promoted_table_identity(
+    output_identity: &TableIdentity,
+    owned_levels_after_removal: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+) -> BranchRuntimeResult<()> {
+    if branch_reachable_table_identity_exists(
+        output_identity,
+        owned_levels_after_removal,
+        inherited_layers,
+    ) {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion identity must not remain reachable after input removal",
+            ),
+        });
     }
     Ok(())
 }
