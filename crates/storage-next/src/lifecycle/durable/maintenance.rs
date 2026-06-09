@@ -16,7 +16,8 @@ use crate::lifecycle::checkpoint::{
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure,
-    compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
+    compact_branch_to_fixed_point_with, compaction_request_from_maintenance_task,
+    materialization_request_from_maintenance_task,
 };
 use crate::lifecycle::flush::{
     flush_durable_branch_with_budget, flush_request_from_maintenance_task,
@@ -45,15 +46,16 @@ use crate::lifecycle::{
     repair_branch_quarantine as repair_branch_lifecycle_quarantine,
     repair_quarantine_family as repair_lifecycle_quarantine_family,
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
-    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
-    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
-    LifecyclePurgeOutcome, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
-    LifecycleQuarantineRequest, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
-    LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
-    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
-    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
-    RecoveryDegradationClass, RecoveryHealth,
+    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionDrainOutcome,
+    LifecycleCompactionDrainRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
+    LifecycleError, LifecycleLowerLayer, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePurgeOutcome,
+    LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome, LifecycleQuarantineRequest,
+    LifecycleResult, LifecycleStats, LifecycleStoragePressure, LifecycleWalGrowthOutcome,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, RecoveryDegradationClass,
+    RecoveryHealth,
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
@@ -181,6 +183,44 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 request,
                 Some(&self.budget),
             )
+        };
+        outcome
+    }
+
+    #[allow(
+        dead_code,
+        reason = "durable maintenance dispatch uses this concrete table rewrite hook"
+    )]
+    pub(crate) fn compact_branch_tables_to_fixed_point(
+        &mut self,
+        request: &LifecycleCompactionDrainRequest,
+    ) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let branch_id = request.branch_id();
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let services = &self.services;
+        let table_catalog = &mut self.table_catalog;
+        let budget = &self.budget;
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            compact_branch_to_fixed_point_with(branch, request, |branch, compaction| {
+                compact_durable_branch_manifest_backed(
+                    branch,
+                    services.table_object(),
+                    services.table_reader(),
+                    services.table_manifest(),
+                    table_catalog,
+                    compaction,
+                    Some(budget),
+                )
+            })
         };
         outcome
     }

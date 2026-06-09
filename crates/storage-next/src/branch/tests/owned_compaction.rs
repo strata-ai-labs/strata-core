@@ -1281,6 +1281,11 @@ fn branch_compaction_l0_to_l1_includes_overlaps_and_preserves_non_overlaps() {
     let candidate = plan.candidate().expect("candidate");
     assert_eq!(candidate.input_refs().len(), 1);
     assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::TableRewrite
+    );
+    assert!(candidate.requires_table_rewrite());
     assert_eq!(candidate.output_level(), BranchLevel::new(1));
 
     let outcome = state
@@ -1316,6 +1321,528 @@ fn branch_compaction_l0_to_l1_includes_overlaps_and_preserves_non_overlaps() {
             level: BranchLevel::new(1),
             table_index: 1,
         },
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_single_no_overlap_promotes_table_metadata() {
+    let branch = branch_id(171);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let row = storage_row_with(
+        branch,
+        b"compact-l0-single".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-single",
+            vec![row.clone()],
+        ))
+        .expect("install l0 input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-single-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::MetadataPromotion
+    );
+    assert!(candidate.is_metadata_promotion());
+    assert!(!candidate.requires_table_rewrite());
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(1));
+    assert_eq!(candidate.input_row_count(), 1);
+    assert!(state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("prepare promotion")
+        .is_none());
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("promote l0 input");
+
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(outcome.removed_refs().len(), 1);
+    assert_eq!(outcome.output_refs().len(), 1);
+    assert_eq!(outcome.removed_refs()[0].level(), BranchLevel::ZERO);
+    assert_eq!(outcome.output_refs()[0].level(), BranchLevel::new(1));
+    assert_eq!(
+        outcome.removed_refs()[0].table_identity(),
+        outcome.output_refs()[0].table_identity()
+    );
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 1);
+    assert_eq!(state.owned_levels()[1][0].level(), BranchLevel::new(1));
+    assert_eq!(
+        state.owned_levels()[1][0].rows(),
+        &[TableRow::new(row.clone())]
+    );
+
+    let after = state.capture_read_view().expect("after view");
+    assert_visible_row(
+        after
+            .latest(&physical_key(branch, b"compact-l0-single".to_vec()))
+            .expect("promoted latest")
+            .as_ref(),
+        &row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_single_no_overlap_inserts_sorted() {
+    let branch = branch_id(172);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "compact-l1-existing-a",
+                vec![storage_row_with(
+                    branch,
+                    b"compact-l1-a".to_vec(),
+                    1,
+                    10,
+                    Timestamp::EPOCH,
+                    b"a".to_vec(),
+                )],
+            ),
+        )
+        .expect("install first target table");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "compact-l1-existing-z",
+                vec![storage_row_with(
+                    branch,
+                    b"compact-l1-z".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"z".to_vec(),
+                )],
+            ),
+        )
+        .expect("install last target table");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-middle",
+            vec![storage_row_with(
+                branch,
+                b"compact-l1-m".to_vec(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                b"middle".to_vec(),
+            )],
+        ))
+        .expect("install l0 input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-middle-output",
+    )
+    .expect("request");
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("promote l0 input");
+
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(
+        state.owned_levels()[1]
+            .iter()
+            .map(|table| table.descriptor().identity().as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "compact-l1-existing-a",
+            "compact-l0-middle",
+            "compact-l1-existing-z"
+        ]
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_multi_table_rewrite_preserves_newest_row() {
+    let branch = branch_id(173);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let key = physical_key(branch, b"compact-l0-multi".to_vec());
+    let newer = storage_row_with(
+        branch,
+        b"compact-l0-multi".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"newer".to_vec(),
+    );
+    let older = storage_row_with(
+        branch,
+        b"compact-l0-multi".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-multi-newer",
+            vec![newer.clone()],
+        ))
+        .expect("install newer input");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-multi-older",
+            vec![older.clone()],
+        ))
+        .expect("install older input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-multi-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::TableRewrite
+    );
+    assert!(candidate.requires_table_rewrite());
+    assert_eq!(candidate.input_refs().len(), 2);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(1));
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact inputs");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), 2);
+    assert_eq!(report.kept_rows(), 2);
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 1);
+
+    let after = state.capture_read_view().expect("after view");
+    assert_visible_row(
+        after.latest(&key).expect("latest").as_ref(),
+        &newer,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after
+            .at_version(&key, CommitVersion::new(2))
+            .expect("bounded")
+            .as_ref(),
+        &older,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_multi_table_rewrite_includes_overlapping_target() {
+    let branch = branch_id(175);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let overlap_key = physical_key(branch, b"compact-l0-target-b".to_vec());
+    let l0_overlap = storage_row_with(
+        branch,
+        b"compact-l0-target-b".to_vec(),
+        5,
+        50,
+        Timestamp::EPOCH,
+        b"newer".to_vec(),
+    );
+    let l0_other = storage_row_with(
+        branch,
+        b"compact-l0-target-c".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"other".to_vec(),
+    );
+    let l1_overlap = storage_row_with(
+        branch,
+        b"compact-l0-target-b".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"base".to_vec(),
+    );
+    let l1_preserved = storage_row_with(
+        branch,
+        b"compact-l0-target-z".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"preserved".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "compact-l0-target-overlap",
+                vec![l1_overlap.clone()],
+            ),
+        )
+        .expect("install overlapping target");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "compact-l0-target-preserved",
+                vec![l1_preserved],
+            ),
+        )
+        .expect("install preserved target");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-target-newer",
+            vec![l0_overlap.clone()],
+        ))
+        .expect("install overlapping input");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-target-other",
+            vec![l0_other.clone()],
+        ))
+        .expect("install other input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-target-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::TableRewrite
+    );
+    assert_eq!(candidate.input_refs().len(), 2);
+    assert_eq!(candidate.overlap_refs().len(), 1);
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact inputs");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), 3);
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 2);
+    assert!(state.owned_levels()[1]
+        .iter()
+        .any(|table| table.descriptor().identity().as_str() == "compact-l0-target-preserved"));
+
+    let after = state.capture_read_view().expect("after view");
+    assert_visible_row(
+        after.latest(&overlap_key).expect("latest").as_ref(),
+        &l0_overlap,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after
+            .at_version(&overlap_key, CommitVersion::new(1))
+            .expect("bounded")
+            .as_ref(),
+        &l1_overlap,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_multi_table_rewrite_preserves_newest_tombstone() {
+    let branch = branch_id(176);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let key = physical_key(branch, b"compact-l0-delete".to_vec());
+    let older = storage_row_with(
+        branch,
+        b"compact-l0-delete".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"older".to_vec(),
+    );
+    let tombstone = tombstone_row(branch, b"compact-l0-delete".to_vec(), 5, 50);
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-delete-tombstone",
+            vec![tombstone.clone()],
+        ))
+        .expect("install tombstone");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-delete-older",
+            vec![older.clone()],
+        ))
+        .expect("install older row");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-delete-output",
+    )
+    .expect("request");
+    state
+        .compact_branch_owned_tables(&request)
+        .expect("compact inputs");
+
+    let after = state.capture_read_view().expect("after view");
+    assert_eq!(after.latest(&key).expect("latest"), None);
+    assert_visible_row(
+        after
+            .at_version(&key, CommitVersion::new(2))
+            .expect("bounded")
+            .as_ref(),
+        &older,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+    assert_eq!(
+        history_versions(
+            &after
+                .history(&key, BranchHistoryOptions::all())
+                .expect("history")
+        ),
+        vec![5, 2]
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_stale_promotion_plan_preserves_l0_tables() {
+    let branch = branch_id(174);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let planned_row = storage_row_with(
+        branch,
+        b"compact-l0-planned".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"planned".to_vec(),
+    );
+    let new_row = storage_row_with(
+        branch,
+        b"compact-l0-new".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"new".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-planned",
+            vec![planned_row],
+        ))
+        .expect("install planned input");
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-stale-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    assert!(plan.is_metadata_promotion());
+
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-new",
+            vec![new_row],
+        ))
+        .expect("install new input");
+    let before_install = state.clone();
+
+    let error = state
+        .install_branch_compaction_plan(&request, &plan)
+        .expect_err("stale plan rejected");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidCompaction { .. }
+    ));
+    assert_eq!(state, before_install);
+    assert_eq!(
+        state.owned_levels()[0]
+            .iter()
+            .map(|table| table.descriptor().identity().as_str())
+            .collect::<Vec<_>>(),
+        vec!["compact-l0-new", "compact-l0-planned"]
     );
 }
 

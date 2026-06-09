@@ -5,11 +5,17 @@ mod shared;
 
 use self::shared::*;
 use super::*;
-use crate::branch::facts::BranchLevel;
+use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::{BranchLevel, BranchLevelTableCount};
 use crate::branch::read::{BranchHistoryOptions, BranchReadBound, BranchScanBounds};
-use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionNoopReason};
+use crate::branch::state::compaction::{
+    BranchCompactionKind, BranchCompactionNoopReason, BranchCompactionOperation,
+};
 use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::BranchLocalState;
+use crate::lifecycle::compaction::{
+    compact_cache_branch_to_fixed_point, LifecycleCompactionDrainRequest,
+};
 use strata_core_next::Timestamp;
 
 #[test]
@@ -173,6 +179,340 @@ fn compaction_candidate_reports_level_movement_and_overlap_refs() {
     assert_eq!(outcome.branch_outcome().removed_refs().len(), 2);
     assert_eq!(outcome.branch_outcome().output_refs().len(), 1);
     assert!(outcome.branch_outcome().table_report().is_some());
+}
+
+#[test]
+fn compaction_candidate_reports_single_l0_promotion() {
+    let branch = branch_id(0x5b);
+    let mut state = BranchLocalState::empty(branch);
+    let key = physical_key(branch, b"single-promote");
+    let row = put_row(branch, b"single-promote", 1, 1_000, b"value");
+    install_l0_table(&mut state, branch, "single-promote", vec![row.clone()]);
+    let request = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "single-promote",
+    )
+    .expect("request");
+
+    let outcome = compact_cache_branch(&mut state, &request).expect("outcome");
+    let candidate = outcome.plan().candidate().expect("candidate");
+
+    assert_eq!(outcome.status(), LifecycleCompactionStatus::Completed);
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::MetadataPromotion
+    );
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(1));
+    assert_eq!(candidate.source_count(), 1);
+    assert_eq!(candidate.input_row_count(), 1);
+    assert_eq!(outcome.branch_outcome().removed_refs().len(), 1);
+    assert_eq!(outcome.branch_outcome().output_refs().len(), 1);
+    assert!(outcome.branch_outcome().table_report().is_none());
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 1);
+    assert_eq!(
+        state
+            .capture_read_view()
+            .expect("view")
+            .latest(&key)
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &row
+    );
+}
+
+#[test]
+fn compaction_fixed_point_drain_empty_branch_is_idempotent() {
+    let branch = branch_id(0x5e);
+    let mut state = BranchLocalState::empty(branch);
+    let before = state.source_layout();
+    let request =
+        LifecycleCompactionDrainRequest::new(branch, "fixed-point-empty").expect("request");
+
+    assert_eq!(request.branch_id(), branch);
+    assert_eq!(request.output_identity_prefix(), "fixed-point-empty");
+    assert_eq!(request.max_passes(), 16);
+
+    let outcome = compact_cache_branch_to_fixed_point(&mut state, &request).expect("first drain");
+
+    assert_eq!(outcome.branch_id(), branch);
+    assert_eq!(outcome.operations_attempted(), 0);
+    assert_eq!(outcome.operations_installed(), 0);
+    assert_eq!(outcome.table_rewrites(), 0);
+    assert_eq!(outcome.metadata_promotions(), 0);
+    assert!(outcome.levels_touched().is_empty());
+    assert_eq!(outcome.input_tables_removed(), 0);
+    assert_eq!(outcome.output_tables_installed(), 0);
+    assert_eq!(outcome.final_source_layout(), &before);
+    assert_eq!(state.source_layout(), before);
+
+    let repeated = compact_cache_branch_to_fixed_point(&mut state, &request).expect("second drain");
+    assert_eq!(repeated.operations_attempted(), 0);
+    assert_eq!(repeated.final_source_layout(), &state.source_layout());
+}
+
+#[test]
+fn compaction_fixed_point_drain_moves_l0_data_to_last_configured_level() {
+    let branch = branch_id(0x5f);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let first_key = physical_key(branch, b"fixed-point-a");
+    let first = put_row(branch, b"fixed-point-a", 1, 1_000, b"a");
+    let second = put_row(branch, b"fixed-point-b", 2, 2_000, b"b");
+    install_l0_table(&mut state, branch, "fixed-point-l0-a", vec![first.clone()]);
+    install_l0_table(&mut state, branch, "fixed-point-l0-b", vec![second]);
+
+    let request =
+        LifecycleCompactionDrainRequest::new(branch, "fixed-point-cascade").expect("request");
+    let outcome =
+        compact_cache_branch_to_fixed_point(&mut state, &request).expect("fixed-point drain");
+
+    assert_eq!(outcome.operations_attempted(), 3);
+    assert_eq!(outcome.operations_installed(), 3);
+    assert_eq!(outcome.table_rewrites(), 1);
+    assert_eq!(outcome.metadata_promotions(), 2);
+    assert_eq!(
+        outcome.levels_touched(),
+        &[
+            BranchLevel::ZERO,
+            BranchLevel::new(1),
+            BranchLevel::new(2),
+            BranchLevel::new(3)
+        ]
+    );
+    assert_eq!(outcome.input_tables_removed(), 4);
+    assert_eq!(outcome.output_tables_installed(), 3);
+    assert_eq!(outcome.final_source_layout(), &state.source_layout());
+    assert_eq!(outcome.final_source_layout().owned_l0_tables(), 0);
+    assert_eq!(
+        outcome
+            .final_source_layout()
+            .owned_nonzero_level_table_counts()
+            .iter()
+            .map(|count: &BranchLevelTableCount| (count.level(), count.table_count()))
+            .collect::<Vec<_>>(),
+        vec![(BranchLevel::new(3), 1)]
+    );
+    assert_eq!(
+        state
+            .capture_read_view()
+            .expect("view")
+            .latest(&first_key)
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &first
+    );
+
+    let repeated = compact_cache_branch_to_fixed_point(&mut state, &request).expect("second drain");
+    assert_eq!(repeated.operations_attempted(), 0);
+    assert_eq!(repeated.operations_installed(), 0);
+    assert_eq!(repeated.final_source_layout(), &state.source_layout());
+}
+
+#[test]
+fn compaction_fixed_point_drain_rewrites_overlaps_and_promotes_gaps() {
+    let branch = branch_id(0x60);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let overlap_key = physical_key(branch, b"fixed-point-m");
+    let newest = put_row(branch, b"fixed-point-m", 7, 7_000, b"newest");
+    let l0_other = put_row(branch, b"fixed-point-n", 6, 6_000, b"other");
+    let l1_overlap = put_row(branch, b"fixed-point-m", 5, 5_000, b"l1");
+    let l1_gap = put_row(branch, b"fixed-point-q", 4, 4_000, b"gap");
+    let l2_overlap = put_row(branch, b"fixed-point-m", 3, 3_000, b"l2");
+    let l2_preserved = put_row(branch, b"fixed-point-z", 2, 2_000, b"preserved");
+    install_owned_table(
+        &mut state,
+        branch,
+        BranchLevel::new(2),
+        "fixed-point-l2-overlap",
+        vec![l2_overlap.clone()],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        BranchLevel::new(2),
+        "fixed-point-l2-preserved",
+        vec![l2_preserved],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        BranchLevel::new(1),
+        "fixed-point-l1-overlap",
+        vec![l1_overlap.clone()],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        BranchLevel::new(1),
+        "fixed-point-l1-gap",
+        vec![l1_gap.clone()],
+    );
+    install_l0_table(
+        &mut state,
+        branch,
+        "fixed-point-l0-newest",
+        vec![newest.clone()],
+    );
+    install_l0_table(&mut state, branch, "fixed-point-l0-other", vec![l0_other]);
+
+    let request =
+        LifecycleCompactionDrainRequest::new(branch, "fixed-point-mixed").expect("request");
+    let outcome =
+        compact_cache_branch_to_fixed_point(&mut state, &request).expect("fixed-point drain");
+
+    assert_eq!(outcome.table_rewrites(), 2);
+    assert_eq!(outcome.metadata_promotions(), 4);
+    assert_eq!(
+        outcome.operations_attempted(),
+        outcome.operations_installed()
+    );
+    assert_eq!(outcome.final_source_layout().owned_l0_tables(), 0);
+    assert_eq!(
+        outcome
+            .final_source_layout()
+            .owned_nonzero_level_table_counts()
+            .iter()
+            .map(|count: &BranchLevelTableCount| (count.level(), count.table_count()))
+            .collect::<Vec<_>>(),
+        vec![(BranchLevel::new(3), 3)]
+    );
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 0);
+    assert_eq!(state.owned_levels()[3].len(), 3);
+
+    let view = state.capture_read_view().expect("view");
+    assert_eq!(
+        view.latest(&overlap_key)
+            .expect("latest")
+            .expect("visible")
+            .row(),
+        &newest
+    );
+    assert_eq!(
+        view.at_version(&overlap_key, CommitVersion::new(3))
+            .expect("bounded")
+            .expect("visible")
+            .row(),
+        &l2_overlap
+    );
+}
+
+#[test]
+fn compaction_fixed_point_drain_enforces_pass_limit() {
+    let branch = branch_id(0x61);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    install_l0_table(
+        &mut state,
+        branch,
+        "fixed-point-limit",
+        vec![put_row(branch, b"fixed-point-limit", 1, 1_000, b"value")],
+    );
+    let request = LifecycleCompactionDrainRequest::new(branch, "fixed-point-limit")
+        .expect("request")
+        .with_max_passes(0);
+
+    let error =
+        compact_cache_branch_to_fixed_point(&mut state, &request).expect_err("pass limit enforced");
+
+    assert!(matches!(
+        error,
+        LifecycleError::MaintenanceTaskFailed {
+            reason: "compaction drain exceeded pass limit"
+        }
+    ));
+    assert_eq!(state.owned_levels()[0].len(), 1);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+}
+
+#[test]
+fn compaction_fixed_point_drain_treats_only_configured_level_as_terminal() {
+    let branch = branch_id(0x62);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(1, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    install_l0_table(
+        &mut state,
+        branch,
+        "fixed-point-terminal",
+        vec![put_row(branch, b"fixed-point-terminal", 1, 1_000, b"value")],
+    );
+    let before = state.source_layout();
+    let request =
+        LifecycleCompactionDrainRequest::new(branch, "fixed-point-terminal").expect("request");
+
+    let outcome =
+        compact_cache_branch_to_fixed_point(&mut state, &request).expect("fixed-point drain");
+
+    assert_eq!(outcome.operations_attempted(), 0);
+    assert_eq!(outcome.operations_installed(), 0);
+    assert_eq!(outcome.final_source_layout(), &before);
+    assert_eq!(state.source_layout(), before);
+}
+
+#[test]
+fn compaction_fixed_point_drain_rejects_branch_mismatch_without_mutation() {
+    let branch = branch_id(0x63);
+    let other = branch_id(0x64);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    install_l0_table(
+        &mut state,
+        branch,
+        "fixed-point-mismatch",
+        vec![put_row(branch, b"fixed-point-mismatch", 1, 1_000, b"value")],
+    );
+    let before = state.clone();
+    let request =
+        LifecycleCompactionDrainRequest::new(other, "fixed-point-mismatch").expect("request");
+
+    let error =
+        compact_cache_branch_to_fixed_point(&mut state, &request).expect_err("mismatch rejected");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.branch_runtime");
+    assert_eq!(state, before);
+}
+
+#[test]
+fn compaction_fixed_point_drain_rejects_invalid_identity_prefix() {
+    let branch = branch_id(0x65);
+
+    assert!(matches!(
+        LifecycleCompactionDrainRequest::new(branch, ""),
+        Err(LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::TableRuntime,
+            ..
+        })
+    ));
+    assert!(matches!(
+        LifecycleCompactionDrainRequest::new(branch, "bad/prefix"),
+        Err(LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::TableRuntime,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -898,6 +1238,46 @@ fn queued_cache_compaction_skips_other_task_kinds() {
         .expect("flush outcome");
     assert_eq!(remaining.task_id(), Some(flush.task_id()));
     assert_eq!(remaining.task_kind(), MaintenanceTaskKind::Flush);
+}
+
+#[test]
+fn queued_cache_compaction_moves_only_the_requested_table_level() {
+    let branch = branch_id(0x5c);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        install_owned_table(
+            state,
+            branch,
+            BranchLevel::new(1),
+            "queued-nonzero-input",
+            vec![put_row(branch, b"queued-nonzero", 1, 1_000, b"value")],
+        );
+    }
+    let compaction = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let state = runtime.branch_state();
+
+    assert_eq!(outcome.task_id(), Some(compaction.task_id()));
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+    assert_eq!(state.owned_levels()[3].len(), 0);
 }
 
 #[test]

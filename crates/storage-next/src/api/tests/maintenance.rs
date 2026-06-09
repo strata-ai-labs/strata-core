@@ -65,6 +65,22 @@ fn put_batch_for(branch_id: BranchId, key: &[u8], value: &[u8]) -> CommitBatch {
     .expect("valid put batch")
 }
 
+fn terminal_owned_level() -> u8 {
+    let max_level_count = crate::branch::config::BranchRuntimeConfig::default().max_level_count();
+    u8::try_from(max_level_count.saturating_sub(1)).expect("configured level fits in u8")
+}
+
+fn owned_table_count_at(layout: &crate::branch::facts::BranchSourceLayout, level: u8) -> usize {
+    if level == 0 {
+        return layout.owned_l0_tables();
+    }
+    layout
+        .owned_nonzero_level_table_counts()
+        .iter()
+        .find(|count| count.level().raw() == level)
+        .map_or(0, |count| count.table_count())
+}
+
 fn fork_branch(runtime: &mut StorageRuntime<'_>, child: BranchId) {
     runtime
         .branch(&BranchRequest::new(
@@ -409,6 +425,133 @@ fn api_rewrite_cache_mode_does_not_call_durable_services() {
 }
 
 #[test]
+fn api_explicit_compact_after_flush_drains_branch_sources() {
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"drain-key", b"drain-value"))
+        .expect("commit");
+    let flush = MaintenanceRequest::new(MaintenanceTask::Flush, MaintenanceScope::Branch(branch()));
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+
+    let flush_outcome = runtime.maintenance(&flush).expect("flush outcome");
+    let flushed = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("flushed layout");
+    let compact_outcome = runtime.maintenance(&compact).expect("compact outcome");
+    let compacted = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("compacted layout");
+    let repeated = runtime.maintenance(&compact).expect("repeat compact");
+    let repeated_layout = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("repeat layout");
+    let read = runtime
+        .read_point(&PointReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"drain-key"),
+            ReadBound::Latest,
+        ))
+        .expect("read after compact");
+
+    assert_eq!(flush_outcome.status(), MaintenanceSummaryStatus::Completed);
+    assert_eq!(flushed.owned_l0_tables(), 1);
+    assert_eq!(
+        compact_outcome.status(),
+        MaintenanceSummaryStatus::Completed
+    );
+    assert!(compact_outcome.state_changes() > 1);
+    assert_eq!(compacted.owned_l0_tables(), 0);
+    assert_eq!(owned_table_count_at(&compacted, terminal_owned_level()), 1);
+    assert_eq!(compacted.owned_total_tables(), 1);
+    assert_eq!(repeated.status(), MaintenanceSummaryStatus::Deferred);
+    assert_eq!(
+        repeated.reason_class(),
+        Some(MaintenanceReasonClass::Deferred)
+    );
+    assert_eq!(repeated.state_changes(), 0);
+    assert_eq!(repeated_layout, compacted);
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        0
+    );
+    assert_eq!(
+        read.row().expect("row").value().expect("value").as_bytes(),
+        b"drain-value"
+    );
+}
+
+#[test]
+fn api_queued_compact_keeps_table_level_semantics() {
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"queued-key", b"queued-value"))
+        .expect("commit");
+    let flush = MaintenanceRequest::new(MaintenanceTask::Flush, MaintenanceScope::Branch(branch()));
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+
+    runtime.maintenance(&flush).expect("flush outcome");
+    runtime
+        .enqueue_maintenance(&compact)
+        .expect("enqueue compact");
+    let drain = runtime.drain_maintenance().expect("drain compact");
+    let layout = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("layout");
+
+    assert_eq!(drain.drained_tasks(), 1);
+    assert_eq!(drain.outcomes()[0].task(), MaintenanceTask::Compact);
+    assert_eq!(
+        drain.outcomes()[0].status(),
+        MaintenanceSummaryStatus::Completed
+    );
+    assert_eq!(layout.owned_l0_tables(), 0);
+    assert_eq!(owned_table_count_at(&layout, 1), 1);
+    assert_eq!(owned_table_count_at(&layout, terminal_owned_level()), 0);
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn api_explicit_compact_reports_equivalent_cache_and_durable_layouts() {
+    let mut cache = open_runtime();
+    let mut durable = open_durable_runtime_with_options(
+        "maintenance-compact-layout-equivalence",
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+    );
+    let flush = MaintenanceRequest::new(MaintenanceTask::Flush, MaintenanceScope::Branch(branch()));
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+
+    for runtime in [&mut cache, &mut durable] {
+        runtime
+            .commit(&put_batch(b"equivalent-key", b"equivalent-value"))
+            .expect("commit");
+        runtime.maintenance(&flush).expect("flush");
+        let outcome = runtime.maintenance(&compact).expect("compact");
+        assert_eq!(outcome.status(), MaintenanceSummaryStatus::Completed);
+    }
+
+    let cache_layout = cache
+        .branch_source_layout_for_test(branch())
+        .expect("cache layout");
+    let durable_layout = durable
+        .branch_source_layout_for_test(branch())
+        .expect("durable layout");
+
+    assert_eq!(cache_layout, durable_layout);
+    assert_eq!(cache_layout.owned_l0_tables(), 0);
+    assert_eq!(
+        owned_table_count_at(&cache_layout, terminal_owned_level()),
+        1
+    );
+}
+
+#[test]
 fn api_wal_growth_policy_status_reports_no_durable_action_for_cache() {
     let mut runtime = open_runtime();
     let request = MaintenanceRequest::new(MaintenanceTask::WalGrowth, MaintenanceScope::Global);
@@ -686,6 +829,21 @@ fn api_maintenance_after_close_rejects() {
     let error = runtime
         .maintenance(&request)
         .expect_err("closed runtime rejects maintenance");
+
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+fn api_compact_after_close_rejects() {
+    let mut runtime = open_runtime();
+    runtime.close().expect("close");
+    let request =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+
+    let error = runtime
+        .maintenance(&request)
+        .expect_err("closed runtime rejects compact");
 
     assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
     assert_eq!(error.code(), "failed_precondition.storage_api.state");

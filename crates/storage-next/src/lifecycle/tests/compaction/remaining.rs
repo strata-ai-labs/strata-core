@@ -542,8 +542,27 @@ fn queued_compaction_recomputes_after_prior_rewrite_without_resurrection() {
         .expect("queued outcome");
 
     assert_eq!(queued_outcome.task_id(), Some(queued.task_id()));
-    assert_eq!(queued_outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(queued_outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(state.owned_levels()[0].is_empty());
+    assert_eq!(state.owned_levels()[1].len(), 1);
     assert_eq!(state.owned_table_count(), 1);
+    let view = state.capture_read_view().expect("view");
+    assert_eq!(
+        view.latest(&physical_key(branch, b"left"))
+            .expect("left read")
+            .expect("left visible")
+            .row()
+            .value(),
+        b"left"
+    );
+    assert_eq!(
+        view.latest(&physical_key(branch, b"right"))
+            .expect("right read")
+            .expect("right visible")
+            .row()
+            .value(),
+        b"right"
+    );
     assert_eq!(executor.status().pending_tasks(), 0);
 }
 

@@ -15,9 +15,10 @@ use crate::lifecycle::{
     collect_storage_pressure, CloseOutcome, CloseOutcomeStatus, FlushFrozenRequest,
     FlushTableIdentitySeed, FlushTableObjectId, LifecycleBranchCatalog, LifecycleBranchDescriptor,
     LifecycleBranchStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
-    LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionRequest, LifecycleConfig,
-    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
-    LifecycleError, LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
+    LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionDrainRequest,
+    LifecycleCompactionRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
+    LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
+    LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
     LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
     MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
@@ -828,14 +829,27 @@ impl<'a> StorageRuntime<'a> {
         if !self.storage_pressure_suggests_compaction(branch_id)? {
             return Ok(());
         }
-        let request = MaintenanceRequest::new(
-            MaintenanceTask::Compact,
-            MaintenanceScope::Branch(branch_id),
-        );
-        let summary = self.compaction_maintenance(&request)?;
-        match summary.status() {
-            MaintenanceSummaryStatus::Completed | MaintenanceSummaryStatus::Deferred => Ok(()),
-            MaintenanceSummaryStatus::Failed | MaintenanceSummaryStatus::Canceled => {
+        let compaction = LifecycleCompactionRequest::new(
+            branch_id,
+            crate::branch::state::compaction::BranchCompactionKind::CompactL0ToLevelOne,
+            format!("storage-boundary-flush-followup-compaction-{branch_id}"),
+        )
+        .map_err(map_lifecycle_error)?;
+        let outcome = match &mut self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime.compact_branch_tables(&compaction),
+            StorageRuntimeInner::Durable(runtime) => runtime.compact_branch_tables(&compaction),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "flush follow-up compaction requires an open runtime",
+                });
+            }
+        }
+        .map_err(map_lifecycle_error)?;
+        match outcome.maintenance_outcome().status() {
+            LifecycleMaintenanceOutcomeStatus::Completed
+            | LifecycleMaintenanceOutcomeStatus::Deferred => Ok(()),
+            LifecycleMaintenanceOutcomeStatus::Failed
+            | LifecycleMaintenanceOutcomeStatus::Canceled => {
                 Err(StorageApiError::InvalidRuntimeState {
                     reason: "flush follow-up compaction did not complete",
                 })
@@ -870,15 +884,18 @@ impl<'a> StorageRuntime<'a> {
         request: &MaintenanceRequest,
     ) -> StorageApiResult<MaintenanceSummary> {
         let branch_id = self.branch_for_maintenance_scope(request.scope())?;
-        let compaction = LifecycleCompactionRequest::new(
+        let compaction = LifecycleCompactionDrainRequest::new(
             branch_id,
-            crate::branch::state::compaction::BranchCompactionKind::CompactL0ToLevelOne,
             format!("storage-boundary-compaction-{branch_id}"),
         )
         .map_err(map_lifecycle_error)?;
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.compact_branch_tables(&compaction),
-            StorageRuntimeInner::Durable(runtime) => runtime.compact_branch_tables(&compaction),
+            StorageRuntimeInner::Cache(runtime) => {
+                runtime.compact_branch_tables_to_fixed_point(&compaction)
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                runtime.compact_branch_tables_to_fixed_point(&compaction)
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "compaction maintenance requires an open runtime",
@@ -890,6 +907,28 @@ impl<'a> StorageRuntime<'a> {
             *request,
             &outcome.maintenance_outcome(),
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn branch_source_layout_for_test(
+        &self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<crate::branch::facts::BranchSourceLayout> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => Ok(runtime
+                .branch_catalog()
+                .branch_state(branch_id)
+                .map_err(map_lifecycle_error)?
+                .source_layout()),
+            StorageRuntimeInner::Durable(runtime) => Ok(runtime
+                .branch_catalog()
+                .branch_state(branch_id)
+                .map_err(map_lifecycle_error)?
+                .source_layout()),
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "source layout requires an open runtime",
+            }),
+        }
     }
 
     fn materialization_maintenance(

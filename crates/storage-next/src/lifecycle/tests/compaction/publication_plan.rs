@@ -1036,6 +1036,34 @@ fn rewrite_manifest_publish_failure_after_install_reports_manifest_debt() {
 }
 
 #[test]
+fn durable_fixed_point_drain_stops_after_manifest_debt() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xeb);
+    let mut runtime = open_runtime(branch, &backend);
+    install_compaction_inputs(runtime.branch_state_mut(), branch, "drain-manifest-debt");
+    backend.fail_table_manifest_replacement_on_call(1);
+    let request =
+        LifecycleCompactionDrainRequest::new(branch, "drain-manifest-debt").expect("request");
+
+    let outcome = runtime
+        .compact_branch_tables_to_fixed_point(&request)
+        .expect("drain outcome");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(outcome.operations_attempted(), 1);
+    assert_eq!(outcome.operations_installed(), 1);
+    assert_eq!(outcome.table_rewrites(), 1);
+    assert_eq!(outcome.metadata_promotions(), 0);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(maintenance.source_error().is_some());
+    assert!(maintenance.checkpoint_required());
+    assert_eq!(backend.table_manifest_replace_calls(), 1);
+    assert!(runtime.branch_state().owned_levels()[0].is_empty());
+    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 1);
+    assert!(runtime.branch_state().owned_levels()[2].is_empty());
+}
+
+#[test]
 fn rewrite_manifest_publish_uncertain_after_install_reports_uncertainty() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0xe5);

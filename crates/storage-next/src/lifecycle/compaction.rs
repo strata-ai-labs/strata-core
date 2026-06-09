@@ -6,10 +6,11 @@ use super::{
     MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskScope, RecoveryHealth,
 };
 use crate::branch::error::BranchRuntimeError;
-use crate::branch::facts::{BranchLevel, BranchReachabilitySnapshot};
+use crate::branch::facts::{BranchLevel, BranchReachabilitySnapshot, BranchSourceLayout};
 use crate::branch::pruning::BranchCompactionPruningProof;
 use crate::branch::state::compaction::{
-    BranchCompactionKind, BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
+    BranchCompactionCandidate, BranchCompactionKind, BranchCompactionOperation,
+    BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
     BranchCompactionRetentionPolicy,
 };
 use crate::branch::state::materialization::{
@@ -18,6 +19,7 @@ use crate::branch::state::materialization::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::object::ObjectName;
+use crate::table::TableIdentity;
 use strata_core_next::BranchId;
 
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 2;
@@ -25,6 +27,7 @@ const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 4;
 const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 8;
 const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
 const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
+const DEFAULT_COMPACTION_DRAIN_PASS_LIMIT: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -54,6 +57,30 @@ pub(crate) struct LifecycleCompactionOutcome {
     recovery_health: Option<RecoveryHealth>,
     durable_output_objects: Vec<ObjectName>,
     retained_input_objects: Vec<String>,
+    failure: Option<LifecycleError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleCompactionDrainRequest {
+    branch_id: BranchId,
+    output_identity_prefix: String,
+    max_passes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleCompactionDrainOutcome {
+    branch_id: BranchId,
+    operations_attempted: usize,
+    operations_installed: usize,
+    table_rewrites: usize,
+    metadata_promotions: usize,
+    levels_touched: Vec<BranchLevel>,
+    input_tables_removed: usize,
+    output_tables_installed: usize,
+    final_source_layout: BranchSourceLayout,
+    affected_object_names: Vec<String>,
+    checkpoint_required: bool,
+    recovery_health: Option<RecoveryHealth>,
     failure: Option<LifecycleError>,
 }
 
@@ -225,6 +252,219 @@ impl LifecycleCompactionRequest {
             request = request.with_pruning_proof(proof);
         }
         Ok(request)
+    }
+}
+
+impl LifecycleCompactionDrainRequest {
+    pub(crate) fn new(
+        branch_id: BranchId,
+        output_identity_prefix: impl Into<String>,
+    ) -> LifecycleResult<Self> {
+        let request = Self {
+            branch_id,
+            output_identity_prefix: output_identity_prefix.into(),
+            max_passes: DEFAULT_COMPACTION_DRAIN_PASS_LIMIT,
+        };
+        TableIdentity::new(request.output_identity_prefix.clone()).map_err(|source| {
+            LifecycleError::lower_layer_with(
+                LifecycleLowerLayer::TableRuntime,
+                "table runtime failed",
+                source,
+            )
+        })?;
+        request.compaction_request_for(0, 0, 0)?;
+        Ok(request)
+    }
+
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) fn output_identity_prefix(&self) -> &str {
+        &self.output_identity_prefix
+    }
+
+    pub(crate) const fn max_passes(&self) -> usize {
+        self.max_passes
+    }
+
+    #[allow(
+        dead_code,
+        reason = "pass-limit behavior is exercised by targeted drain tests"
+    )]
+    pub(crate) const fn with_max_passes(mut self, max_passes: usize) -> Self {
+        self.max_passes = max_passes;
+        self
+    }
+
+    fn compaction_request_for(
+        &self,
+        pass_index: usize,
+        level_index: usize,
+        operation_index: usize,
+    ) -> LifecycleResult<LifecycleCompactionRequest> {
+        let kind = if level_index == 0 {
+            BranchCompactionKind::CompactL0ToLevelOne
+        } else {
+            BranchCompactionKind::CompactLevel {
+                level: BranchLevel::new(u8::try_from(level_index).map_err(|_| {
+                    LifecycleError::MaintenanceTaskFailed {
+                        reason: "compaction drain level must fit in BranchLevel",
+                    }
+                })?),
+                table_index: 0,
+            }
+        };
+        LifecycleCompactionRequest::new(
+            self.branch_id,
+            kind,
+            format!(
+                "{}-pass-{pass_index}-level-{level_index}-op-{operation_index}",
+                self.output_identity_prefix
+            ),
+        )
+    }
+}
+
+impl LifecycleCompactionDrainOutcome {
+    fn new(branch_id: BranchId, final_source_layout: BranchSourceLayout) -> Self {
+        Self {
+            branch_id,
+            operations_attempted: 0,
+            operations_installed: 0,
+            table_rewrites: 0,
+            metadata_promotions: 0,
+            levels_touched: Vec::new(),
+            input_tables_removed: 0,
+            output_tables_installed: 0,
+            final_source_layout,
+            affected_object_names: Vec::new(),
+            checkpoint_required: false,
+            recovery_health: None,
+            failure: None,
+        }
+    }
+
+    fn record_attempt(&mut self) {
+        self.operations_attempted = self.operations_attempted.saturating_add(1);
+    }
+
+    fn record_install(&mut self, outcome: &LifecycleCompactionOutcome) {
+        self.operations_installed = self.operations_installed.saturating_add(1);
+        if let Some(candidate) = outcome.branch_outcome().candidate() {
+            self.record_candidate(candidate);
+        }
+        self.input_tables_removed = self.input_tables_removed.saturating_add(
+            outcome
+                .branch_outcome()
+                .candidate()
+                .map_or(0, |candidate| candidate.input_refs().len()),
+        );
+        self.output_tables_installed = self
+            .output_tables_installed
+            .saturating_add(outcome.branch_outcome().output_refs().len());
+        let maintenance = outcome.maintenance_outcome();
+        for object_name in maintenance.affected_object_names() {
+            if !self.affected_object_names.contains(object_name) {
+                self.affected_object_names.push(object_name.clone());
+            }
+        }
+        self.checkpoint_required |= maintenance.checkpoint_required();
+        if self.recovery_health.is_none() {
+            self.recovery_health = maintenance.recovery_health().cloned();
+        }
+        if self.failure.is_none() {
+            self.failure = maintenance.source_error().cloned();
+        }
+    }
+
+    fn record_candidate(&mut self, candidate: &BranchCompactionCandidate) {
+        match candidate.operation() {
+            BranchCompactionOperation::TableRewrite => {
+                self.table_rewrites = self.table_rewrites.saturating_add(1);
+            }
+            BranchCompactionOperation::MetadataPromotion => {
+                self.metadata_promotions = self.metadata_promotions.saturating_add(1);
+            }
+        }
+        for table_ref in candidate
+            .input_refs()
+            .iter()
+            .chain(candidate.overlap_refs().iter())
+        {
+            self.record_touched_level(table_ref.level());
+        }
+        self.record_touched_level(candidate.output_level());
+    }
+
+    fn record_touched_level(&mut self, level: BranchLevel) {
+        if !self.levels_touched.contains(&level) {
+            self.levels_touched.push(level);
+        }
+    }
+
+    fn with_final_source_layout(mut self, final_source_layout: BranchSourceLayout) -> Self {
+        self.final_source_layout = final_source_layout;
+        self
+    }
+
+    pub(crate) const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    pub(crate) const fn operations_attempted(&self) -> usize {
+        self.operations_attempted
+    }
+
+    pub(crate) const fn operations_installed(&self) -> usize {
+        self.operations_installed
+    }
+
+    pub(crate) const fn table_rewrites(&self) -> usize {
+        self.table_rewrites
+    }
+
+    pub(crate) const fn metadata_promotions(&self) -> usize {
+        self.metadata_promotions
+    }
+
+    pub(crate) fn levels_touched(&self) -> &[BranchLevel] {
+        &self.levels_touched
+    }
+
+    pub(crate) const fn input_tables_removed(&self) -> usize {
+        self.input_tables_removed
+    }
+
+    pub(crate) const fn output_tables_installed(&self) -> usize {
+        self.output_tables_installed
+    }
+
+    pub(crate) const fn final_source_layout(&self) -> &BranchSourceLayout {
+        &self.final_source_layout
+    }
+
+    pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
+        let status = if self.operations_installed == 0 {
+            MaintenanceOutcomeStatus::Deferred
+        } else {
+            MaintenanceOutcomeStatus::Completed
+        };
+        let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Compaction, status)
+            .with_affected_object_names(self.affected_object_names.clone())
+            .with_state_changes(self.operations_installed)
+            .with_checkpoint_required(self.checkpoint_required)
+            .with_stats(LifecycleStats::new(0, 0, self.operations_attempted, 0, 0));
+        if self.operations_installed == 0 {
+            outcome = outcome.with_reason("compaction drain has no candidate tables");
+        }
+        if let Some(health) = &self.recovery_health {
+            outcome = outcome.with_recovery_health(health.clone());
+        }
+        if let Some(error) = &self.failure {
+            outcome = outcome.with_source_error(error.clone());
+        }
+        outcome
     }
 }
 
@@ -671,6 +911,13 @@ pub(crate) fn compact_cache_branch(
     compact_branch(branch, request)
 }
 
+pub(crate) fn compact_cache_branch_to_fixed_point(
+    branch: &mut BranchLocalState,
+    request: &LifecycleCompactionDrainRequest,
+) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
+    compact_branch_to_fixed_point_with(branch, request, compact_branch)
+}
+
 pub(crate) fn compact_durable_branch(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionRequest,
@@ -888,6 +1135,83 @@ fn compact_branch(
         plan,
         branch_outcome,
     ))
+}
+
+pub(crate) fn compact_branch_to_fixed_point_with<F>(
+    branch: &mut BranchLocalState,
+    request: &LifecycleCompactionDrainRequest,
+    mut compact_once: F,
+) -> LifecycleResult<LifecycleCompactionDrainOutcome>
+where
+    F: FnMut(
+        &mut BranchLocalState,
+        &LifecycleCompactionRequest,
+    ) -> LifecycleResult<LifecycleCompactionOutcome>,
+{
+    if branch.branch_id() != request.branch_id() {
+        return Err(branch_error(BranchRuntimeError::InvalidBranchState {
+            reason: "compaction drain request branch id must match branch state",
+        }));
+    }
+    let mut outcome =
+        LifecycleCompactionDrainOutcome::new(branch.branch_id(), branch.source_layout());
+    if branch_compaction_drain_is_stable(branch) {
+        return Ok(outcome);
+    }
+
+    for pass_index in 0..request.max_passes() {
+        let installed_before_pass = outcome.operations_installed();
+        let compactable_level_count = branch.config().max_level_count().saturating_sub(1);
+        for level_index in 0..compactable_level_count {
+            while branch_owned_level_table_count(branch, level_index) > 0 {
+                let input_tables_before = branch_owned_level_table_count(branch, level_index);
+                let request_for_level = request.compaction_request_for(
+                    pass_index,
+                    level_index,
+                    outcome.operations_attempted(),
+                )?;
+                outcome.record_attempt();
+                let compaction = compact_once(branch, &request_for_level)?;
+                if compaction.branch_outcome().noop_reason().is_some() {
+                    break;
+                }
+                let input_tables_after = branch_owned_level_table_count(branch, level_index);
+                if input_tables_after >= input_tables_before {
+                    return Err(LifecycleError::MaintenanceTaskFailed {
+                        reason: "compaction drain operation made no input-level progress",
+                    });
+                }
+                outcome.record_install(&compaction);
+                if compaction.failure().is_some() {
+                    return Ok(outcome.with_final_source_layout(branch.source_layout()));
+                }
+            }
+        }
+        if branch_compaction_drain_is_stable(branch) {
+            return Ok(outcome.with_final_source_layout(branch.source_layout()));
+        }
+        if outcome.operations_installed() == installed_before_pass {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "compaction drain found no progress with remaining compactable tables",
+            });
+        }
+    }
+
+    Err(LifecycleError::MaintenanceTaskFailed {
+        reason: "compaction drain exceeded pass limit",
+    })
+}
+
+fn branch_compaction_drain_is_stable(branch: &BranchLocalState) -> bool {
+    branch
+        .owned_levels()
+        .iter()
+        .take(branch.config().max_level_count().saturating_sub(1))
+        .all(Vec::is_empty)
+}
+
+fn branch_owned_level_table_count(branch: &BranchLocalState, level_index: usize) -> usize {
+    branch.owned_levels().get(level_index).map_or(0, Vec::len)
 }
 
 fn materialize_branch(

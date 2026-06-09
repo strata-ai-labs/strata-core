@@ -84,11 +84,13 @@ pub(crate) use checkpoint::{
     reason = "table rewrite maintenance exports define the local surface for later slices"
 )]
 pub(crate) use compaction::{
-    bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
+    bind_materialization_task_for_enqueue, collect_storage_pressure,
+    compact_branch_to_fixed_point_with, compact_cache_branch, compact_cache_branch_to_fixed_point,
     compact_durable_branch, compaction_request_from_maintenance_task,
     materialization_request_from_maintenance_task, materialize_cache_branch,
-    materialize_durable_branch, LifecycleCompactionOutcome, LifecycleCompactionRequest,
-    LifecycleCompactionStatus, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
+    materialize_durable_branch, LifecycleCompactionDrainOutcome, LifecycleCompactionDrainRequest,
+    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleCompactionStatus,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
     LifecycleMaterializationStatus, LifecycleStoragePressure, LifecycleStoragePressureReason,
     LifecycleStoragePressureSeverity, LifecycleTableRewriteDurability,
 };

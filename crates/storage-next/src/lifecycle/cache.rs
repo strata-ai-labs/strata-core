@@ -3,8 +3,8 @@
 use super::{
     compaction::{
         bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
-        compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
-        materialize_cache_branch,
+        compact_cache_branch_to_fixed_point, compaction_request_from_maintenance_task,
+        materialization_request_from_maintenance_task, materialize_cache_branch,
     },
     flush::{flush_cache_branch_with_budget, flush_request_from_maintenance_task},
     require_maintenance_enqueue_budget, require_rotate_budget, snapshot_with_runtime_usage,
@@ -12,15 +12,15 @@ use super::{
     CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase, FlushFrozenOutcome, FlushFrozenRequest,
     LifecycleBranchCatalog, LifecycleBranchClearOutcome, LifecycleBranchCreateOutcome,
     LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
-    LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleError, LifecycleMaintenanceExecutor,
-    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
-    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleStoragePressure, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
-    MaintenanceCancelOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
-    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
-    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
-    RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
+    LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleCompactionDrainOutcome,
+    LifecycleCompactionDrainRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
+    LifecycleError, LifecycleMaintenanceExecutor, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleOperationKind, LifecycleResult, LifecycleState,
+    LifecycleStateMachine, LifecycleStats, LifecycleStoragePressure, LifecycleTransitionTrigger,
+    LifecycleWalGrowthOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
+    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
     StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
@@ -446,6 +446,26 @@ impl<S> LifecycleCacheRuntime<S> {
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             compact_cache_branch(branch, request)
+        };
+        outcome
+    }
+
+    #[allow(
+        dead_code,
+        reason = "runtime hook is consumed by explicit maintenance dispatch"
+    )]
+    pub(crate) fn compact_branch_tables_to_fixed_point(
+        &mut self,
+        request: &LifecycleCompactionDrainRequest,
+    ) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let branch_id = request.branch_id();
+        let generation = self.branch_catalog.lookup(branch_id)?.generation();
+        let outcome = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            compact_cache_branch_to_fixed_point(branch, request)
         };
         outcome
     }
