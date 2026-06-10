@@ -4,6 +4,7 @@ use super::{
     CommitBatchKind, CommitBranchGuard, CommitBranchGuardSet, CommitRuntimeError,
     CommitRuntimeResult, ValidatedCommitBatch,
 };
+use crate::observability::perf_trace;
 use std::num::NonZeroU64;
 use strata_core_next::BranchId;
 
@@ -182,11 +183,14 @@ impl CommitBranchRegistry {
         &self,
         branch_id: BranchId,
     ) -> CommitRuntimeResult<CommitBranchDescriptor> {
-        self.descriptors
-            .iter()
-            .find(|descriptor| descriptor.branch_id() == branch_id)
-            .copied()
-            .ok_or(CommitRuntimeError::BranchNotFound { branch_id })
+        for (index, descriptor) in self.descriptors.iter().enumerate() {
+            if descriptor.branch_id() == branch_id {
+                perf_trace::record_commit_branch_registry_lookup(index.saturating_add(1));
+                return Ok(*descriptor);
+            }
+        }
+        perf_trace::record_commit_branch_registry_lookup(self.descriptors.len());
+        Err(CommitRuntimeError::BranchNotFound { branch_id })
     }
 
     pub(crate) fn mark_deleting(

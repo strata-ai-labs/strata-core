@@ -68,6 +68,25 @@ fn branch_registry_keeps_multiple_branch_descriptors_isolated() {
     assert_eq!(registry.len(), 2);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_registry_perf_trace_counts_descriptor_scans() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut registry = CommitBranchRegistry::new();
+    for byte in 1..=8 {
+        registry
+            .register_active(branch_id(byte), generation(u64::from(byte)))
+            .expect("register branch");
+    }
+
+    assert!(registry.lookup(branch_id(8)).is_ok());
+    assert!(registry.lookup(branch_id(9)).is_err());
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_branch_registry_lookups(), 2);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 16);
+}
+
 #[test]
 fn branch_registry_rejects_duplicate_and_mismatched_descriptors() {
     let branch = branch_id(92);

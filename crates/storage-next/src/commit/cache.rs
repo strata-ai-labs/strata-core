@@ -105,7 +105,10 @@ where
         self.branch
             .append_committed_rows_atomically(combined_rows)?;
 
-        if let Err(error) = self.visible.publish_from_facts(facts) {
+        perf_trace::record_commit_visible_publish_attempt();
+        let publish = self.visible.publish_from_facts(facts);
+        if let Err(error) = publish {
+            perf_trace::record_commit_visible_publish_failure();
             // Cache mode has no WAL replay path. If publication fails after
             // apply, block all later mutations through the global gate so a
             // cross-branch visible-version advance cannot expose these rows by
@@ -132,6 +135,7 @@ where
                 reason,
             });
         }
+        perf_trace::record_commit_visible_publish_success();
 
         CommitOutcome::visible(
             branch_id,

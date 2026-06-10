@@ -120,7 +120,35 @@ fn durable_blind_commit_does_not_capture_conflict_read_view() {
         .expect("blind durable commit succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
+    let timeline_row_count =
+        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
     assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 1);
+    assert_eq!(perf.commit_conflict_validation_without_source(), 1);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 0);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 0);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 0);
+    assert_eq!(perf.commit_conflicts_detected(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 1);
+    assert_eq!(perf.commit_user_mutation_rows(), 1);
+    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
+    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_records_built(), 1);
+    assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_appends(), 1);
+    assert_eq!(perf.commit_wal_append_bytes(), 128);
+    assert_eq!(perf.commit_visible_publish_attempts(), 1);
+    assert_eq!(perf.commit_visible_publish_successes(), 1);
+    assert_eq!(perf.commit_visible_publish_failures(), 0);
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
+    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
+    assert_eq!(perf.commit_branch_guard_attempts(), 1);
+    assert_eq!(perf.commit_branch_guard_acquired(), 1);
+    assert_eq!(perf.commit_branch_guard_rejected(), 0);
     assert_eq!(perf.read_view_captures(), 0);
     assert_eq!(perf.read_view_rows_cloned(), 0);
     assert_eq!(perf.read_view_validation_rows_scanned(), 0);
@@ -173,6 +201,22 @@ fn durable_cas_commit_still_captures_read_view_and_rejects_before_wal_append() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.conflict_sources_built(), 1);
+    assert_eq!(perf.commit_conflict_validation_calls(), 1);
+    assert_eq!(perf.commit_conflict_validation_without_source(), 0);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 1);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 0);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 1);
+    assert_eq!(perf.commit_conflicts_detected(), 1);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
+    assert_eq!(perf.commit_branch_guard_attempts(), 1);
+    assert_eq!(perf.commit_branch_guard_acquired(), 1);
     assert_eq!(perf.read_view_captures(), 1);
     assert!(perf.read_view_source_handles_cloned() > 0);
     assert_eq!(perf.read_view_rows_cloned(), 0);
@@ -1404,6 +1448,8 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
         },
     );
     let durable_gate = CommitUnresolvedDurableGate::new();
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
     let active_admission = durable_gate
         .admit_mutating_commit()
         .expect("first branch durable admission");
@@ -1447,6 +1493,16 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
     assert_eq!(state.active_row_count(), 0);
     assert_eq!(visible.visible_version(), CommitVersion::ZERO);
     assert_eq!(durable_gate.unresolved().expect("gate read"), None);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 2);
+        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+        assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
+        assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
+        assert_eq!(perf.commit_branch_guard_attempts(), 0);
+        assert_eq!(perf.commit_wal_appends(), 0);
+    }
     drop(active_admission);
     assert!(durable_gate.require_open_for_mutation().is_ok());
 }

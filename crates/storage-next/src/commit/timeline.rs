@@ -1,6 +1,7 @@
 //! Storage-owned commit timeline row helpers.
 
 use super::{CommitRuntimeError, CommitRuntimeResult, CommitStamp};
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -216,8 +217,10 @@ impl CommitTimelineView {
     ) -> CommitRuntimeResult<Self> {
         let mut timestamp_facts = Vec::new();
         let mut version_facts = Vec::new();
+        let mut rows_scanned = 0usize;
 
         for row in rows {
+            rows_scanned = rows_scanned.saturating_add(1);
             if row.physical_key().branch_id() != branch_id || !is_timeline_candidate(row) {
                 continue;
             }
@@ -235,6 +238,8 @@ impl CommitTimelineView {
                 )?,
             }
         }
+        perf_trace::record_commit_timeline_view_rows(rows_scanned);
+        perf_trace::record_commit_timeline_view_facts(timestamp_facts.len(), version_facts.len());
 
         let entries = reconcile_timeline_facts(&timestamp_facts, &version_facts)?;
         let bounds = timeline_bounds(&entries);
@@ -258,14 +263,17 @@ impl CommitTimelineView {
     }
 
     pub(crate) fn version_at_or_before(&self, query_timestamp: Timestamp) -> CommitTimelineLookup {
+        let retained_entries = self.entries.len();
         let Some(first) = self
             .entries
             .iter()
             .min_by_key(|entry| (entry.commit_timestamp(), entry.commit_version()))
         else {
+            perf_trace::record_commit_timeline_lookup(0);
             return CommitTimelineLookup::empty(query_timestamp);
         };
         if query_timestamp < first.commit_timestamp() {
+            perf_trace::record_commit_timeline_lookup(retained_entries);
             return CommitTimelineLookup {
                 query_timestamp,
                 matched_version: None,
@@ -290,6 +298,7 @@ impl CommitTimelineView {
         } else {
             CommitTimelineMiss::Matched
         };
+        perf_trace::record_commit_timeline_lookup(retained_entries.saturating_mul(3));
 
         CommitTimelineLookup {
             query_timestamp,
@@ -492,6 +501,7 @@ fn reconcile_timeline_facts(
     timestamp_facts: &[CommitTimelineEntry],
     version_facts: &[CommitTimelineEntry],
 ) -> CommitRuntimeResult<Vec<CommitTimelineEntry>> {
+    perf_trace::record_commit_timeline_reconcile(timestamp_facts.len(), version_facts.len());
     for timestamp_entry in timestamp_facts {
         match version_facts.iter().find(|version_entry| {
             version_entry.commit_version() == timestamp_entry.commit_version()

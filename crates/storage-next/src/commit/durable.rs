@@ -217,11 +217,24 @@ where
         let (combined_rows, mutation_counts) = prepare_commit_rows(batch, stamp, self.config)?;
         self.branch
             .validate_committed_rows_before_apply(&combined_rows)?;
+        let wal_record_rows = combined_rows.len();
+        let wal_record_timer = perf_trace::start_timer();
         let record = build_wal_record(stamp, combined_rows)?;
-        let append = self
-            .wal
-            .append_commit_record(&record)
-            .map_err(|error| error.into_commit_error(branch_id, stamp.commit_version()))?;
+        perf_trace::record_commit_wal_record_built(wal_record_timer, wal_record_rows);
+        let wal_append_timer = perf_trace::start_timer();
+        let append = match self.wal.append_commit_record(&record) {
+            Ok(append) => {
+                perf_trace::record_commit_wal_append_elapsed(
+                    wal_append_timer,
+                    append.bytes_written,
+                );
+                append
+            }
+            Err(error) => {
+                perf_trace::record_commit_wal_append_elapsed(wal_append_timer, 0);
+                return Err(error.into_commit_error(branch_id, stamp.commit_version()));
+            }
+        };
         require_append_satisfies_policy(
             required_policy,
             append,
@@ -244,7 +257,10 @@ where
         }
 
         let facts = visible_durable_facts(stamp)?;
-        if let Err(error) = self.visible.publish_from_facts(facts) {
+        perf_trace::record_commit_visible_publish_attempt();
+        let publish = self.visible.publish_from_facts(facts);
+        if let Err(error) = publish {
+            perf_trace::record_commit_visible_publish_failure();
             let reason = durable_visible_reason(&error);
             unresolved_admission.record_unresolved(
                 CommitUnresolvedDurable::applied_not_visible(stamp, durability, reason)?,
@@ -256,6 +272,7 @@ where
                 error,
             ));
         }
+        perf_trace::record_commit_visible_publish_success();
 
         CommitOutcome::visible(branch_id, stamp, durability, mutation_counts, facts)
     }

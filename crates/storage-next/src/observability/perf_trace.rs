@@ -78,6 +78,43 @@ pub struct StoragePerfSnapshot {
     commit_user_mutation_rows: u64,
     commit_timeline_rows_prepared: u64,
     commit_rows_prepared: u64,
+    commit_wal_record_build_ns: u64,
+    commit_wal_records_built: u64,
+    commit_wal_record_rows: u64,
+    commit_wal_append_ns: u64,
+    commit_wal_appends: u64,
+    commit_wal_append_bytes: u64,
+    commit_visible_publish_attempts: u64,
+    commit_visible_publish_successes: u64,
+    commit_visible_publish_failures: u64,
+    commit_unresolved_gate_admission_attempts: u64,
+    commit_unresolved_gate_admission_acquired: u64,
+    commit_unresolved_gate_rejected_unresolved: u64,
+    commit_unresolved_gate_rejected_active: u64,
+    commit_unresolved_records: u64,
+    commit_branch_registry_lookups: u64,
+    commit_branch_registry_descriptors_scanned: u64,
+    commit_branch_guard_attempts: u64,
+    commit_branch_guard_acquired: u64,
+    commit_branch_guard_rejected: u64,
+    commit_quiesce_attempts: u64,
+    commit_quiesce_acquired: u64,
+    commit_quiesce_rejected: u64,
+    commit_conflict_validation_calls: u64,
+    commit_conflict_validation_skipped: u64,
+    commit_conflict_validation_without_source: u64,
+    commit_conflict_validation_with_source: u64,
+    commit_conflict_read_facts_checked: u64,
+    commit_conflict_cas_facts_checked: u64,
+    commit_conflicts_detected: u64,
+    commit_timeline_view_rows_scanned: u64,
+    commit_timeline_timestamp_facts: u64,
+    commit_timeline_version_facts: u64,
+    commit_timeline_reconcile_calls: u64,
+    commit_timeline_reconcile_timestamp_facts: u64,
+    commit_timeline_reconcile_version_facts: u64,
+    commit_timeline_lookup_calls: u64,
+    commit_timeline_lookup_entries_scanned: u64,
     append_rows_applied: u64,
     branch_facts_rows_observed: u64,
     read_view_captures: u64,
@@ -290,6 +327,191 @@ impl StoragePerfSnapshot {
     /// Total rows prepared for commit application.
     pub const fn commit_rows_prepared(self) -> u64 {
         self.commit_rows_prepared
+    }
+
+    /// Nanoseconds spent building durable WAL records.
+    pub const fn commit_wal_record_build_ns(self) -> u64 {
+        self.commit_wal_record_build_ns
+    }
+
+    /// Durable WAL records built by commit execution.
+    pub const fn commit_wal_records_built(self) -> u64 {
+        self.commit_wal_records_built
+    }
+
+    /// Rows included in durable WAL records built by commit execution.
+    pub const fn commit_wal_record_rows(self) -> u64 {
+        self.commit_wal_record_rows
+    }
+
+    /// Nanoseconds spent appending durable WAL records.
+    pub const fn commit_wal_append_ns(self) -> u64 {
+        self.commit_wal_append_ns
+    }
+
+    /// Durable WAL append calls made by commit execution.
+    pub const fn commit_wal_appends(self) -> u64 {
+        self.commit_wal_appends
+    }
+
+    /// Durable WAL append payload bytes reported by the WAL service.
+    pub const fn commit_wal_append_bytes(self) -> u64 {
+        self.commit_wal_append_bytes
+    }
+
+    /// Visible-version publication attempts made by commit execution.
+    pub const fn commit_visible_publish_attempts(self) -> u64 {
+        self.commit_visible_publish_attempts
+    }
+
+    /// Successful visible-version publications made by commit execution.
+    pub const fn commit_visible_publish_successes(self) -> u64 {
+        self.commit_visible_publish_successes
+    }
+
+    /// Failed visible-version publications made by commit execution.
+    pub const fn commit_visible_publish_failures(self) -> u64 {
+        self.commit_visible_publish_failures
+    }
+
+    /// Global unresolved-durable gate admission attempts.
+    pub const fn commit_unresolved_gate_admission_attempts(self) -> u64 {
+        self.commit_unresolved_gate_admission_attempts
+    }
+
+    /// Global unresolved-durable gate admissions acquired.
+    pub const fn commit_unresolved_gate_admission_acquired(self) -> u64 {
+        self.commit_unresolved_gate_admission_acquired
+    }
+
+    /// Admission attempts rejected because an unresolved durable commit exists.
+    pub const fn commit_unresolved_gate_rejected_unresolved(self) -> u64 {
+        self.commit_unresolved_gate_rejected_unresolved
+    }
+
+    /// Admission attempts rejected because another mutation is active.
+    pub const fn commit_unresolved_gate_rejected_active(self) -> u64 {
+        self.commit_unresolved_gate_rejected_active
+    }
+
+    /// Unresolved durable commit records installed in the gate.
+    pub const fn commit_unresolved_records(self) -> u64 {
+        self.commit_unresolved_records
+    }
+
+    /// Branch registry lookup calls made by commit admission.
+    pub const fn commit_branch_registry_lookups(self) -> u64 {
+        self.commit_branch_registry_lookups
+    }
+
+    /// Branch descriptors scanned by branch registry lookups.
+    pub const fn commit_branch_registry_descriptors_scanned(self) -> u64 {
+        self.commit_branch_registry_descriptors_scanned
+    }
+
+    /// Branch guard acquisition attempts.
+    pub const fn commit_branch_guard_attempts(self) -> u64 {
+        self.commit_branch_guard_attempts
+    }
+
+    /// Branch guards acquired.
+    pub const fn commit_branch_guard_acquired(self) -> u64 {
+        self.commit_branch_guard_acquired
+    }
+
+    /// Branch guard attempts rejected by active branch or quiesce state.
+    pub const fn commit_branch_guard_rejected(self) -> u64 {
+        self.commit_branch_guard_rejected
+    }
+
+    /// Quiesce guard acquisition attempts.
+    pub const fn commit_quiesce_attempts(self) -> u64 {
+        self.commit_quiesce_attempts
+    }
+
+    /// Quiesce guards acquired.
+    pub const fn commit_quiesce_acquired(self) -> u64 {
+        self.commit_quiesce_acquired
+    }
+
+    /// Quiesce guard attempts rejected by active commit or quiesce state.
+    pub const fn commit_quiesce_rejected(self) -> u64 {
+        self.commit_quiesce_rejected
+    }
+
+    /// Conflict-validation calls.
+    pub const fn commit_conflict_validation_calls(self) -> u64 {
+        self.commit_conflict_validation_calls
+    }
+
+    /// Conflict-validation calls skipped by mode or diagnostic kind.
+    pub const fn commit_conflict_validation_skipped(self) -> u64 {
+        self.commit_conflict_validation_skipped
+    }
+
+    /// Conflict-validation calls that did not need a read source.
+    pub const fn commit_conflict_validation_without_source(self) -> u64 {
+        self.commit_conflict_validation_without_source
+    }
+
+    /// Conflict-validation calls that needed a read source.
+    pub const fn commit_conflict_validation_with_source(self) -> u64 {
+        self.commit_conflict_validation_with_source
+    }
+
+    /// Read-set facts checked by conflict validation.
+    pub const fn commit_conflict_read_facts_checked(self) -> u64 {
+        self.commit_conflict_read_facts_checked
+    }
+
+    /// CAS facts checked by conflict validation.
+    pub const fn commit_conflict_cas_facts_checked(self) -> u64 {
+        self.commit_conflict_cas_facts_checked
+    }
+
+    /// Commit conflicts detected by validation.
+    pub const fn commit_conflicts_detected(self) -> u64 {
+        self.commit_conflicts_detected
+    }
+
+    /// Rows scanned while constructing commit timeline views.
+    pub const fn commit_timeline_view_rows_scanned(self) -> u64 {
+        self.commit_timeline_view_rows_scanned
+    }
+
+    /// Timestamp-to-version facts retained by timeline view construction.
+    pub const fn commit_timeline_timestamp_facts(self) -> u64 {
+        self.commit_timeline_timestamp_facts
+    }
+
+    /// Version-to-timestamp facts retained by timeline view construction.
+    pub const fn commit_timeline_version_facts(self) -> u64 {
+        self.commit_timeline_version_facts
+    }
+
+    /// Timeline reconciliation calls.
+    pub const fn commit_timeline_reconcile_calls(self) -> u64 {
+        self.commit_timeline_reconcile_calls
+    }
+
+    /// Timestamp facts handed to timeline reconciliation.
+    pub const fn commit_timeline_reconcile_timestamp_facts(self) -> u64 {
+        self.commit_timeline_reconcile_timestamp_facts
+    }
+
+    /// Version facts handed to timeline reconciliation.
+    pub const fn commit_timeline_reconcile_version_facts(self) -> u64 {
+        self.commit_timeline_reconcile_version_facts
+    }
+
+    /// Timeline timestamp lookup calls.
+    pub const fn commit_timeline_lookup_calls(self) -> u64 {
+        self.commit_timeline_lookup_calls
+    }
+
+    /// Timeline entries scanned by timestamp lookups.
+    pub const fn commit_timeline_lookup_entries_scanned(self) -> u64 {
+        self.commit_timeline_lookup_entries_scanned
     }
 
     /// Number of prepared rows handed to branch append.
@@ -987,6 +1209,80 @@ static COMMIT_TIMELINE_ROWS_PREPARED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_ROWS_PREPARED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_WAL_RECORD_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_RECORDS_BUILT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_RECORD_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_APPEND_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_APPENDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_APPEND_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_VISIBLE_PUBLISH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_VISIBLE_PUBLISH_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_VISIBLE_PUBLISH_FAILURES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_RECORDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_BRANCH_REGISTRY_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_BRANCH_GUARD_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_BRANCH_GUARD_ACQUIRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_BRANCH_GUARD_REJECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_QUIESCE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_QUIESCE_ACQUIRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_QUIESCE_REJECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICT_VALIDATION_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICT_VALIDATION_SKIPPED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICT_VALIDATION_WITHOUT_SOURCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICT_VALIDATION_WITH_SOURCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICT_READ_FACTS_CHECKED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICT_CAS_FACTS_CHECKED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_CONFLICTS_DETECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_VIEW_ROWS_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_TIMESTAMP_FACTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_VERSION_FACTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_RECONCILE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_RECONCILE_VERSION_FACTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_LOOKUP_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static APPEND_ROWS_APPLIED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static BRANCH_FACTS_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
@@ -1306,6 +1602,43 @@ pub fn reset() {
     COMMIT_USER_MUTATION_ROWS.store(0, Ordering::Relaxed);
     COMMIT_TIMELINE_ROWS_PREPARED.store(0, Ordering::Relaxed);
     COMMIT_ROWS_PREPARED.store(0, Ordering::Relaxed);
+    COMMIT_WAL_RECORD_BUILD_NS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_RECORDS_BUILT.store(0, Ordering::Relaxed);
+    COMMIT_WAL_RECORD_ROWS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_APPEND_NS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_APPENDS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_APPEND_BYTES.store(0, Ordering::Relaxed);
+    COMMIT_VISIBLE_PUBLISH_ATTEMPTS.store(0, Ordering::Relaxed);
+    COMMIT_VISIBLE_PUBLISH_SUCCESSES.store(0, Ordering::Relaxed);
+    COMMIT_VISIBLE_PUBLISH_FAILURES.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_RECORDS.store(0, Ordering::Relaxed);
+    COMMIT_BRANCH_REGISTRY_LOOKUPS.store(0, Ordering::Relaxed);
+    COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED.store(0, Ordering::Relaxed);
+    COMMIT_BRANCH_GUARD_ATTEMPTS.store(0, Ordering::Relaxed);
+    COMMIT_BRANCH_GUARD_ACQUIRED.store(0, Ordering::Relaxed);
+    COMMIT_BRANCH_GUARD_REJECTED.store(0, Ordering::Relaxed);
+    COMMIT_QUIESCE_ATTEMPTS.store(0, Ordering::Relaxed);
+    COMMIT_QUIESCE_ACQUIRED.store(0, Ordering::Relaxed);
+    COMMIT_QUIESCE_REJECTED.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICT_VALIDATION_CALLS.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICT_VALIDATION_SKIPPED.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICT_VALIDATION_WITHOUT_SOURCE.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICT_VALIDATION_WITH_SOURCE.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICT_READ_FACTS_CHECKED.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICT_CAS_FACTS_CHECKED.store(0, Ordering::Relaxed);
+    COMMIT_CONFLICTS_DETECTED.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_VIEW_ROWS_SCANNED.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_TIMESTAMP_FACTS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_VERSION_FACTS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_CALLS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_VERSION_FACTS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_LOOKUP_CALLS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED.store(0, Ordering::Relaxed);
     APPEND_ROWS_APPLIED.store(0, Ordering::Relaxed);
     BRANCH_FACTS_ROWS_OBSERVED.store(0, Ordering::Relaxed);
     READ_VIEW_CAPTURES.store(0, Ordering::Relaxed);
@@ -1461,6 +1794,57 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_user_mutation_rows: COMMIT_USER_MUTATION_ROWS.load(Ordering::Relaxed),
         commit_timeline_rows_prepared: COMMIT_TIMELINE_ROWS_PREPARED.load(Ordering::Relaxed),
         commit_rows_prepared: COMMIT_ROWS_PREPARED.load(Ordering::Relaxed),
+        commit_wal_record_build_ns: COMMIT_WAL_RECORD_BUILD_NS.load(Ordering::Relaxed),
+        commit_wal_records_built: COMMIT_WAL_RECORDS_BUILT.load(Ordering::Relaxed),
+        commit_wal_record_rows: COMMIT_WAL_RECORD_ROWS.load(Ordering::Relaxed),
+        commit_wal_append_ns: COMMIT_WAL_APPEND_NS.load(Ordering::Relaxed),
+        commit_wal_appends: COMMIT_WAL_APPENDS.load(Ordering::Relaxed),
+        commit_wal_append_bytes: COMMIT_WAL_APPEND_BYTES.load(Ordering::Relaxed),
+        commit_visible_publish_attempts: COMMIT_VISIBLE_PUBLISH_ATTEMPTS.load(Ordering::Relaxed),
+        commit_visible_publish_successes: COMMIT_VISIBLE_PUBLISH_SUCCESSES.load(Ordering::Relaxed),
+        commit_visible_publish_failures: COMMIT_VISIBLE_PUBLISH_FAILURES.load(Ordering::Relaxed),
+        commit_unresolved_gate_admission_attempts: COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS
+            .load(Ordering::Relaxed),
+        commit_unresolved_gate_admission_acquired: COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED
+            .load(Ordering::Relaxed),
+        commit_unresolved_gate_rejected_unresolved: COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED
+            .load(Ordering::Relaxed),
+        commit_unresolved_gate_rejected_active: COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE
+            .load(Ordering::Relaxed),
+        commit_unresolved_records: COMMIT_UNRESOLVED_RECORDS.load(Ordering::Relaxed),
+        commit_branch_registry_lookups: COMMIT_BRANCH_REGISTRY_LOOKUPS.load(Ordering::Relaxed),
+        commit_branch_registry_descriptors_scanned: COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED
+            .load(Ordering::Relaxed),
+        commit_branch_guard_attempts: COMMIT_BRANCH_GUARD_ATTEMPTS.load(Ordering::Relaxed),
+        commit_branch_guard_acquired: COMMIT_BRANCH_GUARD_ACQUIRED.load(Ordering::Relaxed),
+        commit_branch_guard_rejected: COMMIT_BRANCH_GUARD_REJECTED.load(Ordering::Relaxed),
+        commit_quiesce_attempts: COMMIT_QUIESCE_ATTEMPTS.load(Ordering::Relaxed),
+        commit_quiesce_acquired: COMMIT_QUIESCE_ACQUIRED.load(Ordering::Relaxed),
+        commit_quiesce_rejected: COMMIT_QUIESCE_REJECTED.load(Ordering::Relaxed),
+        commit_conflict_validation_calls: COMMIT_CONFLICT_VALIDATION_CALLS.load(Ordering::Relaxed),
+        commit_conflict_validation_skipped: COMMIT_CONFLICT_VALIDATION_SKIPPED
+            .load(Ordering::Relaxed),
+        commit_conflict_validation_without_source: COMMIT_CONFLICT_VALIDATION_WITHOUT_SOURCE
+            .load(Ordering::Relaxed),
+        commit_conflict_validation_with_source: COMMIT_CONFLICT_VALIDATION_WITH_SOURCE
+            .load(Ordering::Relaxed),
+        commit_conflict_read_facts_checked: COMMIT_CONFLICT_READ_FACTS_CHECKED
+            .load(Ordering::Relaxed),
+        commit_conflict_cas_facts_checked: COMMIT_CONFLICT_CAS_FACTS_CHECKED
+            .load(Ordering::Relaxed),
+        commit_conflicts_detected: COMMIT_CONFLICTS_DETECTED.load(Ordering::Relaxed),
+        commit_timeline_view_rows_scanned: COMMIT_TIMELINE_VIEW_ROWS_SCANNED
+            .load(Ordering::Relaxed),
+        commit_timeline_timestamp_facts: COMMIT_TIMELINE_TIMESTAMP_FACTS.load(Ordering::Relaxed),
+        commit_timeline_version_facts: COMMIT_TIMELINE_VERSION_FACTS.load(Ordering::Relaxed),
+        commit_timeline_reconcile_calls: COMMIT_TIMELINE_RECONCILE_CALLS.load(Ordering::Relaxed),
+        commit_timeline_reconcile_timestamp_facts: COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS
+            .load(Ordering::Relaxed),
+        commit_timeline_reconcile_version_facts: COMMIT_TIMELINE_RECONCILE_VERSION_FACTS
+            .load(Ordering::Relaxed),
+        commit_timeline_lookup_calls: COMMIT_TIMELINE_LOOKUP_CALLS.load(Ordering::Relaxed),
+        commit_timeline_lookup_entries_scanned: COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED
+            .load(Ordering::Relaxed),
         append_rows_applied: APPEND_ROWS_APPLIED.load(Ordering::Relaxed),
         branch_facts_rows_observed: BRANCH_FACTS_ROWS_OBSERVED.load(Ordering::Relaxed),
         read_view_captures: READ_VIEW_CAPTURES.load(Ordering::Relaxed),
@@ -1763,6 +2147,305 @@ pub(crate) fn record_commit_rows_prepared(
     COMMIT_USER_MUTATION_ROWS.fetch_add(as_u64(user_mutation_rows), Ordering::Relaxed);
     COMMIT_TIMELINE_ROWS_PREPARED.fetch_add(as_u64(timeline_rows), Ordering::Relaxed);
     COMMIT_ROWS_PREPARED.fetch_add(as_u64(total_rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_record_built(_start: PerfTraceTimer, _rows: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_record_built(start: PerfTraceTimer, rows: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    record_elapsed(&COMMIT_WAL_RECORD_BUILD_NS, start);
+    COMMIT_WAL_RECORDS_BUILT.fetch_add(1, Ordering::Relaxed);
+    COMMIT_WAL_RECORD_ROWS.fetch_add(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_append_elapsed(_start: PerfTraceTimer, _bytes: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_append_elapsed(start: PerfTraceTimer, bytes: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    record_elapsed(&COMMIT_WAL_APPEND_NS, start);
+    COMMIT_WAL_APPENDS.fetch_add(1, Ordering::Relaxed);
+    COMMIT_WAL_APPEND_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_visible_publish_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_visible_publish_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_VISIBLE_PUBLISH_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_visible_publish_success() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_visible_publish_success() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_VISIBLE_PUBLISH_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_visible_publish_failure() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_visible_publish_failure() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_VISIBLE_PUBLISH_FAILURES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_gate_admission_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_gate_admission_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_gate_admission_acquired() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_gate_admission_acquired() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_gate_rejected_unresolved() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_gate_rejected_unresolved() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_gate_rejected_active() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_gate_rejected_active() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_record() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_record() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_branch_registry_lookup(_descriptors_scanned: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_branch_registry_lookup(descriptors_scanned: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_BRANCH_REGISTRY_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+    COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED
+        .fetch_add(as_u64(descriptors_scanned), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_branch_guard_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_branch_guard_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_BRANCH_GUARD_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_branch_guard_acquired() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_branch_guard_acquired() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_BRANCH_GUARD_ACQUIRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_branch_guard_rejected() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_branch_guard_rejected() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_BRANCH_GUARD_REJECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_quiesce_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_quiesce_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_QUIESCE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_quiesce_acquired() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_quiesce_acquired() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_QUIESCE_ACQUIRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_quiesce_rejected() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_quiesce_rejected() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_QUIESCE_REJECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_conflict_validation_call() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_conflict_validation_call() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_CONFLICT_VALIDATION_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_conflict_validation_skipped() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_conflict_validation_skipped() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_CONFLICT_VALIDATION_SKIPPED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_conflict_validation_without_source() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_conflict_validation_without_source() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_CONFLICT_VALIDATION_WITHOUT_SOURCE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_conflict_validation_with_source(_read_facts: usize, _cas_facts: usize) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_conflict_validation_with_source(read_facts: usize, cas_facts: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_CONFLICT_VALIDATION_WITH_SOURCE.fetch_add(1, Ordering::Relaxed);
+    COMMIT_CONFLICT_READ_FACTS_CHECKED.fetch_add(as_u64(read_facts), Ordering::Relaxed);
+    COMMIT_CONFLICT_CAS_FACTS_CHECKED.fetch_add(as_u64(cas_facts), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_conflict_detected() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_conflict_detected() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_CONFLICTS_DETECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_timeline_view_rows(_rows_scanned: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_timeline_view_rows(rows_scanned: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_TIMELINE_VIEW_ROWS_SCANNED.fetch_add(as_u64(rows_scanned), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_timeline_view_facts(_timestamp_facts: usize, _version_facts: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_timeline_view_facts(timestamp_facts: usize, version_facts: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_TIMELINE_TIMESTAMP_FACTS.fetch_add(as_u64(timestamp_facts), Ordering::Relaxed);
+    COMMIT_TIMELINE_VERSION_FACTS.fetch_add(as_u64(version_facts), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_timeline_reconcile(_timestamp_facts: usize, _version_facts: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_timeline_reconcile(timestamp_facts: usize, version_facts: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_TIMELINE_RECONCILE_CALLS.fetch_add(1, Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS.fetch_add(as_u64(timestamp_facts), Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_VERSION_FACTS.fetch_add(as_u64(version_facts), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_timeline_lookup(_entries_scanned: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_timeline_lookup(entries_scanned: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_TIMELINE_LOOKUP_CALLS.fetch_add(1, Ordering::Relaxed);
+    COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED.fetch_add(as_u64(entries_scanned), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

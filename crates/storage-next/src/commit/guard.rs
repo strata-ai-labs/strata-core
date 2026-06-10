@@ -6,6 +6,7 @@
 //! recovery orchestration.
 
 use super::{CommitRuntimeError, CommitRuntimeResult};
+use crate::observability::perf_trace;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use strata_core_next::BranchId;
@@ -39,19 +40,23 @@ impl CommitBranchGuardSet {
         &self,
         branch_id: BranchId,
     ) -> CommitRuntimeResult<CommitBranchGuard> {
+        perf_trace::record_commit_branch_guard_attempt();
         let mut state = self.lock_state()?;
         if state.quiescing {
+            perf_trace::record_commit_branch_guard_rejected();
             return Err(CommitRuntimeError::CommitQuiesceUnavailable {
                 reason: "commit quiesce is active",
             });
         }
         if state.active_branches.contains(&branch_id) {
+            perf_trace::record_commit_branch_guard_rejected();
             return Err(CommitRuntimeError::BranchGuardUnavailable {
                 branch_id,
                 reason: "branch commit guard is already active",
             });
         }
         state.active_branches.push(branch_id);
+        perf_trace::record_commit_branch_guard_acquired();
         Ok(CommitBranchGuard {
             inner: Arc::clone(&self.inner),
             branch_id,
@@ -65,18 +70,22 @@ impl CommitBranchGuardSet {
     /// is returned, new mutating branch guards are rejected until the token is
     /// dropped.
     pub(crate) fn try_begin_quiesce(&self) -> CommitRuntimeResult<CommitQuiesceGuard> {
+        perf_trace::record_commit_quiesce_attempt();
         let mut state = self.lock_state()?;
         if state.quiescing {
+            perf_trace::record_commit_quiesce_rejected();
             return Err(CommitRuntimeError::CommitQuiesceUnavailable {
                 reason: "commit quiesce is already active",
             });
         }
         if !state.active_branches.is_empty() {
+            perf_trace::record_commit_quiesce_rejected();
             return Err(CommitRuntimeError::CommitQuiesceUnavailable {
                 reason: "commit quiesce cannot start while branch guards are active",
             });
         }
         state.quiescing = true;
+        perf_trace::record_commit_quiesce_acquired();
         Ok(CommitQuiesceGuard {
             inner: Arc::clone(&self.inner),
         })

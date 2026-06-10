@@ -675,6 +675,43 @@ fn lower_layer_failure_after_successful_read_set_check_preserves_source_chain() 
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn conflict_perf_trace_counts_attempted_facts_when_source_fails() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(232);
+    let read_key = physical_key(branch, 0x20, b"read-ok".to_vec());
+    let cas_key = physical_key(branch, 0x20, b"cas-source-fails".to_vec());
+    let source = PartiallyFailingConflictSource::new(read_key.clone());
+    let batch = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Present(CommitVersion::new(51)),
+            )],
+            vec![CommitCasFact::new(cas_key, CommitObservedVersion::Missing)],
+        ),
+        CommitConflictValidationMode::Validate,
+    );
+
+    let error = validate_commit_conflicts(&batch, &source).expect_err("cas read failure");
+
+    assert_eq!(
+        error,
+        CommitRuntimeError::lower_layer(
+            CommitLowerLayer::BranchRuntime,
+            "partial test read failure"
+        )
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_conflict_validation_calls(), 1);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 1);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 1);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 1);
+    assert_eq!(perf.commit_conflicts_detected(), 0);
+}
+
 #[test]
 fn branch_read_view_source_maps_wrong_branch_to_lower_layer_error() {
     let branch = branch_id(128);

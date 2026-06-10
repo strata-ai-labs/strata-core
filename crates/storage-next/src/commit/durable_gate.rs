@@ -4,6 +4,7 @@ use super::{
     CommitDurabilityClass, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
     CommitVisibilityFacts,
 };
+use crate::observability::perf_trace;
 use std::sync::{Mutex, MutexGuard};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -235,8 +236,10 @@ impl CommitUnresolvedDurableGate {
     pub(crate) fn admit_mutating_commit(
         &self,
     ) -> CommitRuntimeResult<CommitUnresolvedDurableAdmission<'_>> {
+        perf_trace::record_commit_unresolved_gate_admission_attempt();
         let mut state = self.lock()?;
         if let Some(unresolved) = state.unresolved {
+            perf_trace::record_commit_unresolved_gate_rejected_unresolved();
             return Err(CommitRuntimeError::UnresolvedDurableCommit {
                 branch_id: unresolved.branch_id(),
                 commit_version: unresolved.commit_version(),
@@ -244,11 +247,13 @@ impl CommitUnresolvedDurableGate {
             });
         }
         if state.active_admission {
+            perf_trace::record_commit_unresolved_gate_rejected_active();
             return Err(CommitRuntimeError::InvalidCommitState {
                 reason: "durable commit admission is already active",
             });
         }
         state.active_admission = true;
+        perf_trace::record_commit_unresolved_gate_admission_acquired();
         Ok(CommitUnresolvedDurableAdmission {
             gate: self,
             active: true,
@@ -268,6 +273,7 @@ impl CommitUnresolvedDurableGate {
             }),
             None => {
                 state.unresolved = Some(unresolved);
+                perf_trace::record_commit_unresolved_record();
                 Ok(())
             }
         }

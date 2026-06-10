@@ -469,6 +469,42 @@ fn timeline_view_is_branch_local_and_skips_non_timeline_rows() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn timeline_perf_trace_counts_view_rows_facts_and_lookup_scans() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let target = branch_id(5);
+    let mut rows = timeline_rows([entry(5, 1, 10), entry(5, 2, 20), entry(6, 9, 90)]);
+    rows.push(StorageRow::put(
+        physical_key(target, 0x20, b"user-row".to_vec()),
+        CommitVersion::new(3),
+        Timestamp::from_micros(30),
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    ));
+    let supplied_rows = rows.len();
+
+    let view = CommitTimelineView::from_rows(target, rows.iter()).expect("timeline view");
+    assert_lookup(
+        view.version_at_or_before(Timestamp::from_micros(15)),
+        15,
+        Some(1),
+        Some(10),
+        CommitTimelineMiss::Matched,
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    let supplied_rows = u64::try_from(supplied_rows).expect("supplied row count fits u64");
+    assert_eq!(perf.commit_timeline_view_rows_scanned(), supplied_rows);
+    assert_eq!(perf.commit_timeline_timestamp_facts(), 2);
+    assert_eq!(perf.commit_timeline_version_facts(), 2);
+    assert_eq!(perf.commit_timeline_reconcile_calls(), 1);
+    assert_eq!(perf.commit_timeline_reconcile_timestamp_facts(), 2);
+    assert_eq!(perf.commit_timeline_reconcile_version_facts(), 2);
+    assert_eq!(perf.commit_timeline_lookup_calls(), 1);
+    assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 6);
+}
+
 #[test]
 fn timeline_version_lookup_is_branch_local() {
     let mut rows = timeline_rows([entry(5, 1, 10), entry(5, 2, 20), entry(6, 1, 90)]);

@@ -5,6 +5,7 @@ use super::{
     CommitRuntimeError, CommitRuntimeResult, ValidatedCommitBatch,
 };
 use crate::branch::read::{BranchReadBound, BranchReadView};
+use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageSpaceId};
 use strata_core_next::BranchId;
 
@@ -178,22 +179,34 @@ pub(crate) fn validate_commit_conflicts(
     batch: &ValidatedCommitBatch,
     source: &impl CommitConflictReadSource,
 ) -> CommitRuntimeResult<CommitConflictReport> {
+    perf_trace::record_commit_conflict_validation_call();
     let batch = batch.batch();
     if batch.kind() == CommitBatchKind::ReadOnlyDiagnostic
         || batch.options().conflict_validation() == CommitConflictValidationMode::Skip
     {
+        perf_trace::record_commit_conflict_validation_skipped();
         return Ok(CommitConflictReport::skipped());
     }
 
     let validation = batch.validation();
     if validation.read_set().is_empty() && validation.cas_set().is_empty() {
+        perf_trace::record_commit_conflict_validation_without_source();
         return Ok(CommitConflictReport::checked(0, 0));
     }
 
     let mut checked_read_facts = 0;
     for fact in validation.read_set() {
-        let actual = source.current_observed_version(fact.physical_key())?;
+        checked_read_facts += 1;
+        let actual = match source.current_observed_version(fact.physical_key()) {
+            Ok(actual) => actual,
+            Err(error) => {
+                perf_trace::record_commit_conflict_validation_with_source(checked_read_facts, 0);
+                return Err(error);
+            }
+        };
         if actual != fact.observed() {
+            perf_trace::record_commit_conflict_validation_with_source(checked_read_facts, 0);
+            perf_trace::record_commit_conflict_detected();
             return Err(CommitRuntimeError::CommitConflict {
                 conflict: CommitConflict::new(
                     CommitConflictKind::ReadSet,
@@ -203,13 +216,27 @@ pub(crate) fn validate_commit_conflicts(
                 ),
             });
         }
-        checked_read_facts += 1;
     }
 
     let mut checked_cas_facts = 0;
     for fact in validation.cas_set() {
-        let actual = source.current_observed_version(fact.physical_key())?;
+        checked_cas_facts += 1;
+        let actual = match source.current_observed_version(fact.physical_key()) {
+            Ok(actual) => actual,
+            Err(error) => {
+                perf_trace::record_commit_conflict_validation_with_source(
+                    checked_read_facts,
+                    checked_cas_facts,
+                );
+                return Err(error);
+            }
+        };
         if actual != fact.expected() {
+            perf_trace::record_commit_conflict_validation_with_source(
+                checked_read_facts,
+                checked_cas_facts,
+            );
+            perf_trace::record_commit_conflict_detected();
             return Err(CommitRuntimeError::CommitConflict {
                 conflict: CommitConflict::new(
                     CommitConflictKind::Cas,
@@ -219,9 +246,12 @@ pub(crate) fn validate_commit_conflicts(
                 ),
             });
         }
-        checked_cas_facts += 1;
     }
 
+    perf_trace::record_commit_conflict_validation_with_source(
+        checked_read_facts,
+        checked_cas_facts,
+    );
     Ok(CommitConflictReport::checked(
         checked_read_facts,
         checked_cas_facts,

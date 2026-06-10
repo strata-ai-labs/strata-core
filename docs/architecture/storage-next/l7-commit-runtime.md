@@ -777,6 +777,117 @@ Not required for V1:
 10. External transaction IDs as a public API.
 11. Durable storage transaction IDs and transaction-ID allocator catch-up.
 
+## Semantic Decisions
+
+These decisions record intentional storage-next differences from old storage.
+Differential tests should assert the replacement proof below instead of
+weakening the oracle silently.
+
+### Global Commit Admission
+
+Decision: storage-next currently admits at most one mutating commit globally and
+fails fast on contention.
+
+Old behavior: old storage used per-branch commit locks. Same-branch contenders
+blocked on the branch mutex, while unrelated branches could commit
+concurrently. Pending-version tracking let visible-version advancement skip
+over versions that were not yet applied.
+
+Reason: the global unresolved-durable gate prevents later commits from
+advancing visibility past a durable-not-applied or applied-not-visible commit.
+This is more conservative than old storage and fixes an old failure window
+where a WAL-durable commit whose L6 apply failed could be removed from pending,
+allowing visible version to advance before recovery installed the durable rows.
+
+Caller-visible contract: concurrent mutating commit attempts may receive a
+typed admission/contention failure and must retry through L8/L9 policy. L7 does
+not sleep, queue, or run retry loops.
+
+Replacement proof:
+
+1. a durable-not-applied commit blocks later mutating admission until recovery
+   or reconciliation;
+2. an applied-not-visible commit blocks unsafe cross-branch advancement;
+3. same-branch and cross-branch contention return the documented typed facts;
+4. any future per-branch admission design includes an equivalent
+   pending-version or visible-advancement model before relaxing the global gate.
+
+### Explicit Missing Observed Version
+
+Decision: storage-next represents missing validation facts explicitly instead
+of using commit version zero as a sentinel.
+
+Old behavior: old read-set validation used version zero to represent a missing
+row.
+
+Reason: explicit `Missing` avoids conflating absent rows with a synthetic
+version value. `Present(0)` is invalid.
+
+Replacement proof:
+
+1. read-set and CAS validation tests cover missing, present, and deleted rows;
+2. malformed `Present(0)` facts reject before visibility;
+3. L9 exposes storage-shaped read facts without requiring callers to know
+   internal sentinel values.
+
+### Cache Applied-Not-Visible Semantics
+
+Decision: if cache-mode apply succeeds but visible publication fails, the
+applied row remains in branch state while the unresolved gate blocks unsafe
+later advancement.
+
+Old behavior: old cache-mode pending-version behavior did not expose the same
+explicit applied-not-visible classification.
+
+Reason: preserving the applied row gives same-branch read-your-writes behavior
+for the failed commit path, while the unresolved gate prevents unrelated
+branches from advancing global visibility past it by side effect.
+
+Replacement proof:
+
+1. same-branch latest reads can see the applied row after the classified
+   failure;
+2. cross-branch commits are blocked until the unresolved state is resolved;
+3. the outcome/error classification is distinct from durable-not-applied.
+
+### Commit Batch Limits
+
+Decision: storage-next enforces explicit per-batch limits for mutations,
+validation facts, and total commit rows.
+
+Old behavior: old storage did not have the same storage-next V1 limits.
+
+Reason: bounded commit batches keep validation, timeline-row creation, WAL
+payload construction, and branch apply memory predictable.
+
+Replacement proof:
+
+1. limits are tested through L7 validation;
+2. L9 documents the default limits and maps limit failures to typed storage
+   errors;
+3. benchmarks and supported callers stay within the configured defaults or
+   raise them explicitly.
+
+### Public Read-Set Facts
+
+Decision: L7 preserves internal read-set and CAS validation, but storage-next
+does not expose public begin/commit/rollback transaction sessions as the V1
+product surface.
+
+Old behavior: old storage had transaction-context APIs that could capture
+read-set and CAS facts.
+
+Reason: storage-next keeps the conflict model as a storage-shaped internal
+commit capability. Product transaction sessions, if any, belong above L9.
+
+Replacement proof:
+
+1. L7 tests directly prove read-set and CAS semantics;
+2. L9 can expose storage-shaped read facts for engine-next without exposing
+   transaction internals;
+3. public transaction sessions remain absent unless a separate product decision
+   adds them.
+
 ## Open Questions
 
 1. Does V1 keep snapshot isolation with read-set/CAS validation, or reduce the
