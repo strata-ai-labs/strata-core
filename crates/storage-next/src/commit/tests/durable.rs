@@ -2014,6 +2014,90 @@ fn durable_unresolved_gate_perf_trace_stops_before_source_capture_and_wal() {
 }
 
 #[test]
+fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
+    let branch = branch_id(76);
+    let mut registry = CommitBranchRegistry::new();
+    register_active_branch(&mut registry, branch);
+    let guard_set = CommitBranchGuardSet::new();
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::default(),
+        CommitTimestampGuard::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    );
+    let mut state = BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state");
+    let mut visible = VisibleVersionTracker::default();
+    let mut wal = RecordingWalAppender::new(
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let durable_gate = CommitUnresolvedDurableGate::new();
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let active_admission = durable_gate
+        .admit_mutating_commit()
+        .expect("first durable admission");
+
+    let error = CommitDurableRuntime::new(
+        &CommitRuntimeConfig::default(),
+        &registry,
+        &guard_set,
+        &mut allocator,
+        &mut state,
+        &mut visible,
+        &mut wal,
+        &durable_gate,
+    )
+    .execute(
+        durable_batch(
+            branch,
+            CommitDurabilityMode::Standard,
+            vec![CommitMutation::put(
+                physical_key(branch, 0x20, b"same-branch-active-durable".to_vec()),
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+        ),
+        CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+    )
+    .expect_err("active durable admission blocks same-branch commit");
+
+    assert_eq!(
+        error,
+        CommitRuntimeError::InvalidCommitState {
+            reason: "durable commit admission is already active",
+        }
+    );
+    assert_eq!(
+        allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(wal.append_attempts, 0);
+    assert_eq!(state.active_row_count(), 0);
+    assert_eq!(visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(durable_gate.unresolved().expect("gate read"), None);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 2);
+        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+        assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
+        assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
+        assert_eq!(perf.commit_branch_guard_attempts(), 0);
+        assert_eq!(perf.conflict_sources_built(), 0);
+        assert_eq!(perf.read_view_captures(), 0);
+        assert_eq!(perf.commit_conflict_validation_calls(), 0);
+        assert_eq!(perf.commit_batches_prepared(), 0);
+        assert_eq!(perf.commit_wal_records_built(), 0);
+        assert_eq!(perf.commit_wal_appends(), 0);
+    }
+    drop(active_admission);
+    assert!(durable_gate.require_open_for_mutation().is_ok());
+}
+
+#[test]
 fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
     let active_branch = branch_id(76);
     let target_branch = branch_id(77);

@@ -9,6 +9,7 @@ use super::{
 };
 use crate::branch::read::{BranchHistoryOptions, BranchReadView, BranchRowSource};
 use crate::format::WalRecord;
+use crate::observability::perf_trace;
 use crate::row::{StorageRow, StorageSpaceId};
 
 #[derive(Debug)]
@@ -407,14 +408,29 @@ fn classify_replay_rows(
 ) -> CommitRuntimeResult<ReplayDuplicateState> {
     let mut exact = 0usize;
     let mut absent = 0usize;
+    let mut rows_classified = 0usize;
+    let mut history_calls = 0usize;
     for row in rows {
-        match classify_replay_row(read_view, row)? {
+        rows_classified = rows_classified.saturating_add(1);
+        history_calls = history_calls.saturating_add(1);
+        let row_state = match classify_replay_row(read_view, row) {
+            Ok(state) => state,
+            Err(error) => {
+                perf_trace::record_commit_replay_classification(rows_classified, history_calls);
+                return Err(error);
+            }
+        };
+        match row_state {
             ReplayDuplicateState::Exact => exact += 1,
             ReplayDuplicateState::Absent => absent += 1,
-            ReplayDuplicateState::Mismatch => return Ok(ReplayDuplicateState::Mismatch),
+            ReplayDuplicateState::Mismatch => {
+                perf_trace::record_commit_replay_classification(rows_classified, history_calls);
+                return Ok(ReplayDuplicateState::Mismatch);
+            }
             ReplayDuplicateState::Partial => unreachable!("single row cannot be partial"),
         }
     }
+    perf_trace::record_commit_replay_classification(rows_classified, history_calls);
     match (exact, absent) {
         (0, _) => Ok(ReplayDuplicateState::Absent),
         (_, 0) => Ok(ReplayDuplicateState::Exact),

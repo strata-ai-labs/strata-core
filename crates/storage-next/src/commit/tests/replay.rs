@@ -69,6 +69,94 @@ fn replay_applies_wal_rows_preserves_commit_facts_and_publishes_visible() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn replay_classification_perf_trace_counts_rows_and_history_calls() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(121);
+    let version = CommitVersion::new(40);
+    let timestamp = Timestamp::from_micros(40_000);
+    let left = StorageRow::put(
+        physical_key(branch, 0x20, b"replay-classify-left".to_vec()),
+        version,
+        timestamp,
+        Timestamp::EPOCH,
+        b"left".to_vec(),
+    );
+    let right = StorageRow::put(
+        physical_key(branch, 0x20, b"replay-classify-right".to_vec()),
+        version,
+        timestamp,
+        Timestamp::EPOCH,
+        b"right".to_vec(),
+    );
+    let record = replay_record(branch, version, timestamp, vec![left, right]);
+    let expected_rows =
+        u64::try_from(record.commit_payload().rows().len()).expect("row count fits u64");
+    let mut fixture = ReplayFixture::new(branch);
+
+    let report = fixture
+        .replay(record, CommitDurabilityClass::Standard)
+        .expect("replay succeeds");
+
+    assert_eq!(
+        u64::try_from(report.rows_checked()).expect("checked row count fits u64"),
+        expected_rows
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_replay_classification_calls(), 1);
+    assert_eq!(perf.commit_replay_rows_classified(), expected_rows);
+    assert_eq!(perf.commit_replay_history_calls(), expected_rows);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn replay_classification_perf_trace_counts_many_rows_without_conflict_validation() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(122);
+    let version = CommitVersion::new(41);
+    let timestamp = Timestamp::from_micros(41_000);
+    let rows = (0..32)
+        .map(|index| {
+            StorageRow::put(
+                physical_key(
+                    branch,
+                    0x20,
+                    format!("replay-classify-many-{index:02}").into_bytes(),
+                ),
+                version,
+                timestamp,
+                Timestamp::EPOCH,
+                vec![u8::try_from(index).expect("test row index fits u8")],
+            )
+        })
+        .collect::<Vec<_>>();
+    let record = replay_record(branch, version, timestamp, rows);
+    let expected_rows =
+        u64::try_from(record.commit_payload().rows().len()).expect("row count fits u64");
+    let mut fixture = ReplayFixture::new(branch);
+
+    let report = fixture
+        .replay(record, CommitDurabilityClass::Standard)
+        .expect("replay succeeds");
+
+    assert_eq!(report.action(), CommitReplayAction::Applied);
+    assert_eq!(
+        u64::try_from(report.rows_checked()).expect("checked row count fits u64"),
+        expected_rows
+    );
+    assert_eq!(
+        u64::try_from(report.rows_applied()).expect("applied row count fits u64"),
+        expected_rows
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_replay_classification_calls(), 1);
+    assert_eq!(perf.commit_replay_rows_classified(), expected_rows);
+    assert_eq!(perf.commit_replay_history_calls(), expected_rows);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.conflict_sources_built(), 0);
+}
+
 #[test]
 fn replay_applies_mixed_put_delete_with_always_durability() {
     let branch = branch_id(107);

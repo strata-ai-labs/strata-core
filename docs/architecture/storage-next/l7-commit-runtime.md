@@ -812,6 +812,29 @@ Replacement proof:
 4. any future per-branch admission design includes an equivalent
    pending-version or visible-advancement model before relaxing the global gate.
 
+### Version Gaps And Visible Tracking
+
+Decision: storage-next allows commit-version gaps after failures that occur
+after version allocation but before branch apply and visible publication.
+
+Old behavior: old storage used pending-version tracking to advance visibility
+around unresolved versions. Some failure paths could remove a WAL-durable but
+not-yet-applied version from pending before recovery installed the rows.
+
+Reason: commit versions are ordering facts, not proof that user rows were made
+visible. Storage-next keeps the visible-version tracker monotonic and flat, and
+uses explicit unresolved-durable facts to prevent unsafe advancement when a
+durable or applied row exists above visible. Allocation-only gaps are harmless:
+they do not create user rows or commit timeline rows.
+
+Replacement proof:
+
+1. latest reads skip allocation-only gaps and return the newest visible row;
+2. version-bounded reads at a gap return the newest visible row at or before
+   the bound;
+3. history contains only applied rows and remains sorted across gaps;
+4. commit timeline lookup has no timestamp entry for allocation-only gaps.
+
 ### Explicit Missing Observed Version
 
 Decision: storage-next represents missing validation facts explicitly instead
@@ -937,17 +960,16 @@ Replacement proof:
    engine-next callers, and which engine adapter emits them?
 2. Should commit versions remain global, or should storage introduce per-branch
    visible versions while preserving global ordering for history and recovery?
-3. Are version gaps explicitly part of the storage contract?
-4. What exact row value representation should `CommitRow` carry: storage
+3. What exact row value representation should `CommitRow` carry: storage
    `Value`, opaque bytes, or an L3-encoded row payload?
-5. Should branch generation guards stay in engine branch-control logic, or move
+4. Should branch generation guards stay in engine branch-control logic, or move
    into storage branch metadata once storage-next owns branch lifecycle
    mechanics?
-6. How much of the current transaction pool optimization is worth preserving
+5. How much of the current transaction pool optimization is worth preserving
    once public transaction sessions are removed?
-7. What metrics are stable L7 facts versus L8 health aggregation?
+6. What metrics are stable L7 facts versus L8 health aggregation?
 
-Question 5 is also an engine-next architecture input. Engine-next must decide
+Question 4 is also an engine-next architecture input. Engine-next must decide
 which product branch-generation guarantees it expects storage-next to enforce
 mechanically before the L7 implementation plan freezes.
 

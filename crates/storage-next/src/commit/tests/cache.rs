@@ -452,6 +452,144 @@ fn cache_read_and_cas_validation_preserves_version_gaps() {
 }
 
 #[test]
+fn cache_allocation_gap_preserves_latest_bounded_history_and_timeline_reads() {
+    let branch = branch_id(121);
+    let key = physical_key(branch, 0x20, b"allocation-gap-key".to_vec());
+    let gap_key = physical_key(branch, 0x20, b"allocation-gap-failed-key".to_vec());
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+
+    let first = fixture
+        .execute(mutating_batch(
+            branch,
+            vec![CommitMutation::put(
+                key.clone(),
+                b"v1".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+            CommitValidationFacts::empty(),
+            CommitBatchOptions::default(),
+        ))
+        .expect("first commit succeeds");
+    assert_eq!(first.commit_version(), Some(CommitVersion::new(1)));
+    assert_eq!(
+        first.commit_timestamp(),
+        Some(Timestamp::from_micros(1_000))
+    );
+    assert_eq!(fixture.state.active_row_count(), 3);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::new(1));
+
+    fixture
+        .allocator
+        .source_mut()
+        .set_next_timestamp(Timestamp::from_micros(2_000));
+    fixture.config =
+        CommitRuntimeConfig::new(1, 1, 2, CommitReadOnlyDiagnostics::Enabled).expect("config");
+    let failed = fixture
+        .execute(mutating_batch(
+            branch,
+            vec![CommitMutation::put(
+                gap_key,
+                b"gap".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+            CommitValidationFacts::empty(),
+            CommitBatchOptions::default(),
+        ))
+        .expect_err("row limit fails after allocation");
+    assert_eq!(
+        failed,
+        CommitRuntimeError::InvalidBatch {
+            reason: "commit row count exceeds configured limit",
+        }
+    );
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::new(2)
+    );
+    assert_eq!(
+        fixture.allocator.timestamp_guard().last_allocated(),
+        Some(Timestamp::from_micros(2_000))
+    );
+    assert_eq!(fixture.state.active_row_count(), 3);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::new(1));
+
+    fixture.config = CommitRuntimeConfig::default();
+    fixture
+        .allocator
+        .source_mut()
+        .set_next_timestamp(Timestamp::from_micros(3_000));
+    let third = fixture
+        .execute(mutating_batch(
+            branch,
+            vec![CommitMutation::put(
+                key.clone(),
+                b"v3".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+            CommitValidationFacts::empty(),
+            CommitBatchOptions::default(),
+        ))
+        .expect("post-gap commit succeeds");
+    assert_eq!(third.commit_version(), Some(CommitVersion::new(3)));
+    assert_eq!(
+        third.commit_timestamp(),
+        Some(Timestamp::from_micros(3_000))
+    );
+    assert_eq!(fixture.state.active_row_count(), 6);
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::new(3));
+
+    let view = fixture.state.capture_read_view().expect("read view");
+    let latest = view.latest(&key).expect("latest read").expect("latest row");
+    assert_eq!(latest.row().commit_version(), CommitVersion::new(3));
+    assert_eq!(latest.row().value(), b"v3");
+
+    let bounded = view
+        .at_version(&key, CommitVersion::new(2))
+        .expect("bounded read")
+        .expect("pre-gap row");
+    assert_eq!(bounded.row().commit_version(), CommitVersion::new(1));
+    assert_eq!(bounded.row().value(), b"v1");
+
+    let history = view
+        .history(&key, BranchHistoryOptions::all().include_tombstones(true))
+        .expect("history");
+    let history_versions = history
+        .iter()
+        .map(|row| row.row().commit_version())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        history_versions,
+        vec![CommitVersion::new(3), CommitVersion::new(1)]
+    );
+
+    let timeline = timeline_view(&view, branch);
+    assert_eq!(
+        timeline.timestamp_for_version(CommitVersion::new(1)),
+        Some(Timestamp::from_micros(1_000))
+    );
+    assert_eq!(timeline.timestamp_for_version(CommitVersion::new(2)), None);
+    assert_eq!(
+        timeline.timestamp_for_version(CommitVersion::new(3)),
+        Some(Timestamp::from_micros(3_000))
+    );
+    assert_eq!(
+        timeline
+            .version_at_or_before(Timestamp::from_micros(2_500))
+            .matched_version(),
+        Some(CommitVersion::new(1))
+    );
+    assert_eq!(
+        timeline
+            .version_at_or_before(Timestamp::from_micros(3_000))
+            .matched_version(),
+        Some(CommitVersion::new(3))
+    );
+}
+
+#[test]
 fn cache_commit_delete_installs_tombstone_and_hides_latest() {
     let branch = branch_id(34);
     let key = physical_key(branch, 0x20, b"deleted".to_vec());
