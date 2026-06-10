@@ -2,14 +2,17 @@
 
 use super::{TableCacheConfig, TableRuntimeError, TableRuntimeResult};
 use crate::observability::perf_trace;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, VecDeque};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const MAX_TABLE_CACHE_ID_BYTES: usize = 512;
 const MAX_BLOOM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BLOOM_PROBES: u8 = 30;
 const MAX_DEBUG_BYTES: usize = 16;
+const TABLE_BLOCK_CACHE_MAX_SHARDS: usize = 16;
+const TABLE_BLOCK_CACHE_TARGET_SHARD_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct TableCacheTableId {
@@ -217,6 +220,11 @@ impl CacheInsert {
 
 #[derive(Debug)]
 pub(crate) struct TableBlockCache {
+    shards: Vec<CacheShard>,
+}
+
+#[derive(Debug)]
+struct CacheShard {
     state: Mutex<CacheState>,
 }
 
@@ -232,18 +240,24 @@ struct CacheState {
 
 impl TableBlockCache {
     pub(crate) fn new(config: TableCacheConfig) -> Self {
+        let capacities = shard_capacities(config.capacity_bytes(), cache_shard_count(config));
         Self {
-            state: Mutex::new(CacheState {
-                enabled: config.enabled(),
-                capacity_bytes: config.capacity_bytes(),
-                bytes: 0,
-                entries: BTreeMap::new(),
-                recency: VecDeque::new(),
-                stats: TableBlockCacheStats {
-                    capacity_bytes: config.capacity_bytes(),
-                    ..TableBlockCacheStats::default()
-                },
-            }),
+            shards: capacities
+                .into_iter()
+                .map(|capacity_bytes| CacheShard {
+                    state: Mutex::new(CacheState {
+                        enabled: config.enabled(),
+                        capacity_bytes,
+                        bytes: 0,
+                        entries: BTreeMap::new(),
+                        recency: VecDeque::new(),
+                        stats: TableBlockCacheStats {
+                            capacity_bytes,
+                            ..TableBlockCacheStats::default()
+                        },
+                    }),
+                })
+                .collect(),
         }
     }
 
@@ -254,11 +268,15 @@ impl TableBlockCache {
     }
 
     pub(crate) fn enabled(&self) -> bool {
-        self.lock_state().enabled
+        self.shards
+            .first()
+            .expect("table block cache always has at least one shard")
+            .lock_state()
+            .enabled
     }
 
     pub(crate) fn get(&self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
-        let mut state = self.lock_state();
+        let mut state = self.shard_for_key(key).lock_state();
         let bytes = state.entries.get(key).cloned();
         if let Some(bytes) = bytes {
             state.stats.hits = state.stats.hits.saturating_add(1);
@@ -283,7 +301,7 @@ impl TableBlockCache {
             });
         }
 
-        let mut state = self.lock_state();
+        let mut state = self.shard_for_key(&key).lock_state();
         if !state.enabled {
             state.stats.skipped_disabled = state.stats.skipped_disabled.saturating_add(1);
             perf_trace::record_table_cache_skipped_insert();
@@ -320,7 +338,7 @@ impl TableBlockCache {
     }
 
     pub(crate) fn remove(&self, key: &TableBlockCacheKey) -> bool {
-        let mut state = self.lock_state();
+        let mut state = self.shard_for_key(key).lock_state();
         if let Some(bytes) = state.entries.remove(key) {
             state.bytes = state.bytes.saturating_sub(bytes.len());
             remove_from_recency(&mut state.recency, key);
@@ -333,64 +351,107 @@ impl TableBlockCache {
     }
 
     pub(crate) fn remove_table(&self, table: &TableCacheTableId) -> usize {
-        let mut state = self.lock_state();
-        let keys = state
-            .entries
-            .keys()
-            .filter(|key| key.table() == table)
-            .cloned()
-            .collect::<Vec<_>>();
-        let removed = keys.len();
-        for key in keys {
-            if let Some(bytes) = state.entries.remove(&key) {
-                state.bytes = state.bytes.saturating_sub(bytes.len());
+        let mut removed = 0usize;
+        let mut states = self.lock_all_states();
+        for state in &mut states {
+            let keys = state
+                .entries
+                .keys()
+                .filter(|key| key.table() == table)
+                .cloned()
+                .collect::<Vec<_>>();
+            removed = removed.saturating_add(keys.len());
+            for key in keys {
+                if let Some(bytes) = state.entries.remove(&key) {
+                    state.bytes = state.bytes.saturating_sub(bytes.len());
+                }
+                remove_from_recency(&mut state.recency, &key);
             }
-            remove_from_recency(&mut state.recency, &key);
+            refresh_gauges(state);
         }
         if removed > 0 {
-            state.stats.table_invalidations = state.stats.table_invalidations.saturating_add(1);
+            let first_state = states
+                .first_mut()
+                .expect("table block cache always has at least one shard");
+            first_state.stats.table_invalidations =
+                first_state.stats.table_invalidations.saturating_add(1);
+            refresh_gauges(first_state);
         }
-        refresh_gauges(&mut state);
         removed
     }
 
     pub(crate) fn clear(&self) {
-        let mut state = self.lock_state();
-        state.entries.clear();
-        state.recency.clear();
-        state.bytes = 0;
-        state.stats.clears = state.stats.clears.saturating_add(1);
-        refresh_gauges(&mut state);
+        let mut states = self.lock_all_states();
+        for state in &mut states {
+            state.entries.clear();
+            state.recency.clear();
+            state.bytes = 0;
+            refresh_gauges(state);
+        }
+        let first_state = states
+            .first_mut()
+            .expect("table block cache always has at least one shard");
+        first_state.stats.clears = first_state.stats.clears.saturating_add(1);
+        refresh_gauges(first_state);
     }
 
     pub(crate) fn resize(&self, capacity_bytes: usize) {
-        let mut state = self.lock_state();
-        state.capacity_bytes = capacity_bytes;
-        state.stats.capacity_bytes = capacity_bytes;
-        evict_to_capacity(&mut state);
-        refresh_gauges(&mut state);
+        let capacities = shard_capacities(capacity_bytes, self.shards.len());
+        let mut states = self.lock_all_states();
+        for (state, capacity_bytes) in states.iter_mut().zip(capacities) {
+            state.capacity_bytes = capacity_bytes;
+            state.stats.capacity_bytes = capacity_bytes;
+            evict_to_capacity(state);
+            refresh_gauges(state);
+        }
     }
 
     pub(crate) fn stats(&self) -> TableBlockCacheStats {
-        let state = self.lock_state();
-        let mut view = state.stats;
-        view.entries = state.entries.len();
-        view.bytes = state.bytes;
-        view.capacity_bytes = state.capacity_bytes;
-        view
+        let mut stats = TableBlockCacheStats::default();
+        let shard_guards = self.lock_all_states();
+        for cache_state in &shard_guards {
+            let mut shard_stats = cache_state.stats;
+            shard_stats.entries = cache_state.entries.len();
+            shard_stats.bytes = cache_state.bytes;
+            shard_stats.capacity_bytes = cache_state.capacity_bytes;
+            stats = merge_cache_stats(stats, shard_stats);
+        }
+        stats
     }
 
     #[cfg(test)]
     pub(crate) fn poison_for_test(&self) {
-        let _ = std::panic::catch_unwind(|| {
-            let _guard = self
-                .state
-                .lock()
-                .expect("test lock should not already be poisoned");
-            panic!("poison table cache mutex for recovery test");
-        });
+        for shard in &self.shards {
+            let _ = std::panic::catch_unwind(|| {
+                let _guard = shard
+                    .state
+                    .lock()
+                    .expect("test lock should not already be poisoned");
+                panic!("poison table cache mutex for recovery test");
+            });
+        }
     }
 
+    #[cfg(test)]
+    pub(crate) fn shard_count_for_test(&self) -> usize {
+        self.shards.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shard_index_for_test(&self, key: &TableBlockCacheKey) -> usize {
+        shard_index(key, self.shards.len())
+    }
+
+    fn shard_for_key(&self, key: &TableBlockCacheKey) -> &CacheShard {
+        &self.shards[shard_index(key, self.shards.len())]
+    }
+
+    fn lock_all_states(&self) -> Vec<MutexGuard<'_, CacheState>> {
+        self.shards.iter().map(CacheShard::lock_state).collect()
+    }
+}
+
+impl CacheShard {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, CacheState> {
         self.state
             .lock()
@@ -549,6 +610,56 @@ fn refresh_gauges(state: &mut CacheState) {
     state.stats.entries = state.entries.len();
     state.stats.bytes = state.bytes;
     state.stats.capacity_bytes = state.capacity_bytes;
+}
+
+fn cache_shard_count(config: TableCacheConfig) -> usize {
+    if !config.enabled() || config.capacity_bytes() == 0 {
+        return 1;
+    }
+    (config.capacity_bytes() / TABLE_BLOCK_CACHE_TARGET_SHARD_BYTES)
+        .clamp(1, TABLE_BLOCK_CACHE_MAX_SHARDS)
+}
+
+fn shard_capacities(capacity_bytes: usize, shard_count: usize) -> Vec<usize> {
+    let shard_count = shard_count.max(1);
+    let base = capacity_bytes / shard_count;
+    let remainder = capacity_bytes % shard_count;
+    (0..shard_count)
+        .map(|index| base + usize::from(index < remainder))
+        .collect()
+}
+
+fn shard_index(key: &TableBlockCacheKey, shard_count: usize) -> usize {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let shard_count = u64::try_from(shard_count.max(1)).expect("shard count fits in u64");
+    usize::try_from(hasher.finish() % shard_count).expect("shard index fits in usize")
+}
+
+fn merge_cache_stats(
+    mut left: TableBlockCacheStats,
+    right: TableBlockCacheStats,
+) -> TableBlockCacheStats {
+    left.hits = left.hits.saturating_add(right.hits);
+    left.misses = left.misses.saturating_add(right.misses);
+    left.inserts = left.inserts.saturating_add(right.inserts);
+    left.duplicate_inserts = left
+        .duplicate_inserts
+        .saturating_add(right.duplicate_inserts);
+    left.evictions = left.evictions.saturating_add(right.evictions);
+    left.removes = left.removes.saturating_add(right.removes);
+    left.table_invalidations = left
+        .table_invalidations
+        .saturating_add(right.table_invalidations);
+    left.clears = left.clears.saturating_add(right.clears);
+    left.skipped_oversized = left
+        .skipped_oversized
+        .saturating_add(right.skipped_oversized);
+    left.skipped_disabled = left.skipped_disabled.saturating_add(right.skipped_disabled);
+    left.entries = left.entries.saturating_add(right.entries);
+    left.bytes = left.bytes.saturating_add(right.bytes);
+    left.capacity_bytes = left.capacity_bytes.saturating_add(right.capacity_bytes);
+    left
 }
 
 fn optimal_probe_count(bits_per_key: usize) -> u8 {

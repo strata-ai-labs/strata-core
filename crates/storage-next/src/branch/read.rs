@@ -1526,6 +1526,10 @@ fn candidate_is_newer_or_better_tie(
             && source_order_cmp(candidate.source(), selected.source()).is_lt())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "ordered point selection intentionally keeps the active, frozen, owned, and inherited early-exit flow together"
+)]
 fn select_ordered_visible_point_candidate<'a>(
     branch_id: BranchId,
     active: &MutableTable,
@@ -1762,7 +1766,7 @@ fn select_inherited_level_point_candidate<'a>(
                 table,
                 lookup,
                 selection,
-            )?;
+            );
         }
         return Ok(());
     }
@@ -1789,7 +1793,8 @@ fn select_inherited_level_point_candidate<'a>(
         &tables[table_index],
         lookup,
         selection,
-    )
+    );
+    Ok(())
 }
 
 fn append_ordered_inherited_point_table_candidate<'a>(
@@ -1799,7 +1804,7 @@ fn append_ordered_inherited_point_table_candidate<'a>(
     table: &'a BranchOwnedTable,
     lookup: &TablePreparedPointLookup,
     selection: &mut PointSelection<'a>,
-) -> BranchRuntimeResult<()> {
+) {
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
     let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
     selection.add_rows_visited(visited);
@@ -1811,7 +1816,6 @@ fn append_ordered_inherited_point_table_candidate<'a>(
             layer_index,
         );
     }
-    Ok(())
 }
 
 fn ordered_point_can_stop(
@@ -1991,10 +1995,8 @@ fn owned_point_source_count(
         .map(|(level_index, tables)| {
             if level_index == 0 {
                 tables.len()
-            } else if tables.is_empty() {
-                0
             } else {
-                1
+                usize::from(!tables.is_empty())
             }
         })
         .sum()

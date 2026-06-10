@@ -36,6 +36,16 @@ fn enabled_cache(capacity: usize) -> TableBlockCache {
     TableBlockCache::new(TableCacheConfig::new(true, capacity).expect("cache config"))
 }
 
+fn key_on_new_shard(
+    cache: &TableBlockCache,
+    table: &str,
+    existing_shards: &[usize],
+) -> Option<TableBlockCacheKey> {
+    (0..10_000u64)
+        .map(|index| key(table, TableBlockCacheKind::Data, index.saturating_mul(4), 4))
+        .find(|candidate| !existing_shards.contains(&cache.shard_index_for_test(candidate)))
+}
+
 fn physical_key(branch_byte: u8, space_id: u8, user_key: impl Into<Vec<u8>>) -> PhysicalKey {
     PhysicalKey::new(
         BranchId::from_bytes([branch_byte; BranchId::BYTE_LEN]),
@@ -253,6 +263,56 @@ fn table_cache_stats_include_hits_misses_entries_bytes() {
     assert_eq!(stats.entries(), 1);
     assert_eq!(stats.bytes(), 4);
     assert_eq!(stats.capacity_bytes(), 8);
+}
+
+#[test]
+fn sharded_cache_aggregates_capacity_stats_and_table_invalidation() {
+    let cache = enabled_cache((2 * 64 * 1024) + 3);
+    assert!(cache.shard_count_for_test() > 1);
+    assert_eq!(cache.stats().capacity_bytes(), (2 * 64 * 1024) + 3);
+
+    let table = cache_id("sharded-table");
+    let first = key_on_new_shard(&cache, "sharded-table", &[]).expect("first shard key");
+    let second = key_on_new_shard(
+        &cache,
+        "sharded-table",
+        &[cache.shard_index_for_test(&first)],
+    )
+    .expect("second shard key");
+    assert_ne!(
+        cache.shard_index_for_test(&first),
+        cache.shard_index_for_test(&second)
+    );
+
+    cache.insert(first.clone(), bytes(0x41, 4)).expect("first");
+    cache
+        .insert(second.clone(), bytes(0x42, 4))
+        .expect("second");
+    assert_eq!(cache.stats().entries(), 2);
+    assert_eq!(cache.stats().bytes(), 8);
+
+    assert_eq!(cache.remove_table(&table), 2);
+    let stats = cache.stats();
+    assert_eq!(stats.entries(), 0);
+    assert_eq!(stats.bytes(), 0);
+    assert_eq!(stats.table_invalidations(), 1);
+}
+
+#[test]
+fn sharded_cache_caps_default_budget_without_tiny_shards() {
+    let cache = enabled_cache(64 * 1024 * 1024);
+    assert_eq!(cache.shard_count_for_test(), 16);
+    assert_eq!(cache.stats().capacity_bytes(), 64 * 1024 * 1024);
+
+    let block = bytes(0x55, 154);
+    let key = key("default-budget-table", TableBlockCacheKind::Data, 0, 154);
+    assert!(matches!(
+        cache.insert(key, block).expect("insert small block"),
+        CacheInsert::Inserted(_)
+    ));
+    let stats = cache.stats();
+    assert_eq!(stats.inserts(), 1);
+    assert_eq!(stats.skipped_oversized(), 0);
 }
 
 #[cfg(feature = "perf-trace")]

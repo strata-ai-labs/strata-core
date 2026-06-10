@@ -49,9 +49,10 @@ pub(crate) use branch_lifecycle::{
 pub(crate) use budget::{
     branch_config_with_storage_budget, require_generated_artifact_budget,
     require_maintenance_enqueue_budget, require_manifest_catalog_budget, require_rotate_budget,
-    require_table_reader_budget, snapshot_with_runtime_usage, BudgetedCommitBranch,
-    StorageBudgetLedger, StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot,
-    StorageBudgetUsage, StorageRuntimeBudget, StorageRuntimeBudgetParts,
+    require_table_reader_budget, snapshot_with_runtime_usage,
+    table_block_cache_from_storage_budget, BudgetedCommitBranch, StorageBudgetLedger,
+    StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageBudgetUsage,
+    StorageRuntimeBudget, StorageRuntimeBudgetParts,
 };
 #[allow(
     unused_imports,

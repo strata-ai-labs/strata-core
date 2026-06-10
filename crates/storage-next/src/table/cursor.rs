@@ -64,7 +64,7 @@ impl<'a> MemoryTableCursor<'a> {
         Self {
             source: MemoryCursorSource::Map {
                 data: table.read_data(),
-                sequence_upper_bound: table.sequence_upper_bound(),
+                sequence_upper_bound: Some(table.sequence_upper_bound()),
             },
             position: None,
         }

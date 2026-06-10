@@ -36,6 +36,25 @@ fn storage_budget_accepts_zero_optional_block_cache() {
 }
 
 #[test]
+fn storage_budget_builds_optional_shared_table_block_cache() {
+    let disabled_cache =
+        table_block_cache_from_storage_budget(StorageRuntimeBudget::low_memory_test_profile())
+            .expect("disabled table block cache config");
+    assert!(disabled_cache.is_none());
+
+    let budget = StorageRuntimeBudget::default();
+    let enabled_cache = table_block_cache_from_storage_budget(budget)
+        .expect("enabled table block cache config")
+        .expect("default budget enables table block cache");
+    assert!(enabled_cache.enabled());
+    assert_eq!(
+        enabled_cache.stats().capacity_bytes(),
+        usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::BlockCache))
+            .expect("block cache budget fits usize")
+    );
+}
+
+#[test]
 fn storage_budget_rejects_zero_mandatory_active_pool() {
     let parts = StorageRuntimeBudgetParts {
         active_mutable_bytes: 0,

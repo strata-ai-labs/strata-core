@@ -2,11 +2,11 @@
 
 use super::{
     branch_config_with_storage_budget, stage_table_manifest_for_branch,
-    validate_backend_capabilities_for_open, LifecycleCapabilityOutcome,
-    LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer, LifecycleOperationKind,
-    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleTableManifestRecoveryStage,
-    LifecycleTransitionTrigger, StorageBudgetLedger, StorageMode, StorageOpenDisposition,
-    StorageOpenPlan,
+    table_block_cache_from_storage_budget, validate_backend_capabilities_for_open,
+    LifecycleCapabilityOutcome, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
+    LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine,
+    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageBudgetLedger,
+    StorageMode, StorageOpenDisposition, StorageOpenPlan,
 };
 use crate::backend::{
     Backend, BackendError, BackendHandle, BackendWriterGuard, PublishFailureKind,
@@ -328,6 +328,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         .map_err(wal_error)?;
 
         let budget = StorageBudgetLedger::new(request.plan().lifecycle_config().storage_budget())?;
+        let block_cache = table_block_cache_from_storage_budget(budget.budget())?;
         let branch_config =
             branch_config_with_storage_budget(request.branch_config(), budget.budget())?;
         let branch = BranchLocalState::new(request.initial_branch_id(), branch_config)
@@ -354,7 +355,10 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             wal,
             wal_sidecar: WalSegmentMetadataSidecarService::new(backend.clone()),
             snapshot: SnapshotService::new(backend.clone()),
-            table_object: TableObjectService::new(backend.clone()),
+            table_object: match block_cache {
+                Some(cache) => TableObjectService::new(backend.clone()).with_block_cache(cache),
+                None => TableObjectService::new(backend.clone()),
+            },
             checkpoint: CheckpointService::new(backend.clone()),
             quarantine: QuarantineService::new(backend),
             assembly_facts,

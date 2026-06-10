@@ -41,7 +41,7 @@ use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBranchApplyTarget, CommitLowerLayer, CommitRuntimeError, CommitRuntimeResult,
 };
-use crate::table::{TableCacheConfig, TableRow};
+use crate::table::{TableBlockCache, TableCacheConfig, TableRow};
 use std::sync::{Arc, Mutex, MutexGuard};
 use strata_core_next::CommitVersion;
 
@@ -161,6 +161,16 @@ pub(crate) fn branch_config_with_storage_budget(
                 source,
             )
         })
+}
+
+pub(crate) fn table_block_cache_from_storage_budget(
+    budget: StorageRuntimeBudget,
+) -> LifecycleResult<Option<Arc<TableBlockCache>>> {
+    let config = budget.table_cache_config()?;
+    if !config.enabled() {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(TableBlockCache::new(config))))
 }
 
 impl StorageRuntimeBudget {

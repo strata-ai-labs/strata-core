@@ -388,8 +388,8 @@ impl FrozenTable {
             .expect("table memory read lock poisoned")
     }
 
-    pub(super) const fn sequence_upper_bound(&self) -> Option<u64> {
-        Some(self.sequence_upper_bound)
+    pub(super) const fn sequence_upper_bound(&self) -> u64 {
+        self.sequence_upper_bound
     }
 
     pub(crate) fn rows_in_bounds(

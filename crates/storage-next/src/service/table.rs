@@ -9,10 +9,11 @@ use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::{validate_publish_outcome, ObjectPublisher};
 use crate::table::{
-    ImmutableTableReader, TableByteSource, TableIdentity, TableReaderConfig, TableReaderOpenMode,
-    TableRuntimeError, TableRuntimeResult,
+    ImmutableTableReader, TableBlockCache, TableByteSource, TableIdentity, TableReaderConfig,
+    TableReaderOpenMode, TableRuntimeError, TableRuntimeResult,
 };
 use std::fmt;
+use std::sync::Arc;
 use strata_core_next::CommitVersion;
 
 pub(crate) type TableObjectServiceResult<T> = Result<T, TableObjectServiceError>;
@@ -547,6 +548,7 @@ fn read_all_table_object_for_exact_match(
 
 pub(crate) struct TableObjectService<'a> {
     backend: BackendHandle<'a>,
+    block_cache: Option<Arc<TableBlockCache>>,
 }
 
 pub(crate) type TableObjectReaderService<'a> = TableObjectService<'a>;
@@ -555,7 +557,13 @@ impl<'a> TableObjectService<'a> {
     pub(crate) fn new(backend: impl Into<BackendHandle<'a>>) -> Self {
         Self {
             backend: backend.into(),
+            block_cache: None,
         }
+    }
+
+    pub(crate) fn with_block_cache(mut self, block_cache: Arc<TableBlockCache>) -> Self {
+        self.block_cache = Some(block_cache);
+        self
     }
 
     pub(crate) fn publish_create(
@@ -660,8 +668,13 @@ impl<'a> TableObjectService<'a> {
             object_facts.object().clone(),
             object_facts.byte_count(),
         );
-        let reader = ImmutableTableReader::open_source(identity, source, config)
+        let mut reader = ImmutableTableReader::open_source(identity, source, config)
             .map_err(|source| table_object_open_error(object_facts.object(), source))?;
+        if let Some(cache) = &self.block_cache {
+            reader = reader
+                .with_block_cache(Arc::clone(cache))
+                .map_err(|source| table_object_open_error(object_facts.object(), source))?;
+        }
         validate_reader_facts(object_facts, &reader)?;
         Ok(TableObjectReaderOpen::new(reader))
     }
@@ -2392,6 +2405,54 @@ mod tests {
         assert_eq!(reader.runtime_facts().data_blocks_loaded(), 0);
         assert_eq!(reader.runtime_facts().rows_materialized(), 0);
         assert_eq!(recorded_ranges(&backend), expected_metadata_ranges(&bytes));
+    }
+
+    #[test]
+    fn table_object_reader_service_shared_cache_hits_across_readers() {
+        let rows = diverse_rows();
+        let (bytes, table_rows) = built_table_bytes(
+            "object-shared-cache-source",
+            &rows,
+            1,
+            TableCompression::Uncompressed,
+        );
+        let branch = branch_id().to_string();
+        let object =
+            ObjectLayout::table_object(&branch, 0, "table0009-shared-cache").expect("table object");
+        let facts = facts_from_bytes(object.clone(), &bytes);
+        let backend = RecordingBackend::durable();
+        backend.seed(object, &bytes);
+        let identity = TableIdentity::new("object-shared-cache").expect("identity");
+        let cache = enabled_block_cache(64 * 1024 * 1024);
+        let service = TableObjectReaderService::new(&backend).with_block_cache(Arc::clone(&cache));
+        let target = &table_rows[2];
+
+        let first = service
+            .open_reader(identity.clone(), &facts, TableReaderConfig::default())
+            .expect("open first reader");
+        assert!(first.runtime_facts().cache_enabled());
+        assert_eq!(
+            first.try_get_exact(target.key()).expect("first point"),
+            Some(target.clone())
+        );
+        let mut expected = expected_metadata_ranges(&bytes);
+        expected.extend(expected_data_block_ranges(&bytes, 2..=2));
+        assert_eq!(recorded_ranges(&backend), expected);
+        assert_eq!(cache.stats().misses(), 1);
+        assert_eq!(cache.stats().inserts(), 1);
+
+        let second = service
+            .open_reader(identity, &facts, TableReaderConfig::default())
+            .expect("open second reader");
+        assert!(second.runtime_facts().cache_enabled());
+        assert_eq!(
+            second.try_get_exact(target.key()).expect("second point"),
+            Some(target.clone())
+        );
+        expected.extend(expected_metadata_ranges(&bytes));
+        assert_eq!(recorded_ranges(&backend), expected);
+        assert_eq!(cache.stats().hits(), 1);
+        assert_eq!(cache.stats().entries(), 1);
     }
 
     fn expected_metadata_ranges(bytes: &[u8]) -> Vec<BackendRange> {
