@@ -157,6 +157,64 @@ fn durable_blind_commit_does_not_capture_conflict_read_view() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn durable_blind_delete_does_not_capture_conflict_read_view() {
+    let branch = branch_id(104);
+    let key = physical_key(branch, 0x20, b"blind-delete-durable".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture.seed_visible_row(StorageRow::put(
+        key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"old".to_vec(),
+    ));
+    fixture.catch_up_to(CommitVersion::new(1), Timestamp::from_micros(1_000));
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(1));
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let batch = durable_batch(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::delete(key)],
+    );
+
+    fixture
+        .execute(batch)
+        .expect("blind durable delete succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    let timeline_row_count =
+        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 1);
+    assert_eq!(perf.commit_conflict_validation_without_source(), 1);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 0);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 0);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 0);
+    assert_eq!(perf.commit_conflicts_detected(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 1);
+    assert_eq!(perf.commit_user_mutation_rows(), 1);
+    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
+    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_records_built(), 1);
+    assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_appends(), 1);
+    assert_eq!(perf.commit_visible_publish_attempts(), 1);
+    assert_eq!(perf.commit_visible_publish_successes(), 1);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.read_view_rows_cloned(), 0);
+    assert_eq!(perf.read_view_validation_rows_scanned(), 0);
+    assert_eq!(fixture.wal.records.len(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn durable_cas_commit_still_captures_read_view_and_rejects_before_wal_append() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(98);
@@ -295,6 +353,17 @@ fn durable_read_and_cas_validation_perf_trace_builds_one_source_before_wal() {
     assert_eq!(perf.commit_conflict_read_facts_checked(), 1);
     assert_eq!(perf.commit_conflict_cas_facts_checked(), 1);
     assert_eq!(perf.commit_conflicts_detected(), 0);
+    let validation_fact_count = 2;
+    assert_eq!(perf.point_active_probes(), validation_fact_count);
+    assert_eq!(perf.point_frozen_probes(), 0);
+    assert_eq!(perf.point_owned_l0_table_probes(), 0);
+    assert_eq!(perf.point_owned_nonzero_table_probes(), 0);
+    assert_eq!(perf.point_inherited_l0_table_probes(), 0);
+    assert_eq!(perf.point_inherited_nonzero_table_probes(), 0);
+    assert!(perf.point_table_seeks() <= validation_fact_count);
+    assert!(perf.point_rows_visited() <= validation_fact_count);
+    assert!(perf.point_candidates_materialized() <= validation_fact_count);
+    assert!(perf.table_point_lookup_key_builds() <= validation_fact_count);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
     assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
@@ -799,9 +868,300 @@ fn durable_generation_mismatch_rejects_before_allocation_or_wal_append() {
     assert_unallocated_unattempted(&fixture);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_generation_mismatch_perf_trace_stops_before_source_capture_and_wal() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(77);
+    let read_key = physical_key(branch, 0x20, b"durable-stale-generation-read-fact".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-stale-generation-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
+    );
+
+    assert_eq!(
+        fixture.execute_with_generation(
+            batch,
+            CommitBranchGeneration::new(2).expect("stale generation"),
+        ),
+        Err(CommitRuntimeError::BranchGenerationMismatch {
+            branch_id: branch,
+            expected: 1,
+            actual: 2,
+        })
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_unallocated_unattempted(&fixture);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_deleting_branch_perf_trace_stops_before_source_capture_and_wal() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(79);
+    let read_key = physical_key(branch, 0x20, b"durable-deleting-branch-read-fact".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture
+        .registry
+        .mark_deleting(branch)
+        .expect("mark branch deleting");
+    crate::observability::perf_trace::reset();
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-deleting-branch-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::BranchNotWritable {
+            branch_id: branch,
+            reason: "branch is deleting",
+        })
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_unallocated_unattempted(&fixture);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_quiesce_perf_trace_stops_before_source_capture_and_wal() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(80);
+    let read_key = physical_key(branch, 0x20, b"durable-quiesce-read-fact".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let _quiesce = fixture
+        .guard_set
+        .try_begin_quiesce()
+        .expect("begin quiesce");
+    crate::observability::perf_trace::reset();
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-quiesce-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce is active",
+        })
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
+    assert_eq!(perf.commit_branch_guard_attempts(), 1);
+    assert_eq!(perf.commit_branch_guard_acquired(), 0);
+    assert_eq!(perf.commit_branch_guard_rejected(), 1);
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_unallocated_unattempted(&fixture);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_missing_branch_perf_trace_stops_before_source_capture_and_wal() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(75);
+    let read_key = physical_key(branch, 0x20, b"durable-missing-branch-read-fact".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture.registry = CommitBranchRegistry::new();
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-missing-branch-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::BranchNotFound { branch_id: branch })
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 0);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_unallocated_unattempted(&fixture);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_malformed_validation_fact_rejects_before_admission_source_or_wal() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(76);
+    let key = physical_key(branch, 0x20, b"durable-malformed-validation-fact".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-malformed-validation-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            Vec::new(),
+            vec![CommitCasFact::new(
+                key,
+                CommitObservedVersion::Present(CommitVersion::ZERO),
+            )],
+        ),
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::InvalidValidationFacts {
+            reason: "missing observed version must use Missing",
+        })
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 0);
+    assert_eq!(perf.commit_branch_registry_lookups(), 0);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_unallocated_unattempted(&fixture);
+}
+
 #[test]
 fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
     let branch = branch_id(64);
+    let read_key = physical_key(branch, 0x20, b"durable-guard-read-fact".to_vec());
     let mut fixture = DurableFixture::new(
         branch,
         CommitRuntimeConfig::default(),
@@ -814,7 +1174,7 @@ fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
         .guard_set
         .try_acquire_branch_guard(branch)
         .expect("held guard");
-    let batch = durable_batch(
+    let batch = durable_batch_with_validation(
         branch,
         CommitDurabilityMode::Standard,
         vec![CommitMutation::put(
@@ -823,7 +1183,16 @@ fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
             CommitExpiry::None,
             CommitRetentionHint::Append,
         )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
     );
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
 
     assert_eq!(
         fixture.execute(batch),
@@ -833,6 +1202,24 @@ fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
         })
     );
     assert_unallocated_unattempted(&fixture);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+        assert_eq!(perf.commit_branch_registry_lookups(), 1);
+        assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
+        assert_eq!(perf.commit_branch_guard_attempts(), 1);
+        assert_eq!(perf.commit_branch_guard_acquired(), 0);
+        assert_eq!(perf.commit_branch_guard_rejected(), 1);
+        assert_eq!(perf.conflict_sources_built(), 0);
+        assert_eq!(perf.read_view_captures(), 0);
+        assert_eq!(perf.commit_conflict_validation_calls(), 0);
+        assert_eq!(perf.commit_batches_prepared(), 0);
+        assert_eq!(perf.commit_wal_records_built(), 0);
+        assert_eq!(perf.commit_wal_appends(), 0);
+        assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    }
     drop(held_guard);
 }
 
@@ -1564,6 +1951,68 @@ fn unresolved_durable_gate_blocks_durable_commit_before_allocation_and_wal_appen
         .expect("branch guard released after blocked durable commit");
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_unresolved_gate_perf_trace_stops_before_source_capture_and_wal() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(78);
+    let read_key = physical_key(branch, 0x20, b"durable-unresolved-gate-read-fact".to_vec());
+    let mut fixture = DurableFixture::new(
+        branch,
+        CommitRuntimeConfig::default(),
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    fixture
+        .durable_gate
+        .record_unresolved(unresolved_durable_fact(branch, CommitVersion::new(9)))
+        .expect("record unresolved durable fact");
+    crate::observability::perf_trace::reset();
+    let batch = durable_batch_with_validation(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-unresolved-gate-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
+    );
+
+    assert!(matches!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: blocked_branch,
+            commit_version,
+            ..
+        }) if blocked_branch == branch && commit_version == CommitVersion::new(9)
+    ));
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 0);
+    assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 1);
+    assert_eq!(perf.commit_branch_registry_lookups(), 0);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.conflict_sources_built(), 0);
+    assert_eq!(perf.read_view_captures(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_unallocated_unattempted(&fixture);
+}
+
 #[test]
 fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
     let active_branch = branch_id(76);
@@ -1640,6 +2089,11 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
         assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
         assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
         assert_eq!(perf.commit_branch_guard_attempts(), 0);
+        assert_eq!(perf.conflict_sources_built(), 0);
+        assert_eq!(perf.read_view_captures(), 0);
+        assert_eq!(perf.commit_conflict_validation_calls(), 0);
+        assert_eq!(perf.commit_batches_prepared(), 0);
+        assert_eq!(perf.commit_wal_records_built(), 0);
         assert_eq!(perf.commit_wal_appends(), 0);
     }
     drop(active_admission);

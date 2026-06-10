@@ -710,6 +710,79 @@ fn read_only_batches_skip_conflict_validation_without_source_reads() {
 }
 
 #[test]
+fn conflict_source_need_predicate_matches_source_free_shapes() {
+    let branch = branch_id(235);
+    let read_key = physical_key(branch, 0x20, b"predicate-read".to_vec());
+    let cas_key = physical_key(branch, 0x20, b"predicate-cas".to_vec());
+    let validation = CommitValidationFacts::new(
+        vec![CommitReadFact::new(
+            read_key.clone(),
+            CommitObservedVersion::Missing,
+        )],
+        vec![CommitCasFact::new(
+            cas_key.clone(),
+            CommitObservedVersion::Present(CommitVersion::new(7)),
+        )],
+    );
+    let read_only = CommitBatch::read_only_diagnostic(
+        branch,
+        validation.clone(),
+        CommitBatchOptions::default(),
+    )
+    .validate(&CommitRuntimeConfig::default())
+    .expect("read-only validation facts are valid");
+    let skipped = mutating_batch_with_validation(
+        branch,
+        validation.clone(),
+        CommitConflictValidationMode::Skip,
+    );
+    let empty_validate = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::empty(),
+        CommitConflictValidationMode::Validate,
+    );
+    let read_validate = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Missing,
+            )],
+            Vec::new(),
+        ),
+        CommitConflictValidationMode::Validate,
+    );
+    let cas_validate = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::new(
+            Vec::new(),
+            vec![CommitCasFact::new(
+                cas_key,
+                CommitObservedVersion::Present(CommitVersion::new(7)),
+            )],
+        ),
+        CommitConflictValidationMode::Validate,
+    );
+
+    assert!(!commit_conflict_validation_needs_source(&read_only));
+    assert!(!commit_conflict_validation_needs_source(&skipped));
+    assert!(!commit_conflict_validation_needs_source(&empty_validate));
+    assert!(commit_conflict_validation_needs_source(&read_validate));
+    assert!(commit_conflict_validation_needs_source(&cas_validate));
+    assert!(validate_commit_conflicts_without_source(&read_only)
+        .expect("read-only source-free validation succeeds")
+        .skipped_validation());
+    assert!(validate_commit_conflicts_without_source(&skipped)
+        .expect("skipped source-free validation succeeds")
+        .skipped_validation());
+    let empty_report = validate_commit_conflicts_without_source(&empty_validate)
+        .expect("empty source-free validation succeeds");
+    assert!(!empty_report.skipped_validation());
+    assert_eq!(empty_report.checked_read_facts(), 0);
+    assert_eq!(empty_report.checked_cas_facts(), 0);
+}
+
+#[test]
 fn lower_layer_read_errors_preserve_source_chain() {
     let branch = branch_id(127);
     let key = physical_key(branch, 0x20, b"fail".to_vec());
