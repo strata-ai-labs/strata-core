@@ -680,6 +680,76 @@ fn commit_expected_absent_mismatch_conflicts() {
 }
 
 #[test]
+fn commit_expected_absent_succeeds_after_visible_delete() {
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"deleted-cas", b"old"))
+        .expect("first");
+    runtime
+        .commit(&delete_batch(b"deleted-cas"))
+        .expect("delete");
+    assert!(read_latest(&runtime, b"deleted-cas")
+        .row()
+        .expect("tombstone")
+        .is_tombstone());
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"deleted-cas", b"new")],
+        CommitOptions::default(),
+    )
+    .expect("valid batch")
+    .with_conditions(vec![CommitCondition::expected_absent(
+        engine_space(),
+        api_key(b"deleted-cas"),
+    )])
+    .expect("valid condition");
+
+    runtime
+        .commit(&batch)
+        .expect("visible tombstone counts as absent for CAS");
+
+    let row = read_latest(&runtime, b"deleted-cas")
+        .row()
+        .cloned()
+        .expect("new row");
+    assert!(!row.is_tombstone());
+    assert_eq!(row.value().expect("value").as_bytes(), b"new");
+}
+
+#[test]
+fn commit_expected_present_rejects_after_visible_delete() {
+    let mut runtime = open_runtime();
+    let first = runtime
+        .commit(&put_batch(b"deleted-present-cas", b"old"))
+        .expect("first");
+    runtime
+        .commit(&delete_batch(b"deleted-present-cas"))
+        .expect("delete");
+    let batch = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"deleted-present-cas", b"new")],
+        CommitOptions::default(),
+    )
+    .expect("valid batch")
+    .with_conditions(vec![CommitCondition::expected_present(
+        engine_space(),
+        api_key(b"deleted-present-cas"),
+        first.commit_version(),
+    )])
+    .expect("valid condition");
+
+    let error = runtime
+        .commit(&batch)
+        .expect_err("visible tombstone is not present for CAS");
+
+    assert_eq!(error.class(), StorageApiErrorClass::Conflict);
+    assert!(read_latest(&runtime, b"deleted-present-cas")
+        .row()
+        .expect("tombstone remains after failed condition")
+        .is_tombstone());
+}
+
+#[test]
 fn commit_conditions_are_explicit_cas_not_captured_read_sets() {
     let mut runtime = open_runtime();
     let guarded = runtime

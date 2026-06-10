@@ -320,6 +320,138 @@ fn cache_read_and_cas_validation_perf_trace_builds_one_conflict_source() {
 }
 
 #[test]
+fn cache_read_and_cas_validation_preserves_version_gaps() {
+    let branch = branch_id(104);
+    let read_key = physical_key(branch, 0x20, b"gap-read".to_vec());
+    let cas_key = physical_key(branch, 0x20, b"gap-cas".to_vec());
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    fixture.seed_visible_row(StorageRow::put(
+        read_key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"read-old".to_vec(),
+    ));
+    fixture.seed_visible_row(StorageRow::put(
+        cas_key.clone(),
+        CommitVersion::new(3),
+        Timestamp::from_micros(3_000),
+        Timestamp::EPOCH,
+        b"cas-old".to_vec(),
+    ));
+    fixture.catch_up_to(CommitVersion::new(3), Timestamp::from_micros(3_000));
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(3));
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"gap-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key.clone(),
+                CommitObservedVersion::Present(CommitVersion::new(1)),
+            )],
+            vec![CommitCasFact::new(
+                cas_key.clone(),
+                CommitObservedVersion::Present(CommitVersion::new(3)),
+            )],
+        ),
+        CommitBatchOptions::default(),
+    );
+
+    let outcome = fixture.execute(batch).expect("gap facts still validate");
+
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(4)));
+    assert_eq!(fixture.visible.visible_version(), CommitVersion::new(4));
+
+    let mut stale = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    stale.seed_visible_row(StorageRow::put(
+        read_key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"read-old".to_vec(),
+    ));
+    stale.seed_visible_row(StorageRow::put(
+        cas_key.clone(),
+        CommitVersion::new(3),
+        Timestamp::from_micros(3_000),
+        Timestamp::EPOCH,
+        b"cas-old".to_vec(),
+    ));
+    stale.catch_up_to(CommitVersion::new(3), Timestamp::from_micros(3_000));
+    stale.visible = VisibleVersionTracker::new(CommitVersion::new(3));
+    let stale_batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"gap-stale-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key.clone(),
+                CommitObservedVersion::Present(CommitVersion::new(2)),
+            )],
+            Vec::new(),
+        ),
+        CommitBatchOptions::default(),
+    );
+
+    assert_eq!(
+        stale
+            .execute(stale_batch)
+            .expect_err("gap version is not fabricated"),
+        CommitRuntimeError::CommitConflict {
+            conflict: CommitConflict::new(
+                CommitConflictKind::ReadSet,
+                &read_key,
+                CommitObservedVersion::Present(CommitVersion::new(2)),
+                CommitObservedVersion::Present(CommitVersion::new(1)),
+            ),
+        }
+    );
+    assert_eq!(stale.visible.visible_version(), CommitVersion::new(3));
+
+    let stale_cas_batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"gap-stale-cas-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            Vec::new(),
+            vec![CommitCasFact::new(
+                cas_key.clone(),
+                CommitObservedVersion::Present(CommitVersion::new(2)),
+            )],
+        ),
+        CommitBatchOptions::default(),
+    );
+
+    assert_eq!(
+        stale
+            .execute(stale_cas_batch)
+            .expect_err("gap CAS version is not fabricated"),
+        CommitRuntimeError::CommitConflict {
+            conflict: CommitConflict::new(
+                CommitConflictKind::Cas,
+                &cas_key,
+                CommitObservedVersion::Present(CommitVersion::new(2)),
+                CommitObservedVersion::Present(CommitVersion::new(3)),
+            ),
+        }
+    );
+    assert_eq!(stale.visible.visible_version(), CommitVersion::new(3));
+}
+
+#[test]
 fn cache_commit_delete_installs_tombstone_and_hides_latest() {
     let branch = branch_id(34);
     let key = physical_key(branch, 0x20, b"deleted".to_vec());
