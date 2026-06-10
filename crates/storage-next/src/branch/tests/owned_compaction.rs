@@ -1153,6 +1153,10 @@ fn branch_compaction_streams_nonzero_overlap_sources_once() {
     let candidate = plan.candidate().expect("candidate");
     assert_eq!(candidate.input_refs().len(), 1);
     assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::TargetLevelOverlap)
+    );
     assert_eq!(candidate.output_level(), BranchLevel::new(2));
     assert_eq!(candidate.source_count(), 2);
     assert_eq!(candidate.input_row_count(), 3);
@@ -1286,6 +1290,10 @@ fn branch_compaction_l0_to_l1_includes_overlaps_and_preserves_non_overlaps() {
         BranchCompactionOperation::TableRewrite
     );
     assert!(candidate.requires_table_rewrite());
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::TargetLevelOverlap)
+    );
     assert_eq!(candidate.output_level(), BranchLevel::new(1));
 
     let outcome = state
@@ -1363,6 +1371,7 @@ fn branch_compaction_l0_to_l1_single_no_overlap_promotes_table_metadata() {
     );
     assert!(candidate.is_metadata_promotion());
     assert!(!candidate.requires_table_rewrite());
+    assert_eq!(candidate.no_promotion_reason(), None);
     assert_eq!(candidate.input_refs().len(), 1);
     assert!(candidate.overlap_refs().is_empty());
     assert_eq!(candidate.output_level(), BranchLevel::new(1));
@@ -1547,6 +1556,10 @@ fn branch_compaction_l0_to_l1_multi_table_rewrite_preserves_newest_row() {
         BranchCompactionOperation::TableRewrite
     );
     assert!(candidate.requires_table_rewrite());
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::MultipleInputTables)
+    );
     assert_eq!(candidate.input_refs().len(), 2);
     assert!(candidate.overlap_refs().is_empty());
     assert_eq!(candidate.output_level(), BranchLevel::new(1));
@@ -1673,6 +1686,10 @@ fn branch_compaction_l0_to_l1_multi_table_rewrite_includes_overlapping_target() 
     assert_eq!(
         candidate.operation(),
         BranchCompactionOperation::TableRewrite
+    );
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::MultipleInputTables)
     );
     assert_eq!(candidate.input_refs().len(), 2);
     assert_eq!(candidate.overlap_refs().len(), 1);
@@ -1928,6 +1945,10 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
     let candidate = plan.candidate().expect("candidate");
     assert_eq!(candidate.input_refs().len(), 1);
     assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::TargetLevelOverlap)
+    );
     assert_eq!(candidate.output_level(), BranchLevel::new(2));
     assert!(candidate.bottommost_for_branch());
 
@@ -2010,6 +2031,7 @@ fn branch_compaction_nonzero_no_overlap_promotes_table_metadata() {
     );
     assert!(candidate.is_metadata_promotion());
     assert!(!candidate.requires_table_rewrite());
+    assert_eq!(candidate.no_promotion_reason(), None);
     assert_eq!(candidate.input_refs().len(), 1);
     assert!(candidate.overlap_refs().is_empty());
     assert_eq!(candidate.output_level(), BranchLevel::new(2));
@@ -2046,6 +2068,333 @@ fn branch_compaction_nonzero_no_overlap_promotes_table_metadata() {
             .expect("visible")
             .row(),
         &row
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_no_overlap_with_pruning_rewrites_table() {
+    let branch = branch_id(173);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let key = physical_key(branch, b"rewrite-for-pruning".to_vec());
+    let newest = storage_row_with(
+        branch,
+        b"rewrite-for-pruning".to_vec(),
+        9,
+        90,
+        Timestamp::EPOCH,
+        b"newest".to_vec(),
+    );
+    let retained = storage_row_with(
+        branch,
+        b"rewrite-for-pruning".to_vec(),
+        6,
+        60,
+        Timestamp::EPOCH,
+        b"retained".to_vec(),
+    );
+    let floor_survivor = storage_row_with(
+        branch,
+        b"rewrite-for-pruning".to_vec(),
+        4,
+        40,
+        Timestamp::EPOCH,
+        b"floor-survivor".to_vec(),
+    );
+    let dropped = storage_row_with(
+        branch,
+        b"rewrite-for-pruning".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"dropped".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "rewrite-for-pruning-input",
+                vec![
+                    newest.clone(),
+                    retained.clone(),
+                    floor_survivor.clone(),
+                    dropped,
+                ],
+            ),
+        )
+        .expect("install input");
+    state.set_timestamp_coverage(BranchTimestampCoverage::complete());
+    let proof = BranchCompactionPruningProof::from_branch_state(&state, CommitVersion::new(5))
+        .expect("proof")
+        .with_retained_timestamp_floor(Timestamp::from_micros(50))
+        .expect("timestamp proof")
+        .with_no_readable_inherited_layers()
+        .expect("inheritance proof")
+        .with_candidate_tables_not_shared()
+        .expect("shared-table proof")
+        .with_recovery_health(BranchRecoveryHealthAttestation::Healthy)
+        .expect("recovery health proof");
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "rewrite-for-pruning-output",
+    )
+    .expect("request")
+    .with_retention_policy(BranchCompactionRetentionPolicy::DropOlderVersions)
+    .with_pruning_proof(proof);
+
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::TableRewrite
+    );
+    assert!(candidate.requires_table_rewrite());
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::RowPruningRequested)
+    );
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(2));
+    assert!(state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("prepare rewrite")
+        .is_some());
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact with pruning");
+    let report = outcome.table_report().expect("rewrite report");
+    assert_eq!(report.dropped_rows(), 1);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+
+    let after = state.capture_read_view().expect("after");
+    assert_visible_row(
+        after.latest(&key).expect("latest").as_ref(),
+        &newest,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after
+            .at_version(&key, CommitVersion::new(4))
+            .expect("floor survivor")
+            .as_ref(),
+        &floor_survivor,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_promotion_respects_deeper_overlap_budget() {
+    let branch = branch_id(174);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let key = physical_key(branch, b"promotion-budget".to_vec());
+    let input = storage_row_with(
+        branch,
+        b"promotion-budget".to_vec(),
+        7,
+        70,
+        Timestamp::EPOCH,
+        b"input".to_vec(),
+    );
+    let deeper = storage_row_with(
+        branch,
+        b"promotion-budget".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"deeper-overlap".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(3),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(3),
+                "promotion-budget-deeper",
+                vec![deeper],
+            ),
+        )
+        .expect("install deeper table");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "promotion-budget-input",
+                vec![input.clone()],
+            ),
+        )
+        .expect("install input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "promotion-budget-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("tiny target"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::TableRewrite
+    );
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::DeeperLevelOverlapBudgetExceeded)
+    );
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(2));
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("rewrite input");
+    assert_eq!(outcome.removed_refs().len(), 1);
+    assert_eq!(outcome.output_refs().len(), 1);
+    assert!(outcome.table_report().is_some());
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+    assert_eq!(state.owned_levels()[3].len(), 1);
+
+    let after = state.capture_read_view().expect("after");
+    assert_visible_row(
+        after.latest(&key).expect("latest").as_ref(),
+        &input,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_promotion_allows_deeper_overlap_within_budget() {
+    let branch = branch_id(178);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let key = physical_key(branch, b"promotion-budget-allowed".to_vec());
+    let input = storage_row_with(
+        branch,
+        b"promotion-budget-allowed".to_vec(),
+        8,
+        80,
+        Timestamp::EPOCH,
+        b"input".to_vec(),
+    );
+    let deeper = storage_row_with(
+        branch,
+        b"promotion-budget-allowed".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"deeper-overlap".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(3),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(3),
+                "promotion-budget-allowed-deeper",
+                vec![deeper.clone()],
+            ),
+        )
+        .expect("install deeper table");
+    let deeper_bytes = state.owned_levels()[3][0].facts().byte_count();
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "promotion-budget-allowed-input",
+                vec![input.clone()],
+            ),
+        )
+        .expect("install input");
+    let target_output_bytes = deeper_bytes.div_ceil(10);
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "promotion-budget-allowed-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(
+        TableCompactionConfig::new(target_output_bytes, 16).expect("boundary target"),
+    );
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(
+        candidate.operation(),
+        BranchCompactionOperation::MetadataPromotion
+    );
+    assert_eq!(candidate.no_promotion_reason(), None);
+    assert_eq!(candidate.input_refs().len(), 1);
+    assert!(candidate.overlap_refs().is_empty());
+    assert_eq!(candidate.output_level(), BranchLevel::new(2));
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("promote input");
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(outcome.removed_refs().len(), 1);
+    assert_eq!(outcome.output_refs().len(), 1);
+    assert_eq!(state.owned_levels()[1].len(), 0);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+    assert_eq!(state.owned_levels()[3].len(), 1);
+
+    let after = state.capture_read_view().expect("after");
+    assert_visible_row(
+        after.latest(&key).expect("latest").as_ref(),
+        &input,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after
+            .at_version(&key, CommitVersion::new(3))
+            .expect("deeper version")
+            .as_ref(),
+        &deeper,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(3),
+            table_index: 0,
+        },
     );
 }
 

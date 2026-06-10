@@ -145,10 +145,19 @@ pub(crate) enum BranchCompactionOperation {
     MetadataPromotion,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchCompactionNoPromotionReason {
+    MultipleInputTables,
+    TargetLevelOverlap,
+    DeeperLevelOverlapBudgetExceeded,
+    RowPruningRequested,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchCompactionCandidate {
     branch_id: BranchId,
     operation: BranchCompactionOperation,
+    no_promotion_reason: Option<BranchCompactionNoPromotionReason>,
     input_refs: Vec<BranchTableRef>,
     overlap_refs: Vec<BranchTableRef>,
     output_level: BranchLevel,
@@ -165,11 +174,13 @@ impl BranchCompactionCandidate {
         output_level: BranchLevel,
         bottommost_for_branch: bool,
         input_row_count: u64,
+        no_promotion_reason: Option<BranchCompactionNoPromotionReason>,
     ) -> Self {
         let source_count = input_refs.len().saturating_add(overlap_refs.len());
         Self {
             branch_id,
             operation: BranchCompactionOperation::TableRewrite,
+            no_promotion_reason,
             input_refs,
             overlap_refs,
             output_level,
@@ -189,6 +200,7 @@ impl BranchCompactionCandidate {
         Self {
             branch_id,
             operation: BranchCompactionOperation::MetadataPromotion,
+            no_promotion_reason: None,
             source_count: input_refs.len(),
             input_refs,
             overlap_refs: Vec::new(),
@@ -204,6 +216,10 @@ impl BranchCompactionCandidate {
 
     pub(crate) const fn operation(&self) -> BranchCompactionOperation {
         self.operation
+    }
+
+    pub(crate) const fn no_promotion_reason(&self) -> Option<BranchCompactionNoPromotionReason> {
+        self.no_promotion_reason
     }
 
     pub(crate) const fn requires_table_rewrite(&self) -> bool {
@@ -725,6 +741,7 @@ impl BranchLocalState {
             BranchLevel::ZERO,
             self.is_bottommost_output_level(0),
             input_row_count,
+            None,
         );
         Ok(BranchCompactionPlan::with_candidate(
             self.branch_id,
@@ -758,8 +775,9 @@ impl BranchLocalState {
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
-        if input_refs.len().saturating_add(overlap_refs.len()) < 2 {
-            validate_metadata_promotion_request(request)?;
+        let no_promotion_reason =
+            metadata_promotion_blocker(request, input_refs.len(), overlap_refs.len(), None);
+        if no_promotion_reason.is_none() {
             let candidate = BranchCompactionCandidate::metadata_promotion(
                 self.branch_id,
                 input_refs,
@@ -780,6 +798,7 @@ impl BranchLocalState {
             BranchLevel::new(1),
             self.is_bottommost_output_level(1),
             input_row_count,
+            no_promotion_reason,
         );
         Ok(BranchCompactionPlan::with_candidate(
             self.branch_id,
@@ -843,8 +862,15 @@ impl BranchLocalState {
                 ),
             }
         })?);
-        if input_refs.len().saturating_add(overlap_refs.len()) < 2 {
-            validate_metadata_promotion_request(request)?;
+        let deeper_overlap_bytes =
+            self.overlapping_table_bytes_for_input_range(&input_refs, level_index + 2);
+        let no_promotion_reason = metadata_promotion_blocker(
+            request,
+            input_refs.len(),
+            overlap_refs.len(),
+            Some(deeper_overlap_bytes),
+        );
+        if no_promotion_reason.is_none() {
             let candidate = BranchCompactionCandidate::metadata_promotion(
                 self.branch_id,
                 input_refs,
@@ -865,6 +891,7 @@ impl BranchLocalState {
             output_level,
             self.is_bottommost_output_level(level_index + 1),
             input_row_count,
+            no_promotion_reason,
         );
         Ok(BranchCompactionPlan::with_candidate(
             self.branch_id,
@@ -926,6 +953,26 @@ impl BranchLocalState {
             }
         }
         Ok(refs)
+    }
+
+    fn overlapping_table_bytes_for_input_range(
+        &self,
+        input_refs: &[BranchTableRef],
+        target_level_index: usize,
+    ) -> u64 {
+        let Some(target_level) = self.owned_levels.get(target_level_index) else {
+            return 0;
+        };
+        let mut byte_count = 0u64;
+        for table in target_level {
+            if input_refs.iter().any(|input_ref| {
+                self.table_for_ref(input_ref)
+                    .is_some_and(|input_table| table_physical_ranges_overlap(input_table, table))
+            }) {
+                byte_count = byte_count.saturating_add(table.facts().byte_count());
+            }
+        }
+        byte_count
     }
 
     fn table_ref_row_count(&self, refs: &[BranchTableRef]) -> BranchRuntimeResult<u64> {
@@ -1350,6 +1397,35 @@ fn validate_metadata_promotion_request(
         });
     }
     Ok(())
+}
+
+fn metadata_promotion_blocker(
+    request: &BranchCompactionRequest,
+    input_table_count: usize,
+    overlap_table_count: usize,
+    deeper_level_overlap_bytes: Option<u64>,
+) -> Option<BranchCompactionNoPromotionReason> {
+    if request.retention_policy() != BranchCompactionRetentionPolicy::KeepAll
+        || request.pruning_proof().is_some()
+    {
+        return Some(BranchCompactionNoPromotionReason::RowPruningRequested);
+    }
+    if input_table_count != 1 {
+        return Some(BranchCompactionNoPromotionReason::MultipleInputTables);
+    }
+    if overlap_table_count != 0 {
+        return Some(BranchCompactionNoPromotionReason::TargetLevelOverlap);
+    }
+    if deeper_level_overlap_bytes.is_some_and(|bytes| {
+        bytes
+            > request
+                .table_compaction_config()
+                .target_output_bytes()
+                .saturating_mul(10)
+    }) {
+        return Some(BranchCompactionNoPromotionReason::DeeperLevelOverlapBudgetExceeded);
+    }
+    None
 }
 
 fn validate_metadata_promotion_candidate(

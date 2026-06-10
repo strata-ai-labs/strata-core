@@ -612,7 +612,7 @@ fn compact_table_inputs(
                 }
                 let kept_key = current.row.key().clone();
                 pending_output.push_row(
-                    &mut artifacts,
+                    &artifacts,
                     &mut report,
                     current.row,
                     row_approximate_bytes,
@@ -700,7 +700,7 @@ impl<'a> PendingCompactionOutput<'a> {
 
     fn push_row(
         &mut self,
-        artifacts: &mut Vec<BuiltTableArtifact>,
+        artifacts: &[BuiltTableArtifact],
         report: &mut TableCompactionReport,
         row: &TableRow,
         row_approximate_bytes: u64,

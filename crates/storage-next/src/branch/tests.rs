@@ -23,9 +23,9 @@ use super::read::{
     BranchVisibleRow,
 };
 use super::state::compaction::{
-    BranchCompactionCandidate, BranchCompactionKind, BranchCompactionNoopReason,
-    BranchCompactionOperation, BranchCompactionOutcome, BranchCompactionPlan,
-    BranchCompactionRequest, BranchCompactionRetentionPolicy,
+    BranchCompactionCandidate, BranchCompactionKind, BranchCompactionNoPromotionReason,
+    BranchCompactionNoopReason, BranchCompactionOperation, BranchCompactionOutcome,
+    BranchCompactionPlan, BranchCompactionRequest, BranchCompactionRetentionPolicy,
 };
 use super::state::fork::BranchForkOutcome;
 use super::state::manifest_recovery::BranchTableManifestRecoveryRequest;
