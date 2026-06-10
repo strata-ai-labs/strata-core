@@ -845,19 +845,19 @@ impl BranchReadView {
         self.require_matching_branch(key.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
-        Ok(select_visible_row(
-            visible_point_candidates(
-                self.branch_id,
-                &self.active,
-                &self.frozen,
-                &self.owned_levels,
-                &self.inherited_layers,
-                key,
-                bound,
-                effective_bound,
-            )?,
+        let selected = select_ordered_visible_point_candidate(
+            self.branch_id,
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            key,
+            bound,
             effective_bound,
-        ))
+        )?;
+        Ok(selected.and_then(|candidate| {
+            candidate_into_visible_row(candidate, effective_bound.max_commit_timestamp())
+        }))
     }
 
     pub(crate) fn history(
@@ -1017,19 +1017,26 @@ impl BranchLocalState {
         require_state_matching_branch(self, key.branch_id())?;
         require_state_timestamp_coverage(self, bound)?;
         let effective_bound = effective_own_read_bound(bound);
-        Ok(select_visible_row_or_tombstone(
-            visible_point_candidates(
-                self.branch_id(),
-                self.active(),
-                self.frozen(),
-                self.owned_levels(),
-                self.inherited_layers(),
-                key,
-                bound,
-                effective_bound,
-            )?,
+        let selected = select_ordered_visible_point_candidate(
+            self.branch_id(),
+            self.active(),
+            self.frozen(),
+            self.owned_levels(),
+            self.inherited_layers(),
+            key,
+            bound,
             effective_bound,
-        ))
+        )?;
+        Ok(selected.and_then(|candidate| {
+            if row_is_expired_at(
+                candidate_row_ref(&candidate),
+                effective_bound.max_commit_timestamp(),
+            ) {
+                None
+            } else {
+                Some(candidate_into_history_row(candidate))
+            }
+        }))
     }
 
     pub(crate) fn scan_including_tombstones_borrowed(
@@ -1356,6 +1363,576 @@ fn push_history_rows(
     Ok(())
 }
 
+struct PointSelection {
+    selected: Option<CandidateRow>,
+    rows_visited: usize,
+    candidates_materialized: usize,
+    source_counts: perf_trace::BranchPointSourceCounts,
+}
+
+impl PointSelection {
+    fn new() -> Self {
+        Self {
+            selected: None,
+            rows_visited: 0,
+            candidates_materialized: 0,
+            source_counts: perf_trace::BranchPointSourceCounts::default(),
+        }
+    }
+
+    fn add_rows_visited(&mut self, visited: usize) {
+        self.rows_visited = self.rows_visited.saturating_add(visited);
+    }
+
+    fn consider_table_row(&mut self, row: &TableRow, source: BranchRowSource) {
+        let candidate = candidate_row(clone_point_candidate_row(row), source);
+        self.consider_candidate(candidate);
+    }
+
+    fn consider_inherited_table_row(
+        &mut self,
+        row: &TableRow,
+        source_branch_id: BranchId,
+        child_branch_id: BranchId,
+        layer_index: usize,
+    ) -> BranchRuntimeResult<()> {
+        perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
+        let candidate = candidate_row(
+            rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(|_| {
+                BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited row branch rewrite failed",
+                }
+            })?,
+            BranchRowSource::Inherited {
+                source_branch_id,
+                layer_index,
+            },
+        );
+        self.consider_candidate(candidate);
+        Ok(())
+    }
+
+    fn consider_candidate(&mut self, candidate: CandidateRow) {
+        self.candidates_materialized = self.candidates_materialized.saturating_add(1);
+        let should_replace = self
+            .selected
+            .as_ref()
+            .is_none_or(|selected| candidate_is_newer_or_better_tie(&candidate, selected));
+        if should_replace {
+            self.selected = Some(candidate);
+        }
+    }
+
+    fn selected_commit_version(&self) -> Option<CommitVersion> {
+        self.selected
+            .as_ref()
+            .map(|candidate| candidate_row_ref(candidate).commit_version())
+    }
+
+    fn finish(self) -> Option<CandidateRow> {
+        perf_trace::record_branch_point_sources(self.source_counts);
+        perf_trace::record_point_candidate_collection(
+            self.rows_visited,
+            self.candidates_materialized,
+        );
+        if let Some(candidate) = &self.selected {
+            record_selected_point_source(candidate_source(candidate));
+        }
+        self.selected
+    }
+}
+
+fn candidate_is_newer_or_better_tie(candidate: &CandidateRow, selected: &CandidateRow) -> bool {
+    let candidate_version = candidate_row_ref(candidate).commit_version();
+    let selected_version = candidate_row_ref(selected).commit_version();
+    candidate_version > selected_version
+        || (candidate_version == selected_version
+            && source_order_cmp(candidate_source(candidate), candidate_source(selected)).is_lt())
+}
+
+fn select_ordered_visible_point_candidate(
+    branch_id: BranchId,
+    active: &MutableTable,
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    key: &PhysicalKey,
+    bound: BranchReadBound,
+    effective_bound: BranchEffectiveReadBound,
+) -> BranchRuntimeResult<Option<CandidateRow>> {
+    let mut selection = PointSelection::new();
+    let lookup = TablePreparedPointLookup::new(
+        key,
+        effective_bound.max_commit_version(),
+        effective_bound.max_commit_timestamp(),
+    );
+
+    selection.source_counts.active_probes = selection.source_counts.active_probes.saturating_add(1);
+    selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
+    let (row, visited) = active.seek_prepared_point(&lookup);
+    selection.add_rows_visited(visited);
+    if let Some(row) = row {
+        selection.consider_table_row(row.as_ref(), BranchRowSource::Active);
+    }
+    if ordered_point_can_stop(
+        &selection,
+        perf_trace::BranchPointSourceKind::Active,
+        remaining_max_commit_after_active(frozen, owned_levels, inherited_layers, bound),
+        remaining_source_count_after_active(frozen, owned_levels, inherited_layers),
+    ) {
+        return Ok(selection.finish());
+    }
+
+    for (index, table) in frozen.iter().enumerate() {
+        selection.source_counts.frozen_probes =
+            selection.source_counts.frozen_probes.saturating_add(1);
+        selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
+        let (row, visited) = table.seek_prepared_point(&lookup);
+        selection.add_rows_visited(visited);
+        if let Some(row) = row {
+            selection.consider_table_row(row.as_ref(), BranchRowSource::Frozen { index });
+        }
+    }
+    if ordered_point_can_stop(
+        &selection,
+        perf_trace::BranchPointSourceKind::Frozen,
+        remaining_max_commit_after_frozen(owned_levels, inherited_layers, bound),
+        remaining_source_count_after_frozen(owned_levels, inherited_layers),
+    ) {
+        return Ok(selection.finish());
+    }
+
+    for (level_index, tables) in owned_levels.iter().enumerate() {
+        select_owned_level_point_candidate(level_index, tables, &lookup, &mut selection)?;
+        let source = if level_index == 0 {
+            perf_trace::BranchPointSourceKind::OwnedL0
+        } else {
+            perf_trace::BranchPointSourceKind::OwnedNonzero
+        };
+        if ordered_point_can_stop(
+            &selection,
+            source,
+            remaining_max_commit_after_owned_level(
+                owned_levels,
+                level_index.saturating_add(1),
+                inherited_layers,
+                bound,
+            ),
+            remaining_source_count_after_owned_level(
+                owned_levels,
+                level_index.saturating_add(1),
+                inherited_layers,
+            ),
+        ) {
+            return Ok(selection.finish());
+        }
+    }
+
+    for (layer_index, layer) in inherited_layers.iter().enumerate() {
+        if !layer.is_readable() {
+            continue;
+        }
+        selection.source_counts.inherited_layer_searches = selection
+            .source_counts
+            .inherited_layer_searches
+            .saturating_add(1);
+        let source_key =
+            rewrite_physical_key_branch(key, layer.source_branch_id()).map_err(|_| {
+                BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited point key rewrite failed",
+                }
+            })?;
+        perf_trace::record_branch_point_inherited_key_rewrite();
+        let inherited_bound =
+            BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
+        let inherited_lookup = TablePreparedPointLookup::new(
+            &source_key,
+            inherited_bound.max_commit_version(),
+            inherited_bound.max_commit_timestamp(),
+        );
+        for (level_index, tables) in layer.owned_levels().iter().enumerate() {
+            select_inherited_level_point_candidate(
+                branch_id,
+                layer,
+                layer_index,
+                level_index,
+                tables,
+                &inherited_lookup,
+                &mut selection,
+            )?;
+        }
+        if ordered_point_can_stop(
+            &selection,
+            perf_trace::BranchPointSourceKind::Inherited,
+            remaining_max_commit_after_inherited_layer(
+                inherited_layers,
+                layer_index.saturating_add(1),
+                bound,
+            ),
+            remaining_source_count_after_inherited_layer(
+                inherited_layers,
+                layer_index.saturating_add(1),
+            ),
+        ) {
+            return Ok(selection.finish());
+        }
+    }
+
+    Ok(selection.finish())
+}
+
+fn select_owned_level_point_candidate(
+    level_index: usize,
+    tables: &[BranchOwnedTable],
+    lookup: &TablePreparedPointLookup,
+    selection: &mut PointSelection,
+) -> BranchRuntimeResult<()> {
+    if level_index == 0 {
+        for (table_index, table) in tables.iter().enumerate() {
+            selection.source_counts.owned_l0_table_probes = selection
+                .source_counts
+                .owned_l0_table_probes
+                .saturating_add(1);
+            selection.source_counts.table_seeks =
+                selection.source_counts.table_seeks.saturating_add(1);
+            let (row, visited) = table.reader().seek_prepared_point(lookup);
+            selection.add_rows_visited(visited);
+            if let Some(row) = row {
+                selection.consider_table_row(
+                    &row,
+                    BranchRowSource::OwnedTable {
+                        level: table.level(),
+                        table_index,
+                    },
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    if tables.is_empty() {
+        return Ok(());
+    }
+
+    selection.source_counts.owned_nonzero_level_searches = selection
+        .source_counts
+        .owned_nonzero_level_searches
+        .saturating_add(1);
+    let Some(table_index) = select_nonzero_level_point_table(tables, lookup.physical_key())? else {
+        return Ok(());
+    };
+    let table = &tables[table_index];
+    selection.source_counts.owned_nonzero_table_probes = selection
+        .source_counts
+        .owned_nonzero_table_probes
+        .saturating_add(1);
+    selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
+    let (row, visited) = table.reader().seek_prepared_point(lookup);
+    selection.add_rows_visited(visited);
+    if let Some(row) = row {
+        selection.consider_table_row(
+            &row,
+            BranchRowSource::OwnedTable {
+                level: table.level(),
+                table_index,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn select_inherited_level_point_candidate(
+    child_branch_id: BranchId,
+    layer: &BranchInheritedLayer,
+    layer_index: usize,
+    level_index: usize,
+    tables: &[BranchOwnedTable],
+    lookup: &TablePreparedPointLookup,
+    selection: &mut PointSelection,
+) -> BranchRuntimeResult<()> {
+    if level_index == 0 {
+        for table in tables {
+            selection.source_counts.inherited_l0_table_probes = selection
+                .source_counts
+                .inherited_l0_table_probes
+                .saturating_add(1);
+            append_ordered_inherited_point_table_candidate(
+                child_branch_id,
+                layer,
+                layer_index,
+                table,
+                lookup,
+                selection,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if tables.is_empty() {
+        return Ok(());
+    }
+
+    selection.source_counts.inherited_nonzero_level_searches = selection
+        .source_counts
+        .inherited_nonzero_level_searches
+        .saturating_add(1);
+    let Some(table_index) = select_nonzero_level_point_table(tables, lookup.physical_key())? else {
+        return Ok(());
+    };
+    selection.source_counts.inherited_nonzero_table_probes = selection
+        .source_counts
+        .inherited_nonzero_table_probes
+        .saturating_add(1);
+    append_ordered_inherited_point_table_candidate(
+        child_branch_id,
+        layer,
+        layer_index,
+        &tables[table_index],
+        lookup,
+        selection,
+    )
+}
+
+fn append_ordered_inherited_point_table_candidate(
+    child_branch_id: BranchId,
+    layer: &BranchInheritedLayer,
+    layer_index: usize,
+    table: &BranchOwnedTable,
+    lookup: &TablePreparedPointLookup,
+    selection: &mut PointSelection,
+) -> BranchRuntimeResult<()> {
+    selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
+    let (row, visited) = table.reader().seek_prepared_point(lookup);
+    selection.add_rows_visited(visited);
+    if let Some(row) = row {
+        selection.consider_inherited_table_row(
+            &row,
+            layer.source_branch_id(),
+            child_branch_id,
+            layer_index,
+        )?;
+    }
+    Ok(())
+}
+
+fn ordered_point_can_stop(
+    selection: &PointSelection,
+    source: perf_trace::BranchPointSourceKind,
+    remaining_max_commit: Option<CommitVersion>,
+    remaining_source_count: usize,
+) -> bool {
+    if remaining_source_count == 0 {
+        return false;
+    }
+    let Some(selected_commit) = selection.selected_commit_version() else {
+        return false;
+    };
+    if remaining_max_commit.is_none_or(|max_commit| max_commit <= selected_commit) {
+        perf_trace::record_branch_point_early_exit(source);
+        perf_trace::record_branch_point_remaining_source_skips(remaining_source_count);
+        true
+    } else {
+        false
+    }
+}
+
+fn remaining_max_commit_after_active(
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    bound: BranchReadBound,
+) -> Option<CommitVersion> {
+    let effective_bound = effective_own_read_bound(bound);
+    max_commit_for_frozen_tables(frozen, 0, effective_bound)
+        .into_iter()
+        .chain(max_commit_for_owned_levels(
+            owned_levels,
+            0,
+            effective_bound,
+        ))
+        .chain(max_commit_for_inherited_layers(inherited_layers, 0, bound))
+        .max()
+}
+
+fn remaining_max_commit_after_frozen(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    bound: BranchReadBound,
+) -> Option<CommitVersion> {
+    let effective_bound = effective_own_read_bound(bound);
+    max_commit_for_owned_levels(owned_levels, 0, effective_bound)
+        .into_iter()
+        .chain(max_commit_for_inherited_layers(inherited_layers, 0, bound))
+        .max()
+}
+
+fn remaining_max_commit_after_owned_level(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    next_level_index: usize,
+    inherited_layers: &[BranchInheritedLayer],
+    bound: BranchReadBound,
+) -> Option<CommitVersion> {
+    let effective_bound = effective_own_read_bound(bound);
+    max_commit_for_owned_levels(owned_levels, next_level_index, effective_bound)
+        .into_iter()
+        .chain(max_commit_for_inherited_layers(inherited_layers, 0, bound))
+        .max()
+}
+
+fn remaining_max_commit_after_inherited_layer(
+    inherited_layers: &[BranchInheritedLayer],
+    next_layer_index: usize,
+    bound: BranchReadBound,
+) -> Option<CommitVersion> {
+    max_commit_for_inherited_layers(inherited_layers, next_layer_index, bound)
+}
+
+fn max_commit_for_frozen_tables(
+    frozen: &[FrozenTable],
+    start_index: usize,
+    effective_bound: BranchEffectiveReadBound,
+) -> Option<CommitVersion> {
+    frozen
+        .iter()
+        .skip(start_index)
+        .filter_map(|table| {
+            let facts = table.facts();
+            cap_commit_range_max(
+                facts.min_commit()?,
+                facts.max_commit()?,
+                effective_bound.max_commit_version(),
+            )
+        })
+        .max()
+}
+
+fn max_commit_for_owned_levels(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    start_level_index: usize,
+    effective_bound: BranchEffectiveReadBound,
+) -> Option<CommitVersion> {
+    owned_levels
+        .iter()
+        .skip(start_level_index)
+        .flat_map(|tables| tables.iter())
+        .filter_map(|table| {
+            cap_commit_range_max(
+                table.facts().commit_range().min(),
+                table.facts().commit_range().max(),
+                effective_bound.max_commit_version(),
+            )
+        })
+        .max()
+}
+
+fn max_commit_for_inherited_layers(
+    inherited_layers: &[BranchInheritedLayer],
+    start_layer_index: usize,
+    bound: BranchReadBound,
+) -> Option<CommitVersion> {
+    inherited_layers
+        .iter()
+        .skip(start_layer_index)
+        .filter(|layer| layer.is_readable())
+        .flat_map(|layer| {
+            let inherited_bound =
+                BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
+            layer
+                .owned_levels()
+                .iter()
+                .flat_map(|tables| tables.iter())
+                .filter_map(move |table| {
+                    cap_commit_range_max(
+                        table.facts().commit_range().min(),
+                        table.facts().commit_range().max(),
+                        inherited_bound.max_commit_version(),
+                    )
+                })
+        })
+        .max()
+}
+
+fn cap_commit_range_max(
+    min_commit: CommitVersion,
+    commit: CommitVersion,
+    max_commit_version: Option<CommitVersion>,
+) -> Option<CommitVersion> {
+    if max_commit_version.is_some_and(|max| min_commit > max) {
+        None
+    } else {
+        Some(max_commit_version.map_or(commit, |max| commit.min(max)))
+    }
+}
+
+fn remaining_source_count_after_active(
+    frozen: &[FrozenTable],
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+) -> usize {
+    frozen
+        .len()
+        .saturating_add(owned_point_source_count(owned_levels, 0))
+        .saturating_add(inherited_point_source_count(inherited_layers, 0))
+}
+
+fn remaining_source_count_after_frozen(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+) -> usize {
+    owned_point_source_count(owned_levels, 0)
+        .saturating_add(inherited_point_source_count(inherited_layers, 0))
+}
+
+fn remaining_source_count_after_owned_level(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    next_level_index: usize,
+    inherited_layers: &[BranchInheritedLayer],
+) -> usize {
+    owned_point_source_count(owned_levels, next_level_index)
+        .saturating_add(inherited_point_source_count(inherited_layers, 0))
+}
+
+fn remaining_source_count_after_inherited_layer(
+    inherited_layers: &[BranchInheritedLayer],
+    next_layer_index: usize,
+) -> usize {
+    inherited_point_source_count(inherited_layers, next_layer_index)
+}
+
+fn owned_point_source_count(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    start_level_index: usize,
+) -> usize {
+    owned_levels
+        .iter()
+        .enumerate()
+        .skip(start_level_index)
+        .map(|(level_index, tables)| {
+            if level_index == 0 {
+                tables.len()
+            } else if tables.is_empty() {
+                0
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+fn inherited_point_source_count(
+    inherited_layers: &[BranchInheritedLayer],
+    start_layer_index: usize,
+) -> usize {
+    inherited_layers
+        .iter()
+        .skip(start_layer_index)
+        .filter(|layer| layer.is_readable())
+        .map(|layer| 1usize.saturating_add(owned_point_source_count(layer.owned_levels(), 0)))
+        .sum()
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 fn visible_point_candidates(
     branch_id: BranchId,
     active: &MutableTable,
@@ -1424,6 +2001,8 @@ fn visible_point_candidates(
     Ok(rows)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn collect_owned_level_point_candidates(
     level_index: usize,
     tables: &[BranchOwnedTable],
@@ -1479,6 +2058,8 @@ fn collect_owned_level_point_candidates(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn collect_inherited_level_point_candidates(
     child_branch_id: BranchId,
     layer: &BranchInheritedLayer,
@@ -1533,6 +2114,8 @@ fn collect_inherited_level_point_candidates(
     )
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn append_inherited_point_table_candidate(
     child_branch_id: BranchId,
     layer: &BranchInheritedLayer,
@@ -2501,6 +3084,8 @@ fn push_inherited_level_scan_cursors<'a>(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn collect_visible_inherited_point_candidates(
     branch_id: BranchId,
     inherited_layers: &[BranchInheritedLayer],
@@ -2574,6 +3159,8 @@ fn require_state_timestamp_coverage(
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn select_visible_row(
     mut candidates: Vec<CandidateRow>,
     effective_bound: BranchEffectiveReadBound,

@@ -259,16 +259,6 @@ impl MutableTable {
         rows.into_iter()
     }
 
-    pub(crate) fn seek_physical_key(
-        &self,
-        key: &PhysicalKey,
-        max_commit_version: Option<CommitVersion>,
-        max_commit_timestamp: Option<Timestamp>,
-    ) -> (Option<Arc<TableRow>>, usize) {
-        let lookup = TablePreparedPointLookup::new(key, max_commit_version, max_commit_timestamp);
-        self.seek_prepared_point(&lookup)
-    }
-
     pub(crate) fn seek_prepared_point(
         &self,
         lookup: &TablePreparedPointLookup,
@@ -285,7 +275,8 @@ impl MutableTable {
         &self,
         key: &PhysicalKey,
     ) -> (Option<Arc<TableRow>>, usize) {
-        self.seek_physical_key(key, None, None)
+        let lookup = TablePreparedPointLookup::new(key, None, None);
+        self.seek_prepared_point(&lookup)
     }
 
     pub(crate) fn freeze(self) -> FrozenTable {
@@ -425,16 +416,6 @@ impl FrozenTable {
         rows.into_iter()
     }
 
-    pub(crate) fn seek_physical_key(
-        &self,
-        key: &PhysicalKey,
-        max_commit_version: Option<CommitVersion>,
-        max_commit_timestamp: Option<Timestamp>,
-    ) -> (Option<Arc<TableRow>>, usize) {
-        let lookup = TablePreparedPointLookup::new(key, max_commit_version, max_commit_timestamp);
-        self.seek_prepared_point(&lookup)
-    }
-
     pub(crate) fn seek_prepared_point(
         &self,
         lookup: &TablePreparedPointLookup,
@@ -451,7 +432,8 @@ impl FrozenTable {
         &self,
         key: &PhysicalKey,
     ) -> (Option<Arc<TableRow>>, usize) {
-        self.seek_physical_key(key, None, None)
+        let lookup = TablePreparedPointLookup::new(key, None, None);
+        self.seek_prepared_point(&lookup)
     }
 
     fn entry_visible(&self, entry: &TableMemoryEntry) -> bool {

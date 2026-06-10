@@ -112,7 +112,7 @@ fn inherited_mixed_layer(
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn branch_point_read_counters_capture_current_full_traversal() {
+fn branch_point_read_counters_capture_active_early_exit() {
     let branch = branch_id(180);
     let parent = branch_id(181);
     let mut state = BranchLocalState::empty(branch);
@@ -163,35 +163,199 @@ fn branch_point_read_counters_capture_current_full_traversal() {
 
     assert_visible_row(actual.as_ref(), &active, BranchRowSource::Active);
     assert_eq!(perf.point_active_probes(), 1);
-    assert_eq!(perf.point_frozen_probes(), 1);
-    assert_eq!(perf.point_owned_l0_table_probes(), 1);
-    assert_eq!(perf.point_owned_nonzero_level_searches(), 1);
-    assert_eq!(perf.point_owned_nonzero_table_probes(), 1);
-    assert_eq!(perf.point_inherited_layer_searches(), 1);
-    assert_eq!(perf.point_inherited_l0_table_probes(), 1);
-    assert_eq!(perf.point_inherited_nonzero_level_searches(), 1);
-    assert_eq!(perf.point_inherited_nonzero_table_probes(), 1);
-    assert_eq!(perf.point_table_seeks(), 6);
-    assert_eq!(perf.point_candidates_materialized(), 6);
-    assert_eq!(perf.point_candidate_row_clones(), 6);
+    assert_eq!(perf.point_frozen_probes(), 0);
+    assert_eq!(perf.point_owned_l0_table_probes(), 0);
+    assert_eq!(perf.point_owned_nonzero_level_searches(), 0);
+    assert_eq!(perf.point_owned_nonzero_table_probes(), 0);
+    assert_eq!(perf.point_inherited_layer_searches(), 0);
+    assert_eq!(perf.point_inherited_l0_table_probes(), 0);
+    assert_eq!(perf.point_inherited_nonzero_level_searches(), 0);
+    assert_eq!(perf.point_inherited_nonzero_table_probes(), 0);
+    assert_eq!(perf.point_table_seeks(), 1);
+    assert_eq!(perf.point_candidates_materialized(), 1);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
     assert_eq!(perf.point_selected_active(), 1);
     assert_eq!(perf.point_selected_frozen(), 0);
     assert_eq!(perf.point_selected_owned_l0(), 0);
     assert_eq!(perf.point_selected_owned_nonzero(), 0);
     assert_eq!(perf.point_selected_inherited(), 0);
-    assert_eq!(perf.point_inherited_key_rewrites(), 1);
-    assert_eq!(perf.point_early_exit_active(), 0);
+    assert_eq!(perf.point_inherited_key_rewrites(), 0);
+    assert_eq!(perf.point_early_exit_active(), 1);
     assert_eq!(perf.point_early_exit_frozen(), 0);
     assert_eq!(perf.point_early_exit_owned_l0(), 0);
     assert_eq!(perf.point_early_exit_owned_nonzero(), 0);
     assert_eq!(perf.point_early_exit_inherited(), 0);
-    assert_eq!(perf.point_remaining_source_skips(), 0);
-    assert_eq!(perf.table_point_lookup_key_builds(), 2);
-    assert_eq!(perf.table_point_lookup_key_reuses(), 4);
-    assert_eq!(perf.table_eager_filter_probes(), 4);
-    assert_eq!(perf.table_eager_filter_unavailable_probes(), 4);
+    assert_eq!(perf.point_remaining_source_skips(), 6);
+    assert_eq!(perf.table_point_lookup_key_builds(), 1);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_eager_filter_probes(), 0);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 0);
     assert_eq!(perf.table_eager_filter_negative_probes(), 0);
     assert_eq!(perf.table_eager_filter_positive_probes(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_does_not_early_exit_when_later_source_can_beat_active() {
+    let branch = branch_id(182);
+    let parent = branch_id(183);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_nonzero_layer(
+            parent,
+            "target",
+            5,
+            "point-unsafe-exit-parent",
+        )])
+        .expect("attach inherited");
+    let owned = point_row(branch, "target", 70);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-unsafe-exit-owned",
+                vec![owned.clone()],
+            ),
+        )
+        .expect("install nonzero");
+    state
+        .append_committed_row(point_row(branch, "target", 60))
+        .expect("append active");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let actual = view.latest(&target).expect("point read");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_visible_row(
+        actual.as_ref(),
+        &owned,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+    assert_eq!(perf.point_active_probes(), 1);
+    assert_eq!(perf.point_owned_nonzero_level_searches(), 1);
+    assert_eq!(perf.point_owned_nonzero_table_probes(), 1);
+    assert_eq!(perf.point_inherited_layer_searches(), 0);
+    assert_eq!(perf.point_table_seeks(), 2);
+    assert_eq!(perf.point_candidates_materialized(), 2);
+    assert_eq!(perf.point_candidate_row_clones(), 2);
+    assert_eq!(perf.point_selected_active(), 0);
+    assert_eq!(perf.point_selected_owned_nonzero(), 1);
+    assert_eq!(perf.point_early_exit_active(), 0);
+    assert_eq!(perf.point_early_exit_owned_nonzero(), 1);
+    assert_eq!(perf.point_remaining_source_skips(), 2);
+    assert_eq!(perf.point_inherited_key_rewrites(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 1);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_at_version_early_exits_when_remaining_ranges_start_above_bound() {
+    let branch = branch_id(186);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            point_table(
+                branch,
+                BranchLevel::new(1),
+                "point-at-version-range-above-bound",
+                "target",
+                100,
+            ),
+        )
+        .expect("install nonzero");
+    let active = point_row(branch, "target", 5);
+    state
+        .append_committed_row(active.clone())
+        .expect("append active");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let actual = view
+        .at_version(&target, CommitVersion::new(10))
+        .expect("bounded read");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_visible_row(actual.as_ref(), &active, BranchRowSource::Active);
+    assert_eq!(perf.point_active_probes(), 1);
+    assert_eq!(perf.point_owned_nonzero_level_searches(), 0);
+    assert_eq!(perf.point_owned_nonzero_table_probes(), 0);
+    assert_eq!(perf.point_table_seeks(), 1);
+    assert_eq!(perf.point_candidates_materialized(), 1);
+    assert_eq!(perf.point_selected_active(), 1);
+    assert_eq!(perf.point_early_exit_active(), 1);
+    assert_eq!(perf.point_remaining_source_skips(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_local_tombstone_early_exits_before_inherited_sources() {
+    let branch = branch_id(184);
+    let parent = branch_id(185);
+    let inherited_row = point_row(parent, "deleted", 3);
+    let inherited = branch_inherited_layer(
+        parent,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![
+            Vec::new(),
+            vec![branch_owned_table(
+                parent,
+                BranchLevel::new(1),
+                "point-tombstone-early-exit-parent",
+                vec![inherited_row],
+            )],
+        ],
+    );
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited])
+        .expect("attach inherited");
+    let tombstone = tombstone_row(branch, b"deleted".to_vec(), 6, 60);
+    state
+        .append_committed_row(tombstone.clone())
+        .expect("append tombstone");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"deleted".to_vec());
+
+    {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let latest = view.latest(&target).expect("latest");
+        let perf = crate::observability::perf_trace::snapshot();
+
+        assert!(latest.is_none());
+        assert_eq!(perf.point_active_probes(), 1);
+        assert_eq!(perf.point_inherited_layer_searches(), 0);
+        assert_eq!(perf.point_inherited_nonzero_level_searches(), 0);
+        assert_eq!(perf.point_table_seeks(), 1);
+        assert_eq!(perf.point_candidates_materialized(), 1);
+        assert_eq!(perf.point_selected_active(), 1);
+        assert_eq!(perf.point_early_exit_active(), 1);
+        assert_eq!(perf.point_remaining_source_skips(), 2);
+        assert_eq!(perf.point_inherited_key_rewrites(), 0);
+    }
+
+    {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let selected = state
+            .read_point_or_tombstone_borrowed(&target, BranchReadBound::latest())
+            .expect("borrowed tombstone");
+        let perf = crate::observability::perf_trace::snapshot();
+
+        assert_eq!(selected.expect("selected tombstone").row(), &tombstone);
+        assert_eq!(perf.point_active_probes(), 1);
+        assert_eq!(perf.point_inherited_layer_searches(), 0);
+        assert_eq!(perf.point_early_exit_active(), 1);
+    }
 }
 
 #[test]
