@@ -210,6 +210,19 @@ The commit unit should support:
 - storage-owned commit version assignment
 - one storage-owned commit timestamp
 
+The M4P L7-C boundary starts with explicit per-key CAS conditions. An absent
+condition maps to L7's explicit missing observed-version state. A present
+condition must carry a nonzero commit version. These conditions are not captured
+read sets: reads, scans, and history calls performed before a commit are not
+remembered unless the caller supplies an explicit storage fact for each key that
+must be checked.
+
+M4P-L9B may add explicit storage-shaped read facts for engine-next. That surface
+must remain branch-local and storage-key based, and it must map directly to L7
+`CommitReadFact` / `CommitCasFact` without exposing product transaction sessions
+or primitive DTOs. Product transaction/session policy, operation-level write-skew
+claims, and engine-specific condition builders stay above L9.
+
 The commit unit must not contain:
 
 - primitive DTOs

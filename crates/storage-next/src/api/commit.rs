@@ -61,10 +61,17 @@ pub enum CommitDurabilitySummary {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitExpectedVersion {
+    /// The key must not have a currently visible row.
     Absent,
+    /// The key must have the exact currently visible commit version.
     Present(CommitVersion),
 }
 
+/// A compare-and-set condition for one storage key.
+///
+/// Conditions map to L7 CAS validation. They are explicit per-key checks, not a
+/// captured read set: reads and scans performed before building the batch are
+/// not remembered unless the caller adds matching conditions.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitCondition {
     storage_space: StorageSpaceId,

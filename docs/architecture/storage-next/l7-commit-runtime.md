@@ -879,19 +879,62 @@ read-set and CAS facts.
 
 Reason: storage-next keeps the conflict model as a storage-shaped internal
 commit capability. Product transaction sessions, if any, belong above L9.
+The current L9-facing API exposes explicit per-key `CommitCondition` values as
+CAS facts. It does not automatically capture point reads, scans, or history
+queries into a hidden read set, and it does not reject write skew or unrelated
+key changes unless the caller supplies storage facts for those keys.
+
+L9 handoff:
+
+1. `CommitCondition::expected_absent` maps to
+   `CommitObservedVersion::Missing`.
+2. `CommitCondition::expected_present(version)` maps to
+   `CommitObservedVersion::Present(version)`, with version zero rejected before
+   L7 admission.
+3. A future M4P-L9B read-set surface may add explicit storage-shaped read facts
+   over physical storage keys and observed versions, but it must map directly to
+   `CommitReadFact` without introducing product transaction sessions.
+4. Product DTOs, engine-specific invariants, and operation-level conflict policy
+   remain above L9.
 
 Replacement proof:
 
 1. L7 tests directly prove read-set and CAS semantics;
 2. L9 can expose storage-shaped read facts for engine-next without exposing
    transaction internals;
-3. public transaction sessions remain absent unless a separate product decision
+3. API tests prove public conditions are explicit CAS checks and do not capture
+   unrelated reads;
+4. public transaction sessions remain absent unless a separate product decision
    adds them.
+
+### Read-Only Diagnostics Configuration
+
+Decision: read-only diagnostics are an explicit L7 diagnostic capability and may
+be disabled by `CommitRuntimeConfig`.
+
+Old behavior: old storage did not expose the same storage-next read-only commit
+diagnostic shape.
+
+Reason: diagnostics are useful for L7/L8/L9 tests and operators, but they must
+not become an implicit write path or an always-enabled product contract.
+
+L9 handoff: when disabled, L7 returns the typed disabled-diagnostics commit
+error before allocating a commit version or touching branch state. L9 maps that
+to the stable unsupported-capability storage API category without exposing
+`CommitRuntimeError` or other internal commit runtime types.
+
+Replacement proof:
+
+1. direct L7 tests prove enabled diagnostics return a snapshot without commit
+   allocation;
+2. disabled diagnostics return the documented typed error and leave visible
+   version unchanged;
+3. API/L9 mapping tests must keep the error storage-shaped and hide L7 internals.
 
 ## Open Questions
 
-1. Does V1 keep snapshot isolation with read-set/CAS validation, or reduce the
-   public claim while keeping validation only for internal guards?
+1. What exact storage-shaped read facts should M4P-L9B expose for future
+   engine-next callers, and which engine adapter emits them?
 2. Should commit versions remain global, or should storage introduce per-branch
    visible versions while preserving global ordering for history and recovery?
 3. Are version gaps explicitly part of the storage contract?

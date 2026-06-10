@@ -404,6 +404,43 @@ fn multiple_read_facts_are_checked_in_input_order_and_stop_at_first_conflict() {
 }
 
 #[test]
+fn read_set_validation_checks_only_supplied_storage_facts() {
+    let branch = branch_id(142);
+    let first = physical_key(branch, 0x20, b"supplied-first".to_vec());
+    let second = physical_key(branch, 0x20, b"supplied-second".to_vec());
+    let unrelated = physical_key(branch, 0x20, b"unrelated-change".to_vec());
+    let source = FakeConflictSource::new(vec![
+        (
+            first.clone(),
+            CommitObservedVersion::Present(CommitVersion::new(3)),
+        ),
+        (second.clone(), CommitObservedVersion::Missing),
+        (
+            unrelated,
+            CommitObservedVersion::Present(CommitVersion::new(99)),
+        ),
+    ]);
+    let batch = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::new(
+            vec![
+                CommitReadFact::new(first, CommitObservedVersion::Present(CommitVersion::new(3))),
+                CommitReadFact::new(second, CommitObservedVersion::Missing),
+            ],
+            Vec::new(),
+        ),
+        CommitConflictValidationMode::Validate,
+    );
+
+    let report = validate_commit_conflicts(&batch, &source)
+        .expect("unmentioned key changes are not inferred conflicts");
+
+    assert_eq!(report.checked_read_facts(), 2);
+    assert_eq!(report.checked_cas_facts(), 0);
+    assert_eq!(source.read_count(), 2);
+}
+
+#[test]
 fn passing_read_set_and_cas_facts_report_both_checked_counts() {
     let branch = branch_id(137);
     let read_key = physical_key(branch, 0x20, b"read-pass".to_vec());

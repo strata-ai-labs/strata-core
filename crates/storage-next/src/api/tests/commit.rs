@@ -680,6 +680,63 @@ fn commit_expected_absent_mismatch_conflicts() {
 }
 
 #[test]
+fn commit_conditions_are_explicit_cas_not_captured_read_sets() {
+    let mut runtime = open_runtime();
+    let guarded = runtime
+        .commit(&put_batch(b"guarded", b"v1"))
+        .expect("initial guarded row");
+    runtime
+        .commit(&put_batch(b"unrelated", b"v1"))
+        .expect("initial unrelated row");
+    assert!(read_latest(&runtime, b"unrelated").row().is_some());
+    runtime
+        .commit(&put_batch(b"unrelated", b"v2"))
+        .expect("unrelated row can change before conditional commit");
+    let conditioned = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"guarded", b"v2")],
+        CommitOptions::default(),
+    )
+    .expect("valid batch")
+    .with_conditions(vec![CommitCondition::expected_present(
+        engine_space(),
+        api_key(b"guarded"),
+        guarded.commit_version(),
+    )])
+    .expect("valid condition");
+
+    runtime
+        .commit(&conditioned)
+        .expect("only the explicit guarded condition is checked");
+}
+
+#[test]
+fn commit_condition_rejects_zero_expected_present_version() {
+    let error = CommitBatch::new(
+        branch(),
+        vec![put_mutation(b"zero-condition", b"value")],
+        CommitOptions::default(),
+    )
+    .expect("valid batch")
+    .with_conditions(vec![CommitCondition::expected_present(
+        engine_space(),
+        api_key(b"zero-condition"),
+        CommitVersion::ZERO,
+    )])
+    .expect_err("zero expected-present version is malformed");
+
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+    match error {
+        StorageApiError::InvalidArgument { field, reason } => {
+            assert_eq!(field, "conditions");
+            assert_eq!(reason, "expected present version must be nonzero");
+        }
+        other => panic!("expected invalid condition argument, got {other:?}"),
+    }
+}
+
+#[test]
 fn commit_conflict_error_has_structured_branch_and_key() {
     let mut runtime = open_runtime();
     runtime
@@ -763,6 +820,26 @@ fn commit_applied_not_visible_survives_boundary() {
         error.code(),
         "ambiguous_commit.storage_api.durable_uncertain"
     );
+}
+
+#[test]
+fn commit_disabled_read_only_diagnostics_maps_to_api_capability_error() {
+    let error = crate::api::map_commit_error_for_test(
+        crate::commit::CommitRuntimeError::InvalidCommitPhase {
+            reason: "read-only diagnostics are disabled",
+        },
+    );
+
+    assert_eq!(error.class(), StorageApiErrorClass::Unsupported);
+    assert_eq!(error.code(), "unsupported.storage_api.capability");
+    assert!(error.source().is_none());
+    match error {
+        StorageApiError::UnsupportedCapability { capability, reason } => {
+            assert_eq!(capability, "read_only_diagnostics");
+            assert_eq!(reason, "read-only diagnostics are disabled");
+        }
+        other => panic!("expected unsupported diagnostics capability, got {other:?}"),
+    }
 }
 
 #[test]

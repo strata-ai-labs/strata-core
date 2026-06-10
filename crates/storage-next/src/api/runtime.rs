@@ -3160,6 +3160,12 @@ fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageApiError {
         | crate::commit::CommitRuntimeError::BranchUnavailable { reason } => {
             StorageApiError::InvalidRuntimeState { reason }
         }
+        crate::commit::CommitRuntimeError::InvalidCommitPhase {
+            reason: "read-only diagnostics are disabled",
+        } => StorageApiError::UnsupportedCapability {
+            capability: "read_only_diagnostics",
+            reason: "read-only diagnostics are disabled",
+        },
         crate::commit::CommitRuntimeError::CommitConflict { conflict } => {
             StorageApiError::Conflict {
                 branch_id: conflict.branch_id(),
