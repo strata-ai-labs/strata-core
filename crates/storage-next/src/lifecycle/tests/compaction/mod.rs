@@ -412,6 +412,217 @@ fn compaction_fixed_point_drain_rewrites_overlaps_and_promotes_gaps() {
 }
 
 #[test]
+fn generated_shape_fixed_point_compaction_preserves_reads_and_nonoverlap() {
+    for source_count in 1..=8 {
+        let branch = branch_id(0x70 + source_count as u8);
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(4, 128, 32).expect("branch config"),
+        )
+        .expect("state");
+        let table_shapes = generated_compaction_table_shapes(branch);
+        for (source_index, (level, rows)) in table_shapes.into_iter().take(source_count).enumerate()
+        {
+            let identity = format!("generated-shape-{source_count}-{source_index}");
+            if level == BranchLevel::ZERO {
+                install_l0_table(&mut state, branch, &identity, rows);
+            } else {
+                install_owned_table(&mut state, branch, level, &identity, rows);
+            }
+        }
+
+        let probe_keys = generated_compaction_probe_keys(branch);
+        let scan_prefix = physical_key(branch, b"generated-");
+        let range_lower = physical_key(branch, b"generated-a");
+        let range_upper = physical_key(branch, b"generated-z");
+        let before = state.capture_read_view().expect("before");
+        let before_latest = probe_keys
+            .iter()
+            .map(|key| {
+                before
+                    .latest(key)
+                    .expect("before latest")
+                    .map(|row| row.row().clone())
+            })
+            .collect::<Vec<_>>();
+        let before_history = probe_keys
+            .iter()
+            .map(|key| {
+                history_versions(
+                    &before
+                        .history(key, BranchHistoryOptions::all())
+                        .expect("before history"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let before_prefix = scan_user_keys(
+            &before
+                .scan_prefix(
+                    &BranchScanBounds::prefix(&scan_prefix),
+                    BranchReadBound::latest(),
+                )
+                .expect("before prefix"),
+        );
+        let before_range = scan_user_keys(
+            &before
+                .scan_range(
+                    &BranchScanBounds::closed(&range_lower, &range_upper).expect("range"),
+                    BranchReadBound::latest(),
+                )
+                .expect("before range"),
+        );
+
+        let request =
+            LifecycleCompactionDrainRequest::new(branch, format!("generated-shape-{source_count}"))
+                .expect("request");
+        let outcome =
+            compact_cache_branch_to_fixed_point(&mut state, &request).unwrap_or_else(|error| {
+                panic!("fixed-point drain failed for source count {source_count}: {error:?}")
+            });
+        assert_eq!(
+            outcome.operations_attempted(),
+            outcome.operations_installed()
+        );
+        assert_eq!(outcome.final_source_layout(), &state.source_layout());
+
+        let after = state.capture_read_view().expect("after");
+        let after_latest = probe_keys
+            .iter()
+            .map(|key| {
+                after
+                    .latest(key)
+                    .expect("after latest")
+                    .map(|row| row.row().clone())
+            })
+            .collect::<Vec<_>>();
+        let after_history = probe_keys
+            .iter()
+            .map(|key| {
+                history_versions(
+                    &after
+                        .history(key, BranchHistoryOptions::all())
+                        .expect("after history"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(after_latest, before_latest);
+        assert_eq!(after_history, before_history);
+        assert_eq!(
+            scan_user_keys(
+                &after
+                    .scan_prefix(
+                        &BranchScanBounds::prefix(&scan_prefix),
+                        BranchReadBound::latest(),
+                    )
+                    .expect("after prefix")
+            ),
+            before_prefix
+        );
+        assert_eq!(
+            scan_user_keys(
+                &after
+                    .scan_range(
+                        &BranchScanBounds::closed(&range_lower, &range_upper).expect("range"),
+                        BranchReadBound::latest(),
+                    )
+                    .expect("after range")
+            ),
+            before_range
+        );
+        assert_owned_nonzero_tables_are_sorted_and_nonoverlapping(&state);
+
+        let repeated =
+            compact_cache_branch_to_fixed_point(&mut state, &request).expect("repeat drain");
+        assert_eq!(repeated.operations_attempted(), 0);
+        assert_eq!(repeated.operations_installed(), 0);
+        assert_eq!(repeated.final_source_layout(), &state.source_layout());
+    }
+}
+
+fn generated_compaction_table_shapes(
+    branch: strata_core_next::BranchId,
+) -> Vec<(BranchLevel, Vec<crate::row::StorageRow>)> {
+    vec![
+        (
+            BranchLevel::ZERO,
+            vec![
+                put_row(branch, b"generated-shared", 10, 10_000, &[0x10; 96]),
+                put_row(branch, b"generated-shared", 9, 9_000, &[0x09; 96]),
+            ],
+        ),
+        (
+            BranchLevel::ZERO,
+            vec![tombstone_row(branch, b"generated-shared", 8, 8_000)],
+        ),
+        (
+            BranchLevel::ZERO,
+            vec![put_row(branch, b"generated-a", 7, 7_000, &[0x07; 80])],
+        ),
+        (
+            BranchLevel::new(1),
+            vec![put_row(branch, b"generated-shared", 5, 5_000, &[0x05; 80])],
+        ),
+        (
+            BranchLevel::new(1),
+            vec![put_expiring_row(
+                branch,
+                b"generated-x-expiring",
+                6,
+                6_000,
+                6_500,
+                &[0x06; 80],
+            )],
+        ),
+        (
+            BranchLevel::new(2),
+            vec![put_row(branch, b"generated-shared", 3, 3_000, &[0x03; 80])],
+        ),
+        (
+            BranchLevel::new(2),
+            vec![put_row(branch, b"generated-z", 2, 2_000, &[0x02; 80])],
+        ),
+        (
+            BranchLevel::ZERO,
+            vec![put_row(branch, b"generated-m", 4, 4_000, &[0x04; 80])],
+        ),
+    ]
+}
+
+fn generated_compaction_probe_keys(
+    branch: strata_core_next::BranchId,
+) -> Vec<crate::row::PhysicalKey> {
+    vec![
+        physical_key(branch, b"generated-shared"),
+        physical_key(branch, b"generated-a"),
+        physical_key(branch, b"generated-x-expiring"),
+        physical_key(branch, b"generated-m"),
+        physical_key(branch, b"generated-z"),
+    ]
+}
+
+fn assert_owned_nonzero_tables_are_sorted_and_nonoverlapping(state: &BranchLocalState) {
+    for level_tables in state.owned_levels().iter().skip(1) {
+        let mut previous_last = None::<Vec<u8>>;
+        for table in level_tables {
+            let rows = table.rows();
+            assert!(rows
+                .windows(2)
+                .all(|window| window[0].key() < window[1].key()));
+            let first = table.facts().key_range().first_key();
+            let last = table.facts().key_range().last_key();
+            assert!(first <= last);
+            if let Some(previous) = previous_last {
+                assert!(
+                    previous.as_slice() < first,
+                    "nonzero compaction output tables must not overlap"
+                );
+            }
+            previous_last = Some(last.to_vec());
+        }
+    }
+}
+
+#[test]
 fn compaction_fixed_point_drain_enforces_pass_limit() {
     let branch = branch_id(0x61);
     let mut state = BranchLocalState::new(

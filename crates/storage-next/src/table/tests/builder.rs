@@ -4,8 +4,9 @@ use crate::format::{
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, ImmutableTableBuilder, ImmutableTableReader,
-    MutableTable, TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableIdentity,
-    TableReaderConfig, TableRow, TableRuntimeConfig, TableRuntimeError,
+    MutableTable, TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableCursor,
+    TableIdentity, TableKeyBounds, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
+    TableRuntimeConfig, TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -81,6 +82,27 @@ fn builder(rows_per_block: usize, compression: TableCompression) -> ImmutableTab
         TableBuilderConfig::new(1024, rows_per_block, compression).expect("builder config"),
     )
     .expect("builder")
+}
+
+fn collect_cursor_keys(cursor: &mut impl TableCursor) -> Vec<Vec<u8>> {
+    let mut keys = Vec::new();
+    while let Some(row) = cursor.current() {
+        keys.push(row.encoded_key().to_vec());
+        cursor.advance().expect("advance cursor");
+    }
+    keys
+}
+
+fn reader_keys(reader: &ImmutableTableReader) -> Vec<Vec<u8>> {
+    let mut cursor = reader.cursor();
+    cursor.seek_to_first().expect("seek reader");
+    collect_cursor_keys(&mut cursor)
+}
+
+fn bounded_reader_keys(reader: &ImmutableTableReader, bounds: TableKeyBounds) -> Vec<Vec<u8>> {
+    let mut cursor = reader.bounded_cursor(bounds);
+    cursor.seek_to_first().expect("seek bounded reader");
+    collect_cursor_keys(&mut cursor)
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
@@ -443,7 +465,13 @@ fn immutable_builder_streaming_matches_batch_builder_with_block_bounded_buffer()
     }
     assert_eq!(streaming.peak_buffered_rows(), 2);
     let streamed = streaming.finish().expect("finish streaming build");
-    let reader = ImmutableTableReader::open_bytes(
+    let batch_reader = ImmutableTableReader::open_bytes(
+        identity("streaming-equivalent"),
+        batch.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("open batch artifact");
+    let streamed_reader = ImmutableTableReader::open_bytes(
         identity("streaming-equivalent"),
         streamed.bytes().to_vec(),
         TableReaderConfig::default(),
@@ -453,10 +481,29 @@ fn immutable_builder_streaming_matches_batch_builder_with_block_bounded_buffer()
     assert_eq!(streamed.bytes(), encoded.as_slice());
     assert_eq!(streamed.bytes(), batch.bytes());
     assert_eq!(streamed.facts(), batch.facts());
-    assert_eq!(reader.rows(), table_rows.as_slice());
+    assert_eq!(streamed_reader.rows(), table_rows.as_slice());
     for row in &table_rows {
-        assert_eq!(reader.get_exact(row.key()), Some(row.clone()));
+        assert_eq!(streamed_reader.get_exact(row.key()), Some(row.clone()));
+        assert_eq!(
+            streamed_reader.get_exact(row.key()),
+            batch_reader.get_exact(row.key())
+        );
     }
+    assert_eq!(reader_keys(&streamed_reader), reader_keys(&batch_reader));
+
+    let lower = table_rows[1].key().clone();
+    let upper = table_rows[table_rows.len() - 2].key().clone();
+    let range = TableKeyBounds::closed(lower, upper).expect("closed bounds");
+    assert_eq!(
+        bounded_reader_keys(&streamed_reader, range.clone()),
+        bounded_reader_keys(&batch_reader, range)
+    );
+
+    let prefix = TablePhysicalKeyBytes::from_physical_key(table_rows[1].row().physical_key());
+    assert_eq!(
+        bounded_reader_keys(&streamed_reader, TableKeyBounds::prefix(prefix.as_slice())),
+        bounded_reader_keys(&batch_reader, TableKeyBounds::prefix(prefix.as_slice()))
+    );
 }
 
 #[test]

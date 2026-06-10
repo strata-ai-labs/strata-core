@@ -706,6 +706,64 @@ fn heap_compaction_reorders_after_multi_row_source_advances() {
 }
 
 #[test]
+fn compaction_preserves_source_index_tie_break_when_policy_prunes_duplicates() {
+    for source_count in [2, crate::table::MERGE_HEAP_THRESHOLD + 1] {
+        let duplicate = put_row(b"tie-break-duplicate".to_vec(), 7);
+        let mut sources = vec![
+            source(
+                &format!("tie-break-{source_count}-00"),
+                std::slice::from_ref(&duplicate),
+            ),
+            source(
+                &format!("tie-break-{source_count}-01"),
+                std::slice::from_ref(&duplicate),
+            ),
+        ];
+        let mut expected_rows = vec![duplicate.clone()];
+        for source_index in 2..source_count {
+            let row = put_row(
+                format!("tie-break-neighbor-{source_index:02}").into_bytes(),
+                source_index as u64 + 10,
+            );
+            expected_rows.push(row.clone());
+            sources.push(source(
+                &format!("tie-break-{source_count}-{source_index:02}"),
+                &[row],
+            ));
+        }
+
+        let mut duplicate_sources = Vec::new();
+        let mut policy = |context: &TableCompactionRowContext<'_>, row: &TableRow| {
+            if row.row().physical_key().user_key() == b"tie-break-duplicate" {
+                duplicate_sources.push(context.source_index());
+                if duplicate_sources.len() > 1 {
+                    return Ok(TableCompactionDecision::drop(
+                        TableCompactionDropReason::CallerSelected,
+                    ));
+                }
+            }
+            Ok(TableCompactionDecision::Keep)
+        };
+
+        let output_identity =
+            TableIdentity::new(format!("tie-break-{source_count}")).expect("identity");
+        let output = compactor(64 * 1024, source_count)
+            .compact(&output_identity, &sources, &mut policy)
+            .expect("tie-break compaction");
+
+        assert_eq!(duplicate_sources, vec![0, 1]);
+        assert_eq!(output.report().input_rows(), source_count as u64);
+        assert_eq!(output.report().kept_rows(), source_count as u64 - 1);
+        assert_eq!(output.report().dropped_rows(), 1);
+        assert_artifact_facts_match_rows(&output, output_identity.as_str());
+        assert_eq!(
+            output_storage_rows(&output),
+            sorted_storage_rows(&expected_rows)
+        );
+    }
+}
+
+#[test]
 fn policy_context_reports_merged_source_and_previous_kept_rows() {
     let rows = [
         put_row(b"alpha".to_vec(), 1),
