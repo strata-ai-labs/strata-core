@@ -1070,6 +1070,11 @@ fn candidate_source(candidate: &CandidateRow) -> BranchRowSource {
     candidate.1
 }
 
+fn clone_point_candidate_row(row: &TableRow) -> StorageRow {
+    perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
+    row.row().clone()
+}
+
 fn candidate_into_visible_row(
     (row, source): CandidateRow,
     read_timestamp: Option<Timestamp>,
@@ -1374,7 +1379,10 @@ fn visible_point_candidates(
     );
     rows_visited = rows_visited.saturating_add(visited);
     if let Some(row) = row {
-        rows.push(candidate_row(row.row().clone(), BranchRowSource::Active));
+        rows.push(candidate_row(
+            clone_point_candidate_row(row),
+            BranchRowSource::Active,
+        ));
     }
 
     for (index, table) in frozen.iter().enumerate() {
@@ -1388,7 +1396,7 @@ fn visible_point_candidates(
         rows_visited = rows_visited.saturating_add(visited);
         if let Some(row) = row {
             rows.push(candidate_row(
-                row.row().clone(),
+                clone_point_candidate_row(row),
                 BranchRowSource::Frozen { index },
             ));
         }
@@ -1445,7 +1453,7 @@ fn collect_owned_level_point_candidates(
             *rows_visited = (*rows_visited).saturating_add(visited);
             if let Some(row) = row {
                 rows.push(candidate_row(
-                    row.row().clone(),
+                    clone_point_candidate_row(&row),
                     BranchRowSource::OwnedTable {
                         level: table.level(),
                         table_index,
@@ -1477,7 +1485,7 @@ fn collect_owned_level_point_candidates(
     *rows_visited = (*rows_visited).saturating_add(visited);
     if let Some(row) = row {
         rows.push(candidate_row(
-            row.row().clone(),
+            clone_point_candidate_row(&row),
             BranchRowSource::OwnedTable {
                 level: table.level(),
                 table_index,
@@ -1564,6 +1572,7 @@ fn append_inherited_point_table_candidate(
     );
     *rows_visited = (*rows_visited).saturating_add(visited);
     if let Some(row) = row {
+        perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
         rows.push(candidate_row(
             rewrite_row_branch(row.row(), layer.source_branch_id(), child_branch_id).map_err(
                 |_| BranchRuntimeError::InvalidInheritedLayer {
@@ -2538,6 +2547,7 @@ fn collect_visible_inherited_point_candidates(
                     reason: "inherited point key rewrite failed",
                 }
             })?;
+        perf_trace::record_branch_point_inherited_key_rewrite();
         let inherited_bound =
             BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
         let source_key_bytes = TablePhysicalKeyBytes::from_physical_key(&source_key);
@@ -2595,6 +2605,7 @@ fn select_visible_row(
     let candidate = candidates
         .into_iter()
         .find(|candidate| effective_bound.matches_row(candidate_row_ref(candidate)))?;
+    record_selected_point_source(candidate_source(&candidate));
     candidate_into_visible_row(candidate, effective_bound.max_commit_timestamp())
 }
 
@@ -2606,6 +2617,7 @@ fn select_visible_row_or_tombstone(
     let candidate = candidates
         .into_iter()
         .find(|candidate| effective_bound.matches_row(candidate_row_ref(candidate)))?;
+    record_selected_point_source(candidate_source(&candidate));
     if row_is_expired_at(
         candidate_row_ref(&candidate),
         effective_bound.max_commit_timestamp(),
@@ -2622,6 +2634,19 @@ fn row_is_expired_at(row: &StorageRow, read_timestamp: Option<Timestamp>) -> boo
     read_timestamp.is_some_and(|timestamp| {
         !row.is_tombstone() && row.expires_at() != Timestamp::EPOCH && row.expires_at() <= timestamp
     })
+}
+
+fn record_selected_point_source(source: BranchRowSource) {
+    let source = match source {
+        BranchRowSource::Active => perf_trace::BranchPointSourceKind::Active,
+        BranchRowSource::Frozen { .. } => perf_trace::BranchPointSourceKind::Frozen,
+        BranchRowSource::OwnedTable { level, .. } if level == BranchLevel::ZERO => {
+            perf_trace::BranchPointSourceKind::OwnedL0
+        }
+        BranchRowSource::OwnedTable { .. } => perf_trace::BranchPointSourceKind::OwnedNonzero,
+        BranchRowSource::Inherited { .. } => perf_trace::BranchPointSourceKind::Inherited,
+    };
+    perf_trace::record_branch_point_selected(source);
 }
 
 fn sort_candidates_newest_first(candidates: &mut [CandidateRow]) {

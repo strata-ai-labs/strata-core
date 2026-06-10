@@ -71,6 +71,8 @@ reason, and replacement proof or later slice that will close it.
 13. `m4p-l6j-l0-l7-compaction-closure-implementation-plan.md`
 14. `m4p-l6j-l0-l7-compaction-closure-test-plan.md`
 15. `m4p-l6k-table-compaction-hot-path-implementation-and-test-plan.md`
+16. `m4p-l6l-branch-read-hot-path-implementation-plan.md`
+17. `m4p-l6l-branch-read-hot-path-test-plan.md`
 
 ## Initial Slice Queue
 

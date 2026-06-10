@@ -27,6 +27,15 @@ pub(crate) struct BranchPointSourceCounts {
     pub(crate) table_seeks: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchPointSourceKind {
+    Active,
+    Frozen,
+    OwnedL0,
+    OwnedNonzero,
+    Inherited,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct BranchScanSourceCounts {
     pub(crate) active_cursors: usize,
@@ -110,6 +119,22 @@ pub struct StoragePerfSnapshot {
     point_inherited_nonzero_level_searches: u64,
     point_inherited_nonzero_table_probes: u64,
     point_table_seeks: u64,
+    point_candidate_row_clones: u64,
+    point_candidate_row_clone_bytes: u64,
+    point_selected_active: u64,
+    point_selected_frozen: u64,
+    point_selected_owned_l0: u64,
+    point_selected_owned_nonzero: u64,
+    point_selected_inherited: u64,
+    point_early_exit_active: u64,
+    point_early_exit_frozen: u64,
+    point_early_exit_owned_l0: u64,
+    point_early_exit_owned_nonzero: u64,
+    point_early_exit_inherited: u64,
+    point_remaining_source_skips: u64,
+    point_inherited_key_rewrites: u64,
+    table_point_lookup_key_builds: u64,
+    table_point_lookup_key_reuses: u64,
     scan_rows_visited: u64,
     scan_candidates_materialized: u64,
     scan_cursor_seeks: u64,
@@ -172,6 +197,10 @@ pub struct StoragePerfSnapshot {
     table_filter_negative_probes: u64,
     table_filter_positive_probes: u64,
     table_filter_absent_probes: u64,
+    table_eager_filter_probes: u64,
+    table_eager_filter_negative_probes: u64,
+    table_eager_filter_positive_probes: u64,
+    table_eager_filter_unavailable_probes: u64,
     table_seeks: u64,
     table_bound_checks: u64,
     table_bound_check_ns: u64,
@@ -467,6 +496,86 @@ impl StoragePerfSnapshot {
     /// Branch-level seek/probe calls performed by point reads.
     pub const fn point_table_seeks(self) -> u64 {
         self.point_table_seeks
+    }
+
+    /// Candidate rows cloned while collecting point-read candidates.
+    pub const fn point_candidate_row_clones(self) -> u64 {
+        self.point_candidate_row_clones
+    }
+
+    /// Approximate bytes cloned while collecting point-read candidates.
+    pub const fn point_candidate_row_clone_bytes(self) -> u64 {
+        self.point_candidate_row_clone_bytes
+    }
+
+    /// Point reads whose selected candidate came from the active table.
+    pub const fn point_selected_active(self) -> u64 {
+        self.point_selected_active
+    }
+
+    /// Point reads whose selected candidate came from a frozen table.
+    pub const fn point_selected_frozen(self) -> u64 {
+        self.point_selected_frozen
+    }
+
+    /// Point reads whose selected candidate came from an owned L0 table.
+    pub const fn point_selected_owned_l0(self) -> u64 {
+        self.point_selected_owned_l0
+    }
+
+    /// Point reads whose selected candidate came from an owned nonzero-level table.
+    pub const fn point_selected_owned_nonzero(self) -> u64 {
+        self.point_selected_owned_nonzero
+    }
+
+    /// Point reads whose selected candidate came from an inherited table.
+    pub const fn point_selected_inherited(self) -> u64 {
+        self.point_selected_inherited
+    }
+
+    /// Point reads that exited after active-table probing.
+    pub const fn point_early_exit_active(self) -> u64 {
+        self.point_early_exit_active
+    }
+
+    /// Point reads that exited after frozen-table probing.
+    pub const fn point_early_exit_frozen(self) -> u64 {
+        self.point_early_exit_frozen
+    }
+
+    /// Point reads that exited after owned L0 probing.
+    pub const fn point_early_exit_owned_l0(self) -> u64 {
+        self.point_early_exit_owned_l0
+    }
+
+    /// Point reads that exited after owned nonzero-level probing.
+    pub const fn point_early_exit_owned_nonzero(self) -> u64 {
+        self.point_early_exit_owned_nonzero
+    }
+
+    /// Point reads that exited after inherited-source probing.
+    pub const fn point_early_exit_inherited(self) -> u64 {
+        self.point_early_exit_inherited
+    }
+
+    /// Remaining point-read sources skipped because an early exit was proven.
+    pub const fn point_remaining_source_skips(self) -> u64 {
+        self.point_remaining_source_skips
+    }
+
+    /// Inherited physical-key rewrites performed by point reads.
+    pub const fn point_inherited_key_rewrites(self) -> u64 {
+        self.point_inherited_key_rewrites
+    }
+
+    /// Point lookup key encodings built by table seek helpers.
+    pub const fn table_point_lookup_key_builds(self) -> u64 {
+        self.table_point_lookup_key_builds
+    }
+
+    /// Point lookup key encodings reused by table seek helpers.
+    pub const fn table_point_lookup_key_reuses(self) -> u64 {
+        self.table_point_lookup_key_reuses
     }
 
     /// Number of table rows visited during scan candidate collection.
@@ -779,6 +888,26 @@ impl StoragePerfSnapshot {
         self.table_filter_absent_probes
     }
 
+    /// Eager-table point-read filter probes.
+    pub const fn table_eager_filter_probes(self) -> u64 {
+        self.table_eager_filter_probes
+    }
+
+    /// Eager-table point-read filter probes that rejected a key.
+    pub const fn table_eager_filter_negative_probes(self) -> u64 {
+        self.table_eager_filter_negative_probes
+    }
+
+    /// Eager-table point-read filter probes that may contain a key.
+    pub const fn table_eager_filter_positive_probes(self) -> u64 {
+        self.table_eager_filter_positive_probes
+    }
+
+    /// Eager-table point-read filter probes where no filter was available.
+    pub const fn table_eager_filter_unavailable_probes(self) -> u64 {
+        self.table_eager_filter_unavailable_probes
+    }
+
     /// Number of ordered table seeks performed by the serving path.
     pub const fn table_seeks(self) -> u64 {
         self.table_seeks
@@ -916,6 +1045,38 @@ static POINT_INHERITED_NONZERO_TABLE_PROBES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static POINT_TABLE_SEEKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static POINT_CANDIDATE_ROW_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_CANDIDATE_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_SELECTED_ACTIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_SELECTED_FROZEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_SELECTED_OWNED_L0: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_SELECTED_OWNED_NONZERO: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_SELECTED_INHERITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_EARLY_EXIT_ACTIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_EARLY_EXIT_FROZEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_EARLY_EXIT_OWNED_L0: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_EARLY_EXIT_OWNED_NONZERO: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_EARLY_EXIT_INHERITED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_REMAINING_SOURCE_SKIPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static POINT_INHERITED_KEY_REWRITES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_POINT_LOOKUP_KEY_BUILDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_POINT_LOOKUP_KEY_REUSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static SCAN_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static SCAN_CANDIDATES_MATERIALIZED: AtomicU64 = AtomicU64::new(0);
@@ -1040,6 +1201,14 @@ static TABLE_FILTER_POSITIVE_PROBES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_FILTER_ABSENT_PROBES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_EAGER_FILTER_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_EAGER_FILTER_NEGATIVE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_EAGER_FILTER_POSITIVE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_EAGER_FILTER_UNAVAILABLE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_SEEKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_BOUND_CHECKS: AtomicU64 = AtomicU64::new(0);
@@ -1146,6 +1315,22 @@ pub fn reset() {
     POINT_INHERITED_NONZERO_LEVEL_SEARCHES.store(0, Ordering::Relaxed);
     POINT_INHERITED_NONZERO_TABLE_PROBES.store(0, Ordering::Relaxed);
     POINT_TABLE_SEEKS.store(0, Ordering::Relaxed);
+    POINT_CANDIDATE_ROW_CLONES.store(0, Ordering::Relaxed);
+    POINT_CANDIDATE_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
+    POINT_SELECTED_ACTIVE.store(0, Ordering::Relaxed);
+    POINT_SELECTED_FROZEN.store(0, Ordering::Relaxed);
+    POINT_SELECTED_OWNED_L0.store(0, Ordering::Relaxed);
+    POINT_SELECTED_OWNED_NONZERO.store(0, Ordering::Relaxed);
+    POINT_SELECTED_INHERITED.store(0, Ordering::Relaxed);
+    POINT_EARLY_EXIT_ACTIVE.store(0, Ordering::Relaxed);
+    POINT_EARLY_EXIT_FROZEN.store(0, Ordering::Relaxed);
+    POINT_EARLY_EXIT_OWNED_L0.store(0, Ordering::Relaxed);
+    POINT_EARLY_EXIT_OWNED_NONZERO.store(0, Ordering::Relaxed);
+    POINT_EARLY_EXIT_INHERITED.store(0, Ordering::Relaxed);
+    POINT_REMAINING_SOURCE_SKIPS.store(0, Ordering::Relaxed);
+    POINT_INHERITED_KEY_REWRITES.store(0, Ordering::Relaxed);
+    TABLE_POINT_LOOKUP_KEY_BUILDS.store(0, Ordering::Relaxed);
+    TABLE_POINT_LOOKUP_KEY_REUSES.store(0, Ordering::Relaxed);
     SCAN_ROWS_VISITED.store(0, Ordering::Relaxed);
     SCAN_CANDIDATES_MATERIALIZED.store(0, Ordering::Relaxed);
     SCAN_CURSOR_SEEKS.store(0, Ordering::Relaxed);
@@ -1208,6 +1393,10 @@ pub fn reset() {
     TABLE_FILTER_NEGATIVE_PROBES.store(0, Ordering::Relaxed);
     TABLE_FILTER_POSITIVE_PROBES.store(0, Ordering::Relaxed);
     TABLE_FILTER_ABSENT_PROBES.store(0, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_PROBES.store(0, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_NEGATIVE_PROBES.store(0, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_POSITIVE_PROBES.store(0, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_UNAVAILABLE_PROBES.store(0, Ordering::Relaxed);
     TABLE_SEEKS.store(0, Ordering::Relaxed);
     TABLE_BOUND_CHECKS.store(0, Ordering::Relaxed);
     TABLE_BOUND_CHECK_NS.store(0, Ordering::Relaxed);
@@ -1294,6 +1483,22 @@ pub fn snapshot() -> StoragePerfSnapshot {
         point_inherited_nonzero_table_probes: POINT_INHERITED_NONZERO_TABLE_PROBES
             .load(Ordering::Relaxed),
         point_table_seeks: POINT_TABLE_SEEKS.load(Ordering::Relaxed),
+        point_candidate_row_clones: POINT_CANDIDATE_ROW_CLONES.load(Ordering::Relaxed),
+        point_candidate_row_clone_bytes: POINT_CANDIDATE_ROW_CLONE_BYTES.load(Ordering::Relaxed),
+        point_selected_active: POINT_SELECTED_ACTIVE.load(Ordering::Relaxed),
+        point_selected_frozen: POINT_SELECTED_FROZEN.load(Ordering::Relaxed),
+        point_selected_owned_l0: POINT_SELECTED_OWNED_L0.load(Ordering::Relaxed),
+        point_selected_owned_nonzero: POINT_SELECTED_OWNED_NONZERO.load(Ordering::Relaxed),
+        point_selected_inherited: POINT_SELECTED_INHERITED.load(Ordering::Relaxed),
+        point_early_exit_active: POINT_EARLY_EXIT_ACTIVE.load(Ordering::Relaxed),
+        point_early_exit_frozen: POINT_EARLY_EXIT_FROZEN.load(Ordering::Relaxed),
+        point_early_exit_owned_l0: POINT_EARLY_EXIT_OWNED_L0.load(Ordering::Relaxed),
+        point_early_exit_owned_nonzero: POINT_EARLY_EXIT_OWNED_NONZERO.load(Ordering::Relaxed),
+        point_early_exit_inherited: POINT_EARLY_EXIT_INHERITED.load(Ordering::Relaxed),
+        point_remaining_source_skips: POINT_REMAINING_SOURCE_SKIPS.load(Ordering::Relaxed),
+        point_inherited_key_rewrites: POINT_INHERITED_KEY_REWRITES.load(Ordering::Relaxed),
+        table_point_lookup_key_builds: TABLE_POINT_LOOKUP_KEY_BUILDS.load(Ordering::Relaxed),
+        table_point_lookup_key_reuses: TABLE_POINT_LOOKUP_KEY_REUSES.load(Ordering::Relaxed),
         scan_rows_visited: SCAN_ROWS_VISITED.load(Ordering::Relaxed),
         scan_candidates_materialized: SCAN_CANDIDATES_MATERIALIZED.load(Ordering::Relaxed),
         scan_cursor_seeks: SCAN_CURSOR_SEEKS.load(Ordering::Relaxed),
@@ -1371,6 +1576,13 @@ pub fn snapshot() -> StoragePerfSnapshot {
         table_filter_negative_probes: TABLE_FILTER_NEGATIVE_PROBES.load(Ordering::Relaxed),
         table_filter_positive_probes: TABLE_FILTER_POSITIVE_PROBES.load(Ordering::Relaxed),
         table_filter_absent_probes: TABLE_FILTER_ABSENT_PROBES.load(Ordering::Relaxed),
+        table_eager_filter_probes: TABLE_EAGER_FILTER_PROBES.load(Ordering::Relaxed),
+        table_eager_filter_negative_probes: TABLE_EAGER_FILTER_NEGATIVE_PROBES
+            .load(Ordering::Relaxed),
+        table_eager_filter_positive_probes: TABLE_EAGER_FILTER_POSITIVE_PROBES
+            .load(Ordering::Relaxed),
+        table_eager_filter_unavailable_probes: TABLE_EAGER_FILTER_UNAVAILABLE_PROBES
+            .load(Ordering::Relaxed),
         table_seeks: TABLE_SEEKS.load(Ordering::Relaxed),
         table_bound_checks: TABLE_BOUND_CHECKS.load(Ordering::Relaxed),
         table_bound_check_ns: TABLE_BOUND_CHECK_NS.load(Ordering::Relaxed),
@@ -1811,6 +2023,98 @@ pub(crate) fn record_branch_point_sources(counts: BranchPointSourceCounts) {
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_point_candidate_row_clone(_row_bytes: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_point_candidate_row_clone(row_bytes: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    POINT_CANDIDATE_ROW_CLONES.fetch_add(1, Ordering::Relaxed);
+    POINT_CANDIDATE_ROW_CLONE_BYTES.fetch_add(as_u64(row_bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_point_selected(_source: BranchPointSourceKind) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_point_selected(source: BranchPointSourceKind) {
+    if !recording_enabled() {
+        return;
+    }
+    match source {
+        BranchPointSourceKind::Active => {
+            POINT_SELECTED_ACTIVE.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::Frozen => {
+            POINT_SELECTED_FROZEN.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::OwnedL0 => {
+            POINT_SELECTED_OWNED_L0.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::OwnedNonzero => {
+            POINT_SELECTED_OWNED_NONZERO.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::Inherited => {
+            POINT_SELECTED_INHERITED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(dead_code)]
+pub(crate) fn record_branch_point_early_exit(_source: BranchPointSourceKind) {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(dead_code)]
+pub(crate) fn record_branch_point_early_exit(source: BranchPointSourceKind) {
+    if !recording_enabled() {
+        return;
+    }
+    match source {
+        BranchPointSourceKind::Active => {
+            POINT_EARLY_EXIT_ACTIVE.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::Frozen => {
+            POINT_EARLY_EXIT_FROZEN.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::OwnedL0 => {
+            POINT_EARLY_EXIT_OWNED_L0.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::OwnedNonzero => {
+            POINT_EARLY_EXIT_OWNED_NONZERO.fetch_add(1, Ordering::Relaxed);
+        }
+        BranchPointSourceKind::Inherited => {
+            POINT_EARLY_EXIT_INHERITED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(dead_code)]
+pub(crate) fn record_branch_point_remaining_source_skips(_sources: usize) {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(dead_code)]
+pub(crate) fn record_branch_point_remaining_source_skips(sources: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    POINT_REMAINING_SOURCE_SKIPS.fetch_add(as_u64(sources), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_branch_point_inherited_key_rewrite() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_branch_point_inherited_key_rewrite() {
+    if !recording_enabled() {
+        return;
+    }
+    POINT_INHERITED_KEY_REWRITES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_scan_candidate_collection(_rows_visited: usize, _candidates: usize) {}
 
 #[cfg(feature = "perf-trace")]
@@ -2205,6 +2509,70 @@ pub(crate) fn record_table_filter_absent_probe() {
     }
     TABLE_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
     TABLE_FILTER_ABSENT_PROBES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(dead_code)]
+pub(crate) fn record_table_eager_filter_negative_probe() {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(dead_code)]
+pub(crate) fn record_table_eager_filter_negative_probe() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_EAGER_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_NEGATIVE_PROBES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(dead_code)]
+pub(crate) fn record_table_eager_filter_positive_probe() {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(dead_code)]
+pub(crate) fn record_table_eager_filter_positive_probe() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_EAGER_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_POSITIVE_PROBES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_eager_filter_unavailable_probe() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_eager_filter_unavailable_probe() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_EAGER_FILTER_PROBES.fetch_add(1, Ordering::Relaxed);
+    TABLE_EAGER_FILTER_UNAVAILABLE_PROBES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_point_lookup_key_build() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_point_lookup_key_build() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_POINT_LOOKUP_KEY_BUILDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(dead_code)]
+pub(crate) fn record_table_point_lookup_key_reuse() {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(dead_code)]
+pub(crate) fn record_table_point_lookup_key_reuse() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_POINT_LOOKUP_KEY_REUSES.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

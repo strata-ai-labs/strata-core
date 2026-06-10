@@ -441,6 +441,7 @@ impl LazyTableState<'_> {
         max_commit_timestamp: Option<Timestamp>,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
         perf_trace::record_table_seek();
+        perf_trace::record_table_point_lookup_key_build();
         let prefix = TablePhysicalKeyBytes::from_physical_key(key);
         let target_physical_key = prefix.as_slice();
         if !self.contains_physical_key(target_physical_key) {
@@ -1179,6 +1180,8 @@ fn seek_physical_key_in_slice<'a>(
     max_commit_timestamp: Option<Timestamp>,
 ) -> (Option<&'a TableRow>, usize) {
     perf_trace::record_table_seek();
+    perf_trace::record_table_eager_filter_unavailable_probe();
+    perf_trace::record_table_point_lookup_key_build();
     let prefix = TablePhysicalKeyBytes::from_physical_key(key);
     let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
     let seek_key =

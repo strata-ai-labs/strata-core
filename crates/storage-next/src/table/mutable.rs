@@ -323,6 +323,7 @@ fn seek_physical_key_in_rows<'a>(
     max_commit_timestamp: Option<Timestamp>,
 ) -> (Option<&'a TableRow>, usize) {
     perf_trace::record_table_seek();
+    perf_trace::record_table_point_lookup_key_build();
     let prefix = TablePhysicalKeyBytes::from_physical_key(key);
     let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
     let seek_key =

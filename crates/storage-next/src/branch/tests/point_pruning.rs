@@ -80,6 +80,120 @@ fn inherited_nonzero_layer(
     )
 }
 
+#[cfg(feature = "perf-trace")]
+fn inherited_mixed_layer(
+    source: BranchId,
+    user_key: &str,
+    l0_version: u64,
+    nonzero_version: u64,
+) -> BranchInheritedLayer {
+    branch_inherited_layer(
+        source,
+        CommitVersion::new(l0_version.max(nonzero_version).saturating_add(100)),
+        InheritedLayerStatus::Active,
+        vec![
+            vec![point_table(
+                source,
+                BranchLevel::ZERO,
+                "point-baseline-parent-l0",
+                user_key,
+                l0_version,
+            )],
+            vec![point_table(
+                source,
+                BranchLevel::new(1),
+                "point-baseline-parent-nonzero",
+                user_key,
+                nonzero_version,
+            )],
+        ],
+    )
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_counters_capture_current_full_traversal() {
+    let branch = branch_id(180);
+    let parent = branch_id(181);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_mixed_layer(parent, "target", 20, 10)])
+        .expect("attach inherited");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            point_table(
+                branch,
+                BranchLevel::new(1),
+                "point-baseline-owned-nonzero",
+                "target",
+                30,
+            ),
+        )
+        .expect("install nonzero");
+    state
+        .install_l0_table(point_table(
+            branch,
+            BranchLevel::ZERO,
+            "point-baseline-owned-l0",
+            "target",
+            40,
+        ))
+        .expect("install L0");
+    let frozen = point_row(branch, "target", 50);
+    state.append_committed_row(frozen).expect("append frozen");
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    let active = point_row(branch, "target", 60);
+    state
+        .append_committed_row(active.clone())
+        .expect("append active");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().point_table_seeks(),
+        0
+    );
+    let actual = view.latest(&target).expect("point read");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_visible_row(actual.as_ref(), &active, BranchRowSource::Active);
+    assert_eq!(perf.point_active_probes(), 1);
+    assert_eq!(perf.point_frozen_probes(), 1);
+    assert_eq!(perf.point_owned_l0_table_probes(), 1);
+    assert_eq!(perf.point_owned_nonzero_level_searches(), 1);
+    assert_eq!(perf.point_owned_nonzero_table_probes(), 1);
+    assert_eq!(perf.point_inherited_layer_searches(), 1);
+    assert_eq!(perf.point_inherited_l0_table_probes(), 1);
+    assert_eq!(perf.point_inherited_nonzero_level_searches(), 1);
+    assert_eq!(perf.point_inherited_nonzero_table_probes(), 1);
+    assert_eq!(perf.point_table_seeks(), 6);
+    assert_eq!(perf.point_candidates_materialized(), 6);
+    assert_eq!(perf.point_candidate_row_clones(), 6);
+    assert_eq!(perf.point_selected_active(), 1);
+    assert_eq!(perf.point_selected_frozen(), 0);
+    assert_eq!(perf.point_selected_owned_l0(), 0);
+    assert_eq!(perf.point_selected_owned_nonzero(), 0);
+    assert_eq!(perf.point_selected_inherited(), 0);
+    assert_eq!(perf.point_inherited_key_rewrites(), 1);
+    assert_eq!(perf.point_early_exit_active(), 0);
+    assert_eq!(perf.point_early_exit_frozen(), 0);
+    assert_eq!(perf.point_early_exit_owned_l0(), 0);
+    assert_eq!(perf.point_early_exit_owned_nonzero(), 0);
+    assert_eq!(perf.point_early_exit_inherited(), 0);
+    assert_eq!(perf.point_remaining_source_skips(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 6);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_eager_filter_probes(), 4);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 4);
+    assert_eq!(perf.table_eager_filter_negative_probes(), 0);
+    assert_eq!(perf.table_eager_filter_positive_probes(), 0);
+}
+
 #[test]
 fn branch_point_read_active_hit_shadows_older_sources() {
     let branch = branch_id(19);
@@ -772,6 +886,17 @@ fn branch_point_read_skips_nonzero_table_seek_when_key_is_outside_level_ranges()
     assert_eq!(perf.point_owned_nonzero_table_probes(), 0);
     assert_eq!(perf.point_table_seeks(), 1);
     assert_eq!(perf.point_rows_visited(), 0);
+    assert_eq!(perf.point_candidates_materialized(), 0);
+    assert_eq!(perf.point_candidate_row_clones(), 0);
+    assert_eq!(perf.point_selected_active(), 0);
+    assert_eq!(perf.point_selected_frozen(), 0);
+    assert_eq!(perf.point_selected_owned_l0(), 0);
+    assert_eq!(perf.point_selected_owned_nonzero(), 0);
+    assert_eq!(perf.point_selected_inherited(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 1);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_eager_filter_probes(), 0);
+    assert_eq!(perf.point_remaining_source_skips(), 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -829,6 +954,14 @@ fn branch_point_read_prunes_each_owned_nonzero_level_independently() {
     assert_eq!(perf.point_owned_nonzero_table_probes(), 2);
     assert_eq!(perf.point_table_seeks(), 3);
     assert_eq!(perf.point_rows_visited(), 2);
+    assert_eq!(perf.point_candidates_materialized(), 2);
+    assert_eq!(perf.point_candidate_row_clones(), 2);
+    assert_eq!(perf.point_selected_owned_nonzero(), 1);
+    assert_eq!(perf.table_point_lookup_key_builds(), 3);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_eager_filter_probes(), 2);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 2);
+    assert_eq!(perf.point_remaining_source_skips(), 0);
     assert!(perf.point_owned_nonzero_table_probes() <= perf.point_owned_nonzero_level_searches());
 }
 
@@ -880,6 +1013,15 @@ fn branch_point_read_prunes_inherited_nonzero_levels_after_key_rewrite() {
     assert_eq!(perf.point_inherited_nonzero_table_probes(), 1);
     assert_eq!(perf.point_table_seeks(), 2);
     assert_eq!(perf.point_rows_visited(), 1);
+    assert_eq!(perf.point_candidates_materialized(), 1);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
+    assert_eq!(perf.point_selected_inherited(), 1);
+    assert_eq!(perf.point_inherited_key_rewrites(), 1);
+    assert_eq!(perf.table_point_lookup_key_builds(), 2);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_eager_filter_probes(), 1);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 1);
+    assert_eq!(perf.point_remaining_source_skips(), 0);
     assert!(
         perf.point_inherited_nonzero_table_probes()
             <= perf.point_inherited_nonzero_level_searches()
@@ -923,4 +1065,12 @@ fn branch_point_read_keeps_l0_linear_because_ranges_can_overlap() {
     assert_eq!(perf.point_owned_nonzero_table_probes(), 0);
     assert_eq!(perf.point_table_seeks(), 26);
     assert_eq!(perf.point_rows_visited(), 25);
+    assert_eq!(perf.point_candidates_materialized(), 25);
+    assert_eq!(perf.point_candidate_row_clones(), 25);
+    assert_eq!(perf.point_selected_owned_l0(), 1);
+    assert_eq!(perf.table_point_lookup_key_builds(), 26);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_eager_filter_probes(), 25);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 25);
+    assert_eq!(perf.point_remaining_source_skips(), 0);
 }
