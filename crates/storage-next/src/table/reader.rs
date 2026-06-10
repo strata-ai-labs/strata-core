@@ -236,6 +236,27 @@ enum TableReaderRows<'a> {
     Lazy(Box<LazyTableRows<'a>>),
 }
 
+pub(crate) enum TablePointLookupRow<'a> {
+    Borrowed(&'a TableRow),
+    Owned(TableRow),
+}
+
+impl TablePointLookupRow<'_> {
+    pub(crate) const fn as_table_row(&self) -> &TableRow {
+        match self {
+            Self::Borrowed(row) => row,
+            Self::Owned(row) => row,
+        }
+    }
+
+    pub(crate) fn into_owned(self) -> TableRow {
+        match self {
+            Self::Borrowed(row) => row.clone(),
+            Self::Owned(row) => row,
+        }
+    }
+}
+
 impl<'a> TableReaderRows<'a> {
     fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
         match self {
@@ -264,12 +285,20 @@ impl<'a> TableReaderRows<'a> {
         &self,
         lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+        let (row, visited) = self.try_seek_prepared_point_candidate(lookup)?;
+        Ok((row.map(TablePointLookupRow::into_owned), visited))
+    }
+
+    fn try_seek_prepared_point_candidate(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> TableRuntimeResult<(Option<TablePointLookupRow<'_>>, usize)> {
         match self {
             Self::Eager(rows) => {
                 let (row, visited) = seek_prepared_point_in_slice(rows, lookup);
-                Ok((row.cloned(), visited))
+                Ok((row.map(TablePointLookupRow::Borrowed), visited))
             }
-            Self::Lazy(rows) => rows.try_seek_prepared_point(lookup),
+            Self::Lazy(rows) => rows.try_seek_prepared_point_candidate(lookup),
         }
     }
 
@@ -355,20 +384,21 @@ impl<'a> LazyTableRows<'a> {
         Ok(find_exact_in_rows(&rows, key))
     }
 
-    fn try_seek_prepared_point(
+    fn try_seek_prepared_point_candidate(
         &self,
         lookup: &TablePreparedPointLookup,
-    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+    ) -> TableRuntimeResult<(Option<TablePointLookupRow<'_>>, usize)> {
         if let Some(rows) = self.rows.get() {
             return match rows {
                 Ok(rows) => {
                     let (row, visited) = seek_prepared_point_in_slice(rows, lookup);
-                    Ok((row.cloned(), visited))
+                    Ok((row.map(TablePointLookupRow::Borrowed), visited))
                 }
                 Err(error) => Err(error.clone()),
             };
         }
-        self.state.seek_prepared_point(lookup)
+        let (row, visited) = self.state.seek_prepared_point(lookup)?;
+        Ok((row.map(TablePointLookupRow::Owned), visited))
     }
 
     fn try_physical_key_rows(
@@ -883,6 +913,14 @@ impl<'a> ImmutableTableReader<'a> {
             .expect("lazy table physical key seek failed")
     }
 
+    pub(crate) fn seek_prepared_point_candidate(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> (Option<TablePointLookupRow<'_>>, usize) {
+        self.try_seek_prepared_point_candidate(lookup)
+            .expect("lazy table physical key seek failed")
+    }
+
     pub(crate) fn try_seek_physical_key(
         &self,
         key: &PhysicalKey,
@@ -898,6 +936,13 @@ impl<'a> ImmutableTableReader<'a> {
         lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
         self.rows.try_seek_prepared_point(lookup)
+    }
+
+    pub(crate) fn try_seek_prepared_point_candidate(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> TableRuntimeResult<(Option<TablePointLookupRow<'_>>, usize)> {
+        self.rows.try_seek_prepared_point_candidate(lookup)
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {

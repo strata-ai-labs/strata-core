@@ -244,7 +244,7 @@ fn branch_point_read_does_not_early_exit_when_later_source_can_beat_active() {
     assert_eq!(perf.point_inherited_layer_searches(), 0);
     assert_eq!(perf.point_table_seeks(), 2);
     assert_eq!(perf.point_candidates_materialized(), 2);
-    assert_eq!(perf.point_candidate_row_clones(), 2);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
     assert_eq!(perf.point_selected_active(), 0);
     assert_eq!(perf.point_selected_owned_nonzero(), 1);
     assert_eq!(perf.point_early_exit_active(), 0);
@@ -253,6 +253,67 @@ fn branch_point_read_does_not_early_exit_when_later_source_can_beat_active() {
     assert_eq!(perf.point_inherited_key_rewrites(), 0);
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
     assert_eq!(perf.table_point_lookup_key_reuses(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_deferred_clone_does_not_clone_loser_row_value() {
+    let branch = branch_id(187);
+    let mut state = BranchLocalState::empty(branch);
+    let large_loser_value = vec![0xab; 128 * 1024];
+    let large_loser = storage_row_with(
+        branch,
+        b"target".to_vec(),
+        60,
+        600,
+        Timestamp::EPOCH,
+        large_loser_value.clone(),
+    );
+    let winner = point_row(branch, "target", 70);
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "point-deferred-clone-loser",
+                vec![large_loser],
+            ),
+        )
+        .expect("install nonzero");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(2),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(2),
+                "point-deferred-clone-winner",
+                vec![winner.clone()],
+            ),
+        )
+        .expect("install second nonzero");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let actual = view.latest(&target).expect("point read");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_visible_row(
+        actual.as_ref(),
+        &winner,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+    assert_eq!(perf.point_candidates_materialized(), 2);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
+    assert!(
+        perf.point_candidate_row_clone_bytes()
+            < u64::try_from(large_loser_value.len()).expect("value size fits in u64"),
+        "loser value should not contribute to point candidate clone bytes"
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1119,7 +1180,7 @@ fn branch_point_read_prunes_each_owned_nonzero_level_independently() {
     assert_eq!(perf.point_table_seeks(), 3);
     assert_eq!(perf.point_rows_visited(), 2);
     assert_eq!(perf.point_candidates_materialized(), 2);
-    assert_eq!(perf.point_candidate_row_clones(), 2);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
     assert_eq!(perf.point_selected_owned_nonzero(), 1);
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
     assert_eq!(perf.table_point_lookup_key_reuses(), 2);
@@ -1230,7 +1291,7 @@ fn branch_point_read_keeps_l0_linear_because_ranges_can_overlap() {
     assert_eq!(perf.point_table_seeks(), 26);
     assert_eq!(perf.point_rows_visited(), 25);
     assert_eq!(perf.point_candidates_materialized(), 25);
-    assert_eq!(perf.point_candidate_row_clones(), 25);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
     assert_eq!(perf.point_selected_owned_l0(), 1);
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
     assert_eq!(perf.table_point_lookup_key_reuses(), 25);

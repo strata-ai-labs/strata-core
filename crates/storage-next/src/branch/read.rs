@@ -12,10 +12,11 @@ use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     BoundedTableCursor, FrozenTable, ImmutableTableReader, MutableTable, TableCursor,
     TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes,
-    TablePreparedPointLookup, TableRow, TableRuntimeFacts,
+    TablePointLookupRow, TablePreparedPointLookup, TableRow, TableRuntimeFacts,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap};
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1363,14 +1364,89 @@ fn push_history_rows(
     Ok(())
 }
 
-struct PointSelection {
-    selected: Option<CandidateRow>,
+enum PointCandidate<'a> {
+    LocalShared {
+        row: Arc<TableRow>,
+        source: BranchRowSource,
+    },
+    LocalLookup {
+        row: TablePointLookupRow<'a>,
+        source: BranchRowSource,
+    },
+    InheritedLookup {
+        row: TablePointLookupRow<'a>,
+        source_branch_id: BranchId,
+        child_branch_id: BranchId,
+        layer_index: usize,
+    },
+}
+
+impl PointCandidate<'_> {
+    fn row(&self) -> &StorageRow {
+        match self {
+            Self::LocalShared { row, .. } => row.row(),
+            Self::LocalLookup { row, .. } | Self::InheritedLookup { row, .. } => {
+                row.as_table_row().row()
+            }
+        }
+    }
+
+    fn source(&self) -> BranchRowSource {
+        match self {
+            Self::LocalShared { source, .. } | Self::LocalLookup { source, .. } => *source,
+            Self::InheritedLookup {
+                source_branch_id,
+                layer_index,
+                ..
+            } => BranchRowSource::Inherited {
+                source_branch_id: *source_branch_id,
+                layer_index: *layer_index,
+            },
+        }
+    }
+
+    fn into_candidate_row(self) -> BranchRuntimeResult<CandidateRow> {
+        match self {
+            Self::LocalShared { row, source } => Ok(candidate_row(
+                clone_point_candidate_row(row.as_ref()),
+                source,
+            )),
+            Self::LocalLookup { row, source } => Ok(candidate_row(
+                clone_point_candidate_row(row.as_table_row()),
+                source,
+            )),
+            Self::InheritedLookup {
+                row,
+                source_branch_id,
+                child_branch_id,
+                layer_index,
+            } => {
+                let row = row.as_table_row();
+                perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
+                Ok(candidate_row(
+                    rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(
+                        |_| BranchRuntimeError::InvalidInheritedLayer {
+                            reason: "inherited row branch rewrite failed",
+                        },
+                    )?,
+                    BranchRowSource::Inherited {
+                        source_branch_id,
+                        layer_index,
+                    },
+                ))
+            }
+        }
+    }
+}
+
+struct PointSelection<'a> {
+    selected: Option<PointCandidate<'a>>,
     rows_visited: usize,
     candidates_materialized: usize,
     source_counts: perf_trace::BranchPointSourceCounts,
 }
 
-impl PointSelection {
+impl<'a> PointSelection<'a> {
     fn new() -> Self {
         Self {
             selected: None,
@@ -1384,35 +1460,30 @@ impl PointSelection {
         self.rows_visited = self.rows_visited.saturating_add(visited);
     }
 
-    fn consider_table_row(&mut self, row: &TableRow, source: BranchRowSource) {
-        let candidate = candidate_row(clone_point_candidate_row(row), source);
-        self.consider_candidate(candidate);
+    fn consider_shared_table_row(&mut self, row: Arc<TableRow>, source: BranchRowSource) {
+        self.consider_candidate(PointCandidate::LocalShared { row, source });
+    }
+
+    fn consider_lookup_table_row(&mut self, row: TablePointLookupRow<'a>, source: BranchRowSource) {
+        self.consider_candidate(PointCandidate::LocalLookup { row, source });
     }
 
     fn consider_inherited_table_row(
         &mut self,
-        row: &TableRow,
+        row: TablePointLookupRow<'a>,
         source_branch_id: BranchId,
         child_branch_id: BranchId,
         layer_index: usize,
-    ) -> BranchRuntimeResult<()> {
-        perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
-        let candidate = candidate_row(
-            rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(|_| {
-                BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited row branch rewrite failed",
-                }
-            })?,
-            BranchRowSource::Inherited {
-                source_branch_id,
-                layer_index,
-            },
-        );
-        self.consider_candidate(candidate);
-        Ok(())
+    ) {
+        self.consider_candidate(PointCandidate::InheritedLookup {
+            row,
+            source_branch_id,
+            child_branch_id,
+            layer_index,
+        });
     }
 
-    fn consider_candidate(&mut self, candidate: CandidateRow) {
+    fn consider_candidate(&mut self, candidate: PointCandidate<'a>) {
         self.candidates_materialized = self.candidates_materialized.saturating_add(1);
         let should_replace = self
             .selected
@@ -1426,36 +1497,41 @@ impl PointSelection {
     fn selected_commit_version(&self) -> Option<CommitVersion> {
         self.selected
             .as_ref()
-            .map(|candidate| candidate_row_ref(candidate).commit_version())
+            .map(|candidate| candidate.row().commit_version())
     }
 
-    fn finish(self) -> Option<CandidateRow> {
+    fn finish(self) -> BranchRuntimeResult<Option<CandidateRow>> {
         perf_trace::record_branch_point_sources(self.source_counts);
         perf_trace::record_point_candidate_collection(
             self.rows_visited,
             self.candidates_materialized,
         );
         if let Some(candidate) = &self.selected {
-            record_selected_point_source(candidate_source(candidate));
+            record_selected_point_source(candidate.source());
         }
         self.selected
+            .map(PointCandidate::into_candidate_row)
+            .transpose()
     }
 }
 
-fn candidate_is_newer_or_better_tie(candidate: &CandidateRow, selected: &CandidateRow) -> bool {
-    let candidate_version = candidate_row_ref(candidate).commit_version();
-    let selected_version = candidate_row_ref(selected).commit_version();
+fn candidate_is_newer_or_better_tie(
+    candidate: &PointCandidate<'_>,
+    selected: &PointCandidate<'_>,
+) -> bool {
+    let candidate_version = candidate.row().commit_version();
+    let selected_version = selected.row().commit_version();
     candidate_version > selected_version
         || (candidate_version == selected_version
-            && source_order_cmp(candidate_source(candidate), candidate_source(selected)).is_lt())
+            && source_order_cmp(candidate.source(), selected.source()).is_lt())
 }
 
-fn select_ordered_visible_point_candidate(
+fn select_ordered_visible_point_candidate<'a>(
     branch_id: BranchId,
     active: &MutableTable,
     frozen: &[FrozenTable],
-    owned_levels: &[Vec<BranchOwnedTable>],
-    inherited_layers: &[BranchInheritedLayer],
+    owned_levels: &'a [Vec<BranchOwnedTable>],
+    inherited_layers: &'a [BranchInheritedLayer],
     key: &PhysicalKey,
     bound: BranchReadBound,
     effective_bound: BranchEffectiveReadBound,
@@ -1472,7 +1548,7 @@ fn select_ordered_visible_point_candidate(
     let (row, visited) = active.seek_prepared_point(&lookup);
     selection.add_rows_visited(visited);
     if let Some(row) = row {
-        selection.consider_table_row(row.as_ref(), BranchRowSource::Active);
+        selection.consider_shared_table_row(row, BranchRowSource::Active);
     }
     if ordered_point_can_stop(
         &selection,
@@ -1480,7 +1556,7 @@ fn select_ordered_visible_point_candidate(
         remaining_max_commit_after_active(frozen, owned_levels, inherited_layers, bound),
         remaining_source_count_after_active(frozen, owned_levels, inherited_layers),
     ) {
-        return Ok(selection.finish());
+        return selection.finish();
     }
 
     for (index, table) in frozen.iter().enumerate() {
@@ -1490,7 +1566,7 @@ fn select_ordered_visible_point_candidate(
         let (row, visited) = table.seek_prepared_point(&lookup);
         selection.add_rows_visited(visited);
         if let Some(row) = row {
-            selection.consider_table_row(row.as_ref(), BranchRowSource::Frozen { index });
+            selection.consider_shared_table_row(row, BranchRowSource::Frozen { index });
         }
     }
     if ordered_point_can_stop(
@@ -1499,7 +1575,7 @@ fn select_ordered_visible_point_candidate(
         remaining_max_commit_after_frozen(owned_levels, inherited_layers, bound),
         remaining_source_count_after_frozen(owned_levels, inherited_layers),
     ) {
-        return Ok(selection.finish());
+        return selection.finish();
     }
 
     for (level_index, tables) in owned_levels.iter().enumerate() {
@@ -1524,7 +1600,7 @@ fn select_ordered_visible_point_candidate(
                 inherited_layers,
             ),
         ) {
-            return Ok(selection.finish());
+            return selection.finish();
         }
     }
 
@@ -1574,18 +1650,18 @@ fn select_ordered_visible_point_candidate(
                 layer_index.saturating_add(1),
             ),
         ) {
-            return Ok(selection.finish());
+            return selection.finish();
         }
     }
 
-    Ok(selection.finish())
+    selection.finish()
 }
 
-fn select_owned_level_point_candidate(
+fn select_owned_level_point_candidate<'a>(
     level_index: usize,
-    tables: &[BranchOwnedTable],
+    tables: &'a [BranchOwnedTable],
     lookup: &TablePreparedPointLookup,
-    selection: &mut PointSelection,
+    selection: &mut PointSelection<'a>,
 ) -> BranchRuntimeResult<()> {
     if level_index == 0 {
         for (table_index, table) in tables.iter().enumerate() {
@@ -1595,11 +1671,11 @@ fn select_owned_level_point_candidate(
                 .saturating_add(1);
             selection.source_counts.table_seeks =
                 selection.source_counts.table_seeks.saturating_add(1);
-            let (row, visited) = table.reader().seek_prepared_point(lookup);
+            let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
             selection.add_rows_visited(visited);
             if let Some(row) = row {
-                selection.consider_table_row(
-                    &row,
+                selection.consider_lookup_table_row(
+                    row,
                     BranchRowSource::OwnedTable {
                         level: table.level(),
                         table_index,
@@ -1627,11 +1703,11 @@ fn select_owned_level_point_candidate(
         .owned_nonzero_table_probes
         .saturating_add(1);
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_prepared_point(lookup);
+    let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
     selection.add_rows_visited(visited);
     if let Some(row) = row {
-        selection.consider_table_row(
-            &row,
+        selection.consider_lookup_table_row(
+            row,
             BranchRowSource::OwnedTable {
                 level: table.level(),
                 table_index,
@@ -1641,14 +1717,14 @@ fn select_owned_level_point_candidate(
     Ok(())
 }
 
-fn select_inherited_level_point_candidate(
+fn select_inherited_level_point_candidate<'a>(
     child_branch_id: BranchId,
-    layer: &BranchInheritedLayer,
+    layer: &'a BranchInheritedLayer,
     layer_index: usize,
     level_index: usize,
-    tables: &[BranchOwnedTable],
+    tables: &'a [BranchOwnedTable],
     lookup: &TablePreparedPointLookup,
-    selection: &mut PointSelection,
+    selection: &mut PointSelection<'a>,
 ) -> BranchRuntimeResult<()> {
     if level_index == 0 {
         for table in tables {
@@ -1693,30 +1769,30 @@ fn select_inherited_level_point_candidate(
     )
 }
 
-fn append_ordered_inherited_point_table_candidate(
+fn append_ordered_inherited_point_table_candidate<'a>(
     child_branch_id: BranchId,
-    layer: &BranchInheritedLayer,
+    layer: &'a BranchInheritedLayer,
     layer_index: usize,
-    table: &BranchOwnedTable,
+    table: &'a BranchOwnedTable,
     lookup: &TablePreparedPointLookup,
-    selection: &mut PointSelection,
+    selection: &mut PointSelection<'a>,
 ) -> BranchRuntimeResult<()> {
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_prepared_point(lookup);
+    let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
     selection.add_rows_visited(visited);
     if let Some(row) = row {
         selection.consider_inherited_table_row(
-            &row,
+            row,
             layer.source_branch_id(),
             child_branch_id,
             layer_index,
-        )?;
+        );
     }
     Ok(())
 }
 
 fn ordered_point_can_stop(
-    selection: &PointSelection,
+    selection: &PointSelection<'_>,
     source: perf_trace::BranchPointSourceKind,
     remaining_max_commit: Option<CommitVersion>,
     remaining_source_count: usize,

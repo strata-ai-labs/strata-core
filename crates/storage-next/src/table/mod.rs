@@ -116,7 +116,8 @@ pub(crate) use mutable::{FrozenTable, MutableTable, MutableTableAppendBaseline, 
     )
 )]
 pub(crate) use reader::{
-    BytesTableSource, ImmutableTableReader, TableByteSource, TableReaderFilter, TableReaderOpenMode,
+    BytesTableSource, ImmutableTableReader, TableByteSource, TablePointLookupRow,
+    TableReaderFilter, TableReaderOpenMode,
 };
 
 #[cfg(test)]
