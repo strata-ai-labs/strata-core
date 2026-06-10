@@ -441,6 +441,53 @@ fn passing_read_set_and_cas_facts_report_both_checked_counts() {
     assert_eq!(source.read_count(), 2);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn conflict_perf_trace_counts_passing_read_and_cas_facts_once() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(233);
+    let read_key = physical_key(branch, 0x20, b"read-pass-perf".to_vec());
+    let cas_key = physical_key(branch, 0x20, b"cas-pass-perf".to_vec());
+    let source = FakeConflictSource::new(vec![
+        (
+            read_key.clone(),
+            CommitObservedVersion::Present(CommitVersion::new(31)),
+        ),
+        (
+            cas_key.clone(),
+            CommitObservedVersion::Present(CommitVersion::new(32)),
+        ),
+    ]);
+    let batch = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Present(CommitVersion::new(31)),
+            )],
+            vec![CommitCasFact::new(
+                cas_key,
+                CommitObservedVersion::Present(CommitVersion::new(32)),
+            )],
+        ),
+        CommitConflictValidationMode::Validate,
+    );
+
+    let report = validate_commit_conflicts(&batch, &source).expect("all facts pass");
+
+    assert_eq!(report.checked_read_facts(), 1);
+    assert_eq!(report.checked_cas_facts(), 1);
+    assert_eq!(source.read_count(), 2);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_conflict_validation_calls(), 1);
+    assert_eq!(perf.commit_conflict_validation_skipped(), 0);
+    assert_eq!(perf.commit_conflict_validation_without_source(), 0);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 1);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 1);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 1);
+    assert_eq!(perf.commit_conflicts_detected(), 0);
+}
+
 #[test]
 fn skip_mode_and_blind_writes_do_not_read_conflict_source() {
     let branch = branch_id(126);
@@ -478,6 +525,54 @@ fn skip_mode_and_blind_writes_do_not_read_conflict_source() {
     assert_eq!(report.checked_read_facts(), 0);
     assert_eq!(report.checked_cas_facts(), 0);
     assert_eq!(source.read_count(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn conflict_perf_trace_counts_skip_and_empty_validation_without_source() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(234);
+    let key = physical_key(branch, 0x20, b"skip-empty-perf".to_vec());
+    let source = FakeConflictSource::new(vec![(
+        key.clone(),
+        CommitObservedVersion::Present(CommitVersion::new(21)),
+    )]);
+    let skip = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                key.clone(),
+                CommitObservedVersion::Missing,
+            )],
+            vec![CommitCasFact::new(
+                key,
+                CommitObservedVersion::Present(CommitVersion::new(1)),
+            )],
+        ),
+        CommitConflictValidationMode::Skip,
+    );
+    let validate_empty = mutating_batch_with_validation(
+        branch,
+        CommitValidationFacts::empty(),
+        CommitConflictValidationMode::Validate,
+    );
+
+    assert!(validate_commit_conflicts(&skip, &source)
+        .expect("skip passes")
+        .skipped_validation());
+    assert!(!validate_commit_conflicts(&validate_empty, &source)
+        .expect("empty validate passes")
+        .skipped_validation());
+
+    assert_eq!(source.read_count(), 0);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_conflict_validation_calls(), 2);
+    assert_eq!(perf.commit_conflict_validation_skipped(), 1);
+    assert_eq!(perf.commit_conflict_validation_without_source(), 1);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 0);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 0);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 0);
+    assert_eq!(perf.commit_conflicts_detected(), 0);
 }
 
 #[test]

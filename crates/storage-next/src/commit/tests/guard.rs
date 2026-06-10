@@ -59,6 +59,63 @@ fn branch_guard_allows_different_branches_independently() {
     assert_eq!(guard_set.active_guard_count(), Ok(0));
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn guard_perf_trace_counts_branch_and_quiesce_contention() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(121);
+    let guard_set = CommitBranchGuardSet::new();
+
+    let guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("acquire first guard");
+    assert_eq!(
+        guard_set
+            .try_acquire_branch_guard(branch)
+            .expect_err("same branch contention rejects"),
+        CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: branch,
+            reason: "branch commit guard is already active",
+        }
+    );
+    assert_eq!(
+        guard_set
+            .try_begin_quiesce()
+            .expect_err("active branch guard rejects quiesce"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce cannot start while branch guards are active",
+        }
+    );
+    drop(guard);
+
+    let quiesce = guard_set.try_begin_quiesce().expect("begin quiesce");
+    assert_eq!(
+        guard_set
+            .try_acquire_branch_guard(branch)
+            .expect_err("quiesce rejects branch guard"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce is active",
+        }
+    );
+    assert_eq!(
+        guard_set
+            .try_begin_quiesce()
+            .expect_err("second quiesce rejects"),
+        CommitRuntimeError::CommitQuiesceUnavailable {
+            reason: "commit quiesce is already active",
+        }
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_branch_guard_attempts(), 3);
+    assert_eq!(perf.commit_branch_guard_acquired(), 1);
+    assert_eq!(perf.commit_branch_guard_rejected(), 2);
+    assert_eq!(perf.commit_quiesce_attempts(), 3);
+    assert_eq!(perf.commit_quiesce_acquired(), 1);
+    assert_eq!(perf.commit_quiesce_rejected(), 2);
+    drop(quiesce);
+}
+
 #[test]
 fn cloned_guard_sets_share_branch_guard_state() {
     let branch = branch_id(117);

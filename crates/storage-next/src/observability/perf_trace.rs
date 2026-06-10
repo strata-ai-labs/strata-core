@@ -92,6 +92,8 @@ pub struct StoragePerfSnapshot {
     commit_unresolved_gate_rejected_unresolved: u64,
     commit_unresolved_gate_rejected_active: u64,
     commit_unresolved_records: u64,
+    commit_unresolved_durable_not_applied_records: u64,
+    commit_unresolved_applied_not_visible_records: u64,
     commit_branch_registry_lookups: u64,
     commit_branch_registry_descriptors_scanned: u64,
     commit_branch_guard_attempts: u64,
@@ -397,6 +399,16 @@ impl StoragePerfSnapshot {
     /// Unresolved durable commit records installed in the gate.
     pub const fn commit_unresolved_records(self) -> u64 {
         self.commit_unresolved_records
+    }
+
+    /// Durable-not-applied unresolved commit records installed in the gate.
+    pub const fn commit_unresolved_durable_not_applied_records(self) -> u64 {
+        self.commit_unresolved_durable_not_applied_records
+    }
+
+    /// Applied-not-visible unresolved commit records installed in the gate.
+    pub const fn commit_unresolved_applied_not_visible_records(self) -> u64 {
+        self.commit_unresolved_applied_not_visible_records
     }
 
     /// Branch registry lookup calls made by commit admission.
@@ -1237,6 +1249,10 @@ static COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_RECORDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_LOOKUPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED: AtomicU64 = AtomicU64::new(0);
@@ -1616,6 +1632,8 @@ pub fn reset() {
     COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_RECORDS.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.store(0, Ordering::Relaxed);
+    COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_LOOKUPS.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_GUARD_ATTEMPTS.store(0, Ordering::Relaxed);
@@ -1812,6 +1830,10 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_unresolved_gate_rejected_active: COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE
             .load(Ordering::Relaxed),
         commit_unresolved_records: COMMIT_UNRESOLVED_RECORDS.load(Ordering::Relaxed),
+        commit_unresolved_durable_not_applied_records:
+            COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.load(Ordering::Relaxed),
+        commit_unresolved_applied_not_visible_records:
+            COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.load(Ordering::Relaxed),
         commit_branch_registry_lookups: COMMIT_BRANCH_REGISTRY_LOOKUPS.load(Ordering::Relaxed),
         commit_branch_registry_descriptors_scanned: COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED
             .load(Ordering::Relaxed),
@@ -2261,6 +2283,28 @@ pub(crate) fn record_commit_unresolved_record() {
         return;
     }
     COMMIT_UNRESOLVED_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_durable_not_applied_record() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_durable_not_applied_record() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_unresolved_applied_not_visible_record() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_unresolved_applied_not_visible_record() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

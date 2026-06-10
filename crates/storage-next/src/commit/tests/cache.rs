@@ -192,6 +192,76 @@ fn cache_read_set_commit_still_captures_read_view_and_rejects_stale_fact() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_read_and_cas_validation_perf_trace_builds_one_conflict_source() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(99);
+    let read_key = physical_key(branch, 0x20, b"cache-read-pass".to_vec());
+    let cas_key = physical_key(branch, 0x20, b"cache-cas-pass".to_vec());
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    fixture.seed_visible_row(StorageRow::put(
+        read_key.clone(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1_000),
+        Timestamp::EPOCH,
+        b"read-old".to_vec(),
+    ));
+    fixture.seed_visible_row(StorageRow::put(
+        cas_key.clone(),
+        CommitVersion::new(2),
+        Timestamp::from_micros(2_000),
+        Timestamp::EPOCH,
+        b"cas-old".to_vec(),
+    ));
+    fixture.catch_up_to(CommitVersion::new(2), Timestamp::from_micros(2_000));
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(2));
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"cache-validated-write".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::new(
+            vec![CommitReadFact::new(
+                read_key,
+                CommitObservedVersion::Present(CommitVersion::new(1)),
+            )],
+            vec![CommitCasFact::new(
+                cas_key,
+                CommitObservedVersion::Present(CommitVersion::new(2)),
+            )],
+        ),
+        CommitBatchOptions::default(),
+    );
+
+    fixture
+        .execute(batch)
+        .expect("validated cache commit succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    let timeline_row_count =
+        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+    assert_eq!(perf.conflict_sources_built(), 1);
+    assert_eq!(perf.commit_conflict_validation_calls(), 1);
+    assert_eq!(perf.commit_conflict_validation_without_source(), 0);
+    assert_eq!(perf.commit_conflict_validation_with_source(), 1);
+    assert_eq!(perf.commit_conflict_read_facts_checked(), 1);
+    assert_eq!(perf.commit_conflict_cas_facts_checked(), 1);
+    assert_eq!(perf.commit_conflicts_detected(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 1);
+    assert_eq!(perf.commit_user_mutation_rows(), 1);
+    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
+    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_visible_publish_attempts(), 1);
+    assert_eq!(perf.commit_visible_publish_successes(), 1);
+    assert_eq!(perf.commit_branch_guard_attempts(), 1);
+    assert_eq!(perf.commit_branch_guard_acquired(), 1);
+    assert_eq!(perf.read_view_captures(), 1);
+}
+
 #[test]
 fn cache_commit_delete_installs_tombstone_and_hides_latest() {
     let branch = branch_id(34);
@@ -383,6 +453,49 @@ fn cache_commit_rejects_missing_deleted_and_stale_generation_before_allocation()
     );
     assert_eq!(stale.state.active_row_count(), 0);
     assert_eq!(stale.visible.visible_version(), CommitVersion::ZERO);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_missing_branch_perf_trace_stops_before_allocation_and_guard() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(100);
+    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    fixture.registry = CommitBranchRegistry::new();
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"missing-branch-perf".to_vec()),
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    assert_eq!(
+        fixture.execute(batch),
+        Err(CommitRuntimeError::BranchNotFound { branch_id: branch })
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+    assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
+    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
+    assert_eq!(perf.commit_branch_registry_lookups(), 1);
+    assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 0);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.commit_conflict_validation_calls(), 0);
+    assert_eq!(perf.commit_batches_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 0);
+    assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    assert_eq!(
+        fixture.allocator.version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert_eq!(fixture.state.active_row_count(), 0);
 }
 
 #[test]
@@ -758,6 +871,8 @@ fn cache_commit_apply_failure_releases_guard_without_visible_publication() {
 
 #[test]
 fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_releases_guard() {
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(38);
     let key = physical_key(branch, 0x20, b"cache-visible-failure".to_vec());
     let (registry, guard_set, mut allocator, durable_gate) = injected_cache_runtime_parts(branch);
@@ -814,6 +929,21 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
             .value(),
         b"super-secret-cache-visible-value"
     );
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+        assert_eq!(perf.commit_unresolved_records(), 1);
+        assert_eq!(perf.commit_unresolved_durable_not_applied_records(), 0);
+        assert_eq!(perf.commit_unresolved_applied_not_visible_records(), 1);
+        assert_eq!(perf.commit_visible_publish_attempts(), 1);
+        assert_eq!(perf.commit_visible_publish_successes(), 0);
+        assert_eq!(perf.commit_visible_publish_failures(), 1);
+        assert_eq!(perf.commit_batches_prepared(), 1);
+        assert_eq!(perf.commit_wal_records_built(), 0);
+        assert_eq!(perf.commit_wal_appends(), 0);
+    }
     let branch_guard = guard_set
         .try_acquire_branch_guard(branch)
         .expect("branch guard released after cache visible failure");

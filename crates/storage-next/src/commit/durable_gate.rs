@@ -274,6 +274,14 @@ impl CommitUnresolvedDurableGate {
             None => {
                 state.unresolved = Some(unresolved);
                 perf_trace::record_commit_unresolved_record();
+                match unresolved.kind() {
+                    CommitUnresolvedDurableKind::DurableNotApplied => {
+                        perf_trace::record_commit_unresolved_durable_not_applied_record();
+                    }
+                    CommitUnresolvedDurableKind::AppliedNotVisible => {
+                        perf_trace::record_commit_unresolved_applied_not_visible_record();
+                    }
+                }
                 Ok(())
             }
         }
