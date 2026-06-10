@@ -1,9 +1,11 @@
-use crate::format::{decode_immutable_table, TableCompression, MAX_TABLE_KEY_BYTES};
+use crate::format::{
+    decode_immutable_table, encode_immutable_table, TableCompression, MAX_TABLE_KEY_BYTES,
+};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    sort_table_rows_by_key, BuiltTableArtifact, ImmutableTableBuilder, MutableTable,
-    TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableIdentity, TableReaderConfig,
-    TableRow, TableRuntimeConfig, TableRuntimeError,
+    sort_table_rows_by_key, BuiltTableArtifact, ImmutableTableBuilder, ImmutableTableReader,
+    MutableTable, TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableIdentity,
+    TableReaderConfig, TableRow, TableRuntimeConfig, TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -411,6 +413,85 @@ fn immutable_builder_is_deterministic_across_rows_mutable_and_frozen_sources() {
     assert_eq!(bytes, from_rows_a.bytes());
     assert_eq!(&facts, from_rows_a.facts());
     assert_eq!(from_rows_a.into_bytes(), from_rows_b.bytes());
+}
+
+#[test]
+fn immutable_builder_streaming_matches_batch_builder_with_block_bounded_buffer() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        tombstone_row(b"bravo".to_vec(), 2),
+        expired_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let table_rows = sorted_table_rows(&rows);
+    let storage_rows = sorted_storage_rows(&rows);
+    let builder = builder(2, TableCompression::Uncompressed);
+    let batch = builder
+        .build_from_rows(identity("streaming-equivalent"), &table_rows)
+        .expect("batch build");
+    let encoded = encode_immutable_table(&storage_rows, 1024, 2, TableCompression::Uncompressed)
+        .expect("format encode");
+
+    let mut streaming = builder
+        .begin_streaming(identity("streaming-equivalent"))
+        .expect("begin streaming build");
+    assert_eq!(streaming.buffered_rows(), 0);
+    for row in &table_rows {
+        streaming.append(row).expect("append streaming row");
+        assert!(streaming.buffered_rows() <= 2);
+    }
+    assert_eq!(streaming.peak_buffered_rows(), 2);
+    let streamed = streaming.finish().expect("finish streaming build");
+    let reader = ImmutableTableReader::open_bytes(
+        identity("streaming-equivalent"),
+        streamed.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("open streamed artifact");
+
+    assert_eq!(streamed.bytes(), encoded.as_slice());
+    assert_eq!(streamed.bytes(), batch.bytes());
+    assert_eq!(streamed.facts(), batch.facts());
+    assert_eq!(reader.rows(), table_rows.as_slice());
+    for row in &table_rows {
+        assert_eq!(reader.get_exact(row.key()), Some(row.clone()));
+    }
+}
+
+#[test]
+fn immutable_builder_streaming_preserves_validation_errors() {
+    let builder = builder(2, TableCompression::Uncompressed);
+    let empty = builder
+        .begin_streaming(identity("streaming-empty"))
+        .expect("begin empty streaming build");
+    assert_eq!(
+        empty.finish(),
+        Err(TableRuntimeError::InvalidRange { field: "row_count" })
+    );
+
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let mut unsorted = builder
+        .begin_streaming(identity("streaming-unsorted"))
+        .expect("begin unsorted streaming build");
+    unsorted
+        .append(&rows[1])
+        .expect("append first unsorted row");
+    assert!(matches!(
+        unsorted.append(&rows[0]),
+        Err(TableRuntimeError::InvalidRowOrder { .. })
+    ));
+
+    let mut duplicate = builder
+        .begin_streaming(identity("streaming-duplicate"))
+        .expect("begin duplicate streaming build");
+    duplicate
+        .append(&rows[0])
+        .expect("append first duplicate row");
+    assert!(matches!(
+        duplicate.append(&rows[0]),
+        Err(TableRuntimeError::DuplicateInternalKey { .. })
+    ));
 }
 
 #[test]

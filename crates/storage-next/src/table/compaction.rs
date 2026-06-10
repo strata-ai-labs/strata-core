@@ -2,8 +2,9 @@
 
 use super::{
     validate_strictly_sorted_unique_rows, BuiltTableArtifact, ImmutableTableBuilder,
-    TableBuilderConfig, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TableRow, TableRuntimeError, TableRuntimeResult, MERGE_HEAP_THRESHOLD,
+    ImmutableTableStreamingBuilder, TableBuilderConfig, TableCompactionConfig, TableCursor,
+    TableIdentity, TableInternalKeyBytes, TableRow, TableRuntimeError, TableRuntimeResult,
+    MERGE_HEAP_THRESHOLD,
 };
 use crate::observability::perf_trace;
 use std::cmp::Ordering;
@@ -576,10 +577,13 @@ fn compact_table_inputs(
 
     let target_output_bytes = compactor.config.target_output_bytes();
     require_nonzero_target_output_bytes(target_output_bytes)?;
-    let mut output_rows = Vec::new();
-    let mut output_approximate_bytes = 0;
-    let mut output_last_physical_key = None;
     let mut artifacts = Vec::new();
+    let mut pending_output = PendingCompactionOutput::new(
+        builder,
+        output_identity_seed,
+        source_identity,
+        compactor.config.max_output_tables(),
+    );
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
 
     while let Some(current) = merged.current() {
@@ -597,36 +601,23 @@ fn compact_table_inputs(
                 let row_approximate_bytes = row_approximate_size_bytes(current.row)?;
                 let current_physical_key = current.row.key().physical_key_bytes();
                 if should_split_before(
-                    &output_rows,
-                    output_approximate_bytes,
-                    output_last_physical_key.as_deref(),
+                    pending_output.has_rows(),
+                    pending_output.approximate_bytes(),
+                    pending_output.last_physical_key(),
                     target_output_bytes,
                     row_approximate_bytes,
                     current_physical_key,
                 ) {
-                    build_pending_output(
-                        &builder,
-                        output_identity_seed,
-                        source_identity,
-                        &mut output_rows,
-                        &mut output_approximate_bytes,
-                        &mut output_last_physical_key,
-                        &mut artifacts,
-                        &mut report,
-                        compactor.config.max_output_tables(),
-                    )?;
+                    pending_output.finish_current(&mut artifacts, &mut report)?;
                 }
                 let kept_key = current.row.key().clone();
-                let row = clone_row_for_output(current.row);
-                push_pending_row(
-                    &mut output_rows,
-                    &mut output_approximate_bytes,
-                    &mut output_last_physical_key,
+                pending_output.push_row(
+                    &mut artifacts,
+                    &mut report,
+                    current.row,
                     row_approximate_bytes,
                     current_physical_key,
-                    row,
-                );
-                report.record_peak_buffered_rows(output_rows.len());
+                )?;
                 previous_kept_key = Some(kept_key);
                 report.record_keep();
                 perf_trace::record_table_compaction_keep();
@@ -639,17 +630,7 @@ fn compact_table_inputs(
         merged.advance()?;
     }
 
-    build_pending_output(
-        &builder,
-        output_identity_seed,
-        source_identity,
-        &mut output_rows,
-        &mut output_approximate_bytes,
-        &mut output_last_physical_key,
-        &mut artifacts,
-        &mut report,
-        compactor.config.max_output_tables(),
-    )?;
+    pending_output.finish_current(&mut artifacts, &mut report)?;
 
     perf_trace::record_table_compaction_peak_buffered_rows(report.peak_buffered_rows());
 
@@ -675,9 +656,108 @@ fn validate_no_global_duplicate_internal_keys(
     Ok(())
 }
 
-fn clone_row_for_output(row: &TableRow) -> TableRow {
-    perf_trace::record_table_compaction_row_clone();
-    row.clone()
+struct PendingCompactionOutput<'a> {
+    builder: ImmutableTableBuilder,
+    output_identity_seed: &'a TableIdentity,
+    source_identity: u64,
+    max_output_tables: usize,
+    current: Option<ImmutableTableStreamingBuilder>,
+    current_rows: usize,
+    current_approximate_bytes: u64,
+    current_last_physical_key: Option<Vec<u8>>,
+}
+
+impl<'a> PendingCompactionOutput<'a> {
+    fn new(
+        builder: ImmutableTableBuilder,
+        output_identity_seed: &'a TableIdentity,
+        source_identity: u64,
+        max_output_tables: usize,
+    ) -> Self {
+        Self {
+            builder,
+            output_identity_seed,
+            source_identity,
+            max_output_tables,
+            current: None,
+            current_rows: 0,
+            current_approximate_bytes: 0,
+            current_last_physical_key: None,
+        }
+    }
+
+    const fn has_rows(&self) -> bool {
+        self.current_rows > 0
+    }
+
+    const fn approximate_bytes(&self) -> u64 {
+        self.current_approximate_bytes
+    }
+
+    fn last_physical_key(&self) -> Option<&[u8]> {
+        self.current_last_physical_key.as_deref()
+    }
+
+    fn push_row(
+        &mut self,
+        artifacts: &mut Vec<BuiltTableArtifact>,
+        report: &mut TableCompactionReport,
+        row: &TableRow,
+        row_approximate_bytes: u64,
+        row_physical_key: &[u8],
+    ) -> TableRuntimeResult<()> {
+        if self.current.is_none() {
+            if artifacts.len() >= self.max_output_tables {
+                return Err(TableRuntimeError::InvalidRange {
+                    field: "max_output_tables",
+                });
+            }
+            let output_index = artifacts.len();
+            let identity = output_identity(
+                self.output_identity_seed,
+                self.source_identity,
+                output_index,
+            )?;
+            self.current = Some(self.builder.begin_streaming(identity)?);
+        }
+
+        let current = self
+            .current
+            .as_mut()
+            .expect("current output is initialized");
+        current.append(row)?;
+        self.current_rows = self.current_rows.saturating_add(1);
+        self.current_approximate_bytes = self
+            .current_approximate_bytes
+            .saturating_add(row_approximate_bytes);
+        update_pending_last_physical_key(&mut self.current_last_physical_key, row_physical_key);
+        report.record_peak_buffered_rows(current.peak_buffered_rows());
+        Ok(())
+    }
+
+    fn finish_current(
+        &mut self,
+        artifacts: &mut Vec<BuiltTableArtifact>,
+        report: &mut TableCompactionReport,
+    ) -> TableRuntimeResult<()> {
+        if self.current_rows == 0 {
+            return Ok(());
+        }
+        let current = self.current.take().ok_or(TableRuntimeError::InvalidRange {
+            field: "pending_compaction_output",
+        })?;
+        self.current_rows = 0;
+        self.current_approximate_bytes = 0;
+        self.current_last_physical_key = None;
+
+        let artifact = current.finish()?;
+        perf_trace::record_table_compaction_output_table_built();
+        report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
+        artifacts.push(artifact);
+        report.output_tables = artifacts.len();
+        report.split_count = report.output_tables.saturating_sub(1) as u64;
+        Ok(())
+    }
 }
 
 pub(crate) struct TableCompactionMergeCursor<'a> {
@@ -919,14 +999,14 @@ fn require_nonzero_target_output_bytes(target_output_bytes: u64) -> TableRuntime
 }
 
 fn should_split_before(
-    pending_rows: &[TableRow],
+    pending_has_rows: bool,
     pending_approximate_bytes: u64,
     pending_last_physical_key: Option<&[u8]>,
     target_output_bytes: u64,
     row_approximate_bytes: u64,
     row_physical_key: &[u8],
 ) -> bool {
-    if pending_rows.is_empty() {
+    if !pending_has_rows {
         return false;
     }
     let would_cross_target =
@@ -935,19 +1015,6 @@ fn should_split_before(
         return false;
     }
     pending_last_physical_key != Some(row_physical_key)
-}
-
-fn push_pending_row(
-    pending_rows: &mut Vec<TableRow>,
-    pending_approximate_bytes: &mut u64,
-    pending_last_physical_key: &mut Option<Vec<u8>>,
-    row_approximate_bytes: u64,
-    row_physical_key: &[u8],
-    row: TableRow,
-) {
-    *pending_approximate_bytes = pending_approximate_bytes.saturating_add(row_approximate_bytes);
-    update_pending_last_physical_key(pending_last_physical_key, row_physical_key);
-    pending_rows.push(row);
 }
 
 fn row_approximate_size_bytes(row: &TableRow) -> TableRuntimeResult<u64> {
@@ -965,39 +1032,6 @@ fn update_pending_last_physical_key(
     }
     perf_trace::record_table_compaction_boundary_key_allocation();
     *pending_last_physical_key = Some(row_physical_key.to_vec());
-}
-
-fn build_pending_output(
-    builder: &ImmutableTableBuilder,
-    output_identity_seed: &TableIdentity,
-    source_identity: u64,
-    pending_rows: &mut Vec<TableRow>,
-    pending_approximate_bytes: &mut u64,
-    pending_last_physical_key: &mut Option<Vec<u8>>,
-    artifacts: &mut Vec<BuiltTableArtifact>,
-    report: &mut TableCompactionReport,
-    max_output_tables: usize,
-) -> TableRuntimeResult<()> {
-    if pending_rows.is_empty() {
-        return Ok(());
-    }
-    if artifacts.len() >= max_output_tables {
-        return Err(TableRuntimeError::InvalidRange {
-            field: "max_output_tables",
-        });
-    }
-    let output_index = artifacts.len();
-    let rows = std::mem::take(pending_rows);
-    *pending_approximate_bytes = 0;
-    *pending_last_physical_key = None;
-    let identity = output_identity(output_identity_seed, source_identity, output_index)?;
-    let artifact = build_table_artifact_from_rows(builder, identity, &rows)?;
-    perf_trace::record_table_compaction_output_table_built();
-    report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
-    artifacts.push(artifact);
-    report.output_tables = artifacts.len();
-    report.split_count = report.output_tables.saturating_sub(1) as u64;
-    Ok(())
 }
 
 fn build_table_artifact_from_rows(

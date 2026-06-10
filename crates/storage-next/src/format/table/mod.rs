@@ -9,7 +9,7 @@ mod properties;
 pub(crate) use artifact::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
     encode_immutable_table, encode_immutable_table_with_block_compressions, ImmutableTable,
-    ImmutableTableMetadata,
+    ImmutableTableMetadata, ImmutableTableStreamingEncoder,
 };
 pub(crate) use index::TableIndexEntry;
 pub(crate) const MAX_TABLE_HEADER_SIZE: usize = TABLE_HEADER_SIZE;

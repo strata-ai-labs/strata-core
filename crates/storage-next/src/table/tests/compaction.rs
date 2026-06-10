@@ -460,11 +460,11 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_compaction_merge_cursor_opens(), 2);
     assert_eq!(perf.table_compaction_pre_validation_rows_scanned(), 0);
-    assert_eq!(perf.table_compaction_row_clones(), 3);
+    assert_eq!(perf.table_compaction_row_clones(), 0);
     assert_eq!(perf.table_compaction_kept_rows(), 3);
     assert_eq!(perf.table_compaction_dropped_rows(), 1);
     assert_eq!(perf.table_compaction_boundary_key_allocations(), 3);
-    assert_eq!(perf.table_compaction_peak_buffered_rows(), 3);
+    assert_eq!(perf.table_compaction_peak_buffered_rows(), 2);
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
     assert_eq!(perf.table_compaction_merge_advances(), 4);
     assert_eq!(perf.table_compaction_heap_key_clones(), 0);
@@ -509,11 +509,11 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     let strict = crate::observability::perf_trace::snapshot();
     assert_eq!(strict.table_compaction_merge_cursor_opens(), 2);
     assert_eq!(strict.table_compaction_pre_validation_rows_scanned(), 4);
-    assert_eq!(strict.table_compaction_row_clones(), 3);
+    assert_eq!(strict.table_compaction_row_clones(), 0);
     assert_eq!(strict.table_compaction_kept_rows(), 3);
     assert_eq!(strict.table_compaction_dropped_rows(), 1);
     assert_eq!(strict.table_compaction_boundary_key_allocations(), 3);
-    assert_eq!(strict.table_compaction_peak_buffered_rows(), 3);
+    assert_eq!(strict.table_compaction_peak_buffered_rows(), 2);
     assert_eq!(strict.table_compaction_output_tables_built(), 1);
     assert_eq!(strict.table_compaction_merge_advances(), 8);
     assert_eq!(strict.table_compaction_heap_key_clones(), 0);

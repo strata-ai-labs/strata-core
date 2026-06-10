@@ -26,7 +26,9 @@ mod reader;
         reason = "immutable table builder surfaces are consumed by later table-runtime work"
     )
 )]
-pub(crate) use builder::{BuiltTableArtifact, ImmutableTableBuilder};
+pub(crate) use builder::{
+    BuiltTableArtifact, ImmutableTableBuilder, ImmutableTableStreamingBuilder,
+};
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),
     expect(

@@ -12,7 +12,8 @@ use super::{
     MAX_TABLE_DATA_BLOCKS, MAX_TABLE_ROWS, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
 };
 use crate::format::FormatError;
-use crate::row::StorageRow;
+use crate::row::{InternalKey, StorageRow};
+use strata_core_next::CommitVersion;
 
 const TABLE_ARTIFACT_FORMAT: &str = "immutable_table";
 
@@ -77,6 +78,233 @@ impl ImmutableTable {
 struct DataFrameLocation {
     offset: u64,
     frame_len: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ImmutableTableStreamingEncoder {
+    target_data_block_size: u32,
+    rows_per_block: usize,
+    compression: TableCompression,
+    table_bytes: Vec<u8>,
+    current_block_rows: Vec<StorageRow>,
+    index_entries: Vec<TableIndexEntry>,
+    row_count: u64,
+    commit_min: Option<CommitVersion>,
+    commit_max: Option<CommitVersion>,
+    first_key: Option<InternalKey>,
+    last_key: Option<InternalKey>,
+    peak_buffered_rows: usize,
+}
+
+impl ImmutableTableStreamingEncoder {
+    pub(crate) fn new(
+        target_data_block_size: u32,
+        rows_per_block: usize,
+        compression: TableCompression,
+    ) -> Result<Self, FormatError> {
+        if target_data_block_size == 0 {
+            return Err(FormatError::InvalidLength {
+                field: "target_data_block_size",
+            });
+        }
+        if rows_per_block == 0 {
+            return Err(FormatError::InvalidLength {
+                field: "rows_per_block",
+            });
+        }
+        Ok(Self {
+            target_data_block_size,
+            rows_per_block,
+            compression,
+            table_bytes: vec![0; TABLE_HEADER_SIZE],
+            current_block_rows: Vec::new(),
+            index_entries: Vec::new(),
+            row_count: 0,
+            commit_min: None,
+            commit_max: None,
+            first_key: None,
+            last_key: None,
+            peak_buffered_rows: 0,
+        })
+    }
+
+    pub(crate) fn append(&mut self, row: &StorageRow) -> Result<(), FormatError> {
+        let next_row_count = self
+            .row_count
+            .checked_add(1)
+            .ok_or(FormatError::InvalidLength { field: "row_count" })?;
+        if next_row_count > MAX_TABLE_ROWS {
+            return Err(FormatError::InvalidLength { field: "row_count" });
+        }
+
+        let version = row.commit_version();
+        self.commit_min = Some(match self.commit_min {
+            Some(current) if current.as_u64() <= version.as_u64() => current,
+            _ => version,
+        });
+        self.commit_max = Some(match self.commit_max {
+            Some(current) if current.as_u64() >= version.as_u64() => current,
+            _ => version,
+        });
+
+        let key = InternalKey::new(row.physical_key().clone(), row.commit_version());
+        if self.first_key.is_none() {
+            self.first_key = Some(key.clone());
+        }
+        self.last_key = Some(key);
+        self.row_count = next_row_count;
+        self.current_block_rows.push(row.clone());
+        self.peak_buffered_rows = self.peak_buffered_rows.max(self.current_block_rows.len());
+
+        if self.current_block_rows.len() == self.rows_per_block {
+            self.flush_current_block()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn buffered_rows(&self) -> usize {
+        self.current_block_rows.len()
+    }
+
+    pub(crate) const fn peak_buffered_rows(&self) -> usize {
+        self.peak_buffered_rows
+    }
+
+    pub(crate) fn finish(mut self) -> Result<Vec<u8>, FormatError> {
+        self.flush_current_block()?;
+        let data_block_count = self.index_entries.len();
+        validate_build_counts(
+            usize::try_from(self.row_count)
+                .map_err(|_| FormatError::InvalidLength { field: "row_count" })?,
+            data_block_count,
+            self.target_data_block_size,
+        )?;
+
+        let commit_min = self
+            .commit_min
+            .ok_or(FormatError::InvalidLength { field: "row_count" })?;
+        let commit_max = self
+            .commit_max
+            .ok_or(FormatError::InvalidLength { field: "row_count" })?;
+        let first_key = self
+            .first_key
+            .as_ref()
+            .ok_or(FormatError::InvalidLength { field: "row_count" })?;
+        let last_key = self
+            .last_key
+            .as_ref()
+            .ok_or(FormatError::InvalidLength { field: "row_count" })?;
+
+        let data_block_count_u32 =
+            u32::try_from(data_block_count).map_err(|_| FormatError::InvalidLength {
+                field: "data_block_count",
+            })?;
+        let properties = TableProperties::new(
+            self.row_count,
+            data_block_count_u32,
+            commit_min,
+            commit_max,
+            first_key,
+            last_key,
+        )?;
+        let header = TableHeader::new(
+            self.target_data_block_size,
+            properties.data_block_count(),
+            properties.row_count(),
+            properties.commit_min(),
+            properties.commit_max(),
+        )?;
+        let header_bytes = encode_table_header(&header);
+        self.table_bytes[..TABLE_HEADER_SIZE].copy_from_slice(&header_bytes);
+
+        let index = TableIndexBlock::new(self.index_entries)?;
+        let index_frame = TableBlockFrame::new(
+            TableBlockKind::Index,
+            TableCompression::Uncompressed,
+            encode_table_index_block(&index)?,
+        )?;
+        let index_block_offset =
+            u64::try_from(self.table_bytes.len()).map_err(|_| FormatError::InvalidLength {
+                field: "index_block_offset",
+            })?;
+        let index_frame_bytes = encode_table_block_frame(&index_frame)?;
+        let index_block_frame_len =
+            u32::try_from(index_frame_bytes.len()).map_err(|_| FormatError::InvalidLength {
+                field: "index_block_frame_len",
+            })?;
+        self.table_bytes.extend_from_slice(&index_frame_bytes);
+
+        let properties_frame = TableBlockFrame::new(
+            TableBlockKind::Properties,
+            TableCompression::Uncompressed,
+            encode_table_properties(&properties)?,
+        )?;
+        let properties_block_offset =
+            u64::try_from(self.table_bytes.len()).map_err(|_| FormatError::InvalidLength {
+                field: "properties_block_offset",
+            })?;
+        let properties_frame_bytes = encode_table_block_frame(&properties_frame)?;
+        let properties_block_frame_len =
+            u32::try_from(properties_frame_bytes.len()).map_err(|_| {
+                FormatError::InvalidLength {
+                    field: "properties_block_frame_len",
+                }
+            })?;
+        self.table_bytes.extend_from_slice(&properties_frame_bytes);
+
+        let footer = TableFooter::new(
+            index_block_offset,
+            index_block_frame_len,
+            properties_block_offset,
+            properties_block_frame_len,
+        )?;
+        self.table_bytes
+            .extend_from_slice(&encode_table_footer(&footer, &self.table_bytes)?);
+        Ok(self.table_bytes)
+    }
+
+    fn flush_current_block(&mut self) -> Result<(), FormatError> {
+        if self.current_block_rows.is_empty() {
+            return Ok(());
+        }
+        let next_block_count =
+            self.index_entries
+                .len()
+                .checked_add(1)
+                .ok_or(FormatError::InvalidLength {
+                    field: "data_block_count",
+                })?;
+        if next_block_count > MAX_TABLE_DATA_BLOCKS as usize {
+            return Err(FormatError::InvalidLength {
+                field: "data_block_count",
+            });
+        }
+
+        let rows = std::mem::take(&mut self.current_block_rows);
+        let data_block = TableDataBlock::from_rows(&rows)?;
+        let data_payload = encode_table_data_block(&data_block)?;
+        let frame = TableBlockFrame::new(TableBlockKind::Data, self.compression, data_payload)?;
+        let frame_bytes = encode_table_block_frame(&frame)?;
+        let block_offset =
+            u64::try_from(self.table_bytes.len()).map_err(|_| FormatError::InvalidLength {
+                field: "block_offset",
+            })?;
+        let block_frame_len =
+            u32::try_from(frame_bytes.len()).map_err(|_| FormatError::InvalidLength {
+                field: "block_frame_len",
+            })?;
+        let row_count = u32::try_from(data_block.row_count())
+            .map_err(|_| FormatError::InvalidLength { field: "row_count" })?;
+        self.index_entries.push(TableIndexEntry::new(
+            data_block.entries()[0].internal_key(),
+            data_block.entries()[data_block.entries().len() - 1].internal_key(),
+            block_offset,
+            block_frame_len,
+            row_count,
+        )?);
+        self.table_bytes.extend_from_slice(&frame_bytes);
+        Ok(())
+    }
 }
 
 pub(crate) fn encode_immutable_table(

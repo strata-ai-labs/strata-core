@@ -1,14 +1,12 @@
 //! Immutable table builder.
 
 use super::{
-    validate_strictly_sorted_unique_rows, FrozenTable, MutableTable, TableBuilderConfig,
-    TableIdentity, TableRow, TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts,
-    TableRuntimeResult,
+    FrozenTable, MutableTable, TableBuilderConfig, TableIdentity, TableInternalKeyBytes, TableRow,
+    TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
-    decode_immutable_table, encode_immutable_table, MAX_TABLE_BLOCK_DECODED_BYTES,
-    MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_DATA_BLOCKS, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS,
-    MAX_TABLE_ROW_BYTES,
+    decode_immutable_table, ImmutableTableStreamingEncoder, MAX_TABLE_BLOCK_DECODED_BYTES,
+    MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROW_BYTES,
 };
 use crate::row::StorageRow;
 
@@ -70,12 +68,11 @@ impl ImmutableTableBuilder {
         identity: TableIdentity,
         rows: &[TableRow],
     ) -> TableRuntimeResult<BuiltTableArtifact> {
-        validate_builder_rows(rows, self.config)?;
-        let storage_rows = rows
-            .iter()
-            .map(|row| row.row().clone())
-            .collect::<Vec<StorageRow>>();
-        self.build_from_storage_rows_unchecked(identity, &storage_rows)
+        let mut builder = self.begin_streaming(identity)?;
+        for row in rows {
+            builder.append(row)?;
+        }
+        builder.finish()
     }
 
     pub(crate) fn build_from_frozen(
@@ -105,91 +102,155 @@ impl ImmutableTableBuilder {
         self.build_from_rows(identity, &rows)
     }
 
-    fn build_from_storage_rows_unchecked(
+    pub(crate) fn begin_streaming(
         &self,
         identity: TableIdentity,
-        rows: &[StorageRow],
-    ) -> TableRuntimeResult<BuiltTableArtifact> {
-        let bytes = encode_immutable_table(
-            rows,
-            self.config.target_data_block_size(),
-            self.config.rows_per_block(),
-            self.config.compression(),
+    ) -> TableRuntimeResult<ImmutableTableStreamingBuilder> {
+        ImmutableTableStreamingBuilder::new(identity, self.config)
+    }
+}
+
+pub(crate) struct ImmutableTableStreamingBuilder {
+    identity: TableIdentity,
+    encoder: ImmutableTableStreamingEncoder,
+    config: TableBuilderConfig,
+    previous_key: Option<TableInternalKeyBytes>,
+    current_block_entries: usize,
+    current_block_decoded_len: usize,
+}
+
+impl ImmutableTableStreamingBuilder {
+    fn new(identity: TableIdentity, config: TableBuilderConfig) -> TableRuntimeResult<Self> {
+        config.validate()?;
+        let encoder = ImmutableTableStreamingEncoder::new(
+            config.target_data_block_size(),
+            config.rows_per_block(),
+            config.compression(),
         )
         .map_err(|source| TableRuntimeError::BuildFormat { source })?;
-        let decoded = decode_immutable_table(&bytes)
-            .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
-        let facts = table_facts_from_decoded(identity, &bytes, &decoded)?;
-        Ok(BuiltTableArtifact::new(bytes, facts))
-    }
-}
-
-fn validate_builder_rows(rows: &[TableRow], config: TableBuilderConfig) -> TableRuntimeResult<()> {
-    if rows.is_empty() {
-        return Err(TableRuntimeError::InvalidRange { field: "row_count" });
-    }
-    validate_builder_limits_before_encoding(rows, config)?;
-    validate_strictly_sorted_unique_rows(rows)
-}
-
-fn validate_builder_limits_before_encoding(
-    rows: &[TableRow],
-    config: TableBuilderConfig,
-) -> TableRuntimeResult<()> {
-    if u64::try_from(rows.len())
-        .map_err(|_| TableRuntimeError::InvalidRange { field: "row_count" })?
-        > MAX_TABLE_ROWS
-    {
-        return Err(TableRuntimeError::InvalidRange { field: "row_count" });
-    }
-    let block_count = rows.len().div_ceil(config.rows_per_block());
-    if block_count == 0 || block_count > MAX_TABLE_DATA_BLOCKS as usize {
-        return Err(TableRuntimeError::InvalidRange {
-            field: "data_block_count",
-        });
+        Ok(Self {
+            identity,
+            encoder,
+            config,
+            previous_key: None,
+            current_block_entries: 0,
+            current_block_decoded_len: 4,
+        })
     }
 
-    let mut current_block_entries = 0usize;
-    let mut current_block_decoded_len = 4usize;
-    for row in rows {
-        let key_len = row.encoded_key().len();
-        if key_len == 0 || key_len > MAX_TABLE_KEY_BYTES {
-            return Err(TableRuntimeError::InvalidRange {
-                field: "internal_key_len",
-            });
+    pub(crate) fn append(&mut self, row: &TableRow) -> TableRuntimeResult<()> {
+        self.validate_next_row(row)?;
+        self.encoder
+            .append(row.row())
+            .map_err(|source| TableRuntimeError::BuildFormat { source })?;
+        self.previous_key = Some(row.key().clone());
+        Ok(())
+    }
+
+    pub(crate) const fn buffered_rows(&self) -> usize {
+        self.encoder.buffered_rows()
+    }
+
+    pub(crate) const fn peak_buffered_rows(&self) -> usize {
+        self.encoder.peak_buffered_rows()
+    }
+
+    pub(crate) fn finish(self) -> TableRuntimeResult<BuiltTableArtifact> {
+        if self.previous_key.is_none() {
+            return Err(TableRuntimeError::InvalidRange { field: "row_count" });
         }
-        let row_len = encoded_storage_row_len(row)?;
-        if row_len == 0 || row_len > MAX_TABLE_ROW_BYTES {
-            return Err(TableRuntimeError::InvalidRange { field: "row_len" });
-        }
-        let entry_len = 4usize
-            .checked_add(key_len)
-            .and_then(|len| len.checked_add(4))
-            .and_then(|len| len.checked_add(row_len))
+        let bytes = self
+            .encoder
+            .finish()
+            .map_err(|source| TableRuntimeError::BuildFormat { source })?;
+        build_table_artifact_from_bytes(self.identity, bytes)
+    }
+
+    fn validate_next_row(&mut self, row: &TableRow) -> TableRuntimeResult<()> {
+        validate_builder_row_shape(row)?;
+        validate_builder_row_order(self.previous_key.as_ref(), row.key())?;
+        self.record_block_row_shape(row)?;
+        Ok(())
+    }
+
+    fn record_block_row_shape(&mut self, row: &TableRow) -> TableRuntimeResult<()> {
+        let entry_len = encoded_table_data_entry_len(row)?;
+        self.current_block_decoded_len = self
+            .current_block_decoded_len
+            .checked_add(entry_len)
             .ok_or(TableRuntimeError::InvalidRange {
-                field: "table_data_entry_len",
-            })?;
-        current_block_decoded_len = current_block_decoded_len.checked_add(entry_len).ok_or(
-            TableRuntimeError::InvalidRange {
                 field: "data_block_decoded_len",
-            },
-        )?;
-        current_block_entries = current_block_entries.saturating_add(1);
-        if current_block_entries > MAX_TABLE_BLOCK_ENTRIES as usize
-            || current_block_decoded_len > MAX_TABLE_BLOCK_DECODED_BYTES
+            })?;
+        self.current_block_entries = self.current_block_entries.saturating_add(1);
+        if self.current_block_entries > MAX_TABLE_BLOCK_ENTRIES as usize
+            || self.current_block_decoded_len > MAX_TABLE_BLOCK_DECODED_BYTES
         {
             return Err(TableRuntimeError::InvalidRange {
                 field: "data_block_decoded_len",
             });
         }
 
-        if current_block_entries == config.rows_per_block() {
-            current_block_entries = 0;
-            current_block_decoded_len = 4;
+        if self.current_block_entries == self.config.rows_per_block() {
+            self.current_block_entries = 0;
+            self.current_block_decoded_len = 4;
         }
+        Ok(())
     }
+}
 
+fn build_table_artifact_from_bytes(
+    identity: TableIdentity,
+    bytes: Vec<u8>,
+) -> TableRuntimeResult<BuiltTableArtifact> {
+    let decoded = decode_immutable_table(&bytes)
+        .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+    let facts = table_facts_from_decoded(identity, &bytes, &decoded)?;
+    Ok(BuiltTableArtifact::new(bytes, facts))
+}
+
+fn validate_builder_row_shape(row: &TableRow) -> TableRuntimeResult<()> {
+    let key_len = row.encoded_key().len();
+    if key_len == 0 || key_len > MAX_TABLE_KEY_BYTES {
+        return Err(TableRuntimeError::InvalidRange {
+            field: "internal_key_len",
+        });
+    }
+    let row_len = encoded_storage_row_len(row)?;
+    if row_len == 0 || row_len > MAX_TABLE_ROW_BYTES {
+        return Err(TableRuntimeError::InvalidRange { field: "row_len" });
+    }
     Ok(())
+}
+
+fn validate_builder_row_order(
+    previous_key: Option<&TableInternalKeyBytes>,
+    current_key: &TableInternalKeyBytes,
+) -> TableRuntimeResult<()> {
+    let Some(previous_key) = previous_key else {
+        return Ok(());
+    };
+    match previous_key.cmp(current_key) {
+        std::cmp::Ordering::Less => Ok(()),
+        std::cmp::Ordering::Equal => Err(TableRuntimeError::DuplicateInternalKey {
+            key: current_key.as_slice().to_vec(),
+        }),
+        std::cmp::Ordering::Greater => Err(TableRuntimeError::InvalidRowOrder {
+            previous: previous_key.as_slice().to_vec(),
+            current: current_key.as_slice().to_vec(),
+        }),
+    }
+}
+
+fn encoded_table_data_entry_len(row: &TableRow) -> TableRuntimeResult<usize> {
+    let key_len = row.encoded_key().len();
+    let row_len = encoded_storage_row_len(row)?;
+    4usize
+        .checked_add(key_len)
+        .and_then(|len| len.checked_add(4))
+        .and_then(|len| len.checked_add(row_len))
+        .ok_or(TableRuntimeError::InvalidRange {
+            field: "table_data_entry_len",
+        })
 }
 
 fn encoded_storage_row_len(row: &TableRow) -> TableRuntimeResult<usize> {
