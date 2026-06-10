@@ -1283,7 +1283,8 @@ fn branch_point_read_prunes_each_owned_nonzero_level_independently() {
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
     assert_eq!(perf.table_point_lookup_key_reuses(), 2);
     assert_eq!(perf.table_eager_filter_probes(), 2);
-    assert_eq!(perf.table_eager_filter_unavailable_probes(), 2);
+    assert_eq!(perf.table_eager_filter_positive_probes(), 2);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 0);
     assert_eq!(perf.point_remaining_source_skips(), 0);
     assert!(perf.point_owned_nonzero_table_probes() <= perf.point_owned_nonzero_level_searches());
 }
@@ -1343,7 +1344,8 @@ fn branch_point_read_prunes_inherited_nonzero_levels_after_key_rewrite() {
     assert_eq!(perf.table_point_lookup_key_builds(), 2);
     assert_eq!(perf.table_point_lookup_key_reuses(), 0);
     assert_eq!(perf.table_eager_filter_probes(), 1);
-    assert_eq!(perf.table_eager_filter_unavailable_probes(), 1);
+    assert_eq!(perf.table_eager_filter_positive_probes(), 1);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 0);
     assert_eq!(perf.point_remaining_source_skips(), 0);
     assert!(
         perf.point_inherited_nonzero_table_probes()
@@ -1394,6 +1396,7 @@ fn branch_point_read_keeps_l0_linear_because_ranges_can_overlap() {
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
     assert_eq!(perf.table_point_lookup_key_reuses(), 25);
     assert_eq!(perf.table_eager_filter_probes(), 25);
-    assert_eq!(perf.table_eager_filter_unavailable_probes(), 25);
+    assert_eq!(perf.table_eager_filter_positive_probes(), 25);
+    assert_eq!(perf.table_eager_filter_unavailable_probes(), 0);
     assert_eq!(perf.point_remaining_source_skips(), 0);
 }

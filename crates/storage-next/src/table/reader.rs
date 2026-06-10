@@ -23,6 +23,8 @@ use strata_core_next::{CommitVersion, Timestamp};
 
 use super::facts::table_facts_from_decoded;
 
+const DEFAULT_EAGER_FILTER_BITS_PER_KEY: usize = 10;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BytesTableSource {
     bytes: Vec<u8>,
@@ -232,8 +234,43 @@ impl Eq for ImmutableTableReader<'_> {}
 
 #[derive(Clone, Debug)]
 enum TableReaderRows<'a> {
-    Eager(Arc<[TableRow]>),
+    Eager(EagerTableRows),
     Lazy(Box<LazyTableRows<'a>>),
+}
+
+#[derive(Clone, Debug)]
+struct EagerTableRows {
+    rows: Arc<[TableRow]>,
+    filter: TableReaderFilter,
+}
+
+impl EagerTableRows {
+    fn new(rows: Arc<[TableRow]>, filter: TableReaderFilter) -> Self {
+        Self { rows, filter }
+    }
+
+    fn from_vec(
+        facts: TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+        rows: Vec<TableRow>,
+    ) -> TableRuntimeResult<Self> {
+        let filter = build_eager_filter(facts, fingerprint, &rows)?;
+        Ok(Self::new(Arc::from(rows.into_boxed_slice()), filter))
+    }
+
+    fn from_vec_with_filter(rows: Vec<TableRow>, filter: TableReaderFilter) -> Self {
+        Self::new(Arc::from(rows.into_boxed_slice()), filter)
+    }
+
+    fn rows(&self) -> &[TableRow] {
+        &self.rows
+    }
+
+    fn with_filter(&mut self, filter: TableReaderFilter) -> bool {
+        let available = filter.is_available();
+        self.filter = filter;
+        available
+    }
 }
 
 pub(crate) enum TablePointLookupRow<'a> {
@@ -260,23 +297,27 @@ impl TablePointLookupRow<'_> {
 impl<'a> TableReaderRows<'a> {
     fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
         match self {
-            Self::Eager(rows) => Ok(rows),
+            Self::Eager(rows) => Ok(rows.rows()),
             Self::Lazy(rows) => rows.try_rows(),
         }
     }
 
-    fn into_materialized(self) -> TableRuntimeResult<(Arc<[TableRow]>, bool)> {
+    fn into_materialized(
+        self,
+        facts: TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+    ) -> TableRuntimeResult<(EagerTableRows, bool)> {
         match self {
             Self::Eager(rows) => Ok((rows, false)),
             Self::Lazy(rows) => rows
-                .into_materialized()
-                .map(|rows| (Arc::from(rows.into_boxed_slice()), true)),
+                .into_materialized_eager(facts, fingerprint)
+                .map(|rows| (rows, true)),
         }
     }
 
     fn try_get_exact(&self, key: &TableInternalKeyBytes) -> TableRuntimeResult<Option<TableRow>> {
         match self {
-            Self::Eager(rows) => Ok(find_exact_in_rows(rows, key)),
+            Self::Eager(rows) => Ok(find_exact_in_rows(rows.rows(), key)),
             Self::Lazy(rows) => rows.try_get_exact(key),
         }
     }
@@ -295,7 +336,8 @@ impl<'a> TableReaderRows<'a> {
     ) -> TableRuntimeResult<(Option<TablePointLookupRow<'_>>, usize)> {
         match self {
             Self::Eager(rows) => {
-                let (row, visited) = seek_prepared_point_in_slice(rows, lookup);
+                let (row, visited) =
+                    seek_prepared_point_in_slice(rows.rows(), lookup, Some(&rows.filter));
                 Ok((row.map(TablePointLookupRow::Borrowed), visited))
             }
             Self::Lazy(rows) => rows.try_seek_prepared_point_candidate(lookup),
@@ -307,7 +349,7 @@ impl<'a> TableReaderRows<'a> {
         key: &PhysicalKey,
     ) -> TableRuntimeResult<(Vec<TableRow>, usize)> {
         match self {
-            Self::Eager(rows) => Ok(physical_key_rows_in_slice(rows, key)),
+            Self::Eager(rows) => Ok(physical_key_rows_in_slice(rows.rows(), key)),
             Self::Lazy(rows) => rows.try_physical_key_rows(key),
         }
     }
@@ -317,7 +359,7 @@ impl<'a> TableReaderRows<'a> {
         bounds_hint: Option<TableKeyBounds>,
     ) -> ImmutableTableCursor<'reader, 'a> {
         match self {
-            Self::Eager(rows) => ImmutableTableCursor::eager(rows),
+            Self::Eager(rows) => ImmutableTableCursor::eager(&rows.rows),
             Self::Lazy(rows) => rows.cursor(bounds_hint),
         }
     }
@@ -335,7 +377,7 @@ impl<'a> TableReaderRows<'a> {
 
     fn with_filter(&mut self, filter: TableReaderFilter) -> bool {
         match self {
-            Self::Eager(_) => false,
+            Self::Eager(rows) => rows.with_filter(filter),
             Self::Lazy(rows) => rows.with_filter(filter),
         }
     }
@@ -391,7 +433,8 @@ impl<'a> LazyTableRows<'a> {
         if let Some(rows) = self.rows.get() {
             return match rows {
                 Ok(rows) => {
-                    let (row, visited) = seek_prepared_point_in_slice(rows, lookup);
+                    let (row, visited) =
+                        seek_prepared_point_in_slice(rows, lookup, self.state.filter.as_ref());
                     Ok((row.map(TablePointLookupRow::Borrowed), visited))
                 }
                 Err(error) => Err(error.clone()),
@@ -418,6 +461,20 @@ impl<'a> LazyTableRows<'a> {
         match self.rows.into_inner() {
             Some(rows) => rows,
             None => read_and_validate_rows(&self.state),
+        }
+    }
+
+    fn into_materialized_eager(
+        self,
+        facts: TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+    ) -> TableRuntimeResult<EagerTableRows> {
+        let filter = self.state.filter.clone();
+        let rows = self.into_materialized()?;
+        if let Some(filter) = filter {
+            Ok(EagerTableRows::from_vec_with_filter(rows, filter))
+        } else {
+            EagerTableRows::from_vec(facts, fingerprint, rows)
         }
     }
 
@@ -824,17 +881,19 @@ impl<'a> ImmutableTableReader<'a> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
         let (facts, fingerprint, rows) = decode_reader_rows(identity, &bytes)?;
+        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows)?;
         let runtime_facts = TableReaderRuntimeFacts::eager(
             TableReaderOpenMode::EagerBytes,
             facts.data_block_count(),
             facts.row_count(),
-        );
+        )
+        .with_filter_available(rows.filter.is_available());
         Ok(Self {
             config,
             facts,
             fingerprint,
             runtime_facts,
-            rows: TableReaderRows::Eager(Arc::from(rows.into_boxed_slice())),
+            rows: TableReaderRows::Eager(rows),
         })
     }
 
@@ -969,13 +1028,16 @@ impl<'a> ImmutableTableReader<'a> {
         let config = self.config;
         let facts = self.facts;
         let runtime_facts = self.runtime_facts;
-        let (rows, was_lazy) = self.rows.into_materialized()?;
+        let (rows, was_lazy) = self
+            .rows
+            .into_materialized(facts.clone(), self.fingerprint)?;
         let runtime_facts = if was_lazy {
             TableReaderRuntimeFacts::eager(
                 TableReaderOpenMode::EagerSource,
                 facts.data_block_count(),
                 facts.row_count(),
             )
+            .with_filter_available(rows.filter.is_available())
         } else {
             runtime_facts
         };
@@ -1224,11 +1286,18 @@ impl super::TableCursor for ImmutableTableCursor<'_, '_> {
 fn seek_prepared_point_in_slice<'a>(
     rows: &'a [TableRow],
     lookup: &TablePreparedPointLookup,
+    filter: Option<&TableReaderFilter>,
 ) -> (Option<&'a TableRow>, usize) {
     perf_trace::record_table_seek();
     lookup.record_table_seek_use();
-    perf_trace::record_table_eager_filter_unavailable_probe();
     let prefix = lookup.physical_key();
+    match probe_eager_physical_filter(filter, prefix) {
+        TableBloomProbe::DefinitelyAbsent => {
+            perf_trace::record_table_point_rows_visited(0);
+            return (None, 0);
+        }
+        TableBloomProbe::MaybePresent | TableBloomProbe::Unavailable => {}
+    }
     let seek_key = lookup.seek_key();
     let start = match rows.binary_search_by(|row| row.key().cmp(seek_key)) {
         Ok(index) | Err(index) if index < rows.len() => index,
@@ -1255,6 +1324,21 @@ fn seek_prepared_point_in_slice<'a>(
     }
     perf_trace::record_table_point_rows_visited(visited);
     (None, visited)
+}
+
+fn probe_eager_physical_filter(
+    filter: Option<&TableReaderFilter>,
+    prefix: &TablePhysicalKeyBytes,
+) -> TableBloomProbe {
+    let probe = filter.map_or(TableBloomProbe::Unavailable, |filter| {
+        filter.probe_physical_key(prefix)
+    });
+    match probe {
+        TableBloomProbe::DefinitelyAbsent => perf_trace::record_table_eager_filter_negative_probe(),
+        TableBloomProbe::MaybePresent => perf_trace::record_table_eager_filter_positive_probe(),
+        TableBloomProbe::Unavailable => perf_trace::record_table_eager_filter_unavailable_probe(),
+    }
+    probe
 }
 
 fn physical_key_rows_in_slice(rows: &[TableRow], key: &PhysicalKey) -> (Vec<TableRow>, usize) {
@@ -1379,6 +1463,14 @@ fn build_filter_from_decoded_rows(
     bits_per_key: usize,
 ) -> TableRuntimeResult<TableReaderFilter> {
     TableReaderFilter::from_validated_rows(facts, fingerprint, rows, bits_per_key)
+}
+
+fn build_eager_filter(
+    facts: TableRuntimeFacts,
+    fingerprint: TableContentFingerprint,
+    rows: &[TableRow],
+) -> TableRuntimeResult<TableReaderFilter> {
+    build_filter_from_decoded_rows(facts, fingerprint, rows, DEFAULT_EAGER_FILTER_BITS_PER_KEY)
 }
 
 fn read_table_metadata(
