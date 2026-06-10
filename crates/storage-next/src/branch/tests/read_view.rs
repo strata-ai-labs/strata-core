@@ -51,6 +51,65 @@ fn branch_read_view_is_pinned_across_append_and_rotation() {
     );
 }
 
+#[test]
+fn branch_read_view_active_snapshot_ignores_later_unrotated_appends() {
+    let branch = branch_id(39);
+    let mut state = BranchLocalState::empty(branch);
+    let captured = storage_row_with(
+        branch,
+        b"active-snapshot-captured".to_vec(),
+        10,
+        100,
+        Timestamp::EPOCH,
+        b"captured".to_vec(),
+    );
+    let later_same_key = storage_row_with(
+        branch,
+        b"active-snapshot-captured".to_vec(),
+        11,
+        110,
+        Timestamp::EPOCH,
+        b"later-same-key".to_vec(),
+    );
+    let later_other_key = storage_row_with(
+        branch,
+        b"active-snapshot-later".to_vec(),
+        12,
+        120,
+        Timestamp::EPOCH,
+        b"later-other-key".to_vec(),
+    );
+
+    state
+        .append_committed_row(captured.clone())
+        .expect("append captured row");
+    let view = state.capture_read_view().expect("capture read view");
+
+    state
+        .append_committed_row(later_same_key)
+        .expect("append later same key");
+    state
+        .append_committed_row(later_other_key)
+        .expect("append later other key");
+
+    let captured_key = physical_key(branch, b"active-snapshot-captured".to_vec());
+    let later_key = physical_key(branch, b"active-snapshot-later".to_vec());
+    assert_visible_row(
+        view.latest(&captured_key)
+            .expect("captured key read")
+            .as_ref(),
+        &captured,
+        BranchRowSource::Active,
+    );
+    assert_eq!(
+        view.latest(&later_key).expect("later key read"),
+        None,
+        "captured read view must not observe rows appended into the same active table"
+    );
+    assert_eq!(view.active_row_count(), 1);
+    assert_eq!(state.active_row_count(), 3);
+}
+
 #[cfg(feature = "perf-trace")]
 #[test]
 fn branch_read_view_capture_pins_sources_across_later_mutations() {

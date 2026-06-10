@@ -471,13 +471,13 @@ pub(crate) fn branch_pruning_fingerprint(branch: &BranchLocalState) -> u64 {
     hash_bytes(&mut hash, branch.branch_id().as_bytes());
     hash_u64(&mut hash, branch.active_row_count() as u64);
     for row in branch.active().iter() {
-        hash_row(&mut hash, row);
+        hash_row(&mut hash, row.as_ref());
     }
     hash_u64(&mut hash, branch.frozen_table_count() as u64);
     for table in branch.frozen() {
         hash_u64(&mut hash, table.len() as u64);
         for row in table.iter() {
-            hash_row(&mut hash, row);
+            hash_row(&mut hash, row.as_ref());
         }
     }
     hash_owned_levels(&mut hash, branch.owned_levels());

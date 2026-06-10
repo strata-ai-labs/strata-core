@@ -8,7 +8,7 @@ use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::row::{InternalKey, PhysicalKey};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use strata_core_next::{CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,17 +47,31 @@ impl TableMemoryFacts {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct TableMemoryState {
-    rows: BTreeMap<TableInternalKeyBytes, TableRow>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TableMemoryEntry {
+    pub(super) row: Arc<TableRow>,
+    pub(super) sequence: u64,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(super) struct TableMemoryData {
+    pub(super) rows: BTreeMap<TableInternalKeyBytes, TableMemoryEntry>,
     approximate_size_bytes: usize,
     min_commit: Option<CommitVersion>,
     max_commit: Option<CommitVersion>,
+    next_sequence: u64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
+struct TableMemoryState {
+    data: RwLock<TableMemoryData>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct MutableTable {
-    inner: TableMemoryState,
+    inner: Arc<TableMemoryState>,
+    sequence_upper_bound: Option<u64>,
+    captured_facts: Option<TableMemoryFacts>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +79,26 @@ pub(crate) struct MutableTableAppendBaseline {
     approximate_size_bytes: usize,
     min_commit: Option<CommitVersion>,
     max_commit: Option<CommitVersion>,
+    next_sequence: u64,
 }
+
+impl Default for MutableTable {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(TableMemoryState::default()),
+            sequence_upper_bound: None,
+            captured_facts: None,
+        }
+    }
+}
+
+impl PartialEq for MutableTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.facts() == other.facts() && self.visible_rows() == other.visible_rows()
+    }
+}
+
+impl Eq for MutableTable {}
 
 impl MutableTable {
     pub(crate) fn new() -> Self {
@@ -73,7 +106,12 @@ impl MutableTable {
     }
 
     pub(crate) fn clone_for_read_view(&self) -> Self {
-        self.clone()
+        let (sequence_upper_bound, facts) = self.capture_view_state();
+        Self {
+            inner: Arc::clone(&self.inner),
+            sequence_upper_bound: Some(sequence_upper_bound),
+            captured_facts: Some(facts),
+        }
     }
 
     pub(crate) fn insert_row(&mut self, row: StorageRow) -> TableRuntimeResult<()> {
@@ -81,9 +119,14 @@ impl MutableTable {
     }
 
     pub(crate) fn insert_table_row(&mut self, row: TableRow) -> TableRuntimeResult<()> {
+        debug_assert!(
+            self.sequence_upper_bound.is_none(),
+            "cannot insert into a pinned memory-table view"
+        );
         let key = row.key().clone();
         perf_trace::record_mutable_insert_duplicate_check();
-        if self.inner.rows.contains_key(&key) {
+        let mut data = self.write_data();
+        if data.rows.contains_key(&key) {
             return Err(TableRuntimeError::DuplicateInternalKey {
                 key: key.as_slice().to_vec(),
             });
@@ -91,18 +134,34 @@ impl MutableTable {
 
         let row_size = row.approximate_size_bytes();
         let commit_version = row.commit_version();
-        let inner = &mut self.inner;
-        inner.rows.insert(key, row);
-        inner.approximate_size_bytes = inner.approximate_size_bytes.saturating_add(row_size);
-        update_commit_range(&mut inner.min_commit, &mut inner.max_commit, commit_version);
+        let sequence = data.next_sequence;
+        data.next_sequence = data.next_sequence.saturating_add(1);
+        data.rows.insert(
+            key,
+            TableMemoryEntry {
+                row: Arc::new(row),
+                sequence,
+            },
+        );
+        data.approximate_size_bytes = data.approximate_size_bytes.saturating_add(row_size);
+        data.min_commit = Some(
+            data.min_commit
+                .map_or(commit_version, |min| min.min(commit_version)),
+        );
+        data.max_commit = Some(
+            data.max_commit
+                .map_or(commit_version, |max| max.max(commit_version)),
+        );
         Ok(())
     }
 
     pub(crate) fn append_baseline(&self) -> MutableTableAppendBaseline {
+        let data = self.read_data();
         MutableTableAppendBaseline {
-            approximate_size_bytes: self.inner.approximate_size_bytes,
-            min_commit: self.inner.min_commit,
-            max_commit: self.inner.max_commit,
+            approximate_size_bytes: data.approximate_size_bytes,
+            min_commit: data.min_commit,
+            max_commit: data.max_commit,
+            next_sequence: data.next_sequence,
         }
     }
 
@@ -111,78 +170,92 @@ impl MutableTable {
         baseline: MutableTableAppendBaseline,
         inserted_keys: &[TableInternalKeyBytes],
     ) {
-        let inner = &mut self.inner;
+        let mut data = self.write_data();
         for key in inserted_keys {
-            inner.rows.remove(key);
+            data.rows.remove(key);
         }
-        inner.approximate_size_bytes = baseline.approximate_size_bytes;
-        inner.min_commit = baseline.min_commit;
-        inner.max_commit = baseline.max_commit;
+        data.approximate_size_bytes = baseline.approximate_size_bytes;
+        data.min_commit = baseline.min_commit;
+        data.max_commit = baseline.max_commit;
+        data.next_sequence = baseline.next_sequence;
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.inner.rows.len()
+        self.facts().row_count()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.inner.rows.is_empty()
+        self.len() == 0
     }
 
     pub(crate) fn approximate_size_bytes(&self) -> usize {
-        self.inner.approximate_size_bytes
+        self.facts().approximate_size_bytes()
     }
 
     pub(crate) fn facts(&self) -> TableMemoryFacts {
-        memory_facts(
-            &self.inner.rows,
-            self.inner.approximate_size_bytes,
-            self.inner.min_commit,
-            self.inner.max_commit,
-        )
+        if let Some(facts) = &self.captured_facts {
+            return facts.clone();
+        }
+        memory_facts(&self.read_data())
     }
 
-    pub(crate) fn first_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.inner.rows.first_key_value().map(|(key, _)| key)
+    pub(crate) fn first_key(&self) -> Option<TableInternalKeyBytes> {
+        self.facts().first_key().map(canonical_fact_key)
     }
 
-    pub(crate) fn last_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.inner.rows.last_key_value().map(|(key, _)| key)
+    pub(crate) fn last_key(&self) -> Option<TableInternalKeyBytes> {
+        self.facts().last_key().map(canonical_fact_key)
     }
 
-    pub(crate) fn get(&self, key: &TableInternalKeyBytes) -> Option<&TableRow> {
-        self.inner.rows.get(key)
+    pub(crate) fn get(&self, key: &TableInternalKeyBytes) -> Option<Arc<TableRow>> {
+        let data = self.read_data();
+        data.rows
+            .get(key)
+            .filter(|entry| self.entry_visible(entry))
+            .map(|entry| Arc::clone(&entry.row))
     }
 
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &TableRow> {
-        self.inner.rows.values()
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = Arc<TableRow>> {
+        self.visible_rows().into_iter()
     }
 
     pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
         MemoryTableCursor::from_mutable(self)
     }
 
-    pub(super) fn row_map(&self) -> &BTreeMap<TableInternalKeyBytes, TableRow> {
-        &self.inner.rows
+    pub(super) fn read_data(&self) -> RwLockReadGuard<'_, TableMemoryData> {
+        self.inner
+            .data
+            .read()
+            .expect("table memory read lock poisoned")
     }
 
-    pub(crate) fn rows_in_bounds<'a>(
-        &'a self,
-        bounds: &'a TableKeyBounds,
-    ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.inner
-            .rows
-            .values()
-            .filter(move |row| bounds.contains_key(row.key()))
+    pub(super) const fn sequence_upper_bound(&self) -> Option<u64> {
+        self.sequence_upper_bound
     }
 
-    pub(crate) fn rows_with_physical_prefix<'a>(
-        &'a self,
-        prefix: &'a TablePhysicalKeyBytes,
-    ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.inner
-            .rows
-            .values()
-            .filter(move |row| prefix.is_prefix_of(row.key()))
+    pub(crate) fn rows_in_bounds(
+        &self,
+        bounds: &TableKeyBounds,
+    ) -> impl DoubleEndedIterator<Item = Arc<TableRow>> {
+        let rows = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| bounds.contains_key(row.key()))
+            .collect::<Vec<_>>();
+        rows.into_iter()
+    }
+
+    pub(crate) fn rows_with_physical_prefix(
+        &self,
+        prefix: &TablePhysicalKeyBytes,
+    ) -> impl DoubleEndedIterator<Item = Arc<TableRow>> {
+        let rows = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| prefix.is_prefix_of(row.key()))
+            .collect::<Vec<_>>();
+        rows.into_iter()
     }
 
     pub(crate) fn seek_physical_key(
@@ -190,9 +263,10 @@ impl MutableTable {
         key: &PhysicalKey,
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
-    ) -> (Option<&TableRow>, usize) {
+    ) -> (Option<Arc<TableRow>>, usize) {
         seek_physical_key_in_rows(
-            &self.inner.rows,
+            &self.read_data(),
+            self.sequence_upper_bound,
             key,
             max_commit_version,
             max_commit_timestamp,
@@ -200,93 +274,152 @@ impl MutableTable {
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
-        physical_key_rows_in_rows(&self.inner.rows, key)
+        physical_key_rows_in_rows(&self.read_data(), self.sequence_upper_bound, key)
     }
 
     #[cfg(feature = "perf-trace")]
     pub(crate) fn perf_seek_physical_key_unbounded(
         &self,
         key: &PhysicalKey,
-    ) -> (Option<&TableRow>, usize) {
+    ) -> (Option<Arc<TableRow>>, usize) {
         self.seek_physical_key(key, None, None)
     }
 
     pub(crate) fn freeze(self) -> FrozenTable {
+        let (sequence_upper_bound, facts) = self.capture_view_state();
         FrozenTable {
-            inner: Arc::new(self.inner),
+            inner: self.inner,
+            sequence_upper_bound,
+            facts,
         }
+    }
+
+    fn capture_view_state(&self) -> (u64, TableMemoryFacts) {
+        if let (Some(sequence_upper_bound), Some(facts)) =
+            (self.sequence_upper_bound, &self.captured_facts)
+        {
+            return (sequence_upper_bound, facts.clone());
+        }
+        let data = self.read_data();
+        (data.next_sequence, memory_facts(&data))
+    }
+
+    fn write_data(&self) -> RwLockWriteGuard<'_, TableMemoryData> {
+        self.inner
+            .data
+            .write()
+            .expect("table memory write lock poisoned")
+    }
+
+    fn entry_visible(&self, entry: &TableMemoryEntry) -> bool {
+        entry_visible(entry, self.sequence_upper_bound)
+    }
+
+    fn visible_rows(&self) -> Vec<Arc<TableRow>> {
+        let data = self.read_data();
+        data.rows
+            .values()
+            .filter(|entry| self.entry_visible(entry))
+            .map(|entry| Arc::clone(&entry.row))
+            .collect()
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct FrozenTable {
     inner: Arc<TableMemoryState>,
+    sequence_upper_bound: u64,
+    facts: TableMemoryFacts,
 }
+
+impl Default for FrozenTable {
+    fn default() -> Self {
+        MutableTable::new().freeze()
+    }
+}
+
+impl PartialEq for FrozenTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.facts == other.facts && self.visible_rows() == other.visible_rows()
+    }
+}
+
+impl Eq for FrozenTable {}
 
 impl FrozenTable {
     pub(crate) fn len(&self) -> usize {
-        self.inner.rows.len()
+        self.facts.row_count()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.inner.rows.is_empty()
+        self.len() == 0
     }
 
     pub(crate) fn approximate_size_bytes(&self) -> usize {
-        self.inner.approximate_size_bytes
+        self.facts.approximate_size_bytes()
     }
 
     pub(crate) fn facts(&self) -> TableMemoryFacts {
-        memory_facts(
-            &self.inner.rows,
-            self.inner.approximate_size_bytes,
-            self.inner.min_commit,
-            self.inner.max_commit,
-        )
+        self.facts.clone()
     }
 
-    pub(crate) fn first_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.inner.rows.first_key_value().map(|(key, _)| key)
+    pub(crate) fn first_key(&self) -> Option<TableInternalKeyBytes> {
+        self.facts.first_key().map(canonical_fact_key)
     }
 
-    pub(crate) fn last_key(&self) -> Option<&TableInternalKeyBytes> {
-        self.inner.rows.last_key_value().map(|(key, _)| key)
+    pub(crate) fn last_key(&self) -> Option<TableInternalKeyBytes> {
+        self.facts.last_key().map(canonical_fact_key)
     }
 
-    pub(crate) fn get(&self, key: &TableInternalKeyBytes) -> Option<&TableRow> {
-        self.inner.rows.get(key)
+    pub(crate) fn get(&self, key: &TableInternalKeyBytes) -> Option<Arc<TableRow>> {
+        let data = self.read_data();
+        data.rows
+            .get(key)
+            .filter(|entry| self.entry_visible(entry))
+            .map(|entry| Arc::clone(&entry.row))
     }
 
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &TableRow> {
-        self.inner.rows.values()
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = Arc<TableRow>> {
+        self.visible_rows().into_iter()
     }
 
     pub(crate) fn cursor(&self) -> MemoryTableCursor<'_> {
         MemoryTableCursor::from_frozen(self)
     }
 
-    pub(super) fn row_map(&self) -> &BTreeMap<TableInternalKeyBytes, TableRow> {
-        &self.inner.rows
+    pub(super) fn read_data(&self) -> RwLockReadGuard<'_, TableMemoryData> {
+        self.inner
+            .data
+            .read()
+            .expect("table memory read lock poisoned")
     }
 
-    pub(crate) fn rows_in_bounds<'a>(
-        &'a self,
-        bounds: &'a TableKeyBounds,
-    ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.inner
-            .rows
-            .values()
-            .filter(move |row| bounds.contains_key(row.key()))
+    pub(super) const fn sequence_upper_bound(&self) -> Option<u64> {
+        Some(self.sequence_upper_bound)
     }
 
-    pub(crate) fn rows_with_physical_prefix<'a>(
-        &'a self,
-        prefix: &'a TablePhysicalKeyBytes,
-    ) -> impl Iterator<Item = &'a TableRow> + 'a {
-        self.inner
-            .rows
-            .values()
-            .filter(move |row| prefix.is_prefix_of(row.key()))
+    pub(crate) fn rows_in_bounds(
+        &self,
+        bounds: &TableKeyBounds,
+    ) -> impl DoubleEndedIterator<Item = Arc<TableRow>> {
+        let rows = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| bounds.contains_key(row.key()))
+            .collect::<Vec<_>>();
+        rows.into_iter()
+    }
+
+    pub(crate) fn rows_with_physical_prefix(
+        &self,
+        prefix: &TablePhysicalKeyBytes,
+    ) -> impl DoubleEndedIterator<Item = Arc<TableRow>> {
+        let rows = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| prefix.is_prefix_of(row.key()))
+            .collect::<Vec<_>>();
+        rows.into_iter()
     }
 
     pub(crate) fn seek_physical_key(
@@ -294,9 +427,10 @@ impl FrozenTable {
         key: &PhysicalKey,
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
-    ) -> (Option<&TableRow>, usize) {
+    ) -> (Option<Arc<TableRow>>, usize) {
         seek_physical_key_in_rows(
-            &self.inner.rows,
+            &self.read_data(),
+            Some(self.sequence_upper_bound),
             key,
             max_commit_version,
             max_commit_timestamp,
@@ -304,24 +438,42 @@ impl FrozenTable {
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
-        physical_key_rows_in_rows(&self.inner.rows, key)
+        physical_key_rows_in_rows(&self.read_data(), Some(self.sequence_upper_bound), key)
     }
 
     #[cfg(feature = "perf-trace")]
     pub(crate) fn perf_seek_physical_key_unbounded(
         &self,
         key: &PhysicalKey,
-    ) -> (Option<&TableRow>, usize) {
+    ) -> (Option<Arc<TableRow>>, usize) {
         self.seek_physical_key(key, None, None)
+    }
+
+    fn entry_visible(&self, entry: &TableMemoryEntry) -> bool {
+        entry_visible(entry, Some(self.sequence_upper_bound))
+    }
+
+    fn visible_rows(&self) -> Vec<Arc<TableRow>> {
+        let data = self.read_data();
+        data.rows
+            .values()
+            .filter(|entry| self.entry_visible(entry))
+            .map(|entry| Arc::clone(&entry.row))
+            .collect()
     }
 }
 
-fn seek_physical_key_in_rows<'a>(
-    rows: &'a BTreeMap<TableInternalKeyBytes, TableRow>,
+pub(super) fn entry_visible(entry: &TableMemoryEntry, sequence_upper_bound: Option<u64>) -> bool {
+    sequence_upper_bound.is_none_or(|upper_bound| entry.sequence < upper_bound)
+}
+
+fn seek_physical_key_in_rows(
+    data: &TableMemoryData,
+    sequence_upper_bound: Option<u64>,
     key: &PhysicalKey,
     max_commit_version: Option<CommitVersion>,
     max_commit_timestamp: Option<Timestamp>,
-) -> (Option<&'a TableRow>, usize) {
+) -> (Option<Arc<TableRow>>, usize) {
     perf_trace::record_table_seek();
     perf_trace::record_table_point_lookup_key_build();
     let prefix = TablePhysicalKeyBytes::from_physical_key(key);
@@ -329,20 +481,25 @@ fn seek_physical_key_in_rows<'a>(
     let seek_key =
         TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
     let mut visited = 0usize;
-    for (_, row) in rows.range(seek_key..) {
-        visited = visited.saturating_add(1);
+    for (_, entry) in data.rows.range(seek_key..) {
+        let row = entry.row.as_ref();
         if !prefix.is_prefix_of(row.key()) {
             break;
         }
+        if !entry_visible(entry, sequence_upper_bound) {
+            continue;
+        }
+        visited = visited.saturating_add(1);
         if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
-            return (Some(row), visited);
+            return (Some(Arc::clone(&entry.row)), visited);
         }
     }
     (None, visited)
 }
 
 fn physical_key_rows_in_rows(
-    rows: &BTreeMap<TableInternalKeyBytes, TableRow>,
+    data: &TableMemoryData,
+    sequence_upper_bound: Option<u64>,
     key: &PhysicalKey,
 ) -> (Vec<TableRow>, usize) {
     let prefix = TablePhysicalKeyBytes::from_physical_key(key);
@@ -351,9 +508,13 @@ fn physical_key_rows_in_rows(
         CommitVersion::MAX,
     ));
     let mut matching = Vec::new();
-    for (_, row) in rows.range(seek_key..) {
+    for (_, entry) in data.rows.range(seek_key..) {
+        let row = entry.row.as_ref();
         if !prefix.is_prefix_of(row.key()) {
             break;
+        }
+        if !entry_visible(entry, sequence_upper_bound) {
+            continue;
         }
         matching.push(row.clone());
     }
@@ -370,31 +531,24 @@ fn row_matches_point_bound(
         && max_commit_timestamp.is_none_or(|timestamp| row.commit_timestamp() <= timestamp)
 }
 
-fn update_commit_range(
-    min_commit: &mut Option<CommitVersion>,
-    max_commit: &mut Option<CommitVersion>,
-    commit_version: CommitVersion,
-) {
-    *min_commit = Some(min_commit.map_or(commit_version, |min| min.min(commit_version)));
-    *max_commit = Some(max_commit.map_or(commit_version, |max| max.max(commit_version)));
-}
-
-fn memory_facts(
-    rows: &BTreeMap<TableInternalKeyBytes, TableRow>,
-    approximate_size_bytes: usize,
-    min_commit: Option<CommitVersion>,
-    max_commit: Option<CommitVersion>,
-) -> TableMemoryFacts {
+fn memory_facts(data: &TableMemoryData) -> TableMemoryFacts {
     TableMemoryFacts {
-        row_count: rows.len(),
-        approximate_size_bytes,
-        first_key: rows
+        row_count: data.rows.len(),
+        approximate_size_bytes: data.approximate_size_bytes,
+        first_key: data
+            .rows
             .first_key_value()
             .map(|(key, _)| key.as_slice().to_vec()),
-        last_key: rows
+        last_key: data
+            .rows
             .last_key_value()
             .map(|(key, _)| key.as_slice().to_vec()),
-        min_commit,
-        max_commit,
+        min_commit: data.min_commit,
+        max_commit: data.max_commit,
     }
+}
+
+fn canonical_fact_key(bytes: &[u8]) -> TableInternalKeyBytes {
+    TableInternalKeyBytes::from_canonical_bytes(bytes.to_vec())
+        .expect("memory table facts store canonical internal keys")
 }

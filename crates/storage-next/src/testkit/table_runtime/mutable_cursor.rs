@@ -22,7 +22,10 @@ fn check_mutable_frozen_tables(script: &[u8]) -> Result<(), TestkitError> {
     let expected_bytes = insert_rows_into_memory_table(&mut table, &mut model, rows)?;
 
     let before_duplicate_facts = table.facts();
-    let before_duplicate_keys = table.iter().map(table_row_key_bytes).collect::<Vec<_>>();
+    let before_duplicate_keys = table
+        .iter()
+        .map(|row| table_row_key_bytes(row.as_ref()))
+        .collect::<Vec<_>>();
     match table.insert_row(first_row) {
         Err(TableRuntimeError::DuplicateInternalKey { .. }) => {}
         Err(err) => {
@@ -33,7 +36,11 @@ fn check_mutable_frozen_tables(script: &[u8]) -> Result<(), TestkitError> {
         Ok(()) => return Err(TestkitError::new("forced duplicate key insert succeeded")),
     }
     if table.facts() != before_duplicate_facts
-        || table.iter().map(table_row_key_bytes).collect::<Vec<_>>() != before_duplicate_keys
+        || table
+            .iter()
+            .map(|row| table_row_key_bytes(row.as_ref()))
+            .collect::<Vec<_>>()
+            != before_duplicate_keys
     {
         return Err(TestkitError::new(
             "duplicate insert mutated generated mutable table",
@@ -141,7 +148,7 @@ fn assert_sampled_table_reads_match_model(
         .ok_or_else(|| TestkitError::new("generated mutable model was empty"))?;
     let first_table_key = TableInternalKeyBytes::from_canonical_bytes(first_key.clone())
         .map_err(|err| TestkitError::new(format!("model first key was not canonical: {err}")))?;
-    if table.get(&first_table_key).map(TableRow::row) != model.get(first_key) {
+    if table.get(&first_table_key).as_deref().map(TableRow::row) != model.get(first_key) {
         return Err(TestkitError::new("mutable exact lookup drifted"));
     }
     let absent_key = absent_internal_key_for_model(&first_table_key, model)?;
@@ -152,7 +159,7 @@ fn assert_sampled_table_reads_match_model(
     let bounds = TableKeyBounds::exact(first_table_key.clone());
     let bounded = table
         .rows_in_bounds(&bounds)
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>();
     if bounded != vec![first_key.clone()] {
         return Err(TestkitError::new("mutable exact bounds drifted"));
@@ -167,7 +174,7 @@ fn assert_sampled_table_reads_match_model(
     let (range, expected_range) = sample_closed_range_from_model(model)?;
     let actual_range = table
         .rows_in_bounds(&range)
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>();
     if actual_range != expected_range {
         return Err(TestkitError::new("mutable range bounds drifted"));
@@ -177,7 +184,7 @@ fn assert_sampled_table_reads_match_model(
     let prefix_bytes = prefix.as_slice().to_vec();
     let actual_prefix = table
         .rows_with_physical_prefix(&prefix)
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>();
     let expected_prefix = model
         .keys()
@@ -205,7 +212,7 @@ fn assert_frozen_table_matches_model(
         .ok_or_else(|| TestkitError::new("generated frozen model was empty"))?;
     let first_table_key = TableInternalKeyBytes::from_canonical_bytes(first_key.clone())
         .map_err(|err| TestkitError::new(format!("model first key was not canonical: {err}")))?;
-    if table.get(&first_table_key).map(TableRow::row) != model.get(first_key) {
+    if table.get(&first_table_key).as_deref().map(TableRow::row) != model.get(first_key) {
         return Err(TestkitError::new("frozen exact lookup drifted"));
     }
     let absent_key = absent_internal_key_for_model(&first_table_key, model)?;
@@ -214,7 +221,7 @@ fn assert_frozen_table_matches_model(
     }
     if table
         .rows_in_bounds(&TableKeyBounds::exact(first_table_key))
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>()
         != vec![first_key.clone()]
     {
@@ -230,7 +237,7 @@ fn assert_frozen_table_matches_model(
     let (range, expected_range) = sample_closed_range_from_model(model)?;
     if table
         .rows_in_bounds(&range)
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>()
         != expected_range
     {
@@ -241,7 +248,7 @@ fn assert_frozen_table_matches_model(
     let prefix_bytes = prefix.as_slice().to_vec();
     let actual_prefix = table
         .rows_with_physical_prefix(&prefix)
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>();
     let expected_prefix = model
         .keys()
@@ -254,16 +261,16 @@ fn assert_frozen_table_matches_model(
     Ok(())
 }
 
-fn assert_memory_table_matches_model<'a>(
+fn assert_memory_table_matches_model(
     label: &'static str,
-    rows: impl Iterator<Item = &'a TableRow>,
+    rows: impl Iterator<Item = Arc<TableRow>>,
     model: &BTreeMap<Vec<u8>, StorageRow>,
     expected_bytes: usize,
 ) -> Result<(), TestkitError> {
     let rows = rows.collect::<Vec<_>>();
     let actual_keys = rows
         .iter()
-        .map(|row| table_row_key_bytes(row))
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>();
     let expected_keys = model.keys().cloned().collect::<Vec<_>>();
     if actual_keys != expected_keys {
@@ -272,7 +279,7 @@ fn assert_memory_table_matches_model<'a>(
         )));
     }
     for row in &rows {
-        let key = table_row_key_bytes(row);
+        let key = table_row_key_bytes(row.as_ref());
         if model.get(&key) != Some(row.row()) {
             return Err(TestkitError::new(format!(
                 "{label} table row payload did not match generated model"
@@ -457,7 +464,10 @@ fn assert_memory_cursors_match_model(
     label: &'static str,
     table: &MutableTable,
 ) -> Result<(), TestkitError> {
-    let expected = table.iter().map(table_row_key_bytes).collect::<Vec<_>>();
+    let expected = table
+        .iter()
+        .map(|row| table_row_key_bytes(row.as_ref()))
+        .collect::<Vec<_>>();
 
     let mut mutable_cursor = table.cursor();
     mutable_cursor
@@ -542,7 +552,7 @@ fn assert_bounded_cursor_matches_model(
     let expected = table
         .iter()
         .filter(|row| bounds.contains_key(row.key()))
-        .map(table_row_key_bytes)
+        .map(|row| table_row_key_bytes(row.as_ref()))
         .collect::<Vec<_>>();
     let mut cursor = BoundedTableCursor::new(Box::new(table.cursor()), bounds);
     cursor

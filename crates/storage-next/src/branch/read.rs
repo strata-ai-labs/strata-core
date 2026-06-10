@@ -1380,7 +1380,7 @@ fn visible_point_candidates(
     rows_visited = rows_visited.saturating_add(visited);
     if let Some(row) = row {
         rows.push(candidate_row(
-            clone_point_candidate_row(row),
+            clone_point_candidate_row(row.as_ref()),
             BranchRowSource::Active,
         ));
     }
@@ -1396,7 +1396,7 @@ fn visible_point_candidates(
         rows_visited = rows_visited.saturating_add(visited);
         if let Some(row) = row {
             rows.push(candidate_row(
-                clone_point_candidate_row(row),
+                clone_point_candidate_row(row.as_ref()),
                 BranchRowSource::Frozen { index },
             ));
         }

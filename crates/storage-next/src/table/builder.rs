@@ -80,7 +80,10 @@ impl ImmutableTableBuilder {
         identity: TableIdentity,
         table: &FrozenTable,
     ) -> TableRuntimeResult<BuiltTableArtifact> {
-        let rows = table.iter().cloned().collect::<Vec<_>>();
+        let rows = table
+            .iter()
+            .map(|row| row.as_ref().clone())
+            .collect::<Vec<_>>();
         self.build_from_rows(identity, &rows)
     }
 
@@ -89,7 +92,10 @@ impl ImmutableTableBuilder {
         identity: TableIdentity,
         table: &MutableTable,
     ) -> TableRuntimeResult<BuiltTableArtifact> {
-        let rows = table.iter().cloned().collect::<Vec<_>>();
+        let rows = table
+            .iter()
+            .map(|row| row.as_ref().clone())
+            .collect::<Vec<_>>();
         self.build_from_rows(identity, &rows)
     }
 

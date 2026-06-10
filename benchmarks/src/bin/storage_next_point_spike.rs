@@ -10,6 +10,7 @@ use std::fmt;
 use strata_benchmarks::harness::recorder::ResultRecorder;
 use strata_benchmarks::schema::{BenchmarkMetrics, BenchmarkResult};
 use strata_storage_next::perf_probe::{run_point_read_spike, PointReadProbeConfig};
+use strata_storage_next::perf_trace::StoragePerfSnapshot;
 
 const CATEGORY: &str = "storage-next-point-spike";
 
@@ -99,6 +100,28 @@ fn print_case(case: &strata_storage_next::perf_probe::PointReadProbeCase) {
         perf.point_table_seeks(),
         perf.table_seeks()
     );
+    eprintln!(
+        "      candidate_clones={} candidate_clone_bytes={} selected(active/frozen/l0/nonzero/inherited)={}/{}/{}/{}/{} early_exit(active/frozen/l0/nonzero/inherited)={}/{}/{}/{}/{} remaining_source_skips={} inherited_rewrites={} lookup_key_builds={} lookup_key_reuses={} eager_filter(unavailable/negative/positive)={}/{}/{}",
+        perf.point_candidate_row_clones(),
+        perf.point_candidate_row_clone_bytes(),
+        perf.point_selected_active(),
+        perf.point_selected_frozen(),
+        perf.point_selected_owned_l0(),
+        perf.point_selected_owned_nonzero(),
+        perf.point_selected_inherited(),
+        perf.point_early_exit_active(),
+        perf.point_early_exit_frozen(),
+        perf.point_early_exit_owned_l0(),
+        perf.point_early_exit_owned_nonzero(),
+        perf.point_early_exit_inherited(),
+        perf.point_remaining_source_skips(),
+        perf.point_inherited_key_rewrites(),
+        perf.table_point_lookup_key_builds(),
+        perf.table_point_lookup_key_reuses(),
+        perf.table_eager_filter_unavailable_probes(),
+        perf.table_eager_filter_negative_probes(),
+        perf.table_eager_filter_positive_probes()
+    );
 }
 
 fn parameters(
@@ -136,41 +159,153 @@ fn parameters(
         "found_rows".to_string(),
         serde_json::json!(case.found_rows()),
     );
-    parameters.insert(
-        "perf_trace".to_string(),
-        serde_json::json!({
-            "commit_batches_prepared": perf.commit_batches_prepared(),
-            "commit_user_mutation_rows": perf.commit_user_mutation_rows(),
-            "commit_timeline_rows_prepared": perf.commit_timeline_rows_prepared(),
-            "commit_rows_prepared": perf.commit_rows_prepared(),
-            "append_rows_applied": perf.append_rows_applied(),
-            "branch_facts_rows_observed": perf.branch_facts_rows_observed(),
-            "read_view_captures": perf.read_view_captures(),
-            "read_view_rows_cloned": perf.read_view_rows_cloned(),
-            "read_view_validation_rows_scanned": perf.read_view_validation_rows_scanned(),
-            "append_staging_clones": perf.append_staging_clones(),
-            "append_staging_rows_cloned": perf.append_staging_rows_cloned(),
-            "conflict_sources_built": perf.conflict_sources_built(),
-            "point_rows_visited": perf.point_rows_visited(),
-            "point_candidates_materialized": perf.point_candidates_materialized(),
-            "point_active_probes": perf.point_active_probes(),
-            "point_frozen_probes": perf.point_frozen_probes(),
-            "point_owned_l0_table_probes": perf.point_owned_l0_table_probes(),
-            "point_owned_nonzero_level_searches": perf.point_owned_nonzero_level_searches(),
-            "point_owned_nonzero_table_probes": perf.point_owned_nonzero_table_probes(),
-            "point_inherited_layer_searches": perf.point_inherited_layer_searches(),
-            "point_inherited_l0_table_probes": perf.point_inherited_l0_table_probes(),
-            "point_inherited_nonzero_level_searches": perf.point_inherited_nonzero_level_searches(),
-            "point_inherited_nonzero_table_probes": perf.point_inherited_nonzero_table_probes(),
-            "point_table_seeks": perf.point_table_seeks(),
-            "scan_rows_visited": perf.scan_rows_visited(),
-            "scan_candidates_materialized": perf.scan_candidates_materialized(),
-            "scan_cursor_seeks": perf.scan_cursor_seeks(),
-            "scan_cursor_rows_yielded": perf.scan_cursor_rows_yielded(),
-            "table_seeks": perf.table_seeks(),
-        }),
-    );
+    parameters.insert("perf_trace".to_string(), perf_trace_json(perf));
     parameters
+}
+
+fn perf_trace_json(perf: StoragePerfSnapshot) -> serde_json::Value {
+    let mut trace = serde_json::Map::new();
+    macro_rules! field {
+        ($name:literal, $value:expr) => {
+            trace.insert($name.to_string(), serde_json::json!($value));
+        };
+    }
+
+    field!("commit_batches_prepared", perf.commit_batches_prepared());
+    field!(
+        "commit_user_mutation_rows",
+        perf.commit_user_mutation_rows()
+    );
+    field!(
+        "commit_timeline_rows_prepared",
+        perf.commit_timeline_rows_prepared()
+    );
+    field!("commit_rows_prepared", perf.commit_rows_prepared());
+    field!("append_rows_applied", perf.append_rows_applied());
+    field!(
+        "branch_facts_rows_observed",
+        perf.branch_facts_rows_observed()
+    );
+    field!("read_view_captures", perf.read_view_captures());
+    field!("read_view_rows_cloned", perf.read_view_rows_cloned());
+    field!(
+        "read_view_validation_rows_scanned",
+        perf.read_view_validation_rows_scanned()
+    );
+    field!("append_staging_clones", perf.append_staging_clones());
+    field!(
+        "append_staging_rows_cloned",
+        perf.append_staging_rows_cloned()
+    );
+    field!("conflict_sources_built", perf.conflict_sources_built());
+    field!("point_rows_visited", perf.point_rows_visited());
+    field!(
+        "point_candidates_materialized",
+        perf.point_candidates_materialized()
+    );
+    field!("point_active_probes", perf.point_active_probes());
+    field!("point_frozen_probes", perf.point_frozen_probes());
+    field!(
+        "point_owned_l0_table_probes",
+        perf.point_owned_l0_table_probes()
+    );
+    field!(
+        "point_owned_nonzero_level_searches",
+        perf.point_owned_nonzero_level_searches()
+    );
+    field!(
+        "point_owned_nonzero_table_probes",
+        perf.point_owned_nonzero_table_probes()
+    );
+    field!(
+        "point_inherited_layer_searches",
+        perf.point_inherited_layer_searches()
+    );
+    field!(
+        "point_inherited_l0_table_probes",
+        perf.point_inherited_l0_table_probes()
+    );
+    field!(
+        "point_inherited_nonzero_level_searches",
+        perf.point_inherited_nonzero_level_searches()
+    );
+    field!(
+        "point_inherited_nonzero_table_probes",
+        perf.point_inherited_nonzero_table_probes()
+    );
+    field!("point_table_seeks", perf.point_table_seeks());
+    field!(
+        "point_candidate_row_clones",
+        perf.point_candidate_row_clones()
+    );
+    field!(
+        "point_candidate_row_clone_bytes",
+        perf.point_candidate_row_clone_bytes()
+    );
+    field!("point_selected_active", perf.point_selected_active());
+    field!("point_selected_frozen", perf.point_selected_frozen());
+    field!("point_selected_owned_l0", perf.point_selected_owned_l0());
+    field!(
+        "point_selected_owned_nonzero",
+        perf.point_selected_owned_nonzero()
+    );
+    field!("point_selected_inherited", perf.point_selected_inherited());
+    field!("point_early_exit_active", perf.point_early_exit_active());
+    field!("point_early_exit_frozen", perf.point_early_exit_frozen());
+    field!(
+        "point_early_exit_owned_l0",
+        perf.point_early_exit_owned_l0()
+    );
+    field!(
+        "point_early_exit_owned_nonzero",
+        perf.point_early_exit_owned_nonzero()
+    );
+    field!(
+        "point_early_exit_inherited",
+        perf.point_early_exit_inherited()
+    );
+    field!(
+        "point_remaining_source_skips",
+        perf.point_remaining_source_skips()
+    );
+    field!(
+        "point_inherited_key_rewrites",
+        perf.point_inherited_key_rewrites()
+    );
+    field!(
+        "table_point_lookup_key_builds",
+        perf.table_point_lookup_key_builds()
+    );
+    field!(
+        "table_point_lookup_key_reuses",
+        perf.table_point_lookup_key_reuses()
+    );
+    field!(
+        "table_eager_filter_probes",
+        perf.table_eager_filter_probes()
+    );
+    field!(
+        "table_eager_filter_negative_probes",
+        perf.table_eager_filter_negative_probes()
+    );
+    field!(
+        "table_eager_filter_positive_probes",
+        perf.table_eager_filter_positive_probes()
+    );
+    field!(
+        "table_eager_filter_unavailable_probes",
+        perf.table_eager_filter_unavailable_probes()
+    );
+    field!("scan_rows_visited", perf.scan_rows_visited());
+    field!(
+        "scan_candidates_materialized",
+        perf.scan_candidates_materialized()
+    );
+    field!("scan_cursor_seeks", perf.scan_cursor_seeks());
+    field!("scan_cursor_rows_yielded", perf.scan_cursor_rows_yielded());
+    field!("table_seeks", perf.table_seeks());
+
+    serde_json::Value::Object(trace)
 }
 
 #[derive(Clone, Copy, Debug)]

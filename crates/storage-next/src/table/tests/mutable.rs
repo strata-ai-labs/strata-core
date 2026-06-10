@@ -132,8 +132,8 @@ fn mutable_table_insert_preserves_row_facts_and_updates_memory_facts() {
     assert_eq!(table.len(), 1);
     assert!(!table.is_empty());
     assert_eq!(table.approximate_size_bytes(), expected_size);
-    assert_eq!(table.first_key(), Some(table_row.key()));
-    assert_eq!(table.last_key(), Some(table_row.key()));
+    assert_eq!(table.first_key(), Some(table_row.key().clone()));
+    assert_eq!(table.last_key(), Some(table_row.key().clone()));
     assert_eq!(table.get(table_row.key()).expect("stored row").row(), &row);
 
     let facts = table.facts();
@@ -185,7 +185,7 @@ fn mutable_table_accepts_supported_row_shapes_and_tracks_facts() {
         table.insert_row(row.clone()).expect("insert row shape");
 
         assert_eq!(
-            table.get(table_row.key()).map(TableRow::row),
+            table.get(table_row.key()).as_deref().map(TableRow::row),
             Some(row),
             "insert must preserve row facts exactly"
         );
@@ -197,7 +197,7 @@ fn mutable_table_accepts_supported_row_shapes_and_tracks_facts() {
     assert_eq!(facts.approximate_size_bytes(), expected_size);
     assert_eq!(facts.min_commit(), Some(CommitVersion::new(2)));
     assert_eq!(facts.max_commit(), Some(CommitVersion::new(99)));
-    assert!(table.iter().any(TableRow::is_tombstone));
+    assert!(table.iter().any(|row| row.is_tombstone()));
     assert!(table
         .iter()
         .any(|row| row.expires_at() == Timestamp::from_micros(1)));
@@ -239,7 +239,7 @@ fn mutable_table_iterates_by_encoded_internal_key_order() {
         TablePhysicalKeyBytes::from_physical_key(&physical_key(1, 0x20, b"same".to_vec()));
     let versions = table
         .rows_with_physical_prefix(&same_prefix)
-        .map(TableRow::commit_version)
+        .map(|row| row.commit_version())
         .collect::<Vec<_>>();
     assert_eq!(versions, vec![CommitVersion::new(9), CommitVersion::new(3)]);
 }
@@ -358,7 +358,7 @@ fn mutable_table_exact_lookup_covers_present_and_absent_keys() {
         expected.last().expect("last"),
     ] {
         assert_eq!(
-            table.get(table_row.key()).map(TableRow::row),
+            table.get(table_row.key()).as_deref().map(TableRow::row),
             Some(table_row.row())
         );
     }
@@ -500,7 +500,7 @@ fn mutable_table_key_bound_lookup_covers_bound_variants() {
     .is_empty());
     assert!(table
         .rows_in_bounds(&TableKeyBounds::unbounded())
-        .any(TableRow::is_tombstone));
+        .any(|row| row.is_tombstone()));
     assert!(table
         .rows_in_bounds(&TableKeyBounds::unbounded())
         .any(|row| row.expires_at() == Timestamp::from_micros(1)));
@@ -670,9 +670,12 @@ fn freeze_preserves_rows_facts_and_read_helpers() {
         facts.approximate_size_bytes()
     );
     assert_eq!(frozen_keys(&frozen), keys);
-    assert_eq!(frozen.first_key(), Some(&first));
+    assert_eq!(frozen.first_key(), Some(first.clone()));
+    let frozen_last_key = frozen.last_key();
     assert_eq!(
-        frozen.last_key().map(TableInternalKeyBytes::as_slice),
+        frozen_last_key
+            .as_ref()
+            .map(TableInternalKeyBytes::as_slice),
         facts.last_key()
     );
     assert_eq!(

@@ -5,10 +5,12 @@ use super::{
     TableKeyBounds, TableRow,
 };
 use crate::observability::perf_trace;
+use crate::table::mutable::{entry_visible, TableMemoryData};
 use crate::table::TableRuntimeResult;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::BinaryHeap;
 use std::ops::Bound::{Excluded, Unbounded};
+use std::sync::RwLockReadGuard;
 
 pub(crate) const MERGE_HEAP_THRESHOLD: usize = 4;
 const _: () = assert!(MERGE_HEAP_THRESHOLD >= 2);
@@ -28,15 +30,16 @@ pub(crate) trait TableCursor {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct MemoryTableCursor<'a> {
     source: MemoryCursorSource<'a>,
     position: Option<MemoryCursorPosition>,
 }
 
-#[derive(Clone)]
 enum MemoryCursorSource<'a> {
-    Map(&'a BTreeMap<TableInternalKeyBytes, TableRow>),
+    Map {
+        data: RwLockReadGuard<'a, TableMemoryData>,
+        sequence_upper_bound: Option<u64>,
+    },
     Rows(Vec<&'a TableRow>),
 }
 
@@ -49,14 +52,20 @@ enum MemoryCursorPosition {
 impl<'a> MemoryTableCursor<'a> {
     pub(crate) fn from_mutable(table: &'a MutableTable) -> Self {
         Self {
-            source: MemoryCursorSource::Map(table.row_map()),
+            source: MemoryCursorSource::Map {
+                data: table.read_data(),
+                sequence_upper_bound: table.sequence_upper_bound(),
+            },
             position: None,
         }
     }
 
     pub(crate) fn from_frozen(table: &'a FrozenTable) -> Self {
         Self {
-            source: MemoryCursorSource::Map(table.row_map()),
+            source: MemoryCursorSource::Map {
+                data: table.read_data(),
+                sequence_upper_bound: table.sequence_upper_bound(),
+            },
             position: None,
         }
     }
@@ -74,9 +83,13 @@ impl<'a> MemoryTableCursor<'a> {
 
     fn seek_position(&self, target: &TableInternalKeyBytes) -> Option<MemoryCursorPosition> {
         match &self.source {
-            MemoryCursorSource::Map(rows) => rows
+            MemoryCursorSource::Map {
+                data,
+                sequence_upper_bound,
+            } => data
+                .rows
                 .range(target.clone()..)
-                .next()
+                .find(|(_, entry)| entry_visible(entry, *sequence_upper_bound))
                 .map(|(key, _)| MemoryCursorPosition::Map(key.clone())),
             MemoryCursorSource::Rows(rows) => {
                 let index = match rows.binary_search_by(|row| row.key().cmp(target)) {
@@ -89,8 +102,13 @@ impl<'a> MemoryTableCursor<'a> {
 
     fn first_position(&self) -> Option<MemoryCursorPosition> {
         match &self.source {
-            MemoryCursorSource::Map(rows) => rows
-                .first_key_value()
+            MemoryCursorSource::Map {
+                data,
+                sequence_upper_bound,
+            } => data
+                .rows
+                .iter()
+                .find(|(_, entry)| entry_visible(entry, *sequence_upper_bound))
                 .map(|(key, _)| MemoryCursorPosition::Map(key.clone())),
             MemoryCursorSource::Rows(rows) => {
                 (!rows.is_empty()).then_some(MemoryCursorPosition::Rows(0))
@@ -100,9 +118,16 @@ impl<'a> MemoryTableCursor<'a> {
 
     fn next_position(&self) -> Option<MemoryCursorPosition> {
         match (&self.source, &self.position) {
-            (MemoryCursorSource::Map(rows), Some(MemoryCursorPosition::Map(key))) => rows
+            (
+                MemoryCursorSource::Map {
+                    data,
+                    sequence_upper_bound,
+                },
+                Some(MemoryCursorPosition::Map(key)),
+            ) => data
+                .rows
                 .range((Excluded(key.clone()), Unbounded))
-                .next()
+                .find(|(_, entry)| entry_visible(entry, *sequence_upper_bound))
                 .map(|(key, _)| MemoryCursorPosition::Map(key.clone())),
             (MemoryCursorSource::Rows(rows), Some(MemoryCursorPosition::Rows(position))) => {
                 let next = position.saturating_add(1);
@@ -131,7 +156,17 @@ impl TableCursor for MemoryTableCursor<'_> {
 
     fn current(&self) -> Option<&TableRow> {
         match (&self.source, &self.position) {
-            (MemoryCursorSource::Map(rows), Some(MemoryCursorPosition::Map(key))) => rows.get(key),
+            (
+                MemoryCursorSource::Map {
+                    data,
+                    sequence_upper_bound,
+                },
+                Some(MemoryCursorPosition::Map(key)),
+            ) => data
+                .rows
+                .get(key)
+                .filter(|entry| entry_visible(entry, *sequence_upper_bound))
+                .map(|entry| entry.row.as_ref()),
             (MemoryCursorSource::Rows(rows), Some(MemoryCursorPosition::Rows(position))) => {
                 rows.get(*position).copied()
             }
