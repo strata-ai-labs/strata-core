@@ -1064,17 +1064,38 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
     ));
 
     let mut compact_state = BranchLocalState::empty(branch);
-    install_l0_table(
-        &mut compact_state,
-        branch,
-        "pressure-left",
-        vec![put_row(branch, b"left", 2, 2_000, b"left")],
+    for index in 0_u64..3 {
+        install_l0_table(
+            &mut compact_state,
+            branch,
+            &format!("pressure-below-threshold-{index}"),
+            vec![put_row(
+                branch,
+                format!("below-threshold-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    let below_threshold_pressure =
+        collect_storage_pressure(&compact_state, empty_maintenance_status());
+    assert_eq!(
+        below_threshold_pressure.reason(),
+        LifecycleStoragePressureReason::None
     );
+    assert_eq!(
+        below_threshold_pressure.severity(),
+        LifecycleStoragePressureSeverity::None
+    );
+    assert_eq!(below_threshold_pressure.level_zero_tables(), 3);
+    assert!(below_threshold_pressure.suggested_task().is_none());
+
     install_l0_table(
         &mut compact_state,
         branch,
-        "pressure-right",
-        vec![put_row(branch, b"right", 3, 3_000, b"right")],
+        "pressure-background-threshold",
+        vec![put_row(branch, b"background-threshold", 5, 5_000, b"value")],
     );
     let compact_pressure = collect_storage_pressure(&compact_state, empty_maintenance_status());
     assert_eq!(
@@ -1085,8 +1106,8 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
         compact_pressure.severity(),
         LifecycleStoragePressureSeverity::Background
     );
-    assert_eq!(compact_pressure.level_zero_tables(), 2);
-    assert_eq!(compact_pressure.owned_tables(), 2);
+    assert_eq!(compact_pressure.level_zero_tables(), 4);
+    assert_eq!(compact_pressure.owned_tables(), 4);
     assert!(matches!(
         compact_pressure
             .suggested_task()
@@ -1150,7 +1171,7 @@ fn storage_pressure_reports_none_urgent_and_deterministic_facts() {
     assert!(empty_pressure.suggested_task().is_none());
 
     let mut urgent = BranchLocalState::empty(branch);
-    for index in 0_u64..4 {
+    for index in 0_u64..8 {
         install_l0_table(
             &mut urgent,
             branch,
@@ -1172,11 +1193,61 @@ fn storage_pressure_reports_none_urgent_and_deterministic_facts() {
         first.reason(),
         LifecycleStoragePressureReason::LevelZeroTableBacklog
     );
-    assert_eq!(first.level_zero_tables(), 4);
+    assert_eq!(first.level_zero_tables(), 8);
     assert!(matches!(
         first.suggested_task().map(MaintenanceTaskRequest::kind),
         Some(MaintenanceTaskKind::Compaction)
     ));
+}
+
+#[test]
+fn storage_pressure_reports_l0_table_backlog_boundaries() {
+    fn pressure_for_l0_table_count(count: u64) -> LifecycleStoragePressure {
+        let branch = branch_id(0x67);
+        let mut state = BranchLocalState::empty(branch);
+        for index in 0..count {
+            install_l0_table(
+                &mut state,
+                branch,
+                &format!("boundary-{count}-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("boundary-{count}-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        collect_storage_pressure(&state, empty_maintenance_status())
+    }
+
+    for (table_count, expected_severity) in [
+        (3, LifecycleStoragePressureSeverity::None),
+        (4, LifecycleStoragePressureSeverity::Background),
+        (7, LifecycleStoragePressureSeverity::Background),
+        (8, LifecycleStoragePressureSeverity::Urgent),
+        (15, LifecycleStoragePressureSeverity::Urgent),
+        (16, LifecycleStoragePressureSeverity::BlockMutatingAdmission),
+    ] {
+        let pressure = pressure_for_l0_table_count(table_count);
+
+        assert_eq!(pressure.level_zero_tables(), table_count as usize);
+        assert_eq!(pressure.severity(), expected_severity);
+        if expected_severity == LifecycleStoragePressureSeverity::None {
+            assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+            assert!(pressure.suggested_task().is_none());
+        } else {
+            assert_eq!(
+                pressure.reason(),
+                LifecycleStoragePressureReason::LevelZeroTableBacklog
+            );
+            assert!(matches!(
+                pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+                Some(MaintenanceTaskKind::Compaction)
+            ));
+        }
+    }
 }
 
 #[test]

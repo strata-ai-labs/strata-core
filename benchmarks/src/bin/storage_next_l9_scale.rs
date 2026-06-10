@@ -106,8 +106,11 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
             }
 
             if loaded && config.needs_loaded_data() {
-                source_shape_context =
-                    Some(prepare_loaded_source_shape(&mut open.runtime, branch_id, scale)?);
+                source_shape_context = Some(prepare_loaded_source_shape(
+                    &mut open.runtime,
+                    branch_id,
+                    scale,
+                )?);
             }
 
             if config.workloads.contains(&Workload::PointLatest) {
@@ -272,16 +275,22 @@ fn prepare_loaded_source_shape(
     let compact_elapsed = compact_start.elapsed();
     require_maintenance_finished(MaintenanceTask::Compact, scale, &compact)?;
 
-    let diagnostics = runtime.diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Branch(
-        branch_id,
-    )))?;
+    let diagnostics =
+        runtime.diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Branch(branch_id)))?;
     let layout = diagnostics.source_layout();
     if layout.state() != DiagnosticsFactState::Known {
         return Err(BenchmarkError::SourceLayoutUnavailable);
     }
 
-    let context =
-        SourceShapeContext::from_report(scale, flush, flush_elapsed, compact, compact_elapsed, layout);
+    let context = SourceShapeContext::from_report(
+        scale,
+        flush,
+        flush_elapsed,
+        compact,
+        compact_elapsed,
+        SourceShapeCompactionMode::ExplicitFixedPointDrain,
+        layout,
+    );
     print_source_shape_context(&context);
     if !context.source_shape_passed {
         return Err(BenchmarkError::SourceShapeDidNotPass {
@@ -810,8 +819,9 @@ fn print_result(result: &RunResult) {
     }
     if let Some(source_shape) = result.source_shape_context.as_ref() {
         eprintln!(
-            "    post-load-source-shape passed={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} interpretation={}",
+            "    post-load-source-shape passed={} compaction_mode={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} interpretation={}",
             source_shape.source_shape_passed,
+            source_shape.compaction_mode.as_str(),
             source_shape.final_layout.owned_l0_tables,
             format_level_counts(&source_shape.final_layout.owned_nonzero_level_table_counts),
             source_shape.final_layout.inherited_l0_tables,
@@ -1230,7 +1240,10 @@ impl RunResult {
         self
     }
 
-    fn with_source_shape_context(mut self, source_shape_context: Option<SourceShapeContext>) -> Self {
+    fn with_source_shape_context(
+        mut self,
+        source_shape_context: Option<SourceShapeContext>,
+    ) -> Self {
         self.source_shape_context = source_shape_context;
         self
     }
@@ -1653,7 +1666,10 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         "table_metadata_read_bytes",
         perf_trace.table_metadata_read_bytes()
     );
-    field!("table_index_read_bytes", perf_trace.table_index_read_bytes());
+    field!(
+        "table_index_read_bytes",
+        perf_trace.table_index_read_bytes()
+    );
     field!(
         "table_properties_read_bytes",
         perf_trace.table_properties_read_bytes()
@@ -1743,6 +1759,10 @@ fn source_shape_metrics_json(
                 scale as u64,
             )
         });
+    let post_load_compaction_mode = source_shape_context
+        .map_or(serde_json::Value::Null, |context| {
+            serde_json::json!(context.compaction_mode.as_str())
+        });
     let point_shape = source_shape_context.map(|context| {
         point_probe_shape_json(
             operation_count,
@@ -1752,20 +1772,21 @@ fn source_shape_metrics_json(
             context.final_layout.inherited_nonzero_level_count(),
         )
     });
-    let throughput_interpretation = source_shape_context.map_or("source-shape-unavailable", |context| {
-        if !context.source_shape_passed {
-            "source-shape-failed"
-        } else if point_shape
-            .as_ref()
-            .and_then(|shape| shape.get("passed"))
-            .and_then(serde_json::Value::as_bool)
-            == Some(false)
-        {
-            "point-probe-shape-failed"
-        } else {
-            "source-shape-passed-evaluate-filter-cache"
-        }
-    });
+    let throughput_interpretation =
+        source_shape_context.map_or("source-shape-unavailable", |context| {
+            if !context.source_shape_passed {
+                "source-shape-failed"
+            } else if point_shape
+                .as_ref()
+                .and_then(|shape| shape.get("passed"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+            {
+                "point-probe-shape-failed"
+            } else {
+                "source-shape-passed-evaluate-filter-cache"
+            }
+        });
 
     serde_json::json!({
         "point_source_probes_per_read": ratio_json(point_source_probes, operation_count),
@@ -1782,6 +1803,7 @@ fn source_shape_metrics_json(
             perf_trace.scan_rows_returned(),
         ),
         "l0_tables_per_million_rows_after_load": l0_tables_per_million_rows_after_load,
+        "post_load_compaction_mode": post_load_compaction_mode,
         "post_load_source_shape": source_shape_context.map(source_shape_context_json),
         "point_probe_shape": point_shape,
         "throughput_interpretation": throughput_interpretation,
@@ -1798,7 +1820,11 @@ fn source_shape_metrics_json(
         },
         "assumptions": {
             "operation_count": operation_count,
-            "l0_tables_after_load": "diagnostics source layout after final flush and compact drain",
+            "l0_tables_after_load": source_shape_context.map_or(
+                "source-shape unavailable",
+                |context| context.compaction_mode.layout_assumption(),
+            ),
+            "known_compaction_mode_values": source_shape_compaction_modes_json(),
         },
     })
 }
@@ -1830,14 +1856,14 @@ fn point_probe_shape_json_from_counts(
         return serde_json::Value::Null;
     }
 
-    let max_owned_nonzero_level_searches = operation_count.saturating_mul(owned_nonzero_level_count);
-    let inherited_level_bound = inherited_nonzero_level_count.saturating_mul(
-        if inherited_nonzero_level_count == 0 {
+    let max_owned_nonzero_level_searches =
+        operation_count.saturating_mul(owned_nonzero_level_count);
+    let inherited_level_bound =
+        inherited_nonzero_level_count.saturating_mul(if inherited_nonzero_level_count == 0 {
             0
         } else {
             inherited_layers.max(1)
-        },
-    );
+        });
     let max_inherited_nonzero_level_searches =
         operation_count.saturating_mul(inherited_level_bound);
     let mut failures = Vec::new();
@@ -1902,6 +1928,7 @@ fn ratio_json(numerator: u64, denominator: u64) -> serde_json::Value {
 #[derive(Clone, Debug)]
 struct SourceShapeContext {
     scale: usize,
+    compaction_mode: SourceShapeCompactionMode,
     flush_status: MaintenanceSummaryStatus,
     flush_rows: u64,
     flush_maintenance_ns: u64,
@@ -1920,12 +1947,14 @@ impl SourceShapeContext {
         flush_elapsed: Duration,
         compact: MaintenanceSummary,
         compact_elapsed: Duration,
+        compaction_mode: SourceShapeCompactionMode,
         report: &DiagnosticsSourceLayoutReport,
     ) -> Self {
         let final_layout = SourceLayoutSnapshot::from_report(report);
         let failures = final_layout.compacted_shape_failures();
         Self {
             scale,
+            compaction_mode,
             flush_status: flush.status(),
             flush_rows: flush.rows_processed(),
             flush_maintenance_ns: nanos_u64(flush_elapsed),
@@ -1937,6 +1966,50 @@ impl SourceShapeContext {
             failures,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceShapeCompactionMode {
+    SingleSelectedOperation,
+    ExplicitFixedPointDrain,
+    AutomaticScheduling,
+}
+
+impl SourceShapeCompactionMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleSelectedOperation => "single-selected-operation",
+            Self::ExplicitFixedPointDrain => "explicit-fixed-point-drain",
+            Self::AutomaticScheduling => "automatic-scheduling",
+        }
+    }
+
+    const fn layout_assumption(self) -> &'static str {
+        match self {
+            Self::SingleSelectedOperation => {
+                "diagnostics source layout after final flush and one selected compaction operation"
+            }
+            Self::ExplicitFixedPointDrain => {
+                "diagnostics source layout after final flush and explicit fixed-point compaction drain"
+            }
+            Self::AutomaticScheduling => {
+                "diagnostics source layout after final flush and automatic compaction scheduling"
+            }
+        }
+    }
+}
+
+const SOURCE_SHAPE_COMPACTION_MODES: [SourceShapeCompactionMode; 3] = [
+    SourceShapeCompactionMode::SingleSelectedOperation,
+    SourceShapeCompactionMode::ExplicitFixedPointDrain,
+    SourceShapeCompactionMode::AutomaticScheduling,
+];
+
+fn source_shape_compaction_modes_json() -> Vec<&'static str> {
+    SOURCE_SHAPE_COMPACTION_MODES
+        .iter()
+        .map(|mode| mode.as_str())
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -2020,8 +2093,9 @@ struct LevelTableCountSnapshot {
 
 fn print_source_shape_context(context: &SourceShapeContext) {
     eprintln!(
-        "  source-shape         passed={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} flush_status={} compact_status={} compact_changes={}",
+        "  source-shape         passed={} compaction_mode={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} flush_status={} compact_status={} compact_changes={}",
         context.source_shape_passed,
+        context.compaction_mode.as_str(),
         context.final_layout.owned_l0_tables,
         format_level_counts(&context.final_layout.owned_nonzero_level_table_counts),
         context.final_layout.inherited_l0_tables,
@@ -2038,6 +2112,7 @@ fn print_source_shape_context(context: &SourceShapeContext) {
 fn source_shape_context_json(context: &SourceShapeContext) -> serde_json::Value {
     serde_json::json!({
         "scale_keys": context.scale,
+        "compaction_mode": context.compaction_mode.as_str(),
         "passed": context.source_shape_passed,
         "failures": &context.failures,
         "final_layout": source_layout_json(&context.final_layout),
@@ -2051,6 +2126,7 @@ fn source_shape_context_json(context: &SourceShapeContext) -> serde_json::Value 
             "maintenance_ns": context.flush_maintenance_ns,
         },
         "compact": {
+            "mode": context.compaction_mode.as_str(),
             "status": format_maintenance_status(context.compact_status),
             "state_changes": context.compact_state_changes,
             "maintenance_ns": context.compact_maintenance_ns,
@@ -2078,17 +2154,15 @@ fn source_layout_json(layout: &SourceLayoutSnapshot) -> serde_json::Value {
 }
 
 fn level_counts_json(counts: &[LevelTableCountSnapshot]) -> serde_json::Value {
-    serde_json::json!(
-        counts
-            .iter()
-            .map(|count| {
-                serde_json::json!({
-                    "level": count.level,
-                    "table_count": count.table_count,
-                })
+    serde_json::json!(counts
+        .iter()
+        .map(|count| {
+            serde_json::json!({
+                "level": count.level,
+                "table_count": count.table_count,
             })
-            .collect::<Vec<_>>()
-    )
+        })
+        .collect::<Vec<_>>())
 }
 
 fn format_level_counts(counts: &[LevelTableCountSnapshot]) -> String {
@@ -2483,7 +2557,15 @@ mod tests {
         );
         assert!(metrics["scan_rows_visited_per_row_returned"].is_null());
         assert!(metrics["l0_tables_per_million_rows_after_load"].is_null());
+        assert!(metrics["post_load_compaction_mode"].is_null());
         assert_eq!(metrics["assumptions"]["operation_count"].as_u64(), Some(5));
+        assert_eq!(
+            metrics["assumptions"]["known_compaction_mode_values"]
+                .as_array()
+                .expect("known mode values")
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -2497,6 +2579,7 @@ mod tests {
         assert!(metrics["scan_table_cursors_opened_per_call"].is_null());
         assert!(metrics["scan_rows_visited_per_row_returned"].is_null());
         assert!(metrics["l0_tables_per_million_rows_after_load"].is_null());
+        assert!(metrics["post_load_compaction_mode"].is_null());
 
         let load_metrics = source_shape_metrics_json(
             0,
@@ -2516,6 +2599,7 @@ mod tests {
         perf_trace::reset();
         let source_shape = SourceShapeContext {
             scale: 1_000,
+            compaction_mode: SourceShapeCompactionMode::ExplicitFixedPointDrain,
             flush_status: MaintenanceSummaryStatus::Completed,
             flush_rows: 1_000,
             flush_maintenance_ns: 1,
@@ -2538,13 +2622,8 @@ mod tests {
             failures: vec!["owned_l0_tables_nonzero".to_string()],
         };
 
-        let metrics = source_shape_metrics_json(
-            1_000,
-            1,
-            perf_trace::snapshot(),
-            None,
-            Some(&source_shape),
-        );
+        let metrics =
+            source_shape_metrics_json(1_000, 1, perf_trace::snapshot(), None, Some(&source_shape));
 
         assert_eq!(
             metrics["l0_tables_per_million_rows_after_load"].as_f64(),
@@ -2553,6 +2632,20 @@ mod tests {
         assert_eq!(
             metrics["throughput_interpretation"].as_str(),
             Some("source-shape-failed")
+        );
+        assert_eq!(
+            metrics["post_load_compaction_mode"].as_str(),
+            Some("explicit-fixed-point-drain")
+        );
+        assert_eq!(
+            metrics["post_load_source_shape"]["compact"]["mode"].as_str(),
+            Some("explicit-fixed-point-drain")
+        );
+        assert_eq!(
+            metrics["assumptions"]["l0_tables_after_load"].as_str(),
+            Some(
+                "diagnostics source layout after final flush and explicit fixed-point compaction drain"
+            )
         );
     }
 
@@ -2620,13 +2713,11 @@ mod tests {
         );
 
         assert_eq!(failed["passed"].as_bool(), Some(false));
-        assert!(
-            failed["failures"]
-                .as_array()
-                .expect("failures")
-                .iter()
-                .any(|failure| failure.as_str()
-                    == Some("inherited_nonzero_level_searches_exceed_layout_bound"))
-        );
+        assert!(failed["failures"]
+            .as_array()
+            .expect("failures")
+            .iter()
+            .any(|failure| failure.as_str()
+                == Some("inherited_nonzero_level_searches_exceed_layout_bound")));
     }
 }
