@@ -203,6 +203,51 @@ fn corrupt_data_block_payload(bytes: &mut [u8], block_index: usize) {
     bytes[payload_offset] ^= 0xff;
 }
 
+fn duplicate_first_data_entry_key_into_second(bytes: &mut [u8], block_index: usize) {
+    let metadata = decode_table_metadata(bytes);
+    let entry = metadata
+        .index()
+        .entries()
+        .get(block_index)
+        .expect("data block entry");
+    let frame_start = checked_table_offset(entry.block_offset());
+    let frame_len = usize::try_from(entry.block_frame_len()).expect("frame length fits usize");
+    let payload_start = frame_start + 12;
+    let payload_end = frame_start + frame_len - 4;
+    let payload = &mut bytes[payload_start..payload_end];
+    let entry_count = u32::from_le_bytes(payload[0..4].try_into().expect("entry count"));
+    assert!(entry_count >= 2, "fixture must have at least two entries");
+
+    let first_key_len =
+        u32::from_le_bytes(payload[4..8].try_into().expect("first key len")) as usize;
+    let first_key_start = 8;
+    let first_key_end = first_key_start + first_key_len;
+    let first_row_len_offset = first_key_end;
+    let first_row_len = u32::from_le_bytes(
+        payload[first_row_len_offset..first_row_len_offset + 4]
+            .try_into()
+            .expect("first row len"),
+    ) as usize;
+    let second_key_len_offset = first_row_len_offset + 4 + first_row_len;
+    let second_key_len = u32::from_le_bytes(
+        payload[second_key_len_offset..second_key_len_offset + 4]
+            .try_into()
+            .expect("second key len"),
+    ) as usize;
+    assert_eq!(
+        first_key_len, second_key_len,
+        "fixture keys must have the same encoded length"
+    );
+    let second_key_start = second_key_len_offset + 4;
+    let first_key = payload[first_key_start..first_key_end].to_vec();
+    payload[second_key_start..second_key_start + second_key_len].copy_from_slice(&first_key);
+
+    let frame_crc_offset = frame_start + frame_len - 4;
+    let frame_crc = crc32fast::hash(&bytes[frame_start..frame_crc_offset]);
+    bytes[frame_crc_offset..frame_crc_offset + 4].copy_from_slice(&frame_crc.to_le_bytes());
+    refresh_table_crc(bytes);
+}
+
 fn checked_table_offset(offset: u64) -> usize {
     usize::try_from(offset).expect("table fixture offset fits usize")
 }
@@ -1621,8 +1666,12 @@ fn immutable_reader_indexed_point_present_hit_reads_one_block_then_uses_cache() 
     assert_eq!(perf.table_cache_misses(), 1);
     assert_eq!(perf.table_cache_inserts(), 1);
     assert_eq!(perf.table_cache_hits(), 1);
-    assert_eq!(perf.table_data_block_decodes(), 2);
-    assert_eq!(perf.table_rows_decoded(), 2);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_lazy_point_block_scans(), 2);
+    assert_eq!(perf.table_lazy_point_entries_scanned(), 2);
+    assert_eq!(perf.table_lazy_point_rows_decoded(), 2);
+    assert_eq!(perf.table_lazy_point_full_block_decodes_avoided(), 0);
     assert_eq!(perf.table_point_rows_visited(), 2);
 }
 
@@ -1660,8 +1709,12 @@ fn immutable_reader_indexed_point_absent_inside_candidate_block_reads_one_block_
     assert_eq!(source_probe.calls(), 5);
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_data_block_reads(), 1);
-    assert_eq!(perf.table_data_block_decodes(), 1);
-    assert_eq!(perf.table_rows_decoded(), 2);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_lazy_point_block_scans(), 1);
+    assert_eq!(perf.table_lazy_point_entries_scanned(), 2);
+    assert_eq!(perf.table_lazy_point_rows_decoded(), 0);
+    assert_eq!(perf.table_lazy_point_full_block_decodes_avoided(), 2);
     assert_eq!(perf.table_point_rows_visited(), 1);
 }
 
@@ -2102,8 +2155,12 @@ fn immutable_reader_positive_filter_probe_still_validates_data_block() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_filter_positive_probes(), 1);
     assert_eq!(perf.table_data_block_reads(), 1);
-    assert_eq!(perf.table_data_block_decodes(), 1);
-    assert_eq!(perf.table_rows_decoded(), 2);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_lazy_point_block_scans(), 1);
+    assert_eq!(perf.table_lazy_point_entries_scanned(), 2);
+    assert_eq!(perf.table_lazy_point_rows_decoded(), 1);
+    assert_eq!(perf.table_lazy_point_full_block_decodes_avoided(), 1);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2185,7 +2242,11 @@ fn immutable_reader_false_positive_filter_keeps_point_miss_correct() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_filter_positive_probes(), 1);
     assert!(perf.table_data_block_reads() > 0);
-    assert!(perf.table_data_block_decodes() > 0);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert!(perf.table_lazy_point_block_scans() > 0);
+    assert!(perf.table_lazy_point_entries_scanned() > 0);
+    assert_eq!(perf.table_lazy_point_rows_decoded(), 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2270,8 +2331,11 @@ fn immutable_reader_indexed_point_rows_visited_are_bounded_to_candidate_key_chai
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_data_block_reads(), 1);
-    assert_eq!(perf.table_data_block_decodes(), 1);
-    assert_eq!(perf.table_rows_decoded(), 4);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_lazy_point_block_scans(), 1);
+    assert_eq!(perf.table_lazy_point_rows_decoded(), 1);
+    assert_eq!(perf.table_lazy_point_full_block_decodes_avoided(), 3);
     assert_eq!(perf.table_point_rows_visited(), 1);
 }
 
@@ -2419,8 +2483,12 @@ fn immutable_reader_indexed_point_timestamp_bound_walks_only_target_chain_blocks
     assert_eq!(visited, 4);
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_data_block_reads(), 3);
-    assert_eq!(perf.table_data_block_decodes(), 3);
-    assert_eq!(perf.table_rows_decoded(), 6);
+    assert_eq!(perf.table_data_block_decodes(), 0);
+    assert_eq!(perf.table_rows_decoded(), 0);
+    assert_eq!(perf.table_lazy_point_block_scans(), 3);
+    assert_eq!(perf.table_lazy_point_entries_scanned(), 6);
+    assert_eq!(perf.table_lazy_point_rows_decoded(), 4);
+    assert_eq!(perf.table_lazy_point_full_block_decodes_avoided(), 2);
     assert_eq!(perf.table_point_rows_visited(), 4);
 }
 
@@ -2495,6 +2563,39 @@ fn immutable_reader_indexed_point_corrupt_candidate_block_errors_but_range_miss_
         reader.try_seek_physical_key(&out_of_range, None, None),
         Ok((None, 0))
     );
+    assert_eq!(source_probe.calls(), 4);
+
+    let target = physical_key(1, "reader", 0x20, b"alpha".to_vec());
+    assert!(matches!(
+        reader.try_seek_physical_key(&target, None, None),
+        Err(TableRuntimeError::DecodeFormat { .. })
+    ));
+    assert_eq!(source_probe.calls(), 5);
+}
+
+#[test]
+fn immutable_reader_lazy_point_validates_later_entries_after_matching_row() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-indexed-point-corrupt-after-match",
+        &rows,
+        3,
+        TableCompression::Uncompressed,
+    );
+    let mut bytes = artifact.bytes().to_vec();
+    duplicate_first_data_entry_key_into_second(&mut bytes, 0);
+    let source = TestSource::exact(bytes);
+    let source_probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-point-corrupt-after-match"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader with structurally corrupt data block");
     assert_eq!(source_probe.calls(), 4);
 
     let target = physical_key(1, "reader", 0x20, b"alpha".to_vec());

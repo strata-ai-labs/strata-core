@@ -73,6 +73,7 @@ reason, and replacement proof or later slice that will close it.
 15. `m4p-l6k-table-compaction-hot-path-implementation-and-test-plan.md`
 16. `m4p-l6l-branch-read-hot-path-implementation-plan.md`
 17. `m4p-l6l-branch-read-hot-path-test-plan.md`
+18. `m4p-l8-automatic-maintenance-scheduling-followup.md`
 
 ## Initial Slice Queue
 

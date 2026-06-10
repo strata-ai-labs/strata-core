@@ -1,4 +1,7 @@
-use super::data::{decode_table_data_block, encode_table_data_block, TableDataBlock};
+use super::data::{
+    decode_table_data_block, encode_table_data_block, seek_table_data_block_point, TableDataBlock,
+    TableDataBlockPointSeek,
+};
 use super::index::{decode_table_index_block_for_data_blocks, encode_table_index_block};
 use super::index::{TableIndexBlock, TableIndexEntry};
 use super::properties::{
@@ -13,7 +16,7 @@ use super::{
 };
 use crate::format::FormatError;
 use crate::row::{InternalKey, StorageRow};
-use strata_core_next::CommitVersion;
+use strata_core_next::{CommitVersion, Timestamp};
 
 const TABLE_ARTIFACT_FORMAT: &str = "immutable_table";
 
@@ -589,6 +592,36 @@ pub(crate) fn decode_immutable_table_data_block(
     let block = decode_table_data_block(frame.decoded_payload())?;
     validate_data_block_against_index(index_entry, &block)?;
     Ok(block)
+}
+
+pub(crate) fn seek_immutable_table_data_block_point(
+    index_entry: &TableIndexEntry,
+    frame_bytes: &[u8],
+    seek_key: &[u8],
+    target_physical_key: &[u8],
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> Result<TableDataBlockPointSeek, FormatError> {
+    let (frame, consumed) = decode_exact_frame(frame_bytes, TableBlockKind::Data)?;
+    if consumed
+        != usize::try_from(index_entry.block_frame_len()).map_err(|_| {
+            FormatError::InvalidLength {
+                field: "block_frame_len",
+            }
+        })?
+    {
+        return Err(FormatError::InvalidLength {
+            field: "block_frame_len",
+        });
+    }
+    seek_table_data_block_point(
+        index_entry,
+        frame.decoded_payload(),
+        seek_key,
+        target_physical_key,
+        max_commit_version,
+        max_commit_timestamp,
+    )
 }
 
 fn decode_data_region(

@@ -17,7 +17,8 @@ Related planning docs:
 8. `docs/architecture/implementation-plans/M4/L8/l8x-lazy-object-backed-table-reads-implementation-plan.md`
 9. `docs/architecture/implementation-plans/M4/L8/l8y-branch-lifecycle-completeness-implementation-plan.md`
 10. `docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md`
-11. `docs/architecture/storage-next/l9-storage-api-boundary.md`
+11. `docs/architecture/implementation-plans/M4P/m4p-l8-automatic-maintenance-scheduling-followup.md`
+12. `docs/architecture/storage-next/l9-storage-api-boundary.md`
 
 ## Purpose
 
@@ -59,6 +60,7 @@ These are not deferred gaps anymore. They are planned L8Q-L8Z work.
 | Lazy object-backed table reads | L8X | Planned before L9. |
 | Branch lifecycle completeness | L8Y | Planned before L9. |
 | Commit hardening and pre-L9 readiness | L8Z | Planned before L9, including minimal checkpoint/WAL-growth policy. |
+| Automatic maintenance scheduling and score-based compaction drain | M4P-L8A/L8B/L8C | Follow-up before L9 scale benchmark closeout. See `m4p-l8-automatic-maintenance-scheduling-followup.md`. |
 
 ## L9-Owned Work
 

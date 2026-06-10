@@ -11,10 +11,11 @@ use super::{
     TablePreparedPointLookup, TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts,
     TableRuntimeResult,
 };
+use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
-    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata, TableIndexEntry,
-    MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
+    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata,
+    TableDataBlockPointSeek, TableIndexEntry, MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
 use crate::observability::perf_trace;
 use crate::row::{InternalKey, PhysicalKey};
@@ -532,7 +533,6 @@ impl LazyTableState<'_> {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         };
-        let first_candidate_block_index = block_index;
 
         let mut visited = 0usize;
         while let Some(entry) = entries.get(block_index) {
@@ -548,34 +548,12 @@ impl LazyTableState<'_> {
                 PhysicalRangeOrdering::MayContain => {}
             }
 
-            let rows = self.read_data_block_rows(block_index)?;
-            let start = if block_index == first_candidate_block_index {
-                candidate_row_index_for_seek_key(&rows, seek_key)
-            } else {
-                0
-            };
-
-            let mut continue_to_next_block = false;
-            for row in &rows[start..] {
-                visited = visited.saturating_add(1);
-                match row.key().physical_key_bytes().cmp(target_physical_key) {
-                    std::cmp::Ordering::Less => {}
-                    std::cmp::Ordering::Greater => {
-                        perf_trace::record_table_point_rows_visited(visited);
-                        return Ok((None, visited));
-                    }
-                    std::cmp::Ordering::Equal => {
-                        continue_to_next_block = true;
-                        if row_matches_point_bound(
-                            row,
-                            lookup.max_commit_version(),
-                            lookup.max_commit_timestamp(),
-                        ) {
-                            perf_trace::record_table_point_rows_visited(visited);
-                            return Ok((Some(row.clone()), visited));
-                        }
-                    }
-                }
+            let seek = self.seek_data_block_point(entry, block_index, lookup)?;
+            visited = visited.saturating_add(seek.rows_visited());
+            let continue_to_next_block = seek.continue_to_next_block();
+            if let Some(row) = seek.row() {
+                perf_trace::record_table_point_rows_visited(visited);
+                return Ok((Some(TableRow::new(row)), visited));
             }
 
             if !continue_to_next_block {
@@ -686,6 +664,35 @@ impl LazyTableState<'_> {
             cache.insert(key, Arc::clone(&frame.bytes))?;
         }
         Ok(block.rows().cloned().map(TableRow::new).collect())
+    }
+
+    fn seek_data_block_point(
+        &self,
+        entry: &TableIndexEntry,
+        block_index: usize,
+        lookup: &TablePreparedPointLookup,
+    ) -> TableRuntimeResult<TableDataBlockPointSeek> {
+        let frame = self.read_data_block_frame(entry, block_index)?;
+        let seek = seek_immutable_table_data_block_point(
+            entry,
+            frame.bytes.as_ref(),
+            lookup.seek_key().as_slice(),
+            lookup.physical_key().as_slice(),
+            lookup.max_commit_version(),
+            lookup.max_commit_timestamp(),
+        )
+        .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+        perf_trace::record_table_lazy_point_block_scan(
+            seek.entries_scanned(),
+            seek.candidate_rows_decoded(),
+            usize::try_from(entry.row_count())
+                .unwrap_or(usize::MAX)
+                .saturating_sub(seek.candidate_rows_decoded()),
+        );
+        if let Some((cache, key)) = frame.cache_insert {
+            cache.insert(key, Arc::clone(&frame.bytes))?;
+        }
+        Ok(seek)
     }
 
     fn read_data_block_frame(

@@ -187,6 +187,10 @@ pub struct StoragePerfSnapshot {
     table_data_block_read_bytes: u64,
     table_data_block_decodes: u64,
     table_rows_decoded: u64,
+    table_lazy_point_block_scans: u64,
+    table_lazy_point_entries_scanned: u64,
+    table_lazy_point_rows_decoded: u64,
+    table_lazy_point_full_block_decodes_avoided: u64,
     table_point_rows_visited: u64,
     table_cursor_rows_visited: u64,
     table_cache_hits: u64,
@@ -838,6 +842,26 @@ impl StoragePerfSnapshot {
         self.table_rows_decoded
     }
 
+    /// Number of lazy data blocks scanned by table-local point lookup.
+    pub const fn table_lazy_point_block_scans(self) -> u64 {
+        self.table_lazy_point_block_scans
+    }
+
+    /// Number of encoded data-block entries scanned by lazy point lookup.
+    pub const fn table_lazy_point_entries_scanned(self) -> u64 {
+        self.table_lazy_point_entries_scanned
+    }
+
+    /// Number of row payloads decoded by lazy point lookup.
+    pub const fn table_lazy_point_rows_decoded(self) -> u64 {
+        self.table_lazy_point_rows_decoded
+    }
+
+    /// Number of full data-block row decodes avoided by lazy point lookup.
+    pub const fn table_lazy_point_full_block_decodes_avoided(self) -> u64 {
+        self.table_lazy_point_full_block_decodes_avoided
+    }
+
     /// Number of table rows visited during table-local point lookup.
     pub const fn table_point_rows_visited(self) -> u64 {
         self.table_point_rows_visited
@@ -1181,6 +1205,14 @@ static TABLE_DATA_BLOCK_DECODES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_ROWS_DECODED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_LAZY_POINT_BLOCK_SCANS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_LAZY_POINT_ENTRIES_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_LAZY_POINT_ROWS_DECODED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_LAZY_POINT_FULL_BLOCK_DECODES_AVOIDED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_POINT_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_CURSOR_ROWS_VISITED: AtomicU64 = AtomicU64::new(0);
@@ -1383,6 +1415,10 @@ pub fn reset() {
     TABLE_DATA_BLOCK_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_DATA_BLOCK_DECODES.store(0, Ordering::Relaxed);
     TABLE_ROWS_DECODED.store(0, Ordering::Relaxed);
+    TABLE_LAZY_POINT_BLOCK_SCANS.store(0, Ordering::Relaxed);
+    TABLE_LAZY_POINT_ENTRIES_SCANNED.store(0, Ordering::Relaxed);
+    TABLE_LAZY_POINT_ROWS_DECODED.store(0, Ordering::Relaxed);
+    TABLE_LAZY_POINT_FULL_BLOCK_DECODES_AVOIDED.store(0, Ordering::Relaxed);
     TABLE_POINT_ROWS_VISITED.store(0, Ordering::Relaxed);
     TABLE_CURSOR_ROWS_VISITED.store(0, Ordering::Relaxed);
     TABLE_CACHE_HITS.store(0, Ordering::Relaxed);
@@ -1566,6 +1602,11 @@ pub fn snapshot() -> StoragePerfSnapshot {
         table_data_block_read_bytes: TABLE_DATA_BLOCK_READ_BYTES.load(Ordering::Relaxed),
         table_data_block_decodes: TABLE_DATA_BLOCK_DECODES.load(Ordering::Relaxed),
         table_rows_decoded: TABLE_ROWS_DECODED.load(Ordering::Relaxed),
+        table_lazy_point_block_scans: TABLE_LAZY_POINT_BLOCK_SCANS.load(Ordering::Relaxed),
+        table_lazy_point_entries_scanned: TABLE_LAZY_POINT_ENTRIES_SCANNED.load(Ordering::Relaxed),
+        table_lazy_point_rows_decoded: TABLE_LAZY_POINT_ROWS_DECODED.load(Ordering::Relaxed),
+        table_lazy_point_full_block_decodes_avoided: TABLE_LAZY_POINT_FULL_BLOCK_DECODES_AVOIDED
+            .load(Ordering::Relaxed),
         table_point_rows_visited: TABLE_POINT_ROWS_VISITED.load(Ordering::Relaxed),
         table_cursor_rows_visited: TABLE_CURSOR_ROWS_VISITED.load(Ordering::Relaxed),
         table_cache_hits: TABLE_CACHE_HITS.load(Ordering::Relaxed),
@@ -2407,6 +2448,30 @@ pub(crate) fn record_table_data_blocks_decoded(blocks: usize, rows: usize) {
     }
     TABLE_DATA_BLOCK_DECODES.fetch_add(as_u64(blocks), Ordering::Relaxed);
     TABLE_ROWS_DECODED.fetch_add(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_lazy_point_block_scan(
+    _entries_scanned: usize,
+    _rows_decoded: usize,
+    _full_block_rows_avoided: usize,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_lazy_point_block_scan(
+    entries_scanned: usize,
+    rows_decoded: usize,
+    full_block_rows_avoided: usize,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_LAZY_POINT_BLOCK_SCANS.fetch_add(1, Ordering::Relaxed);
+    TABLE_LAZY_POINT_ENTRIES_SCANNED.fetch_add(as_u64(entries_scanned), Ordering::Relaxed);
+    TABLE_LAZY_POINT_ROWS_DECODED.fetch_add(as_u64(rows_decoded), Ordering::Relaxed);
+    TABLE_LAZY_POINT_FULL_BLOCK_DECODES_AVOIDED
+        .fetch_add(as_u64(full_block_rows_avoided), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

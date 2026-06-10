@@ -97,14 +97,12 @@ This plan does not own:
 3. automatic flush or automatic compaction scheduling;
 4. durable Bloom/filter block format changes;
 5. a new secondary point index;
-6. global/sharded block cache replacement;
-7. lazy data-block stream decoding, unless profiling after the early slices
-   proves lazy block decode is the next dominant point-read cost;
-8. public L9 API semantics.
+6. public L9 API semantics.
 
-Global block cache and lazy block stream decoding remain valid later work, but
-they should not block the first branch read cleanup. The first target is to stop
-probing and cloning rows from sources that cannot affect a point read answer.
+The first target was to stop probing and cloning rows from sources that cannot
+affect a point read answer. L6L-G and L6L-H now intentionally continue past that
+first target and close the remaining lazy-table point seek and block-cache
+architecture gaps.
 
 ## Correctness Rules
 
@@ -322,48 +320,123 @@ Exit gate:
 3. If an inherited layer can contain a higher visible row under the bound, the
    selector still probes it.
 
-### L6L-G. Lazy Data-Block Point Seek Follow-Up
+### L6L-G. Lazy Data-Block Point Seek
 
-Goal: eliminate full data-block row materialization for lazy point reads if it
-remains a measured bottleneck after L6L-A through L6L-F.
+Goal: eliminate full data-block row materialization for lazy point reads. A
+lazy point read should validate and decompress the touched data-block frame, but
+it should parse encoded entries in key order and decode only rows in the
+matching physical-key chain that can satisfy the read bound.
 
 Work:
 
-1. Add a lazy block point cursor that scans encoded entries in place instead of
-   decoding the entire data block into `Vec<TableRow>`.
-2. Reuse existing checksum/frame validation.
-3. Decode only candidate rows in the physical-key chain.
-4. Keep the existing full-block decode path for scans until scan cleanup owns
-   that work.
+1. Add a data-block point seek helper in the table format layer that accepts:
+   - the decoded data-block payload bytes after frame validation;
+   - the `TableIndexEntry` for first/last-key validation;
+   - prepared seek-key bytes;
+   - prepared physical-key bytes;
+   - optional max commit version and max commit timestamp.
+2. Keep existing checksum, compression, frame-length, and frame-kind validation
+   in `decode_immutable_table_data_block`/frame decoding. The new point helper
+   starts only after those checks pass.
+3. Parse the data-block entry count and length-prefixed internal keys directly
+   from the encoded payload.
+4. Validate entry count, key lengths, row lengths, sorted internal-key order,
+   duplicate internal-key rejection, and first/last key agreement with the index
+   while scanning. Corrupt blocks must fail closed even when the matching row is
+   near the front of the block.
+5. Use the prepared seek key to skip entries before the first possible
+   candidate, then scan forward until the physical key is greater than the
+   target.
+6. Decode `StorageRow` bytes only for entries whose internal key belongs to the
+   target physical-key chain and whose commit/timestamp facts can satisfy the
+   point read bound.
+7. Preserve the cross-block chain behavior in `LazyTableState::seek_prepared_point`:
+   if the touched block contains target physical-key entries but none match the
+   bound, continue to the next block only when the chain may continue there.
+8. Keep `read_data_block_rows` and the full `Vec<TableRow>` materialization path
+   for scans, cursors, `rows()`, history helpers, and any table API that needs a
+   complete block.
+9. Keep `try_get_exact` on the existing full-block decode path unless a later
+   focused measurement proves exact lookup is a hot path. Branch point reads
+   use the prepared physical-key seek path.
+10. Add perf counters, behind the existing perf-trace feature, for:
+    - lazy point block scans;
+    - encoded entries inspected;
+    - candidate row bytes decoded;
+    - full-block row materializations avoided.
+11. Route lazy `seek_prepared_point` through the new helper and record existing
+    data-block read/cache counters unchanged. A cold lazy point read still reads
+    one block frame; it should no longer increment full-block row materialized
+    counts by the whole block size.
+12. Keep eager readers unchanged in this slice.
 
 Exit gate:
 
 1. Lazy point reads decode only the matching key-chain rows on a cold block.
 2. Lazy point read results match the existing block decode path.
-3. Corrupt block behavior remains unchanged for the queried block.
+3. Corrupt block behavior remains unchanged for touched blocks.
+4. Untouched corrupt data blocks still do not affect point reads for other
+   physical keys.
+5. Scans and materialization still use the complete-block decode path and
+   preserve current ordering and validation behavior.
 
-This slice should not start until benchmark counters show lazy block decode is
-still material after source traversal is bounded.
+### L6L-H. Shared And Sharded Block Cache Architecture
 
-### L6L-H. Block Cache Architecture Decision
-
-Goal: decide whether per-table block caches must become a shared or sharded
-cache for point reads.
+Goal: make lazy table block caching a runtime-level shared resource and remove
+single-cache-lock contention from point reads. The existing cache key already
+includes table identity plus block address; this slice should preserve that key
+model while changing ownership and internal concurrency.
 
 Work:
 
-1. Profile point reads after L6L-A through L6L-G.
-2. Measure block cache lock contention and hit-rate fragmentation.
-3. If material, write a separate cache implementation plan that owns:
-   - shared cache keying by table id and block index;
-   - sharding or lock-free behavior;
-   - memory budget accounting;
-   - eviction correctness.
+1. Split the slice into two mechanical steps:
+   - L6L-H1: shared runtime cache wiring;
+   - L6L-H2: sharded `TableBlockCache` internals behind the existing public
+     table-cache API.
+2. Add a storage-next runtime/lifecycle owned `Arc<TableBlockCache>` built from
+   `StorageRuntimeBudget::table_cache_config()`.
+3. Thread that shared cache through table-object reader construction and branch
+   table reader admission so every lazy reader opened by one runtime uses the
+   same cache instance by default.
+4. Keep `ImmutableTableReader::with_block_cache` as an explicit override for
+   tests and specialized callers.
+5. Preserve `TableBlockCacheKey { table, address }` as the cache key so blocks
+   from different tables cannot collide in the shared cache.
+6. Preserve disabled-cache behavior when the block-cache budget is zero.
+7. Convert `TableBlockCache` from one `Mutex<CacheState>` to a fixed number of
+   shards. Each shard owns:
+   - enabled/capacity facts;
+   - bytes in shard;
+   - entry map;
+   - recency queue;
+   - per-shard stats.
+8. Choose shards by hashing the full `TableBlockCacheKey`. Keep table
+   invalidation correct by visiting all shards in `remove_table`.
+9. Divide configured capacity across shards, distributing any remainder so the
+   aggregate capacity equals the configured budget.
+10. Aggregate stats across shards in `stats()`, including entries, bytes,
+    capacity, hits, misses, inserts, duplicate inserts, evictions, removes,
+    table invalidations, clears, skipped oversized, and skipped disabled.
+11. Keep `resize`, `clear`, `remove`, `remove_table`, `get`, and `insert`
+    behavior compatible with existing tests.
+12. Add optional perf counters for cache shard selection and lock acquisitions
+    only if the current perf trace surface already has an appropriate pattern.
+    Do not turn cache lock instrumentation into a catch-all counter family.
+13. Do not change durable table format, table identity format, or object layout.
 
 Exit gate:
 
-1. A decision note either defers cache architecture or promotes a separate
-   cache slice with measured evidence.
+1. Readers opened through the runtime share one cache instance and can hit a
+   block inserted by another reader for the same table identity and block
+   address.
+2. Readers for different table identities do not collide even when block offsets
+   and lengths match.
+3. A disabled or zero-budget runtime attaches no enabled cache and preserves
+   current no-cache behavior.
+4. Cache stats aggregate correctly across shards.
+5. Eviction respects the configured aggregate capacity.
+6. Existing explicit `with_block_cache` tests keep passing.
+7. Point-read results and lazy-reader error behavior remain unchanged.
 
 ## Execution Order
 
@@ -375,9 +448,11 @@ Recommended order:
 4. L6L-D deferred row cloning.
 5. L6L-F inherited short-circuiting, if not fully landed in L6L-C.
 6. L6L-E eager table filters.
-7. Rerun 100K and 1M point-read benchmarks after manual flush and explicit
+7. L6L-G lazy data-block point seek.
+8. L6L-H1 shared runtime cache wiring.
+9. L6L-H2 sharded block cache internals.
+10. Rerun 100K and 1M point-read benchmarks after manual flush and explicit
    compaction drain.
-8. Decide whether L6L-G or L6L-H is justified by the new counters.
 
 L6L-B through L6L-D can share some edits, but they should have separate counter
 gates. If the early-exit selector changes more than one semantic surface at
@@ -412,6 +487,8 @@ Stop and write a short decision note before continuing if any of these happen:
 3. The selector fix lands but 100K point-read throughput does not materially
    improve and counters show source traversal is bounded.
 4. Eager filter construction cost materially slows writes, flush, or table open.
-5. Lazy block decode or block cache contention becomes the new dominant cost
-   center.
-
+5. Lazy point seek requires weakening data-block corruption validation.
+6. Shared cache wiring requires changing durable table identity or object
+   layout.
+7. Sharded cache stats or eviction semantics cannot remain compatible with the
+   existing `TableBlockCache` API.

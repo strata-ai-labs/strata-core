@@ -12,7 +12,11 @@ The test suite must prove two things independently:
 1. point-read semantics are unchanged for latest, version-bounded,
    timestamp-bounded, tombstone, TTL, owned, and inherited reads;
 2. the hot path no longer traverses or clones rows from sources that cannot
-   affect the selected point-read result.
+   affect the selected point-read result;
+3. lazy point reads no longer materialize full data blocks when only one
+   physical-key chain is needed;
+4. runtime-opened lazy table readers use a shared, correctly keyed block cache
+   instead of fragmented per-reader caches.
 
 Correctness tests should not depend on perf counters. Mechanical counter tests
 should use the existing perf-gated test pattern and should be narrow.
@@ -126,6 +130,53 @@ Required assertions:
    latest/tombstone behavior;
 5. L9 public read tests still return the same values and errors.
 
+### Lazy Data-Block Point Seek Tests
+
+Add focused table reader tests for lazy immutable readers opened from a byte
+source.
+
+Required assertions:
+
+1. latest lazy point seek returns the same row as the existing full-block decode
+   path for a single-version key;
+2. version-bounded lazy point seek returns the newest row at or below the bound
+   without decoding unrelated rows in the block;
+3. timestamp-bounded lazy point seek returns the newest row at or below the
+   timestamp bound without decoding unrelated rows in the block;
+4. a matching physical-key chain with no visible version continues into the
+   next data block when the chain spans a block boundary;
+5. a nonmatching key inside a candidate block stops before decoding unrelated
+   row payload bytes after the physical key becomes greater than the target;
+6. a definite-negative table filter still skips data-block reads before the new
+   lazy point block cursor is entered;
+7. eager readers keep their existing path and results;
+8. scans, cursors, `rows()`, and materialization still decode complete data
+   blocks and return the same ordered rows as before.
+
+### Shared Block Cache Correctness Tests
+
+Add table, service, and lifecycle/runtime tests for the shared cache wiring.
+
+Required assertions:
+
+1. two lazy readers for the same table identity and same runtime cache share a
+   cached data block;
+2. two lazy readers for different table identities but identical block offsets
+   and lengths do not collide;
+3. runtime-opened branch table readers attach the runtime shared cache by
+   default when the block-cache budget is nonzero;
+4. zero block-cache budget keeps cache disabled and does not attach an enabled
+   cache;
+5. explicit `ImmutableTableReader::with_block_cache` still overrides/attaches
+   the supplied cache for direct table tests;
+6. `remove_table` invalidates all shards for one table without removing another
+   table's blocks;
+7. `clear` removes entries from every shard;
+8. `resize` changes aggregate capacity and evicts as needed without corrupting
+   stats;
+9. duplicate inserts still return the existing bytes for the same full
+   table/block key.
+
 ## Mechanical Counter Tests
 
 All tests in this section should be behind the perf-trace feature or the
@@ -188,6 +239,40 @@ Required assertions:
    unavailable probe;
 5. filter construction does not run per point read.
 
+### Lazy Point Decode Counters
+
+Required assertions:
+
+1. cold lazy point hit records one data-block frame read and one lazy point
+   block scan;
+2. cold lazy point hit decodes only the matching physical-key chain rows, not
+   every row in the data block;
+3. lazy point miss inside a candidate block records encoded entries inspected
+   but zero candidate row payload decodes when no matching physical key exists;
+4. lazy point seek over a multi-block version chain records one block scan per
+   touched block and row payload decodes only for matching chain entries;
+5. full cursor/materialization paths continue to increment full-block decode
+   and row materialization counters;
+6. cache hits avoid source reads but still perform the lazy point payload scan
+   against cached block bytes.
+
+### Shared Cache Counters
+
+Required assertions:
+
+1. a second reader for the same table/block records a cache hit after the first
+   reader inserts the block;
+2. readers for different table identities record misses for the same offset and
+   length;
+3. cache stats aggregate hits, misses, inserts, duplicate inserts, evictions,
+   removes, clears, skipped oversized, and skipped disabled across shards;
+4. the aggregate byte gauge never exceeds configured capacity after inserts and
+   evictions settle;
+5. disabled runtime cache records skipped inserts or no-cache behavior
+   consistently with the existing table-cache contract;
+6. perf-gated cache assertions stay narrow and do not become a required part of
+   every read-path correctness test.
+
 ## Fault And Failure Tests
 
 Required cases:
@@ -203,7 +288,15 @@ Required cases:
 6. a corrupt lazy block touched by a point read still reports the existing table
    error;
 7. an untouched corrupt lazy block does not affect a point read for another
-   physical key.
+   physical key;
+8. a corrupt lazy block with the matching row near the front still fails if a
+   later encoded entry in the same block violates sorted-order, duplicate-key,
+   key-length, row-length, or first/last-index validation;
+9. a cache shard mutex poison recovers with the existing poison-tolerant cache
+   behavior;
+10. cache insert failure or invalid cache key construction aborts reader cache
+    attachment without changing read semantics;
+11. a failed lazy block read is not inserted into the shared cache.
 
 ## Generated Tests
 
@@ -224,6 +317,9 @@ Generated fixture dimensions:
 10. TTL rows with timestamp bounds before and after expiration;
 11. version bounds below, inside, and above the retained version chain;
 12. timestamp bounds below, inside, and above retained timestamp ranges.
+13. lazy tables with one through several data blocks;
+14. same-physical-key version chains split at data-block boundaries;
+15. shared cache enabled and disabled runtime budgets.
 
 Generated invariants:
 
@@ -236,7 +332,9 @@ Generated invariants:
 5. source probes are bounded by active/frozen/L0 plus at most one table per
    nonzero level unless the fixture intentionally keeps newer possible sources
    after an earlier hit;
-6. inherited layers are not probed after a local candidate is proven final.
+6. inherited layers are not probed after a local candidate is proven final;
+7. lazy point seek and full-block decode return equivalent point-read results;
+8. shared cache hits and misses do not change read results or error results.
 
 ## Benchmark Gates
 
@@ -265,14 +363,19 @@ Expected counter movement:
 4. table point rows visited are bounded by key-chain length plus false-positive
    filter cases;
 5. prepared key builds are not proportional to table probes;
-6. row-clone bytes are not proportional to matching layers.
+6. row-clone bytes are not proportional to matching layers;
+7. lazy point reads do not materialize all rows in the touched data block;
+8. repeated lazy point reads through separate runtime-opened readers hit the
+   shared block cache when they target the same table/block.
 
 Expected performance movement:
 
-1. 100K latest point-read throughput should improve materially before starting
-   lazy block decode or block cache work.
-2. If 100K throughput does not improve while counters show bounded traversal,
-   collect a CPU profile before implementing the next read-path slice.
+1. 100K latest point-read throughput should improve materially after source
+   traversal, clone deferral, eager filters, lazy point seek, and shared cache
+   wiring are all in place.
+2. If 100K throughput does not improve while counters show bounded traversal
+   and bounded row materialization, collect a CPU profile before adding another
+   read-path slice.
 3. Do not run 5M or 10M as the primary gate until 1M has a sane point-read
    number and counters show the branch path is no longer doing full traversal.
 
@@ -283,10 +386,14 @@ Focused commands:
 ```sh
 cargo fmt --manifest-path crates/storage-next/Cargo.toml --all
 cargo test --manifest-path crates/storage-next/Cargo.toml --lib table::tests::reader
+cargo test --manifest-path crates/storage-next/Cargo.toml --lib table::tests::cache
+cargo test --manifest-path crates/storage-next/Cargo.toml --lib service::table
 cargo test --manifest-path crates/storage-next/Cargo.toml --lib branch::tests::point_pruning
 cargo test --manifest-path crates/storage-next/Cargo.toml --lib branch::tests::read_view
 cargo test --manifest-path crates/storage-next/Cargo.toml --lib branch::tests::inheritance_materialization
 cargo test --manifest-path crates/storage-next/Cargo.toml --lib api::tests::read
+cargo test --manifest-path crates/storage-next/Cargo.toml --lib --features perf-trace table::tests::reader
+cargo test --manifest-path crates/storage-next/Cargo.toml --lib --features perf-trace table::tests::cache
 cargo test --manifest-path crates/storage-next/Cargo.toml --lib --features perf-trace branch::tests::point_pruning
 cargo clippy --manifest-path crates/storage-next/Cargo.toml --lib --all-features -- -D warnings
 git diff --check
@@ -307,7 +414,8 @@ Stop the slice and write a decision note if:
 2. early-exit counters improve but point-read throughput does not move;
 3. eager filters slow table construction enough to affect load or flush
    throughput materially;
-4. lazy block decode or block cache contention becomes the measured dominant
-   cost after source traversal and row cloning are bounded;
-5. a required fix would change durable table format or public read semantics.
-
+4. lazy point seek cannot preserve full data-block corruption validation;
+5. shared cache wiring requires changing durable table identity, object layout,
+   or public read semantics;
+6. sharded cache eviction or stats cannot remain compatible with existing
+   `TableBlockCache` behavior.

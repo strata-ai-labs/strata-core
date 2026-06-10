@@ -3,10 +3,13 @@ use super::super::{
     storage_row::{decode_storage_row, encode_storage_row},
     ByteReader, FormatError,
 };
+use super::index::TableIndexEntry;
 use super::{MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROW_BYTES};
 use crate::row::{InternalKey, StorageRow};
+use strata_core_next::{CommitVersion, Timestamp};
 
 const TABLE_DATA_BLOCK_FORMAT: &str = "table_data_block";
+const INTERNAL_KEY_SUFFIX_LEN: usize = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableDataEntry {
@@ -150,6 +153,140 @@ pub(crate) fn decode_table_data_block(bytes: &[u8]) -> Result<TableDataBlock, Fo
     TableDataBlock::from_entries(entries)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableDataBlockPointSeek {
+    row: Option<StorageRow>,
+    rows_visited: usize,
+    entries_scanned: usize,
+    candidate_rows_decoded: usize,
+    continue_to_next_block: bool,
+}
+
+impl TableDataBlockPointSeek {
+    pub(crate) const fn new(
+        row: Option<StorageRow>,
+        rows_visited: usize,
+        entries_scanned: usize,
+        candidate_rows_decoded: usize,
+        continue_to_next_block: bool,
+    ) -> Self {
+        Self {
+            row,
+            rows_visited,
+            entries_scanned,
+            candidate_rows_decoded,
+            continue_to_next_block,
+        }
+    }
+
+    pub(crate) fn row(self) -> Option<StorageRow> {
+        self.row
+    }
+
+    pub(crate) const fn rows_visited(&self) -> usize {
+        self.rows_visited
+    }
+
+    pub(crate) const fn entries_scanned(&self) -> usize {
+        self.entries_scanned
+    }
+
+    pub(crate) const fn candidate_rows_decoded(&self) -> usize {
+        self.candidate_rows_decoded
+    }
+
+    pub(crate) const fn continue_to_next_block(&self) -> bool {
+        self.continue_to_next_block
+    }
+}
+
+pub(crate) fn seek_table_data_block_point(
+    index_entry: &TableIndexEntry,
+    bytes: &[u8],
+    seek_key: &[u8],
+    target_physical_key: &[u8],
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> Result<TableDataBlockPointSeek, FormatError> {
+    let mut reader = ByteReader::new(TABLE_DATA_BLOCK_FORMAT, bytes);
+    let entry_count =
+        usize::try_from(reader.read_u32_le()?).map_err(|_| FormatError::InvalidLength {
+            field: "entry_count",
+        })?;
+    validate_count(entry_count)?;
+
+    let mut first_key = None;
+    let mut last_key = None;
+    let mut previous_key = None;
+    let mut scan_started = false;
+    let mut saw_target_at_block_tail = false;
+    let mut terminal_reached = false;
+    let mut row = None;
+    let mut rows_visited = 0usize;
+    let mut candidate_rows_decoded = 0usize;
+
+    for _ in 0..entry_count {
+        let internal_key_len = read_len(&mut reader, MAX_TABLE_KEY_BYTES, "internal_key_len")?;
+        let internal_key_bytes = reader.read_exact(internal_key_len)?;
+        let internal_key = decode_internal_key(internal_key_bytes)?;
+        validate_next_key_order(previous_key, internal_key_bytes)?;
+        if first_key.is_none() {
+            first_key = Some(internal_key_bytes);
+        }
+        previous_key = Some(internal_key_bytes);
+        last_key = Some(internal_key_bytes);
+
+        let row_len = read_len(&mut reader, MAX_TABLE_ROW_BYTES, "row_len")?;
+        let row_bytes = reader.read_exact(row_len)?;
+
+        if terminal_reached || row.is_some() {
+            continue;
+        }
+        if !scan_started {
+            if internal_key_bytes < seek_key {
+                continue;
+            }
+            scan_started = true;
+        }
+
+        rows_visited = rows_visited.saturating_add(1);
+        match internal_key_physical_key_bytes(internal_key_bytes).cmp(target_physical_key) {
+            std::cmp::Ordering::Less => {
+                saw_target_at_block_tail = false;
+            }
+            std::cmp::Ordering::Greater => {
+                saw_target_at_block_tail = false;
+                terminal_reached = true;
+            }
+            std::cmp::Ordering::Equal => {
+                saw_target_at_block_tail = true;
+                if max_commit_version
+                    .is_some_and(|max_version| internal_key.commit_version() > max_version)
+                {
+                    continue;
+                }
+                let candidate = decode_storage_row_for_internal_key(&internal_key, row_bytes)?;
+                candidate_rows_decoded = candidate_rows_decoded.saturating_add(1);
+                if max_commit_timestamp
+                    .is_none_or(|max_timestamp| candidate.commit_timestamp() <= max_timestamp)
+                {
+                    row = Some(candidate);
+                }
+            }
+        }
+    }
+    reader.finish()?;
+    validate_scanned_block_against_index(index_entry, entry_count, first_key, last_key)?;
+
+    Ok(TableDataBlockPointSeek::new(
+        row,
+        rows_visited,
+        entry_count,
+        candidate_rows_decoded,
+        saw_target_at_block_tail && !terminal_reached,
+    ))
+}
+
 fn append_len_prefixed(
     target: &mut Vec<u8>,
     payload: &[u8],
@@ -213,4 +350,68 @@ fn validate_entry_order(entries: &[TableDataEntry]) -> Result<(), FormatError> {
         }
     }
     Ok(())
+}
+
+fn validate_next_key_order(
+    previous_key: Option<&[u8]>,
+    current_key: &[u8],
+) -> Result<(), FormatError> {
+    let Some(previous_key) = previous_key else {
+        return Ok(());
+    };
+    match previous_key.cmp(current_key) {
+        std::cmp::Ordering::Less => Ok(()),
+        std::cmp::Ordering::Equal => Err(FormatError::InvalidValue {
+            field: "internal_key",
+        }),
+        std::cmp::Ordering::Greater => Err(FormatError::InvalidValue {
+            field: "internal_key_order",
+        }),
+    }
+}
+
+fn validate_scanned_block_against_index(
+    index_entry: &TableIndexEntry,
+    row_count: usize,
+    first_key: Option<&[u8]>,
+    last_key: Option<&[u8]>,
+) -> Result<(), FormatError> {
+    if index_entry.row_count() as usize != row_count {
+        return Err(FormatError::InvalidValue {
+            field: "index_row_count",
+        });
+    }
+    if Some(index_entry.first_key_bytes()) != first_key {
+        return Err(FormatError::InvalidValue {
+            field: "index_first_key",
+        });
+    }
+    if Some(index_entry.last_key_bytes()) != last_key {
+        return Err(FormatError::InvalidValue {
+            field: "index_last_key",
+        });
+    }
+    Ok(())
+}
+
+fn internal_key_physical_key_bytes(bytes: &[u8]) -> &[u8] {
+    &bytes[..bytes.len().saturating_sub(INTERNAL_KEY_SUFFIX_LEN)]
+}
+
+fn decode_storage_row_for_internal_key(
+    internal_key: &InternalKey,
+    row_bytes: &[u8],
+) -> Result<StorageRow, FormatError> {
+    let row = decode_storage_row(row_bytes)?;
+    if internal_key.physical_key() != row.physical_key() {
+        return Err(FormatError::InvalidValue {
+            field: "physical_key",
+        });
+    }
+    if internal_key.commit_version() != row.commit_version() {
+        return Err(FormatError::InvalidValue {
+            field: "commit_version",
+        });
+    }
+    Ok(row)
 }
