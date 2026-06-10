@@ -107,6 +107,7 @@ fn replay_classification_perf_trace_counts_rows_and_history_calls() {
     assert_eq!(perf.commit_replay_classification_calls(), 1);
     assert_eq!(perf.commit_replay_rows_classified(), expected_rows);
     assert_eq!(perf.commit_replay_history_calls(), expected_rows);
+    assert_eq!(perf.commit_replay_source_probes(), expected_rows);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -153,6 +154,7 @@ fn replay_classification_perf_trace_counts_many_rows_without_conflict_validation
     assert_eq!(perf.commit_replay_classification_calls(), 1);
     assert_eq!(perf.commit_replay_rows_classified(), expected_rows);
     assert_eq!(perf.commit_replay_history_calls(), expected_rows);
+    assert_eq!(perf.commit_replay_source_probes(), expected_rows);
     assert_eq!(perf.commit_conflict_validation_calls(), 0);
     assert_eq!(perf.conflict_sources_built(), 0);
 }

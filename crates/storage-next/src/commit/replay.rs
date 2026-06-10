@@ -410,13 +410,21 @@ fn classify_replay_rows(
     let mut absent = 0usize;
     let mut rows_classified = 0usize;
     let mut history_calls = 0usize;
+    let mut source_probes = 0usize;
     for row in rows {
         rows_classified = rows_classified.saturating_add(1);
         history_calls = history_calls.saturating_add(1);
         let row_state = match classify_replay_row(read_view, row) {
-            Ok(state) => state,
+            Ok((state, row_source_probes)) => {
+                source_probes = source_probes.saturating_add(row_source_probes);
+                state
+            }
             Err(error) => {
-                perf_trace::record_commit_replay_classification(rows_classified, history_calls);
+                perf_trace::record_commit_replay_classification(
+                    rows_classified,
+                    history_calls,
+                    source_probes,
+                );
                 return Err(error);
             }
         };
@@ -424,13 +432,17 @@ fn classify_replay_rows(
             ReplayDuplicateState::Exact => exact += 1,
             ReplayDuplicateState::Absent => absent += 1,
             ReplayDuplicateState::Mismatch => {
-                perf_trace::record_commit_replay_classification(rows_classified, history_calls);
+                perf_trace::record_commit_replay_classification(
+                    rows_classified,
+                    history_calls,
+                    source_probes,
+                );
                 return Ok(ReplayDuplicateState::Mismatch);
             }
             ReplayDuplicateState::Partial => unreachable!("single row cannot be partial"),
         }
     }
-    perf_trace::record_commit_replay_classification(rows_classified, history_calls);
+    perf_trace::record_commit_replay_classification(rows_classified, history_calls, source_probes);
     match (exact, absent) {
         (0, _) => Ok(ReplayDuplicateState::Absent),
         (_, 0) => Ok(ReplayDuplicateState::Exact),
@@ -441,9 +453,9 @@ fn classify_replay_rows(
 fn classify_replay_row(
     read_view: &BranchReadView,
     row: &StorageRow,
-) -> CommitRuntimeResult<ReplayDuplicateState> {
-    let history = read_view
-        .history(row.physical_key(), BranchHistoryOptions::all())
+) -> CommitRuntimeResult<(ReplayDuplicateState, usize)> {
+    let (history, source_probes) = read_view
+        .history_with_source_probe_count(row.physical_key(), BranchHistoryOptions::all())
         .map_err(|source| {
             CommitRuntimeError::lower_layer_with(
                 CommitLowerLayer::BranchRuntime,
@@ -459,13 +471,13 @@ fn classify_replay_row(
     {
         saw_same_internal = true;
         if existing.row() == row {
-            return Ok(ReplayDuplicateState::Exact);
+            return Ok((ReplayDuplicateState::Exact, source_probes));
         }
     }
     if saw_same_internal {
-        Ok(ReplayDuplicateState::Mismatch)
+        Ok((ReplayDuplicateState::Mismatch, source_probes))
     } else {
-        Ok(ReplayDuplicateState::Absent)
+        Ok((ReplayDuplicateState::Absent, source_probes))
     }
 }
 

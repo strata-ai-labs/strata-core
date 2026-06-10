@@ -120,6 +120,7 @@ pub struct StoragePerfSnapshot {
     commit_replay_classification_calls: u64,
     commit_replay_rows_classified: u64,
     commit_replay_history_calls: u64,
+    commit_replay_source_probes: u64,
     append_rows_applied: u64,
     branch_facts_rows_observed: u64,
     read_view_captures: u64,
@@ -542,6 +543,11 @@ impl StoragePerfSnapshot {
     /// Branch history probes issued by replay duplicate detection.
     pub const fn commit_replay_history_calls(self) -> u64 {
         self.commit_replay_history_calls
+    }
+
+    /// Branch sources probed during replay duplicate detection.
+    pub const fn commit_replay_source_probes(self) -> u64 {
+        self.commit_replay_source_probes
     }
 
     /// Number of prepared rows handed to branch append.
@@ -1323,6 +1329,8 @@ static COMMIT_REPLAY_ROWS_CLASSIFIED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_REPLAY_HISTORY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_REPLAY_SOURCE_PROBES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static APPEND_ROWS_APPLIED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static BRANCH_FACTS_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
@@ -1684,6 +1692,7 @@ pub fn reset() {
     COMMIT_REPLAY_CLASSIFICATION_CALLS.store(0, Ordering::Relaxed);
     COMMIT_REPLAY_ROWS_CLASSIFIED.store(0, Ordering::Relaxed);
     COMMIT_REPLAY_HISTORY_CALLS.store(0, Ordering::Relaxed);
+    COMMIT_REPLAY_SOURCE_PROBES.store(0, Ordering::Relaxed);
     APPEND_ROWS_APPLIED.store(0, Ordering::Relaxed);
     BRANCH_FACTS_ROWS_OBSERVED.store(0, Ordering::Relaxed);
     READ_VIEW_CAPTURES.store(0, Ordering::Relaxed);
@@ -1898,6 +1907,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         commit_replay_rows_classified: COMMIT_REPLAY_ROWS_CLASSIFIED.load(Ordering::Relaxed),
         commit_replay_history_calls: COMMIT_REPLAY_HISTORY_CALLS.load(Ordering::Relaxed),
+        commit_replay_source_probes: COMMIT_REPLAY_SOURCE_PROBES.load(Ordering::Relaxed),
         append_rows_applied: APPEND_ROWS_APPLIED.load(Ordering::Relaxed),
         branch_facts_rows_observed: BRANCH_FACTS_ROWS_OBSERVED.load(Ordering::Relaxed),
         read_view_captures: READ_VIEW_CAPTURES.load(Ordering::Relaxed),
@@ -2524,16 +2534,26 @@ pub(crate) fn record_commit_timeline_lookup(entries_scanned: usize) {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_commit_replay_classification(_rows: usize, _history_calls: usize) {}
+pub(crate) fn record_commit_replay_classification(
+    _rows: usize,
+    _history_calls: usize,
+    _source_probes: usize,
+) {
+}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_commit_replay_classification(rows: usize, history_calls: usize) {
+pub(crate) fn record_commit_replay_classification(
+    rows: usize,
+    history_calls: usize,
+    source_probes: usize,
+) {
     if !recording_enabled() {
         return;
     }
     COMMIT_REPLAY_CLASSIFICATION_CALLS.fetch_add(1, Ordering::Relaxed);
     COMMIT_REPLAY_ROWS_CLASSIFIED.fetch_add(as_u64(rows), Ordering::Relaxed);
     COMMIT_REPLAY_HISTORY_CALLS.fetch_add(as_u64(history_calls), Ordering::Relaxed);
+    COMMIT_REPLAY_SOURCE_PROBES.fetch_add(as_u64(source_probes), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

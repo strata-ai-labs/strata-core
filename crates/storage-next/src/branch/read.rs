@@ -866,6 +866,25 @@ impl BranchReadView {
         key: &PhysicalKey,
         options: BranchHistoryOptions,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.collect_history(key, options, None)
+    }
+
+    pub(crate) fn history_with_source_probe_count(
+        &self,
+        key: &PhysicalKey,
+        options: BranchHistoryOptions,
+    ) -> BranchRuntimeResult<(Vec<BranchHistoryRow>, usize)> {
+        let mut source_probes = 0usize;
+        let history = self.collect_history(key, options, Some(&mut source_probes))?;
+        Ok((history, source_probes))
+    }
+
+    fn collect_history(
+        &self,
+        key: &PhysicalKey,
+        options: BranchHistoryOptions,
+        source_probes: Option<&mut usize>,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(key.branch_id())?;
         if options.limit_bound() == Some(0) {
             return Ok(Vec::new());
@@ -880,6 +899,7 @@ impl BranchReadView {
             key,
             BranchReadBound::latest(),
             effective_own_read_bound(BranchReadBound::latest()),
+            source_probes,
         )?;
         sort_candidates_newest_first(&mut rows);
 
@@ -1119,11 +1139,13 @@ fn history_candidates(
     key: &PhysicalKey,
     bound: BranchReadBound,
     effective_bound: BranchEffectiveReadBound,
+    mut source_probes: Option<&mut usize>,
 ) -> BranchRuntimeResult<Vec<CandidateRow>> {
     let mut rows = Vec::new();
     let mut rows_visited = 0usize;
     let mut history_counts = perf_trace::BranchSourceRowCounts::default();
 
+    add_history_source_probes(&mut source_probes, 1);
     let (active_rows, visited) = active.physical_key_rows(key);
     rows_visited = rows_visited.saturating_add(visited);
     history_counts.active = history_counts.active.saturating_add(visited);
@@ -1135,6 +1157,7 @@ fn history_candidates(
     )?;
 
     for (index, table) in frozen.iter().enumerate() {
+        add_history_source_probes(&mut source_probes, 1);
         let (table_rows, visited) = table.physical_key_rows(key);
         rows_visited = rows_visited.saturating_add(visited);
         history_counts.frozen = history_counts.frozen.saturating_add(visited);
@@ -1157,6 +1180,7 @@ fn history_candidates(
             &mut rows,
             &mut rows_visited,
             &mut history_counts,
+            &mut source_probes,
         )?;
     }
 
@@ -1168,6 +1192,7 @@ fn history_candidates(
         &mut rows,
         &mut rows_visited,
         &mut history_counts,
+        &mut source_probes,
     )?;
 
     perf_trace::record_point_candidate_collection(rows_visited, rows.len());
@@ -1184,9 +1209,11 @@ fn collect_owned_level_history_candidates(
     rows: &mut Vec<CandidateRow>,
     rows_visited: &mut usize,
     history_counts: &mut perf_trace::BranchSourceRowCounts,
+    source_probes: &mut Option<&mut usize>,
 ) -> BranchRuntimeResult<()> {
     if level_index == 0 {
         for (table_index, table) in tables.iter().enumerate() {
+            add_history_source_probes(source_probes, 1);
             let (table_rows, visited) = table.reader().physical_key_rows(key);
             *rows_visited = (*rows_visited).saturating_add(visited);
             history_counts.owned_l0 = history_counts.owned_l0.saturating_add(visited);
@@ -1206,10 +1233,12 @@ fn collect_owned_level_history_candidates(
     if tables.is_empty() {
         return Ok(());
     }
+    add_history_source_probes(source_probes, 1);
     let Some(table_index) = select_nonzero_level_point_table(tables, key_bytes)? else {
         return Ok(());
     };
     let table = &tables[table_index];
+    add_history_source_probes(source_probes, 1);
     let (table_rows, visited) = table.reader().physical_key_rows(key);
     *rows_visited = (*rows_visited).saturating_add(visited);
     history_counts.owned_nonzero = history_counts.owned_nonzero.saturating_add(visited);
@@ -1232,11 +1261,13 @@ fn collect_inherited_history_candidates(
     rows: &mut Vec<CandidateRow>,
     rows_visited: &mut usize,
     history_counts: &mut perf_trace::BranchSourceRowCounts,
+    source_probes: &mut Option<&mut usize>,
 ) -> BranchRuntimeResult<()> {
     for (layer_index, layer) in inherited_layers.iter().enumerate() {
         if !layer.is_readable() {
             continue;
         }
+        add_history_source_probes(source_probes, 1);
         let source_key =
             rewrite_physical_key_branch(key, layer.source_branch_id()).map_err(|_| {
                 BranchRuntimeError::InvalidInheritedLayer {
@@ -1259,6 +1290,7 @@ fn collect_inherited_history_candidates(
                 rows,
                 rows_visited,
                 history_counts,
+                source_probes,
             )?;
         }
     }
@@ -1277,9 +1309,11 @@ fn collect_inherited_level_history_candidates(
     rows: &mut Vec<CandidateRow>,
     rows_visited: &mut usize,
     history_counts: &mut perf_trace::BranchSourceRowCounts,
+    source_probes: &mut Option<&mut usize>,
 ) -> BranchRuntimeResult<()> {
     if level_index == 0 {
         for table in tables {
+            add_history_source_probes(source_probes, 1);
             let (table_rows, visited) = table.reader().physical_key_rows(source_key);
             *rows_visited = (*rows_visited).saturating_add(visited);
             history_counts.inherited_l0 = history_counts.inherited_l0.saturating_add(visited);
@@ -1300,9 +1334,11 @@ fn collect_inherited_level_history_candidates(
     if tables.is_empty() {
         return Ok(());
     }
+    add_history_source_probes(source_probes, 1);
     let Some(table_index) = select_nonzero_level_point_table(tables, source_key_bytes)? else {
         return Ok(());
     };
+    add_history_source_probes(source_probes, 1);
     let (table_rows, visited) = tables[table_index].reader().physical_key_rows(source_key);
     *rows_visited = (*rows_visited).saturating_add(visited);
     history_counts.inherited_nonzero = history_counts.inherited_nonzero.saturating_add(visited);
@@ -1326,6 +1362,12 @@ enum BranchHistoryCandidateSource {
         layer_index: usize,
         child_branch_id: BranchId,
     },
+}
+
+fn add_history_source_probes(source_probes: &mut Option<&mut usize>, probes: usize) {
+    if let Some(source_probes) = source_probes.as_deref_mut() {
+        *source_probes = source_probes.saturating_add(probes);
+    }
 }
 
 fn push_history_rows(
