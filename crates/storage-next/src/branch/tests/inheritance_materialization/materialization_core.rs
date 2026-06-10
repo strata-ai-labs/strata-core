@@ -1093,6 +1093,7 @@ fn branch_materialization_prepare_records_streaming_source_counters() {
     assert_eq!(perf.branch_materialization_rows_skipped_by_shadowing(), 1);
     assert_eq!(perf.branch_materialization_output_tables(), 2);
     assert_eq!(perf.branch_materialization_peak_buffered_rows(), 4_096);
+    assert_eq!(perf.table_compaction_source_order_key_clones(), 0);
 }
 
 #[test]

@@ -432,6 +432,10 @@ impl TableCompactionInput for BranchTableCompactionSource<'_> {
         perf_trace::record_branch_compaction_source_opens(1);
         Ok(Box::new(self.table.reader().cursor()))
     }
+
+    fn requires_source_order_validation(&self) -> bool {
+        false
+    }
 }
 
 impl BranchLocalState {

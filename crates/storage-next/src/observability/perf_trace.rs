@@ -1690,17 +1690,6 @@ pub(crate) fn record_table_compaction_pre_validation_row() {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_table_compaction_heap_key_clone() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_table_compaction_heap_key_clone() {
-    if !recording_enabled() {
-        return;
-    }
-    TABLE_COMPACTION_HEAP_KEY_CLONES.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_table_compaction_source_order_key_clone() {}
 
 #[cfg(feature = "perf-trace")]

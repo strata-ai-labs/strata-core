@@ -468,7 +468,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
     assert_eq!(perf.table_compaction_merge_advances(), 4);
     assert_eq!(perf.table_compaction_heap_key_clones(), 0);
-    assert_eq!(perf.table_compaction_source_order_key_clones(), 4);
+    assert_eq!(perf.table_compaction_source_order_key_clones(), 0);
 
     crate::observability::perf_trace::reset();
     let reset = crate::observability::perf_trace::snapshot();
@@ -517,7 +517,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(strict.table_compaction_output_tables_built(), 1);
     assert_eq!(strict.table_compaction_merge_advances(), 8);
     assert_eq!(strict.table_compaction_heap_key_clones(), 0);
-    assert_eq!(strict.table_compaction_source_order_key_clones(), 8);
+    assert_eq!(strict.table_compaction_source_order_key_clones(), 0);
 
     let shared_key = physical_key(1, 0x20, b"counter-version-chain".to_vec());
     let version_chain_rows = [
@@ -621,6 +621,7 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
         let small = crate::observability::perf_trace::snapshot();
         assert_eq!(small.table_compaction_merge_advances(), source_count as u64);
         assert_eq!(small.table_compaction_heap_key_clones(), 0);
+        assert_eq!(small.table_compaction_source_order_key_clones(), 0);
     }
 
     crate::observability::perf_trace::reset();
@@ -650,9 +651,57 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
         heap.table_compaction_merge_advances(),
         heap_source_count as u64
     );
+    assert_eq!(heap.table_compaction_heap_key_clones(), 0);
+    assert_eq!(heap.table_compaction_source_order_key_clones(), 0);
+}
+
+#[test]
+fn heap_compaction_reorders_after_multi_row_source_advances() {
+    let heap_source_count = crate::table::MERGE_HEAP_THRESHOLD + 1;
+    let mut expected_rows = Vec::with_capacity(heap_source_count + 1);
+    let first_source_rows = [
+        put_row(b"heap-reorder-00".to_vec(), 1),
+        put_row(b"heap-reorder-99".to_vec(), 99),
+    ];
+    expected_rows.extend(first_source_rows.iter().cloned());
+
+    let mut sources = Vec::with_capacity(heap_source_count);
+    sources.push(source("heap-reorder-source-00", &first_source_rows));
+    for source_index in 1..heap_source_count {
+        let row = put_row(
+            format!("heap-reorder-{source_index:02}").into_bytes(),
+            source_index as u64 + 10,
+        );
+        expected_rows.push(row.clone());
+        sources.push(source(
+            &format!("heap-reorder-source-{source_index:02}"),
+            &[row],
+        ));
+    }
+
+    let mut observed_keys = Vec::new();
+    let mut policy = |_: &TableCompactionRowContext<'_>, row: &TableRow| {
+        observed_keys.push(row.row().physical_key().user_key().to_vec());
+        Ok(TableCompactionDecision::Keep)
+    };
+
+    let output = compactor(64 * 1024, heap_source_count)
+        .compact(
+            &identity("heap-reorder-after-advance"),
+            &sources,
+            &mut policy,
+        )
+        .expect("heap compaction reorders advanced source");
+
+    let expected = sorted_storage_rows(&expected_rows);
+    assert_eq!(output.report().kept_rows(), expected.len() as u64);
+    assert_eq!(output_storage_rows(&output), expected);
     assert_eq!(
-        heap.table_compaction_heap_key_clones(),
-        heap_source_count as u64
+        observed_keys,
+        expected
+            .iter()
+            .map(|row| row.physical_key().user_key().to_vec())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1808,6 +1857,9 @@ fn explicit_cursor_input_duplicate_validation_runs_before_policy() {
 
 #[test]
 fn cursor_input_invalid_order_is_rejected_by_source_order_validation() {
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+
     let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
     let input = TrackedCompactionInput::from_table_rows(
         "unsorted-cursor",
@@ -1828,6 +1880,13 @@ fn cursor_input_invalid_order_is_rejected_by_source_order_validation() {
     assert_eq!(calls, 1);
     assert_eq!(input.open_calls(), 1);
     assert_eq!(input.advance_calls(), 1);
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_compaction_heap_key_clones(), 0);
+        assert_eq!(perf.table_compaction_source_order_key_clones(), 1);
+    }
 }
 
 #[test]

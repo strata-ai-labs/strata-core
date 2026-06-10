@@ -8,7 +8,6 @@ use super::{
 };
 use crate::observability::perf_trace;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 
 const MAX_SOURCE_ID_BYTES: usize = 128;
 const OUTPUT_IDENTITY_METADATA_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -201,6 +200,10 @@ impl TableCompactionSource {
 pub(crate) trait TableCompactionInput {
     fn id(&self) -> &TableCompactionSourceId;
     fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>>;
+
+    fn requires_source_order_validation(&self) -> bool {
+        true
+    }
 }
 
 impl TableCompactionInput for TableCompactionSource {
@@ -210,6 +213,10 @@ impl TableCompactionInput for TableCompactionSource {
 
     fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>> {
         Ok(self.cursor())
+    }
+
+    fn requires_source_order_validation(&self) -> bool {
+        false
     }
 }
 
@@ -769,13 +776,14 @@ struct TableCompactionSourceCursor<'a> {
     source_id: &'a TableCompactionSourceId,
     source_index: usize,
     source_row_index: usize,
+    validate_source_order: bool,
     last_key: Option<TableInternalKeyBytes>,
     cursor: Box<dyn TableCursor + 'a>,
 }
 
 enum TableCompactionMergeSelection {
     Linear { current_source: Option<usize> },
-    Heap(BinaryHeap<TableCompactionHeapItem>),
+    Heap(TableCompactionIndexHeap),
 }
 
 pub(crate) struct TableCompactionMergedRow<'a> {
@@ -791,25 +799,9 @@ impl<'a> TableCompactionMergedRow<'a> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct TableCompactionHeapItem {
-    key: TableInternalKeyBytes,
-    source_index: usize,
-}
-
-impl Ord for TableCompactionHeapItem {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .key
-            .cmp(&self.key)
-            .then_with(|| other.source_index.cmp(&self.source_index))
-    }
-}
-
-impl PartialOrd for TableCompactionHeapItem {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TableCompactionIndexHeap {
+    source_indices: Vec<usize>,
 }
 
 impl<'a> TableCompactionMergeCursor<'a> {
@@ -820,9 +812,9 @@ impl<'a> TableCompactionMergeCursor<'a> {
             let mut cursor = source.open_cursor()?;
             perf_trace::record_table_compaction_merge_cursor_opens(1);
             cursor.seek_to_first()?;
-            let last_key = if let Some(key) = cursor.current_key() {
-                selection.push_current_key(key, source_index);
-                Some(clone_source_order_key(key))
+            let validate_source_order = source.requires_source_order_validation();
+            let last_key = if validate_source_order {
+                cursor.current_key().map(clone_source_order_key)
             } else {
                 None
             };
@@ -830,11 +822,12 @@ impl<'a> TableCompactionMergeCursor<'a> {
                 source_id: source.id(),
                 source_index,
                 source_row_index: 0,
+                validate_source_order,
                 last_key,
                 cursor,
             });
         }
-        selection.refresh_current_source(&cursors);
+        selection.rebuild_current_sources(&cursors);
         Ok(Self {
             sources: cursors,
             selection,
@@ -843,15 +836,16 @@ impl<'a> TableCompactionMergeCursor<'a> {
 
     pub(crate) fn seek_to_first(&mut self) -> TableRuntimeResult<()> {
         self.selection.clear();
-        for (source_index, source) in self.sources.iter_mut().enumerate() {
+        for source in &mut self.sources {
             source.cursor.seek_to_first()?;
             source.source_row_index = 0;
-            source.last_key = source.cursor.current_key().map(clone_source_order_key);
-            if let Some(key) = &source.last_key {
-                self.selection.push_current_key(key, source_index);
-            }
+            source.last_key = if source.validate_source_order {
+                source.cursor.current_key().map(clone_source_order_key)
+            } else {
+                None
+            };
         }
-        self.selection.refresh_current_source(&self.sources);
+        self.selection.rebuild_current_sources(&self.sources);
         Ok(())
     }
 
@@ -868,7 +862,7 @@ impl<'a> TableCompactionMergeCursor<'a> {
     }
 
     pub(crate) fn advance(&mut self) -> TableRuntimeResult<()> {
-        let Some(source_index) = self.selection.take_current_source_index() else {
+        let Some(source_index) = self.selection.take_current_source_index(&self.sources) else {
             return Ok(());
         };
         perf_trace::record_table_compaction_merge_advance();
@@ -882,11 +876,14 @@ impl<'a> TableCompactionMergeCursor<'a> {
             source.cursor.advance()?;
             source.source_row_index = source.source_row_index.saturating_add(1);
             if let Some(key) = source.cursor.current_key() {
-                validate_compaction_source_key_order(source.last_key.as_ref(), key)?;
-                source.last_key = Some(clone_source_order_key(key));
-                self.selection.push_current_key(key, source_index);
+                if source.validate_source_order {
+                    validate_compaction_source_key_order(source.last_key.as_ref(), key)?;
+                    source.last_key = Some(clone_source_order_key(key));
+                }
             }
         }
+        self.selection
+            .push_current_source(source_index, &self.sources);
         self.selection.refresh_current_source(&self.sources);
         Ok(())
     }
@@ -899,7 +896,7 @@ impl TableCompactionMergeSelection {
                 current_source: None,
             }
         } else {
-            Self::Heap(BinaryHeap::new())
+            Self::Heap(TableCompactionIndexHeap::default())
         }
     }
 
@@ -910,32 +907,129 @@ impl TableCompactionMergeSelection {
         }
     }
 
-    fn push_current_key(&mut self, key: &TableInternalKeyBytes, source_index: usize) {
+    fn rebuild_current_sources(&mut self, sources: &[TableCompactionSourceCursor<'_>]) {
+        match self {
+            Self::Linear { current_source } => {
+                *current_source = select_linear_compaction_source(sources);
+            }
+            Self::Heap(heap) => heap.rebuild(sources),
+        }
+    }
+
+    fn push_current_source(
+        &mut self,
+        source_index: usize,
+        sources: &[TableCompactionSourceCursor<'_>],
+    ) {
         if let Self::Heap(heap) = self {
-            heap.push(TableCompactionHeapItem {
-                key: clone_heap_key(key),
-                source_index,
-            });
+            heap.push(source_index, sources);
         }
     }
 
-    fn current_source_index(&self, _sources: &[TableCompactionSourceCursor<'_>]) -> Option<usize> {
+    fn current_source_index(&self, sources: &[TableCompactionSourceCursor<'_>]) -> Option<usize> {
         match self {
             Self::Linear { current_source } => *current_source,
-            Self::Heap(heap) => heap.peek().map(|selected| selected.source_index),
+            Self::Heap(heap) => heap.peek(sources),
         }
     }
 
-    fn take_current_source_index(&mut self) -> Option<usize> {
+    fn take_current_source_index(
+        &mut self,
+        sources: &[TableCompactionSourceCursor<'_>],
+    ) -> Option<usize> {
         match self {
             Self::Linear { current_source } => *current_source,
-            Self::Heap(heap) => heap.pop().map(|selected| selected.source_index),
+            Self::Heap(heap) => heap.pop(sources),
         }
     }
 
     fn refresh_current_source(&mut self, sources: &[TableCompactionSourceCursor<'_>]) {
         if let Self::Linear { current_source } = self {
             *current_source = select_linear_compaction_source(sources);
+        }
+    }
+}
+
+impl TableCompactionIndexHeap {
+    fn clear(&mut self) {
+        self.source_indices.clear();
+    }
+
+    fn rebuild(&mut self, sources: &[TableCompactionSourceCursor<'_>]) {
+        self.clear();
+        for source_index in 0..sources.len() {
+            self.push(source_index, sources);
+        }
+    }
+
+    fn push(&mut self, source_index: usize, sources: &[TableCompactionSourceCursor<'_>]) {
+        if source_current_key(sources, source_index).is_none() {
+            return;
+        }
+        self.source_indices.push(source_index);
+        self.sift_up(self.source_indices.len().saturating_sub(1), sources);
+    }
+
+    fn peek(&self, sources: &[TableCompactionSourceCursor<'_>]) -> Option<usize> {
+        self.source_indices
+            .first()
+            .copied()
+            .filter(|source_index| source_current_key(sources, *source_index).is_some())
+    }
+
+    fn pop(&mut self, sources: &[TableCompactionSourceCursor<'_>]) -> Option<usize> {
+        let selected = *self.source_indices.first()?;
+        let last = self.source_indices.pop().expect("heap is nonempty");
+        if !self.source_indices.is_empty() {
+            self.source_indices[0] = last;
+            self.sift_down(0, sources);
+        }
+        Some(selected)
+    }
+
+    fn sift_up(&mut self, mut index: usize, sources: &[TableCompactionSourceCursor<'_>]) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !source_precedes(
+                sources,
+                self.source_indices[index],
+                self.source_indices[parent],
+            ) {
+                break;
+            }
+            self.source_indices.swap(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize, sources: &[TableCompactionSourceCursor<'_>]) {
+        loop {
+            let left = index.saturating_mul(2).saturating_add(1);
+            let right = left.saturating_add(1);
+            let mut smallest = index;
+            if left < self.source_indices.len()
+                && source_precedes(
+                    sources,
+                    self.source_indices[left],
+                    self.source_indices[smallest],
+                )
+            {
+                smallest = left;
+            }
+            if right < self.source_indices.len()
+                && source_precedes(
+                    sources,
+                    self.source_indices[right],
+                    self.source_indices[smallest],
+                )
+            {
+                smallest = right;
+            }
+            if smallest == index {
+                break;
+            }
+            self.source_indices.swap(index, smallest);
+            index = smallest;
         }
     }
 }
@@ -959,9 +1053,25 @@ fn select_linear_compaction_source(sources: &[TableCompactionSourceCursor<'_>]) 
     selected.map(|(source_index, _)| source_index)
 }
 
-fn clone_heap_key(key: &TableInternalKeyBytes) -> TableInternalKeyBytes {
-    perf_trace::record_table_compaction_heap_key_clone();
-    key.clone()
+fn source_current_key<'sources>(
+    sources: &'sources [TableCompactionSourceCursor<'_>],
+    source_index: usize,
+) -> Option<&'sources TableInternalKeyBytes> {
+    sources.get(source_index)?.cursor.current_key()
+}
+
+fn source_precedes(
+    sources: &[TableCompactionSourceCursor<'_>],
+    left_source_index: usize,
+    right_source_index: usize,
+) -> bool {
+    let Some(left_key) = source_current_key(sources, left_source_index) else {
+        return false;
+    };
+    let Some(right_key) = source_current_key(sources, right_source_index) else {
+        return true;
+    };
+    left_key < right_key || (left_key == right_key && left_source_index < right_source_index)
 }
 
 fn clone_source_order_key(key: &TableInternalKeyBytes) -> TableInternalKeyBytes {

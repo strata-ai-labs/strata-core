@@ -1177,6 +1177,10 @@ impl TableCompactionInput for MaterializationTableSource<'_> {
             self.stats,
         )))
     }
+
+    fn requires_source_order_validation(&self) -> bool {
+        false
+    }
 }
 
 struct MaterializationRewriteCursor<'a> {
