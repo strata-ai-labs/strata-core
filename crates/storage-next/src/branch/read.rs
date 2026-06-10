@@ -1537,6 +1537,8 @@ fn select_ordered_visible_point_candidate<'a>(
     effective_bound: BranchEffectiveReadBound,
 ) -> BranchRuntimeResult<Option<CandidateRow>> {
     let mut selection = PointSelection::new();
+    let inherited_source_count = remaining_source_count_after_inherited_layer(inherited_layers, 0);
+    let mut skip_remaining_local_sources = false;
     let lookup = TablePreparedPointLookup::new(
         key,
         effective_bound.max_commit_version(),
@@ -1553,55 +1555,76 @@ fn select_ordered_visible_point_candidate<'a>(
     if ordered_point_can_stop(
         &selection,
         perf_trace::BranchPointSourceKind::Active,
-        remaining_max_commit_after_active(frozen, owned_levels, inherited_layers, bound),
-        remaining_source_count_after_active(frozen, owned_levels, inherited_layers),
+        remaining_local_max_commit_after_active(frozen, owned_levels, bound),
+        remaining_local_source_count_after_active(frozen, owned_levels),
     ) {
-        return selection.finish();
-    }
-
-    for (index, table) in frozen.iter().enumerate() {
-        selection.source_counts.frozen_probes =
-            selection.source_counts.frozen_probes.saturating_add(1);
-        selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-        let (row, visited) = table.seek_prepared_point(&lookup);
-        selection.add_rows_visited(visited);
-        if let Some(row) = row {
-            selection.consider_shared_table_row(row, BranchRowSource::Frozen { index });
-        }
-    }
-    if ordered_point_can_stop(
-        &selection,
-        perf_trace::BranchPointSourceKind::Frozen,
-        remaining_max_commit_after_frozen(owned_levels, inherited_layers, bound),
-        remaining_source_count_after_frozen(owned_levels, inherited_layers),
-    ) {
-        return selection.finish();
-    }
-
-    for (level_index, tables) in owned_levels.iter().enumerate() {
-        select_owned_level_point_candidate(level_index, tables, &lookup, &mut selection)?;
-        let source = if level_index == 0 {
-            perf_trace::BranchPointSourceKind::OwnedL0
-        } else {
-            perf_trace::BranchPointSourceKind::OwnedNonzero
-        };
-        if ordered_point_can_stop(
-            &selection,
-            source,
-            remaining_max_commit_after_owned_level(
-                owned_levels,
-                level_index.saturating_add(1),
-                inherited_layers,
-                bound,
-            ),
-            remaining_source_count_after_owned_level(
-                owned_levels,
-                level_index.saturating_add(1),
-                inherited_layers,
-            ),
-        ) {
+        if inherited_source_count == 0 {
             return selection.finish();
         }
+        skip_remaining_local_sources = true;
+    }
+
+    if !skip_remaining_local_sources {
+        for (index, table) in frozen.iter().enumerate() {
+            selection.source_counts.frozen_probes =
+                selection.source_counts.frozen_probes.saturating_add(1);
+            selection.source_counts.table_seeks =
+                selection.source_counts.table_seeks.saturating_add(1);
+            let (row, visited) = table.seek_prepared_point(&lookup);
+            selection.add_rows_visited(visited);
+            if let Some(row) = row {
+                selection.consider_shared_table_row(row, BranchRowSource::Frozen { index });
+            }
+        }
+        if ordered_point_can_stop(
+            &selection,
+            perf_trace::BranchPointSourceKind::Frozen,
+            remaining_local_max_commit_after_frozen(owned_levels, bound),
+            remaining_local_source_count_after_frozen(owned_levels),
+        ) {
+            if inherited_source_count == 0 {
+                return selection.finish();
+            }
+            skip_remaining_local_sources = true;
+        }
+    }
+
+    if !skip_remaining_local_sources {
+        for (level_index, tables) in owned_levels.iter().enumerate() {
+            select_owned_level_point_candidate(level_index, tables, &lookup, &mut selection)?;
+            let source = if level_index == 0 {
+                perf_trace::BranchPointSourceKind::OwnedL0
+            } else {
+                perf_trace::BranchPointSourceKind::OwnedNonzero
+            };
+            if ordered_point_can_stop(
+                &selection,
+                source,
+                remaining_local_max_commit_after_owned_level(
+                    owned_levels,
+                    level_index.saturating_add(1),
+                    bound,
+                ),
+                remaining_local_source_count_after_owned_level(
+                    owned_levels,
+                    level_index.saturating_add(1),
+                ),
+            ) {
+                if inherited_source_count == 0 {
+                    return selection.finish();
+                }
+                break;
+            }
+        }
+    }
+
+    if ordered_point_can_stop(
+        &selection,
+        perf_trace::BranchPointSourceKind::Inherited,
+        remaining_max_commit_after_inherited_layer(inherited_layers, 0, bound),
+        inherited_source_count,
+    ) {
+        return selection.finish();
     }
 
     for (layer_index, layer) in inherited_layers.iter().enumerate() {
@@ -1812,10 +1835,9 @@ fn ordered_point_can_stop(
     }
 }
 
-fn remaining_max_commit_after_active(
+fn remaining_local_max_commit_after_active(
     frozen: &[FrozenTable],
     owned_levels: &[Vec<BranchOwnedTable>],
-    inherited_layers: &[BranchInheritedLayer],
     bound: BranchReadBound,
 ) -> Option<CommitVersion> {
     let effective_bound = effective_own_read_bound(bound);
@@ -1826,33 +1848,24 @@ fn remaining_max_commit_after_active(
             0,
             effective_bound,
         ))
-        .chain(max_commit_for_inherited_layers(inherited_layers, 0, bound))
         .max()
 }
 
-fn remaining_max_commit_after_frozen(
+fn remaining_local_max_commit_after_frozen(
     owned_levels: &[Vec<BranchOwnedTable>],
-    inherited_layers: &[BranchInheritedLayer],
     bound: BranchReadBound,
 ) -> Option<CommitVersion> {
     let effective_bound = effective_own_read_bound(bound);
     max_commit_for_owned_levels(owned_levels, 0, effective_bound)
-        .into_iter()
-        .chain(max_commit_for_inherited_layers(inherited_layers, 0, bound))
-        .max()
 }
 
-fn remaining_max_commit_after_owned_level(
+fn remaining_local_max_commit_after_owned_level(
     owned_levels: &[Vec<BranchOwnedTable>],
     next_level_index: usize,
-    inherited_layers: &[BranchInheritedLayer],
     bound: BranchReadBound,
 ) -> Option<CommitVersion> {
     let effective_bound = effective_own_read_bound(bound);
     max_commit_for_owned_levels(owned_levels, next_level_index, effective_bound)
-        .into_iter()
-        .chain(max_commit_for_inherited_layers(inherited_layers, 0, bound))
-        .max()
 }
 
 fn remaining_max_commit_after_inherited_layer(
@@ -1940,32 +1953,24 @@ fn cap_commit_range_max(
     }
 }
 
-fn remaining_source_count_after_active(
+fn remaining_local_source_count_after_active(
     frozen: &[FrozenTable],
     owned_levels: &[Vec<BranchOwnedTable>],
-    inherited_layers: &[BranchInheritedLayer],
 ) -> usize {
     frozen
         .len()
         .saturating_add(owned_point_source_count(owned_levels, 0))
-        .saturating_add(inherited_point_source_count(inherited_layers, 0))
 }
 
-fn remaining_source_count_after_frozen(
-    owned_levels: &[Vec<BranchOwnedTable>],
-    inherited_layers: &[BranchInheritedLayer],
-) -> usize {
+fn remaining_local_source_count_after_frozen(owned_levels: &[Vec<BranchOwnedTable>]) -> usize {
     owned_point_source_count(owned_levels, 0)
-        .saturating_add(inherited_point_source_count(inherited_layers, 0))
 }
 
-fn remaining_source_count_after_owned_level(
+fn remaining_local_source_count_after_owned_level(
     owned_levels: &[Vec<BranchOwnedTable>],
     next_level_index: usize,
-    inherited_layers: &[BranchInheritedLayer],
 ) -> usize {
     owned_point_source_count(owned_levels, next_level_index)
-        .saturating_add(inherited_point_source_count(inherited_layers, 0))
 }
 
 fn remaining_source_count_after_inherited_layer(

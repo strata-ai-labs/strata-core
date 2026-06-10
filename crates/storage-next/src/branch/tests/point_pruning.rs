@@ -184,7 +184,7 @@ fn branch_point_read_counters_capture_active_early_exit() {
     assert_eq!(perf.point_early_exit_frozen(), 0);
     assert_eq!(perf.point_early_exit_owned_l0(), 0);
     assert_eq!(perf.point_early_exit_owned_nonzero(), 0);
-    assert_eq!(perf.point_early_exit_inherited(), 0);
+    assert_eq!(perf.point_early_exit_inherited(), 1);
     assert_eq!(perf.point_remaining_source_skips(), 6);
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
     assert_eq!(perf.table_point_lookup_key_reuses(), 0);
@@ -248,7 +248,8 @@ fn branch_point_read_does_not_early_exit_when_later_source_can_beat_active() {
     assert_eq!(perf.point_selected_active(), 0);
     assert_eq!(perf.point_selected_owned_nonzero(), 1);
     assert_eq!(perf.point_early_exit_active(), 0);
-    assert_eq!(perf.point_early_exit_owned_nonzero(), 1);
+    assert_eq!(perf.point_early_exit_owned_nonzero(), 0);
+    assert_eq!(perf.point_early_exit_inherited(), 1);
     assert_eq!(perf.point_remaining_source_skips(), 2);
     assert_eq!(perf.point_inherited_key_rewrites(), 0);
     assert_eq!(perf.table_point_lookup_key_builds(), 1);
@@ -400,7 +401,8 @@ fn branch_point_read_local_tombstone_early_exits_before_inherited_sources() {
         assert_eq!(perf.point_table_seeks(), 1);
         assert_eq!(perf.point_candidates_materialized(), 1);
         assert_eq!(perf.point_selected_active(), 1);
-        assert_eq!(perf.point_early_exit_active(), 1);
+        assert_eq!(perf.point_early_exit_active(), 0);
+        assert_eq!(perf.point_early_exit_inherited(), 1);
         assert_eq!(perf.point_remaining_source_skips(), 2);
         assert_eq!(perf.point_inherited_key_rewrites(), 0);
     }
@@ -415,8 +417,104 @@ fn branch_point_read_local_tombstone_early_exits_before_inherited_sources() {
         assert_eq!(selected.expect("selected tombstone").row(), &tombstone);
         assert_eq!(perf.point_active_probes(), 1);
         assert_eq!(perf.point_inherited_layer_searches(), 0);
-        assert_eq!(perf.point_early_exit_active(), 1);
+        assert_eq!(perf.point_early_exit_active(), 0);
+        assert_eq!(perf.point_early_exit_inherited(), 1);
     }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_child_local_row_short_circuits_inherited_boundary() {
+    let branch = branch_id(188);
+    let parent = branch_id(189);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_nonzero_layer(
+            parent,
+            "target",
+            50,
+            "point-inherited-boundary-parent-loser",
+        )])
+        .expect("attach inherited");
+    let local = point_row(branch, "target", 60);
+    state
+        .append_committed_row(local.clone())
+        .expect("append child-local row");
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let actual = view.latest(&target).expect("point read");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_visible_row(actual.as_ref(), &local, BranchRowSource::Active);
+    assert_eq!(perf.point_active_probes(), 1);
+    assert_eq!(perf.point_frozen_probes(), 0);
+    assert_eq!(perf.point_owned_l0_table_probes(), 0);
+    assert_eq!(perf.point_owned_nonzero_level_searches(), 0);
+    assert_eq!(perf.point_inherited_layer_searches(), 0);
+    assert_eq!(perf.point_inherited_nonzero_level_searches(), 0);
+    assert_eq!(perf.point_inherited_nonzero_table_probes(), 0);
+    assert_eq!(perf.point_table_seeks(), 1);
+    assert_eq!(perf.point_candidates_materialized(), 1);
+    assert_eq!(perf.point_selected_active(), 1);
+    assert_eq!(perf.point_selected_inherited(), 0);
+    assert_eq!(perf.point_early_exit_active(), 0);
+    assert_eq!(perf.point_early_exit_inherited(), 1);
+    assert_eq!(perf.point_remaining_source_skips(), 2);
+    assert_eq!(perf.point_inherited_key_rewrites(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 1);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_point_read_enters_inherited_when_inherited_can_beat_local() {
+    let branch = branch_id(190);
+    let parent = branch_id(191);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited_nonzero_layer(
+            parent,
+            "target",
+            80,
+            "point-inherited-boundary-parent-winner",
+        )])
+        .expect("attach inherited");
+    state
+        .append_committed_row(point_row(branch, "target", 60))
+        .expect("append child-local row");
+    let expected = point_row(branch, "target", 80);
+    let view = state.capture_read_view().expect("read view");
+    let target = physical_key(branch, b"target".to_vec());
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let actual = view.latest(&target).expect("point read");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_visible_row(
+        actual.as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: parent,
+            layer_index: 0,
+        },
+    );
+    assert_eq!(perf.point_active_probes(), 1);
+    assert_eq!(perf.point_inherited_layer_searches(), 1);
+    assert_eq!(perf.point_inherited_nonzero_level_searches(), 1);
+    assert_eq!(perf.point_inherited_nonzero_table_probes(), 1);
+    assert_eq!(perf.point_table_seeks(), 2);
+    assert_eq!(perf.point_candidates_materialized(), 2);
+    assert_eq!(perf.point_candidate_row_clones(), 1);
+    assert_eq!(perf.point_selected_active(), 0);
+    assert_eq!(perf.point_selected_inherited(), 1);
+    assert_eq!(perf.point_early_exit_active(), 0);
+    assert_eq!(perf.point_early_exit_inherited(), 0);
+    assert_eq!(perf.point_remaining_source_skips(), 0);
+    assert_eq!(perf.point_inherited_key_rewrites(), 1);
+    assert_eq!(perf.table_point_lookup_key_builds(), 2);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
 }
 
 #[test]
