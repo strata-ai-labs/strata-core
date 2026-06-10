@@ -8,7 +8,8 @@ use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
     TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes,
-    TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TablePreparedPointLookup, TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts,
+    TableRuntimeResult,
 };
 use crate::format::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
@@ -259,21 +260,16 @@ impl<'a> TableReaderRows<'a> {
         }
     }
 
-    fn try_seek_physical_key(
+    fn try_seek_prepared_point(
         &self,
-        key: &PhysicalKey,
-        max_commit_version: Option<CommitVersion>,
-        max_commit_timestamp: Option<Timestamp>,
+        lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
         match self {
             Self::Eager(rows) => {
-                let (row, visited) =
-                    seek_physical_key_in_slice(rows, key, max_commit_version, max_commit_timestamp);
+                let (row, visited) = seek_prepared_point_in_slice(rows, lookup);
                 Ok((row.cloned(), visited))
             }
-            Self::Lazy(rows) => {
-                rows.try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
-            }
+            Self::Lazy(rows) => rows.try_seek_prepared_point(lookup),
         }
     }
 
@@ -359,28 +355,20 @@ impl<'a> LazyTableRows<'a> {
         Ok(find_exact_in_rows(&rows, key))
     }
 
-    fn try_seek_physical_key(
+    fn try_seek_prepared_point(
         &self,
-        key: &PhysicalKey,
-        max_commit_version: Option<CommitVersion>,
-        max_commit_timestamp: Option<Timestamp>,
+        lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
         if let Some(rows) = self.rows.get() {
             return match rows {
                 Ok(rows) => {
-                    let (row, visited) = seek_physical_key_in_slice(
-                        rows,
-                        key,
-                        max_commit_version,
-                        max_commit_timestamp,
-                    );
+                    let (row, visited) = seek_prepared_point_in_slice(rows, lookup);
                     Ok((row.cloned(), visited))
                 }
                 Err(error) => Err(error.clone()),
             };
         }
-        self.state
-            .seek_physical_key(key, max_commit_version, max_commit_timestamp)
+        self.state.seek_prepared_point(lookup)
     }
 
     fn try_physical_key_rows(
@@ -434,30 +422,26 @@ struct LazyTableState<'a> {
 }
 
 impl LazyTableState<'_> {
-    fn seek_physical_key(
+    fn seek_prepared_point(
         &self,
-        key: &PhysicalKey,
-        max_commit_version: Option<CommitVersion>,
-        max_commit_timestamp: Option<Timestamp>,
+        lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
         perf_trace::record_table_seek();
-        perf_trace::record_table_point_lookup_key_build();
-        let prefix = TablePhysicalKeyBytes::from_physical_key(key);
+        lookup.record_table_seek_use();
+        let prefix = lookup.physical_key();
         let target_physical_key = prefix.as_slice();
         if !self.contains_physical_key(target_physical_key) {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
-        if self.probe_physical_filter(&prefix) == TableBloomProbe::DefinitelyAbsent {
+        if self.probe_physical_filter(prefix) == TableBloomProbe::DefinitelyAbsent {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
 
-        let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
-        let seek_key =
-            TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
+        let seek_key = lookup.seek_key();
         let entries = self.metadata.index().entries();
-        let Some(mut block_index) = first_candidate_block_for_key(entries, &seek_key) else {
+        let Some(mut block_index) = first_candidate_block_for_key(entries, seek_key) else {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         };
@@ -479,7 +463,7 @@ impl LazyTableState<'_> {
 
             let rows = self.read_data_block_rows(block_index)?;
             let start = if block_index == first_candidate_block_index {
-                candidate_row_index_for_seek_key(&rows, &seek_key)
+                candidate_row_index_for_seek_key(&rows, seek_key)
             } else {
                 0
             };
@@ -495,7 +479,11 @@ impl LazyTableState<'_> {
                     }
                     std::cmp::Ordering::Equal => {
                         continue_to_next_block = true;
-                        if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
+                        if row_matches_point_bound(
+                            row,
+                            lookup.max_commit_version(),
+                            lookup.max_commit_timestamp(),
+                        ) {
                             perf_trace::record_table_point_rows_visited(visited);
                             return Ok((Some(row.clone()), visited));
                         }
@@ -883,7 +871,15 @@ impl<'a> ImmutableTableReader<'a> {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> (Option<TableRow>, usize) {
-        self.try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
+        let lookup = TablePreparedPointLookup::new(key, max_commit_version, max_commit_timestamp);
+        self.seek_prepared_point(&lookup)
+    }
+
+    pub(crate) fn seek_prepared_point(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> (Option<TableRow>, usize) {
+        self.try_seek_prepared_point(lookup)
             .expect("lazy table physical key seek failed")
     }
 
@@ -893,8 +889,15 @@ impl<'a> ImmutableTableReader<'a> {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
-        self.rows
-            .try_seek_physical_key(key, max_commit_version, max_commit_timestamp)
+        let lookup = TablePreparedPointLookup::new(key, max_commit_version, max_commit_timestamp);
+        self.try_seek_prepared_point(&lookup)
+    }
+
+    pub(crate) fn try_seek_prepared_point(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+        self.rows.try_seek_prepared_point(lookup)
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
@@ -1173,20 +1176,16 @@ impl super::TableCursor for ImmutableTableCursor<'_, '_> {
     }
 }
 
-fn seek_physical_key_in_slice<'a>(
+fn seek_prepared_point_in_slice<'a>(
     rows: &'a [TableRow],
-    key: &PhysicalKey,
-    max_commit_version: Option<CommitVersion>,
-    max_commit_timestamp: Option<Timestamp>,
+    lookup: &TablePreparedPointLookup,
 ) -> (Option<&'a TableRow>, usize) {
     perf_trace::record_table_seek();
+    lookup.record_table_seek_use();
     perf_trace::record_table_eager_filter_unavailable_probe();
-    perf_trace::record_table_point_lookup_key_build();
-    let prefix = TablePhysicalKeyBytes::from_physical_key(key);
-    let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
-    let seek_key =
-        TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
-    let start = match rows.binary_search_by(|row| row.key().cmp(&seek_key)) {
+    let prefix = lookup.physical_key();
+    let seek_key = lookup.seek_key();
+    let start = match rows.binary_search_by(|row| row.key().cmp(seek_key)) {
         Ok(index) | Err(index) if index < rows.len() => index,
         Ok(_) | Err(_) => {
             perf_trace::record_table_point_rows_visited(0);
@@ -1200,7 +1199,11 @@ fn seek_physical_key_in_slice<'a>(
         if !prefix.is_prefix_of(row.key()) {
             break;
         }
-        if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
+        if row_matches_point_bound(
+            row,
+            lookup.max_commit_version(),
+            lookup.max_commit_timestamp(),
+        ) {
             perf_trace::record_table_point_rows_visited(visited);
             return (Some(row), visited);
         }

@@ -11,8 +11,8 @@ use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     BoundedTableCursor, FrozenTable, ImmutableTableReader, MutableTable, TableCursor,
-    TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableRow,
-    TableRuntimeFacts,
+    TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes,
+    TablePreparedPointLookup, TableRow, TableRuntimeFacts,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap};
@@ -1369,14 +1369,15 @@ fn visible_point_candidates(
     let mut rows = Vec::new();
     let mut rows_visited = 0usize;
     let mut source_counts = perf_trace::BranchPointSourceCounts::default();
-
-    source_counts.active_probes = source_counts.active_probes.saturating_add(1);
-    source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = active.seek_physical_key(
+    let lookup = TablePreparedPointLookup::new(
         key,
         effective_bound.max_commit_version(),
         effective_bound.max_commit_timestamp(),
     );
+
+    source_counts.active_probes = source_counts.active_probes.saturating_add(1);
+    source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
+    let (row, visited) = active.seek_prepared_point(&lookup);
     rows_visited = rows_visited.saturating_add(visited);
     if let Some(row) = row {
         rows.push(candidate_row(
@@ -1388,11 +1389,7 @@ fn visible_point_candidates(
     for (index, table) in frozen.iter().enumerate() {
         source_counts.frozen_probes = source_counts.frozen_probes.saturating_add(1);
         source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-        let (row, visited) = table.seek_physical_key(
-            key,
-            effective_bound.max_commit_version(),
-            effective_bound.max_commit_timestamp(),
-        );
+        let (row, visited) = table.seek_prepared_point(&lookup);
         rows_visited = rows_visited.saturating_add(visited);
         if let Some(row) = row {
             rows.push(candidate_row(
@@ -1402,14 +1399,11 @@ fn visible_point_candidates(
         }
     }
 
-    let key_bytes = TablePhysicalKeyBytes::from_physical_key(key);
     for (level_index, tables) in owned_levels.iter().enumerate() {
         collect_owned_level_point_candidates(
             level_index,
             tables,
-            key,
-            &key_bytes,
-            effective_bound,
+            &lookup,
             &mut rows,
             &mut rows_visited,
             &mut source_counts,
@@ -1433,9 +1427,7 @@ fn visible_point_candidates(
 fn collect_owned_level_point_candidates(
     level_index: usize,
     tables: &[BranchOwnedTable],
-    key: &PhysicalKey,
-    key_bytes: &TablePhysicalKeyBytes,
-    effective_bound: BranchEffectiveReadBound,
+    lookup: &TablePreparedPointLookup,
     rows: &mut Vec<CandidateRow>,
     rows_visited: &mut usize,
     source_counts: &mut perf_trace::BranchPointSourceCounts,
@@ -1445,11 +1437,7 @@ fn collect_owned_level_point_candidates(
             source_counts.owned_l0_table_probes =
                 source_counts.owned_l0_table_probes.saturating_add(1);
             source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-            let (row, visited) = table.reader().seek_physical_key(
-                key,
-                effective_bound.max_commit_version(),
-                effective_bound.max_commit_timestamp(),
-            );
+            let (row, visited) = table.reader().seek_prepared_point(lookup);
             *rows_visited = (*rows_visited).saturating_add(visited);
             if let Some(row) = row {
                 rows.push(candidate_row(
@@ -1470,18 +1458,14 @@ fn collect_owned_level_point_candidates(
 
     source_counts.owned_nonzero_level_searches =
         source_counts.owned_nonzero_level_searches.saturating_add(1);
-    let Some(table_index) = select_nonzero_level_point_table(tables, key_bytes)? else {
+    let Some(table_index) = select_nonzero_level_point_table(tables, lookup.physical_key())? else {
         return Ok(());
     };
     let table = &tables[table_index];
     source_counts.owned_nonzero_table_probes =
         source_counts.owned_nonzero_table_probes.saturating_add(1);
     source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_physical_key(
-        key,
-        effective_bound.max_commit_version(),
-        effective_bound.max_commit_timestamp(),
-    );
+    let (row, visited) = table.reader().seek_prepared_point(lookup);
     *rows_visited = (*rows_visited).saturating_add(visited);
     if let Some(row) = row {
         rows.push(candidate_row(
@@ -1501,9 +1485,7 @@ fn collect_inherited_level_point_candidates(
     layer_index: usize,
     level_index: usize,
     tables: &[BranchOwnedTable],
-    source_key: &PhysicalKey,
-    source_key_bytes: &TablePhysicalKeyBytes,
-    inherited_bound: BranchEffectiveReadBound,
+    lookup: &TablePreparedPointLookup,
     rows: &mut Vec<CandidateRow>,
     rows_visited: &mut usize,
     source_counts: &mut perf_trace::BranchPointSourceCounts,
@@ -1517,8 +1499,7 @@ fn collect_inherited_level_point_candidates(
                 layer,
                 layer_index,
                 table,
-                source_key,
-                inherited_bound,
+                lookup,
                 rows,
                 rows_visited,
                 source_counts,
@@ -1534,7 +1515,7 @@ fn collect_inherited_level_point_candidates(
     source_counts.inherited_nonzero_level_searches = source_counts
         .inherited_nonzero_level_searches
         .saturating_add(1);
-    let Some(table_index) = select_nonzero_level_point_table(tables, source_key_bytes)? else {
+    let Some(table_index) = select_nonzero_level_point_table(tables, lookup.physical_key())? else {
         return Ok(());
     };
     source_counts.inherited_nonzero_table_probes = source_counts
@@ -1545,8 +1526,7 @@ fn collect_inherited_level_point_candidates(
         layer,
         layer_index,
         &tables[table_index],
-        source_key,
-        inherited_bound,
+        lookup,
         rows,
         rows_visited,
         source_counts,
@@ -1558,18 +1538,13 @@ fn append_inherited_point_table_candidate(
     layer: &BranchInheritedLayer,
     layer_index: usize,
     table: &BranchOwnedTable,
-    source_key: &PhysicalKey,
-    inherited_bound: BranchEffectiveReadBound,
+    lookup: &TablePreparedPointLookup,
     rows: &mut Vec<CandidateRow>,
     rows_visited: &mut usize,
     source_counts: &mut perf_trace::BranchPointSourceCounts,
 ) -> BranchRuntimeResult<()> {
     source_counts.table_seeks = source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_physical_key(
-        source_key,
-        inherited_bound.max_commit_version(),
-        inherited_bound.max_commit_timestamp(),
-    );
+    let (row, visited) = table.reader().seek_prepared_point(lookup);
     *rows_visited = (*rows_visited).saturating_add(visited);
     if let Some(row) = row {
         perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
@@ -2550,7 +2525,11 @@ fn collect_visible_inherited_point_candidates(
         perf_trace::record_branch_point_inherited_key_rewrite();
         let inherited_bound =
             BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
-        let source_key_bytes = TablePhysicalKeyBytes::from_physical_key(&source_key);
+        let lookup = TablePreparedPointLookup::new(
+            &source_key,
+            inherited_bound.max_commit_version(),
+            inherited_bound.max_commit_timestamp(),
+        );
         for (level_index, tables) in layer.owned_levels().iter().enumerate() {
             collect_inherited_level_point_candidates(
                 branch_id,
@@ -2558,9 +2537,7 @@ fn collect_visible_inherited_point_candidates(
                 layer_index,
                 level_index,
                 tables,
-                &source_key,
-                &source_key_bytes,
-                inherited_bound,
+                &lookup,
                 rows,
                 rows_visited,
                 source_counts,

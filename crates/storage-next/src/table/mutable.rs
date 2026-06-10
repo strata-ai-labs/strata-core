@@ -1,13 +1,14 @@
 //! Mutable and frozen in-memory tables.
 
 use super::{
-    MemoryTableCursor, TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes, TableRow,
-    TableRuntimeError, TableRuntimeResult,
+    MemoryTableCursor, TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes,
+    TablePreparedPointLookup, TableRow, TableRuntimeError, TableRuntimeResult,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::row::{InternalKey, PhysicalKey};
 use std::collections::BTreeMap;
+use std::ops::Bound::{Included, Unbounded};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use strata_core_next::{CommitVersion, Timestamp};
 
@@ -264,13 +265,15 @@ impl MutableTable {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> (Option<Arc<TableRow>>, usize) {
-        seek_physical_key_in_rows(
-            &self.read_data(),
-            self.sequence_upper_bound,
-            key,
-            max_commit_version,
-            max_commit_timestamp,
-        )
+        let lookup = TablePreparedPointLookup::new(key, max_commit_version, max_commit_timestamp);
+        self.seek_prepared_point(&lookup)
+    }
+
+    pub(crate) fn seek_prepared_point(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> (Option<Arc<TableRow>>, usize) {
+        seek_physical_key_in_rows(&self.read_data(), self.sequence_upper_bound, lookup)
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
@@ -428,13 +431,15 @@ impl FrozenTable {
         max_commit_version: Option<CommitVersion>,
         max_commit_timestamp: Option<Timestamp>,
     ) -> (Option<Arc<TableRow>>, usize) {
-        seek_physical_key_in_rows(
-            &self.read_data(),
-            Some(self.sequence_upper_bound),
-            key,
-            max_commit_version,
-            max_commit_timestamp,
-        )
+        let lookup = TablePreparedPointLookup::new(key, max_commit_version, max_commit_timestamp);
+        self.seek_prepared_point(&lookup)
+    }
+
+    pub(crate) fn seek_prepared_point(
+        &self,
+        lookup: &TablePreparedPointLookup,
+    ) -> (Option<Arc<TableRow>>, usize) {
+        seek_physical_key_in_rows(&self.read_data(), Some(self.sequence_upper_bound), lookup)
     }
 
     pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
@@ -470,18 +475,14 @@ pub(super) fn entry_visible(entry: &TableMemoryEntry, sequence_upper_bound: Opti
 fn seek_physical_key_in_rows(
     data: &TableMemoryData,
     sequence_upper_bound: Option<u64>,
-    key: &PhysicalKey,
-    max_commit_version: Option<CommitVersion>,
-    max_commit_timestamp: Option<Timestamp>,
+    lookup: &TablePreparedPointLookup,
 ) -> (Option<Arc<TableRow>>, usize) {
     perf_trace::record_table_seek();
-    perf_trace::record_table_point_lookup_key_build();
-    let prefix = TablePhysicalKeyBytes::from_physical_key(key);
-    let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
-    let seek_key =
-        TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
+    lookup.record_table_seek_use();
+    let prefix = lookup.physical_key();
+    let seek_key = lookup.seek_key();
     let mut visited = 0usize;
-    for (_, entry) in data.rows.range(seek_key..) {
+    for (_, entry) in data.rows.range((Included(seek_key), Unbounded)) {
         let row = entry.row.as_ref();
         if !prefix.is_prefix_of(row.key()) {
             break;
@@ -490,7 +491,11 @@ fn seek_physical_key_in_rows(
             continue;
         }
         visited = visited.saturating_add(1);
-        if row_matches_point_bound(row, max_commit_version, max_commit_timestamp) {
+        if row_matches_point_bound(
+            row,
+            lookup.max_commit_version(),
+            lookup.max_commit_timestamp(),
+        ) {
             return (Some(Arc::clone(&entry.row)), visited);
         }
     }

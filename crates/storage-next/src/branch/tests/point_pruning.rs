@@ -186,8 +186,8 @@ fn branch_point_read_counters_capture_current_full_traversal() {
     assert_eq!(perf.point_early_exit_owned_nonzero(), 0);
     assert_eq!(perf.point_early_exit_inherited(), 0);
     assert_eq!(perf.point_remaining_source_skips(), 0);
-    assert_eq!(perf.table_point_lookup_key_builds(), 6);
-    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 2);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 4);
     assert_eq!(perf.table_eager_filter_probes(), 4);
     assert_eq!(perf.table_eager_filter_unavailable_probes(), 4);
     assert_eq!(perf.table_eager_filter_negative_probes(), 0);
@@ -957,8 +957,8 @@ fn branch_point_read_prunes_each_owned_nonzero_level_independently() {
     assert_eq!(perf.point_candidates_materialized(), 2);
     assert_eq!(perf.point_candidate_row_clones(), 2);
     assert_eq!(perf.point_selected_owned_nonzero(), 1);
-    assert_eq!(perf.table_point_lookup_key_builds(), 3);
-    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 1);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 2);
     assert_eq!(perf.table_eager_filter_probes(), 2);
     assert_eq!(perf.table_eager_filter_unavailable_probes(), 2);
     assert_eq!(perf.point_remaining_source_skips(), 0);
@@ -1068,8 +1068,8 @@ fn branch_point_read_keeps_l0_linear_because_ranges_can_overlap() {
     assert_eq!(perf.point_candidates_materialized(), 25);
     assert_eq!(perf.point_candidate_row_clones(), 25);
     assert_eq!(perf.point_selected_owned_l0(), 1);
-    assert_eq!(perf.table_point_lookup_key_builds(), 26);
-    assert_eq!(perf.table_point_lookup_key_reuses(), 0);
+    assert_eq!(perf.table_point_lookup_key_builds(), 1);
+    assert_eq!(perf.table_point_lookup_key_reuses(), 25);
     assert_eq!(perf.table_eager_filter_probes(), 25);
     assert_eq!(perf.table_eager_filter_unavailable_probes(), 25);
     assert_eq!(perf.point_remaining_source_skips(), 0);

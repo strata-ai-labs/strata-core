@@ -2,7 +2,9 @@
 
 use super::{TableRuntimeError, TableRuntimeResult};
 use crate::format::{decode_internal_key, encode_internal_key, encode_physical_key, FormatError};
+use crate::observability::perf_trace;
 use crate::row::{InternalKey, PhysicalKey, StorageRow};
+use std::cell::Cell;
 use std::{cmp::Ordering, fmt};
 use strata_core_next::{CommitVersion, Timestamp};
 
@@ -119,6 +121,60 @@ impl TablePhysicalKeyBytes {
 impl AsRef<[u8]> for TablePhysicalKeyBytes {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TablePreparedPointLookup {
+    physical_key: TablePhysicalKeyBytes,
+    seek_key: TableInternalKeyBytes,
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+    table_uses: Cell<u64>,
+}
+
+impl TablePreparedPointLookup {
+    pub(crate) fn new(
+        key: &PhysicalKey,
+        max_commit_version: Option<CommitVersion>,
+        max_commit_timestamp: Option<Timestamp>,
+    ) -> Self {
+        perf_trace::record_table_point_lookup_key_build();
+        let physical_key = TablePhysicalKeyBytes::from_physical_key(key);
+        let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
+        let seek_key =
+            TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
+        Self {
+            physical_key,
+            seek_key,
+            max_commit_version,
+            max_commit_timestamp,
+            table_uses: Cell::new(0),
+        }
+    }
+
+    pub(crate) fn record_table_seek_use(&self) {
+        let previous_uses = self.table_uses.get();
+        if previous_uses > 0 {
+            perf_trace::record_table_point_lookup_key_reuse();
+        }
+        self.table_uses.set(previous_uses.saturating_add(1));
+    }
+
+    pub(crate) const fn physical_key(&self) -> &TablePhysicalKeyBytes {
+        &self.physical_key
+    }
+
+    pub(crate) const fn seek_key(&self) -> &TableInternalKeyBytes {
+        &self.seek_key
+    }
+
+    pub(crate) const fn max_commit_version(&self) -> Option<CommitVersion> {
+        self.max_commit_version
+    }
+
+    pub(crate) const fn max_commit_timestamp(&self) -> Option<Timestamp> {
+        self.max_commit_timestamp
     }
 }
 
