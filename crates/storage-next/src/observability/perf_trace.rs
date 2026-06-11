@@ -92,6 +92,12 @@ pub struct StoragePerfSnapshot {
     commit_visible_publish_attempts: u64,
     commit_visible_publish_successes: u64,
     commit_visible_publish_failures: u64,
+    commit_admission_pressure_facts: u64,
+    commit_admission_under_pressure: u64,
+    commit_admission_accepted_under_pressure: u64,
+    commit_admission_requires_maintenance: u64,
+    commit_admission_mutations: u64,
+    commit_admission_approx_bytes: u64,
     commit_unresolved_gate_admission_attempts: u64,
     commit_unresolved_gate_admission_acquired: u64,
     commit_unresolved_gate_rejected_unresolved: u64,
@@ -409,6 +415,36 @@ impl StoragePerfSnapshot {
     /// Failed visible-version publications made by commit execution.
     pub const fn commit_visible_publish_failures(self) -> u64 {
         self.commit_visible_publish_failures
+    }
+
+    /// Commit admission pressure fact records emitted after batch validation.
+    pub const fn commit_admission_pressure_facts(self) -> u64 {
+        self.commit_admission_pressure_facts
+    }
+
+    /// Admission fact records that marked a commit over pressure thresholds.
+    pub const fn commit_admission_under_pressure(self) -> u64 {
+        self.commit_admission_under_pressure
+    }
+
+    /// Commits accepted for execution while over pressure thresholds.
+    pub const fn commit_admission_accepted_under_pressure(self) -> u64 {
+        self.commit_admission_accepted_under_pressure
+    }
+
+    /// Admission fact records that marked a commit as maintenance-worthy.
+    pub const fn commit_admission_requires_maintenance(self) -> u64 {
+        self.commit_admission_requires_maintenance
+    }
+
+    /// Mutations counted by admission pressure facts.
+    pub const fn commit_admission_mutations(self) -> u64 {
+        self.commit_admission_mutations
+    }
+
+    /// Approximate commit bytes counted by admission pressure facts.
+    pub const fn commit_admission_approx_bytes(self) -> u64 {
+        self.commit_admission_approx_bytes
     }
 
     /// Global unresolved-durable gate admission attempts.
@@ -1309,6 +1345,18 @@ static COMMIT_VISIBLE_PUBLISH_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_VISIBLE_PUBLISH_FAILURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_ADMISSION_PRESSURE_FACTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_ADMISSION_UNDER_PRESSURE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_ADMISSION_ACCEPTED_UNDER_PRESSURE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_ADMISSION_REQUIRES_MAINTENANCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_ADMISSION_MUTATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_ADMISSION_APPROX_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED: AtomicU64 = AtomicU64::new(0);
@@ -1712,6 +1760,12 @@ pub fn reset() {
     COMMIT_VISIBLE_PUBLISH_ATTEMPTS.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_SUCCESSES.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_FAILURES.store(0, Ordering::Relaxed);
+    COMMIT_ADMISSION_PRESSURE_FACTS.store(0, Ordering::Relaxed);
+    COMMIT_ADMISSION_UNDER_PRESSURE.store(0, Ordering::Relaxed);
+    COMMIT_ADMISSION_ACCEPTED_UNDER_PRESSURE.store(0, Ordering::Relaxed);
+    COMMIT_ADMISSION_REQUIRES_MAINTENANCE.store(0, Ordering::Relaxed);
+    COMMIT_ADMISSION_MUTATIONS.store(0, Ordering::Relaxed);
+    COMMIT_ADMISSION_APPROX_BYTES.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.store(0, Ordering::Relaxed);
@@ -1917,6 +1971,14 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_visible_publish_attempts: COMMIT_VISIBLE_PUBLISH_ATTEMPTS.load(Ordering::Relaxed),
         commit_visible_publish_successes: COMMIT_VISIBLE_PUBLISH_SUCCESSES.load(Ordering::Relaxed),
         commit_visible_publish_failures: COMMIT_VISIBLE_PUBLISH_FAILURES.load(Ordering::Relaxed),
+        commit_admission_pressure_facts: COMMIT_ADMISSION_PRESSURE_FACTS.load(Ordering::Relaxed),
+        commit_admission_under_pressure: COMMIT_ADMISSION_UNDER_PRESSURE.load(Ordering::Relaxed),
+        commit_admission_accepted_under_pressure: COMMIT_ADMISSION_ACCEPTED_UNDER_PRESSURE
+            .load(Ordering::Relaxed),
+        commit_admission_requires_maintenance: COMMIT_ADMISSION_REQUIRES_MAINTENANCE
+            .load(Ordering::Relaxed),
+        commit_admission_mutations: COMMIT_ADMISSION_MUTATIONS.load(Ordering::Relaxed),
+        commit_admission_approx_bytes: COMMIT_ADMISSION_APPROX_BYTES.load(Ordering::Relaxed),
         commit_unresolved_gate_admission_attempts: COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS
             .load(Ordering::Relaxed),
         commit_unresolved_gate_admission_acquired: COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED
@@ -2272,6 +2334,47 @@ pub(crate) fn record_commit_rows_prepared(
     COMMIT_USER_MUTATION_ROWS.fetch_add(as_u64(user_mutation_rows), Ordering::Relaxed);
     COMMIT_TIMELINE_ROWS_PREPARED.fetch_add(as_u64(timeline_rows), Ordering::Relaxed);
     COMMIT_ROWS_PREPARED.fetch_add(as_u64(total_rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_admission_pressure_facts(
+    _mutations: usize,
+    _approximate_commit_bytes: usize,
+    _under_pressure: bool,
+    _would_require_maintenance: bool,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_admission_pressure_facts(
+    mutations: usize,
+    approximate_commit_bytes: usize,
+    under_pressure: bool,
+    would_require_maintenance: bool,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_ADMISSION_PRESSURE_FACTS.fetch_add(1, Ordering::Relaxed);
+    COMMIT_ADMISSION_MUTATIONS.fetch_add(as_u64(mutations), Ordering::Relaxed);
+    COMMIT_ADMISSION_APPROX_BYTES.fetch_add(as_u64(approximate_commit_bytes), Ordering::Relaxed);
+    if under_pressure {
+        COMMIT_ADMISSION_UNDER_PRESSURE.fetch_add(1, Ordering::Relaxed);
+    }
+    if would_require_maintenance {
+        COMMIT_ADMISSION_REQUIRES_MAINTENANCE.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_admission_accepted_under_pressure(_under_pressure: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_admission_accepted_under_pressure(under_pressure: bool) {
+    if !recording_enabled() || !under_pressure {
+        return;
+    }
+    COMMIT_ADMISSION_ACCEPTED_UNDER_PRESSURE.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

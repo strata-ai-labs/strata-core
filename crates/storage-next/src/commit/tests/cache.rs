@@ -114,6 +114,12 @@ fn cache_blind_commit_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
     assert_eq!(perf.commit_visible_publish_successes(), 1);
     assert_eq!(perf.commit_visible_publish_failures(), 0);
+    assert_eq!(perf.commit_admission_pressure_facts(), 1);
+    assert_eq!(perf.commit_admission_under_pressure(), 0);
+    assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+    assert_eq!(perf.commit_admission_mutations(), 1);
+    assert!(perf.commit_admission_approx_bytes() > 0);
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
     assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
     assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
@@ -126,6 +132,48 @@ fn cache_blind_commit_does_not_capture_conflict_read_view() {
     assert_eq!(perf.read_view_captures(), 0);
     assert_eq!(perf.read_view_rows_cloned(), 0);
     assert_eq!(perf.read_view_validation_rows_scanned(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_commit_records_admission_pressure_without_maintenance_work() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(108);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let key = physical_key(branch, 0x20, b"cache-pressure".to_vec());
+    let mut fixture = CacheFixture::new(branch, config);
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            key,
+            b"value".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    fixture
+        .execute(batch)
+        .expect("pressure-marked cache commit succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_admission_pressure_facts(), 1);
+    assert_eq!(perf.commit_admission_under_pressure(), 1);
+    assert_eq!(perf.commit_admission_accepted_under_pressure(), 1);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+    assert_eq!(perf.commit_admission_mutations(), 1);
+    assert!(perf.commit_admission_approx_bytes() > 0);
+    assert_eq!(perf.commit_batches_prepared(), 1);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_successes(), 1);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1094,6 +1142,12 @@ fn cache_unresolved_gate_perf_trace_stops_before_source_capture() {
     ));
 
     let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_admission_pressure_facts(), 1);
+    assert_eq!(perf.commit_admission_under_pressure(), 0);
+    assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+    assert_eq!(perf.commit_admission_mutations(), 1);
+    assert!(perf.commit_admission_approx_bytes() > 0);
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
     assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 0);
     assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 1);
@@ -1408,6 +1462,12 @@ fn cache_commit_guard_contention_serializes_conflict_validation_window() {
         assert_eq!(perf.commit_branch_guard_attempts(), 1);
         assert_eq!(perf.commit_branch_guard_acquired(), 0);
         assert_eq!(perf.commit_branch_guard_rejected(), 1);
+        assert_eq!(perf.commit_admission_pressure_facts(), 1);
+        assert_eq!(perf.commit_admission_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+        assert_eq!(perf.commit_admission_mutations(), 1);
+        assert!(perf.commit_admission_approx_bytes() > 0);
         assert_eq!(perf.conflict_sources_built(), 0);
         assert_eq!(perf.read_view_captures(), 0);
         assert_eq!(perf.commit_conflict_validation_calls(), 0);

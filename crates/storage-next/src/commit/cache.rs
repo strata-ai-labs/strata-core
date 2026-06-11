@@ -67,6 +67,7 @@ where
                 actual: self.branch.branch_id(),
             });
         }
+        let admission_pressure = record_admission_pressure_facts(&batch, self.config)?;
         // The unresolved durable gate is global for V1 visible-version safety,
         // so check it before target-branch admission or allocation.
         //
@@ -84,6 +85,9 @@ where
         // primitive.
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;
+        perf_trace::record_commit_admission_accepted_under_pressure(
+            admission_pressure.under_pressure(),
+        );
         let current_visible_version = self.visible.visible_version();
         require_branch_not_ahead_of_visible(
             self.branch.max_commit_version(),
@@ -153,6 +157,20 @@ where
             facts,
         )
     }
+}
+
+fn record_admission_pressure_facts(
+    batch: &ValidatedCommitBatch,
+    config: &CommitRuntimeConfig,
+) -> CommitRuntimeResult<super::CommitAdmissionPressureFacts> {
+    let facts = batch.admission_pressure_facts(config)?;
+    perf_trace::record_commit_admission_pressure_facts(
+        facts.mutations(),
+        facts.approximate_commit_bytes(),
+        facts.under_pressure(),
+        facts.would_require_maintenance(),
+    );
+    Ok(facts)
 }
 
 pub(crate) fn prepare_commit_rows(

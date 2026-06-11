@@ -142,6 +142,26 @@ Required behavior:
 4. document any intentional no-stall policy with a bounded-fanout proof;
 5. wake or unblock writers after compaction makes progress if blocking is used.
 
+Commit-runtime fact handoff:
+
+1. `CommitAdmissionPressureFacts` reports mutation count, put/delete counts,
+   approximate commit bytes, whether the commit is above configured pressure
+   thresholds, and whether the commit would merit maintenance before
+   admission.
+2. Perf-trace exposes `commit_admission_pressure_facts`,
+   `commit_admission_under_pressure`,
+   `commit_admission_accepted_under_pressure`,
+   `commit_admission_requires_maintenance`,
+   `commit_admission_mutations`, and `commit_admission_approx_bytes`.
+3. Retryable admission failures remain distinguishable through existing commit
+   gate and branch-guard counters:
+   `commit_unresolved_gate_rejected_unresolved`,
+   `commit_unresolved_gate_rejected_active`, and
+   `commit_branch_guard_rejected`.
+4. L8 should consume these facts to select enqueue/drive/stall/reject policy;
+   commit runtime must continue to avoid sleeps, waits, flushes, compactions,
+   and scheduler calls.
+
 ## Non-Goals
 
 Do not fix this by:

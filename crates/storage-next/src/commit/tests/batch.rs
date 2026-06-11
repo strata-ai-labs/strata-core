@@ -70,6 +70,44 @@ fn commit_batch_accepts_valid_storage_mutations_and_options() {
 }
 
 #[test]
+fn validated_batch_reports_admission_pressure_facts() {
+    let branch = branch_id(33);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(2), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let batch = CommitBatch::mutating(
+        branch,
+        vec![
+            CommitMutation::put(
+                physical_key(branch, 0x20, b"pressure-put".to_vec()),
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            ),
+            CommitMutation::delete(physical_key(branch, 0x21, b"pressure-delete".to_vec())),
+        ],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    let facts = batch
+        .validate(&config)
+        .expect("valid batch")
+        .admission_pressure_facts(&config)
+        .expect("pressure facts");
+
+    assert_eq!(facts.mutations(), 2);
+    assert_eq!(facts.puts(), 1);
+    assert_eq!(facts.deletes(), 1);
+    assert!(facts.approximate_commit_bytes() >= b"value".len());
+    assert!(facts.under_pressure());
+    assert!(facts.would_require_maintenance());
+}
+
+#[test]
 fn commit_batch_options_cover_all_durability_modes() {
     let branch = branch_id(32);
     let cases = [

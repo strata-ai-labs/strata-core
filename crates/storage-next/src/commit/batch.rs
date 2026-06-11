@@ -1,12 +1,16 @@
 //! Commit batch, mutation, validation fact, and stamping model.
 
-use super::{CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult};
+use super::{
+    CommitAdmissionPressureFacts, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult,
+};
 use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow};
 use std::collections::HashSet;
 use std::fmt;
 use std::num::NonZeroUsize;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+const APPROX_MUTATION_FIXED_BYTES: usize = BranchId::BYTE_LEN + 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommitBatch {
@@ -444,6 +448,35 @@ impl ValidatedCommitBatch {
         &self.batch
     }
 
+    pub(crate) fn admission_pressure_facts(
+        &self,
+        config: &CommitRuntimeConfig,
+    ) -> CommitRuntimeResult<CommitAdmissionPressureFacts> {
+        let mut puts = 0usize;
+        let mut deletes = 0usize;
+        let mut approximate_commit_bytes = 0usize;
+        for mutation in &self.batch.mutations {
+            match mutation {
+                CommitMutation::Put { .. } => puts = puts.saturating_add(1),
+                CommitMutation::Delete { .. } => deletes = deletes.saturating_add(1),
+            }
+            approximate_commit_bytes =
+                approximate_commit_bytes.saturating_add(approximate_mutation_bytes(mutation));
+        }
+        let mutations =
+            puts.checked_add(deletes)
+                .ok_or(CommitRuntimeError::InvalidCommitState {
+                    reason: "commit admission mutation count overflow",
+                })?;
+        CommitAdmissionPressureFacts::new(
+            mutations,
+            puts,
+            deletes,
+            approximate_commit_bytes,
+            config.admission_pressure_thresholds(),
+        )
+    }
+
     pub(crate) fn stamp_user_rows(
         &self,
         stamp: CommitStamp,
@@ -492,6 +525,19 @@ impl ValidatedCommitBatch {
 
         Ok(rows)
     }
+}
+
+fn approximate_mutation_bytes(mutation: &CommitMutation) -> usize {
+    let key = mutation.physical_key();
+    let key_bytes = key
+        .space()
+        .len()
+        .saturating_add(1)
+        .saturating_add(key.user_key().len());
+    let value_bytes = mutation.value().map_or(0, <[u8]>::len);
+    APPROX_MUTATION_FIXED_BYTES
+        .saturating_add(key_bytes)
+        .saturating_add(value_bytes)
 }
 
 fn validate_batch_shape(

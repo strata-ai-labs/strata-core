@@ -104,7 +104,10 @@ pub(crate) use error::{CommitLowerLayer, CommitRuntimeError};
         reason = "commit scaffold exports define the local surface for later slices"
     )
 )]
-pub(crate) use facts::{CommitDurabilityClass, CommitPhase, CommitVisibilityFacts};
+pub(crate) use facts::{
+    CommitAdmissionPressureFacts, CommitAdmissionPressureThresholds, CommitDurabilityClass,
+    CommitPhase, CommitVisibilityFacts,
+};
 #[allow(
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"

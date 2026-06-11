@@ -11,6 +11,10 @@ fn commit_runtime_default_config_is_valid() {
         config.read_only_diagnostics(),
         CommitReadOnlyDiagnostics::Enabled
     );
+    assert_eq!(
+        config.admission_pressure_thresholds(),
+        CommitAdmissionPressureThresholds::disabled()
+    );
 }
 
 #[test]
@@ -41,6 +45,28 @@ fn commit_runtime_config_rejects_unusable_limits() {
         Err(CommitRuntimeError::InvalidConfig {
             field: "max_commit_rows_per_batch",
             reason: "must be greater than or equal to max_mutations_per_batch",
+        })
+    );
+}
+
+#[test]
+fn commit_runtime_config_accepts_admission_pressure_thresholds() {
+    let thresholds = CommitAdmissionPressureThresholds::new(Some(2), Some(128), Some(4), Some(256))
+        .expect("thresholds");
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(thresholds)
+        .expect("config with admission pressure thresholds");
+
+    assert_eq!(config.admission_pressure_thresholds(), thresholds);
+    assert_eq!(thresholds.under_pressure_mutations(), Some(2));
+    assert_eq!(thresholds.under_pressure_bytes(), Some(128));
+    assert_eq!(thresholds.maintenance_mutations(), Some(4));
+    assert_eq!(thresholds.maintenance_bytes(), Some(256));
+    assert_eq!(
+        CommitAdmissionPressureThresholds::new(Some(0), None, None, None),
+        Err(CommitRuntimeError::InvalidConfig {
+            field: "under_pressure_mutations",
+            reason: "must be nonzero when configured",
         })
     );
 }
