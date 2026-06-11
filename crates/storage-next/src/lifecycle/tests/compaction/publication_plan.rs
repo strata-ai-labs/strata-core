@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use super::shared::*;
 use super::*;
 use crate::backend::Backend;

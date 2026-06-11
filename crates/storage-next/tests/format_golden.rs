@@ -52,7 +52,7 @@ fn format_golden_harness_has_storage_format_directory() {
     ] {
         assert!(dir.join(file).is_file(), "missing golden vector {file}");
     }
-    let historical_empty_record = format!("wal-record-empty-pre-{}f.hex", format!("m{}", 3));
+    let historical_empty_record = format!("wal-record-empty-pre-m{}f.hex", 3);
     assert!(
         dir.join(&historical_empty_record).is_file(),
         "missing golden vector {historical_empty_record}"

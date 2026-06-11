@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use super::*;
 
 fn scan_put(branch: BranchId, user_key: &str, version: u64, value: &str) -> StorageRow {

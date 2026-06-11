@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use super::*;
 use crate::table::FrozenTable;
 
@@ -129,7 +131,7 @@ fn read_view_facts(
 }
 
 #[cfg(feature = "perf-trace")]
-fn assert_source_counters_zero(perf: crate::observability::perf_trace::StoragePerfSnapshot) {
+fn assert_source_counters_zero(perf: &crate::observability::perf_trace::StoragePerfSnapshot) {
     assert_eq!(perf.point_active_probes(), 0);
     assert_eq!(perf.point_frozen_probes(), 0);
     assert_eq!(perf.point_owned_l0_table_probes(), 0);
@@ -884,7 +886,7 @@ fn branch_source_layout_does_not_increment_perf_trace_counters() {
     assert_eq!(layout.frozen_table_count(), 1);
     assert_eq!(layout.owned_total_tables(), 2);
     assert_eq!(layout.inherited_total_tables(), 2);
-    assert_source_counters_zero(crate::observability::perf_trace::snapshot());
+    assert_source_counters_zero(&crate::observability::perf_trace::snapshot());
 }
 
 #[cfg(feature = "perf-trace")]
@@ -905,7 +907,7 @@ fn branch_source_counters_reset_and_snapshot_deterministically() {
     assert_eq!(first_snapshot.point_table_seeks(), 1);
 
     crate::observability::perf_trace::reset();
-    assert_source_counters_zero(crate::observability::perf_trace::snapshot());
+    assert_source_counters_zero(&crate::observability::perf_trace::snapshot());
 
     let second = view.latest(&target).expect("second point read");
     assert!(second.is_some());

@@ -243,7 +243,7 @@ struct StateOutcome {
     committed_tombstone_appends: usize,
     wrong_branch_append_rejections: usize,
     active_duplicate_rejections: usize,
-    frozen_duplicate_rejections: usize,
+    cross_layer_duplicate_appends: usize,
     same_key_version_appends: usize,
     same_version_key_appends: usize,
     active_rotations: usize,

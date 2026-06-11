@@ -1,6 +1,7 @@
 //! Generated branch-LSM scaffold property harness.
 
 #![deny(unsafe_code)]
+#![allow(clippy::too_many_lines)]
 
 mod common;
 
@@ -39,7 +40,7 @@ const REQUIRED_HARNESS_TOKENS: &[&str] = &[
     "committed_tombstone_append_cases",
     "wrong_branch_append_rejection_cases",
     "active_duplicate_rejection_cases",
-    "frozen_duplicate_rejection_cases",
+    "cross_layer_duplicate_append_cases",
     "same_key_version_append_cases",
     "same_version_key_append_cases",
     "active_rotation_cases",
@@ -242,7 +243,7 @@ const REQUIRED_OUTCOME_COUNTERS: &[BranchLsmOutcomeCounter] = &[
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::committed_tombstone_append_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::wrong_branch_append_rejection_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::active_duplicate_rejection_cases,
-    strata_storage_next::testkit::BranchLsmScaffoldOutcome::frozen_duplicate_rejection_cases,
+    strata_storage_next::testkit::BranchLsmScaffoldOutcome::cross_layer_duplicate_append_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::same_key_version_append_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::same_version_key_append_cases,
     strata_storage_next::testkit::BranchLsmScaffoldOutcome::active_rotation_cases,
@@ -489,7 +490,7 @@ fn branch_lsm_property_harness_runs_seeded_source_topologies() {
     for script in runtime_topology_scripts() {
         let outcome =
             check_branch_lsm_scaffold_contract(&script).expect("seeded branch LSM scaffold");
-        assert_seeded_source_topology_outcome(outcome);
+        assert_seeded_source_topology_outcome(&outcome);
         check_branch_lsm_reference_model_contract(&script)
             .expect("seeded branch LSM reference model");
         check_branch_lsm_fault_window_contract(&script).expect("seeded branch LSM fault windows");
@@ -513,7 +514,7 @@ fn runtime_topology_scripts() -> [Vec<u8>; 3] {
 
 #[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
 fn assert_seeded_source_topology_outcome(
-    outcome: strata_storage_next::testkit::BranchLsmScaffoldOutcome,
+    outcome: &strata_storage_next::testkit::BranchLsmScaffoldOutcome,
 ) {
     let required = [
         ("active append", outcome.committed_put_append_cases()),

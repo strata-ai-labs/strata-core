@@ -521,7 +521,7 @@ fn wal_record_envelope_matches_golden_vector() {
 fn wal_record_rejects_historical_empty_payload_golden() {
     let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("testdata/goldens/storage-format-v1")
-        .join(format!("wal-record-empty-pre-{}f.hex", format!("m{}", 3)));
+        .join(format!("wal-record-empty-pre-m{}f.hex", 3));
     let historical_empty_payload =
         fs::read_to_string(&golden_path).expect("read historical empty payload golden");
     let bytes = parse_hex(&historical_empty_payload);

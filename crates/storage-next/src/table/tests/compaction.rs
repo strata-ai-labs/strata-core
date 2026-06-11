@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use crate::format::{decode_immutable_table, TableCompression};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
@@ -601,7 +603,9 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
         crate::observability::perf_trace::reset();
         let sources = (0..source_count)
             .map(|source_index| {
-                let user_key = vec![b'a'.saturating_add(source_index as u8)];
+                let source_index_byte =
+                    u8::try_from(source_index).expect("source index fits in u8");
+                let user_key = vec![b'a'.saturating_add(source_index_byte)];
                 source(
                     &format!("small-merge-{source_count}-{source_index}"),
                     &[put_row(user_key, source_index as u64 + 10)],

@@ -139,7 +139,7 @@ fn branch_lsm_closeout_direct_branch_tests_cover_required_surfaces() {
             "branch_row_identity_accepts_matching_rows_and_rejects_mismatches",
             "branch_rewrite_groups_inherited_rows_with_child_local_encoded_keys",
             "branch_local_state_appends_puts_tombstones_and_preserves_row_facts",
-            "branch_local_state_rejects_active_and_frozen_duplicates_without_mutation",
+            "branch_local_state_rejects_active_duplicates_and_defers_frozen_duplicate_resolution",
             "branch_local_state_rotation_preserves_rows_and_newest_first_order",
             "branch_read_view_is_pinned_across_append_and_rotation",
             "branch_read_view_latest_and_version_reads_follow_row_chain_not_source_order",

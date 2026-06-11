@@ -545,6 +545,7 @@ fn branch_fork_and_attach_rejections_do_not_mutate_state() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn branch_fork_into_empty_child_captures_inherited_layers_without_copying_rows() {
     let source = branch_id(72);
     let child = branch_id(73);
@@ -761,6 +762,7 @@ fn branch_fork_uses_inherited_rows_when_source_has_no_own_rows() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn branch_fork_child_local_rows_shadow_inherited_parent_rows() {
     let source = branch_id(91);
     let child_with_put = branch_id(92);
@@ -987,6 +989,7 @@ fn branch_fork_frontier_survives_parent_compaction() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn branch_fork_frontier_survives_parent_materialization() {
     let grandparent = branch_id(88);
     let parent = branch_id(89);

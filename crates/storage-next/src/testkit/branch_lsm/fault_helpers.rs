@@ -257,7 +257,7 @@ fn check_branch_local_rotation_path(
     }
     outcome.frozen_only_facts += 1;
 
-    let duplicate_frozen = storage_row_with(
+    let cross_layer_duplicate = storage_row_with(
         branch,
         put.physical_key().user_key().to_vec(),
         5,
@@ -265,14 +265,19 @@ fn check_branch_local_rotation_path(
         Timestamp::EPOCH,
         b"duplicate".to_vec(),
     )?;
-    let facts_before_frozen_duplicate = branch_state_facts(state)?;
-    expect_duplicate_internal_key(state.append_committed_row(duplicate_frozen))?;
-    if branch_state_facts(state)? != facts_before_frozen_duplicate {
+    append_expect_put(state, &cross_layer_duplicate)?;
+    let cross_layer_facts = branch_state_facts(state)?;
+    if cross_layer_facts.active_rows() != 1
+        || cross_layer_facts.frozen_table_count() != 1
+        || cross_layer_facts.max_commit_version() != Some(CommitVersion::new(11))
+        || cross_layer_facts.timestamp_min() != Some(Timestamp::from_micros(30))
+        || cross_layer_facts.timestamp_max() != Some(Timestamp::from_micros(70))
+    {
         return Err(TestkitError::new(
-            "frozen duplicate append changed branch-local facts",
+            "cross-layer duplicate append facts drifted",
         ));
     }
-    outcome.frozen_duplicate_rejections += 1;
+    outcome.cross_layer_duplicate_appends += 1;
 
     let later = storage_row_with(
         branch,
@@ -286,7 +291,7 @@ fn check_branch_local_rotation_path(
         .append_committed_row(later)
         .map_err(|err| TestkitError::new(format!("mixed append failed: {err}")))?;
     let mixed = branch_state_facts(state)?;
-    if mixed.active_rows() != 1
+    if mixed.active_rows() != 2
         || mixed.frozen_table_count() != 1
         || mixed.max_commit_version() != Some(CommitVersion::new(12))
         || mixed.timestamp_max() != Some(Timestamp::from_micros(120))

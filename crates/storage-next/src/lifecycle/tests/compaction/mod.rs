@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 mod publication_plan;
 mod remaining;
 mod row_pruning;
@@ -414,7 +416,8 @@ fn compaction_fixed_point_drain_rewrites_overlaps_and_promotes_gaps() {
 #[test]
 fn generated_shape_fixed_point_compaction_preserves_reads_and_nonoverlap() {
     for source_count in 1..=8 {
-        let branch = branch_id(0x70 + source_count as u8);
+        let source_count_byte = u8::try_from(source_count).expect("source count fits in u8");
+        let branch = branch_id(0x70 + source_count_byte);
         let mut state = BranchLocalState::new(
             branch,
             BranchRuntimeConfig::new(4, 128, 32).expect("branch config"),
@@ -1443,7 +1446,8 @@ fn storage_pressure_reports_l0_table_backlog_boundaries() {
     ] {
         let pressure = pressure_for_l0_table_count(table_count);
 
-        assert_eq!(pressure.level_zero_tables(), table_count as usize);
+        let table_count = usize::try_from(table_count).expect("fixture table count fits in usize");
+        assert_eq!(pressure.level_zero_tables(), table_count);
         assert_eq!(pressure.severity(), expected_severity);
         if expected_severity == LifecycleStoragePressureSeverity::None {
             assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);

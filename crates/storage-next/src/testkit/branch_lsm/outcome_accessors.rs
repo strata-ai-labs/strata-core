@@ -95,8 +95,8 @@ impl BranchLsmScaffoldOutcome {
         self.active_duplicate_rejections
     }
 
-    pub const fn frozen_duplicate_rejection_cases(self) -> usize {
-        self.frozen_duplicate_rejections
+    pub const fn cross_layer_duplicate_append_cases(self) -> usize {
+        self.cross_layer_duplicate_appends
     }
 
     pub const fn same_key_version_append_cases(self) -> usize {

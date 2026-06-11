@@ -5,7 +5,7 @@ impl BranchLsmScaffoldOutcome {
         self.committed_tombstone_appends += outcome.committed_tombstone_appends;
         self.wrong_branch_append_rejections += outcome.wrong_branch_append_rejections;
         self.active_duplicate_rejections += outcome.active_duplicate_rejections;
-        self.frozen_duplicate_rejections += outcome.frozen_duplicate_rejections;
+        self.cross_layer_duplicate_appends += outcome.cross_layer_duplicate_appends;
         self.same_key_version_appends += outcome.same_key_version_appends;
         self.same_version_key_appends += outcome.same_version_key_appends;
         self.active_rotations += outcome.active_rotations;

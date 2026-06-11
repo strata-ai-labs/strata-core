@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use super::*;
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::read::{

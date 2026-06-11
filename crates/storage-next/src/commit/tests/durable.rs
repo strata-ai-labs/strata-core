@@ -562,7 +562,7 @@ fn durable_standard_commit_appends_through_real_wal_service() {
         b"value"
     );
     #[cfg(feature = "perf-trace")]
-    assert_real_wal_commit_perf(crate::observability::perf_trace::snapshot(), 1);
+    assert_real_wal_commit_perf(&crate::observability::perf_trace::snapshot(), 1);
 }
 
 #[cfg(all(feature = "localfs", unix))]
@@ -639,7 +639,7 @@ fn durable_always_commit_appends_through_real_wal_service() {
     );
     assert_payload_contains_timeline_rows(&read.records()[0]);
     #[cfg(feature = "perf-trace")]
-    assert_real_wal_commit_perf(crate::observability::perf_trace::snapshot(), 1);
+    assert_real_wal_commit_perf(&crate::observability::perf_trace::snapshot(), 1);
 }
 
 #[test]
@@ -2703,7 +2703,7 @@ fn assert_payload_contains_timeline_rows(record: &WalRecord) {
 
 #[cfg(feature = "perf-trace")]
 fn assert_real_wal_commit_perf(
-    perf: crate::observability::perf_trace::StoragePerfSnapshot,
+    perf: &crate::observability::perf_trace::StoragePerfSnapshot,
     user_rows: u64,
 ) {
     let timeline_rows =
