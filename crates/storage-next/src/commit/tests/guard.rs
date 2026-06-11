@@ -59,6 +59,27 @@ fn branch_guard_allows_different_branches_independently() {
     assert_eq!(guard_set.active_guard_count(), Ok(0));
 }
 
+#[test]
+fn branch_guard_availability_probe_rejects_without_acquiring() {
+    let branch = branch_id(116);
+    let guard_set = CommitBranchGuardSet::new();
+    assert_eq!(guard_set.require_branch_guard_available(branch), Ok(()));
+
+    let guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("active branch guard");
+    assert_eq!(
+        guard_set.require_branch_guard_available(branch),
+        Err(CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: branch,
+            reason: "branch commit guard is already active",
+        })
+    );
+    assert_eq!(guard_set.active_guard_count(), Ok(1));
+    drop(guard);
+    assert_eq!(guard_set.require_branch_guard_available(branch), Ok(()));
+}
+
 #[cfg(feature = "perf-trace")]
 #[test]
 fn guard_perf_trace_counts_branch_and_quiesce_contention() {
@@ -114,6 +135,39 @@ fn guard_perf_trace_counts_branch_and_quiesce_contention() {
     assert_eq!(perf.commit_quiesce_acquired(), 1);
     assert_eq!(perf.commit_quiesce_rejected(), 2);
     drop(quiesce);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_guard_availability_probe_counts_only_rejections() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(122);
+    let guard_set = CommitBranchGuardSet::new();
+
+    guard_set
+        .require_branch_guard_available(branch)
+        .expect("clean probe");
+    let clean = crate::observability::perf_trace::snapshot();
+    assert_eq!(clean.commit_branch_guard_attempts(), 0);
+    assert_eq!(clean.commit_branch_guard_acquired(), 0);
+    assert_eq!(clean.commit_branch_guard_rejected(), 0);
+
+    let guard = guard_set
+        .try_acquire_branch_guard(branch)
+        .expect("active branch guard");
+    crate::observability::perf_trace::reset();
+    assert_eq!(
+        guard_set.require_branch_guard_available(branch),
+        Err(CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: branch,
+            reason: "branch commit guard is already active",
+        })
+    );
+    let rejected = crate::observability::perf_trace::snapshot();
+    assert_eq!(rejected.commit_branch_guard_attempts(), 1);
+    assert_eq!(rejected.commit_branch_guard_acquired(), 0);
+    assert_eq!(rejected.commit_branch_guard_rejected(), 1);
+    drop(guard);
 }
 
 #[test]

@@ -236,6 +236,27 @@ impl CommitUnresolvedDurableGate {
         Ok(self.lock()?.unresolved)
     }
 
+    pub(crate) fn require_admission_available(&self) -> CommitRuntimeResult<()> {
+        let state = self.lock()?;
+        if let Some(unresolved) = state.unresolved {
+            perf_trace::record_commit_unresolved_gate_admission_attempt();
+            perf_trace::record_commit_unresolved_gate_rejected_unresolved();
+            return Err(CommitRuntimeError::UnresolvedDurableCommit {
+                branch_id: unresolved.branch_id(),
+                commit_version: unresolved.commit_version(),
+                reason: "durable commit must be replayed or reconciled first",
+            });
+        }
+        if state.active_admission {
+            perf_trace::record_commit_unresolved_gate_admission_attempt();
+            perf_trace::record_commit_unresolved_gate_rejected_active();
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "durable commit admission is already active",
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn require_open_for_mutation(&self) -> CommitRuntimeResult<()> {
         self.admit_mutating_commit().map(|_| ())
     }

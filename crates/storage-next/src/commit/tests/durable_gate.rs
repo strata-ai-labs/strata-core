@@ -263,6 +263,97 @@ fn unresolved_durable_gate_records_idempotently_and_blocks_mutation() {
 }
 
 #[test]
+fn unresolved_durable_gate_availability_probe_rejects_without_admitting() {
+    let gate = CommitUnresolvedDurableGate::new();
+    assert_eq!(gate.require_admission_available(), Ok(()));
+    let active = gate.admit_mutating_commit().expect("active admission");
+    assert_eq!(
+        gate.require_admission_available(),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "durable commit admission is already active",
+        })
+    );
+    drop(active);
+
+    let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch_id(85), 8),
+        CommitDurabilityClass::Standard,
+        "apply failed",
+    )
+    .expect("fact");
+    gate.record_unresolved(fact).expect("record fact");
+    assert_eq!(
+        gate.require_admission_available(),
+        Err(CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: fact.branch_id(),
+            commit_version: fact.commit_version(),
+            reason: "durable commit must be replayed or reconciled first",
+        })
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn unresolved_durable_gate_availability_probe_counts_only_rejections() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let gate = CommitUnresolvedDurableGate::new();
+
+    gate.require_admission_available()
+        .expect("clean availability probe");
+    let clean = crate::observability::perf_trace::snapshot();
+    assert_eq!(clean.commit_unresolved_gate_admission_attempts(), 0);
+    assert_eq!(clean.commit_unresolved_gate_admission_acquired(), 0);
+    assert_eq!(clean.commit_unresolved_gate_rejected_active(), 0);
+    assert_eq!(clean.commit_unresolved_gate_rejected_unresolved(), 0);
+
+    let active = gate.admit_mutating_commit().expect("active admission");
+    crate::observability::perf_trace::reset();
+    assert!(matches!(
+        gate.require_admission_available(),
+        Err(CommitRuntimeError::InvalidCommitState { .. })
+    ));
+    let active_reject = crate::observability::perf_trace::snapshot();
+    assert_eq!(active_reject.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(active_reject.commit_unresolved_gate_admission_acquired(), 0);
+    assert_eq!(active_reject.commit_unresolved_gate_rejected_active(), 1);
+    assert_eq!(
+        active_reject.commit_unresolved_gate_rejected_unresolved(),
+        0
+    );
+    drop(active);
+
+    let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch_id(86), 9),
+        CommitDurabilityClass::Standard,
+        "apply failed",
+    )
+    .expect("fact");
+    gate.record_unresolved(fact).expect("record fact");
+    crate::observability::perf_trace::reset();
+    assert!(matches!(
+        gate.require_admission_available(),
+        Err(CommitRuntimeError::UnresolvedDurableCommit { .. })
+    ));
+    let unresolved_reject = crate::observability::perf_trace::snapshot();
+    assert_eq!(
+        unresolved_reject.commit_unresolved_gate_admission_attempts(),
+        1
+    );
+    assert_eq!(
+        unresolved_reject.commit_unresolved_gate_admission_acquired(),
+        0
+    );
+    assert_eq!(
+        unresolved_reject.commit_unresolved_gate_rejected_active(),
+        0
+    );
+    assert_eq!(
+        unresolved_reject.commit_unresolved_gate_rejected_unresolved(),
+        1
+    );
+}
+
+#[test]
 fn unresolved_durable_gate_instances_are_not_process_global() {
     let first = CommitUnresolvedDurableGate::new();
     let second = CommitUnresolvedDurableGate::new();

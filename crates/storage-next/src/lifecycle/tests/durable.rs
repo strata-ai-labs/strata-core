@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::memory::MemoryBackend;
 use crate::backend::{
     Backend, BackendAppend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata,
     BackendRange, BackendResult, BackendWriterGuard, PublishDurability, PublishError,
@@ -10,8 +11,8 @@ use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,
-    CommitRetentionHint, CommitRuntimeConfig, CommitStamp, CommitTimestampPolicy,
-    CommitUnresolvedDurable, CommitValidationFacts,
+    CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError, CommitStamp,
+    CommitTimestampPolicy, CommitUnresolvedDurable, CommitValidationFacts,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
@@ -1287,6 +1288,223 @@ fn durable_commit_allows_telemetry_degraded_recovery_health() {
 }
 
 #[test]
+fn durable_unresolved_gate_rejection_takes_precedence_over_blocking_pressure() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x82);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        CommitStamp::new(branch, CommitVersion::new(4), Timestamp::from_micros(8_004))
+            .expect("stamp"),
+        CommitDurabilityClass::Standard,
+        "seed unresolved durable fact",
+    )
+    .expect("unresolved fact");
+    runtime
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("record unresolved");
+
+    let error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"unresolved-before-pressure", b"value"),
+            generation_guard(),
+        )
+        .expect_err("unresolved gate rejects before pressure policy");
+
+    let LifecycleError::LowerLayer {
+        layer: LifecycleLowerLayer::CommitRuntime,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected unresolved durable commit runtime error, got {error:?}");
+    };
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("commit runtime source");
+    assert!(matches!(
+        commit_error,
+        CommitRuntimeError::UnresolvedDurableCommit {
+            branch_id: rejected_branch,
+            commit_version,
+            ..
+        } if *rejected_branch == branch && *commit_version == CommitVersion::new(4)
+    ));
+    assert_eq!(runtime.last_write_admission(), None);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_unresolved_rejection_under_pressure_keeps_pressure_counters_separate() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x86);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        CommitStamp::new(branch, CommitVersion::new(4), Timestamp::from_micros(8_004))
+            .expect("stamp"),
+        CommitDurabilityClass::Standard,
+        "seed unresolved durable fact",
+    )
+    .expect("unresolved fact");
+    runtime
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("record unresolved");
+    crate::observability::perf_trace::reset();
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"unresolved-pressure-counters", b"value"),
+            generation_guard(),
+        )
+        .expect_err("unresolved gate rejects before pressure policy");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+    assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 0);
+    assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 1);
+    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
+    assert_eq!(perf.commit_branch_guard_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_evaluations(), 0);
+    assert_eq!(perf.lifecycle_write_admission_pressure_rejects(), 0);
+}
+
+#[test]
+fn durable_branch_guard_rejection_takes_precedence_over_blocking_pressure() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x87);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active branch guard");
+
+    let error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"guard-before-pressure", b"value"),
+            generation_guard(),
+        )
+        .expect_err("active guard rejects before pressure policy");
+
+    assert!(matches!(
+        commit_runtime_source(&error),
+        CommitRuntimeError::BranchGuardUnavailable {
+            branch_id: rejected_branch,
+            ..
+        } if *rejected_branch == branch
+    ));
+    assert_eq!(runtime.last_write_admission(), None);
+    drop(guard);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_branch_guard_rejection_under_pressure_keeps_pressure_counters_separate() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x88);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active branch guard");
+    crate::observability::perf_trace::reset();
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"guard-pressure-counters", b"value"),
+            generation_guard(),
+        )
+        .expect_err("active guard rejects before pressure policy");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 0);
+    assert_eq!(perf.commit_branch_guard_attempts(), 1);
+    assert_eq!(perf.commit_branch_guard_acquired(), 0);
+    assert_eq!(perf.commit_branch_guard_rejected(), 1);
+    assert_eq!(perf.lifecycle_write_admission_evaluations(), 0);
+    assert_eq!(perf.lifecycle_write_admission_pressure_rejects(), 0);
+    drop(guard);
+}
+
+#[test]
+fn cache_and_durable_l0_pressure_facts_match_for_equivalent_source_shapes() {
+    for (index, table_count, expected_severity) in [
+        (0_u8, 4_usize, LifecycleStoragePressureSeverity::Background),
+        (1, 8, LifecycleStoragePressureSeverity::Urgent),
+        (
+            2,
+            16,
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+        ),
+    ] {
+        let branch = branch_id(0x83 + index);
+        let cache_backend = MemoryBackend::new();
+        let mut cache = open_cache_runtime(branch, &cache_backend);
+        build_cache_l0_tables_with_scheduled_flushes(&mut cache, branch, table_count);
+
+        let durable_backend = DurableTestBackend::new();
+        let mut durable = open_runtime(StorageMode::DurableLocalStandard, branch, &durable_backend);
+        build_durable_l0_tables_with_scheduled_flushes(&mut durable, branch, table_count);
+
+        let cache_pressure = cache.storage_pressure();
+        let durable_pressure = durable.storage_pressure();
+        assert_eq!(cache_pressure.severity(), expected_severity);
+        assert_eq!(durable_pressure.severity(), expected_severity);
+        assert_eq!(cache_pressure.reason(), durable_pressure.reason());
+        assert_eq!(
+            cache_pressure.reason(),
+            LifecycleStoragePressureReason::LevelZeroTableBacklog
+        );
+        assert_eq!(
+            cache_pressure.level_zero_tables(),
+            durable_pressure.level_zero_tables()
+        );
+        assert_eq!(
+            cache_pressure.owned_tables(),
+            durable_pressure.owned_tables()
+        );
+        assert_eq!(
+            cache_pressure.frozen_tables(),
+            durable_pressure.frozen_tables()
+        );
+        assert_eq!(
+            cache_pressure.pending_maintenance(),
+            durable_pressure.pending_maintenance()
+        );
+        assert_eq!(
+            cache_pressure
+                .suggested_task()
+                .map(MaintenanceTaskRequest::kind),
+            durable_pressure
+                .suggested_task()
+                .map(MaintenanceTaskRequest::kind)
+        );
+        assert_eq!(
+            cache_pressure
+                .suggested_task()
+                .map(MaintenanceTaskRequest::scope),
+            durable_pressure
+                .suggested_task()
+                .map(MaintenanceTaskRequest::scope)
+        );
+    }
+}
+
+#[test]
 fn durable_commit_deterministic_inline_runs_suggested_flush() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x6e);
@@ -2060,6 +2278,40 @@ fn generation_guard() -> CommitBranchGenerationGuard {
     CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation"))
 }
 
+fn commit_runtime_source(error: &LifecycleError) -> &CommitRuntimeError {
+    let LifecycleError::LowerLayer {
+        layer: LifecycleLowerLayer::CommitRuntime,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected commit runtime error, got {error:?}");
+    };
+    source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("commit runtime source")
+}
+
+fn open_cache_runtime(
+    branch: BranchId,
+    backend: &dyn Backend,
+) -> LifecycleCacheRuntime<CommitManualTimestampSource> {
+    let request = LifecycleCacheOpenRequest::new(
+        open_plan_with_config(StorageMode::Cache, LifecycleConfig::default()),
+        branch,
+        CommitBranchGeneration::new(1).expect("generation"),
+    )
+    .expect("cache request");
+    LifecycleCacheRuntime::open(
+        request,
+        backend,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    )
+    .expect("cache runtime")
+}
+
 fn durable_put_batch(
     branch: BranchId,
     user_key: &'static [u8],
@@ -2091,6 +2343,90 @@ fn durable_put_batch_with_mode(
             CommitOrigin::StorageRuntime,
         ),
     )
+}
+
+fn cache_put_batch(branch: BranchId, user_key: &'static [u8], value: &'static [u8]) -> CommitBatch {
+    CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, user_key),
+            value.to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Cache,
+            CommitConflictValidationMode::Skip,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGenerated,
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+}
+
+fn build_cache_l0_tables_with_scheduled_flushes(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    table_count: usize,
+) {
+    assert!(table_count > 0);
+    runtime
+        .execute_cache_commit(
+            cache_put_batch(branch, b"cache-l0-seed", b"value"),
+            generation_guard(),
+        )
+        .expect("cache seed commit");
+    for _ in 0..table_count {
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate cache active table");
+        runtime
+            .execute_cache_commit(
+                cache_put_batch(branch, b"cache-l0-trigger", b"value"),
+                generation_guard(),
+            )
+            .expect("cache trigger commit");
+        let outcome = runtime
+            .run_next_flush_maintenance()
+            .expect("run cache flush maintenance")
+            .expect("cache flush task");
+        assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+        assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    }
+}
+
+fn build_durable_l0_tables_with_scheduled_flushes(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    branch: BranchId,
+    table_count: usize,
+) {
+    assert!(table_count > 0);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-l0-seed", b"value"),
+            generation_guard(),
+        )
+        .expect("durable seed commit");
+    for _ in 0..table_count {
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate durable active table");
+        runtime
+            .execute_durable_commit(
+                durable_put_batch(branch, b"durable-l0-trigger", b"value"),
+                generation_guard(),
+            )
+            .expect("durable trigger commit");
+        let outcome = runtime
+            .run_next_flush_maintenance()
+            .expect("run durable flush maintenance")
+            .expect("durable flush task");
+        assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+        assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    }
 }
 
 fn physical_key(branch: BranchId, user_key: &'static [u8]) -> PhysicalKey {

@@ -22,3 +22,16 @@ fn quarantine_service_script_exercises_quarantine_reconcile_and_purge() {
 
     assert_eq!(outcome.steps_executed(), script.len() / 8);
 }
+
+#[test]
+fn quarantine_service_script_retains_inventory_after_failed_delete_of_missing_object() {
+    let script = [
+        56, 0, 68, 0, 0, 0, 0, 0, // seed source bytes
+        169, 87, 36, 0, 4, 115, 1, 0, // visible inventory, no copied object
+        2, 7, 196, 0, 116, 19, 0, 0, // failed purge delete keeps inventory
+    ];
+
+    let outcome = run_quarantine_service_script(&script).expect("script");
+
+    assert_eq!(outcome.steps_executed(), script.len() / 8);
+}

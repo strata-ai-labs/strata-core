@@ -535,7 +535,7 @@ fn update_model_after_purge(
     for (entry_object_id, entry) in entries {
         let key = (branch_key(branch_id), entry_object_id.clone());
         let should_fail = fail_delete && entry_object_id == object_id;
-        if model.quarantine_objects.contains_key(&key) && should_fail {
+        if should_fail {
             retained.insert(entry_object_id, entry);
         } else {
             model.quarantine_objects.remove(&key);

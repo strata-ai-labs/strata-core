@@ -569,6 +569,18 @@ impl<S> LifecycleCacheRuntime<S> {
         Ok(())
     }
 
+    fn require_no_unresolved_durable_commit(&self) -> LifecycleResult<()> {
+        self.durable_gate
+            .require_admission_available()
+            .map_err(commit_error)
+    }
+
+    fn require_branch_commit_guard_available(&self, branch_id: BranchId) -> LifecycleResult<()> {
+        self.guard_set
+            .require_branch_guard_available(branch_id)
+            .map_err(commit_error)
+    }
+
     pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
         self.last_write_admission
     }
@@ -1232,6 +1244,8 @@ where
         Self::require_generation_guard(branch_id, generation, generation_guard)?;
         Self::require_cache_commit_mode(&batch)?;
         if batch.kind() == CommitBatchKind::Mutating {
+            self.require_no_unresolved_durable_commit()?;
+            self.require_branch_commit_guard_available(branch_id)?;
             self.evaluate_mutating_write_admission_for_branch(branch_id)?;
         }
         let outcome = {

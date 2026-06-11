@@ -81,6 +81,29 @@ impl CommitBranchGuardSet {
         })
     }
 
+    pub(crate) fn require_branch_guard_available(
+        &self,
+        branch_id: BranchId,
+    ) -> CommitRuntimeResult<()> {
+        let state = self.lock_state()?;
+        if state.quiescing {
+            perf_trace::record_commit_branch_guard_attempt();
+            perf_trace::record_commit_branch_guard_rejected();
+            return Err(CommitRuntimeError::CommitQuiesceUnavailable {
+                reason: "commit quiesce is active",
+            });
+        }
+        if state.active_branches.contains(&branch_id) {
+            perf_trace::record_commit_branch_guard_attempt();
+            perf_trace::record_commit_branch_guard_rejected();
+            return Err(CommitRuntimeError::BranchGuardUnavailable {
+                branch_id,
+                reason: "branch commit guard is already active",
+            });
+        }
+        Ok(())
+    }
+
     /// Attempts to begin V1 quiesce.
     ///
     /// V1 deliberately fast-fails instead of waiting: the maintenance layer
