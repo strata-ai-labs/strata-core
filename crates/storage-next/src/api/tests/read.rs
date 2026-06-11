@@ -14,6 +14,13 @@ fn open_runtime() -> StorageRuntime<'static> {
         .into_runtime()
 }
 
+#[cfg(feature = "localfs")]
+fn open_durable_runtime(root: std::path::PathBuf) -> StorageRuntime<'static> {
+    StorageRuntime::open_local(root)
+        .expect("open durable runtime")
+        .into_runtime()
+}
+
 fn branch() -> BranchId {
     StorageRuntime::default_branch_id_for_test()
 }
@@ -757,6 +764,36 @@ fn timestamp_lookup_after_latest_returns_matched_with_miss_flag() {
 }
 
 #[test]
+fn timeline_rows_commit_atomically_with_user_rows() {
+    let mut runtime = open_runtime();
+    let commit = commit_put(&mut runtime, b"atomic-timeline", b"value", 70);
+
+    let point = runtime
+        .read_point(&point_request(b"atomic-timeline", ReadBound::Latest))
+        .expect("point read after commit");
+    let lookup = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            commit.commit_timestamp(),
+        ))
+        .expect("timeline lookup after commit");
+    let reverse = runtime
+        .lookup_timestamp_for_version(VersionLookupRequest::new(branch(), commit.commit_version()))
+        .expect("version lookup after commit");
+
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+    assert_eq!(commit.timeline_row_count(), 2);
+    assert_eq!(
+        point.row().expect("user row").commit_version(),
+        commit.commit_version()
+    );
+    assert_eq!(lookup.matched_version(), commit.commit_version());
+    assert_eq!(lookup.matched_timestamp(), commit.commit_timestamp());
+    assert_eq!(reverse.timestamp(), commit.commit_timestamp());
+}
+
+#[test]
 fn version_lookup_returns_commit_timestamp() {
     let mut runtime = open_runtime();
     let commit = commit_put(&mut runtime, b"a", b"a", 50);
@@ -791,6 +828,123 @@ fn timeline_bounds_report_retained_range() {
     assert_eq!(bounds.max_timestamp(), Some(second.commit_timestamp()));
     assert_eq!(bounds.min_version(), Some(first.commit_version()));
     assert_eq!(bounds.max_version(), Some(second.commit_version()));
+}
+
+#[test]
+fn timeline_lookup_survives_flush_and_compaction() {
+    let mut runtime = open_runtime();
+    let first = commit_put(&mut runtime, b"compact-a", b"a", 10);
+    let second = commit_put(&mut runtime, b"compact-b", b"b", 30);
+    let before_lookup = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(20),
+        ))
+        .expect("timeline lookup before compaction");
+    runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch()),
+        ))
+        .expect("flush timeline rows");
+    let flushed = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("flushed source layout");
+    let compacted_outcome = runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Compact,
+            MaintenanceScope::Branch(branch()),
+        ))
+        .expect("compact timeline rows");
+    let compacted = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("compacted source layout");
+
+    let after_lookup = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(20),
+        ))
+        .expect("timeline lookup after compaction");
+    let after_reverse = runtime
+        .lookup_timestamp_for_version(VersionLookupRequest::new(branch(), second.commit_version()))
+        .expect("version lookup after compaction");
+
+    assert_eq!(before_lookup.matched_version(), first.commit_version());
+    assert_eq!(flushed.owned_l0_tables(), 1);
+    assert_eq!(
+        compacted_outcome.status(),
+        MaintenanceSummaryStatus::Completed
+    );
+    assert_eq!(compacted.owned_l0_tables(), 0);
+    assert_eq!(compacted.owned_total_tables(), 1);
+    assert_eq!(after_lookup, before_lookup);
+    assert_eq!(after_reverse.timestamp(), second.commit_timestamp());
+}
+
+#[cfg(feature = "localfs")]
+#[test]
+fn timeline_lookup_survives_durable_recovery() {
+    let root = temp_dir_for_api_test("read-timeline-durable-recovery");
+    let first;
+    let second;
+    {
+        let mut runtime = open_durable_runtime(root.clone());
+        first = commit_put(&mut runtime, b"recover-a", b"a", 10);
+        second = commit_put(&mut runtime, b"recover-b", b"b", 30);
+        runtime.close().expect("close durable runtime");
+    }
+
+    let runtime = open_durable_runtime(root);
+    let timestamp_lookup = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(20),
+        ))
+        .expect("timeline lookup after durable recovery");
+    let version_lookup = runtime
+        .lookup_timestamp_for_version(VersionLookupRequest::new(branch(), second.commit_version()))
+        .expect("version lookup after durable recovery");
+
+    assert_eq!(timestamp_lookup.matched_version(), first.commit_version());
+    assert_eq!(
+        timestamp_lookup.matched_timestamp(),
+        first.commit_timestamp()
+    );
+    assert_eq!(version_lookup.timestamp(), second.commit_timestamp());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn timeline_lookup_over_many_user_rows_scans_no_user_rows() {
+    let _capture = perf_trace::begin_test_capture();
+    let mut runtime = open_runtime();
+    let retained_commits = 32usize;
+    for index in 0..retained_commits {
+        let key = format!("user-row-{index:03}");
+        commit_put(
+            &mut runtime,
+            key.as_bytes(),
+            b"value",
+            u64::try_from((index + 1) * 10).expect("timestamp fits u64"),
+        );
+    }
+
+    let lookup = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(175),
+        ))
+        .expect("timeline lookup");
+
+    let perf = perf_trace::snapshot();
+    let retained = u64::try_from(retained_commits).expect("retained count fits u64");
+    assert_eq!(lookup.matched_version(), CommitVersion::new(17));
+    assert_eq!(perf.commit_timeline_view_rows_scanned(), retained * 2);
+    assert_eq!(perf.commit_timeline_timestamp_facts(), retained);
+    assert_eq!(perf.commit_timeline_version_facts(), retained);
+    assert_eq!(perf.commit_timeline_reconcile_entry_checks(), retained * 4);
+    assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 6);
 }
 
 #[test]

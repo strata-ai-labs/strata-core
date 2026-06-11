@@ -3,6 +3,8 @@
 use super::{CommitRuntimeError, CommitRuntimeResult, CommitStamp};
 use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 pub(crate) const COMMIT_TIMELINE_SPACE: &str = "timeline";
@@ -51,6 +53,7 @@ pub(crate) struct CommitTimelineBounds {
 pub(crate) struct CommitTimelineView {
     branch_id: BranchId,
     entries: Vec<CommitTimelineEntry>,
+    entries_by_version: Vec<CommitTimelineEntry>,
     bounds: CommitTimelineBounds,
 }
 
@@ -226,26 +229,20 @@ impl CommitTimelineView {
             }
             let fact = CommitTimelineFact::validate(row)?;
             match fact.kind() {
-                CommitTimelineRowKind::TimestampToVersion => push_unique_entry(
-                    &mut timestamp_facts,
-                    fact.entry(),
-                    "conflicting duplicate timestamp timeline fact",
-                )?,
-                CommitTimelineRowKind::VersionToTimestamp => push_unique_entry(
-                    &mut version_facts,
-                    fact.entry(),
-                    "conflicting duplicate version timeline fact",
-                )?,
+                CommitTimelineRowKind::TimestampToVersion => timestamp_facts.push(fact.entry()),
+                CommitTimelineRowKind::VersionToTimestamp => version_facts.push(fact.entry()),
             }
         }
         perf_trace::record_commit_timeline_view_rows(rows_scanned);
         perf_trace::record_commit_timeline_view_facts(timestamp_facts.len(), version_facts.len());
 
-        let entries = reconcile_timeline_facts(&timestamp_facts, &version_facts)?;
+        let (entries, entries_by_version) =
+            reconcile_timeline_facts(&timestamp_facts, &version_facts)?;
         let bounds = timeline_bounds(&entries);
         Ok(Self {
             branch_id,
             entries,
+            entries_by_version,
             bounds,
         })
     }
@@ -264,16 +261,13 @@ impl CommitTimelineView {
 
     pub(crate) fn version_at_or_before(&self, query_timestamp: Timestamp) -> CommitTimelineLookup {
         let retained_entries = self.entries.len();
-        let Some(first) = self
-            .entries
-            .iter()
-            .min_by_key(|entry| (entry.commit_timestamp(), entry.commit_version()))
-        else {
+        let lookup_probes = binary_search_probe_bound(retained_entries);
+        let Some(first) = self.entries.first() else {
             perf_trace::record_commit_timeline_lookup(0);
             return CommitTimelineLookup::empty(query_timestamp);
         };
         if query_timestamp < first.commit_timestamp() {
-            perf_trace::record_commit_timeline_lookup(retained_entries);
+            perf_trace::record_commit_timeline_lookup(lookup_probes);
             return CommitTimelineLookup {
                 query_timestamp,
                 matched_version: None,
@@ -284,21 +278,21 @@ impl CommitTimelineView {
 
         let latest = self
             .entries
-            .iter()
-            .max_by_key(|entry| (entry.commit_timestamp(), entry.commit_version()))
+            .last()
             .expect("non-empty entries have a latest entry");
+        let upper_bound = self
+            .entries
+            .partition_point(|entry| entry.commit_timestamp() <= query_timestamp);
         let matched = self
             .entries
-            .iter()
-            .filter(|entry| entry.commit_timestamp() <= query_timestamp)
-            .max_by_key(|entry| (entry.commit_timestamp(), entry.commit_version()))
+            .get(upper_bound.saturating_sub(1))
             .expect("query at or after earliest timestamp must match an entry");
         let miss = if query_timestamp > latest.commit_timestamp() {
             CommitTimelineMiss::AfterLatestRetained
         } else {
             CommitTimelineMiss::Matched
         };
-        perf_trace::record_commit_timeline_lookup(retained_entries.saturating_mul(3));
+        perf_trace::record_commit_timeline_lookup(lookup_probes);
 
         CommitTimelineLookup {
             query_timestamp,
@@ -309,9 +303,10 @@ impl CommitTimelineView {
     }
 
     pub(crate) fn timestamp_for_version(&self, version: CommitVersion) -> Option<Timestamp> {
-        self.entries
-            .iter()
-            .find(|entry| entry.commit_version() == version)
+        self.entries_by_version
+            .binary_search_by_key(&version, |entry| entry.commit_version())
+            .ok()
+            .and_then(|index| self.entries_by_version.get(index))
             .map(|entry| entry.commit_timestamp())
     }
 }
@@ -477,59 +472,107 @@ fn is_timeline_candidate(row: &StorageRow) -> bool {
     row.physical_key().storage_space_id() == StorageSpaceId::COMMIT_TIMELINE
 }
 
-fn push_unique_entry(
-    entries: &mut Vec<CommitTimelineEntry>,
+fn insert_unique_timeline_entry(
+    entries: &mut HashMap<CommitVersion, CommitTimelineEntry>,
     entry: CommitTimelineEntry,
     conflict_reason: &'static str,
 ) -> CommitRuntimeResult<()> {
-    if entries.contains(&entry) {
-        return Ok(());
-    }
-    if entries
-        .iter()
-        .any(|seen| seen.commit_version() == entry.commit_version())
-    {
-        return Err(CommitRuntimeError::TimelineConflict {
+    match entries.entry(entry.commit_version()) {
+        Entry::Vacant(slot) => {
+            slot.insert(entry);
+            Ok(())
+        }
+        Entry::Occupied(slot) if *slot.get() == entry => Ok(()),
+        Entry::Occupied(_) => Err(CommitRuntimeError::TimelineConflict {
             reason: conflict_reason,
-        });
+        }),
     }
-    entries.push(entry);
-    Ok(())
 }
 
 fn reconcile_timeline_facts(
     timestamp_facts: &[CommitTimelineEntry],
     version_facts: &[CommitTimelineEntry],
-) -> CommitRuntimeResult<Vec<CommitTimelineEntry>> {
-    perf_trace::record_commit_timeline_reconcile(timestamp_facts.len(), version_facts.len());
+) -> CommitRuntimeResult<(Vec<CommitTimelineEntry>, Vec<CommitTimelineEntry>)> {
+    let mut timestamp_by_version = HashMap::with_capacity(timestamp_facts.len());
+    let mut version_by_version = HashMap::with_capacity(version_facts.len());
+    let mut entry_checks = 0usize;
+
     for timestamp_entry in timestamp_facts {
-        match version_facts.iter().find(|version_entry| {
-            version_entry.commit_version() == timestamp_entry.commit_version()
-        }) {
-            Some(version_entry) if version_entry == timestamp_entry => {}
-            Some(_) => {
-                return Err(CommitRuntimeError::TimelineConflict {
-                    reason: "timeline indexes disagree for a commit version",
-                });
-            }
-            None => {
-                return Err(CommitRuntimeError::InvalidTimelineFact {
-                    reason: "timestamp timeline fact is missing version index",
-                });
-            }
+        entry_checks = entry_checks.saturating_add(1);
+        if let Err(error) = insert_unique_timeline_entry(
+            &mut timestamp_by_version,
+            *timestamp_entry,
+            "conflicting duplicate timestamp timeline fact",
+        ) {
+            record_timeline_reconcile(timestamp_facts, version_facts, entry_checks);
+            return Err(error);
         }
     }
     for version_entry in version_facts {
-        if !timestamp_facts.iter().any(|entry| entry == version_entry) {
+        entry_checks = entry_checks.saturating_add(1);
+        if let Err(error) = insert_unique_timeline_entry(
+            &mut version_by_version,
+            *version_entry,
+            "conflicting duplicate version timeline fact",
+        ) {
+            record_timeline_reconcile(timestamp_facts, version_facts, entry_checks);
+            return Err(error);
+        }
+    }
+
+    for timestamp_entry in timestamp_by_version.values() {
+        entry_checks = entry_checks.saturating_add(1);
+        let Some(version_entry) = version_by_version.get(&timestamp_entry.commit_version()) else {
+            record_timeline_reconcile(timestamp_facts, version_facts, entry_checks);
+            return Err(CommitRuntimeError::InvalidTimelineFact {
+                reason: "timestamp timeline fact is missing version index",
+            });
+        };
+        if version_entry != timestamp_entry {
+            record_timeline_reconcile(timestamp_facts, version_facts, entry_checks);
+            return Err(CommitRuntimeError::TimelineConflict {
+                reason: "timeline indexes disagree for a commit version",
+            });
+        }
+    }
+
+    for version_entry in version_by_version.values() {
+        entry_checks = entry_checks.saturating_add(1);
+        if !timestamp_by_version.contains_key(&version_entry.commit_version()) {
+            record_timeline_reconcile(timestamp_facts, version_facts, entry_checks);
             return Err(CommitRuntimeError::InvalidTimelineFact {
                 reason: "version timeline fact is missing timestamp index",
             });
         }
     }
+    record_timeline_reconcile(timestamp_facts, version_facts, entry_checks);
 
-    let mut entries = timestamp_facts.to_vec();
+    let mut entries = timestamp_by_version
+        .into_values()
+        .collect::<Vec<CommitTimelineEntry>>();
     entries.sort_by_key(|entry| (entry.commit_timestamp(), entry.commit_version()));
-    Ok(entries)
+    let mut entries_by_version = entries.clone();
+    entries_by_version.sort_by_key(|entry| entry.commit_version());
+    Ok((entries, entries_by_version))
+}
+
+fn record_timeline_reconcile(
+    timestamp_facts: &[CommitTimelineEntry],
+    version_facts: &[CommitTimelineEntry],
+    entry_checks: usize,
+) {
+    perf_trace::record_commit_timeline_reconcile(
+        timestamp_facts.len(),
+        version_facts.len(),
+        entry_checks,
+    );
+}
+
+fn binary_search_probe_bound(retained_entries: usize) -> usize {
+    if retained_entries == 0 {
+        return 0;
+    }
+    usize::BITS as usize - retained_entries.leading_zeros() as usize
 }
 
 fn timeline_bounds(entries: &[CommitTimelineEntry]) -> CommitTimelineBounds {

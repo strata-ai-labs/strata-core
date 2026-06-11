@@ -501,8 +501,47 @@ fn timeline_perf_trace_counts_view_rows_facts_and_lookup_scans() {
     assert_eq!(perf.commit_timeline_reconcile_calls(), 1);
     assert_eq!(perf.commit_timeline_reconcile_timestamp_facts(), 2);
     assert_eq!(perf.commit_timeline_reconcile_version_facts(), 2);
+    assert_eq!(perf.commit_timeline_reconcile_entry_checks(), 8);
     assert_eq!(perf.commit_timeline_lookup_calls(), 1);
-    assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 6);
+    assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 2);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn timeline_perf_trace_bounds_large_lookup_and_reconciliation() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let retained_entries = 128usize;
+    let rows = timeline_rows((1..=retained_entries).map(|version| {
+        entry(
+            12,
+            u64::try_from(version).expect("version fits u64"),
+            u64::try_from(version * 10).expect("timestamp fits u64"),
+        )
+    }));
+
+    let view = CommitTimelineView::from_rows(branch_id(12), rows.iter()).expect("timeline view");
+    assert_lookup(
+        view.version_at_or_before(Timestamp::from_micros(640)),
+        640,
+        Some(64),
+        Some(640),
+        CommitTimelineMiss::Matched,
+    );
+    assert_eq!(
+        view.timestamp_for_version(CommitVersion::new(127)),
+        Some(Timestamp::from_micros(1_270))
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    let retained = u64::try_from(retained_entries).expect("retained count fits u64");
+    assert_eq!(perf.commit_timeline_timestamp_facts(), retained);
+    assert_eq!(perf.commit_timeline_version_facts(), retained);
+    assert_eq!(perf.commit_timeline_reconcile_calls(), 1);
+    assert_eq!(perf.commit_timeline_reconcile_timestamp_facts(), retained);
+    assert_eq!(perf.commit_timeline_reconcile_version_facts(), retained);
+    assert_eq!(perf.commit_timeline_reconcile_entry_checks(), retained * 4);
+    assert_eq!(perf.commit_timeline_lookup_calls(), 1);
+    assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 8);
 }
 
 #[test]

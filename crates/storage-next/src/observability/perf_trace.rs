@@ -115,6 +115,7 @@ pub struct StoragePerfSnapshot {
     commit_timeline_reconcile_calls: u64,
     commit_timeline_reconcile_timestamp_facts: u64,
     commit_timeline_reconcile_version_facts: u64,
+    commit_timeline_reconcile_entry_checks: u64,
     commit_timeline_lookup_calls: u64,
     commit_timeline_lookup_entries_scanned: u64,
     commit_replay_classification_calls: u64,
@@ -495,12 +496,12 @@ impl StoragePerfSnapshot {
         self.commit_timeline_view_rows_scanned
     }
 
-    /// Timestamp-to-version facts retained by timeline view construction.
+    /// Timestamp-to-version facts observed by timeline view construction.
     pub const fn commit_timeline_timestamp_facts(self) -> u64 {
         self.commit_timeline_timestamp_facts
     }
 
-    /// Version-to-timestamp facts retained by timeline view construction.
+    /// Version-to-timestamp facts observed by timeline view construction.
     pub const fn commit_timeline_version_facts(self) -> u64 {
         self.commit_timeline_version_facts
     }
@@ -518,6 +519,11 @@ impl StoragePerfSnapshot {
     /// Version facts handed to timeline reconciliation.
     pub const fn commit_timeline_reconcile_version_facts(self) -> u64 {
         self.commit_timeline_reconcile_version_facts
+    }
+
+    /// Timeline entries checked while reconciling timestamp and version facts.
+    pub const fn commit_timeline_reconcile_entry_checks(self) -> u64 {
+        self.commit_timeline_reconcile_entry_checks
     }
 
     /// Timeline timestamp lookup calls.
@@ -1319,6 +1325,8 @@ static COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_TIMELINE_RECONCILE_VERSION_FACTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_TIMELINE_RECONCILE_ENTRY_CHECKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_TIMELINE_LOOKUP_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED: AtomicU64 = AtomicU64::new(0);
@@ -1687,6 +1695,7 @@ pub fn reset() {
     COMMIT_TIMELINE_RECONCILE_CALLS.store(0, Ordering::Relaxed);
     COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS.store(0, Ordering::Relaxed);
     COMMIT_TIMELINE_RECONCILE_VERSION_FACTS.store(0, Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_ENTRY_CHECKS.store(0, Ordering::Relaxed);
     COMMIT_TIMELINE_LOOKUP_CALLS.store(0, Ordering::Relaxed);
     COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED.store(0, Ordering::Relaxed);
     COMMIT_REPLAY_CLASSIFICATION_CALLS.store(0, Ordering::Relaxed);
@@ -1899,6 +1908,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_timeline_reconcile_timestamp_facts: COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS
             .load(Ordering::Relaxed),
         commit_timeline_reconcile_version_facts: COMMIT_TIMELINE_RECONCILE_VERSION_FACTS
+            .load(Ordering::Relaxed),
+        commit_timeline_reconcile_entry_checks: COMMIT_TIMELINE_RECONCILE_ENTRY_CHECKS
             .load(Ordering::Relaxed),
         commit_timeline_lookup_calls: COMMIT_TIMELINE_LOOKUP_CALLS.load(Ordering::Relaxed),
         commit_timeline_lookup_entries_scanned: COMMIT_TIMELINE_LOOKUP_ENTRIES_SCANNED
@@ -2509,16 +2520,26 @@ pub(crate) fn record_commit_timeline_view_facts(timestamp_facts: usize, version_
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_commit_timeline_reconcile(_timestamp_facts: usize, _version_facts: usize) {}
+pub(crate) fn record_commit_timeline_reconcile(
+    _timestamp_facts: usize,
+    _version_facts: usize,
+    _entry_checks: usize,
+) {
+}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_commit_timeline_reconcile(timestamp_facts: usize, version_facts: usize) {
+pub(crate) fn record_commit_timeline_reconcile(
+    timestamp_facts: usize,
+    version_facts: usize,
+    entry_checks: usize,
+) {
     if !recording_enabled() {
         return;
     }
     COMMIT_TIMELINE_RECONCILE_CALLS.fetch_add(1, Ordering::Relaxed);
     COMMIT_TIMELINE_RECONCILE_TIMESTAMP_FACTS.fetch_add(as_u64(timestamp_facts), Ordering::Relaxed);
     COMMIT_TIMELINE_RECONCILE_VERSION_FACTS.fetch_add(as_u64(version_facts), Ordering::Relaxed);
+    COMMIT_TIMELINE_RECONCILE_ENTRY_CHECKS.fetch_add(as_u64(entry_checks), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
