@@ -227,6 +227,21 @@ fn commit_runtime_sources_do_not_start_maintenance_work() {
 }
 
 #[test]
+fn durable_commit_sources_do_not_use_cache_default_options() {
+    let durable_source = include_str!("../durable.rs");
+    let durable_lifecycle_source = include_str!("../../lifecycle/durable/bootstrap.rs");
+    let api_runtime_source = include_str!("../../api/runtime.rs");
+
+    assert!(!durable_source.contains("CommitBatchOptions::default"));
+    assert!(!durable_lifecycle_source.contains("CommitBatchOptions::default"));
+    assert!(durable_source.contains("CommitDurabilityMode::Cache => Err"));
+    assert!(api_runtime_source.contains("CommitDurability::RuntimeDefault"));
+    assert!(api_runtime_source.contains("CommitDurability::Standard"));
+    assert!(api_runtime_source.contains("CommitDurability::Always"));
+    assert!(api_runtime_source.contains("durable runtime cannot accept cache-only commit requests"));
+}
+
+#[test]
 fn cloned_guard_sets_share_branch_guard_state() {
     let branch = branch_id(117);
     let guard_set = CommitBranchGuardSet::new();

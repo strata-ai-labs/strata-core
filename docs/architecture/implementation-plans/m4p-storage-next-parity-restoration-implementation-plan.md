@@ -83,7 +83,7 @@ and any semantic decision register entry needed to reinterpret old behavior.
 | `M4P-L4` | Log / manifest / snapshot services | Restore durable topology and restart proof across WAL, checkpoint, table manifest, rewrite publication, and quarantine. | Crash/restart tests classify each publication window without losing reachable rows or resurrecting unmanifested table objects. |
 | `M4P-L5` | Table runtime | Restore table seek, cursor, reader, compaction, and source-layout observability. | Table point seeks and scan cursors are bounded by table/index shape, and table compaction output preserves sorted non-overlapping level facts. |
 | `M4P-L6` | Branch-isolated LSM runtime | Restore old serving topology: bounded point source pruning, lazy scans, history, inheritance, and materialization. | Point reads and scans are bounded by active + frozen + L0 + level count, not total table count; independent model tests match old MVCC/branch behavior. |
-| `M4P-L7` | Commit runtime | Keep commit parity narrow: validation, timeline, generation, visibility, and pressure facts. | Commit correctness and timeline lookup are restored without absorbing L5/L6 read-path logic. |
+| `M4P-L7` | Commit runtime | Closed commit parity narrowly: validation, timeline, generation, visibility, and pressure facts. | Commit correctness and timeline lookup are restored without absorbing L5/L6 read-path logic; remaining retry/scheduler policy is owned by L8/L9. |
 | `M4P-L8` | Lifecycle / recovery / maintenance | Restore automatic maintenance, write admission, durable close, retention, budget, and recovery orchestration. | Sustained L9 load no longer strands unbounded L0/source fanout, and durable crash/recovery proof remains intact. |
 | `M4P-L9` | Storage API boundary | Expose only the storage-shaped mechanics that future engine-next needs after lower layers are restored. | Engine-facing API supports read-set facts, diagnostics, mode contracts, and benchmarks through normal L9 paths only; engine-next dependency guards become mandatory when that crate exists. |
 
@@ -179,7 +179,7 @@ closed through later slice plans before M4P can exit.
 | Durable cleanup reports, L4 manifest-service docs, service conformance, WAL policy tests, and object-durable fenced publication decision. | L4/L1/L8 | `M4P-L4A` covers touched rewrite windows; durable hardening closeout covers the remaining L4 service and future object-durable gates. |
 | Immutable reader eagerness, block cache/bloom integration, block-backed cursors, streaming table compaction, overlap-aware splitting, frozen-table negative lookup, and L5 asymptotic counters. | L5 | `M4P-L5A` starts with counters/facts; later L5 reader/cursor/compaction slices restore table-runtime parity. Counters decide priority, not whether the gap must close. |
 | L6 point pruning, lazy level scans, row-scanning history, timestamp lookup, hot facts recomputation, read-view cloning, eager compaction sources, eager materialization, fork ergonomics, and L6 source-count tests. | L6/L5/L7/L8 | `M4P-L6A` through `M4P-L6D` cover counters, point, scan, history/timestamp/facts; later L6 pinned-view and streaming compaction/materialization slices cover the remaining branch-runtime gaps. |
-| Independent branch commit concurrency, pending-version visibility, conflict-source cost, WAL allocation cost, timeline lookup, cache-leaning internal defaults, vector branch registry, and quiesce retry integration. | L7/L6/L8/L9 | L7 closeout remains narrow: only restore or document commit-runtime drift after L5/L6/L8 source mechanics are stable. |
+| Independent branch commit concurrency, pending-version visibility, conflict-source cost, WAL allocation cost, timeline lookup, cache-leaning internal defaults, vector branch registry, and quiesce retry integration. | L7/L6/L8/L9 | L7 is closed with documented V1 semantic decisions, source guards, and perf counters. L8/L9 own retry/deadline/scheduler behavior and future admission-policy changes. |
 | Automatic maintenance scheduling, write admission, flush drain, compaction scoring, multi-branch flush-watermark proof, pending releases, close retry/deadline, budget/rate limiting, and lifecycle crash/perf proof. | L8/L4/L6/L5 | `M4P-L8A` through `M4P-L8C` cover the sustained-load critical path; later L8 durable/lifecycle slices close watermark, pending-release, close, budget, and crash windows. |
 | Engine-next consumer absence, public read-set facts, pressure/stall facts, explicit maintenance policy, checkpoint extension payloads, diagnostics, wasm-none, and timeline lookup. | L9/L8/L7/L6 | `M4P-L9A` and `M4P-L9B` cover diagnostics/read-set; later L9 mode/API closeout covers checkpoint extension, wasm-none, pressure facts, and engine-next dependency guards when that crate exists. |
 | Product decisions: latest/history TTL behavior, copied `Materializing` inherited-layer status, table-object reference recovery, pool budget model, and wasm-none mode shape. | Owning layer per decision | The semantic decision register in the test plan must record each decision before differential tests skip or reinterpret old behavior. |
@@ -390,6 +390,9 @@ Exit gate:
 
 ### M4P-L7: Commit Runtime
 
+Status: closed with documented V1 deltas; L8/L9 own retry/deadline and
+automatic maintenance policy.
+
 Scope:
 
 1. Keep blind-write validation fast paths ahead of unnecessary source capture.
@@ -419,7 +422,10 @@ Storage-next targets:
 
 Exit gate:
 
-- Commit correctness tests pass unchanged under the restored L5/L6 topology.
+- Commit correctness tests pass under the restored L5/L6 topology.
+- Perf counters and source guards prove conflict validation, timeline lookup,
+  durable WAL facts, branch registry probes, replay classification, admission
+  pressure facts, and runtime-default durability mapping.
 - L7 does not absorb L5/L6 source planning or L8 maintenance scheduling.
 
 ### M4P-L8: Lifecycle / Recovery / Maintenance

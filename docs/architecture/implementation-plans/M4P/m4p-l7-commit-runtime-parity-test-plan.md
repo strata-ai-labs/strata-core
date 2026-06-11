@@ -1,6 +1,7 @@
 # M4P-L7 Test Plan: Commit Runtime Parity
 
-Status: draft test plan
+Status: implemented closeout; remaining benchmark and orchestration work is
+owned by L8/L9 follow-up plans.
 
 Implementation plan:
 `docs/architecture/implementation-plans/M4P/m4p-l7-commit-runtime-parity-implementation-plan.md`
@@ -504,6 +505,29 @@ L7 is complete only when:
    API exposure remains in L9;
 9. every remaining L7 audit finding is closed or explicitly deferred with
    owner layer, reason, and follow-up slice.
+
+Closeout evidence:
+
+1. Focused commit tests cover blind writes, read-set validation, CAS
+   validation, branch generation/deletion, quiesce, durable gates, replay,
+   version gaps, timeline lookup, cache mode, standard durability, and always
+   durability.
+2. Perf-gated tests assert mechanical counters for conflict-source capture,
+   row preparation, WAL encode/build, visible publication, unresolved durable
+   gates, branch registry probes, replay classification, timeline lookup, and
+   admission pressure.
+3. Generated API read workloads compare committed rows against an independent
+   model; generated L6 source-shape and L8 maintenance workloads are tracked
+   outside the commit-runtime closeout.
+4. Source guards assert that commit runtime does not import L5 table internals,
+   L6 source planning, L8 scheduling, backend filesystem APIs, public
+   transaction sessions, or roadmap labels.
+5. L9-facing handoffs are documented: public CAS conditions map to storage
+   facts; future read-set exposure remains storage-shaped; pressure/admission
+   facts are emitted but enforcement remains an L8 policy.
+6. Benchmark interpretation is documented: 100K/1M public L9 load benchmarks
+   are valid smoke gates for commit runtime, while larger source-shape runs
+   remain L8 automatic-maintenance readiness gates.
 
 ## Stop Conditions
 

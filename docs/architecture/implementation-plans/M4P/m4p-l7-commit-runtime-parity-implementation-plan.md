@@ -1,6 +1,7 @@
 # M4P-L7 Implementation Plan: Commit Runtime Parity
 
-Status: draft implementation plan
+Status: implemented closeout; remaining work is tracked as explicit L8/L9
+handoffs or V1 semantic decisions.
 
 Parent plan:
 `docs/architecture/implementation-plans/m4p-storage-next-parity-restoration-implementation-plan.md`
@@ -70,14 +71,14 @@ Current delta status:
 
 | Finding | Current status | Planning consequence |
 | --- | --- | --- |
-| Independent per-branch write concurrency | Open caller-visible delta: current storage-next admits at most one mutating commit globally and fails fast on contention. This is stronger than "weaker per-branch" concurrency. | Record a semantic decision before differential tests reinterpret old independent-branch blocking admission. Do not loosen until pending-version or equivalent facts exist. |
-| Pending-version visible advancement | Open intentional delta: flat visible-version tracking plus unresolved gate replaces old `pending_versions` advancement, but also fixes an old visibility leak where WAL-durable apply failures could be removed from pending. | Treat as part of the same global-admission decision unless L7-D restores independent advancement. Tests should assert the safer new behavior, not the old leak. |
-| Conflict-source cost for blind writes | Mostly closed in code: source capture is gated by validation need. | L7-B should add perf-trace assertions and then close. |
-| Durable payload/row allocation | Mostly closed: one-pass row preparation exists. | L7-F should measure missing WAL buffer pooling before adding pooling. |
-| Timeline lookup isolation | User-row isolation is closed through `COMMIT_TIMELINE_SPACE`; lookup and timeline-view construction algorithms remain open. | L7-E must replace retained-timeline linear lookup with a binary-search or indexed lookup and replace nested reconciliation with linear merge/zip validation. |
-| Cache-leaning internal defaults | Open; not yet investigated. | Add a focused L7/L9 default-mapping scan before closeout. |
-| Branch registry lookup shape | Open: current registry lookup is linear over descriptors. | L7-G should run a branch-count scaling test before any rework. |
-| Quiesce primitive | Closed as an L7 primitive: fast-fail typed guard exists. | L7-G should test facts; retry/deadline orchestration stays L8. |
+| Independent per-branch write concurrency | Closed as an explicit V1 semantic decision: current storage-next admits at most one mutating commit globally and fails fast on contention. | L8/L9 owns retry, deadline, and future admission policy. Do not loosen until pending-version or equivalent facts exist. |
+| Pending-version visible advancement | Closed as an explicit V1 semantic decision: flat visible-version tracking plus unresolved gate replaces old `pending_versions` advancement and fixes the old WAL-durable apply-failure visibility leak. | Tests assert safer unresolved-durable blocking, not the old leak. |
+| Conflict-source cost for blind writes | Closed. Blind writes and empty validation sets skip source capture; read/CAS facts build at most one source per commit that needs validation. | Keep perf-trace counters in place for regressions. |
+| Durable payload/row allocation | Closed for correctness and measurement. One-pass row preparation and WAL encode counters exist; buffer pooling is a measured future optimization, not a parity blocker. | Revisit pooling only if durable-write profiles justify it. |
+| Timeline lookup isolation | Closed for L7. Timeline rows live in `COMMIT_TIMELINE_SPACE`; lookup and reconciliation counters prove no user-row scan and bounded vector/index work inside the L7 view. | L6/L8 still own source-shape and timestamp-source planning outside the commit runtime. |
+| Cache-leaning internal defaults | Closed. L9 runtime-default durability resolves from the opened runtime, durable paths construct explicit durability, and durable runtime rejects cache-only batches. | Source guards prevent durable production paths from using cache-default options accidentally. |
+| Branch registry lookup shape | Closed as a documented V1 bound. Registry lookup remains descriptor-vector based, but branch-count perf counters and scale tests record descriptor probes. | Switch to indexed registry only if branch-count workloads exceed the documented envelope. |
+| Quiesce primitive | Closed as an L7 primitive: fast-fail typed guard exists and is tested. | Retry/deadline and close orchestration stay in L8. |
 
 Additional L7 deltas to track:
 
@@ -526,6 +527,26 @@ Exit gate:
 ### L7-I. Closeout And Benchmark Gate
 
 Goal: prove L7 parity and document remaining handoffs.
+
+Closeout status:
+
+1. Focused cache and durable commit tests cover blind writes, read-set/CAS
+   validation, branch generation/deletion, quiesce, durable gates, replay,
+   version gaps, timeline rows, and every touched WAL-before-visible phase.
+2. Generated public API read workloads preserve an independent visible-row
+   model after commit mutations; generated L6/L8 source-shape tests remain
+   outside L7.
+3. Source guards prove the commit runtime does not import table-source planning,
+   maintenance scheduling, backend filesystem APIs, public transaction sessions,
+   or roadmap labels.
+4. L9 runtime-default durability mapping is tested and durable production paths
+   are guarded against cache-default options.
+5. L7 perf counters prove blind writes avoid conflict-source capture, timeline
+   lookup does not scan user rows, WAL build facts are separated from L6 apply
+   rows, and pressure/admission facts are emitted without running maintenance.
+6. Benchmark interpretation remains separated from L8 source-shape maintenance:
+   100K/1M L9 `load-seq` runs are valid L7 smoke tests, while 5M/10M runs are
+   L8 readiness checks until automatic maintenance scheduling lands.
 
 Tasks:
 

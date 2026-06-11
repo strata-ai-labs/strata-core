@@ -1280,7 +1280,7 @@ L6 conclusion:
 
 ### L7. Commit Runtime
 
-Status: `Partial`
+Status: `Confirmed with documented V1 deltas`
 
 Architecture source:
 
@@ -1432,7 +1432,7 @@ Intentional storage-next changes:
   old blocking semantics, L8 should layer retry/deadline behavior on top of the
   L7 guard result instead of making L7 wait internally.
 
-Gaps:
+Closed and deferred findings:
 
 1. Independent branch commit concurrency is narrower than old storage.
    - Old `TransactionManager` had per-branch commit locks plus a quiesce
@@ -1441,13 +1441,13 @@ Gaps:
    - Storage-next has per-branch guards, but `CommitUnresolvedDurableGate`
      also has a single `active_admission` slot. That serializes all mutating
      commits across branches, even when there is no unresolved durable commit.
-   - This is correct but lower-throughput. It is not the source of the current
-     single-branch read/scan regression, but it is a parity gap for
-     multi-branch write workloads.
-   - Owner: L7 admission/visibility facts.
-   - Exit gate: either document global mutating-commit serialization as an
-     explicit V1 tradeoff, or restore old independent-branch concurrency with
-     pending-version visibility tracking.
+   - This is accepted as an explicit V1 semantic decision, documented in
+     `docs/architecture/storage-next/l7-commit-runtime.md`.
+   - Owner: L8/L9 for retry/deadline policy; future L7 work only if the global
+     gate is relaxed.
+   - Replacement proof: same-branch and cross-branch contention tests return
+     typed admission facts, and unresolved durable/applied-not-visible tests
+     prove later commits cannot advance visibility unsafely.
 
 2. Visible-version tracking no longer has old pending-version machinery.
    - Old `TransactionManager` maintained a `pending_versions` `BTreeSet` and
@@ -1455,11 +1455,12 @@ Gaps:
      commit. That allowed allocated commits to finish out of order without
      publishing future versions over gaps.
    - Storage-next `VisibleVersionTracker` is a simple monotonic scalar. This is
-     safe today because mutating commits are globally admitted one at a time,
-     but it will be insufficient if independent-branch concurrency is restored.
-   - Owner: L7 version/visibility publication.
-   - Exit gate: before loosening global admission, add pending-version facts or
-     equivalent visibility advancement tests covering out-of-order post-WAL
+     safe today because mutating commits are globally admitted one at a time
+     and unresolved durable/applied-not-visible states block unsafe follow-up
+     commits.
+   - Status: closed as a documented semantic decision for V1.
+   - Future gate: before loosening global admission, add pending-version facts
+     or equivalent visibility advancement tests covering out-of-order post-WAL
      apply/publish results.
 
 3. Conflict validation can inherit L6 read-view cost.
@@ -1468,9 +1469,10 @@ Gaps:
    - Storage-next conflict validation can use `BranchReadView` as its source.
      Where that read view is captured eagerly, validation cost inherits the
      L6 captured-read-view row-scaling gap.
-   - Owner: L6 pinned read view plus L7 conflict source.
-   - Exit gate: conflict validation for a small read/CAS set must perform
-     source/key seeks, not capture or scan unrelated retained rows.
+   - Status: closed for L7. Blind writes and empty validation sets skip source
+     capture; read/CAS validation builds at most one pinned source and the
+     remaining source cost is L6 read-view/source-shape work.
+   - Owner of remaining cost: L6 pinned read view plus source planning.
 
 4. WAL record construction is less allocation-conscious than old storage.
    - Old `commit_adapter` serialized WAL payloads into reusable thread-local
@@ -1479,20 +1481,22 @@ Gaps:
      clones them into a WAL record, then applies the rows to L6. The batch
      limits make this bounded, but it is not the old zero-extra-row-copy hot
      path.
-   - Owner: L7 durable WAL bridge plus L3/L4 serialization.
-   - Exit gate: durable commit perf counters report WAL encode bytes, row
-     clones, and allocation counts; if material, switch to a borrowed or
-     pre-serialized WAL append path without changing commit semantics.
+   - Status: closed for parity. Row preparation is one pass and perf counters
+     report WAL encode bytes, rows, and buffer reuse/allocation facts.
+   - Future optimization: switch to a borrowed or pre-serialized WAL append
+     path only if durable-write profiles justify it.
 
 5. Commit timeline lookup is storage-backed but not yet proven efficient.
    - L7 writes timeline rows for every commit, which is the right substrate.
    - `CommitTimelineView::version_at_or_before` is vector-scan based after
      rows are collected. L6 timestamp reads can still scale with retained row
      count if timeline rows are discovered by broad branch scans.
-   - Owner: L6 timestamp resolution using L7 timeline rows.
-   - Exit gate: timestamp-to-version resolution uses the commit timeline space
-     as an indexed storage key lookup/range seek, with counters proving it does
-     not scan user rows or unrelated timeline rows.
+   - Status: closed for L7 view construction and lookup mechanics. Timeline
+     rows are isolated in `COMMIT_TIMELINE_SPACE`, reconciliation avoids nested
+     scans, timestamp lookup uses sorted/indexed entries, and counters prove no
+     user-row scans.
+   - Owner of remaining source-shape work: L6 timestamp resolution using L7
+     timeline rows.
 
 6. Internal commit defaults still lean cache.
    - The public L9 runtime resolves `CommitDurability::RuntimeDefault` based
@@ -1501,11 +1505,9 @@ Gaps:
      `CommitDurabilityMode::Cache`. That is fine for cache-specific test
      helpers, but risky if new internal call sites use the default in durable
      paths.
-   - Owner: L7 options constructors and L9 mapping.
-   - Exit gate: durable code paths construct durability explicitly, tests
-     assert no durable runtime accepts cache-only commits, and lower-layer
-     defaults are either removed from production call sites or renamed as
-     cache-test helpers.
+   - Status: closed. L9 runtime-default durability maps from the opened
+     runtime; durable runtimes reject cache-only commit batches; source guards
+     prove durable production paths do not use cache-default options.
 
 7. Branch registry lookup is vector based.
    - Old storage used map/set structures for transaction locks and deleting
@@ -1513,37 +1515,31 @@ Gaps:
    - Storage-next `CommitBranchRegistry` stores descriptors in a `Vec` because
      `BranchId` currently lacks `Ord`. This makes branch validation O(branch
      count).
-   - This does not explain current single-branch benchmarks, but it is a
-     multi-branch scale gap.
-   - Owner: L7 branch registry or core `BranchId` ordering/hash support.
-   - Exit gate: either document the expected branch-count envelope, or switch
-     registry state to an indexed structure with equivalent generation/deletion
-     tests.
+   - Status: closed as a documented V1 bound. Branch-count scale tests record
+     descriptor probes and keep generation/deletion behavior covered.
+   - Future optimization: switch registry state to an indexed structure only if
+     branch-count workloads exceed the documented envelope.
 
 8. Quiesce behavior is fast-fail instead of old blocking drain.
    - Old quiesce used a write lock that naturally waited for in-flight commit
      read guards to drain.
    - Storage-next `CommitBranchGuardSet::try_begin_quiesce` returns a typed
      busy result if a commit guard is active.
-   - This can be a good L8-owned retry/deadline model, but L8 must prove it
-     does not skip required close/recovery/branch-delete barriers.
-   - Owner: L8 lifecycle orchestration consuming L7 guards.
-   - Exit gate: lifecycle tests cover quiesce retry, timeout, close while
-     commit is active, branch delete while commit is active, and recovery
-     bootstrap admission.
+   - Status: closed as an L7 primitive. Guard tests prove fast-fail facts and
+     release behavior.
+   - Owner of retry/deadline/close orchestration: L8 lifecycle consuming L7
+     guards.
 
 L7 conclusion:
 
-- Storage-next preserved the core commit-runtime architecture. The major old
+- Storage-next preserves the core commit-runtime architecture. The major old
   correctness mechanics are present: internal batch validation, version and
   timestamp allocation, WAL-before-visible ordering, durable-but-not-visible
   classification, branch generation/deletion guards, conflict validation,
   visible-version publication, commit timeline rows, and replay/catch-up.
-- L7 is still `Partial` rather than `Confirmed` because a few old runtime
-  mechanics are either intentionally simplified or not yet proved at scale:
-  independent branch write concurrency, pending-version visibility
-  advancement, allocation-conscious WAL serialization, efficient timeline
-  lookup, and fast-fail quiesce integration.
+- L7 is confirmed with documented V1 deltas. The global mutating-admission
+  gate, flat visible tracking, and fast-fail quiesce are explicit decisions
+  with replacement tests rather than hidden compatibility gaps.
 - The current 10M read/scan throughput gap should not be fixed in L7. The L7
   work should stay narrow: preserve commit correctness, make durability and
   concurrency tradeoffs explicit, and avoid moving L5/L6 source planning into

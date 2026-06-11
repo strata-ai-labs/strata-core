@@ -891,6 +891,59 @@ Replacement proof:
 3. benchmarks and supported callers stay within the configured defaults or
    raise them explicitly.
 
+### Runtime Default Durability Mapping
+
+Decision: public runtime-default commit durability is resolved by L9 from the
+opened storage runtime, while L7 durable executors require explicit durable
+commit modes.
+
+Old behavior: old storage commit paths could be reached through multiple cache
+and durable entry points, and internal defaulting could make it unclear whether
+an omitted durability request meant cache mode or the opened durable policy.
+
+Reason: storage-next keeps caller defaults at the API boundary and keeps lower
+commit execution explicit. Cache runtimes map runtime-default and not-durable
+requests to cache commits. Durable-local standard runtimes map runtime-default
+to standard WAL commits. Durable-local always runtimes map runtime-default to
+always-durable WAL commits. Durable executors reject cache-only commit batches
+instead of silently weakening durability.
+
+Replacement proof:
+
+1. API tests prove runtime-default commits return standard or always summaries
+   according to the opened durable runtime;
+2. cache-runtime tests reject standard and always durability requests before
+   mutation;
+3. durable-runtime tests reject cache-only commit batches before allocation or
+   WAL append;
+4. source guards prove durable production paths do not construct commits with
+   cache-default options accidentally.
+
+### Admission Pressure Facts
+
+Decision: L7 emits commit-local admission pressure facts, but does not enforce
+write stalls, sleeps, retries, flushes, compactions, or scheduler work.
+
+Old behavior: old storage had commit-time pressure and backpressure hooks that
+could slow or stall writers and could wake maintenance work.
+
+Reason: L7 is the commit primitive. It can describe the commit-local facts L8
+needs, such as accepted-under-pressure, branch-guard rejection, unresolved
+durable blocking, approximate bytes, mutation counts, and would-require-
+maintenance hints. Enforcement needs source-shape, scheduler, and retry policy
+owned by L8/L9.
+
+Replacement proof:
+
+1. perf-trace tests prove pressure facts are emitted for successful commits and
+   retryable admission failures;
+2. under-pressure commits that fail before allocation are not counted as
+   accepted under pressure;
+3. source guards prove commit code does not call flush, compaction,
+   materialization, maintenance scheduling, or rate-limit loops;
+4. L8 plans consume the facts for automatic maintenance and write-admission
+   policy.
+
 ### Public Read-Set Facts
 
 Decision: L7 preserves internal read-set and CAS validation, but storage-next
