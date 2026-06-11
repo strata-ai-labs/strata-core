@@ -1,4 +1,10 @@
 //! Branch admission registry for commit-runtime targets.
+//!
+//! The V1 registry intentionally keeps descriptors in insertion order and
+//! records descriptor-probe counters on every lookup. Registry scale tests exercise
+//! this linear shape at a high branch count; if production traces show registry
+//! scans becoming material, replace the list with an indexed lookup keyed by
+//! raw branch bytes while preserving the same admission errors.
 
 use super::{
     CommitBatchKind, CommitBranchGuard, CommitBranchGuardSet, CommitRuntimeError,
@@ -35,6 +41,8 @@ pub(crate) struct CommitBranchDescriptor {
 pub(crate) struct CommitBranchRegistry {
     // BranchId intentionally does not expose Ord, so this registry keeps a
     // small explicit list instead of the BTreeMap shape from the planning doc.
+    // Lookup probes are counted so scale runs can decide when this
+    // documented V1 tradeoff should be replaced with an indexed registry.
     descriptors: Vec<CommitBranchDescriptor>,
 }
 
@@ -322,6 +330,10 @@ pub(crate) fn admit_mutating_commit(
     // Validate branch lifecycle and generation before acquiring the branch
     // guard. A guard-acquisition failure therefore cannot mutate registry
     // descriptors, and later commit phases hold the guard by RAII.
+    //
+    // Lock order: registry validation is lock-free, then the nonblocking
+    // branch guard is acquired. Callers must not take the guard-state mutex
+    // before calling into the registry.
     let admission = registry.validate_target(branch_id, generation_guard)?;
     let guard = guard_set.try_acquire_branch_guard(branch_id)?;
     Ok(CommitBranchAdmissionGuard {

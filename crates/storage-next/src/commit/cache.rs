@@ -69,11 +69,19 @@ where
         }
         // The unresolved durable gate is global for V1 visible-version safety,
         // so check it before target-branch admission or allocation.
+        //
+        // Commit-runtime lock order: this call sets the global admission token
+        // and releases the gate mutex before branch registry validation or
+        // branch guard acquisition. The global admission token remains active
+        // through conflict validation, apply, and visible publication, but it
+        // does not carry a mutex guard.
         let mut unresolved_admission = self.durable_gate.admit_mutating_commit()?;
 
-        // Keep this guard alive through conflict validation, apply, and
-        // visible publication. That is the single-process safety window for
-        // target-branch read-set/CAS checks.
+        // Keep this branch guard alive through conflict validation, apply, and
+        // visible publication. It is the target-branch safety window for
+        // read-set/CAS checks. Same-branch contention is a documented fail-fast
+        // condition; retry/deadline policy belongs above this commit-runtime
+        // primitive.
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;
         let current_visible_version = self.visible.visible_version();

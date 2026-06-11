@@ -1,4 +1,11 @@
 //! Unresolved durable commit gate.
+//!
+//! This gate is the first mutating-commit admission point in the commit
+//! runtime. Its mutex is held only while checking or updating gate state; the
+//! returned admission token is a logical global commit token and does not carry
+//! a mutex guard. Cache and durable runtimes must therefore acquire this gate
+//! before branch admission, then proceed to registry validation and branch guard
+//! acquisition after the gate mutex has been released.
 
 use super::{
     CommitDurabilityClass, CommitRuntimeError, CommitRuntimeResult, CommitStamp,

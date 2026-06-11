@@ -87,6 +87,61 @@ fn branch_registry_perf_trace_counts_descriptor_scans() {
     assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 16);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn branch_registry_large_scale_admission_records_linear_probe_bound() {
+    const BRANCHES: usize = 1_024;
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut registry = CommitBranchRegistry::new();
+    let guard_set = CommitBranchGuardSet::new();
+    for index in 0..BRANCHES {
+        let branch = branch_id_from_u64(index as u64);
+        registry
+            .register_active(branch, generation(index as u64 + 1))
+            .expect("register branch");
+    }
+    crate::observability::perf_trace::reset();
+
+    let last_branch = branch_id_from_u64((BRANCHES - 1) as u64);
+    let missing_branch = branch_id_from_u64(BRANCHES as u64);
+    let last_batch = mutating_delete_batch(last_branch, 0x20, b"last".to_vec());
+    let missing_batch = mutating_delete_batch(missing_branch, 0x20, b"missing".to_vec());
+
+    let admitted = super::super::admit_mutating_commit(
+        &registry,
+        &guard_set,
+        &last_batch,
+        CommitBranchGenerationGuard::not_supplied(),
+    )
+    .expect("admit last branch");
+    assert_eq!(
+        super::super::admit_mutating_commit(
+            &registry,
+            &guard_set,
+            &missing_batch,
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect_err("missing branch rejects"),
+        CommitRuntimeError::BranchNotFound {
+            branch_id: missing_branch,
+        }
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_branch_registry_lookups(), 2);
+    assert_eq!(
+        perf.commit_branch_registry_descriptors_scanned(),
+        u64::try_from(BRANCHES * 2).expect("descriptor count fits u64")
+    );
+    assert_eq!(perf.commit_branch_guard_attempts(), 1);
+    assert_eq!(perf.commit_branch_guard_acquired(), 1);
+    assert_eq!(perf.commit_branch_guard_rejected(), 0);
+    assert_eq!(guard_set.active_guard_count(), Ok(1));
+    drop(admitted);
+    assert_eq!(guard_set.active_guard_count(), Ok(0));
+}
+
 #[test]
 fn branch_registry_rejects_duplicate_and_mismatched_descriptors() {
     let branch = branch_id(92);
@@ -622,8 +677,79 @@ fn branch_registry_errors_use_storage_vocabulary() {
     }
 }
 
+#[test]
+fn admission_contention_retry_errors_are_variant_distinct() {
+    let branch = branch_id(78);
+    let key = physical_key(branch, 0x20, b"distinct-contention-error".to_vec());
+    let same_branch_contention = CommitRuntimeError::BranchGuardUnavailable {
+        branch_id: branch,
+        reason: "branch commit guard is already active",
+    };
+    let quiesce_contention = CommitRuntimeError::CommitQuiesceUnavailable {
+        reason: "commit quiesce is active",
+    };
+    let generation_mismatch = CommitRuntimeError::BranchGenerationMismatch {
+        branch_id: branch,
+        expected: 2,
+        actual: 1,
+    };
+    let validation_conflict = CommitRuntimeError::CommitConflict {
+        conflict: CommitConflict::new(
+            CommitConflictKind::ReadSet,
+            &key,
+            CommitObservedVersion::Missing,
+            CommitObservedVersion::Present(CommitVersion::new(9)),
+        ),
+    };
+    let unresolved_durable = CommitRuntimeError::UnresolvedDurableCommit {
+        branch_id: branch,
+        commit_version: CommitVersion::new(7),
+        reason: "durable commit must be replayed or reconciled first",
+    };
+
+    assert!(matches!(
+        same_branch_contention,
+        CommitRuntimeError::BranchGuardUnavailable { .. }
+    ));
+    assert!(matches!(
+        quiesce_contention,
+        CommitRuntimeError::CommitQuiesceUnavailable { .. }
+    ));
+    assert_ne!(
+        std::mem::discriminant(&same_branch_contention),
+        std::mem::discriminant(&generation_mismatch)
+    );
+    assert_ne!(
+        std::mem::discriminant(&same_branch_contention),
+        std::mem::discriminant(&validation_conflict)
+    );
+    assert_ne!(
+        std::mem::discriminant(&same_branch_contention),
+        std::mem::discriminant(&unresolved_durable)
+    );
+    assert_ne!(
+        std::mem::discriminant(&quiesce_contention),
+        std::mem::discriminant(&generation_mismatch)
+    );
+    assert_ne!(
+        std::mem::discriminant(&quiesce_contention),
+        std::mem::discriminant(&validation_conflict)
+    );
+    assert_ne!(
+        std::mem::discriminant(&quiesce_contention),
+        std::mem::discriminant(&unresolved_durable)
+    );
+}
+
 fn generation(value: u64) -> CommitBranchGeneration {
     CommitBranchGeneration::new(value).expect("generation")
+}
+
+#[cfg(feature = "perf-trace")]
+fn branch_id_from_u64(value: u64) -> BranchId {
+    let mut bytes = [0_u8; BranchId::BYTE_LEN];
+    bytes[BranchId::BYTE_LEN - 8..].copy_from_slice(&value.to_be_bytes());
+    BranchId::from_bytes(bytes)
 }
 
 fn mutating_delete_batch(

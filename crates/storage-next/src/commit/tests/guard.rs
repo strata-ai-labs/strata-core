@@ -117,6 +117,37 @@ fn guard_perf_trace_counts_branch_and_quiesce_contention() {
 }
 
 #[test]
+fn lock_order_documentation_covers_commit_admission_sites() {
+    let guard_source = include_str!("../guard.rs");
+    let branch_registry_source = include_str!("../branch_registry.rs");
+    let cache_source = include_str!("../cache.rs");
+    let durable_source = include_str!("../durable.rs");
+    let durable_gate_source = include_str!("../durable_gate.rs");
+
+    assert!(guard_source.contains("Commit-runtime lock order"));
+    assert!(guard_source.contains("unresolved-durable gate"));
+    assert!(guard_source.contains("logical admission tokens"));
+    assert!(guard_source.contains("no gate"));
+    assert!(guard_source.contains("Branch registry validation"));
+    assert!(guard_source.contains("try_acquire_branch_guard"));
+    assert!(guard_source.contains("try_begin_quiesce"));
+    assert!(guard_source.contains("BranchGuardUnavailable"));
+    assert!(guard_source.contains("CommitQuiesceUnavailable"));
+
+    assert!(branch_registry_source.contains("Lock order: registry validation is lock-free"));
+    assert!(cache_source.contains("Commit-runtime lock order"));
+    assert!(cache_source.contains("global admission token remains active"));
+    assert!(cache_source.contains("does not carry a mutex guard"));
+    assert!(cache_source.contains("retry/deadline policy belongs above"));
+    assert!(durable_source.contains("Commit-runtime lock order"));
+    assert!(durable_source.contains("global admission token remains active"));
+    assert!(durable_source.contains("does not carry a mutex guard"));
+    assert!(durable_source.contains("typed, fail-fast retry condition"));
+    assert!(durable_gate_source.contains("first mutating-commit admission point"));
+    assert!(durable_gate_source.contains("after the gate mutex has been released"));
+}
+
+#[test]
 fn cloned_guard_sets_share_branch_guard_state() {
     let branch = branch_id(117);
     let guard_set = CommitBranchGuardSet::new();

@@ -1,9 +1,27 @@
 //! Commit guard tokens for branch admission and quiesce.
 //!
-//! These guards are crate-local, in-process admission tokens. They serialize
-//! mutating work for one branch, allow independent branches to proceed at the
-//! same time, and provide a nonblocking quiesce token for maintenance and
-//! recovery orchestration.
+//! These guards are crate-local, in-process admission tokens. At the guard
+//! layer they serialize mutating work for one branch, allow independent
+//! branches to proceed at the same time, and provide a nonblocking quiesce
+//! token for maintenance and recovery orchestration. Cache and durable runtimes
+//! may still add broader admission constraints above this guard set.
+//!
+//! Commit-runtime lock order:
+//! 1. The unresolved-durable gate may be admitted first by cache/durable
+//!    runtimes, but it never holds its mutex while branch admission runs.
+//! 2. Branch registry validation runs without taking this guard mutex.
+//! 3. `try_acquire_branch_guard` or `try_begin_quiesce` takes this guard mutex
+//!    briefly and returns an RAII token; no WAL, branch-state, visible-version,
+//!    or read-view lock may be acquired while the guard mutex is held.
+//! 4. Commit work may run while holding logical admission tokens, including the
+//!    unresolved-durable admission token and the RAII branch token, but no gate
+//!    or guard mutex remains held. The branch-token drop path reacquires this
+//!    mutex only to remove its branch from the active set.
+//!
+//! Both branch contention and quiesce contention are intentionally fail-fast in
+//! the commit runtime. Callers that want wait, retry, or deadline behavior must
+//! build it above this primitive with the typed `BranchGuardUnavailable` or
+//! `CommitQuiesceUnavailable` errors.
 
 use super::{CommitRuntimeError, CommitRuntimeResult};
 use crate::observability::perf_trace;

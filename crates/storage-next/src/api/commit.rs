@@ -69,7 +69,7 @@ pub enum CommitExpectedVersion {
 
 /// A compare-and-set condition for one storage key.
 ///
-/// Conditions map to L7 CAS validation. They are explicit per-key checks, not a
+/// Conditions map to commit-runtime CAS validation. They are explicit per-key checks, not a
 /// captured read set: reads and scans performed before building the batch are
 /// not remembered unless the caller adds matching conditions.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -9,17 +9,15 @@ use std::path::{Path, PathBuf};
 ///
 /// Flagged tokens:
 /// - standalone milestone-layer labels.
-/// - `L[4-9]` followed by a short uppercase suffix (slice codes:
-///   `L7M`, `L8Y`, `L8Z`, `L6C`).
+/// - `L[4-9]` followed by a short uppercase suffix.
 /// - standalone milestone labels.
 /// - milestone labels followed by a short uppercase suffix.
 ///
 /// Allowed tokens (not flagged):
 /// - `L[0-3]` (LSM-level references such as `L0`, `L1`, `L2`, `L3`).
-/// - `PascalCase` identifiers like `L4Backend`, `L7BranchStatefile`,
-///   and matching milestone-named state types. These are heuristically
-///   detected by the presence of any lowercase letter in the four
-///   characters following the digit.
+/// - `PascalCase` identifiers with architecture-layer digits in the name.
+///   These are heuristically detected by the presence of any lowercase letter
+///   in the four characters following the digit.
 pub(crate) fn contains_milestone_label(line: &str) -> bool {
     let bytes = line.as_bytes();
     if bytes.len() < 2 {
