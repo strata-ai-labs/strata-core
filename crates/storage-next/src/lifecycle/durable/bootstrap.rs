@@ -958,6 +958,7 @@ where
                 Ok(policy_outcome) => self.record_wal_growth_outcome(policy_outcome),
                 Err(error) => self.record_wal_growth_policy_error(error),
             }
+            let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
         }
         outcome
     }

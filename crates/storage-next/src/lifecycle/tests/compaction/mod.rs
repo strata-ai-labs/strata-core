@@ -1466,6 +1466,72 @@ fn storage_pressure_reports_l0_table_backlog_boundaries() {
 }
 
 #[test]
+fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
+    let branch = branch_id(0x6c);
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0..16 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("blocking-with-frozen-{index}"),
+            vec![put_row(
+                branch,
+                format!("blocking-with-frozen-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"flush-first", 20, 20_000, b"value"))
+        .expect("append active row");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::FrozenBacklog
+    );
+    assert_eq!(pressure.level_zero_tables(), 16);
+    assert_eq!(pressure.frozen_tables(), 1);
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    ));
+}
+
+#[test]
+fn storage_pressure_does_not_schedule_terminal_level_compaction() {
+    let branch = branch_id(0x6b);
+    let mut state = BranchLocalState::empty(branch);
+    let terminal_level =
+        BranchLevel::new(u8::try_from(state.owned_levels().len() - 1).expect("level fits in u8"));
+    for index in 0..4 {
+        install_owned_table(
+            &mut state,
+            branch,
+            terminal_level,
+            &format!("terminal-pressure-{index}"),
+            vec![put_row(
+                branch,
+                format!("terminal-pressure-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                b"value",
+            )],
+        );
+    }
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+
+    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+    assert_eq!(pressure.severity(), LifecycleStoragePressureSeverity::None);
+    assert!(pressure.suggested_task().is_none());
+}
+
+#[test]
 fn durable_rewrite_outcomes_report_checkpoint_debt_without_reclaim() {
     let branch = branch_id(0x66);
     let mut state = BranchLocalState::empty(branch);
@@ -1564,6 +1630,68 @@ fn queued_cache_compaction_moves_only_the_requested_table_level() {
     assert_eq!(state.owned_levels()[1].len(), 0);
     assert_eq!(state.owned_levels()[2].len(), 1);
     assert_eq!(state.owned_levels()[3].len(), 0);
+}
+
+#[test]
+fn scheduler_enqueues_nonzero_level_compaction_with_selected_level() {
+    let branch = branch_id(0x6a);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("scheduled-nonzero-input-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("scheduled-nonzero-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+
+    let pressure = runtime.storage_pressure();
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog
+    );
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id,
+            level: 1
+        }) if branch_id == branch
+    ));
+
+    let outcome = runtime.schedule_post_commit_maintenance();
+    assert_eq!(
+        outcome.status(),
+        LifecyclePostCommitMaintenanceStatus::Enqueued
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let state = runtime.branch_state();
+
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(state.owned_levels()[1].len(), 3);
+    assert_eq!(state.owned_levels()[2].len(), 1);
 }
 
 #[test]

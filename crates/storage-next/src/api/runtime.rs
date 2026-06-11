@@ -2663,6 +2663,9 @@ const fn map_storage_pressure_reason(
         LifecycleStoragePressureReason::LevelZeroTableBacklog => {
             DiagnosticsStoragePressureReason::LevelZeroTableBacklog
         }
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog => {
+            DiagnosticsStoragePressureReason::NonZeroLevelTableBacklog
+        }
         LifecycleStoragePressureReason::InheritedLayerBacklog => {
             DiagnosticsStoragePressureReason::InheritedLayerBacklog
         }

@@ -122,6 +122,7 @@ pub enum DiagnosticsStoragePressureReason {
     None,
     FrozenBacklog,
     LevelZeroTableBacklog,
+    NonZeroLevelTableBacklog,
     InheritedLayerBacklog,
     MaintenanceQueueBacklog,
 }

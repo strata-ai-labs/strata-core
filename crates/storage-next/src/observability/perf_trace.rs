@@ -105,6 +105,13 @@ pub struct StoragePerfSnapshot {
     commit_unresolved_records: u64,
     commit_unresolved_durable_not_applied_records: u64,
     commit_unresolved_applied_not_visible_records: u64,
+    lifecycle_post_commit_maintenance_evaluations: u64,
+    lifecycle_post_commit_maintenance_disabled: u64,
+    lifecycle_post_commit_maintenance_no_task: u64,
+    lifecycle_post_commit_maintenance_tasks_suggested: u64,
+    lifecycle_post_commit_maintenance_tasks_enqueued: u64,
+    lifecycle_post_commit_maintenance_tasks_coalesced: u64,
+    lifecycle_post_commit_maintenance_tasks_deferred: u64,
     commit_branch_registry_lookups: u64,
     commit_branch_registry_descriptors_scanned: u64,
     commit_branch_guard_attempts: u64,
@@ -480,6 +487,41 @@ impl StoragePerfSnapshot {
     /// Applied-not-visible unresolved commit records installed in the gate.
     pub const fn commit_unresolved_applied_not_visible_records(self) -> u64 {
         self.commit_unresolved_applied_not_visible_records
+    }
+
+    /// Post-commit maintenance pressure evaluations.
+    pub const fn lifecycle_post_commit_maintenance_evaluations(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_evaluations
+    }
+
+    /// Post-commit maintenance evaluations skipped by disabled policy.
+    pub const fn lifecycle_post_commit_maintenance_disabled(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_disabled
+    }
+
+    /// Post-commit maintenance evaluations with no suggested task.
+    pub const fn lifecycle_post_commit_maintenance_no_task(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_no_task
+    }
+
+    /// Post-commit maintenance evaluations that found a suggested task.
+    pub const fn lifecycle_post_commit_maintenance_tasks_suggested(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_tasks_suggested
+    }
+
+    /// Post-commit maintenance tasks admitted to the maintenance queue.
+    pub const fn lifecycle_post_commit_maintenance_tasks_enqueued(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_tasks_enqueued
+    }
+
+    /// Post-commit maintenance tasks coalesced with an existing queued task.
+    pub const fn lifecycle_post_commit_maintenance_tasks_coalesced(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_tasks_coalesced
+    }
+
+    /// Post-commit maintenance tasks deferred by queue/admission failure.
+    pub const fn lifecycle_post_commit_maintenance_tasks_deferred(self) -> u64 {
+        self.lifecycle_post_commit_maintenance_tasks_deferred
     }
 
     /// Branch registry lookup calls made by commit admission.
@@ -1371,6 +1413,20 @@ static COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS: AtomicU64 = AtomicU64::new
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_NO_TASK: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_SUGGESTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_LOOKUPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED: AtomicU64 = AtomicU64::new(0);
@@ -1773,6 +1829,13 @@ pub fn reset() {
     COMMIT_UNRESOLVED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_NO_TASK.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_SUGGESTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.store(0, Ordering::Relaxed);
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_LOOKUPS.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_GUARD_ATTEMPTS.store(0, Ordering::Relaxed);
@@ -1992,6 +2055,20 @@ pub fn snapshot() -> StoragePerfSnapshot {
             COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.load(Ordering::Relaxed),
         commit_unresolved_applied_not_visible_records:
             COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_evaluations:
+            LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_disabled: LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED
+            .load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_no_task: LIFECYCLE_POST_COMMIT_MAINTENANCE_NO_TASK
+            .load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_tasks_suggested:
+            LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_SUGGESTED.load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_tasks_enqueued:
+            LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED.load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_tasks_coalesced:
+            LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.load(Ordering::Relaxed),
+        lifecycle_post_commit_maintenance_tasks_deferred:
+            LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.load(Ordering::Relaxed),
         commit_branch_registry_lookups: COMMIT_BRANCH_REGISTRY_LOOKUPS.load(Ordering::Relaxed),
         commit_branch_registry_descriptors_scanned: COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED
             .load(Ordering::Relaxed),
@@ -2539,6 +2616,77 @@ pub(crate) fn record_commit_unresolved_applied_not_visible_record() {
         return;
     }
     COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_post_commit_maintenance_evaluation() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_post_commit_maintenance_evaluation() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_post_commit_maintenance_disabled() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_post_commit_maintenance_disabled() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_post_commit_maintenance_no_task() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_post_commit_maintenance_no_task() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_NO_TASK.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_post_commit_maintenance_task_suggested() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_post_commit_maintenance_task_suggested() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_SUGGESTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_post_commit_maintenance_enqueue(_enqueued: bool, _coalesced: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_post_commit_maintenance_enqueue(enqueued: bool, coalesced: bool) {
+    if !recording_enabled() {
+        return;
+    }
+    if enqueued {
+        LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED.fetch_add(1, Ordering::Relaxed);
+    }
+    if coalesced {
+        LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_post_commit_maintenance_deferred() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_post_commit_maintenance_deferred() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

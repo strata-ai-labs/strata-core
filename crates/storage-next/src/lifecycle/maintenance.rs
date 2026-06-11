@@ -6,12 +6,14 @@
 )]
 
 use super::{
-    LifecycleAdmissionEffect, LifecycleError, LifecycleOperationAdmission, LifecycleOperationKind,
-    LifecycleResult, LifecycleStateMachine, LifecycleStats, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault,
-    RecoveryFaultKind, RecoveryHealth,
+    LifecycleAdmissionEffect, LifecycleError, LifecycleMaintenanceSchedulingPolicy,
+    LifecycleOperationAdmission, LifecycleOperationKind, LifecycleResult, LifecycleStateMachine,
+    LifecycleStats, LifecycleStoragePressure, MaintenanceOutcome, MaintenanceOutcomeStatus,
+    MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind,
+    RecoveryHealth,
 };
 use crate::branch::state::materialization::BranchMaterializationHandle;
+use crate::observability::perf_trace;
 use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -117,6 +119,25 @@ pub(crate) struct MaintenanceDrainOutcome {
 pub(crate) struct MaintenanceCancelOutcome {
     canceled_tasks: usize,
     stats: LifecycleMaintenanceStats,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LifecyclePostCommitMaintenanceOutcome {
+    status: LifecyclePostCommitMaintenanceStatus,
+    pressure: LifecycleStoragePressure,
+    suggested_task: Option<MaintenanceTaskRequest>,
+    enqueue: Option<MaintenanceEnqueueOutcome>,
+    failure: Option<LifecycleError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub(crate) enum LifecyclePostCommitMaintenanceStatus {
+    Disabled,
+    NoSuggestedTask,
+    Enqueued,
+    Coalesced,
+    Deferred,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -685,6 +706,86 @@ impl MaintenanceEnqueueOutcome {
     }
 }
 
+impl LifecyclePostCommitMaintenanceOutcome {
+    const fn disabled(pressure: LifecycleStoragePressure) -> Self {
+        Self {
+            status: LifecyclePostCommitMaintenanceStatus::Disabled,
+            pressure,
+            suggested_task: None,
+            enqueue: None,
+            failure: None,
+        }
+    }
+
+    const fn no_suggested_task(pressure: LifecycleStoragePressure) -> Self {
+        Self {
+            status: LifecyclePostCommitMaintenanceStatus::NoSuggestedTask,
+            pressure,
+            suggested_task: None,
+            enqueue: None,
+            failure: None,
+        }
+    }
+
+    const fn enqueued(
+        pressure: LifecycleStoragePressure,
+        suggested_task: MaintenanceTaskRequest,
+        enqueue: MaintenanceEnqueueOutcome,
+    ) -> Self {
+        Self {
+            status: if enqueue.was_coalesced() {
+                LifecyclePostCommitMaintenanceStatus::Coalesced
+            } else {
+                LifecyclePostCommitMaintenanceStatus::Enqueued
+            },
+            pressure,
+            suggested_task: Some(suggested_task),
+            enqueue: Some(enqueue),
+            failure: None,
+        }
+    }
+
+    const fn deferred(
+        pressure: LifecycleStoragePressure,
+        suggested_task: MaintenanceTaskRequest,
+        failure: LifecycleError,
+    ) -> Self {
+        Self {
+            status: LifecyclePostCommitMaintenanceStatus::Deferred,
+            pressure,
+            suggested_task: Some(suggested_task),
+            enqueue: None,
+            failure: Some(failure),
+        }
+    }
+
+    pub(crate) fn with_inline_failure(mut self, failure: LifecycleError) -> Self {
+        self.status = LifecyclePostCommitMaintenanceStatus::Deferred;
+        self.failure = Some(failure);
+        self
+    }
+
+    pub(crate) const fn status(&self) -> LifecyclePostCommitMaintenanceStatus {
+        self.status
+    }
+
+    pub(crate) const fn pressure(&self) -> LifecycleStoragePressure {
+        self.pressure
+    }
+
+    pub(crate) const fn suggested_task(&self) -> Option<MaintenanceTaskRequest> {
+        self.suggested_task
+    }
+
+    pub(crate) const fn enqueue(&self) -> Option<MaintenanceEnqueueOutcome> {
+        self.enqueue
+    }
+
+    pub(crate) const fn failure(&self) -> Option<&LifecycleError> {
+        self.failure.as_ref()
+    }
+}
+
 impl MaintenanceDrainOutcome {
     const fn new(
         drained_tasks: usize,
@@ -793,6 +894,36 @@ impl LifecycleMaintenanceStats {
 
     pub(crate) const fn lifecycle_stats(self) -> LifecycleStats {
         LifecycleStats::new(0, 0, self.completed + self.deferred + self.failed, 0, 0)
+    }
+}
+
+pub(crate) fn schedule_post_commit_maintenance(
+    policy: LifecycleMaintenanceSchedulingPolicy,
+    pressure: LifecycleStoragePressure,
+    enqueue: impl FnOnce(MaintenanceTaskRequest) -> LifecycleResult<MaintenanceEnqueueOutcome>,
+) -> LifecyclePostCommitMaintenanceOutcome {
+    perf_trace::record_lifecycle_post_commit_maintenance_evaluation();
+    if !policy.enabled() {
+        perf_trace::record_lifecycle_post_commit_maintenance_disabled();
+        return LifecyclePostCommitMaintenanceOutcome::disabled(pressure);
+    }
+    let Some(suggested_task) = pressure.suggested_task() else {
+        perf_trace::record_lifecycle_post_commit_maintenance_no_task();
+        return LifecyclePostCommitMaintenanceOutcome::no_suggested_task(pressure);
+    };
+    perf_trace::record_lifecycle_post_commit_maintenance_task_suggested();
+    match enqueue(suggested_task) {
+        Ok(enqueue) => {
+            perf_trace::record_lifecycle_post_commit_maintenance_enqueue(
+                enqueue.was_enqueued(),
+                enqueue.was_coalesced(),
+            );
+            LifecyclePostCommitMaintenanceOutcome::enqueued(pressure, suggested_task, enqueue)
+        }
+        Err(error) => {
+            perf_trace::record_lifecycle_post_commit_maintenance_deferred();
+            LifecyclePostCommitMaintenanceOutcome::deferred(pressure, suggested_task, error)
+        }
     }
 }
 

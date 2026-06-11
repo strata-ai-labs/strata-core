@@ -25,6 +25,12 @@ use strata_core_next::BranchId;
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
 const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
+const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
+const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
+const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
+const NONZERO_LEVEL_TARGET_BYTES: u64 = 64 * 1024 * 1024;
+const NONZERO_LEVEL_URGENT_BYTES: u64 = NONZERO_LEVEL_TARGET_BYTES * 2;
+const NONZERO_LEVEL_BLOCKING_BYTES: u64 = NONZERO_LEVEL_TARGET_BYTES * 4;
 const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
 const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
 const DEFAULT_COMPACTION_DRAIN_PASS_LIMIT: usize = 16;
@@ -157,6 +163,7 @@ pub(crate) enum LifecycleStoragePressureReason {
     None,
     FrozenBacklog,
     LevelZeroTableBacklog,
+    NonZeroLevelTableBacklog,
     InheritedLayerBacklog,
     MaintenanceQueueBacklog,
 }
@@ -1045,6 +1052,7 @@ pub(crate) fn collect_storage_pressure(
         .owned_levels()
         .get(usize::from(BranchLevel::ZERO.raw()))
         .map_or(0, std::vec::Vec::len);
+    let nonzero_level_pressure = selected_nonzero_level_pressure(branch);
     let owned_tables = branch.owned_table_count();
     let inherited_layers = branch.inherited_layer_count();
     let pending_maintenance = maintenance.pending_tasks();
@@ -1055,11 +1063,26 @@ pub(crate) fn collect_storage_pressure(
             LifecycleStoragePressureReason::FrozenBacklog,
             Some(MaintenanceTaskRequest::flush(branch_id)),
         )
+    } else if frozen_tables > 0 {
+        (
+            LifecycleStoragePressureSeverity::Urgent,
+            LifecycleStoragePressureReason::FrozenBacklog,
+            Some(MaintenanceTaskRequest::flush(branch_id)),
+        )
     } else if level_zero_tables >= LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD {
         (
             LifecycleStoragePressureSeverity::BlockMutatingAdmission,
             LifecycleStoragePressureReason::LevelZeroTableBacklog,
             Some(MaintenanceTaskRequest::compaction(branch_id, 0)),
+        )
+    } else if nonzero_level_pressure.is_some_and(NonZeroLevelPressure::is_blocking) {
+        let level = nonzero_level_pressure
+            .expect("checked nonzero level pressure")
+            .level;
+        (
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
+            Some(MaintenanceTaskRequest::compaction(branch_id, level)),
         )
     } else if pending_maintenance >= PENDING_MAINTENANCE_BLOCKING_THRESHOLD {
         (
@@ -1067,23 +1090,35 @@ pub(crate) fn collect_storage_pressure(
             LifecycleStoragePressureReason::MaintenanceQueueBacklog,
             None,
         )
-    } else if frozen_tables > 0 {
-        (
-            LifecycleStoragePressureSeverity::Urgent,
-            LifecycleStoragePressureReason::FrozenBacklog,
-            Some(MaintenanceTaskRequest::flush(branch_id)),
-        )
     } else if level_zero_tables >= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD {
         (
             LifecycleStoragePressureSeverity::Urgent,
             LifecycleStoragePressureReason::LevelZeroTableBacklog,
             Some(MaintenanceTaskRequest::compaction(branch_id, 0)),
         )
+    } else if nonzero_level_pressure.is_some_and(NonZeroLevelPressure::is_urgent) {
+        let level = nonzero_level_pressure
+            .expect("checked nonzero level pressure")
+            .level;
+        (
+            LifecycleStoragePressureSeverity::Urgent,
+            LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
+            Some(MaintenanceTaskRequest::compaction(branch_id, level)),
+        )
     } else if level_zero_tables >= LEVEL_ZERO_COMPACTION_THRESHOLD {
         (
             LifecycleStoragePressureSeverity::Background,
             LifecycleStoragePressureReason::LevelZeroTableBacklog,
             Some(MaintenanceTaskRequest::compaction(branch_id, 0)),
+        )
+    } else if nonzero_level_pressure.is_some() {
+        let level = nonzero_level_pressure
+            .expect("checked nonzero level pressure")
+            .level;
+        (
+            LifecycleStoragePressureSeverity::Background,
+            LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
+            Some(MaintenanceTaskRequest::compaction(branch_id, level)),
         )
     } else if inherited_layers > 0 {
         (
@@ -1117,6 +1152,63 @@ pub(crate) fn collect_storage_pressure(
         inherited_layers,
         pending_maintenance,
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NonZeroLevelPressure {
+    level: u8,
+    table_count: usize,
+    byte_count: u64,
+}
+
+impl NonZeroLevelPressure {
+    const fn is_background(self) -> bool {
+        self.table_count >= NONZERO_LEVEL_COMPACTION_THRESHOLD
+            || self.byte_count >= NONZERO_LEVEL_TARGET_BYTES
+    }
+
+    const fn is_urgent(self) -> bool {
+        self.table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
+            || self.byte_count >= NONZERO_LEVEL_URGENT_BYTES
+    }
+
+    const fn is_blocking(self) -> bool {
+        self.table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
+            || self.byte_count >= NONZERO_LEVEL_BLOCKING_BYTES
+    }
+}
+
+fn selected_nonzero_level_pressure(branch: &BranchLocalState) -> Option<NonZeroLevelPressure> {
+    let terminal_level_index = branch.owned_levels().len().saturating_sub(1);
+    branch
+        .owned_levels()
+        .iter()
+        .enumerate()
+        .skip(usize::from(BranchLevel::ZERO.raw()) + 1)
+        .filter_map(|(level_index, tables)| {
+            if level_index >= terminal_level_index {
+                return None;
+            }
+            let level = u8::try_from(level_index).ok()?;
+            let byte_count = tables.iter().fold(0u64, |total, table| {
+                total.saturating_add(table.facts().byte_count())
+            });
+            Some(NonZeroLevelPressure {
+                level,
+                table_count: tables.len(),
+                byte_count,
+            })
+        })
+        .filter(|pressure| pressure.is_background())
+        .max_by_key(|pressure| {
+            (
+                pressure.is_blocking(),
+                pressure.is_urgent(),
+                pressure.table_count,
+                pressure.byte_count,
+                std::cmp::Reverse(pressure.level),
+            )
+        })
 }
 
 fn compact_branch(

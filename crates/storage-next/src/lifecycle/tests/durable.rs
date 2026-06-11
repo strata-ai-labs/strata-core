@@ -1056,6 +1056,105 @@ fn durable_close_after_flush_does_not_advance_flush_watermark_unless_checkpointe
 }
 
 #[test]
+fn durable_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x6c);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"scheduled-flush-a", b"value-a"),
+            generation_guard(),
+        )
+        .expect("first durable commit");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    assert!(runtime.storage_pressure().suggested_task().is_some());
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"scheduled-flush-b", b"value-b"),
+            generation_guard(),
+        )
+        .expect("second durable commit");
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.stats().enqueued(), 1);
+}
+
+#[test]
+fn durable_commit_respects_disabled_post_commit_maintenance_scheduling() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x6d);
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
+        .expect("disable maintenance scheduling");
+    let mut runtime =
+        open_runtime_with_config(StorageMode::DurableLocalStandard, branch, &backend, config);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"disabled-scheduled-flush-a", b"value-a"),
+            generation_guard(),
+        )
+        .expect("first durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    assert!(runtime.storage_pressure().suggested_task().is_some());
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"disabled-scheduled-flush-b", b"value-b"),
+            generation_guard(),
+        )
+        .expect("second durable commit");
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(runtime.maintenance_status().stats().enqueued(), 0);
+}
+
+#[test]
+fn durable_commit_deterministic_inline_runs_suggested_flush() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x6e);
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        )
+        .expect("inline maintenance scheduling");
+    let mut runtime =
+        open_runtime_with_config(StorageMode::DurableLocalStandard, branch, &backend, config);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"inline-scheduled-flush-a", b"value-a"),
+            generation_guard(),
+        )
+        .expect("first durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"inline-scheduled-flush-b", b"value-b"),
+            generation_guard(),
+        )
+        .expect("second durable commit");
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.stats().enqueued(), 1);
+    assert_eq!(status.stats().started(), 1);
+    assert_eq!(status.stats().completed(), 1);
+    assert!(runtime.storage_pressure().suggested_task().is_none());
+}
+
+#[test]
 fn durable_close_does_not_truncate_wal_unless_drain_task_did_so() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x37);
@@ -1705,12 +1804,41 @@ fn assemble_shell(
     LifecycleDurableLocalShell::assemble(request(mode, branch)?, backend, timestamp_source())
 }
 
+fn assemble_shell_with_config(
+    mode: StorageMode,
+    branch: BranchId,
+    backend: &DurableTestBackend,
+    config: LifecycleConfig,
+) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+    LifecycleDurableLocalShell::assemble(
+        request_with_config(mode, branch, config)?,
+        backend,
+        timestamp_source(),
+    )
+}
+
 fn open_runtime(
     mode: StorageMode,
     branch: BranchId,
     backend: &DurableTestBackend,
 ) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
     let mut shell = assemble_shell(mode, branch, backend).expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    shell.complete_recovery(&recovery).expect("open runtime")
+}
+
+fn open_runtime_with_config(
+    mode: StorageMode,
+    branch: BranchId,
+    backend: &DurableTestBackend,
+    config: LifecycleConfig,
+) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    let mut shell =
+        assemble_shell_with_config(mode, branch, backend, config).expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
     let recovery = LifecycleRecoveryRuntime::new(&mut shell)
@@ -1811,8 +1939,16 @@ fn request(
     mode: StorageMode,
     branch: BranchId,
 ) -> LifecycleResult<LifecycleDurableLocalOpenRequest> {
+    request_with_config(mode, branch, LifecycleConfig::default())
+}
+
+fn request_with_config(
+    mode: StorageMode,
+    branch: BranchId,
+    config: LifecycleConfig,
+) -> LifecycleResult<LifecycleDurableLocalOpenRequest> {
     LifecycleDurableLocalOpenRequest::new(
-        open_plan(mode),
+        open_plan_with_config(mode, config),
         DATABASE_ID,
         branch,
         CommitBranchGeneration::new(1).expect("generation"),
@@ -1848,11 +1984,15 @@ fn close_health_debt() -> RecoveryHealth {
 }
 
 fn open_plan(mode: StorageMode) -> StorageOpenPlan {
+    open_plan_with_config(mode, LifecycleConfig::default())
+}
+
+fn open_plan_with_config(mode: StorageMode, config: LifecycleConfig) -> StorageOpenPlan {
     StorageOpenPlan::new(
         mode,
         LifecycleCodecId::identity(),
         RecoveryStrictness::Strict,
-        LifecycleConfig::default(),
+        config,
     )
     .expect("open plan")
 }

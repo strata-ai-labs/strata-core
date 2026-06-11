@@ -57,6 +57,13 @@ fn lifecycle_default_config_is_valid_and_lossless() {
     assert!(config.wal_growth_policy().max_retained_wal_bytes() > 0);
     assert!(config.wal_growth_policy().max_retained_wal_segments() > 0);
     assert!(config.wal_growth_policy().max_commits_since_checkpoint() > 0);
+    assert!(config.maintenance_scheduling_policy().enabled());
+    assert_eq!(
+        config.maintenance_scheduling_policy(),
+        LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue
+    );
+    assert!(LifecycleMaintenanceSchedulingPolicy::DeterministicInline.enabled());
+    assert!(!LifecycleMaintenanceSchedulingPolicy::Disabled.enabled());
 }
 
 #[test]

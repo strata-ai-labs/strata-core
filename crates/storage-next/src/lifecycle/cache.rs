@@ -15,9 +15,10 @@ use super::{
     LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
     LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleCompactionDrainOutcome,
     LifecycleCompactionDrainRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
-    LifecycleError, LifecycleMaintenanceExecutor, LifecycleMaterializationOutcome,
-    LifecycleMaterializationRequest, LifecycleOperationKind, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleStats, LifecycleStoragePressure, LifecycleTransitionTrigger,
+    LifecycleError, LifecycleMaintenanceExecutor, LifecycleMaintenanceSchedulingPolicy,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
+    LifecyclePostCommitMaintenanceOutcome, LifecycleResult, LifecycleState, LifecycleStateMachine,
+    LifecycleStats, LifecycleStoragePressure, LifecycleTransitionTrigger,
     LifecycleWalGrowthOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
     MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
@@ -35,6 +36,7 @@ use crate::commit::{
     CommitUnresolvedDurable, CommitUnresolvedDurableGate, CommitVersionAllocator,
     VisibleVersionTracker,
 };
+use crate::lifecycle::maintenance::schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance;
 use crate::row::PhysicalKey;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -497,10 +499,14 @@ impl<S> LifecycleCacheRuntime<S> {
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(crate) fn storage_pressure(&self) -> LifecycleStoragePressure {
+        self.storage_pressure_for_branch(self.initial_branch_id)
+    }
+
+    fn storage_pressure_for_branch(&self, branch_id: BranchId) -> LifecycleStoragePressure {
         let branch = self
             .branch_catalog
-            .branch_state(self.initial_branch_id)
-            .expect("seeded branch is always present in the catalog");
+            .branch_state(branch_id)
+            .expect("pressure target branch is present in the catalog");
         collect_storage_pressure(branch, self.maintenance.status())
     }
 
@@ -519,6 +525,77 @@ impl<S> LifecycleCacheRuntime<S> {
     pub(crate) fn evaluate_wal_growth_policy(&self) -> LifecycleWalGrowthOutcome {
         debug_assert_eq!(self.state(), LifecycleState::Open);
         LifecycleWalGrowthOutcome::cache_mode()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "post-commit scheduler is also exercised through commit execution"
+    )]
+    pub(crate) fn schedule_post_commit_maintenance(
+        &mut self,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id)
+    }
+
+    fn schedule_post_commit_maintenance_for_branch(
+        &mut self,
+        branch_id: BranchId,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        let policy = self
+            .open_plan
+            .lifecycle_config()
+            .maintenance_scheduling_policy();
+        let pressure = self.storage_pressure_for_branch(branch_id);
+        let outcome = schedule_suggested_post_commit_maintenance(policy, pressure, |request| {
+            self.enqueue_maintenance(request)
+        });
+        if policy == LifecycleMaintenanceSchedulingPolicy::DeterministicInline {
+            self.run_inline_post_commit_maintenance(outcome)
+        } else {
+            outcome
+        }
+    }
+
+    fn run_inline_post_commit_maintenance(
+        &mut self,
+        outcome: LifecyclePostCommitMaintenanceOutcome,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        let (Some(request), Some(enqueue)) = (outcome.suggested_task(), outcome.enqueue()) else {
+            return outcome;
+        };
+        match self.run_inline_maintenance_task(request, enqueue.task_id()) {
+            Ok(()) => outcome,
+            Err(error) => {
+                crate::observability::perf_trace::record_lifecycle_post_commit_maintenance_deferred(
+                );
+                outcome.with_inline_failure(error)
+            }
+        }
+    }
+
+    fn run_inline_maintenance_task(
+        &mut self,
+        request: MaintenanceTaskRequest,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<()> {
+        let outcome = match request.kind() {
+            MaintenanceTaskKind::Flush => self.run_flush_maintenance_task(task_id)?,
+            MaintenanceTaskKind::Compaction => self.run_compaction_maintenance_task(task_id)?,
+            MaintenanceTaskKind::Materialization => {
+                self.run_materialization_maintenance_task(task_id)?
+            }
+            _ => {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "post-commit inline scheduling does not support task kind",
+                });
+            }
+        };
+        if outcome.is_none() {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "post-commit inline task was not pending",
+            });
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -568,15 +645,27 @@ impl<S> LifecycleCacheRuntime<S> {
     pub(crate) fn run_next_flush_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        let state = self.state;
-        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
         else {
             return Ok(None);
         };
-        let task_id = task.id();
+        self.run_flush_maintenance_task(task.id())
+    }
+
+    fn run_flush_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
+        }) else {
+            return Ok(None);
+        };
         let branch_id = branch_id_from_branch_task(task)?;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
@@ -608,15 +697,27 @@ impl<S> LifecycleCacheRuntime<S> {
     pub(crate) fn run_next_compaction_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        let state = self.state;
-        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Compaction)
         else {
             return Ok(None);
         };
-        let task_id = task.id();
+        self.run_compaction_maintenance_task(task.id())
+    }
+
+    fn run_compaction_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Compaction
+        }) else {
+            return Ok(None);
+        };
         let branch_id = branch_id_from_table_level_task(task)?;
         // Pre-sync the shadow into the catalog so any direct shadow
         // mutations (e.g. test-only branch_state_mut writes) are visible
@@ -934,6 +1035,9 @@ where
             .execute(batch, generation_guard)
             .map_err(commit_error)
         };
+        if outcome.is_ok() {
+            let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
+        }
         outcome
     }
 }

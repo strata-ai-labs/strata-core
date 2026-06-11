@@ -227,6 +227,495 @@ fn cache_runtime_executes_cache_commit_and_reads_through_branch_state() {
 }
 
 #[test]
+fn cache_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
+    let branch = branch_id(0x68);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"flush-pressure-a"),
+                b"value-a".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("first cache commit");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active table");
+    assert!(runtime.storage_pressure().suggested_task().is_some());
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"flush-pressure-b"),
+                b"value-b".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("second cache commit");
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.stats().enqueued(), 1);
+
+    let outcome = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn cache_commit_coalesces_repeated_post_commit_flush_suggestions() {
+    let branch = branch_id(0x69);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"coalesce-a"),
+                b"value-a".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("first cache commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active table");
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"coalesce-b"),
+                b"value-b".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("second cache commit");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"coalesce-c"),
+                b"value-c".to_vec(),
+                Timestamp::from_micros(3_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("third cache commit");
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.stats().enqueued(), 1);
+    assert_eq!(status.stats().coalesced(), 1);
+}
+
+#[test]
+fn cache_post_commit_flush_coalescing_is_branch_scoped() {
+    let branch_a = branch_id(0x6e);
+    let branch_b = branch_id(0x6f);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch_a, &backend);
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create second branch");
+
+    commit_cache_put(&mut runtime, branch_a, b"branch-a-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch_a)
+        .expect("rotate branch-a active table");
+    commit_cache_put(&mut runtime, branch_a, b"branch-a-trigger", 2_000);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    commit_cache_put(&mut runtime, branch_b, b"branch-b-seed", 3_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch_b)
+        .expect("rotate branch-b active table");
+    commit_cache_put(&mut runtime, branch_b, b"branch-b-trigger", 4_000);
+    assert_eq!(
+        runtime.maintenance_status().pending_tasks(),
+        2,
+        "same flush kind but different branch scopes must not coalesce"
+    );
+
+    commit_cache_put(&mut runtime, branch_a, b"branch-a-coalesce", 5_000);
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 2);
+    assert_eq!(status.stats().enqueued(), 2);
+    assert_eq!(status.stats().coalesced(), 1);
+}
+
+#[test]
+fn cache_post_commit_schedules_flush_before_compaction_when_both_are_needed() {
+    let branch = branch_id(0x70);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active row into frozen state");
+    commit_cache_put(
+        &mut runtime,
+        branch,
+        b"flush-before-compaction-trigger",
+        20_000,
+    );
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[test]
+fn cache_post_commit_flush_preempts_blocking_l0_compaction_pressure() {
+    let branch = branch_id(0x75);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active row into frozen state");
+    commit_cache_put(
+        &mut runtime,
+        branch,
+        b"flush-before-blocking-compaction-trigger",
+        30_000,
+    );
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert!(
+        runtime
+            .run_next_compaction_maintenance()
+            .expect("compaction lookup")
+            .is_none(),
+        "flushable state must be queued before blocking L0 compaction"
+    );
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[test]
+fn cache_post_commit_schedules_l0_compaction_after_flushable_state_is_drained() {
+    let branch = branch_id(0x71);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, branch, b"l0-compaction-trigger", 20_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction maintenance")
+        .expect("compaction task");
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[test]
+fn cache_commit_deterministic_inline_runs_suggested_flush() {
+    let branch = branch_id(0x76);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        )
+        .expect("inline maintenance scheduling");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+
+    commit_cache_put(&mut runtime, branch, b"inline-flush-a", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active table");
+    commit_cache_put(&mut runtime, branch, b"inline-flush-b", 2_000);
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.stats().enqueued(), 1);
+    assert_eq!(status.stats().started(), 1);
+    assert_eq!(status.stats().completed(), 1);
+    assert!(runtime.storage_pressure().suggested_task().is_none());
+}
+
+#[test]
+fn cache_post_commit_schedules_materialization_for_inherited_branch() {
+    let parent = branch_id(0x72);
+    let child = branch_id(0x73);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+
+    commit_cache_put(&mut runtime, parent, b"parent-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(parent)
+        .expect("rotate parent active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(parent))
+        .expect("enqueue parent flush");
+    run_queued_flush(&mut runtime);
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child from flushed parent");
+
+    commit_cache_put(&mut runtime, child, b"child-trigger", 2_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let materialization = runtime
+        .run_next_materialization_maintenance()
+        .expect("run materialization maintenance")
+        .expect("materialization task");
+    assert_eq!(
+        materialization.task_kind(),
+        MaintenanceTaskKind::Materialization
+    );
+    assert_eq!(
+        materialization.status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+}
+
+#[test]
+fn cache_commit_respects_disabled_post_commit_maintenance_scheduling() {
+    let branch = branch_id(0x6a);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
+        .expect("disable maintenance scheduling");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"disabled-a"),
+                b"value-a".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("first cache commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active table");
+    assert!(runtime.storage_pressure().suggested_task().is_some());
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"disabled-b"),
+                b"value-b".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("second cache commit");
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(runtime.maintenance_status().stats().enqueued(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_post_commit_maintenance_perf_trace_counts_suggestions_and_coalescing() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x6b);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"perf-a"),
+                b"value-a".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("first cache commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active table");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"perf-b"),
+                b"value-b".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("second cache commit");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"perf-c"),
+                b"value-c".to_vec(),
+                Timestamp::from_micros(3_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("third cache commit");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_post_commit_maintenance_evaluations(), 3);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_no_task(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_suggested(), 2);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_enqueued(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_coalesced(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_deferred(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_disabled(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_post_commit_maintenance_perf_trace_counts_disabled_and_skips_read_only() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x6d);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
+        .expect("disable maintenance scheduling");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+
+    assert!(
+        runtime
+            .execute_cache_commit(
+                read_only_batch(branch, physical_key(branch, b"diagnostic")),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation")
+                ),
+            )
+            .is_err(),
+        "read-only diagnostics are rejected before lifecycle scheduling"
+    );
+    assert_eq!(
+        crate::observability::perf_trace::snapshot()
+            .lifecycle_post_commit_maintenance_evaluations(),
+        0
+    );
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"disabled-perf-a"),
+                b"value-a".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("first cache commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active table");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"disabled-perf-b"),
+                b"value-b".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("second cache commit");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_post_commit_maintenance_evaluations(), 2);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_disabled(), 2);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_no_task(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_suggested(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_coalesced(), 0);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_post_commit_queue_full_records_deferred_without_failing_commit() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x74);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::new(
+        1,
+        64,
+        LifecycleCloseTimeoutPolicy::ReturnTypedTimeout,
+        LifecycleLossyRecoveryPolicy::Disabled,
+    )
+    .expect("single-slot maintenance queue config");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+
+    commit_cache_put(&mut runtime, branch, b"queue-full-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("fill maintenance queue");
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(&mut runtime, branch, b"queue-full-visible", 2_000);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_post_commit_maintenance_evaluations(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_suggested(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_coalesced(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_deferred(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let key = physical_key(branch, b"queue-full-visible");
+    let visible = runtime
+        .read_view()
+        .expect("read view")
+        .latest(&key)
+        .expect("latest read")
+        .expect("visible row");
+    assert_eq!(visible.row().value(), b"queue-full-visible");
+}
+
+#[test]
 fn cache_runtime_generated_timestamp_proves_zero_allocator_and_empty_timestamp_guard() {
     let branch = branch_id(0x4c);
     let backend = MemoryBackend::new();
@@ -842,9 +1331,28 @@ fn open_runtime_with_timestamp(
     .expect("cache runtime opens")
 }
 
+fn open_runtime_with_config(
+    branch: BranchId,
+    backend: &dyn Backend,
+    config: LifecycleConfig,
+) -> LifecycleCacheRuntime<CommitManualTimestampSource> {
+    LifecycleCacheRuntime::open(
+        request_with_config(branch, config),
+        backend,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
+    )
+    .expect("cache runtime opens")
+}
+
 fn request(branch: BranchId) -> LifecycleCacheOpenRequest {
+    request_with_config(branch, LifecycleConfig::default())
+}
+
+fn request_with_config(branch: BranchId, config: LifecycleConfig) -> LifecycleCacheOpenRequest {
     LifecycleCacheOpenRequest::new(
-        open_plan(StorageMode::Cache),
+        open_plan_with_config(StorageMode::Cache, config),
         branch,
         CommitBranchGeneration::new(1).expect("generation"),
     )
@@ -852,11 +1360,15 @@ fn request(branch: BranchId) -> LifecycleCacheOpenRequest {
 }
 
 fn open_plan(mode: StorageMode) -> StorageOpenPlan {
+    open_plan_with_config(mode, LifecycleConfig::default())
+}
+
+fn open_plan_with_config(mode: StorageMode, config: LifecycleConfig) -> StorageOpenPlan {
     StorageOpenPlan::new(
         mode,
         LifecycleCodecId::identity(),
         RecoveryStrictness::Strict,
-        LifecycleConfig::default(),
+        config,
     )
     .expect("open plan")
 }
@@ -976,6 +1488,67 @@ fn runtime_generated_put_batch(branch: BranchId, key: PhysicalKey, value: Vec<u8
             CommitOrigin::StorageRuntime,
         ),
     )
+}
+
+fn commit_cache_put(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    user_key: &[u8],
+    timestamp_micros: u64,
+) {
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, user_key),
+                user_key.to_vec(),
+                Timestamp::from_micros(timestamp_micros),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("cache put commit");
+}
+
+fn build_l0_tables_with_scheduled_flushes(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    table_count: usize,
+) {
+    build_l0_tables_with_scheduled_flushes_from(runtime, branch, table_count, 10_000);
+}
+
+fn build_l0_tables_with_scheduled_flushes_from(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    table_count: usize,
+    base_timestamp_micros: u64,
+) {
+    assert!(table_count > 0);
+    commit_cache_put(runtime, branch, b"scheduled-l0-seed", base_timestamp_micros);
+    for index in 0..table_count {
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate active table");
+        let key = format!("scheduled-l0-trigger-{index}");
+        commit_cache_put(
+            runtime,
+            branch,
+            key.as_bytes(),
+            base_timestamp_micros + 1 + index as u64,
+        );
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+        run_queued_flush(runtime);
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    }
+}
+
+fn run_queued_flush(runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>) {
+    let outcome = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
 }
 
 struct MaintenanceTestRunner;

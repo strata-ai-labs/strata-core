@@ -16,6 +16,7 @@ pub(crate) struct LifecycleConfig {
     lossy_recovery: LifecycleLossyRecoveryPolicy,
     storage_budget: StorageRuntimeBudget,
     wal_growth_policy: LifecycleWalGrowthPolicy,
+    maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +39,13 @@ pub(crate) struct LifecycleWalGrowthPolicy {
     max_commits_since_checkpoint: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleMaintenanceSchedulingPolicy {
+    Disabled,
+    EvaluateAndEnqueue,
+    DeterministicInline,
+}
+
 impl LifecycleConfig {
     pub(crate) fn new(
         max_maintenance_queue_depth: usize,
@@ -52,6 +60,7 @@ impl LifecycleConfig {
             lossy_recovery,
             storage_budget: StorageRuntimeBudget::default(),
             wal_growth_policy: LifecycleWalGrowthPolicy::default(),
+            maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy::default(),
         };
         config.validate()?;
         Ok(config)
@@ -73,6 +82,15 @@ impl LifecycleConfig {
     ) -> LifecycleResult<Self> {
         wal_growth_policy.validate()?;
         self.wal_growth_policy = wal_growth_policy;
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub(crate) fn with_maintenance_scheduling_policy(
+        mut self,
+        maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy,
+    ) -> LifecycleResult<Self> {
+        self.maintenance_scheduling_policy = maintenance_scheduling_policy;
         self.validate()?;
         Ok(self)
     }
@@ -99,6 +117,12 @@ impl LifecycleConfig {
 
     pub(crate) const fn wal_growth_policy(self) -> LifecycleWalGrowthPolicy {
         self.wal_growth_policy
+    }
+
+    pub(crate) const fn maintenance_scheduling_policy(
+        self,
+    ) -> LifecycleMaintenanceSchedulingPolicy {
+        self.maintenance_scheduling_policy
     }
 
     pub(crate) fn validate(self) -> LifecycleResult<()> {
@@ -189,6 +213,18 @@ impl Default for LifecycleWalGrowthPolicy {
             DEFAULT_WAL_GROWTH_MAX_SEGMENTS,
             DEFAULT_WAL_GROWTH_MAX_COMMITS,
         )
+    }
+}
+
+impl LifecycleMaintenanceSchedulingPolicy {
+    pub(crate) const fn enabled(self) -> bool {
+        matches!(self, Self::EvaluateAndEnqueue | Self::DeterministicInline)
+    }
+}
+
+impl Default for LifecycleMaintenanceSchedulingPolicy {
+    fn default() -> Self {
+        Self::EvaluateAndEnqueue
     }
 }
 

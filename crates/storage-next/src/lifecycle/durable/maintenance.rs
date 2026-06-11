@@ -22,6 +22,7 @@ use crate::lifecycle::compaction::{
 use crate::lifecycle::flush::{
     flush_durable_branch_with_budget, flush_request_from_maintenance_task,
 };
+use crate::lifecycle::maintenance::schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance;
 use crate::lifecycle::retention::{
     build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
     retention_outcome_for_delegated_families, retention_outcome_for_scope,
@@ -48,20 +49,20 @@ use crate::lifecycle::{
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
     FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionDrainOutcome,
     LifecycleCompactionDrainRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
-    LifecycleError, LifecycleLowerLayer, LifecycleMaterializationOutcome,
-    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePurgeOutcome,
-    LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome, LifecycleQuarantineRequest,
-    LifecycleResult, LifecycleStats, LifecycleStoragePressure, LifecycleWalGrowthOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, RecoveryDegradationClass,
-    RecoveryHealth,
+    LifecycleError, LifecycleLowerLayer, LifecycleMaintenanceSchedulingPolicy,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
+    LifecyclePostCommitMaintenanceOutcome, LifecyclePurgeOutcome, LifecycleQuarantineOutcome,
+    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRequest, LifecycleResult, LifecycleStats,
+    LifecycleStoragePressure, LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
+    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
     WalGrowthFacts,
 };
-use strata_core_next::{CommitVersion, Timestamp};
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 impl<S> LifecycleDurableLocalRuntime<'_, S> {
     #[allow(
@@ -263,11 +264,86 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         reason = "durable maintenance dispatch uses this concrete pressure hook"
     )]
     pub(crate) fn storage_pressure(&self) -> LifecycleStoragePressure {
+        self.storage_pressure_for_branch(self.initial_branch_id)
+    }
+
+    fn storage_pressure_for_branch(&self, branch_id: BranchId) -> LifecycleStoragePressure {
         let branch = self
             .branch_catalog
-            .branch_state(self.initial_branch_id)
-            .expect("seeded branch is always present in the catalog");
+            .branch_state(branch_id)
+            .expect("pressure target branch is present in the catalog");
         collect_storage_pressure(branch, self.maintenance.status())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "post-commit scheduler is also exercised through commit execution"
+    )]
+    pub(crate) fn schedule_post_commit_maintenance(
+        &mut self,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id)
+    }
+
+    pub(super) fn schedule_post_commit_maintenance_for_branch(
+        &mut self,
+        branch_id: BranchId,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        let policy = self
+            .open_plan
+            .lifecycle_config()
+            .maintenance_scheduling_policy();
+        let pressure = self.storage_pressure_for_branch(branch_id);
+        let outcome = schedule_suggested_post_commit_maintenance(policy, pressure, |request| {
+            self.enqueue_maintenance(request)
+        });
+        if policy == LifecycleMaintenanceSchedulingPolicy::DeterministicInline {
+            self.run_inline_post_commit_maintenance(outcome)
+        } else {
+            outcome
+        }
+    }
+
+    fn run_inline_post_commit_maintenance(
+        &mut self,
+        outcome: LifecyclePostCommitMaintenanceOutcome,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        let (Some(request), Some(enqueue)) = (outcome.suggested_task(), outcome.enqueue()) else {
+            return outcome;
+        };
+        match self.run_inline_maintenance_task(request, enqueue.task_id()) {
+            Ok(()) => outcome,
+            Err(error) => {
+                crate::observability::perf_trace::record_lifecycle_post_commit_maintenance_deferred(
+                );
+                outcome.with_inline_failure(error)
+            }
+        }
+    }
+
+    fn run_inline_maintenance_task(
+        &mut self,
+        request: MaintenanceTaskRequest,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<()> {
+        let outcome = match request.kind() {
+            MaintenanceTaskKind::Flush => self.run_flush_maintenance_task(task_id)?,
+            MaintenanceTaskKind::Compaction => self.run_compaction_maintenance_task(task_id)?,
+            MaintenanceTaskKind::Materialization => {
+                self.run_materialization_maintenance_task(task_id)?
+            }
+            _ => {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "post-commit inline scheduling does not support task kind",
+                });
+            }
+        };
+        if outcome.is_none() {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "post-commit inline task was not pending",
+            });
+        }
+        Ok(())
     }
 
     #[allow(
@@ -665,14 +741,26 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_flush_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        let state = self.state;
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
         else {
             return Ok(None);
         };
-        let task_id = task.id();
+        self.run_flush_maintenance_task(task.id())
+    }
+
+    fn run_flush_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
+        }) else {
+            return Ok(None);
+        };
         let branch_id = branch_id_from_branch_task(task)?;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
@@ -795,14 +883,26 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_compaction_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        let state = self.state;
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Compaction)
         else {
             return Ok(None);
         };
-        let task_id = task.id();
+        self.run_compaction_maintenance_task(task.id())
+    }
+
+    fn run_compaction_maintenance_task(
+        &mut self,
+        task_id: MaintenanceTaskId,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let state = self.state;
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Compaction
+        }) else {
+            return Ok(None);
+        };
         let branch_id = branch_id_from_table_level_task(task)?;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
@@ -842,6 +942,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     pub(crate) fn run_next_materialization_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Materialization)

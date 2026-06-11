@@ -76,6 +76,8 @@ reason, and replacement proof or later slice that will close it.
 18. `m4p-l7-commit-runtime-parity-implementation-plan.md`
 19. `m4p-l7-commit-runtime-parity-test-plan.md`
 20. `m4p-l8-automatic-maintenance-scheduling-followup.md`
+21. `m4p-l8-lifecycle-maintenance-parity-implementation-plan.md`
+22. `m4p-l8-lifecycle-maintenance-parity-test-plan.md`
 
 ## Initial Slice Queue
 
@@ -95,3 +97,9 @@ The parent plan defines the first executable queue:
 12. `M4P-L8C`: write-admission and pressure policy.
 13. `M4P-L9A`: diagnostics boundary.
 14. `M4P-L9B`: storage-shaped read-set facts.
+
+The L8A-L8C queue items are planned together in
+`m4p-l8-lifecycle-maintenance-parity-implementation-plan.md` and
+`m4p-l8-lifecycle-maintenance-parity-test-plan.md` because post-commit
+scheduling, compaction chaining, and admission pressure share one source-shape
+exit gate.

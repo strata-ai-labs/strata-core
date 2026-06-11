@@ -101,7 +101,7 @@ pub(crate) use compaction::{
 )]
 pub(crate) use config::{
     LifecycleCloseTimeoutPolicy, LifecycleConfig, LifecycleLossyRecoveryPolicy,
-    LifecycleWalGrowthPolicy,
+    LifecycleMaintenanceSchedulingPolicy, LifecycleWalGrowthPolicy,
 };
 #[allow(
     unused_imports,
@@ -145,7 +145,8 @@ pub(crate) use health::{
 )]
 pub(crate) use maintenance::{
     maintenance_ready_for_recovery_health, telemetry_health_debt, LifecycleMaintenanceExecutor,
-    LifecycleMaintenanceStats, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
+    LifecycleMaintenanceStats, LifecyclePostCommitMaintenanceOutcome,
+    LifecyclePostCommitMaintenanceStatus, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
     MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceEnqueueOutcome,
     MaintenanceExecutorStatus, MaintenanceFaultHook, MaintenanceFaultPoint,
     MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
