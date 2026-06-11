@@ -1007,6 +1007,39 @@ Replacement proof:
    version unchanged;
 3. API/L9 mapping tests must keep the error storage-shaped and hide L7 internals.
 
+## Measured Optimization Gates
+
+These gates are intentionally measure-first. The baseline measurement on
+2026-06-11 used `benchmarks/src/bin/storage_next_l9_scale.rs` against
+storage-next commit `306b9184`:
+
+```text
+cargo run --release --manifest-path benchmarks/Cargo.toml \
+  --bin storage-next-l9-scale -- \
+  --scales 100k --engines standard --workloads load-seq \
+  --batch-size 1000 --value-bytes 64 \
+  --root /tmp/strata-l7-gates \
+  --results-dir /tmp/strata-l7-gates-results
+```
+
+The run loaded 100,000 rows through 100 durable commits at 644,777 rows/s.
+It also ran targeted `perf-trace` L7 tests for replay classification,
+branch-registry scaling, global durable-admission contention, and same-branch
+guard contention.
+
+| Gate | Current status | Measurement result | Re-evaluate when |
+|---|---|---|---|
+| Replay bulk classification | Deferred | The L9 load workload has no recovery, so `replay_classification_calls=0`, `replay_rows_classified=0`, `replay_history_calls=0`, and `replay_source_probes=0`. Targeted replay tests confirm one history call per row in the current classifier, but only a single-source fixture was exercised. | Recovery telemetry shows `commit_replay_history_calls > 10000` in one replay pass and `commit_replay_source_probes / commit_replay_rows_classified > 1`. |
+| Indexed branch registry lookup | Deferred | Single-branch L9 load is the best case: `commit_branch_registry_lookups=200` and `commit_branch_registry_descriptors_scanned=200`. The 1,024-branch scale test confirms the intentional linear shape with 2,048 descriptors scanned for two lookups. | A real workload registers more than 100 active branches and `commit_branch_registry_descriptors_scanned / commit_branch_registry_lookups > 10`, or branch admission latency becomes visible in a high-branch-count benchmark. |
+| WAL encode buffer pooling | Closed | Durable L9 load stressed the relevant path: `commit_wal_encode_buffer_allocations=3`, `commit_wal_encode_buffer_reuses=397`, `commit_wal_records_built=100`, and `commit_wal_record_rows=100200`. Buffer reuse was 99.25 percent, so durable commit throughput is not allocating fresh WAL encode buffers per commit. | Re-open only if a future durable workload shows low reuse, for example `commit_wal_encode_buffer_reuses / (allocations + reuses) < 0.95`, together with WAL build time or allocator profiling as a throughput bottleneck. |
+| Per-branch concurrent commit admission | Deferred | Sequential L9 load does not exercise contention: `commit_unresolved_gate_admission_attempts=100`, `commit_unresolved_gate_admission_acquired=100`, `commit_unresolved_gate_rejected_active=0`, and `commit_unresolved_gate_rejected_unresolved=0`. Targeted tests prove cross-branch contenders fail fast before WAL while the global admission token is held. | A concurrent multi-branch benchmark exists and `commit_unresolved_gate_rejected_active / commit_unresolved_gate_admission_attempts > 0.05`, or multi-tenant callers show global admission as the dominant commit bottleneck. |
+| Same-branch blocking admission | Deferred | Sequential L9 load does not exercise branch-guard contention: `commit_branch_guard_attempts=100`, `commit_branch_guard_acquired=100`, and `commit_branch_guard_rejected=0`. Targeted tests prove `BranchGuardUnavailable` fails before conflict validation, allocation, WAL append, and visible publication. | L8 or L9 grows retry loops around `BranchGuardUnavailable`, or a same-branch concurrent writer benchmark shows guard rejection as a sustained caller-visible retry cost. |
+
+Deferral means the triggering workload was not exercised by the L9 load
+measurement. It is not proof that the optimization will never matter. The WAL
+buffer-pooling gate is the exception: the measured workload exercised the
+durable WAL encode path directly and showed high reuse.
+
 ## Open Questions
 
 1. What exact storage-shaped read facts should M4P-L9B expose for future
