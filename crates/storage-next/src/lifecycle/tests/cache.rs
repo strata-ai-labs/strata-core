@@ -325,6 +325,45 @@ fn cache_commit_coalesces_repeated_post_commit_flush_suggestions() {
 }
 
 #[test]
+fn cache_coalesced_flush_task_drains_all_currently_frozen_tables() {
+    let branch = branch_id(0x79);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"drain-coalesce-a", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate first frozen table");
+    commit_cache_put(&mut runtime, branch, b"drain-coalesce-b", 2_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate second frozen table");
+    commit_cache_put(&mut runtime, branch, b"drain-coalesce-c", 3_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate third frozen table");
+    commit_cache_put(&mut runtime, branch, b"drain-coalesce-d", 4_000);
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.stats().enqueued(), 1);
+    assert_eq!(status.stats().coalesced(), 2);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 3);
+
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(flush.stats().maintenance_tasks(), 3);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 0);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 3);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
 fn cache_post_commit_flush_coalescing_is_branch_scoped() {
     let branch_a = branch_id(0x6e);
     let branch_b = branch_id(0x6f);
@@ -361,6 +400,86 @@ fn cache_post_commit_flush_coalescing_is_branch_scoped() {
     assert_eq!(status.pending_tasks(), 2);
     assert_eq!(status.stats().enqueued(), 2);
     assert_eq!(status.stats().coalesced(), 1);
+}
+
+#[test]
+fn cache_global_flush_task_drains_branches_in_deterministic_order() {
+    let branch_a = branch_id(0x61);
+    let branch_b = branch_id(0x62);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch_a, &backend);
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create second branch");
+
+    commit_cache_put(&mut runtime, branch_a, b"global-flush-a", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch_a)
+        .expect("rotate branch-a active table");
+    commit_cache_put(&mut runtime, branch_b, b"global-flush-b", 2_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch_b)
+        .expect("rotate branch-b active table");
+
+    runtime
+        .enqueue_maintenance(
+            MaintenanceTaskRequest::new(
+                MaintenanceTaskKind::Flush,
+                MaintenanceTaskPriority::Normal,
+                MaintenanceTaskScope::Global,
+                MaintenanceTaskPolicy::coalescing(),
+            )
+            .expect("global flush task"),
+        )
+        .expect("enqueue global flush");
+
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run global flush")
+        .expect("flush task");
+
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(flush.task_scope(), Some(MaintenanceTaskScope::Global));
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(flush.stats().maintenance_tasks(), 2);
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_a)
+            .expect("branch-a")
+            .frozen_table_count(),
+        0
+    );
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_b)
+            .expect("branch-b")
+            .frozen_table_count(),
+        0
+    );
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_a)
+            .expect("branch-a")
+            .owned_levels()[0]
+            .len(),
+        1
+    );
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_b)
+            .expect("branch-b")
+            .owned_levels()[0]
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -605,6 +724,43 @@ fn cache_post_commit_maintenance_perf_trace_counts_suggestions_and_coalescing() 
     assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_coalesced(), 1);
     assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_deferred(), 0);
     assert_eq!(perf.lifecycle_post_commit_maintenance_disabled(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_flush_drain_perf_trace_counts_discovered_completed_and_remaining_tables() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x7a);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"drain-perf-a", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate first frozen table");
+    commit_cache_put(&mut runtime, branch, b"drain-perf-b", 2_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate second frozen table");
+    commit_cache_put(&mut runtime, branch, b"drain-perf-c", 3_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate third frozen table");
+    commit_cache_put(&mut runtime, branch, b"drain-perf-d", 4_000);
+    crate::observability::perf_trace::reset();
+
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_flush_drain_frozen_tables_discovered(), 3);
+    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 3);
+    assert_eq!(perf.lifecycle_flush_drain_freeze_retries(), 0);
+    assert_eq!(perf.lifecycle_flush_drain_failures(), 0);
+    assert_eq!(perf.lifecycle_flush_drain_post_drain_frozen_tables(), 0);
 }
 
 #[cfg(feature = "perf-trace")]

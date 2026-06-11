@@ -7,7 +7,12 @@ use super::{
         compact_cache_branch_to_fixed_point, compaction_request_from_maintenance_task,
         materialization_request_from_maintenance_task, materialize_cache_branch,
     },
-    flush::{flush_cache_branch_with_budget, flush_request_from_maintenance_task},
+    flush::{
+        flush_branch_drain_with, flush_cache_branch_with_budget,
+        flush_drain_maintenance_outcome_for_scope,
+        flush_drain_request_for_branch_from_maintenance_task,
+        flush_drain_request_from_maintenance_task,
+    },
     require_maintenance_enqueue_budget, require_rotate_budget, snapshot_with_runtime_usage,
     validate_backend_capabilities_for_open, BudgetedCommitBranch, CloseOutcome,
     CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase, FlushFrozenOutcome, FlushFrozenRequest,
@@ -661,28 +666,19 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
         require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let Some(task) = self.maintenance.next_matching_task(|task| {
-            task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
-        }) else {
+        if self
+            .maintenance
+            .next_matching_task(|task| {
+                task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
+            })
+            .is_none()
+        {
             return Ok(None);
-        };
-        let branch_id = branch_id_from_branch_task(task)?;
-        // Pre-sync the shadow into the catalog so any direct shadow
-        // mutations (e.g. test-only branch_state_mut writes) are visible
-        // when the runner fetches branch state via the catalog.
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
+        }
         let outcome = {
             let maintenance = &mut self.maintenance;
-            let branch = self
-                .branch_catalog
-                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             let mut runner = CacheFlushMaintenanceRunner {
-                branch,
+                branch_catalog: &mut self.branch_catalog,
                 budget: &self.budget,
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
@@ -910,10 +906,15 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         match task.kind() {
             MaintenanceTaskKind::Flush => {
-                let request = flush_request_from_maintenance_task(task)?;
+                let request = flush_drain_request_from_maintenance_task(task)?;
                 Ok(
-                    flush_cache_branch_with_budget(self.branch, &request, Some(self.budget))?
-                        .maintenance_outcome(),
+                    flush_branch_drain_with(self.branch, &request, |branch, request| {
+                        Ok(
+                            flush_cache_branch_with_budget(branch, request, Some(self.budget))?
+                                .maintenance_outcome(),
+                        )
+                    })?
+                    .maintenance_outcome(),
                 )
             }
             MaintenanceTaskKind::Compaction => {
@@ -945,17 +946,52 @@ const fn cache_unsupported_drain_reason(_kind: MaintenanceTaskKind) -> &'static 
 }
 
 struct CacheFlushMaintenanceRunner<'a> {
-    branch: &'a mut BranchLocalState,
+    branch_catalog: &'a mut LifecycleBranchCatalog,
     budget: &'a StorageBudgetLedger,
 }
 
 impl MaintenanceTaskRunner for CacheFlushMaintenanceRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let request = flush_request_from_maintenance_task(task)?;
-        Ok(
-            flush_cache_branch_with_budget(self.branch, &request, Some(self.budget))?
-                .maintenance_outcome(),
-        )
+        let mut outcomes = Vec::new();
+        for descriptor in flush_branch_descriptors(self.branch_catalog, task)? {
+            let branch_id = descriptor.branch_id();
+            let request = flush_drain_request_for_branch_from_maintenance_task(task, branch_id)?;
+            let branch = self.branch_catalog.branch_state_mut(
+                branch_id,
+                CommitBranchGenerationGuard::exact(descriptor.generation()),
+            )?;
+            outcomes.push(flush_branch_drain_with(
+                branch,
+                &request,
+                |branch, request| {
+                    Ok(
+                        flush_cache_branch_with_budget(branch, request, Some(self.budget))?
+                            .maintenance_outcome(),
+                    )
+                },
+            )?);
+        }
+        Ok(flush_drain_maintenance_outcome_for_scope(&outcomes))
+    }
+}
+
+fn flush_branch_descriptors(
+    branch_catalog: &LifecycleBranchCatalog,
+    task: &MaintenanceTask,
+) -> LifecycleResult<Vec<LifecycleBranchDescriptor>> {
+    flush_branch_descriptors_for_scope(branch_catalog, task.scope())
+}
+
+fn flush_branch_descriptors_for_scope(
+    branch_catalog: &LifecycleBranchCatalog,
+    scope: MaintenanceTaskScope,
+) -> LifecycleResult<Vec<LifecycleBranchDescriptor>> {
+    match scope {
+        MaintenanceTaskScope::Branch(branch_id) => Ok(vec![branch_catalog.lookup(branch_id)?]),
+        MaintenanceTaskScope::Global => Ok(branch_catalog.list_branches(false)),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "flush task must target a branch or global scope",
+        }),
     }
 }
 
@@ -1115,15 +1151,6 @@ fn bind_materialization_request_in_catalog(
     let branch = branch_catalog
         .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
     bind_materialization_task_for_enqueue(branch, request)
-}
-
-const fn branch_id_from_branch_task(task: MaintenanceTask) -> LifecycleResult<BranchId> {
-    match task.scope() {
-        MaintenanceTaskScope::Branch(branch_id) => Ok(branch_id),
-        _ => Err(LifecycleError::MaintenanceTaskFailed {
-            reason: "maintenance task must target a branch",
-        }),
-    }
 }
 
 const fn branch_id_from_table_level_task(task: MaintenanceTask) -> LifecycleResult<BranchId> {

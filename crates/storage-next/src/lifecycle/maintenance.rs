@@ -516,6 +516,14 @@ impl MaintenanceTaskRequest {
                 reason: "maintenance task scope does not match task kind",
             });
         }
+        if self.kind == MaintenanceTaskKind::Flush
+            && self.scope == MaintenanceTaskScope::Global
+            && self.policy.close_policy() == MaintenanceClosePolicy::DrainBeforeClose
+        {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "global flush tasks cannot be drained during close",
+            });
+        }
         if self.checkpoint_options.is_some() && self.kind != MaintenanceTaskKind::Checkpoint {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "checkpoint options require a checkpoint task",
@@ -1288,34 +1296,43 @@ fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) ->
         (
             MaintenanceTaskKind::Flush | MaintenanceTaskKind::Purge | MaintenanceTaskKind::Repair,
             MaintenanceTaskScope::Branch(_)
-        ) | (
-            MaintenanceTaskKind::Checkpoint,
-            MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
-        ) | (
-            MaintenanceTaskKind::WalTruncation | MaintenanceTaskKind::FlushWatermark,
-            MaintenanceTaskScope::Wal
-        ) | (
-            MaintenanceTaskKind::Compaction,
-            MaintenanceTaskScope::TableLevel { .. }
-        ) | (
-            MaintenanceTaskKind::Materialization,
-            MaintenanceTaskScope::InheritedLayer { .. }
-        ) | (
-            MaintenanceTaskKind::SnapshotPruning,
-            MaintenanceTaskScope::Retention
-        ) | (
-            MaintenanceTaskKind::Retention,
-            MaintenanceTaskScope::Retention | MaintenanceTaskScope::Branch(_)
-        ) | (
-            MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
-            MaintenanceTaskScope::Quarantine
-        ) | (
-            MaintenanceTaskKind::Repair,
-            MaintenanceTaskScope::Quarantine | MaintenanceTaskScope::Global
-        ) | (
-            MaintenanceTaskKind::HealthCollection,
-            MaintenanceTaskScope::Global
-        )
+        ) | (MaintenanceTaskKind::Flush, MaintenanceTaskScope::Global)
+            | (
+                MaintenanceTaskKind::Checkpoint,
+                MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
+            )
+            | (
+                MaintenanceTaskKind::WalTruncation | MaintenanceTaskKind::FlushWatermark,
+                MaintenanceTaskScope::Wal
+            )
+            | (
+                MaintenanceTaskKind::Compaction,
+                MaintenanceTaskScope::TableLevel { .. }
+            )
+            | (
+                MaintenanceTaskKind::Materialization,
+                MaintenanceTaskScope::InheritedLayer { .. }
+            )
+            | (
+                MaintenanceTaskKind::SnapshotPruning,
+                MaintenanceTaskScope::Retention
+            )
+            | (
+                MaintenanceTaskKind::Retention,
+                MaintenanceTaskScope::Retention | MaintenanceTaskScope::Branch(_)
+            )
+            | (
+                MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
+                MaintenanceTaskScope::Quarantine
+            )
+            | (
+                MaintenanceTaskKind::Repair,
+                MaintenanceTaskScope::Quarantine | MaintenanceTaskScope::Global
+            )
+            | (
+                MaintenanceTaskKind::HealthCollection,
+                MaintenanceTaskScope::Global
+            )
     )
 }
 

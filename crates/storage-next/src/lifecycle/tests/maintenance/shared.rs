@@ -3,12 +3,13 @@ use std::error::Error;
 use std::fmt;
 use strata_core_next::BranchId;
 
-pub(super) fn valid_kind_scopes() -> [(MaintenanceTaskKind, MaintenanceTaskScope); 15] {
+pub(super) fn valid_kind_scopes() -> [(MaintenanceTaskKind, MaintenanceTaskScope); 16] {
     [
         (
             MaintenanceTaskKind::Flush,
             MaintenanceTaskScope::Branch(branch_id(1)),
         ),
+        (MaintenanceTaskKind::Flush, MaintenanceTaskScope::Global),
         (
             MaintenanceTaskKind::Checkpoint,
             MaintenanceTaskScope::Checkpoint,

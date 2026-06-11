@@ -13,15 +13,33 @@ fn maintenance_task_request_validates_kind_scope_pairs() {
         MaintenanceTaskPolicy::coalescing(),
     )
     .is_ok());
+    assert!(MaintenanceTaskRequest::new(
+        MaintenanceTaskKind::Flush,
+        MaintenanceTaskPriority::Normal,
+        MaintenanceTaskScope::Global,
+        MaintenanceTaskPolicy::coalescing(),
+    )
+    .is_ok());
+    assert_eq!(
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::Flush,
+            MaintenanceTaskPriority::Normal,
+            MaintenanceTaskScope::Wal,
+            MaintenanceTaskPolicy::coalescing(),
+        ),
+        Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "maintenance task scope does not match task kind",
+        })
+    );
     assert_eq!(
         MaintenanceTaskRequest::new(
             MaintenanceTaskKind::Flush,
             MaintenanceTaskPriority::Normal,
             MaintenanceTaskScope::Global,
-            MaintenanceTaskPolicy::coalescing(),
+            MaintenanceTaskPolicy::drain_before_close(),
         ),
         Err(LifecycleError::MaintenanceTaskFailed {
-            reason: "maintenance task scope does not match task kind",
+            reason: "global flush tasks cannot be drained during close",
         })
     );
 }

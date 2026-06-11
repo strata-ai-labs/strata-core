@@ -14,7 +14,9 @@ use crate::commit::{
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation, CommitOrigin,
     CommitRetentionHint, CommitRuntimeConfig, CommitValidationFacts,
 };
-use crate::lifecycle::flush::{flush_cache_branch, flush_durable_branch};
+use crate::lifecycle::flush::{
+    flush_branch_drain_with, flush_cache_branch, flush_durable_branch, FlushDrainRequest,
+};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::service::{
@@ -160,6 +162,140 @@ fn cache_flush_replaces_oldest_frozen_table_and_preserves_reads() {
         .expect("newer visible");
     assert_eq!(newer_visible.row(), &newer);
     assert_eq!(newer_visible.source(), BranchRowSource::Frozen { index: 0 });
+}
+
+#[test]
+fn cache_flush_drain_flushes_all_currently_frozen_tables() {
+    let branch = branch_id(0x7a);
+    let mut state = multi_frozen_branch(
+        branch,
+        [
+            put_row(branch, b"drain-first", 1, 1_000, b"first"),
+            put_row(branch, b"drain-second", 2, 2_000, b"second"),
+            put_row(branch, b"drain-third", 3, 3_000, b"third"),
+        ],
+    );
+
+    let outcome = flush_branch_drain_with(
+        &mut state,
+        &flush_drain_request(branch),
+        |branch, request| Ok(flush_cache_branch(branch, request)?.maintenance_outcome()),
+    )
+    .expect("flush drain");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(outcome.branch_id(), branch);
+    assert_eq!(outcome.frozen_tables_discovered(), 3);
+    assert_eq!(outcome.completed_flushes(), 3);
+    assert_eq!(outcome.deferred_flushes(), 0);
+    assert_eq!(outcome.failed_flushes(), 0);
+    assert_eq!(outcome.skipped_flushes(), 0);
+    assert_eq!(outcome.post_drain_frozen_tables(), 0);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(maintenance.stats().maintenance_tasks(), 3);
+    assert_eq!(state.frozen_table_count(), 0);
+    assert_eq!(state.owned_levels()[0].len(), 3);
+}
+
+#[test]
+fn cache_flush_drain_without_frozen_state_is_skipped() {
+    let branch = branch_id(0x7b);
+    let mut state = BranchLocalState::empty(branch);
+
+    let outcome = flush_branch_drain_with(
+        &mut state,
+        &flush_drain_request(branch),
+        |branch, request| Ok(flush_cache_branch(branch, request)?.maintenance_outcome()),
+    )
+    .expect("flush drain");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(outcome.branch_id(), branch);
+    assert_eq!(outcome.frozen_tables_discovered(), 0);
+    assert_eq!(outcome.completed_flushes(), 0);
+    assert_eq!(outcome.skipped_flushes(), 1);
+    assert_eq!(outcome.post_drain_frozen_tables(), 0);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        maintenance.reason(),
+        Some("flush drain has no frozen state to publish")
+    );
+}
+
+#[test]
+fn cache_flush_drain_retries_when_new_frozen_state_appears_during_drain() {
+    let branch = branch_id(0x7c);
+    let mut state = frozen_branch(branch, put_row(branch, b"drain-seed", 1, 1_000, b"seed"));
+    let mut injected = false;
+    let request = flush_drain_request(branch).with_freeze_during_drain_retry_limit(1);
+
+    let outcome = flush_branch_drain_with(&mut state, &request, |branch, request| {
+        let outcome = flush_cache_branch(branch, request)?.maintenance_outcome();
+        if !injected {
+            injected = true;
+            branch
+                .append_committed_row(put_row(
+                    branch.branch_id(),
+                    b"drain-injected",
+                    2,
+                    2_000,
+                    b"new",
+                ))
+                .expect("append injected row");
+            branch.rotate_active();
+        }
+        Ok(outcome)
+    })
+    .expect("flush drain");
+
+    assert_eq!(outcome.frozen_tables_discovered(), 1);
+    assert_eq!(outcome.completed_flushes(), 2);
+    assert_eq!(outcome.freeze_during_drain_retries(), 1);
+    assert_eq!(outcome.post_drain_frozen_tables(), 0);
+    assert_eq!(
+        outcome.maintenance_outcome().status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_eq!(state.frozen_table_count(), 0);
+    assert_eq!(state.owned_levels()[0].len(), 2);
+}
+
+#[test]
+fn cache_flush_drain_defers_when_freeze_retry_limit_is_exhausted() {
+    let branch = branch_id(0x7d);
+    let mut state = frozen_branch(branch, put_row(branch, b"drain-limit", 1, 1_000, b"seed"));
+    let request = flush_drain_request(branch).with_freeze_during_drain_retry_limit(0);
+
+    let outcome = flush_branch_drain_with(&mut state, &request, |branch, request| {
+        let outcome = flush_cache_branch(branch, request)?.maintenance_outcome();
+        branch
+            .append_committed_row(put_row(
+                branch.branch_id(),
+                b"drain-limit-new",
+                2,
+                2_000,
+                b"new",
+            ))
+            .expect("append injected row");
+        branch.rotate_active();
+        Ok(outcome)
+    })
+    .expect("flush drain");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(outcome.frozen_tables_discovered(), 1);
+    assert_eq!(outcome.completed_flushes(), 1);
+    assert_eq!(outcome.freeze_during_drain_retries(), 0);
+    assert_eq!(outcome.deferred_flushes(), 1);
+    assert_eq!(outcome.post_drain_frozen_tables(), 1);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert!(maintenance.recovery_health().is_some());
+    assert_eq!(
+        maintenance.reason(),
+        Some("flush drain left deferred frozen state")
+    );
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(state.owned_levels()[0].len(), 1);
 }
 
 #[test]
@@ -1327,6 +1463,14 @@ fn flush_request(branch: BranchId, frozen_index: Option<usize>) -> FlushFrozenRe
     .expect("flush request")
 }
 
+fn flush_drain_request(branch: BranchId) -> FlushDrainRequest {
+    FlushDrainRequest::new(
+        branch,
+        FlushTableIdentitySeed::new("flush-drain-seed").expect("seed"),
+        FlushTableObjectId::new("flush-drain-object").expect("object id"),
+    )
+}
+
 fn cache_open_request(branch: BranchId) -> LifecycleCacheOpenRequest {
     LifecycleCacheOpenRequest::new(
         StorageOpenPlan::new(
@@ -1423,6 +1567,18 @@ fn frozen_branch(branch: BranchId, row: StorageRow) -> BranchLocalState {
     let mut state = BranchLocalState::empty(branch);
     state.append_committed_row(row).expect("append row");
     state.rotate_active();
+    state
+}
+
+fn multi_frozen_branch<const N: usize>(
+    branch: BranchId,
+    rows: [StorageRow; N],
+) -> BranchLocalState {
+    let mut state = BranchLocalState::empty(branch);
+    for row in rows {
+        state.append_committed_row(row).expect("append row");
+        state.rotate_active();
+    }
     state
 }
 

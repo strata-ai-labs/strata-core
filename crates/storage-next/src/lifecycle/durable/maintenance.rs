@@ -20,7 +20,8 @@ use crate::lifecycle::compaction::{
     materialization_request_from_maintenance_task,
 };
 use crate::lifecycle::flush::{
-    flush_durable_branch_with_budget, flush_request_from_maintenance_task,
+    flush_branch_drain_with, flush_drain_maintenance_outcome_for_scope,
+    flush_drain_request_for_branch_from_maintenance_task, flush_durable_branch_with_budget,
 };
 use crate::lifecycle::maintenance::schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance;
 use crate::lifecycle::retention::{
@@ -756,31 +757,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         task_id: MaintenanceTaskId,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let Some(task) = self.maintenance.next_matching_task(|task| {
-            task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
-        }) else {
+        if self
+            .maintenance
+            .next_matching_task(|task| {
+                task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
+            })
+            .is_none()
+        {
             return Ok(None);
-        };
-        let branch_id = branch_id_from_branch_task(task)?;
-        // Pre-sync shadow into catalog so the runner sees direct shadow
-        // mutations (test-only) before fetching from the catalog.
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
+        }
         let outcome = {
             let maintenance = &mut self.maintenance;
-            let branch = self
-                .branch_catalog
-                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             let table_object = self.services.table_object();
             let table_reader = self.services.table_reader();
             let table_manifest = self.services.table_manifest();
             let table_catalog = &mut self.table_catalog;
             let mut runner = DurableFlushMaintenanceRunner {
-                branch,
+                branch_catalog: &mut self.branch_catalog,
                 table_object,
                 table_reader,
                 table_manifest,
@@ -1165,7 +1158,7 @@ const fn health_rank(health: &RecoveryHealth) -> u8 {
 }
 
 struct DurableFlushMaintenanceRunner<'a, 'b> {
-    branch: &'a mut BranchLocalState,
+    branch_catalog: &'a mut crate::lifecycle::LifecycleBranchCatalog,
     table_object: &'a TableObjectService<'b>,
     table_reader: &'a TableObjectReaderService<'b>,
     table_manifest: &'a TableManifestService<'b>,
@@ -1175,29 +1168,44 @@ struct DurableFlushMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let request = flush_request_from_maintenance_task(task)?;
-        let outcome = flush_durable_branch_with_budget(
-            self.branch,
-            self.table_object,
-            self.table_reader,
-            &request,
-            Some(self.budget),
-        )?;
-        let maintenance_outcome = outcome.maintenance_outcome();
-        if let Some(error) = publish_table_manifest_after_flush(
-            self.branch,
-            self.table_manifest,
-            self.table_catalog,
-            Some(self.budget),
-            &outcome,
-        ) {
-            return Ok(table_manifest_debt_outcome(maintenance_outcome, error));
+        let mut outcomes = Vec::new();
+        for descriptor in flush_branch_descriptors(self.branch_catalog, task)? {
+            let branch_id = descriptor.branch_id();
+            let request = flush_drain_request_for_branch_from_maintenance_task(task, branch_id)?;
+            let branch = self.branch_catalog.branch_state_mut(
+                branch_id,
+                CommitBranchGenerationGuard::exact(descriptor.generation()),
+            )?;
+            outcomes.push(flush_branch_drain_with(
+                branch,
+                &request,
+                |branch, request| {
+                    let outcome = flush_durable_branch_with_budget(
+                        branch,
+                        self.table_object,
+                        self.table_reader,
+                        request,
+                        Some(self.budget),
+                    )?;
+                    let maintenance_outcome = outcome.maintenance_outcome();
+                    if let Some(error) = publish_table_manifest_after_flush(
+                        branch,
+                        self.table_manifest,
+                        self.table_catalog,
+                        Some(self.budget),
+                        &outcome,
+                    ) {
+                        return Ok(table_manifest_debt_outcome(maintenance_outcome, error));
+                    }
+                    Ok(maintenance_outcome)
+                },
+            )?);
         }
-        Ok(maintenance_outcome)
+        Ok(flush_drain_maintenance_outcome_for_scope(&outcomes))
     }
 }
 
-fn publish_table_manifest_after_flush(
+pub(super) fn publish_table_manifest_after_flush(
     branch: &BranchLocalState,
     service: &TableManifestService<'_>,
     catalog: &mut crate::lifecycle::LifecycleDurableTableCatalog,
@@ -1216,6 +1224,26 @@ fn publish_table_manifest_after_flush(
     }
     publish_table_manifest_for_branch_with_budget(branch, service, catalog, budget)
         .map_or_else(Some, |_| None)
+}
+
+fn flush_branch_descriptors(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    task: &MaintenanceTask,
+) -> LifecycleResult<Vec<crate::lifecycle::LifecycleBranchDescriptor>> {
+    flush_branch_descriptors_for_scope(branch_catalog, task.scope())
+}
+
+fn flush_branch_descriptors_for_scope(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    scope: MaintenanceTaskScope,
+) -> LifecycleResult<Vec<crate::lifecycle::LifecycleBranchDescriptor>> {
+    match scope {
+        MaintenanceTaskScope::Branch(branch_id) => Ok(vec![branch_catalog.lookup(branch_id)?]),
+        MaintenanceTaskScope::Global => Ok(branch_catalog.list_branches(false)),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "flush task must target a branch or global scope",
+        }),
+    }
 }
 
 struct DurableCheckpointMaintenanceRunner<'a, 'b> {
@@ -2000,17 +2028,6 @@ fn bind_materialization_request_in_catalog(
     let branch = branch_catalog
         .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
     bind_materialization_task_for_enqueue(branch, request)
-}
-
-const fn branch_id_from_branch_task(
-    task: MaintenanceTask,
-) -> LifecycleResult<strata_core_next::BranchId> {
-    match task.scope() {
-        MaintenanceTaskScope::Branch(branch_id) => Ok(branch_id),
-        _ => Err(LifecycleError::MaintenanceTaskFailed {
-            reason: "maintenance task must target a branch",
-        }),
-    }
 }
 
 const fn branch_id_from_table_level_task(

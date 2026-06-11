@@ -13,10 +13,12 @@ use crate::lifecycle::compaction::{
     materialization_request_from_maintenance_task, materialize_durable_branch,
 };
 use crate::lifecycle::durable::maintenance::{
-    checkpoint_created_at, durable_quarantine_service_error, purge_branch_id_from_task,
+    checkpoint_created_at, durable_quarantine_service_error, publish_table_manifest_after_flush,
+    purge_branch_id_from_task,
 };
 use crate::lifecycle::flush::{
-    flush_durable_branch_with_budget, flush_request_from_maintenance_task,
+    flush_branch_drain_with, flush_drain_request_from_maintenance_task,
+    flush_durable_branch_with_budget,
 };
 use crate::lifecycle::retention::{
     build_retention_proof, build_retention_proof_from_facts, prune_snapshots_with_proof,
@@ -116,6 +118,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             next_snapshot_id: &mut self.next_checkpoint_snapshot_id,
             health: self.current_recovery_health.clone(),
             budget: &self.budget,
+            table_catalog: &mut self.table_catalog,
         };
         let active = match self
             .maintenance
@@ -280,21 +283,40 @@ struct DurableCloseMaintenanceRunner<'a, 'b> {
     next_snapshot_id: &'a mut u64,
     health: RecoveryHealth,
     budget: &'a StorageBudgetLedger,
+    table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
 }
 
 impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         match task.kind() {
             MaintenanceTaskKind::Flush => {
-                let request = flush_request_from_maintenance_task(task)?;
-                Ok(flush_durable_branch_with_budget(
-                    self.branch,
-                    self.services.table_object(),
-                    self.services.table_reader(),
-                    &request,
-                    Some(self.budget),
-                )?
-                .maintenance_outcome())
+                let request = flush_drain_request_from_maintenance_task(task)?;
+                Ok(
+                    flush_branch_drain_with(self.branch, &request, |branch, request| {
+                        let outcome = flush_durable_branch_with_budget(
+                            branch,
+                            self.services.table_object(),
+                            self.services.table_reader(),
+                            request,
+                            Some(self.budget),
+                        )?;
+                        let maintenance_outcome = outcome.maintenance_outcome();
+                        if let Some(error) = publish_table_manifest_after_flush(
+                            branch,
+                            self.services.table_manifest(),
+                            self.table_catalog,
+                            Some(self.budget),
+                            &outcome,
+                        ) {
+                            return Ok(crate::lifecycle::table_manifest_debt_outcome(
+                                maintenance_outcome,
+                                error,
+                            ));
+                        }
+                        Ok(maintenance_outcome)
+                    })?
+                    .maintenance_outcome(),
+                )
             }
             MaintenanceTaskKind::Checkpoint => self.run_checkpoint(task),
             MaintenanceTaskKind::FlushWatermark => Ok(MaintenanceOutcome::new(

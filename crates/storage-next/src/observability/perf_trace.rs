@@ -112,6 +112,11 @@ pub struct StoragePerfSnapshot {
     lifecycle_post_commit_maintenance_tasks_enqueued: u64,
     lifecycle_post_commit_maintenance_tasks_coalesced: u64,
     lifecycle_post_commit_maintenance_tasks_deferred: u64,
+    lifecycle_flush_drain_frozen_tables_discovered: u64,
+    lifecycle_flush_drain_operations_completed: u64,
+    lifecycle_flush_drain_freeze_retries: u64,
+    lifecycle_flush_drain_failures: u64,
+    lifecycle_flush_drain_post_drain_frozen_tables: u64,
     commit_branch_registry_lookups: u64,
     commit_branch_registry_descriptors_scanned: u64,
     commit_branch_guard_attempts: u64,
@@ -522,6 +527,31 @@ impl StoragePerfSnapshot {
     /// Post-commit maintenance tasks deferred by queue/admission failure.
     pub const fn lifecycle_post_commit_maintenance_tasks_deferred(self) -> u64 {
         self.lifecycle_post_commit_maintenance_tasks_deferred
+    }
+
+    /// Frozen tables observed at flush-drain start.
+    pub const fn lifecycle_flush_drain_frozen_tables_discovered(self) -> u64 {
+        self.lifecycle_flush_drain_frozen_tables_discovered
+    }
+
+    /// Concrete flush operations completed by branch flush drains.
+    pub const fn lifecycle_flush_drain_operations_completed(self) -> u64 {
+        self.lifecycle_flush_drain_operations_completed
+    }
+
+    /// Extra flush operations used for frozen state that appeared during a drain.
+    pub const fn lifecycle_flush_drain_freeze_retries(self) -> u64 {
+        self.lifecycle_flush_drain_freeze_retries
+    }
+
+    /// Failed concrete flush operations inside branch flush drains.
+    pub const fn lifecycle_flush_drain_failures(self) -> u64 {
+        self.lifecycle_flush_drain_failures
+    }
+
+    /// Frozen tables left after branch flush drains complete or defer.
+    pub const fn lifecycle_flush_drain_post_drain_frozen_tables(self) -> u64 {
+        self.lifecycle_flush_drain_post_drain_frozen_tables
     }
 
     /// Branch registry lookup calls made by commit admission.
@@ -1427,6 +1457,16 @@ static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED: AtomicU64 = AtomicU64:
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_DRAIN_FAILURES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_LOOKUPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED: AtomicU64 = AtomicU64::new(0);
@@ -1836,6 +1876,11 @@ pub fn reset() {
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_DRAIN_FAILURES.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_LOOKUPS.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_GUARD_ATTEMPTS.store(0, Ordering::Relaxed);
@@ -2069,6 +2114,15 @@ pub fn snapshot() -> StoragePerfSnapshot {
             LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_tasks_deferred:
             LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.load(Ordering::Relaxed),
+        lifecycle_flush_drain_frozen_tables_discovered:
+            LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.load(Ordering::Relaxed),
+        lifecycle_flush_drain_operations_completed: LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED
+            .load(Ordering::Relaxed),
+        lifecycle_flush_drain_freeze_retries: LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES
+            .load(Ordering::Relaxed),
+        lifecycle_flush_drain_failures: LIFECYCLE_FLUSH_DRAIN_FAILURES.load(Ordering::Relaxed),
+        lifecycle_flush_drain_post_drain_frozen_tables:
+            LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.load(Ordering::Relaxed),
         commit_branch_registry_lookups: COMMIT_BRANCH_REGISTRY_LOOKUPS.load(Ordering::Relaxed),
         commit_branch_registry_descriptors_scanned: COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED
             .load(Ordering::Relaxed),
@@ -2687,6 +2741,61 @@ pub(crate) fn record_lifecycle_post_commit_maintenance_deferred() {
         return;
     }
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_drain_frozen_tables_discovered(_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_drain_frozen_tables_discovered(count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.fetch_add(as_u64(count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_drain_operations_completed(_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_drain_operations_completed(count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED.fetch_add(as_u64(count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_drain_freeze_retries(_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_drain_freeze_retries(count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.fetch_add(as_u64(count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_drain_failures(_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_drain_failures(count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_FLUSH_DRAIN_FAILURES.fetch_add(as_u64(count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_drain_post_drain_frozen_tables(_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_drain_post_drain_frozen_tables(count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.fetch_add(as_u64(count), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

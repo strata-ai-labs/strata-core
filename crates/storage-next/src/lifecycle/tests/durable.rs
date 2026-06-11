@@ -20,7 +20,7 @@ use crate::format::{
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageSpaceId};
-use crate::service::WalServiceConfig;
+use crate::service::{TableManifestService, WalServiceConfig};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1084,6 +1084,111 @@ fn durable_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
     let status = runtime.maintenance_status();
     assert_eq!(status.pending_tasks(), 1);
     assert_eq!(status.stats().enqueued(), 1);
+}
+
+#[test]
+fn durable_coalesced_flush_task_drains_all_currently_frozen_tables() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x6f);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-drain-a", b"value-a"),
+            generation_guard(),
+        )
+        .expect("first durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate first frozen table");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-drain-b", b"value-b"),
+            generation_guard(),
+        )
+        .expect("second durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate second frozen table");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-drain-c", b"value-c"),
+            generation_guard(),
+        )
+        .expect("third durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate third frozen table");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-drain-d", b"value-d"),
+            generation_guard(),
+        )
+        .expect("fourth durable commit");
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.stats().enqueued(), 1);
+    assert_eq!(status.stats().coalesced(), 2);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 3);
+
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush task");
+
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(flush.stats().maintenance_tasks(), 3);
+    assert_eq!(flush.affected_objects(), 3);
+    assert!(flush.source_error().is_none());
+    assert!(flush.recovery_health().is_none());
+    assert_eq!(runtime.branch_state().frozen_table_count(), 0);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 3);
+    assert!(
+        backend
+            .operations()
+            .iter()
+            .filter(|operation| matches!(operation, Operation::Publish(_, PublishMode::Create)))
+            .count()
+            >= 3
+    );
+}
+
+#[test]
+fn durable_close_drain_flush_publishes_table_manifest() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x70);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"close-drain-flush", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate frozen table");
+    runtime
+        .enqueue_maintenance(drain_task(
+            MaintenanceTaskKind::Flush,
+            MaintenanceTaskScope::Branch(branch),
+            MaintenanceTaskPriority::Normal,
+        ))
+        .expect("enqueue close-drain flush");
+
+    let close = runtime.close().expect("close drains flush");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 0);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
+    let manifest = TableManifestService::new(&backend)
+        .load_required(branch)
+        .expect("table manifest");
+    assert_eq!(manifest.levels().len(), 1);
+    assert_eq!(manifest.levels()[0].tables().len(), 1);
 }
 
 #[test]
