@@ -178,6 +178,48 @@ fn cache_commit_records_admission_pressure_without_maintenance_work() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn cache_commit_records_byte_admission_pressure_without_maintenance_work() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(109);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(None, Some(64), None, Some(128))
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let key = physical_key(branch, 0x20, b"cache-byte-pressure".to_vec());
+    let mut fixture = CacheFixture::new(branch, config);
+    let batch = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            key,
+            vec![0x41; 256],
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    fixture
+        .execute(batch)
+        .expect("byte pressure-marked cache commit succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_admission_pressure_facts(), 1);
+    assert_eq!(perf.commit_admission_under_pressure(), 1);
+    assert_eq!(perf.commit_admission_accepted_under_pressure(), 1);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+    assert_eq!(perf.commit_admission_mutations(), 1);
+    assert!(perf.commit_admission_approx_bytes() >= 256);
+    assert_eq!(perf.commit_batches_prepared(), 1);
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_visible_publish_successes(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn cache_blind_delete_does_not_capture_conflict_read_view() {
     let branch = branch_id(104);
     let key = physical_key(branch, 0x20, b"blind-delete-cache".to_vec());
@@ -1108,7 +1150,13 @@ fn cache_unresolved_gate_perf_trace_stops_before_source_capture() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(103);
     let read_key = physical_key(branch, 0x20, b"unresolved-gate-read-fact".to_vec());
-    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let mut fixture = CacheFixture::new(branch, config);
     fixture
         .durable_gate
         .record_unresolved(unresolved_durable_fact(branch, CommitVersion::new(7)))
@@ -1143,9 +1191,9 @@ fn cache_unresolved_gate_perf_trace_stops_before_source_capture() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.commit_admission_pressure_facts(), 1);
-    assert_eq!(perf.commit_admission_under_pressure(), 0);
+    assert_eq!(perf.commit_admission_under_pressure(), 1);
     assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
-    assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 1);
     assert_eq!(perf.commit_admission_mutations(), 1);
     assert!(perf.commit_admission_approx_bytes() > 0);
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
@@ -1407,7 +1455,13 @@ fn cache_commit_guard_contention_rejects_before_allocation() {
 fn cache_commit_guard_contention_serializes_conflict_validation_window() {
     let branch = branch_id(40);
     let key = physical_key(branch, 0x20, b"guarded-conflict-window".to_vec());
-    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let mut fixture = CacheFixture::new(branch, config);
     fixture.seed_visible_row(StorageRow::put(
         key.clone(),
         CommitVersion::new(1),
@@ -1463,9 +1517,9 @@ fn cache_commit_guard_contention_serializes_conflict_validation_window() {
         assert_eq!(perf.commit_branch_guard_acquired(), 0);
         assert_eq!(perf.commit_branch_guard_rejected(), 1);
         assert_eq!(perf.commit_admission_pressure_facts(), 1);
-        assert_eq!(perf.commit_admission_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_under_pressure(), 1);
         assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
-        assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
         assert_eq!(perf.commit_admission_mutations(), 1);
         assert!(perf.commit_admission_approx_bytes() > 0);
         assert_eq!(perf.conflict_sources_built(), 0);

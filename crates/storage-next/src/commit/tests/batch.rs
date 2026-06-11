@@ -108,6 +108,41 @@ fn validated_batch_reports_admission_pressure_facts() {
 }
 
 #[test]
+fn validated_batch_reports_byte_based_admission_pressure_facts() {
+    let branch = branch_id(34);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(None, Some(64), None, Some(128))
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let batch = CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"byte-pressure-put".to_vec()),
+            vec![0x7a; 256],
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    );
+
+    let facts = batch
+        .validate(&config)
+        .expect("valid batch")
+        .admission_pressure_facts(&config)
+        .expect("pressure facts");
+
+    assert_eq!(facts.mutations(), 1);
+    assert_eq!(facts.puts(), 1);
+    assert_eq!(facts.deletes(), 0);
+    assert!(facts.approximate_commit_bytes() >= 256);
+    assert!(facts.under_pressure());
+    assert!(facts.would_require_maintenance());
+}
+
+#[test]
 fn commit_batch_options_cover_all_durability_modes() {
     let branch = branch_id(32);
     let cases = [

@@ -209,6 +209,52 @@ fn durable_commit_records_admission_pressure_before_wal_work() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn durable_commit_records_byte_admission_pressure_before_wal_work() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(109);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(None, Some(64), None, Some(128))
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let mut fixture = DurableFixture::new(
+        branch,
+        config,
+        DurabilityPolicy::Standard,
+        FakeWalMode::Succeed {
+            forced_durable: false,
+        },
+    );
+    let batch = durable_batch(
+        branch,
+        CommitDurabilityMode::Standard,
+        vec![CommitMutation::put(
+            physical_key(branch, 0x20, b"durable-byte-pressure".to_vec()),
+            vec![0x42; 256],
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+    );
+
+    fixture
+        .execute(batch)
+        .expect("byte pressure-marked durable commit succeeds");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_admission_pressure_facts(), 1);
+    assert_eq!(perf.commit_admission_under_pressure(), 1);
+    assert_eq!(perf.commit_admission_accepted_under_pressure(), 1);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+    assert_eq!(perf.commit_admission_mutations(), 1);
+    assert!(perf.commit_admission_approx_bytes() >= 256);
+    assert_eq!(perf.commit_wal_records_built(), 1);
+    assert_eq!(perf.commit_wal_appends(), 1);
+    assert_eq!(perf.commit_visible_publish_successes(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn durable_blind_delete_does_not_capture_conflict_read_view() {
     let branch = branch_id(104);
     let key = physical_key(branch, 0x20, b"blind-delete-durable".to_vec());
@@ -1222,9 +1268,15 @@ fn durable_malformed_validation_fact_rejects_before_admission_source_or_wal() {
 fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
     let branch = branch_id(64);
     let read_key = physical_key(branch, 0x20, b"durable-guard-read-fact".to_vec());
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
     let mut fixture = DurableFixture::new(
         branch,
-        CommitRuntimeConfig::default(),
+        config,
         DurabilityPolicy::Standard,
         FakeWalMode::Succeed {
             forced_durable: false,
@@ -1272,6 +1324,12 @@ fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
         assert_eq!(perf.commit_branch_guard_attempts(), 1);
         assert_eq!(perf.commit_branch_guard_acquired(), 0);
         assert_eq!(perf.commit_branch_guard_rejected(), 1);
+        assert_eq!(perf.commit_admission_pressure_facts(), 1);
+        assert_eq!(perf.commit_admission_under_pressure(), 1);
+        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+        assert_eq!(perf.commit_admission_mutations(), 1);
+        assert!(perf.commit_admission_approx_bytes() > 0);
         assert_eq!(perf.conflict_sources_built(), 0);
         assert_eq!(perf.read_view_captures(), 0);
         assert_eq!(perf.commit_conflict_validation_calls(), 0);
@@ -2044,9 +2102,15 @@ fn durable_unresolved_gate_perf_trace_stops_before_source_capture_and_wal() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(78);
     let read_key = physical_key(branch, 0x20, b"durable-unresolved-gate-read-fact".to_vec());
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
     let mut fixture = DurableFixture::new(
         branch,
-        CommitRuntimeConfig::default(),
+        config,
         DurabilityPolicy::Standard,
         FakeWalMode::Succeed {
             forced_durable: false,
@@ -2086,9 +2150,9 @@ fn durable_unresolved_gate_perf_trace_stops_before_source_capture_and_wal() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.commit_admission_pressure_facts(), 1);
-    assert_eq!(perf.commit_admission_under_pressure(), 0);
+    assert_eq!(perf.commit_admission_under_pressure(), 1);
     assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
-    assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+    assert_eq!(perf.commit_admission_requires_maintenance(), 1);
     assert_eq!(perf.commit_admission_mutations(), 1);
     assert!(perf.commit_admission_approx_bytes() > 0);
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);

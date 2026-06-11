@@ -148,6 +148,57 @@ fn lock_order_documentation_covers_commit_admission_sites() {
 }
 
 #[test]
+fn commit_runtime_sources_do_not_start_maintenance_work() {
+    let production_sources = [
+        ("allocator.rs", include_str!("../allocator.rs")),
+        ("batch.rs", include_str!("../batch.rs")),
+        ("branch_registry.rs", include_str!("../branch_registry.rs")),
+        ("cache.rs", include_str!("../cache.rs")),
+        ("config.rs", include_str!("../config.rs")),
+        ("conflict.rs", include_str!("../conflict.rs")),
+        ("durable.rs", include_str!("../durable.rs")),
+        ("durable_gate.rs", include_str!("../durable_gate.rs")),
+        ("error.rs", include_str!("../error.rs")),
+        ("facts.rs", include_str!("../facts.rs")),
+        ("guard.rs", include_str!("../guard.rs")),
+        ("outcome.rs", include_str!("../outcome.rs")),
+        ("replay.rs", include_str!("../replay.rs")),
+        ("timeline.rs", include_str!("../timeline.rs")),
+        ("visibility.rs", include_str!("../visibility.rs")),
+    ];
+    let forbidden_action_references = [
+        "MaintenanceTask",
+        "compact_cache_branch",
+        "compact_branch",
+        "flush_cache_branch",
+        "flush_branch",
+        "schedule_compaction",
+        "schedule_flush",
+        "schedule_maintenance",
+        "materialization",
+        "rate_limiter",
+        "thread::sleep",
+        "tokio::time::sleep",
+    ];
+    let roadmap_labels = [["M", "4", "P"].concat(), ["L", "7"].concat()];
+
+    for (name, source) in production_sources {
+        for label in &roadmap_labels {
+            assert!(
+                !source.contains(label),
+                "{name} contains roadmap label text"
+            );
+        }
+        for forbidden in forbidden_action_references {
+            assert!(
+                !source.contains(forbidden),
+                "{name} unexpectedly references {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
 fn cloned_guard_sets_share_branch_guard_state() {
     let branch = branch_id(117);
     let guard_set = CommitBranchGuardSet::new();
