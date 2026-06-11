@@ -12,6 +12,7 @@ use super::{
         table_rewrite_outcome_allows_chain_resubmit, table_rewrite_score_key_for_task,
         LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
     },
+    evaluate_mutating_write_admission,
     flush::{
         flush_branch_drain_with, flush_cache_branch_with_budget,
         flush_drain_maintenance_outcome_for_scope,
@@ -29,22 +30,23 @@ use super::{
     LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
     LifecyclePostCommitMaintenanceOutcome, LifecycleResult, LifecycleState, LifecycleStateMachine,
     LifecycleStats, LifecycleStoragePressure, LifecycleTransitionTrigger,
-    LifecycleWalGrowthOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
-    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
+    LifecycleWalGrowthOutcome, LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, RecoveryHealth,
+    StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenDisposition,
+    StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, BranchScanBounds};
 use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
-    CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
-    CommitCacheRuntime, CommitFactAllocator, CommitManualTimestampSource, CommitOutcome,
-    CommitRuntimeConfig, CommitRuntimeError, CommitTimestampGuard, CommitTimestampSource,
-    CommitUnresolvedDurable, CommitUnresolvedDurableGate, CommitVersionAllocator,
-    VisibleVersionTracker,
+    CommitBatch, CommitBatchKind, CommitBranchGeneration, CommitBranchGenerationGuard,
+    CommitBranchGuardSet, CommitCacheRuntime, CommitDurabilityMode, CommitFactAllocator,
+    CommitManualTimestampSource, CommitOutcome, CommitRuntimeConfig, CommitRuntimeError,
+    CommitTimestampGuard, CommitTimestampSource, CommitUnresolvedDurable,
+    CommitUnresolvedDurableGate, CommitVersionAllocator, VisibleVersionTracker,
 };
 use crate::lifecycle::maintenance::schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance;
 use crate::row::PhysicalKey;
@@ -71,6 +73,8 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
+    pressure_rejected_commit_branches: Vec<BranchId>,
+    last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
     budget: StorageBudgetLedger,
     // The CloseOutcome from the first successful close is preserved here so
     // subsequent idempotent close calls return the *prior final facts*
@@ -183,6 +187,8 @@ impl<S> LifecycleCacheRuntime<S> {
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            pressure_rejected_commit_branches: Vec::new(),
+            last_write_admission: None,
             budget,
             last_close_outcome: None,
         })
@@ -518,6 +524,53 @@ impl<S> LifecycleCacheRuntime<S> {
             .branch_state(branch_id)
             .expect("pressure target branch is present in the catalog");
         collect_storage_pressure(branch, self.maintenance.status())
+    }
+
+    fn evaluate_mutating_write_admission_for_branch(
+        &mut self,
+        branch_id: BranchId,
+    ) -> LifecycleResult<()> {
+        self.last_write_admission = None;
+        let pressure = self.storage_pressure_for_branch(branch_id);
+        let outcome = evaluate_mutating_write_admission(
+            pressure,
+            &mut self.pressure_rejected_commit_branches,
+        )?;
+        self.last_write_admission = Some(outcome);
+        Ok(())
+    }
+
+    fn require_generation_guard(
+        branch_id: BranchId,
+        generation: CommitBranchGeneration,
+        generation_guard: CommitBranchGenerationGuard,
+    ) -> LifecycleResult<()> {
+        match generation_guard {
+            CommitBranchGenerationGuard::NotSupplied => Ok(()),
+            CommitBranchGenerationGuard::Exact(supplied) if supplied == generation => Ok(()),
+            CommitBranchGenerationGuard::Exact(supplied) => {
+                Err(LifecycleError::BranchGenerationMismatch {
+                    branch_id,
+                    expected: generation.get(),
+                    actual: supplied.get(),
+                })
+            }
+        }
+    }
+
+    fn require_cache_commit_mode(batch: &CommitBatch) -> LifecycleResult<()> {
+        if batch.kind() == CommitBatchKind::Mutating
+            && batch.options().durability() != CommitDurabilityMode::Cache
+        {
+            return Err(commit_error(CommitRuntimeError::DurabilityUnavailable {
+                reason: "cache commit executor requires cache durability mode",
+            }));
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
+        self.last_write_admission
     }
 
     #[allow(
@@ -1165,6 +1218,7 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
+        self.last_write_admission = None;
         require_admitted(self.state, LifecycleOperationKind::Commit)?;
         let branch_id = batch.branch_id();
         // Pre-sync shadow into catalog so the commit runtime sees any direct
@@ -1175,6 +1229,11 @@ where
             .lookup(branch_id)
             .map_err(commit_error)?
             .generation();
+        Self::require_generation_guard(branch_id, generation, generation_guard)?;
+        Self::require_cache_commit_mode(&batch)?;
+        if batch.kind() == CommitBatchKind::Mutating {
+            self.evaluate_mutating_write_admission_for_branch(branch_id)?;
+        }
         let outcome = {
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
                 branch_id,

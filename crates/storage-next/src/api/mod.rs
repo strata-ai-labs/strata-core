@@ -75,8 +75,9 @@ pub use options::{
     StorageWalGrowthPolicy,
 };
 pub use outcome::{
-    CommitSummary, RecoveryHealthSummary, StorageCloseSummary, StorageOpenDisposition,
-    StorageOpenOutcome, StorageOpenSummary, StorageRuntimeState,
+    CommitAdmissionPressureReason, CommitAdmissionPressureSeverity, CommitAdmissionStatus,
+    CommitAdmissionSummary, CommitSummary, RecoveryHealthSummary, StorageCloseSummary,
+    StorageOpenDisposition, StorageOpenOutcome, StorageOpenSummary, StorageRuntimeState,
 };
 pub use read::{
     HistoryReadOutcome, HistoryReadRequest, PointReadOutcome, PointReadRequest,

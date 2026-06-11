@@ -300,6 +300,20 @@ fn cache_commit_returns_not_durable_outcome() {
         .expect("commit");
 
     assert_eq!(summary.durability(), CommitDurabilitySummary::NotDurable);
+    assert_eq!(
+        summary.admission().status(),
+        CommitAdmissionStatus::AcceptedClean
+    );
+    assert_eq!(
+        summary.admission().pressure_severity(),
+        CommitAdmissionPressureSeverity::None
+    );
+    assert_eq!(
+        summary.admission().pressure_reason(),
+        CommitAdmissionPressureReason::None
+    );
+    assert!(!summary.admission().inline_maintenance_driven());
+    assert!(!summary.admission().cleared_prior_pressure_rejection());
     assert!(summary.visible());
 }
 
@@ -972,6 +986,37 @@ fn commit_unresolved_durable_gate_rejects_followup() {
     );
 
     assert_eq!(error.class(), StorageApiErrorClass::AmbiguousCommit);
+}
+
+#[test]
+fn commit_storage_pressure_rejection_maps_to_retryable_api_error() {
+    let error = crate::api::map_lifecycle_error_for_test(
+        crate::lifecycle::LifecycleError::StoragePressureRejected {
+            branch_id: branch(),
+            severity: crate::lifecycle::LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason:
+                crate::lifecycle::LifecycleStoragePressureReason::LevelZeroTableBacklog,
+            retryable: true,
+            reason: "mutating commit admission requires maintenance progress",
+        },
+    );
+
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+    assert_eq!(
+        error.code(),
+        "failed_precondition.storage_api.storage_pressure"
+    );
+    assert!(matches!(
+        error,
+        StorageApiError::StoragePressure {
+            branch_id,
+            severity: crate::api::CommitAdmissionPressureSeverity::Blocking,
+            pressure_reason:
+                crate::api::CommitAdmissionPressureReason::LevelZeroTableBacklog,
+            retryable: true,
+            ..
+        } if branch_id == branch()
+    ));
 }
 
 #[test]

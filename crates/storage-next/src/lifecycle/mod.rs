@@ -144,13 +144,15 @@ pub(crate) use health::{
     reason = "maintenance executor exports define the local surface for later slices"
 )]
 pub(crate) use maintenance::{
-    maintenance_ready_for_recovery_health, telemetry_health_debt, LifecycleMaintenanceExecutor,
-    LifecycleMaintenanceStats, LifecyclePostCommitMaintenanceOutcome,
-    LifecyclePostCommitMaintenanceStatus, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
-    MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceFaultHook, MaintenanceFaultPoint,
-    MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
-    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    evaluate_mutating_write_admission, maintenance_ready_for_recovery_health,
+    telemetry_health_debt, LifecycleMaintenanceExecutor, LifecycleMaintenanceStats,
+    LifecyclePostCommitMaintenanceOutcome, LifecyclePostCommitMaintenanceStatus,
+    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome,
+    MaintenanceCheckpointOptions, MaintenanceClosePolicy, MaintenanceCoalesceKey,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceFaultHook,
+    MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope,
 };
 #[allow(
     unused_imports,

@@ -21,8 +21,8 @@ use crate::lifecycle::{
     LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
     LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
-    MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
-    MaintenanceOutcome as LifecycleMaintenanceOutcome,
+    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions,
+    MaintenanceExecutorStatus, MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
     MaintenanceTaskKind as LifecycleMaintenanceTaskKind,
@@ -41,7 +41,8 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::{
     BranchAction, BranchCleanupSummary, BranchGeneration, BranchOperation, BranchOutcome,
-    BranchParentSummary, BranchRequest, BranchStatus, BranchSummary, CommitBatch, CommitDurability,
+    BranchParentSummary, BranchRequest, BranchStatus, BranchSummary, CommitAdmissionPressureReason,
+    CommitAdmissionPressureSeverity, CommitAdmissionSummary, CommitBatch, CommitDurability,
     CommitDurabilitySummary, CommitExpectedVersion, CommitSummary, DiagnosticsBranchCatalogReport,
     DiagnosticsBudgetPool, DiagnosticsBudgetPressure, DiagnosticsBudgetReport,
     DiagnosticsBudgetUsage, DiagnosticsCheckpointReport, DiagnosticsOutcome,
@@ -1618,12 +1619,14 @@ impl<'a> StorageRuntime<'a> {
         let runtime_batch = runtime_batch_result?;
 
         let runtime_timer = perf_trace::start_timer();
-        let outcome_result = match &mut self.inner {
+        let (outcome_result, admission) = match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
-                runtime.execute_cache_commit(runtime_batch, generation_guard)
+                let result = runtime.execute_cache_commit(runtime_batch, generation_guard);
+                (result, runtime.last_write_admission())
             }
             StorageRuntimeInner::Durable(runtime) => {
-                runtime.execute_durable_commit(runtime_batch, generation_guard)
+                let result = runtime.execute_durable_commit(runtime_batch, generation_guard);
+                (result, runtime.last_write_admission())
             }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
@@ -1633,7 +1636,7 @@ impl<'a> StorageRuntime<'a> {
         };
         perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
         let outcome = outcome_result.map_err(map_lifecycle_error)?;
-        map_commit_summary(&outcome)
+        map_commit_summary(&outcome, admission)
     }
 
     fn resolve_commit_durability(
@@ -2734,7 +2737,10 @@ fn map_branch_cleanup(release_plan: &BranchReleasePlan) -> BranchCleanupSummary 
     )
 }
 
-fn map_commit_summary(outcome: &crate::commit::CommitOutcome) -> StorageApiResult<CommitSummary> {
+fn map_commit_summary(
+    outcome: &crate::commit::CommitOutcome,
+    admission: Option<LifecycleWriteAdmissionOutcome>,
+) -> StorageApiResult<CommitSummary> {
     let commit_version = outcome
         .commit_version()
         .ok_or(StorageApiError::InvalidRuntimeState {
@@ -2756,7 +2762,69 @@ fn map_commit_summary(outcome: &crate::commit::CommitOutcome) -> StorageApiResul
         counts.deletes(),
         counts.timeline_rows(),
         matches!(outcome.kind(), crate::commit::CommitOutcomeKind::Visible),
-    ))
+    )
+    .with_admission_summary(map_commit_admission_summary(admission)))
+}
+
+const fn map_commit_admission_summary(
+    admission: Option<LifecycleWriteAdmissionOutcome>,
+) -> CommitAdmissionSummary {
+    let Some(admission) = admission else {
+        return CommitAdmissionSummary::accepted_clean(
+            CommitAdmissionPressureSeverity::None,
+            CommitAdmissionPressureReason::None,
+            false,
+        );
+    };
+    match admission.status() {
+        LifecycleWriteAdmissionStatus::AcceptedClean => CommitAdmissionSummary::accepted_clean(
+            map_commit_admission_pressure_severity(admission.pressure().severity()),
+            map_commit_admission_pressure_reason(admission.pressure().reason()),
+            admission.cleared_prior_rejection(),
+        ),
+        LifecycleWriteAdmissionStatus::AcceptedUnderPressure => {
+            CommitAdmissionSummary::accepted_under_pressure(
+                map_commit_admission_pressure_reason(admission.pressure().reason()),
+                admission.cleared_prior_rejection(),
+            )
+        }
+    }
+}
+
+const fn map_commit_admission_pressure_severity(
+    severity: LifecycleStoragePressureSeverity,
+) -> CommitAdmissionPressureSeverity {
+    match severity {
+        LifecycleStoragePressureSeverity::None => CommitAdmissionPressureSeverity::None,
+        LifecycleStoragePressureSeverity::Background => CommitAdmissionPressureSeverity::Background,
+        LifecycleStoragePressureSeverity::Urgent => CommitAdmissionPressureSeverity::Urgent,
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission => {
+            CommitAdmissionPressureSeverity::Blocking
+        }
+    }
+}
+
+const fn map_commit_admission_pressure_reason(
+    reason: LifecycleStoragePressureReason,
+) -> CommitAdmissionPressureReason {
+    match reason {
+        LifecycleStoragePressureReason::None => CommitAdmissionPressureReason::None,
+        LifecycleStoragePressureReason::FrozenBacklog => {
+            CommitAdmissionPressureReason::FrozenBacklog
+        }
+        LifecycleStoragePressureReason::LevelZeroTableBacklog => {
+            CommitAdmissionPressureReason::LevelZeroTableBacklog
+        }
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog => {
+            CommitAdmissionPressureReason::NonZeroLevelTableBacklog
+        }
+        LifecycleStoragePressureReason::InheritedLayerBacklog => {
+            CommitAdmissionPressureReason::InheritedLayerBacklog
+        }
+        LifecycleStoragePressureReason::MaintenanceQueueBacklog => {
+            CommitAdmissionPressureReason::MaintenanceQueueBacklog
+        }
+    }
 }
 
 const fn map_commit_durability(durability: CommitDurabilityClass) -> CommitDurabilitySummary {
@@ -3267,6 +3335,20 @@ fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
         | LifecycleError::CheckpointSnapshotOrphaned { reason, .. } => {
             StorageApiError::MaintenanceRejected { reason }
         }
+        LifecycleError::StoragePressureRejected {
+            branch_id,
+            severity,
+            pressure_reason,
+            retryable,
+            reason,
+            ..
+        } => StorageApiError::StoragePressure {
+            branch_id,
+            severity: map_commit_admission_pressure_severity(severity),
+            pressure_reason: map_commit_admission_pressure_reason(pressure_reason),
+            reason,
+            retryable,
+        },
         LifecycleError::FlushPublicationUncertain { reason, source }
         | LifecycleError::FlushPublicationOrphaned { reason, source, .. }
         | LifecycleError::RewritePublicationUncertain { reason, source, .. }

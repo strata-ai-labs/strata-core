@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use strata_core_next::BranchId;
 
+use super::{CommitAdmissionPressureReason, CommitAdmissionPressureSeverity};
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageApiErrorClass {
@@ -83,6 +85,13 @@ pub enum StorageApiError {
     MaintenanceRejected {
         reason: &'static str,
     },
+    StoragePressure {
+        branch_id: BranchId,
+        severity: CommitAdmissionPressureSeverity,
+        pressure_reason: CommitAdmissionPressureReason,
+        reason: &'static str,
+        retryable: bool,
+    },
     LowerLayer {
         layer: StorageApiLowerLayer,
         reason: &'static str,
@@ -107,6 +116,7 @@ impl StorageApiError {
             Self::DurableUncertain { .. } => "ambiguous_commit.storage_api.durable_uncertain",
             Self::RecoveryDegraded { .. } => "failed_precondition.storage_api.recovery_degraded",
             Self::MaintenanceRejected { .. } => "failed_precondition.storage_api.maintenance",
+            Self::StoragePressure { .. } => "failed_precondition.storage_api.storage_pressure",
             Self::LowerLayer { .. } => "internal.storage_api.lower_layer",
         }
     }
@@ -118,6 +128,7 @@ impl StorageApiError {
             Self::InvalidRuntimeState { .. }
             | Self::BranchGenerationMismatch { .. }
             | Self::MaintenanceRejected { .. }
+            | Self::StoragePressure { .. }
             | Self::RecoveryDegraded { .. } => StorageApiErrorClass::FailedPrecondition,
             Self::BranchNotFound { .. } => StorageApiErrorClass::NotFound,
             Self::BranchAlreadyExists { .. } => StorageApiErrorClass::AlreadyExists,
@@ -212,6 +223,22 @@ impl fmt::Display for StorageApiError {
             }
             Self::MaintenanceRejected { reason } => {
                 write!(formatter, "storage maintenance rejected: {reason}")
+            }
+            Self::StoragePressure {
+                branch_id,
+                severity,
+                pressure_reason,
+                reason,
+                retryable,
+            } => {
+                write!(
+                    formatter,
+                    "branch {branch_id} commit rejected by {severity:?} storage pressure from {pressure_reason:?}: {reason}"
+                )?;
+                if *retryable {
+                    formatter.write_str(" (retryable after maintenance)")?;
+                }
+                Ok(())
             }
             Self::LowerLayer { layer, reason, .. } => {
                 write!(formatter, "storage lower layer {layer:?} failed: {reason}")

@@ -8,11 +8,12 @@ use crate::branch::error::BranchRuntimeError;
 use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, BranchScanBounds};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
-    CommitBatch, CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
-    CommitDurabilityClass, CommitDurableRuntime, CommitFactAllocator, CommitManualTimestampSource,
-    CommitOutcome, CommitReplayAction, CommitReplayRequest, CommitReplayRuntime,
-    CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
-    VisibleVersionPublish, VisibleVersionTracker,
+    CommitBatch, CommitBatchKind, CommitBranchGeneration, CommitBranchGenerationGuard,
+    CommitBranchGuardSet, CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime,
+    CommitFactAllocator, CommitManualTimestampSource, CommitOutcome, CommitReplayAction,
+    CommitReplayRequest, CommitReplayRuntime, CommitRuntimeError, CommitTimestampSource,
+    CommitUnresolvedDurable, CommitUnresolvedDurableGate, VisibleVersionPublish,
+    VisibleVersionTracker,
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
@@ -20,8 +21,8 @@ use crate::lifecycle::{
     LifecycleDurableTableCatalog, LifecycleError, LifecycleMaintenanceExecutor,
     LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
     LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
-    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
-    StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    LifecycleWriteAdmissionOutcome, RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger,
+    StorageBudgetSnapshot, StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
@@ -49,6 +50,8 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
     pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
+    pub(super) pressure_rejected_commit_branches: Vec<BranchId>,
+    pub(super) last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
     // Released table references from `clear_branch`/`delete_branch` queue
     // here until the next retention pass drains them. In-memory only —
     // restart loses the buffer; durable persistence of release tombstones
@@ -176,6 +179,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
             last_wal_growth_outcome: None,
+            pressure_rejected_commit_branches: Vec::new(),
+            last_write_admission: None,
             pending_releases,
             branch_catalog_sequence,
             pending_releases_sequence,
@@ -443,6 +448,52 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) const fn last_wal_growth_outcome(&self) -> Option<&LifecycleWalGrowthOutcome> {
         self.last_wal_growth_outcome.as_ref()
+    }
+
+    pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
+        self.last_write_admission
+    }
+
+    fn require_generation_guard(
+        branch_id: BranchId,
+        generation: CommitBranchGeneration,
+        generation_guard: CommitBranchGenerationGuard,
+    ) -> LifecycleResult<()> {
+        match generation_guard {
+            CommitBranchGenerationGuard::NotSupplied => Ok(()),
+            CommitBranchGenerationGuard::Exact(supplied) if supplied == generation => Ok(()),
+            CommitBranchGenerationGuard::Exact(supplied) => {
+                Err(LifecycleError::BranchGenerationMismatch {
+                    branch_id,
+                    expected: generation.get(),
+                    actual: supplied.get(),
+                })
+            }
+        }
+    }
+
+    fn require_durable_commit_mode(batch: &CommitBatch) -> LifecycleResult<()> {
+        if batch.kind() == CommitBatchKind::Mutating
+            && batch.options().durability() == CommitDurabilityMode::Cache
+        {
+            return Err(commit_error(CommitRuntimeError::DurabilityUnavailable {
+                reason: "durable commit executor requires durable mode",
+            }));
+        }
+        Ok(())
+    }
+
+    fn require_write_admission_recovery_health(&self, branch_id: BranchId) -> LifecycleResult<()> {
+        if maintenance_ready_for_recovery_health(&self.current_recovery_health) {
+            return Ok(());
+        }
+        Err(LifecycleError::StoragePressureRejected {
+            branch_id,
+            severity: crate::lifecycle::LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: crate::lifecycle::LifecycleStoragePressureReason::None,
+            retryable: false,
+            reason: "durable recovery health blocks mutating commit admission",
+        })
     }
 
     #[cfg(any(test, feature = "testkit"))]
@@ -924,6 +975,7 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
+        self.last_write_admission = None;
         require_admitted(self.state, LifecycleOperationKind::Commit)?;
         let branch_id = batch.branch_id();
         // Pre-sync shadow into catalog so the commit runtime sees any direct
@@ -934,6 +986,12 @@ where
             .lookup(branch_id)
             .map_err(commit_error)?
             .generation();
+        Self::require_generation_guard(branch_id, generation, generation_guard)?;
+        Self::require_durable_commit_mode(&batch)?;
+        if batch.kind() == CommitBatchKind::Mutating {
+            self.require_write_admission_recovery_health(branch_id)?;
+            self.evaluate_mutating_write_admission_for_branch(branch_id)?;
+        }
         let outcome = {
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
                 branch_id,

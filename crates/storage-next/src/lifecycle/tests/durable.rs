@@ -1224,6 +1224,69 @@ fn durable_commit_respects_disabled_post_commit_maintenance_scheduling() {
 }
 
 #[test]
+fn durable_commit_blocks_when_recovery_health_is_unsafe() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x7e);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.record_recovery_health_for_test(&data_loss_health_debt());
+    let before_visible = runtime.visible_version();
+
+    let error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"unsafe-recovery-health", b"value"),
+            generation_guard(),
+        )
+        .expect_err("unsafe recovery health blocks mutating commit");
+
+    assert!(matches!(
+        error,
+        LifecycleError::StoragePressureRejected {
+            branch_id: rejected_branch,
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::None,
+            retryable: false,
+            ..
+        } if rejected_branch == branch
+    ));
+    assert_eq!(runtime.last_write_admission(), None);
+    assert_eq!(runtime.visible_version(), before_visible);
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&physical_key(branch, b"unsafe-recovery-health"))
+            .expect("latest read")
+            .is_none(),
+        "commit rejected by recovery health must not append rows"
+    );
+}
+
+#[test]
+fn durable_commit_allows_telemetry_degraded_recovery_health() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x7f);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.record_recovery_health_for_test(&close_health_debt());
+
+    let outcome = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"telemetry-recovery-health", b"value"),
+            generation_guard(),
+        )
+        .expect("telemetry health debt does not block mutating commit admission");
+
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(1)));
+    assert!(runtime.last_write_admission().is_some());
+    let row = runtime
+        .read_view()
+        .expect("read view")
+        .latest(&physical_key(branch, b"telemetry-recovery-health"))
+        .expect("latest read")
+        .expect("visible row");
+    assert_eq!(row.row().value(), b"value");
+}
+
+#[test]
 fn durable_commit_deterministic_inline_runs_suggested_flush() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x6e);
@@ -2084,6 +2147,18 @@ fn close_health_debt() -> RecoveryHealth {
             RecoveryFault::new(RecoveryFaultKind::WalTailRepairFailed, "close health debt")
                 .expect("fault"),
         ],
+    )
+    .expect("health")
+}
+
+fn data_loss_health_debt() -> RecoveryHealth {
+    RecoveryHealth::degraded(
+        RecoveryDegradationClass::DataLoss,
+        vec![RecoveryFault::new(
+            RecoveryFaultKind::MissingTableObject,
+            "unsafe recovery health",
+        )
+        .expect("fault")],
     )
     .expect("health")
 }

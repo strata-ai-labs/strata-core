@@ -105,6 +105,14 @@ pub struct StoragePerfSnapshot {
     commit_unresolved_records: u64,
     commit_unresolved_durable_not_applied_records: u64,
     commit_unresolved_applied_not_visible_records: u64,
+    lifecycle_write_admission_evaluations: u64,
+    lifecycle_write_admission_clean_accepts: u64,
+    lifecycle_write_admission_under_pressure_accepts: u64,
+    lifecycle_write_admission_requires_maintenance: u64,
+    lifecycle_write_admission_inline_attempts: u64,
+    lifecycle_write_admission_pressure_rejects: u64,
+    lifecycle_write_admission_retryable_rejects: u64,
+    lifecycle_write_admission_pressure_cleared_retries: u64,
     lifecycle_post_commit_maintenance_evaluations: u64,
     lifecycle_post_commit_maintenance_disabled: u64,
     lifecycle_post_commit_maintenance_no_task: u64,
@@ -512,6 +520,46 @@ impl StoragePerfSnapshot {
     /// Applied-not-visible unresolved commit records installed in the gate.
     pub const fn commit_unresolved_applied_not_visible_records(self) -> u64 {
         self.commit_unresolved_applied_not_visible_records
+    }
+
+    /// Lifecycle write-admission pressure evaluations before commit-runtime admission.
+    pub const fn lifecycle_write_admission_evaluations(self) -> u64 {
+        self.lifecycle_write_admission_evaluations
+    }
+
+    /// Mutating commits admitted without storage-pressure throttling.
+    pub const fn lifecycle_write_admission_clean_accepts(self) -> u64 {
+        self.lifecycle_write_admission_clean_accepts
+    }
+
+    /// Mutating commits admitted while storage pressure was urgent.
+    pub const fn lifecycle_write_admission_under_pressure_accepts(self) -> u64 {
+        self.lifecycle_write_admission_under_pressure_accepts
+    }
+
+    /// Admission evaluations that found maintenance required before more writes.
+    pub const fn lifecycle_write_admission_requires_maintenance(self) -> u64 {
+        self.lifecycle_write_admission_requires_maintenance
+    }
+
+    /// Bounded inline maintenance attempts made before write admission.
+    pub const fn lifecycle_write_admission_inline_attempts(self) -> u64 {
+        self.lifecycle_write_admission_inline_attempts
+    }
+
+    /// Mutating commit admissions rejected by storage pressure.
+    pub const fn lifecycle_write_admission_pressure_rejects(self) -> u64 {
+        self.lifecycle_write_admission_pressure_rejects
+    }
+
+    /// Storage-pressure rejections marked retryable after maintenance.
+    pub const fn lifecycle_write_admission_retryable_rejects(self) -> u64 {
+        self.lifecycle_write_admission_retryable_rejects
+    }
+
+    /// Later admissions accepted after a prior pressure rejection for that branch.
+    pub const fn lifecycle_write_admission_pressure_cleared_retries(self) -> u64 {
+        self.lifecycle_write_admission_pressure_cleared_retries
     }
 
     /// Post-commit maintenance pressure evaluations.
@@ -1563,6 +1611,22 @@ static COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS: AtomicU64 = AtomicU64::new
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_CLEAN_ACCEPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED: AtomicU64 = AtomicU64::new(0);
@@ -2029,6 +2093,14 @@ pub fn reset() {
     COMMIT_UNRESOLVED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_EVALUATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_CLEAN_ACCEPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_NO_TASK.store(0, Ordering::Relaxed);
@@ -2280,6 +2352,22 @@ pub fn snapshot() -> StoragePerfSnapshot {
             COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.load(Ordering::Relaxed),
         commit_unresolved_applied_not_visible_records:
             COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.load(Ordering::Relaxed),
+        lifecycle_write_admission_evaluations: LIFECYCLE_WRITE_ADMISSION_EVALUATIONS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_clean_accepts: LIFECYCLE_WRITE_ADMISSION_CLEAN_ACCEPTS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_under_pressure_accepts:
+            LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS.load(Ordering::Relaxed),
+        lifecycle_write_admission_requires_maintenance:
+            LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE.load(Ordering::Relaxed),
+        lifecycle_write_admission_inline_attempts: LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_pressure_rejects: LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_retryable_rejects: LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_pressure_cleared_retries:
+            LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_evaluations:
             LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_disabled: LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED
@@ -2888,6 +2976,62 @@ pub(crate) fn record_commit_unresolved_applied_not_visible_record() {
         return;
     }
     COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_clean(_cleared_retry: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_clean(cleared_retry: bool) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_CLEAN_ACCEPTS.fetch_add(1, Ordering::Relaxed);
+    if cleared_retry {
+        LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_under_pressure(_cleared_retry: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_under_pressure(cleared_retry: bool) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS.fetch_add(1, Ordering::Relaxed);
+    if cleared_retry {
+        LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_requires_maintenance() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_requires_maintenance() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_pressure_reject(_retryable: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_pressure_reject(retryable: bool) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS.fetch_add(1, Ordering::Relaxed);
+    if retryable {
+        LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[cfg(not(feature = "perf-trace"))]

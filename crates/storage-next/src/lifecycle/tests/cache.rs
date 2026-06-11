@@ -880,6 +880,320 @@ fn cache_post_commit_queue_full_records_deferred_without_failing_commit() {
 }
 
 #[test]
+fn cache_commit_rejects_blocking_table_pressure_before_allocating_version() {
+    let branch = branch_id(0x77);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"blocked-by-table-pressure"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(40_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("blocking pressure rejects commit");
+
+    assert!(matches!(
+        error,
+        LifecycleError::StoragePressureRejected {
+            branch_id: rejected_branch,
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::LevelZeroTableBacklog,
+            retryable: true,
+            ..
+        } if rejected_branch == branch
+    ));
+    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    let key = physical_key(branch, b"blocked-by-table-pressure");
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&key)
+            .expect("latest read")
+            .is_none(),
+        "rejected admission must not append rows"
+    );
+}
+
+#[test]
+fn cache_commit_stale_generation_takes_precedence_over_blocking_pressure() {
+    let branch = branch_id(0x7c);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"stale-generation-under-pressure"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(40_100),
+            ),
+            CommitBranchGenerationGuard::exact(
+                CommitBranchGeneration::new(99).expect("generation"),
+            ),
+        )
+        .expect_err("stale generation rejects before pressure policy");
+
+    assert!(matches!(
+        error,
+        LifecycleError::BranchGenerationMismatch {
+            branch_id: rejected_branch,
+            expected: 1,
+            actual: 99,
+        } if rejected_branch == branch
+    ));
+    assert_eq!(runtime.last_write_admission(), None);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&physical_key(branch, b"stale-generation-under-pressure"))
+            .expect("latest read")
+            .is_none(),
+        "rejected stale-generation commit must not append rows"
+    );
+}
+
+#[test]
+fn cache_commit_wrong_mode_takes_precedence_over_blocking_pressure() {
+    let branch = branch_id(0x7d);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch_with_durability(
+                branch,
+                physical_key(branch, b"wrong-mode-under-pressure"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(40_200),
+                CommitDurabilityMode::Standard,
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("wrong durability rejects before pressure policy");
+
+    assert_commit_runtime_error(&error);
+    assert_eq!(runtime.last_write_admission(), None);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&physical_key(branch, b"wrong-mode-under-pressure"))
+            .expect("latest read")
+            .is_none(),
+        "rejected wrong-mode commit must not append rows"
+    );
+}
+
+#[test]
+fn cache_commit_retry_after_pressure_maintenance_succeeds() {
+    let branch = branch_id(0x78);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"retry-after-pressure"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(40_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("blocking pressure rejects first attempt");
+    assert_eq!(runtime.last_write_admission(), None);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    assert_ne!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+
+    let outcome = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"retry-after-pressure"),
+                b"visible".to_vec(),
+                Timestamp::from_micros(41_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("retry after maintenance succeeds");
+
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(18)));
+    let admission = runtime
+        .last_write_admission()
+        .expect("retry records accepted admission facts");
+    assert_ne!(
+        admission.pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert!(
+        admission.cleared_prior_rejection(),
+        "retry after maintenance should record the cleared pressure rejection"
+    );
+    let visible = runtime
+        .read_view()
+        .expect("read view")
+        .latest(&physical_key(branch, b"retry-after-pressure"))
+        .expect("latest read")
+        .expect("visible row");
+    assert_eq!(visible.row().value(), b"visible");
+}
+
+#[test]
+fn cache_commit_branch_guard_rejection_remains_distinct_from_pressure_rejection() {
+    let branch = branch_id(0x7a);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let guard = runtime
+        .guard_set()
+        .try_acquire_branch_guard(branch)
+        .expect("active branch guard");
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"guard-still-distinct"),
+                b"value".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("active guard rejects commit");
+
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer {
+            layer: LifecycleLowerLayer::CommitRuntime,
+            ..
+        }
+    ));
+    assert_eq!(error.code(), "failed_precondition.lifecycle.commit_runtime");
+    drop(guard);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_write_admission_perf_trace_records_pressure_policy() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x7b);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    crate::observability::perf_trace::reset();
+    commit_cache_put(&mut runtime, branch, b"clean-admission", 1_000);
+    let clean = crate::observability::perf_trace::snapshot();
+    assert_eq!(clean.lifecycle_write_admission_evaluations(), 1);
+    assert_eq!(clean.lifecycle_write_admission_clean_accepts(), 1);
+    assert_eq!(clean.lifecycle_write_admission_under_pressure_accepts(), 0);
+    assert_eq!(clean.lifecycle_write_admission_pressure_rejects(), 0);
+
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active");
+    crate::observability::perf_trace::reset();
+    commit_cache_put(&mut runtime, branch, b"urgent-admission", 2_000);
+    let admission = runtime
+        .last_write_admission()
+        .expect("under-pressure admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+    );
+    assert_eq!(
+        admission.pressure().reason(),
+        LifecycleStoragePressureReason::FrozenBacklog
+    );
+    assert!(!admission.cleared_prior_rejection());
+    let urgent = crate::observability::perf_trace::snapshot();
+    assert_eq!(urgent.lifecycle_write_admission_evaluations(), 1);
+    assert_eq!(urgent.lifecycle_write_admission_under_pressure_accepts(), 1);
+    assert_eq!(urgent.lifecycle_write_admission_pressure_rejects(), 0);
+    runtime
+        .run_next_flush_maintenance()
+        .expect("run scheduled flush")
+        .expect("flush outcome");
+
+    build_l0_tables_with_scheduled_flushes_from(&mut runtime, branch, 15, 10_000);
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    crate::observability::perf_trace::reset();
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"pressure-rejected"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(50_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("blocking pressure rejects");
+    let rejected = crate::observability::perf_trace::snapshot();
+    assert_eq!(rejected.lifecycle_write_admission_evaluations(), 1);
+    assert_eq!(rejected.lifecycle_write_admission_requires_maintenance(), 1);
+    assert_eq!(rejected.lifecycle_write_admission_pressure_rejects(), 1);
+    assert_eq!(rejected.lifecycle_write_admission_retryable_rejects(), 1);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    crate::observability::perf_trace::reset();
+    commit_cache_put(&mut runtime, branch, b"pressure-cleared", 51_000);
+    let cleared = crate::observability::perf_trace::snapshot();
+    assert_eq!(cleared.lifecycle_write_admission_evaluations(), 1);
+    assert_eq!(
+        cleared.lifecycle_write_admission_pressure_cleared_retries(),
+        1
+    );
+}
+
+#[test]
 fn cache_runtime_generated_timestamp_proves_zero_allocator_and_empty_timestamp_guard() {
     let branch = branch_id(0x4c);
     let backend = MemoryBackend::new();
@@ -986,21 +1300,25 @@ fn cache_runtime_rejects_read_only_wrong_branch_stale_generation_and_conflict() 
     );
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
 
-    assert_commit_runtime_error(
-        &runtime
-            .execute_cache_commit(
-                put_batch(
-                    branch,
-                    physical_key(branch, b"stale-generation"),
-                    b"value".to_vec(),
-                    Timestamp::from_micros(2_200),
-                ),
-                CommitBranchGenerationGuard::exact(
-                    CommitBranchGeneration::new(2).expect("generation"),
-                ),
-            )
-            .expect_err("stale generation rejected"),
-    );
+    let stale_generation = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"stale-generation"),
+                b"value".to_vec(),
+                Timestamp::from_micros(2_200),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(2).expect("generation")),
+        )
+        .expect_err("stale generation rejected");
+    assert!(matches!(
+        stale_generation,
+        LifecycleError::BranchGenerationMismatch {
+            branch_id: rejected_branch,
+            expected: 1,
+            actual: 2,
+        } if rejected_branch == branch
+    ));
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
 
     let first = runtime

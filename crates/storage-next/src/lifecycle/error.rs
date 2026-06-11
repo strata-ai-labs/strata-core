@@ -1,6 +1,9 @@
 //! Lifecycle error vocabulary.
 
-use super::{ClosePhase, StorageBudgetPool, StorageMode};
+use super::{
+    ClosePhase, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
+    StorageBudgetPool, StorageMode,
+};
 use crate::backend::BackendCapability;
 use std::error::Error;
 use std::fmt;
@@ -77,6 +80,13 @@ pub(crate) enum LifecycleError {
         reason: &'static str,
     },
     MaintenanceTaskFailed {
+        reason: &'static str,
+    },
+    StoragePressureRejected {
+        branch_id: BranchId,
+        severity: LifecycleStoragePressureSeverity,
+        pressure_reason: LifecycleStoragePressureReason,
+        retryable: bool,
         reason: &'static str,
     },
     StorageBudgetExceeded {
@@ -401,6 +411,9 @@ impl LifecycleError {
             Self::MaintenanceFailed { .. } => "failed_precondition.lifecycle.maintenance",
             Self::MaintenanceQueueFull { .. } => "resource_exhausted.lifecycle.maintenance_queue",
             Self::MaintenanceTaskFailed { .. } => "failed_precondition.lifecycle.maintenance_task",
+            Self::StoragePressureRejected { .. } => {
+                "failed_precondition.lifecycle.storage_pressure"
+            }
             Self::StorageBudgetExceeded { .. } => "resource_exhausted.lifecycle.storage_budget",
             Self::FlushPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.flush_publication"
@@ -807,6 +820,28 @@ impl PartialEq for LifecycleError {
                     && left_reason == right_reason
             }
             (
+                Self::StoragePressureRejected {
+                    branch_id: left_branch,
+                    severity: left_severity,
+                    pressure_reason: left_pressure_reason,
+                    retryable: left_retryable,
+                    reason: left_reason,
+                },
+                Self::StoragePressureRejected {
+                    branch_id: right_branch,
+                    severity: right_severity,
+                    pressure_reason: right_pressure_reason,
+                    retryable: right_retryable,
+                    reason: right_reason,
+                },
+            ) => {
+                left_branch == right_branch
+                    && left_severity == right_severity
+                    && left_pressure_reason == right_pressure_reason
+                    && left_retryable == right_retryable
+                    && left_reason == right_reason
+            }
+            (
                 Self::RecoveryVisibilityFailed {
                     recovered_visible_version: left_version,
                     reason: left_reason,
@@ -939,6 +974,24 @@ impl fmt::Display for LifecycleError {
             }
             Self::MaintenanceTaskFailed { reason } => {
                 write!(formatter, "maintenance task failed: {reason}")
+            }
+            Self::StoragePressureRejected {
+                branch_id,
+                severity,
+                pressure_reason,
+                retryable,
+                reason,
+            } => {
+                write!(
+                    formatter,
+                    "branch {branch_id} commit rejected by {} storage pressure from {}: {reason}",
+                    storage_pressure_severity_name(*severity),
+                    storage_pressure_reason_name(*pressure_reason),
+                )?;
+                if *retryable {
+                    formatter.write_str(" (retryable after maintenance)")?;
+                }
+                Ok(())
             }
             Self::StorageBudgetExceeded {
                 pool,
@@ -1153,6 +1206,28 @@ impl Error for LifecycleError {
             } => Some(source.as_ref()),
             _ => None,
         }
+    }
+}
+
+const fn storage_pressure_severity_name(
+    severity: LifecycleStoragePressureSeverity,
+) -> &'static str {
+    match severity {
+        LifecycleStoragePressureSeverity::None => "healthy",
+        LifecycleStoragePressureSeverity::Background => "background",
+        LifecycleStoragePressureSeverity::Urgent => "urgent",
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission => "blocking",
+    }
+}
+
+const fn storage_pressure_reason_name(reason: LifecycleStoragePressureReason) -> &'static str {
+    match reason {
+        LifecycleStoragePressureReason::None => "no backlog",
+        LifecycleStoragePressureReason::FrozenBacklog => "frozen table backlog",
+        LifecycleStoragePressureReason::LevelZeroTableBacklog => "level-zero table backlog",
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog => "nonzero-level table backlog",
+        LifecycleStoragePressureReason::InheritedLayerBacklog => "inherited-layer backlog",
+        LifecycleStoragePressureReason::MaintenanceQueueBacklog => "maintenance queue backlog",
     }
 }
 

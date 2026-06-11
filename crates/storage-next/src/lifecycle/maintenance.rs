@@ -8,9 +8,9 @@
 use super::{
     LifecycleAdmissionEffect, LifecycleError, LifecycleMaintenanceSchedulingPolicy,
     LifecycleOperationAdmission, LifecycleOperationKind, LifecycleResult, LifecycleStateMachine,
-    LifecycleStats, LifecycleStoragePressure, MaintenanceOutcome, MaintenanceOutcomeStatus,
-    MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind,
-    RecoveryHealth,
+    LifecycleStats, LifecycleStoragePressure, LifecycleStoragePressureSeverity, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTaskKind, RecoveryDegradationClass, RecoveryFault,
+    RecoveryFaultKind, RecoveryHealth,
 };
 use crate::branch::state::materialization::BranchMaterializationHandle;
 use crate::observability::perf_trace;
@@ -131,6 +131,13 @@ pub(crate) struct LifecyclePostCommitMaintenanceOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleWriteAdmissionOutcome {
+    status: LifecycleWriteAdmissionStatus,
+    pressure: LifecycleStoragePressure,
+    cleared_prior_rejection: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub(crate) enum LifecyclePostCommitMaintenanceStatus {
     Disabled,
@@ -138,6 +145,13 @@ pub(crate) enum LifecyclePostCommitMaintenanceStatus {
     Enqueued,
     Coalesced,
     Deferred,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub(crate) enum LifecycleWriteAdmissionStatus {
+    AcceptedClean,
+    AcceptedUnderPressure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -905,6 +919,32 @@ impl LifecycleMaintenanceStats {
     }
 }
 
+impl LifecycleWriteAdmissionOutcome {
+    const fn new(
+        status: LifecycleWriteAdmissionStatus,
+        pressure: LifecycleStoragePressure,
+        cleared_prior_rejection: bool,
+    ) -> Self {
+        Self {
+            status,
+            pressure,
+            cleared_prior_rejection,
+        }
+    }
+
+    pub(crate) const fn status(self) -> LifecycleWriteAdmissionStatus {
+        self.status
+    }
+
+    pub(crate) const fn pressure(self) -> LifecycleStoragePressure {
+        self.pressure
+    }
+
+    pub(crate) const fn cleared_prior_rejection(self) -> bool {
+        self.cleared_prior_rejection
+    }
+}
+
 pub(crate) fn schedule_post_commit_maintenance(
     policy: LifecycleMaintenanceSchedulingPolicy,
     pressure: LifecycleStoragePressure,
@@ -933,6 +973,67 @@ pub(crate) fn schedule_post_commit_maintenance(
             LifecyclePostCommitMaintenanceOutcome::deferred(pressure, suggested_task, error)
         }
     }
+}
+
+pub(crate) fn evaluate_mutating_write_admission(
+    pressure: LifecycleStoragePressure,
+    pressure_rejected_branches: &mut Vec<BranchId>,
+) -> LifecycleResult<LifecycleWriteAdmissionOutcome> {
+    let branch_id = pressure.branch_id();
+    match pressure.severity() {
+        LifecycleStoragePressureSeverity::None | LifecycleStoragePressureSeverity::Background => {
+            let cleared_prior_rejection =
+                clear_pressure_rejected_branch(pressure_rejected_branches, branch_id);
+            perf_trace::record_lifecycle_write_admission_clean(cleared_prior_rejection);
+            Ok(LifecycleWriteAdmissionOutcome::new(
+                LifecycleWriteAdmissionStatus::AcceptedClean,
+                pressure,
+                cleared_prior_rejection,
+            ))
+        }
+        LifecycleStoragePressureSeverity::Urgent => {
+            let cleared_prior_rejection =
+                clear_pressure_rejected_branch(pressure_rejected_branches, branch_id);
+            perf_trace::record_lifecycle_write_admission_under_pressure(cleared_prior_rejection);
+            Ok(LifecycleWriteAdmissionOutcome::new(
+                LifecycleWriteAdmissionStatus::AcceptedUnderPressure,
+                pressure,
+                cleared_prior_rejection,
+            ))
+        }
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission => {
+            perf_trace::record_lifecycle_write_admission_requires_maintenance();
+            remember_pressure_rejected_branch(pressure_rejected_branches, branch_id);
+            let retryable = pressure.suggested_task().is_some()
+                || pressure.reason()
+                    == crate::lifecycle::LifecycleStoragePressureReason::MaintenanceQueueBacklog;
+            perf_trace::record_lifecycle_write_admission_pressure_reject(retryable);
+            Err(LifecycleError::StoragePressureRejected {
+                branch_id,
+                severity: pressure.severity(),
+                pressure_reason: pressure.reason(),
+                retryable,
+                reason: "mutating commit admission requires maintenance progress",
+            })
+        }
+    }
+}
+
+fn remember_pressure_rejected_branch(branches: &mut Vec<BranchId>, branch_id: BranchId) {
+    if !branches.contains(&branch_id) {
+        branches.push(branch_id);
+    }
+}
+
+fn clear_pressure_rejected_branch(branches: &mut Vec<BranchId>, branch_id: BranchId) -> bool {
+    let Some(position) = branches
+        .iter()
+        .position(|candidate| *candidate == branch_id)
+    else {
+        return false;
+    };
+    branches.swap_remove(position);
+    true
 }
 
 impl LifecycleMaintenanceExecutor {

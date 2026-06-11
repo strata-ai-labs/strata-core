@@ -268,10 +268,113 @@ pub struct CommitSummary {
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
     durability: crate::api::CommitDurabilitySummary,
+    admission: CommitAdmissionSummary,
     put_count: usize,
     delete_count: usize,
     timeline_row_count: usize,
     visible: bool,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitAdmissionStatus {
+    AcceptedClean,
+    AcceptedUnderPressure,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitAdmissionPressureSeverity {
+    None,
+    Background,
+    Urgent,
+    Blocking,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitAdmissionPressureReason {
+    None,
+    FrozenBacklog,
+    LevelZeroTableBacklog,
+    NonZeroLevelTableBacklog,
+    InheritedLayerBacklog,
+    MaintenanceQueueBacklog,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommitAdmissionSummary {
+    status: CommitAdmissionStatus,
+    pressure_severity: CommitAdmissionPressureSeverity,
+    pressure_reason: CommitAdmissionPressureReason,
+    inline_maintenance_driven: bool,
+    cleared_prior_pressure_rejection: bool,
+}
+
+impl Default for CommitAdmissionSummary {
+    fn default() -> Self {
+        Self::accepted_clean(
+            CommitAdmissionPressureSeverity::None,
+            CommitAdmissionPressureReason::None,
+            false,
+        )
+    }
+}
+
+impl CommitAdmissionSummary {
+    #[must_use]
+    pub const fn accepted_clean(
+        pressure_severity: CommitAdmissionPressureSeverity,
+        pressure_reason: CommitAdmissionPressureReason,
+        cleared_prior_pressure_rejection: bool,
+    ) -> Self {
+        Self {
+            status: CommitAdmissionStatus::AcceptedClean,
+            pressure_severity,
+            pressure_reason,
+            inline_maintenance_driven: false,
+            cleared_prior_pressure_rejection,
+        }
+    }
+
+    #[must_use]
+    pub const fn accepted_under_pressure(
+        pressure_reason: CommitAdmissionPressureReason,
+        cleared_prior_pressure_rejection: bool,
+    ) -> Self {
+        Self {
+            status: CommitAdmissionStatus::AcceptedUnderPressure,
+            pressure_severity: CommitAdmissionPressureSeverity::Urgent,
+            pressure_reason,
+            inline_maintenance_driven: false,
+            cleared_prior_pressure_rejection,
+        }
+    }
+
+    #[must_use]
+    pub const fn status(self) -> CommitAdmissionStatus {
+        self.status
+    }
+
+    #[must_use]
+    pub const fn pressure_severity(self) -> CommitAdmissionPressureSeverity {
+        self.pressure_severity
+    }
+
+    #[must_use]
+    pub const fn pressure_reason(self) -> CommitAdmissionPressureReason {
+        self.pressure_reason
+    }
+
+    #[must_use]
+    pub const fn inline_maintenance_driven(self) -> bool {
+        self.inline_maintenance_driven
+    }
+
+    #[must_use]
+    pub const fn cleared_prior_pressure_rejection(self) -> bool {
+        self.cleared_prior_pressure_rejection
+    }
 }
 
 impl CommitSummary {
@@ -287,6 +390,11 @@ impl CommitSummary {
             commit_version,
             commit_timestamp,
             durability: crate::api::CommitDurabilitySummary::NotDurable,
+            admission: CommitAdmissionSummary::accepted_clean(
+                CommitAdmissionPressureSeverity::None,
+                CommitAdmissionPressureReason::None,
+                false,
+            ),
             put_count: 0,
             delete_count: 0,
             timeline_row_count: 0,
@@ -314,11 +422,25 @@ impl CommitSummary {
             commit_version,
             commit_timestamp,
             durability,
+            admission: CommitAdmissionSummary::accepted_clean(
+                CommitAdmissionPressureSeverity::None,
+                CommitAdmissionPressureReason::None,
+                false,
+            ),
             put_count,
             delete_count,
             timeline_row_count,
             visible,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_admission_summary(
+        mut self,
+        admission: CommitAdmissionSummary,
+    ) -> Self {
+        self.admission = admission;
+        self
     }
 
     #[must_use]
@@ -339,6 +461,11 @@ impl CommitSummary {
     #[must_use]
     pub const fn durability(self) -> crate::api::CommitDurabilitySummary {
         self.durability
+    }
+
+    #[must_use]
+    pub const fn admission(self) -> CommitAdmissionSummary {
+        self.admission
     }
 
     #[must_use]

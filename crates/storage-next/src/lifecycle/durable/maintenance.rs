@@ -43,9 +43,9 @@ use crate::lifecycle::table_reachability::{
 };
 use crate::lifecycle::{
     checkpoint_task_for_wal_growth, commits_since_checkpoint,
-    compact_durable_branch_manifest_backed, materialize_durable_branch_manifest_backed,
-    policy_admission_error, purge_proof_from_maintenance_task,
-    purge_quarantine as purge_lifecycle_quarantine,
+    compact_durable_branch_manifest_backed, evaluate_mutating_write_admission,
+    materialize_durable_branch_manifest_backed, policy_admission_error,
+    purge_proof_from_maintenance_task, purge_quarantine as purge_lifecycle_quarantine,
     quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
     repair_branch_from_maintenance_task,
     repair_branch_quarantine as repair_branch_lifecycle_quarantine,
@@ -277,6 +277,20 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .branch_state(branch_id)
             .expect("pressure target branch is present in the catalog");
         collect_storage_pressure(branch, self.maintenance.status())
+    }
+
+    pub(super) fn evaluate_mutating_write_admission_for_branch(
+        &mut self,
+        branch_id: BranchId,
+    ) -> LifecycleResult<()> {
+        self.last_write_admission = None;
+        let pressure = self.storage_pressure_for_branch(branch_id);
+        let outcome = evaluate_mutating_write_admission(
+            pressure,
+            &mut self.pressure_rejected_commit_branches,
+        )?;
+        self.last_write_admission = Some(outcome);
+        Ok(())
     }
 
     #[allow(
