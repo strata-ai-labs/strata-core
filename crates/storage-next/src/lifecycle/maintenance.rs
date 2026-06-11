@@ -1296,43 +1296,34 @@ fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) ->
         (
             MaintenanceTaskKind::Flush | MaintenanceTaskKind::Purge | MaintenanceTaskKind::Repair,
             MaintenanceTaskScope::Branch(_)
-        ) | (MaintenanceTaskKind::Flush, MaintenanceTaskScope::Global)
-            | (
-                MaintenanceTaskKind::Checkpoint,
-                MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
-            )
-            | (
-                MaintenanceTaskKind::WalTruncation | MaintenanceTaskKind::FlushWatermark,
-                MaintenanceTaskScope::Wal
-            )
-            | (
-                MaintenanceTaskKind::Compaction,
-                MaintenanceTaskScope::TableLevel { .. }
-            )
-            | (
-                MaintenanceTaskKind::Materialization,
-                MaintenanceTaskScope::InheritedLayer { .. }
-            )
-            | (
-                MaintenanceTaskKind::SnapshotPruning,
-                MaintenanceTaskScope::Retention
-            )
-            | (
-                MaintenanceTaskKind::Retention,
-                MaintenanceTaskScope::Retention | MaintenanceTaskScope::Branch(_)
-            )
-            | (
-                MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
-                MaintenanceTaskScope::Quarantine
-            )
-            | (
-                MaintenanceTaskKind::Repair,
-                MaintenanceTaskScope::Quarantine | MaintenanceTaskScope::Global
-            )
-            | (
-                MaintenanceTaskKind::HealthCollection,
-                MaintenanceTaskScope::Global
-            )
+        ) | (
+            MaintenanceTaskKind::Flush | MaintenanceTaskKind::HealthCollection,
+            MaintenanceTaskScope::Global
+        ) | (
+            MaintenanceTaskKind::Checkpoint,
+            MaintenanceTaskScope::Checkpoint | MaintenanceTaskScope::Global
+        ) | (
+            MaintenanceTaskKind::WalTruncation | MaintenanceTaskKind::FlushWatermark,
+            MaintenanceTaskScope::Wal
+        ) | (
+            MaintenanceTaskKind::Compaction,
+            MaintenanceTaskScope::TableLevel { .. }
+        ) | (
+            MaintenanceTaskKind::Materialization,
+            MaintenanceTaskScope::InheritedLayer { .. }
+        ) | (
+            MaintenanceTaskKind::SnapshotPruning,
+            MaintenanceTaskScope::Retention
+        ) | (
+            MaintenanceTaskKind::Retention,
+            MaintenanceTaskScope::Retention | MaintenanceTaskScope::Branch(_)
+        ) | (
+            MaintenanceTaskKind::Quarantine | MaintenanceTaskKind::Purge,
+            MaintenanceTaskScope::Quarantine
+        ) | (
+            MaintenanceTaskKind::Repair,
+            MaintenanceTaskScope::Quarantine | MaintenanceTaskScope::Global
+        )
     )
 }
 
@@ -1343,6 +1334,9 @@ const fn normalized_coalesce_scope(
     match (kind, scope) {
         (MaintenanceTaskKind::Checkpoint, MaintenanceTaskScope::Global) => {
             MaintenanceTaskScope::Checkpoint
+        }
+        (MaintenanceTaskKind::Compaction, MaintenanceTaskScope::TableLevel { branch_id, .. }) => {
+            MaintenanceTaskScope::Branch(branch_id)
         }
         (_, scope) => scope,
     }

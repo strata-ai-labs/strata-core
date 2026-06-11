@@ -209,9 +209,16 @@ pub(super) fn empty_maintenance_status() -> MaintenanceExecutorStatus {
 pub(super) fn cache_runtime(
     branch: BranchId,
 ) -> LifecycleCacheRuntime<CommitManualTimestampSource> {
+    cache_runtime_with_config(branch, LifecycleConfig::default())
+}
+
+pub(super) fn cache_runtime_with_config(
+    branch: BranchId,
+    config: LifecycleConfig,
+) -> LifecycleCacheRuntime<CommitManualTimestampSource> {
     let backend = crate::backend::memory::MemoryBackend::new();
     LifecycleCacheRuntime::open(
-        cache_open_request(branch),
+        cache_open_request(branch, config),
         &backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
@@ -220,13 +227,13 @@ pub(super) fn cache_runtime(
     .expect("cache runtime")
 }
 
-fn cache_open_request(branch: BranchId) -> LifecycleCacheOpenRequest {
+fn cache_open_request(branch: BranchId, config: LifecycleConfig) -> LifecycleCacheOpenRequest {
     LifecycleCacheOpenRequest::new(
         StorageOpenPlan::new(
             StorageMode::Cache,
             LifecycleCodecId::identity(),
             RecoveryStrictness::Strict,
-            LifecycleConfig::default(),
+            config,
         )
         .expect("cache plan"),
         branch,

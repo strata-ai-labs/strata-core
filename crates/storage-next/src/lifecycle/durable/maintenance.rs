@@ -16,8 +16,11 @@ use crate::lifecycle::checkpoint::{
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure,
-    compact_branch_to_fixed_point_with, compaction_request_from_maintenance_task,
+    compact_branch_to_fixed_point_with, compaction_score_key_for_branch,
     materialization_request_from_maintenance_task,
+    record_lifecycle_table_rewrite_post_operation_score,
+    scored_compaction_request_from_maintenance_task, table_rewrite_outcome_allows_chain_resubmit,
+    table_rewrite_score_key_for_task, LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
 };
 use crate::lifecycle::flush::{
     flush_branch_drain_with, flush_drain_maintenance_outcome_for_scope,
@@ -877,13 +880,77 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let Some(task) = self
-            .maintenance
-            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Compaction)
-        else {
+        let Some(task) = self.next_scored_compaction_task() else {
             return Ok(None);
         };
         self.run_compaction_maintenance_task(task.id())
+    }
+
+    pub(crate) fn run_next_table_rewrite_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self.next_scored_table_rewrite_task() else {
+            return Ok(None);
+        };
+        match task.kind() {
+            MaintenanceTaskKind::Compaction => self.run_compaction_maintenance_task(task.id()),
+            MaintenanceTaskKind::Materialization => {
+                self.run_materialization_maintenance_task(task.id())
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn next_scored_table_rewrite_task(&self) -> Option<MaintenanceTask> {
+        self.maintenance
+            .pending_tasks()
+            .iter()
+            .copied()
+            .filter(|task| {
+                matches!(
+                    task.kind(),
+                    MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
+                )
+            })
+            .max_by_key(|task| {
+                (
+                    self.table_rewrite_task_score_key(*task),
+                    std::cmp::Reverse(task.sequence()),
+                )
+            })
+    }
+
+    fn table_rewrite_task_score_key(
+        &self,
+        task: MaintenanceTask,
+    ) -> Option<LifecycleTableRewriteScoreKey> {
+        let branch_id = branch_id_from_table_rewrite_task(task).ok()?;
+        let branch = self.branch_catalog.branch_state(branch_id).ok()?;
+        table_rewrite_score_key_for_task(branch, task)
+    }
+
+    fn next_scored_compaction_task(&self) -> Option<MaintenanceTask> {
+        self.maintenance
+            .pending_tasks()
+            .iter()
+            .copied()
+            .filter(|task| task.kind() == MaintenanceTaskKind::Compaction)
+            .max_by_key(|task| {
+                (
+                    self.compaction_task_score_key(*task),
+                    std::cmp::Reverse(task.sequence()),
+                )
+            })
+    }
+
+    fn compaction_task_score_key(
+        &self,
+        task: MaintenanceTask,
+    ) -> Option<LifecycleCompactionScoreKey> {
+        let branch_id = branch_id_from_table_level_task(task).ok()?;
+        let branch = self.branch_catalog.branch_state(branch_id).ok()?;
+        compaction_score_key_for_branch(branch)
     }
 
     fn run_compaction_maintenance_task(
@@ -924,8 +991,46 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 budget,
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
+        }?;
+        if outcome
+            .as_ref()
+            .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
+        {
+            self.resubmit_table_rewrite_if_branch_still_unhealthy(branch_id);
+        }
+        Ok(outcome)
+    }
+
+    fn resubmit_table_rewrite_if_branch_still_unhealthy(&mut self, branch_id: BranchId) {
+        if let Ok(branch) = self.branch_catalog.branch_state(branch_id) {
+            record_lifecycle_table_rewrite_post_operation_score(branch);
+        }
+        let pressure = self.storage_pressure_for_branch(branch_id);
+        let Some(request) = pressure.suggested_task() else {
+            return;
         };
-        outcome
+        if !matches!(
+            request.kind(),
+            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
+        ) {
+            return;
+        }
+        let request_kind = request.kind();
+        match self.enqueue_maintenance(request) {
+            Ok(enqueue) => {
+                if request_kind == MaintenanceTaskKind::Compaction {
+                    crate::observability::perf_trace::record_lifecycle_compaction_resubmit(
+                        enqueue.was_coalesced(),
+                    );
+                }
+            }
+            Err(_error) => {
+                if request_kind == MaintenanceTaskKind::Compaction {
+                    crate::observability::perf_trace::record_lifecycle_compaction_resubmit_deferred(
+                    );
+                }
+            }
+        }
     }
 
     #[allow(
@@ -983,8 +1088,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 budget,
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
-        };
-        outcome
+        }?;
+        if outcome
+            .as_ref()
+            .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
+        {
+            self.resubmit_table_rewrite_if_branch_still_unhealthy(branch_id);
+        }
+        Ok(outcome)
     }
 
     #[allow(
@@ -1401,8 +1512,8 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let request = compaction_request_from_maintenance_task(task)?;
-        Ok(compact_durable_branch_manifest_backed(
+        let request = scored_compaction_request_from_maintenance_task(task, self.branch)?;
+        let compaction = compact_durable_branch_manifest_backed(
             self.branch,
             self.table_object,
             self.table_reader,
@@ -1410,8 +1521,9 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
             self.table_catalog,
             &request,
             Some(self.budget),
-        )?
-        .maintenance_outcome())
+        )?;
+        crate::lifecycle::compaction::record_lifecycle_compaction_outcome(&compaction);
+        Ok(compaction.maintenance_outcome())
     }
 }
 
@@ -2048,6 +2160,18 @@ const fn branch_id_from_inherited_layer_task(
         MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Ok(branch_id),
         _ => Err(LifecycleError::MaintenanceTaskFailed {
             reason: "materialization task must target an inherited layer",
+        }),
+    }
+}
+
+const fn branch_id_from_table_rewrite_task(
+    task: MaintenanceTask,
+) -> LifecycleResult<strata_core_next::BranchId> {
+    match task.scope() {
+        MaintenanceTaskScope::TableLevel { branch_id, .. }
+        | MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "table rewrite task must target a branch table scope",
         }),
     }
 }

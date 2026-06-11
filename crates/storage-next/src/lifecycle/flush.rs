@@ -430,14 +430,11 @@ impl FlushDrainOutcome {
             MaintenanceOutcomeStatus::Completed => {
                 self.completed_flushes = self.completed_flushes.saturating_add(1);
             }
-            MaintenanceOutcomeStatus::Deferred => {
+            MaintenanceOutcomeStatus::Deferred | MaintenanceOutcomeStatus::Canceled => {
                 self.deferred_flushes = self.deferred_flushes.saturating_add(1);
             }
             MaintenanceOutcomeStatus::Failed => {
                 self.failed_flushes = self.failed_flushes.saturating_add(1);
-            }
-            MaintenanceOutcomeStatus::Canceled => {
-                self.deferred_flushes = self.deferred_flushes.saturating_add(1);
             }
         }
         self.affected_objects = self
@@ -828,10 +825,10 @@ pub(crate) fn flush_drain_maintenance_outcome_for_scope(
         retryable |= outcome.retryable;
         state_changes = state_changes.saturating_add(outcome.state_changes);
         if source_error.is_none() {
-            source_error = outcome.source_error.clone();
+            source_error.clone_from(&outcome.source_error);
         }
         if recovery_health.is_none() {
-            recovery_health = outcome.recovery_health.clone();
+            recovery_health.clone_from(&outcome.recovery_health);
         }
     }
 

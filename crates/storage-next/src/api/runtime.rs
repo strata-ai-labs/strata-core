@@ -2284,14 +2284,8 @@ fn run_next_cache_maintenance(
     {
         return Ok(Some(outcome));
     }
-    if let Some(outcome) = runtime
-        .run_next_compaction_maintenance()
-        .map_err(map_lifecycle_error)?
-    {
-        return Ok(Some(outcome));
-    }
     runtime
-        .run_next_materialization_maintenance()
+        .run_next_table_rewrite_maintenance()
         .map_err(map_lifecycle_error)
 }
 
@@ -2323,13 +2317,7 @@ fn run_next_durable_maintenance(
         return Ok(Some(outcome));
     }
     if let Some(outcome) = runtime
-        .run_next_compaction_maintenance()
-        .map_err(map_lifecycle_error)?
-    {
-        return Ok(Some(outcome));
-    }
-    if let Some(outcome) = runtime
-        .run_next_materialization_maintenance()
+        .run_next_table_rewrite_maintenance()
         .map_err(map_lifecycle_error)?
     {
         return Ok(Some(outcome));

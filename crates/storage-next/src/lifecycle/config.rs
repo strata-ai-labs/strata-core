@@ -39,9 +39,10 @@ pub(crate) struct LifecycleWalGrowthPolicy {
     max_commits_since_checkpoint: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum LifecycleMaintenanceSchedulingPolicy {
     Disabled,
+    #[default]
     EvaluateAndEnqueue,
     DeterministicInline,
 }
@@ -219,12 +220,6 @@ impl Default for LifecycleWalGrowthPolicy {
 impl LifecycleMaintenanceSchedulingPolicy {
     pub(crate) const fn enabled(self) -> bool {
         matches!(self, Self::EvaluateAndEnqueue | Self::DeterministicInline)
-    }
-}
-
-impl Default for LifecycleMaintenanceSchedulingPolicy {
-    fn default() -> Self {
-        Self::EvaluateAndEnqueue
     }
 }
 

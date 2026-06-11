@@ -46,7 +46,7 @@ fn table_rewrite_requests_reject_bad_components_and_wrong_branch_execution() {
 }
 
 #[test]
-fn table_rewrite_tasks_coalesce_by_exact_storage_scope() {
+fn compaction_chain_tasks_coalesce_by_branch_scope() {
     let branch = branch_id(0x72);
     let other = branch_id(0x73);
     let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
@@ -78,14 +78,15 @@ fn table_rewrite_tasks_coalesce_by_exact_storage_scope() {
 
     assert_eq!(duplicate.task_id(), first.task_id());
     assert!(duplicate.was_coalesced());
-    assert_ne!(other_level.task_id(), first.task_id());
+    assert_eq!(other_level.task_id(), first.task_id());
+    assert!(other_level.was_coalesced());
     assert_ne!(other_branch.task_id(), first.task_id());
     assert_eq!(
         duplicate_materialization.task_id(),
         materialization.task_id()
     );
-    assert_eq!(executor.status().pending_tasks(), 4);
-    assert_eq!(executor.stats().coalesced(), 2);
+    assert_eq!(executor.status().pending_tasks(), 3);
+    assert_eq!(executor.stats().coalesced(), 3);
 }
 
 #[test]

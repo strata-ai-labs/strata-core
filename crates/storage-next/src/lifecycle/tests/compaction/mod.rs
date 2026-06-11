@@ -18,7 +18,7 @@ use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
     compact_cache_branch_to_fixed_point, LifecycleCompactionDrainRequest,
 };
-use strata_core_next::Timestamp;
+use strata_core_next::{BranchId, Timestamp};
 
 #[test]
 fn table_rewrite_requests_validate_opaque_identity_components() {
@@ -1692,6 +1692,842 @@ fn scheduler_enqueues_nonzero_level_compaction_with_selected_level() {
     assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(state.owned_levels()[1].len(), 3);
     assert_eq!(state.owned_levels()[2].len(), 1);
+}
+
+#[test]
+fn compaction_pressure_selects_highest_scored_level() {
+    let branch = branch_id(0x6b);
+    let mut l0_dominant = BranchLocalState::empty(branch);
+    for index in 0..8 {
+        install_l0_table(
+            &mut l0_dominant,
+            branch,
+            &format!("score-l0-dominant-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("l0-dominant-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    for index in 0..4 {
+        install_owned_table(
+            &mut l0_dominant,
+            branch,
+            BranchLevel::new(1),
+            &format!("score-l0-dominant-l1-{index}"),
+            vec![put_row(
+                branch,
+                format!("l1-smaller-{index}").as_bytes(),
+                index + 20,
+                (index + 20) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    let l0_pressure = collect_storage_pressure(&l0_dominant, empty_maintenance_status());
+    assert_eq!(
+        l0_pressure.reason(),
+        LifecycleStoragePressureReason::LevelZeroTableBacklog
+    );
+    assert!(matches!(
+        l0_pressure.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id,
+            level: 0
+        }) if branch_id == branch
+    ));
+
+    let mut nonzero_dominant = BranchLocalState::empty(branch);
+    for index in 0..4 {
+        install_l0_table(
+            &mut nonzero_dominant,
+            branch,
+            &format!("score-nonzero-dominant-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("l0-smaller-{index}").as_bytes(),
+                index + 40,
+                (index + 40) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    for index in 0..6 {
+        install_owned_table(
+            &mut nonzero_dominant,
+            branch,
+            BranchLevel::new(1),
+            &format!("score-nonzero-dominant-l1-{index}"),
+            vec![put_row(
+                branch,
+                format!("l1-dominant-{index}").as_bytes(),
+                index + 60,
+                (index + 60) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    let nonzero_pressure = collect_storage_pressure(&nonzero_dominant, empty_maintenance_status());
+    assert_eq!(
+        nonzero_pressure.reason(),
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog
+    );
+    assert!(matches!(
+        nonzero_pressure
+            .suggested_task()
+            .map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id,
+            level: 1
+        }) if branch_id == branch
+    ));
+}
+
+#[test]
+fn queued_compaction_runs_highest_scored_branch_first() {
+    let branch_a = branch_id(0x6c);
+    let branch_b = branch_id(0x6d);
+    let mut runtime = cache_runtime(branch_a);
+    runtime
+        .create_branch(
+            branch_b,
+            crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create branch-b");
+    {
+        let catalog = runtime.branch_catalog_mut_for_test();
+        let state_a = catalog
+            .branch_state_mut(
+                branch_a,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch-a state");
+        for index in 0..4 {
+            install_l0_table(
+                state_a,
+                branch_a,
+                &format!("score-branch-a-l0-{index}"),
+                vec![put_row(
+                    branch_a,
+                    format!("branch-a-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        let state_b = catalog
+            .branch_state_mut(
+                branch_b,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch-b state");
+        for index in 0..6 {
+            install_owned_table(
+                state_b,
+                branch_b,
+                BranchLevel::new(1),
+                &format!("score-branch-b-l1-{index}"),
+                vec![put_row(
+                    branch_b,
+                    format!("branch-b-{index}").as_bytes(),
+                    index + 20,
+                    (index + 20) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    let low_pressure_task = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch_a, 0))
+        .expect("enqueue branch-a");
+    let high_pressure_task = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch_b, 1))
+        .expect("enqueue branch-b");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let branch_b_state = runtime
+        .branch_catalog()
+        .branch_state(branch_b)
+        .expect("branch-b state");
+
+    assert_eq!(outcome.task_id(), Some(high_pressure_task.task_id()));
+    assert_ne!(outcome.task_id(), Some(low_pressure_task.task_id()));
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 4);
+    assert_eq!(branch_b_state.owned_levels()[1].len(), 5);
+    assert_eq!(branch_b_state.owned_levels()[2].len(), 1);
+}
+
+#[test]
+fn queued_nonzero_compaction_selects_largest_input_table() {
+    let branch = branch_id(0x6e);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        let small_value = vec![b's'; 16];
+        let large_value = vec![b'l'; 4096];
+        for (index, value) in [
+            small_value.as_slice(),
+            small_value.as_slice(),
+            large_value.as_slice(),
+            small_value.as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("score-largest-input-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("largest-input-{index}").as_bytes(),
+                    index as u64 + 1,
+                    (index as u64 + 1) * 1_000,
+                    value,
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let state = runtime.branch_state();
+    let promoted_key = state.owned_levels()[2][0].rows()[0]
+        .physical_key()
+        .user_key();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(state.owned_levels()[1].len(), 3);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+    assert_eq!(promoted_key, b"largest-input-2");
+}
+
+#[test]
+fn completed_compaction_resubmits_chain_until_branch_is_healthy() {
+    let branch = branch_id(0x6f);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..5 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("score-chain-l1-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("chain-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+
+    let first = runtime
+        .run_next_compaction_maintenance()
+        .expect("run first")
+        .expect("first outcome");
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 4);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let second = runtime
+        .run_next_compaction_maintenance()
+        .expect("run second")
+        .expect("second outcome");
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 3);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
+    let parent = branch_id(0xa8);
+    let child = branch_id(0xa9);
+    let mut runtime = cache_runtime(child);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state") = single_inherited_state(parent, child);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                child,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_l0_table(
+                state,
+                child,
+                &format!("cross-rewrite-l0-{index}"),
+                vec![put_row(
+                    child,
+                    format!("cross-rewrite-{index}").as_bytes(),
+                    index + 10,
+                    (index + 10) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(child, 0))
+        .expect("enqueue compaction");
+
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert!(
+        runtime
+            .run_next_compaction_maintenance()
+            .expect("run compaction again")
+            .is_none(),
+        "remaining rewrite pressure should be queued as materialization"
+    );
+
+    let materialization = runtime
+        .run_next_materialization_maintenance()
+        .expect("run materialization")
+        .expect("materialization outcome");
+    assert_eq!(
+        materialization.status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_eq!(
+        materialization.task_kind(),
+        MaintenanceTaskKind::Materialization
+    );
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn materialization_pressure_competes_with_compaction_score() {
+    let far = branch_id(0xa0);
+    let near = branch_id(0xa1);
+    let child = branch_id(0xa2);
+    let mut child_state = inherited_chain_state(far, near, child);
+    for index in 0..4 {
+        install_l0_table(
+            &mut child_state,
+            child,
+            &format!("mixed-pressure-l0-{index}"),
+            vec![put_row(
+                child,
+                format!("mixed-pressure-{index}").as_bytes(),
+                index + 10,
+                (index + 10) * 1_000,
+                b"value",
+            )],
+        );
+    }
+
+    let pressure = collect_storage_pressure(&child_state, empty_maintenance_status());
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::InheritedLayerBacklog
+    );
+    assert_eq!(pressure.inherited_layers(), 2);
+    assert_eq!(pressure.level_zero_tables(), 4);
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::InheritedLayer {
+            branch_id,
+            layer_index: 0
+        }) if branch_id == child
+    ));
+}
+
+#[test]
+fn queued_table_rewrite_runs_highest_scored_work_first() {
+    let far = branch_id(0xaa);
+    let near = branch_id(0xab);
+    let child = branch_id(0xac);
+    let mut runtime = cache_runtime(child);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state") = inherited_chain_state(far, near, child);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                child,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_l0_table(
+                state,
+                child,
+                &format!("queued-mixed-l0-{index}"),
+                vec![put_row(
+                    child,
+                    format!("queued-mixed-{index}").as_bytes(),
+                    index + 10,
+                    (index + 10) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    let compaction = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(child, 0))
+        .expect("enqueue compaction");
+    let materialization = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::materialization_layer(child, 0))
+        .expect("enqueue materialization");
+
+    let first = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run table rewrite")
+        .expect("rewrite outcome");
+
+    assert_eq!(first.task_id(), Some(materialization.task_id()));
+    assert_eq!(first.task_kind(), MaintenanceTaskKind::Materialization);
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+
+    let second = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    assert_eq!(second.task_id(), Some(compaction.task_id()));
+    assert_eq!(second.task_kind(), MaintenanceTaskKind::Compaction);
+}
+
+#[test]
+fn queued_table_rewrite_runs_compaction_when_it_has_higher_score() {
+    let parent = branch_id(0xad);
+    let child = branch_id(0xae);
+    let mut runtime = cache_runtime(child);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state") = single_inherited_state(parent, child);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                child,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..8 {
+            install_l0_table(
+                state,
+                child,
+                &format!("queued-compaction-dominant-l0-{index}"),
+                vec![put_row(
+                    child,
+                    format!("queued-compaction-dominant-{index}").as_bytes(),
+                    index + 10,
+                    (index + 10) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    let materialization = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::materialization_layer(child, 0))
+        .expect("enqueue materialization");
+    let compaction = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(child, 0))
+        .expect("enqueue compaction");
+
+    let first = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run table rewrite")
+        .expect("rewrite outcome");
+
+    assert_eq!(first.task_id(), Some(compaction.task_id()));
+    assert_eq!(first.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 0);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+
+    let second = runtime
+        .run_next_materialization_maintenance()
+        .expect("run materialization")
+        .expect("materialization outcome");
+    assert_eq!(second.task_id(), Some(materialization.task_id()));
+    assert_eq!(second.task_kind(), MaintenanceTaskKind::Materialization);
+}
+
+#[test]
+fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
+    let far = branch_id(0xa3);
+    let near = branch_id(0xa4);
+    let child = branch_id(0xa5);
+    let mut runtime = cache_runtime(child);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state") = inherited_chain_state(far, near, child);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::materialization_layer(child, 0))
+        .expect("enqueue materialization");
+
+    let first = runtime
+        .run_next_materialization_maintenance()
+        .expect("run first materialization")
+        .expect("first materialization outcome");
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let second = runtime
+        .run_next_materialization_maintenance()
+        .expect("run second materialization")
+        .expect("second materialization outcome");
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+fn inherited_chain_state(far: BranchId, near: BranchId, child: BranchId) -> BranchLocalState {
+    let mut far_state = BranchLocalState::empty(far);
+    install_l0_table(
+        &mut far_state,
+        far,
+        "scored-materialization-far",
+        vec![put_row(far, b"far", 1, 1_000, b"far")],
+    );
+    let (mut near_state, _) = far_state.fork_into_empty_child(near).expect("fork near");
+    install_l0_table(
+        &mut near_state,
+        near,
+        "scored-materialization-near",
+        vec![put_row(near, b"near", 2, 2_000, b"near")],
+    );
+    let (child_state, outcome) = near_state.fork_into_empty_child(child).expect("fork child");
+    assert_eq!(outcome.inherited_layer_count(), 2);
+    child_state
+}
+
+fn single_inherited_state(parent: BranchId, child: BranchId) -> BranchLocalState {
+    let mut parent_state = BranchLocalState::empty(parent);
+    install_l0_table(
+        &mut parent_state,
+        parent,
+        "scored-materialization-parent",
+        vec![put_row(parent, b"parent", 1, 1_000, b"parent")],
+    );
+    let (child_state, outcome) = parent_state
+        .fork_into_empty_child(child)
+        .expect("fork child from parent");
+    assert_eq!(outcome.inherited_layer_count(), 1);
+    child_state
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_compaction_score_perf_trace_records_candidates_selection_and_operation() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xa6);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_l0_table(
+                state,
+                branch,
+                &format!("perf-score-l0-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("perf-score-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        for index in 0..6 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("perf-score-l1-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("perf-score-l1-{index}").as_bytes(),
+                    index + 20,
+                    (index + 20) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(
+        perf.lifecycle_compaction_score_candidates() >= 2,
+        "scoring should evaluate L0 and nonzero candidates"
+    );
+    assert_eq!(perf.lifecycle_compaction_selected(), 1);
+    assert_eq!(perf.lifecycle_compaction_selected_level_sum(), 1);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 1);
+    assert!(perf.lifecycle_compaction_input_tables() > 0);
+    assert!(perf.lifecycle_compaction_output_tables() > 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_compaction_chain_perf_trace_records_resubmit() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xa7);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..5 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("perf-resubmit-l1-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("perf-resubmit-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(perf.lifecycle_compaction_resubmits(), 1);
+    assert_eq!(perf.lifecycle_compaction_resubmit_deferred(), 0);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_scores(), 1);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_remaining(), 1);
+    assert_eq!(
+        perf.lifecycle_table_rewrite_post_operation_score_sum(),
+        1_000
+    );
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_item_count(), 4);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_compaction_chain_perf_trace_records_terminal_score() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xaf);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_l0_table(
+                state,
+                branch,
+                &format!("perf-terminal-l0-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("perf-terminal-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(perf.lifecycle_compaction_resubmits(), 0);
+    assert_eq!(perf.lifecycle_compaction_resubmit_deferred(), 0);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_scores(), 1);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_remaining(), 0);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_score_sum(), 0);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_item_count(), 0);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_byte_count(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_compaction_chain_perf_trace_records_deferred_resubmit() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xb0);
+    let config = LifecycleConfig::new(
+        1,
+        64,
+        LifecycleCloseTimeoutPolicy::ReturnTypedTimeout,
+        LifecycleLossyRecoveryPolicy::Disabled,
+    )
+    .expect("single-slot queue config");
+    let mut runtime = cache_runtime_with_config(branch, config);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..5 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("perf-deferred-resubmit-l1-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("perf-deferred-resubmit-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("fill maintenance queue");
+    crate::observability::perf_trace::reset();
+
+    runtime.resubmit_table_rewrite_if_branch_still_unhealthy_for_test(branch);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(perf.lifecycle_compaction_resubmits(), 0);
+    assert_eq!(perf.lifecycle_compaction_resubmit_deferred(), 1);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_scores(), 1);
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_remaining(), 1);
+    assert_eq!(
+        perf.lifecycle_table_rewrite_post_operation_score_sum(),
+        1_250
+    );
+    assert_eq!(perf.lifecycle_table_rewrite_post_operation_item_count(), 5);
 }
 
 #[test]

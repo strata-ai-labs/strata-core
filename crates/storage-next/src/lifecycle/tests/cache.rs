@@ -429,7 +429,7 @@ fn cache_global_flush_task_drains_branches_in_deterministic_order() {
         .branch_catalog()
         .list_branches(false)
         .into_iter()
-        .map(|descriptor| descriptor.branch_id())
+        .map(LifecycleBranchDescriptor::branch_id)
         .collect::<Vec<_>>();
     assert_eq!(drain_order, vec![branch_low, branch_high]);
 

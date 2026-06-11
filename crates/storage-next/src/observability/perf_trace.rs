@@ -117,6 +117,26 @@ pub struct StoragePerfSnapshot {
     lifecycle_flush_drain_freeze_retries: u64,
     lifecycle_flush_drain_failures: u64,
     lifecycle_flush_drain_post_drain_frozen_tables: u64,
+    lifecycle_compaction_score_candidates: u64,
+    lifecycle_compaction_selected: u64,
+    lifecycle_compaction_selected_level_sum: u64,
+    lifecycle_compaction_selected_score_sum: u64,
+    lifecycle_compaction_selected_table_count: u64,
+    lifecycle_compaction_selected_byte_count: u64,
+    lifecycle_compaction_operations_completed: u64,
+    lifecycle_compaction_input_tables: u64,
+    lifecycle_compaction_overlap_tables: u64,
+    lifecycle_compaction_output_tables: u64,
+    lifecycle_compaction_output_bytes: u64,
+    lifecycle_compaction_trivial_moves: u64,
+    lifecycle_compaction_resubmits: u64,
+    lifecycle_compaction_resubmit_coalesces: u64,
+    lifecycle_compaction_resubmit_deferred: u64,
+    lifecycle_table_rewrite_post_operation_scores: u64,
+    lifecycle_table_rewrite_post_operation_remaining: u64,
+    lifecycle_table_rewrite_post_operation_score_sum: u64,
+    lifecycle_table_rewrite_post_operation_item_count: u64,
+    lifecycle_table_rewrite_post_operation_byte_count: u64,
     commit_branch_registry_lookups: u64,
     commit_branch_registry_descriptors_scanned: u64,
     commit_branch_guard_attempts: u64,
@@ -552,6 +572,106 @@ impl StoragePerfSnapshot {
     /// Frozen tables left after branch flush drains complete or defer.
     pub const fn lifecycle_flush_drain_post_drain_frozen_tables(self) -> u64 {
         self.lifecycle_flush_drain_post_drain_frozen_tables
+    }
+
+    /// Compaction score candidates evaluated by lifecycle maintenance.
+    pub const fn lifecycle_compaction_score_candidates(self) -> u64 {
+        self.lifecycle_compaction_score_candidates
+    }
+
+    /// Compaction candidates selected by lifecycle maintenance.
+    pub const fn lifecycle_compaction_selected(self) -> u64 {
+        self.lifecycle_compaction_selected
+    }
+
+    /// Sum of selected compaction output levels.
+    pub const fn lifecycle_compaction_selected_level_sum(self) -> u64 {
+        self.lifecycle_compaction_selected_level_sum
+    }
+
+    /// Sum of selected compaction pressure scores.
+    pub const fn lifecycle_compaction_selected_score_sum(self) -> u64 {
+        self.lifecycle_compaction_selected_score_sum
+    }
+
+    /// Tables in selected compaction source levels.
+    pub const fn lifecycle_compaction_selected_table_count(self) -> u64 {
+        self.lifecycle_compaction_selected_table_count
+    }
+
+    /// Bytes in selected compaction source levels.
+    pub const fn lifecycle_compaction_selected_byte_count(self) -> u64 {
+        self.lifecycle_compaction_selected_byte_count
+    }
+
+    /// Completed compaction operations recorded by lifecycle maintenance.
+    pub const fn lifecycle_compaction_operations_completed(self) -> u64 {
+        self.lifecycle_compaction_operations_completed
+    }
+
+    /// Input tables selected by completed lifecycle compactions.
+    pub const fn lifecycle_compaction_input_tables(self) -> u64 {
+        self.lifecycle_compaction_input_tables
+    }
+
+    /// Overlap tables selected by completed lifecycle compactions.
+    pub const fn lifecycle_compaction_overlap_tables(self) -> u64 {
+        self.lifecycle_compaction_overlap_tables
+    }
+
+    /// Output tables installed by completed lifecycle compactions.
+    pub const fn lifecycle_compaction_output_tables(self) -> u64 {
+        self.lifecycle_compaction_output_tables
+    }
+
+    /// Output bytes produced by completed lifecycle compactions.
+    pub const fn lifecycle_compaction_output_bytes(self) -> u64 {
+        self.lifecycle_compaction_output_bytes
+    }
+
+    /// Metadata-only table promotions completed by lifecycle compactions.
+    pub const fn lifecycle_compaction_trivial_moves(self) -> u64 {
+        self.lifecycle_compaction_trivial_moves
+    }
+
+    /// Compaction chain tasks resubmitted after a completed operation.
+    pub const fn lifecycle_compaction_resubmits(self) -> u64 {
+        self.lifecycle_compaction_resubmits
+    }
+
+    /// Compaction chain resubmissions coalesced with an existing task.
+    pub const fn lifecycle_compaction_resubmit_coalesces(self) -> u64 {
+        self.lifecycle_compaction_resubmit_coalesces
+    }
+
+    /// Compaction chain resubmissions deferred by queue/admission failure.
+    pub const fn lifecycle_compaction_resubmit_deferred(self) -> u64 {
+        self.lifecycle_compaction_resubmit_deferred
+    }
+
+    /// Table rewrite pressure samples recorded after completed operations.
+    pub const fn lifecycle_table_rewrite_post_operation_scores(self) -> u64 {
+        self.lifecycle_table_rewrite_post_operation_scores
+    }
+
+    /// Post-operation samples that still had table rewrite pressure.
+    pub const fn lifecycle_table_rewrite_post_operation_remaining(self) -> u64 {
+        self.lifecycle_table_rewrite_post_operation_remaining
+    }
+
+    /// Sum of post-operation table rewrite pressure scores.
+    pub const fn lifecycle_table_rewrite_post_operation_score_sum(self) -> u64 {
+        self.lifecycle_table_rewrite_post_operation_score_sum
+    }
+
+    /// Items in post-operation table rewrite pressure samples.
+    pub const fn lifecycle_table_rewrite_post_operation_item_count(self) -> u64 {
+        self.lifecycle_table_rewrite_post_operation_item_count
+    }
+
+    /// Bytes in post-operation table rewrite pressure samples.
+    pub const fn lifecycle_table_rewrite_post_operation_byte_count(self) -> u64 {
+        self.lifecycle_table_rewrite_post_operation_byte_count
     }
 
     /// Branch registry lookup calls made by commit admission.
@@ -1467,6 +1587,46 @@ static LIFECYCLE_FLUSH_DRAIN_FAILURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SCORE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SELECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_INPUT_TABLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OVERLAP_TABLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OUTPUT_TABLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OUTPUT_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_TRIVIAL_MOVES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_RESUBMITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_RESUBMIT_COALESCES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_RESUBMIT_DEFERRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_TABLE_REWRITE_POST_OPERATION_REMAINING: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORE_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_TABLE_REWRITE_POST_OPERATION_ITEM_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_TABLE_REWRITE_POST_OPERATION_BYTE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_LOOKUPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED: AtomicU64 = AtomicU64::new(0);
@@ -1881,6 +2041,26 @@ pub fn reset() {
     LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FAILURES.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SCORE_CANDIDATES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_INPUT_TABLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OVERLAP_TABLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_TABLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_TRIVIAL_MOVES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_RESUBMITS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_RESUBMIT_COALESCES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_RESUBMIT_DEFERRED.store(0, Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORES.store(0, Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_REMAINING.store(0, Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORE_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_ITEM_COUNT.store(0, Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_BYTE_COUNT.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_LOOKUPS.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED.store(0, Ordering::Relaxed);
     COMMIT_BRANCH_GUARD_ATTEMPTS.store(0, Ordering::Relaxed);
@@ -2123,6 +2303,44 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_flush_drain_failures: LIFECYCLE_FLUSH_DRAIN_FAILURES.load(Ordering::Relaxed),
         lifecycle_flush_drain_post_drain_frozen_tables:
             LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.load(Ordering::Relaxed),
+        lifecycle_compaction_score_candidates: LIFECYCLE_COMPACTION_SCORE_CANDIDATES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_selected: LIFECYCLE_COMPACTION_SELECTED.load(Ordering::Relaxed),
+        lifecycle_compaction_selected_level_sum: LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_selected_score_sum: LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_selected_table_count: LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_selected_byte_count: LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_operations_completed: LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_input_tables: LIFECYCLE_COMPACTION_INPUT_TABLES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_overlap_tables: LIFECYCLE_COMPACTION_OVERLAP_TABLES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_output_tables: LIFECYCLE_COMPACTION_OUTPUT_TABLES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_output_bytes: LIFECYCLE_COMPACTION_OUTPUT_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_trivial_moves: LIFECYCLE_COMPACTION_TRIVIAL_MOVES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_resubmits: LIFECYCLE_COMPACTION_RESUBMITS.load(Ordering::Relaxed),
+        lifecycle_compaction_resubmit_coalesces: LIFECYCLE_COMPACTION_RESUBMIT_COALESCES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_resubmit_deferred: LIFECYCLE_COMPACTION_RESUBMIT_DEFERRED
+            .load(Ordering::Relaxed),
+        lifecycle_table_rewrite_post_operation_scores:
+            LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORES.load(Ordering::Relaxed),
+        lifecycle_table_rewrite_post_operation_remaining:
+            LIFECYCLE_TABLE_REWRITE_POST_OPERATION_REMAINING.load(Ordering::Relaxed),
+        lifecycle_table_rewrite_post_operation_score_sum:
+            LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORE_SUM.load(Ordering::Relaxed),
+        lifecycle_table_rewrite_post_operation_item_count:
+            LIFECYCLE_TABLE_REWRITE_POST_OPERATION_ITEM_COUNT.load(Ordering::Relaxed),
+        lifecycle_table_rewrite_post_operation_byte_count:
+            LIFECYCLE_TABLE_REWRITE_POST_OPERATION_BYTE_COUNT.load(Ordering::Relaxed),
         commit_branch_registry_lookups: COMMIT_BRANCH_REGISTRY_LOOKUPS.load(Ordering::Relaxed),
         commit_branch_registry_descriptors_scanned: COMMIT_BRANCH_REGISTRY_DESCRIPTORS_SCANNED
             .load(Ordering::Relaxed),
@@ -2796,6 +3014,141 @@ pub(crate) fn record_lifecycle_flush_drain_post_drain_frozen_tables(count: usize
         return;
     }
     LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.fetch_add(as_u64(count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_score_candidate(
+    _level: u8,
+    _score: u64,
+    _table_count: usize,
+    _byte_count: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_score_candidate(
+    _level: u8,
+    _score: u64,
+    _table_count: usize,
+    _byte_count: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_SCORE_CANDIDATES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_selected(
+    _level: u8,
+    _score: u64,
+    _table_count: usize,
+    _byte_count: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_selected(
+    level: u8,
+    score: u64,
+    table_count: usize,
+    byte_count: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_SELECTED.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM.fetch_add(u64::from(level), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM.fetch_add(score, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT.fetch_add(as_u64(table_count), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT.fetch_add(byte_count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_operation(
+    _level: u8,
+    _input_tables: usize,
+    _overlap_tables: usize,
+    _output_tables: usize,
+    _output_bytes: u64,
+    _trivial_move: bool,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_operation(
+    _level: u8,
+    input_tables: usize,
+    overlap_tables: usize,
+    output_tables: usize,
+    output_bytes: u64,
+    trivial_move: bool,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_INPUT_TABLES.fetch_add(as_u64(input_tables), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OVERLAP_TABLES.fetch_add(as_u64(overlap_tables), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_TABLES.fetch_add(as_u64(output_tables), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_BYTES.fetch_add(output_bytes, Ordering::Relaxed);
+    if trivial_move {
+        LIFECYCLE_COMPACTION_TRIVIAL_MOVES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_resubmit(_coalesced: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_resubmit(coalesced: bool) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_RESUBMITS.fetch_add(1, Ordering::Relaxed);
+    if coalesced {
+        LIFECYCLE_COMPACTION_RESUBMIT_COALESCES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_resubmit_deferred() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_resubmit_deferred() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_RESUBMIT_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_table_rewrite_post_operation_score(
+    _remaining: bool,
+    _score: u64,
+    _item_count: usize,
+    _byte_count: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_table_rewrite_post_operation_score(
+    remaining: bool,
+    score: u64,
+    item_count: usize,
+    byte_count: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORES.fetch_add(1, Ordering::Relaxed);
+    if remaining {
+        LIFECYCLE_TABLE_REWRITE_POST_OPERATION_REMAINING.fetch_add(1, Ordering::Relaxed);
+    }
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_SCORE_SUM.fetch_add(score, Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_ITEM_COUNT
+        .fetch_add(as_u64(item_count), Ordering::Relaxed);
+    LIFECYCLE_TABLE_REWRITE_POST_OPERATION_BYTE_COUNT.fetch_add(byte_count, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

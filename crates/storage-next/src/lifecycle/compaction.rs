@@ -31,6 +31,9 @@ const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
 const NONZERO_LEVEL_TARGET_BYTES: u64 = 64 * 1024 * 1024;
 const NONZERO_LEVEL_URGENT_BYTES: u64 = NONZERO_LEVEL_TARGET_BYTES * 2;
 const NONZERO_LEVEL_BLOCKING_BYTES: u64 = NONZERO_LEVEL_TARGET_BYTES * 4;
+const INHERITED_LAYER_MATERIALIZATION_THRESHOLD: usize = 1;
+const INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD: usize = 4;
+const INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD: usize = 16;
 const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
 const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
 const DEFAULT_COMPACTION_DRAIN_PASS_LIMIT: usize = 16;
@@ -146,6 +149,52 @@ pub(crate) struct LifecycleStoragePressure {
     owned_tables: usize,
     inherited_layers: usize,
     pending_maintenance: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LifecycleCompactionScore {
+    level: u8,
+    table_index: Option<usize>,
+    score: u64,
+    severity: LifecycleStoragePressureSeverity,
+    reason: LifecycleStoragePressureReason,
+    table_count: usize,
+    byte_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LifecycleTableRewriteScore {
+    work: LifecycleTableRewriteWork,
+    score: u64,
+    severity: LifecycleStoragePressureSeverity,
+    reason: LifecycleStoragePressureReason,
+    item_count: usize,
+    byte_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LifecycleTableRewriteWork {
+    Compaction { level: u8 },
+    Materialization { layer_index: usize },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct LifecycleTableRewriteScoreKey {
+    severity_rank: u8,
+    score: u64,
+    item_count: usize,
+    byte_count: u64,
+    work_tiebreaker: u8,
+    low_level_tiebreaker: std::cmp::Reverse<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct LifecycleCompactionScoreKey {
+    severity_rank: u8,
+    score: u64,
+    table_count: usize,
+    byte_count: u64,
+    low_level_tiebreaker: std::cmp::Reverse<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -935,6 +984,30 @@ pub(crate) fn compact_durable_branch(
     compact_branch(branch, &request)
 }
 
+pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionOutcome) {
+    let Some(candidate) = outcome.branch_outcome().candidate() else {
+        return;
+    };
+    let output_bytes = outcome
+        .branch_outcome()
+        .table_report()
+        .map_or(0, crate::table::TableCompactionReport::output_bytes);
+    crate::observability::perf_trace::record_lifecycle_compaction_operation(
+        candidate.output_level().raw(),
+        candidate.input_refs().len(),
+        candidate.overlap_refs().len(),
+        outcome.branch_outcome().output_refs().len(),
+        output_bytes,
+        candidate.is_metadata_promotion(),
+    );
+}
+
+pub(crate) fn table_rewrite_outcome_allows_chain_resubmit(outcome: &MaintenanceOutcome) -> bool {
+    outcome.status() == MaintenanceOutcomeStatus::Completed
+        && outcome.recovery_health().is_none()
+        && outcome.source_error().is_none()
+}
+
 pub(crate) fn materialize_cache_branch(
     branch: &mut BranchLocalState,
     request: &LifecycleMaterializationRequest,
@@ -983,6 +1056,58 @@ pub(crate) fn compaction_request_from_maintenance_task(
     )
 }
 
+pub(crate) fn scored_compaction_request_from_maintenance_task(
+    task: &MaintenanceTask,
+    branch: &BranchLocalState,
+) -> LifecycleResult<LifecycleCompactionRequest> {
+    let MaintenanceTaskScope::TableLevel { branch_id, .. } = task.scope() else {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "compaction task must target a table level",
+        });
+    };
+    if task.kind() != MaintenanceTaskKind::Compaction {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "maintenance task is not a compaction task",
+        });
+    }
+    if branch.branch_id() != branch_id {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "compaction task branch must match branch state",
+        });
+    }
+    let Some(score) = selected_compaction_score(branch) else {
+        return compaction_request_from_maintenance_task(task);
+    };
+    let kind = if score.level == 0 {
+        BranchCompactionKind::CompactL0ToLevelOne
+    } else {
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(score.level),
+            table_index: score
+                .table_index
+                .ok_or(LifecycleError::MaintenanceTaskFailed {
+                    reason: "scored nonzero compaction requires a table index",
+                })?,
+        }
+    };
+    crate::observability::perf_trace::record_lifecycle_compaction_selected(
+        score.level,
+        score.score,
+        score.table_count,
+        score.byte_count,
+    );
+    LifecycleCompactionRequest::new(
+        branch_id,
+        kind,
+        format!(
+            "maintenance-compaction-{}-level-{}-score-{}",
+            branch_component(branch_id),
+            score.level,
+            score.score
+        ),
+    )
+}
+
 pub(crate) fn materialization_request_from_maintenance_task(
     task: &MaintenanceTask,
 ) -> LifecycleResult<LifecycleMaterializationRequest> {
@@ -1000,13 +1125,20 @@ pub(crate) fn materialization_request_from_maintenance_task(
             reason: "maintenance task is not a materialization task",
         });
     }
-    let prefix = format!(
-        "maintenance-materialization-{}",
-        branch_component(branch_id)
-    );
     if let Some(handle) = task.materialization_handle() {
+        let prefix = format!(
+            "maintenance-materialization-{}-source-{}-fork-{}",
+            branch_component(branch_id),
+            branch_component(handle.source_branch_id()),
+            handle.fork_version().as_u64()
+        );
         LifecycleMaterializationRequest::from_handle(handle, prefix)
     } else {
+        let prefix = format!(
+            "maintenance-materialization-{}-layer-{}",
+            branch_component(branch_id),
+            layer_index
+        );
         LifecycleMaterializationRequest::new(branch_id, layer_index, prefix)
     }
 }
@@ -1052,7 +1184,7 @@ pub(crate) fn collect_storage_pressure(
         .owned_levels()
         .get(usize::from(BranchLevel::ZERO.raw()))
         .map_or(0, std::vec::Vec::len);
-    let nonzero_level_pressure = selected_nonzero_level_pressure(branch);
+    let table_rewrite_score = selected_table_rewrite_score(branch);
     let owned_tables = branch.owned_table_count();
     let inherited_layers = branch.inherited_layer_count();
     let pending_maintenance = maintenance.pending_tasks();
@@ -1069,20 +1201,14 @@ pub(crate) fn collect_storage_pressure(
             LifecycleStoragePressureReason::FrozenBacklog,
             Some(MaintenanceTaskRequest::flush(branch_id)),
         )
-    } else if level_zero_tables >= LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD {
+    } else if table_rewrite_score.is_some_and(|score| {
+        score.severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    }) {
+        let score = table_rewrite_score.expect("checked table rewrite pressure");
         (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            Some(MaintenanceTaskRequest::compaction(branch_id, 0)),
-        )
-    } else if nonzero_level_pressure.is_some_and(NonZeroLevelPressure::is_blocking) {
-        let level = nonzero_level_pressure
-            .expect("checked nonzero level pressure")
-            .level;
-        (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
-            Some(MaintenanceTaskRequest::compaction(branch_id, level)),
+            score.severity,
+            score.reason,
+            Some(score.task_request(branch_id)),
         )
     } else if pending_maintenance >= PENDING_MAINTENANCE_BLOCKING_THRESHOLD {
         (
@@ -1090,41 +1216,20 @@ pub(crate) fn collect_storage_pressure(
             LifecycleStoragePressureReason::MaintenanceQueueBacklog,
             None,
         )
-    } else if level_zero_tables >= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD {
+    } else if table_rewrite_score
+        .is_some_and(|score| score.severity == LifecycleStoragePressureSeverity::Urgent)
+    {
+        let score = table_rewrite_score.expect("checked table rewrite pressure");
         (
-            LifecycleStoragePressureSeverity::Urgent,
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            Some(MaintenanceTaskRequest::compaction(branch_id, 0)),
+            score.severity,
+            score.reason,
+            Some(score.task_request(branch_id)),
         )
-    } else if nonzero_level_pressure.is_some_and(NonZeroLevelPressure::is_urgent) {
-        let level = nonzero_level_pressure
-            .expect("checked nonzero level pressure")
-            .level;
+    } else if let Some(score) = table_rewrite_score {
         (
-            LifecycleStoragePressureSeverity::Urgent,
-            LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
-            Some(MaintenanceTaskRequest::compaction(branch_id, level)),
-        )
-    } else if level_zero_tables >= LEVEL_ZERO_COMPACTION_THRESHOLD {
-        (
-            LifecycleStoragePressureSeverity::Background,
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            Some(MaintenanceTaskRequest::compaction(branch_id, 0)),
-        )
-    } else if nonzero_level_pressure.is_some() {
-        let level = nonzero_level_pressure
-            .expect("checked nonzero level pressure")
-            .level;
-        (
-            LifecycleStoragePressureSeverity::Background,
-            LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
-            Some(MaintenanceTaskRequest::compaction(branch_id, level)),
-        )
-    } else if inherited_layers > 0 {
-        (
-            LifecycleStoragePressureSeverity::Background,
-            LifecycleStoragePressureReason::InheritedLayerBacklog,
-            Some(MaintenanceTaskRequest::materialization(branch_id)),
+            score.severity,
+            score.reason,
+            Some(score.task_request(branch_id)),
         )
     } else if pending_maintenance > 0 {
         (
@@ -1154,61 +1259,283 @@ pub(crate) fn collect_storage_pressure(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NonZeroLevelPressure {
-    level: u8,
-    table_count: usize,
-    byte_count: u64,
+pub(crate) fn compaction_score_key_for_branch(
+    branch: &BranchLocalState,
+) -> Option<LifecycleCompactionScoreKey> {
+    selected_compaction_score(branch).map(compaction_score_key)
 }
 
-impl NonZeroLevelPressure {
-    const fn is_background(self) -> bool {
-        self.table_count >= NONZERO_LEVEL_COMPACTION_THRESHOLD
-            || self.byte_count >= NONZERO_LEVEL_TARGET_BYTES
-    }
-
-    const fn is_urgent(self) -> bool {
-        self.table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
-            || self.byte_count >= NONZERO_LEVEL_URGENT_BYTES
-    }
-
-    const fn is_blocking(self) -> bool {
-        self.table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
-            || self.byte_count >= NONZERO_LEVEL_BLOCKING_BYTES
-    }
+pub(crate) fn table_rewrite_score_key_for_task(
+    branch: &BranchLocalState,
+    task: MaintenanceTask,
+) -> Option<LifecycleTableRewriteScoreKey> {
+    Some(table_rewrite_score_key(match task.scope() {
+        MaintenanceTaskScope::TableLevel { branch_id, .. }
+            if branch_id == branch.branch_id()
+                && task.kind() == MaintenanceTaskKind::Compaction =>
+        {
+            selected_compaction_score(branch)?.into()
+        }
+        MaintenanceTaskScope::InheritedLayer {
+            branch_id,
+            layer_index,
+        } if branch_id == branch.branch_id()
+            && task.kind() == MaintenanceTaskKind::Materialization
+            && layer_index < branch.inherited_layer_count() =>
+        {
+            materialization_score(branch)?
+        }
+        _ => return None,
+    }))
 }
 
-fn selected_nonzero_level_pressure(branch: &BranchLocalState) -> Option<NonZeroLevelPressure> {
+pub(crate) fn record_lifecycle_table_rewrite_post_operation_score(branch: &BranchLocalState) {
+    let score = selected_table_rewrite_score(branch);
+    let (remaining, pressure_score, item_count, byte_count) = score
+        .map_or((false, 0, 0, 0), |score| {
+            (true, score.score, score.item_count, score.byte_count)
+        });
+    crate::observability::perf_trace::record_lifecycle_table_rewrite_post_operation_score(
+        remaining,
+        pressure_score,
+        item_count,
+        byte_count,
+    );
+}
+
+fn selected_table_rewrite_score(branch: &BranchLocalState) -> Option<LifecycleTableRewriteScore> {
+    let mut best = selected_compaction_score(branch).map(LifecycleTableRewriteScore::from);
+    if let Some(score) = materialization_score(branch) {
+        best = Some(match best {
+            Some(current) if table_rewrite_score_key(current) >= table_rewrite_score_key(score) => {
+                current
+            }
+            _ => score,
+        });
+    }
+    best
+}
+
+fn selected_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCompactionScore> {
+    let mut best = level_zero_compaction_score(branch);
     let terminal_level_index = branch.owned_levels().len().saturating_sub(1);
-    branch
+    for (level_index, tables) in branch
         .owned_levels()
         .iter()
         .enumerate()
         .skip(usize::from(BranchLevel::ZERO.raw()) + 1)
-        .filter_map(|(level_index, tables)| {
-            if level_index >= terminal_level_index {
-                return None;
-            }
-            let level = u8::try_from(level_index).ok()?;
-            let byte_count = tables.iter().fold(0u64, |total, table| {
-                total.saturating_add(table.facts().byte_count())
+    {
+        if level_index >= terminal_level_index {
+            continue;
+        }
+        if let Some(score) = nonzero_compaction_score(level_index, tables) {
+            best = Some(match best {
+                Some(current) if compaction_score_key(current) >= compaction_score_key(score) => {
+                    current
+                }
+                _ => score,
             });
-            Some(NonZeroLevelPressure {
-                level,
-                table_count: tables.len(),
-                byte_count,
-            })
-        })
-        .filter(|pressure| pressure.is_background())
-        .max_by_key(|pressure| {
+        }
+    }
+    best
+}
+
+fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCompactionScore> {
+    let tables = branch
+        .owned_levels()
+        .get(usize::from(BranchLevel::ZERO.raw()))?;
+    let table_count = tables.len();
+    if table_count < LEVEL_ZERO_COMPACTION_THRESHOLD {
+        return None;
+    }
+    let byte_count = level_byte_count(tables);
+    let severity = if table_count >= LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD {
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    } else if table_count >= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD {
+        LifecycleStoragePressureSeverity::Urgent
+    } else {
+        LifecycleStoragePressureSeverity::Background
+    };
+    let score = count_pressure_score(table_count, LEVEL_ZERO_COMPACTION_THRESHOLD);
+    crate::observability::perf_trace::record_lifecycle_compaction_score_candidate(
+        0,
+        score,
+        table_count,
+        byte_count,
+    );
+    Some(LifecycleCompactionScore {
+        level: 0,
+        table_index: None,
+        score,
+        severity,
+        reason: LifecycleStoragePressureReason::LevelZeroTableBacklog,
+        table_count,
+        byte_count,
+    })
+}
+
+fn nonzero_compaction_score(
+    level_index: usize,
+    tables: &[crate::branch::read::BranchOwnedTable],
+) -> Option<LifecycleCompactionScore> {
+    let level = u8::try_from(level_index).ok()?;
+    let table_count = tables.len();
+    let byte_count = level_byte_count(tables);
+    if table_count < NONZERO_LEVEL_COMPACTION_THRESHOLD && byte_count < NONZERO_LEVEL_TARGET_BYTES {
+        return None;
+    }
+    let severity = if table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
+        || byte_count >= NONZERO_LEVEL_BLOCKING_BYTES
+    {
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    } else if table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
+        || byte_count >= NONZERO_LEVEL_URGENT_BYTES
+    {
+        LifecycleStoragePressureSeverity::Urgent
+    } else {
+        LifecycleStoragePressureSeverity::Background
+    };
+    let count_score = count_pressure_score(table_count, NONZERO_LEVEL_COMPACTION_THRESHOLD);
+    let byte_score = byte_pressure_score(byte_count, NONZERO_LEVEL_TARGET_BYTES);
+    let score = count_score.max(byte_score);
+    crate::observability::perf_trace::record_lifecycle_compaction_score_candidate(
+        level,
+        score,
+        table_count,
+        byte_count,
+    );
+    Some(LifecycleCompactionScore {
+        level,
+        table_index: selected_nonzero_compaction_table_index(tables),
+        score,
+        severity,
+        reason: LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
+        table_count,
+        byte_count,
+    })
+}
+
+fn materialization_score(branch: &BranchLocalState) -> Option<LifecycleTableRewriteScore> {
+    let layer_count = branch.inherited_layer_count();
+    if layer_count < INHERITED_LAYER_MATERIALIZATION_THRESHOLD {
+        return None;
+    }
+    let severity = if layer_count >= INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD {
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    } else if layer_count >= INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD {
+        LifecycleStoragePressureSeverity::Urgent
+    } else {
+        LifecycleStoragePressureSeverity::Background
+    };
+    Some(LifecycleTableRewriteScore {
+        work: LifecycleTableRewriteWork::Materialization { layer_index: 0 },
+        score: count_pressure_score(layer_count, INHERITED_LAYER_MATERIALIZATION_THRESHOLD),
+        severity,
+        reason: LifecycleStoragePressureReason::InheritedLayerBacklog,
+        item_count: layer_count,
+        byte_count: 0,
+    })
+}
+
+impl From<LifecycleCompactionScore> for LifecycleTableRewriteScore {
+    fn from(score: LifecycleCompactionScore) -> Self {
+        Self {
+            work: LifecycleTableRewriteWork::Compaction { level: score.level },
+            score: score.score,
+            severity: score.severity,
+            reason: score.reason,
+            item_count: score.table_count,
+            byte_count: score.byte_count,
+        }
+    }
+}
+
+impl LifecycleTableRewriteScore {
+    fn task_request(self, branch_id: BranchId) -> MaintenanceTaskRequest {
+        match self.work {
+            LifecycleTableRewriteWork::Compaction { level } => {
+                MaintenanceTaskRequest::compaction(branch_id, level)
+            }
+            LifecycleTableRewriteWork::Materialization { layer_index } => {
+                MaintenanceTaskRequest::materialization_layer(branch_id, layer_index)
+            }
+        }
+    }
+}
+
+fn compaction_score_key(score: LifecycleCompactionScore) -> LifecycleCompactionScoreKey {
+    LifecycleCompactionScoreKey {
+        severity_rank: score.severity.rank(),
+        score: score.score,
+        table_count: score.table_count,
+        byte_count: score.byte_count,
+        low_level_tiebreaker: std::cmp::Reverse(score.level),
+    }
+}
+
+fn table_rewrite_score_key(score: LifecycleTableRewriteScore) -> LifecycleTableRewriteScoreKey {
+    let (work_tiebreaker, level) = match score.work {
+        LifecycleTableRewriteWork::Compaction { level } => (1, level),
+        LifecycleTableRewriteWork::Materialization { .. } => (0, u8::MAX),
+    };
+    LifecycleTableRewriteScoreKey {
+        severity_rank: score.severity.rank(),
+        score: score.score,
+        item_count: score.item_count,
+        byte_count: score.byte_count,
+        work_tiebreaker,
+        low_level_tiebreaker: std::cmp::Reverse(level),
+    }
+}
+
+impl LifecycleStoragePressureSeverity {
+    const fn rank(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Background => 1,
+            Self::Urgent => 2,
+            Self::BlockMutatingAdmission => 3,
+        }
+    }
+}
+
+fn count_pressure_score(count: usize, threshold: usize) -> u64 {
+    if threshold == 0 {
+        return u64::MAX;
+    }
+    u64::try_from(count)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(1_000)
+        / u64::try_from(threshold).expect("threshold fits in u64")
+}
+
+fn byte_pressure_score(bytes: u64, threshold: u64) -> u64 {
+    if threshold == 0 {
+        return u64::MAX;
+    }
+    bytes.saturating_mul(1_000) / threshold
+}
+
+fn level_byte_count(tables: &[crate::branch::read::BranchOwnedTable]) -> u64 {
+    tables.iter().fold(0u64, |total, table| {
+        total.saturating_add(table.facts().byte_count())
+    })
+}
+
+fn selected_nonzero_compaction_table_index(
+    tables: &[crate::branch::read::BranchOwnedTable],
+) -> Option<usize> {
+    tables
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, table)| {
             (
-                pressure.is_blocking(),
-                pressure.is_urgent(),
-                pressure.table_count,
-                pressure.byte_count,
-                std::cmp::Reverse(pressure.level),
+                table.facts().byte_count(),
+                table.facts().row_count(),
+                std::cmp::Reverse(*index),
             )
         })
+        .map(|(index, _)| index)
 }
 
 fn compact_branch(

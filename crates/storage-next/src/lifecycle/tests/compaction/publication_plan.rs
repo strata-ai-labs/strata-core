@@ -11,7 +11,7 @@ use crate::branch::state::compaction::{
     BranchCompactionKind, BranchCompactionRequest, BranchCompactionRetentionPolicy,
 };
 use crate::branch::state::BranchLocalState;
-use crate::commit::CommitManualTimestampSource;
+use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource};
 use crate::lifecycle::tests::checkpoint::shared::{
     assemble_shell, durable_batch, generation_guard, open_runtime,
     physical_key as checkpoint_physical_key, CheckpointTestBackend,
@@ -1539,6 +1539,45 @@ fn queued_durable_compaction_publishes_manifest_through_maintenance_runner() {
 }
 
 #[test]
+fn queued_durable_compaction_does_not_resubmit_after_manifest_debt() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xfe);
+    let mut runtime = open_runtime(branch, &backend);
+    for index in 0..5 {
+        install_owned_table(
+            runtime.branch_state_mut(),
+            branch,
+            BranchLevel::new(1),
+            &format!("queued-debt-chain-input-{index}"),
+            vec![put_row(
+                branch,
+                format!("queued-debt-chain-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    backend.fail_table_manifest_replacement_on_call(1);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(outcome.source_error().is_some());
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 4);
+    assert_eq!(runtime.branch_state().owned_levels()[2].len(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
 fn queued_durable_materialization_publishes_manifest_through_maintenance_runner() {
     let backend = CheckpointTestBackend::new();
     let child = branch_id(0xfd);
@@ -1580,6 +1619,108 @@ fn queued_durable_materialization_publishes_manifest_through_maintenance_runner(
     assert_eq!(manifest.levels()[0].tables().len(), 1);
     assert_eq!(backend.table_object_create_calls(), 1);
     assert_eq!(backend.table_manifest_replace_calls(), 1);
+}
+
+#[test]
+fn queued_durable_compaction_resubmits_materialization_and_publishes_followup_manifest() {
+    let backend = CheckpointTestBackend::new();
+    let parent = branch_id(0xfa);
+    let child = branch_id(0xff);
+    let mut runtime = open_runtime(parent, &backend);
+    install_compaction_inputs(runtime.branch_state_mut(), parent, "durable-chain-parent");
+    runtime
+        .compact_branch_tables(&compaction_request(parent, "durable-chain-parent"))
+        .expect("publish durable parent");
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(2).expect("child generation"),
+        )
+        .expect("fork child");
+    let child_generation = runtime
+        .branch_catalog()
+        .registry()
+        .lookup(child)
+        .expect("child descriptor")
+        .generation();
+    let child_state = runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(child_generation),
+        )
+        .expect("child state");
+    for index in 0..4 {
+        install_l0_table(
+            child_state,
+            child,
+            &format!("durable-chain-l0-{index}"),
+            vec![put_row(
+                child,
+                format!("durable-chain-{index}").as_bytes(),
+                index + 10,
+                (index + 10) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(child, 0))
+        .expect("enqueue compaction");
+
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(
+        compaction.source_error().is_none(),
+        "unexpected compaction source error: {:?}",
+        compaction.source_error()
+    );
+    assert!(compaction.recovery_health().is_none());
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(child)
+            .expect("child state")
+            .inherited_layer_count(),
+        1
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let materialization = runtime
+        .run_next_materialization_maintenance()
+        .expect("run materialization")
+        .expect("materialization outcome");
+    let manifest = runtime
+        .services()
+        .table_manifest()
+        .load_current(child)
+        .expect("load manifest")
+        .expect("manifest");
+
+    assert_eq!(
+        materialization.task_kind(),
+        MaintenanceTaskKind::Materialization
+    );
+    assert_eq!(
+        materialization.status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(child)
+            .expect("child state")
+            .inherited_layer_count(),
+        0
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert!(manifest.inherited_layers().is_empty());
+    assert_eq!(backend.table_manifest_replace_calls(), 3);
 }
 
 struct TestMaterializationRunner<'a> {
