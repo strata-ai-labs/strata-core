@@ -1,5 +1,5 @@
 use super::super::{
-    storage_row::{decode_storage_row, encode_storage_row},
+    storage_row::{decode_storage_row, encode_storage_row_into},
     ByteReader, FormatError,
 };
 use crate::row::StorageRow;
@@ -59,9 +59,20 @@ impl WalCommitPayload {
 pub(crate) fn encode_wal_commit_payload(
     payload: &WalCommitPayload,
 ) -> Result<Vec<u8>, FormatError> {
+    let mut bytes = Vec::new();
+    let mut row_bytes = Vec::new();
+    encode_wal_commit_payload_into(payload, &mut bytes, &mut row_bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn encode_wal_commit_payload_into(
+    payload: &WalCommitPayload,
+    bytes: &mut Vec<u8>,
+    row_bytes: &mut Vec<u8>,
+) -> Result<(), FormatError> {
     validate_row_count(payload.rows().len())?;
 
-    let mut bytes = Vec::new();
+    bytes.clear();
     bytes.extend_from_slice(&WAL_COMMIT_PAYLOAD_MAGIC);
     bytes.extend_from_slice(&WAL_COMMIT_PAYLOAD_FORMAT_VERSION.to_le_bytes());
     let row_count = u32::try_from(payload.rows().len())
@@ -69,7 +80,7 @@ pub(crate) fn encode_wal_commit_payload(
     bytes.extend_from_slice(&row_count.to_le_bytes());
 
     for row in payload.rows() {
-        let row_bytes = encode_storage_row(row)?;
+        encode_storage_row_into(row, row_bytes)?;
         validate_row_len(row_bytes.len())?;
         let row_len = u32::try_from(row_bytes.len())
             .map_err(|_| FormatError::InvalidLength { field: "row_len" })?;
@@ -84,10 +95,10 @@ pub(crate) fn encode_wal_commit_payload(
         validate_payload_len(required_len)?;
 
         bytes.extend_from_slice(&row_len.to_le_bytes());
-        bytes.extend_from_slice(&row_bytes);
+        bytes.extend_from_slice(row_bytes);
     }
 
-    Ok(bytes)
+    Ok(())
 }
 
 pub(crate) fn decode_wal_commit_payload(bytes: &[u8]) -> Result<WalCommitPayload, FormatError> {

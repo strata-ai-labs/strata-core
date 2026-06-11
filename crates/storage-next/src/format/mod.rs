@@ -83,10 +83,12 @@ pub(crate) use table_manifest::{
 )]
 pub(crate) use wal::{decode_wal_commit_payload, encode_wal_commit_payload, WalCommitPayload};
 pub(crate) use wal::{
-    decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header, encode_wal_record,
-    encode_wal_record_envelope, encode_wal_segment_header, WalRecord, WalRecordEnvelope,
-    WalSegmentHeader,
+    decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header,
+    encode_wal_record_envelope_bytes_into, encode_wal_record_into_reusing,
+    encode_wal_segment_header, WalRecord, WalSegmentHeader,
 };
+#[cfg(test)]
+pub(crate) use wal::{encode_wal_record, encode_wal_record_envelope, WalRecordEnvelope};
 
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) mod fuzzing;

@@ -14,24 +14,95 @@ use crate::backend::{
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
-    decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header, encode_wal_record,
-    encode_wal_record_envelope, encode_wal_segment_header, FormatError, SegmentMetadata, WalRecord,
-    WalRecordEnvelope, WalSegmentHeader, WAL_SEGMENT_HEADER_SIZE,
+    decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header,
+    encode_wal_record_envelope_bytes_into, encode_wal_record_into_reusing,
+    encode_wal_segment_header, FormatError, SegmentMetadata, WalRecord, WalSegmentHeader,
+    WAL_SEGMENT_HEADER_SIZE,
 };
 use crate::layout::{LayoutError, ObjectLayout, WalObjectClassification};
 use crate::object::ObjectName;
+use crate::observability::perf_trace;
 use crate::service::{
     durable_cleanup_failure, durable_cleanup_succeeded, validate_publish_outcome, ObjectPublisher,
 };
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::fmt;
 use strata_core_next::CommitVersion;
 
 const DEFAULT_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 const MIN_SEGMENT_SIZE: u64 = 1024;
 const IDENTITY_CODEC_ID: &str = "identity";
+const WAL_COMMIT_PAYLOAD_FIXED_BYTES: usize = 12;
 
 pub(crate) type WalServiceResult<T> = Result<T, WalServiceError>;
+
+thread_local! {
+    static WAL_ENCODE_BUFFERS: RefCell<WalEncodeBuffers> =
+        RefCell::new(WalEncodeBuffers::with_initial_capacity(4096));
+}
+
+#[derive(Debug)]
+struct WalEncodeBuffers {
+    frame: Vec<u8>,
+    record: Vec<u8>,
+    payload: Vec<u8>,
+    row: Vec<u8>,
+}
+
+impl WalEncodeBuffers {
+    fn with_initial_capacity(capacity: usize) -> Self {
+        Self {
+            frame: Vec::with_capacity(capacity),
+            record: Vec::with_capacity(capacity),
+            payload: Vec::with_capacity(capacity),
+            row: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn capacities(&self) -> WalEncodeCapacities {
+        WalEncodeCapacities {
+            frame: self.frame.capacity(),
+            record: self.record.capacity(),
+            payload: self.payload.capacity(),
+            row: self.row.capacity(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WalEncodeCapacities {
+    frame: usize,
+    record: usize,
+    payload: usize,
+    row: usize,
+}
+
+impl WalEncodeCapacities {
+    fn growth_from(self, before: Self) -> WalEncodeBufferReuse {
+        let before = [before.frame, before.record, before.payload, before.row];
+        let after = [self.frame, self.record, self.payload, self.row];
+        let mut allocations = 0usize;
+        let mut reuses = 0usize;
+        for (before_capacity, after_capacity) in before.into_iter().zip(after) {
+            if after_capacity > before_capacity {
+                allocations = allocations.saturating_add(1);
+            } else {
+                reuses = reuses.saturating_add(1);
+            }
+        }
+        WalEncodeBufferReuse {
+            allocations,
+            reuses,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WalEncodeBufferReuse {
+    allocations: usize,
+    reuses: usize,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WalServiceConfig {
@@ -785,101 +856,113 @@ impl<'a> WalService<'a> {
             });
         }
 
-        let frame = encode_record_frame(record, &self.active_object, self.codec_id)?;
-        let frame_len = frame.len() as u64;
-        // The segment header consumes part of the configured segment budget, so
-        // a single record frame must fit in the remaining capacity before any
-        // backend append is attempted.
-        let max_record_bytes = self
-            .segment_size
-            .checked_sub(WAL_SEGMENT_HEADER_SIZE as u64)
-            .ok_or(WalServiceError::InvalidConfig {
-                field: "segment_size",
-            })?;
-        if frame_len > max_record_bytes {
-            return Err(WalServiceError::RecordTooLarge {
-                bytes: frame_len,
-                segment_size: self.segment_size,
-            });
-        }
+        WAL_ENCODE_BUFFERS.with(|buffer_cell| {
+            let mut buffers = buffer_cell.borrow_mut();
+            let encode =
+                encode_record_frame(record, &self.active_object, self.codec_id, &mut buffers)?;
+            perf_trace::record_commit_wal_encode_buffers(
+                encode.record_bytes,
+                encode.payload_bytes,
+                encode.row_encode_bytes,
+                encode.buffer_reuse.allocations,
+                encode.buffer_reuse.reuses,
+            );
 
-        self.validate_active_object_size(WalOperation::Append)?;
-
-        // Rotation is decided against service state that was just reconciled
-        // with backend metadata. That prevents appending after an unrepaired
-        // partial tail or externally-mutated active segment.
-        let projected_size = self.active_segment_size.checked_add(frame_len).ok_or(
-            WalServiceError::RecordTooLarge {
-                bytes: frame_len,
-                segment_size: self.segment_size,
-            },
-        )?;
-        if projected_size > self.segment_size {
-            self.rotate_segment()?;
-            self.validate_active_object_size(WalOperation::Append)?;
-        }
-
-        let expected_offset = self.active_segment_size;
-        let append = self
-            .backend
-            .append_object(&self.active_object, &frame)
-            .map_err(|source| WalServiceError::Backend {
-                operation: WalOperation::Append,
-                object: self.active_object.clone(),
-                source,
-            })?;
-        if append.start_offset() != expected_offset {
-            return Err(WalServiceError::UnexpectedAppendOffset {
-                object: self.active_object.clone(),
-                expected: expected_offset,
-                actual: append.start_offset(),
-            });
-        }
-        if append.bytes_written() != frame_len {
-            return Err(WalServiceError::UnexpectedAppendLength {
-                object: self.active_object.clone(),
-                expected: frame_len,
-                actual: append.bytes_written(),
-            });
-        }
-        let expected_size =
-            expected_offset
-                .checked_add(frame_len)
-                .ok_or(WalServiceError::RecordTooLarge {
+            let frame_len = buffers.frame.len() as u64;
+            // The segment header consumes part of the configured segment budget, so
+            // a single record frame must fit in the remaining capacity before any
+            // backend append is attempted.
+            let max_record_bytes = self
+                .segment_size
+                .checked_sub(WAL_SEGMENT_HEADER_SIZE as u64)
+                .ok_or(WalServiceError::InvalidConfig {
+                    field: "segment_size",
+                })?;
+            if frame_len > max_record_bytes {
+                return Err(WalServiceError::RecordTooLarge {
                     bytes: frame_len,
                     segment_size: self.segment_size,
+                });
+            }
+
+            self.validate_active_object_size(WalOperation::Append)?;
+
+            // Rotation is decided against service state that was just reconciled
+            // with backend metadata. That prevents appending after an unrepaired
+            // partial tail or externally-mutated active segment.
+            let projected_size = self.active_segment_size.checked_add(frame_len).ok_or(
+                WalServiceError::RecordTooLarge {
+                    bytes: frame_len,
+                    segment_size: self.segment_size,
+                },
+            )?;
+            if projected_size > self.segment_size {
+                self.rotate_segment()?;
+                self.validate_active_object_size(WalOperation::Append)?;
+            }
+
+            let expected_offset = self.active_segment_size;
+            let append = self
+                .backend
+                .append_object(&self.active_object, &buffers.frame)
+                .map_err(|source| WalServiceError::Backend {
+                    operation: WalOperation::Append,
+                    object: self.active_object.clone(),
+                    source,
                 })?;
-        if append.metadata().size_bytes() != expected_size {
-            return Err(WalServiceError::UnexpectedObjectSize {
-                object: self.active_object.clone(),
-                expected: expected_size,
-                actual: append.metadata().size_bytes(),
-            });
-        }
+            if append.start_offset() != expected_offset {
+                return Err(WalServiceError::UnexpectedAppendOffset {
+                    object: self.active_object.clone(),
+                    expected: expected_offset,
+                    actual: append.start_offset(),
+                });
+            }
+            if append.bytes_written() != frame_len {
+                return Err(WalServiceError::UnexpectedAppendLength {
+                    object: self.active_object.clone(),
+                    expected: frame_len,
+                    actual: append.bytes_written(),
+                });
+            }
+            let expected_size =
+                expected_offset
+                    .checked_add(frame_len)
+                    .ok_or(WalServiceError::RecordTooLarge {
+                        bytes: frame_len,
+                        segment_size: self.segment_size,
+                    })?;
+            if append.metadata().size_bytes() != expected_size {
+                return Err(WalServiceError::UnexpectedObjectSize {
+                    object: self.active_object.clone(),
+                    expected: expected_size,
+                    actual: append.metadata().size_bytes(),
+                });
+            }
 
-        self.active_segment_size = append.metadata().size_bytes();
-        self.dirty_bytes = self.dirty_bytes.saturating_add(frame_len);
-        self.dirty_records = self.dirty_records.saturating_add(1);
-        self.active_metadata
-            .track_record(record.commit_version(), record.commit_timestamp());
+            self.active_segment_size = append.metadata().size_bytes();
+            self.dirty_bytes = self.dirty_bytes.saturating_add(frame_len);
+            self.dirty_records = self.dirty_records.saturating_add(1);
+            self.active_metadata
+                .track_record(record.commit_version(), record.commit_timestamp());
 
-        // In always mode the append is already visible when sync runs. If sync
-        // fails, dirty facts intentionally remain advanced so lifecycle can
-        // classify the durability-uncertain window.
-        let forced_durable = if self.durability_policy == DurabilityPolicy::Always {
-            self.force_durable()?;
-            true
-        } else {
-            false
-        };
+            // In always mode the append is already visible when sync runs. If sync
+            // fails, dirty facts intentionally remain advanced so lifecycle can
+            // classify the durability-uncertain window.
+            let forced_durable = if self.durability_policy == DurabilityPolicy::Always {
+                self.force_durable()?;
+                true
+            } else {
+                false
+            };
 
-        Ok(WalAppend::new(
-            self.active_segment_id,
-            append.start_offset(),
-            append.bytes_written(),
-            self.dirty_bytes,
-            forced_durable,
-        ))
+            Ok(WalAppend::new(
+                self.active_segment_id,
+                append.start_offset(),
+                append.bytes_written(),
+                self.dirty_bytes,
+                forced_durable,
+            ))
+        })
     }
 
     pub(crate) fn force_durable(&mut self) -> WalServiceResult<()> {
@@ -1315,33 +1398,56 @@ fn validate_wal_publish_outcome(
     })
 }
 
+struct WalEncodeFacts {
+    record_bytes: usize,
+    payload_bytes: usize,
+    row_encode_bytes: usize,
+    buffer_reuse: WalEncodeBufferReuse,
+}
+
 fn encode_record_frame(
     record: &WalRecord,
     object: &ObjectName,
     codec_id: &str,
-) -> WalServiceResult<Vec<u8>> {
-    let record_bytes = encode_wal_record(record).map_err(|source| WalServiceError::Format {
+    buffers: &mut WalEncodeBuffers,
+) -> WalServiceResult<WalEncodeFacts> {
+    let before_capacities = buffers.capacities();
+    encode_wal_record_into_reusing(
+        record,
+        &mut buffers.record,
+        &mut buffers.payload,
+        &mut buffers.row,
+    )
+    .map_err(|source| WalServiceError::Format {
         operation: WalOperation::Append,
         object: object.clone(),
         source,
     })?;
-    let record_bytes = encode_wal_codec_bytes(codec_id, record_bytes)?;
-    let envelope =
-        WalRecordEnvelope::new(record_bytes).map_err(|source| WalServiceError::Format {
+    validate_wal_codec_id(codec_id)?;
+    encode_wal_record_envelope_bytes_into(&buffers.record, &mut buffers.frame).map_err(
+        |source| WalServiceError::Format {
             operation: WalOperation::Append,
             object: object.clone(),
             source,
-        })?;
-    encode_wal_record_envelope(&envelope).map_err(|source| WalServiceError::Format {
-        operation: WalOperation::Append,
-        object: object.clone(),
-        source,
+        },
+    )?;
+    let row_count = record.commit_payload().rows().len();
+    let row_encode_bytes = buffers
+        .payload
+        .len()
+        .saturating_sub(WAL_COMMIT_PAYLOAD_FIXED_BYTES)
+        .saturating_sub(row_count.saturating_mul(4));
+    Ok(WalEncodeFacts {
+        record_bytes: buffers.record.len(),
+        payload_bytes: buffers.payload.len(),
+        row_encode_bytes,
+        buffer_reuse: buffers.capacities().growth_from(before_capacities),
     })
 }
 
-fn encode_wal_codec_bytes(codec_id: &str, bytes: Vec<u8>) -> WalServiceResult<Vec<u8>> {
+fn validate_wal_codec_id(codec_id: &str) -> WalServiceResult<()> {
     match codec_id {
-        IDENTITY_CODEC_ID => Ok(bytes),
+        IDENTITY_CODEC_ID => Ok(()),
         _ => Err(WalServiceError::InvalidConfig { field: "codec_id" }),
     }
 }

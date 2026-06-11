@@ -81,6 +81,11 @@ pub struct StoragePerfSnapshot {
     commit_wal_record_build_ns: u64,
     commit_wal_records_built: u64,
     commit_wal_record_rows: u64,
+    commit_wal_record_bytes: u64,
+    commit_wal_payload_bytes: u64,
+    commit_wal_row_encode_bytes: u64,
+    commit_wal_encode_buffer_allocations: u64,
+    commit_wal_encode_buffer_reuses: u64,
     commit_wal_append_ns: u64,
     commit_wal_appends: u64,
     commit_wal_append_bytes: u64,
@@ -349,6 +354,31 @@ impl StoragePerfSnapshot {
     /// Rows included in durable WAL records built by commit execution.
     pub const fn commit_wal_record_rows(self) -> u64 {
         self.commit_wal_record_rows
+    }
+
+    /// Encoded durable WAL record bytes before the outer envelope.
+    pub const fn commit_wal_record_bytes(self) -> u64 {
+        self.commit_wal_record_bytes
+    }
+
+    /// Encoded durable WAL commit payload bytes.
+    pub const fn commit_wal_payload_bytes(self) -> u64 {
+        self.commit_wal_payload_bytes
+    }
+
+    /// Encoded durable WAL storage-row bytes across all rows.
+    pub const fn commit_wal_row_encode_bytes(self) -> u64 {
+        self.commit_wal_row_encode_bytes
+    }
+
+    /// Reusable WAL encode buffers that had to grow during append encoding.
+    pub const fn commit_wal_encode_buffer_allocations(self) -> u64 {
+        self.commit_wal_encode_buffer_allocations
+    }
+
+    /// Reusable WAL encode buffers satisfied from existing capacity.
+    pub const fn commit_wal_encode_buffer_reuses(self) -> u64 {
+        self.commit_wal_encode_buffer_reuses
     }
 
     /// Nanoseconds spent appending durable WAL records.
@@ -1257,6 +1287,16 @@ static COMMIT_WAL_RECORDS_BUILT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_RECORD_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_WAL_RECORD_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_PAYLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_ROW_ENCODE_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_ENCODE_BUFFER_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_ENCODE_BUFFER_REUSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_APPEND_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_APPENDS: AtomicU64 = AtomicU64::new(0);
@@ -1661,6 +1701,11 @@ pub fn reset() {
     COMMIT_WAL_RECORD_BUILD_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_RECORDS_BUILT.store(0, Ordering::Relaxed);
     COMMIT_WAL_RECORD_ROWS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_RECORD_BYTES.store(0, Ordering::Relaxed);
+    COMMIT_WAL_PAYLOAD_BYTES.store(0, Ordering::Relaxed);
+    COMMIT_WAL_ROW_ENCODE_BYTES.store(0, Ordering::Relaxed);
+    COMMIT_WAL_ENCODE_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_ENCODE_BUFFER_REUSES.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPEND_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPENDS.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPEND_BYTES.store(0, Ordering::Relaxed);
@@ -1860,6 +1905,12 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_wal_record_build_ns: COMMIT_WAL_RECORD_BUILD_NS.load(Ordering::Relaxed),
         commit_wal_records_built: COMMIT_WAL_RECORDS_BUILT.load(Ordering::Relaxed),
         commit_wal_record_rows: COMMIT_WAL_RECORD_ROWS.load(Ordering::Relaxed),
+        commit_wal_record_bytes: COMMIT_WAL_RECORD_BYTES.load(Ordering::Relaxed),
+        commit_wal_payload_bytes: COMMIT_WAL_PAYLOAD_BYTES.load(Ordering::Relaxed),
+        commit_wal_row_encode_bytes: COMMIT_WAL_ROW_ENCODE_BYTES.load(Ordering::Relaxed),
+        commit_wal_encode_buffer_allocations: COMMIT_WAL_ENCODE_BUFFER_ALLOCATIONS
+            .load(Ordering::Relaxed),
+        commit_wal_encode_buffer_reuses: COMMIT_WAL_ENCODE_BUFFER_REUSES.load(Ordering::Relaxed),
         commit_wal_append_ns: COMMIT_WAL_APPEND_NS.load(Ordering::Relaxed),
         commit_wal_appends: COMMIT_WAL_APPENDS.load(Ordering::Relaxed),
         commit_wal_append_bytes: COMMIT_WAL_APPEND_BYTES.load(Ordering::Relaxed),
@@ -2234,6 +2285,34 @@ pub(crate) fn record_commit_wal_record_built(start: PerfTraceTimer, rows: usize)
     record_elapsed(&COMMIT_WAL_RECORD_BUILD_NS, start);
     COMMIT_WAL_RECORDS_BUILT.fetch_add(1, Ordering::Relaxed);
     COMMIT_WAL_RECORD_ROWS.fetch_add(as_u64(rows), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_encode_buffers(
+    _record_bytes: usize,
+    _payload_bytes: usize,
+    _row_encode_bytes: usize,
+    _buffer_allocations: usize,
+    _buffer_reuses: usize,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_encode_buffers(
+    record_bytes: usize,
+    payload_bytes: usize,
+    row_encode_bytes: usize,
+    buffer_allocations: usize,
+    buffer_reuses: usize,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_WAL_RECORD_BYTES.fetch_add(as_u64(record_bytes), Ordering::Relaxed);
+    COMMIT_WAL_PAYLOAD_BYTES.fetch_add(as_u64(payload_bytes), Ordering::Relaxed);
+    COMMIT_WAL_ROW_ENCODE_BYTES.fetch_add(as_u64(row_encode_bytes), Ordering::Relaxed);
+    COMMIT_WAL_ENCODE_BUFFER_ALLOCATIONS.fetch_add(as_u64(buffer_allocations), Ordering::Relaxed);
+    COMMIT_WAL_ENCODE_BUFFER_REUSES.fetch_add(as_u64(buffer_reuses), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

@@ -423,6 +423,8 @@ fn durable_standard_commit_appends_through_real_wal_service() {
         )],
     );
 
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
     let outcome = CommitDurableRuntime::new(
         &CommitRuntimeConfig::default(),
         &registry,
@@ -461,6 +463,8 @@ fn durable_standard_commit_appends_through_real_wal_service() {
             .value(),
         b"value"
     );
+    #[cfg(feature = "perf-trace")]
+    assert_real_wal_commit_perf(crate::observability::perf_trace::snapshot(), 1);
 }
 
 #[cfg(all(feature = "localfs", unix))]
@@ -507,6 +511,8 @@ fn durable_always_commit_appends_through_real_wal_service() {
         )],
     );
 
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
     let outcome = CommitDurableRuntime::new(
         &CommitRuntimeConfig::default(),
         &registry,
@@ -534,6 +540,8 @@ fn durable_always_commit_appends_through_real_wal_service() {
         timestamp,
     );
     assert_payload_contains_timeline_rows(&read.records()[0]);
+    #[cfg(feature = "perf-trace")]
+    assert_real_wal_commit_perf(crate::observability::perf_trace::snapshot(), 1);
 }
 
 #[test]
@@ -2518,6 +2526,37 @@ fn assert_payload_contains_timeline_rows(record: &WalRecord) {
         .filter(|row| row.physical_key().storage_space_id() == StorageSpaceId::COMMIT_TIMELINE)
         .count();
     assert_eq!(timeline_rows, CommitTimelineRows::timeline_row_count());
+}
+
+#[cfg(feature = "perf-trace")]
+fn assert_real_wal_commit_perf(
+    perf: crate::observability::perf_trace::StoragePerfSnapshot,
+    user_rows: u64,
+) {
+    let timeline_rows =
+        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+    let payload_rows = user_rows
+        .checked_add(timeline_rows)
+        .expect("payload row count fits u64");
+    assert_eq!(perf.commit_batches_prepared(), 1);
+    assert_eq!(perf.commit_user_mutation_rows(), user_rows);
+    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_rows);
+    assert_eq!(perf.commit_rows_prepared(), payload_rows);
+    assert_eq!(perf.commit_wal_records_built(), 1);
+    assert_eq!(perf.commit_wal_record_rows(), payload_rows);
+    assert_eq!(perf.commit_wal_appends(), 1);
+    assert_eq!(perf.append_rows_applied(), payload_rows);
+    assert!(perf.commit_wal_append_bytes() > 0);
+    assert!(perf.commit_wal_record_bytes() > 0);
+    assert!(perf.commit_wal_payload_bytes() > 0);
+    assert!(perf.commit_wal_row_encode_bytes() > 0);
+    assert!(perf.commit_wal_append_bytes() >= perf.commit_wal_record_bytes());
+    assert!(perf.commit_wal_record_bytes() > perf.commit_wal_payload_bytes());
+    assert!(perf.commit_wal_payload_bytes() > perf.commit_wal_row_encode_bytes());
+    assert!(
+        perf.commit_wal_encode_buffer_allocations() + perf.commit_wal_encode_buffer_reuses() >= 4
+    );
+    assert!(perf.commit_wal_encode_buffer_reuses() > 0);
 }
 
 fn assert_apply_failure_error_and_wal(

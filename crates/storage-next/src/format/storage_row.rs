@@ -1,5 +1,5 @@
 use super::{
-    key::{decode_physical_key, encode_physical_key},
+    key::{append_physical_key, decode_physical_key},
     ByteReader, FormatError, STORAGE_ROW_FLAGS_NONE, STORAGE_ROW_FORMAT_VERSION,
 };
 use crate::row::StorageRow;
@@ -8,20 +8,31 @@ use strata_core_next::{CommitVersion, Timestamp};
 const STORAGE_ROW_FORMAT: &str = "storage_row";
 
 pub(crate) fn encode_storage_row(row: &StorageRow) -> Result<Vec<u8>, FormatError> {
-    let physical_key = encode_physical_key(row.physical_key());
+    let mut bytes = Vec::with_capacity(storage_row_encode_capacity(row));
+    encode_storage_row_into(row, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn encode_storage_row_into(
+    row: &StorageRow,
+    bytes: &mut Vec<u8>,
+) -> Result<(), FormatError> {
+    bytes.clear();
+    bytes.reserve(storage_row_encode_capacity(row));
     let value = row.value();
-    let physical_key_len =
-        u32::try_from(physical_key.len()).map_err(|_| FormatError::InvalidLength {
-            field: "physical_key",
-        })?;
     let value_len =
         u32::try_from(value.len()).map_err(|_| FormatError::InvalidLength { field: "value" })?;
-    let mut bytes =
-        Vec::with_capacity(1 + 4 + physical_key.len() + 8 + 8 + 8 + 4 + 1 + 4 + value.len());
 
     bytes.push(STORAGE_ROW_FORMAT_VERSION);
-    bytes.extend_from_slice(&physical_key_len.to_le_bytes());
-    bytes.extend_from_slice(&physical_key);
+    let key_len_offset = bytes.len();
+    bytes.extend_from_slice(&[0; 4]);
+    let key_start = bytes.len();
+    append_physical_key(row.physical_key(), bytes);
+    let physical_key_len =
+        u32::try_from(bytes.len() - key_start).map_err(|_| FormatError::InvalidLength {
+            field: "physical_key",
+        })?;
+    bytes[key_len_offset..key_len_offset + 4].copy_from_slice(&physical_key_len.to_le_bytes());
     // The row carries commit facts redundantly with the internal key. Recovery
     // and diagnostics can validate row bytes without re-parsing the key suffix.
     bytes.extend_from_slice(&row.commit_version().as_u64().to_le_bytes());
@@ -31,7 +42,30 @@ pub(crate) fn encode_storage_row(row: &StorageRow) -> Result<Vec<u8>, FormatErro
     bytes.push(u8::from(row.is_tombstone()));
     bytes.extend_from_slice(&value_len.to_le_bytes());
     bytes.extend_from_slice(value);
-    Ok(bytes)
+    Ok(())
+}
+
+fn storage_row_encode_capacity(row: &StorageRow) -> usize {
+    let key = row.physical_key();
+    let physical_key_capacity = key
+        .branch_id()
+        .as_bytes()
+        .len()
+        .saturating_add(key.space().len())
+        .saturating_add(1)
+        .saturating_add(1)
+        .saturating_add(key.user_key().len())
+        .saturating_add(2);
+    1usize
+        .saturating_add(4)
+        .saturating_add(physical_key_capacity)
+        .saturating_add(8)
+        .saturating_add(8)
+        .saturating_add(8)
+        .saturating_add(4)
+        .saturating_add(1)
+        .saturating_add(4)
+        .saturating_add(row.value().len())
 }
 
 pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError> {

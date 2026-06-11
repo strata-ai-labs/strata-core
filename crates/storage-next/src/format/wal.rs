@@ -8,7 +8,8 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 mod commit_payload;
 
 pub(crate) use commit_payload::{
-    decode_wal_commit_payload, encode_wal_commit_payload, WalCommitPayload,
+    decode_wal_commit_payload, encode_wal_commit_payload, encode_wal_commit_payload_into,
+    WalCommitPayload,
 };
 
 const WAL_ENVELOPE_FORMAT: &str = "wal_record_envelope";
@@ -186,8 +187,19 @@ pub(crate) fn encode_wal_record_into(
     record: &WalRecord,
     bytes: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
+    let mut payload_bytes = Vec::new();
+    let mut row_bytes = Vec::new();
+    encode_wal_record_into_reusing(record, bytes, &mut payload_bytes, &mut row_bytes)
+}
+
+pub(crate) fn encode_wal_record_into_reusing(
+    record: &WalRecord,
+    bytes: &mut Vec<u8>,
+    payload_bytes: &mut Vec<u8>,
+    row_bytes: &mut Vec<u8>,
+) -> Result<(), FormatError> {
     bytes.clear();
-    let commit_payload = encode_wal_commit_payload(record.commit_payload())?;
+    encode_wal_commit_payload_into(record.commit_payload(), payload_bytes, row_bytes)?;
     // record_len includes the versioned payload and trailing payload CRC, but
     // excludes the 4-byte length prefix itself. The separate length CRC lets
     // readers reject impossible lengths before allocating or slicing payloads.
@@ -196,7 +208,7 @@ pub(crate) fn encode_wal_record_into(
         .and_then(|len| len.checked_add(8))
         .and_then(|len| len.checked_add(BranchId::BYTE_LEN))
         .and_then(|len| len.checked_add(8))
-        .and_then(|len| len.checked_add(commit_payload.len()))
+        .and_then(|len| len.checked_add(payload_bytes.len()))
         .ok_or(FormatError::InvalidLength {
             field: WAL_RECORD_FORMAT,
         })?;
@@ -224,7 +236,7 @@ pub(crate) fn encode_wal_record_into(
     bytes.extend_from_slice(&record.commit_version().as_u64().to_le_bytes());
     bytes.extend_from_slice(record.branch_id().as_bytes());
     bytes.extend_from_slice(&record.commit_timestamp().as_micros().to_le_bytes());
-    bytes.extend_from_slice(&commit_payload);
+    bytes.extend_from_slice(payload_bytes);
 
     let len_crc = crc32fast::hash(&record_len_bytes);
     bytes[payload_start + 1..payload_start + 5].copy_from_slice(&len_crc.to_le_bytes());
@@ -399,8 +411,22 @@ impl WalRecordEnvelope {
 pub(crate) fn encode_wal_record_envelope(
     envelope: &WalRecordEnvelope,
 ) -> Result<Vec<u8>, FormatError> {
+    let mut bytes = Vec::new();
+    encode_wal_record_envelope_bytes_into(envelope.encoded_record(), &mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn encode_wal_record_envelope_bytes_into(
+    encoded_record: &[u8],
+    bytes: &mut Vec<u8>,
+) -> Result<(), FormatError> {
+    if encoded_record.is_empty() {
+        return Err(FormatError::InvalidLength {
+            field: WAL_ENVELOPE_FORMAT,
+        });
+    }
     let encoded_len =
-        u32::try_from(envelope.encoded_record().len()).map_err(|_| FormatError::InvalidLength {
+        u32::try_from(encoded_record.len()).map_err(|_| FormatError::InvalidLength {
             field: WAL_ENVELOPE_FORMAT,
         })?;
     let encoded_len_bytes = encoded_len.to_le_bytes();
@@ -409,15 +435,16 @@ pub(crate) fn encode_wal_record_envelope(
     let encoded_len_crc = crc32fast::hash(&encoded_len_bytes);
 
     let capacity = WAL_RECORD_ENVELOPE_HEADER_SIZE
-        .checked_add(envelope.encoded_record().len())
+        .checked_add(encoded_record.len())
         .ok_or(FormatError::InvalidLength {
             field: WAL_ENVELOPE_FORMAT,
         })?;
-    let mut bytes = Vec::with_capacity(capacity);
+    bytes.clear();
+    bytes.reserve(capacity);
     bytes.extend_from_slice(&encoded_len_bytes);
     bytes.extend_from_slice(&encoded_len_crc.to_le_bytes());
-    bytes.extend_from_slice(envelope.encoded_record());
-    Ok(bytes)
+    bytes.extend_from_slice(encoded_record);
+    Ok(())
 }
 
 pub(crate) fn decode_wal_record_envelope(
@@ -489,8 +516,9 @@ pub(crate) fn decode_wal_record_envelope(
 mod tests {
     use super::{
         decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header,
-        encode_wal_record, encode_wal_record_envelope, encode_wal_segment_header, WalCommitPayload,
-        WalRecord, WalRecordEnvelope, WalSegmentHeader, WAL_ENVELOPE_FORMAT, WAL_RECORD_FORMAT,
+        encode_wal_record, encode_wal_record_envelope, encode_wal_record_envelope_bytes_into,
+        encode_wal_record_into_reusing, encode_wal_segment_header, WalCommitPayload, WalRecord,
+        WalRecordEnvelope, WalSegmentHeader, WAL_ENVELOPE_FORMAT, WAL_RECORD_FORMAT,
         WAL_RECORD_LENGTH_FORMAT, WAL_SEGMENT_FORMAT,
     };
     use crate::format::{
@@ -730,6 +758,33 @@ mod tests {
         let bytes = encode_wal_record(&record).expect("encode record");
 
         assert_eq!(decode_wal_record(&bytes), Ok((record, bytes.len())));
+    }
+
+    #[test]
+    fn wal_reusable_record_and_envelope_encoding_matches_vec_helpers() {
+        let record = record(b"payload".to_vec());
+        let expected_record = encode_wal_record(&record).expect("encode record");
+        let expected_envelope = encode_wal_record_envelope(
+            &WalRecordEnvelope::new(expected_record.clone()).expect("envelope"),
+        )
+        .expect("encode envelope");
+        let mut record_bytes = Vec::with_capacity(4096);
+        let mut payload_bytes = Vec::with_capacity(4096);
+        let mut row_bytes = Vec::with_capacity(4096);
+        let mut envelope_bytes = Vec::with_capacity(4096);
+
+        encode_wal_record_into_reusing(
+            &record,
+            &mut record_bytes,
+            &mut payload_bytes,
+            &mut row_bytes,
+        )
+        .expect("encode reusable record");
+        encode_wal_record_envelope_bytes_into(&record_bytes, &mut envelope_bytes)
+            .expect("encode reusable envelope");
+
+        assert_eq!(record_bytes, expected_record);
+        assert_eq!(envelope_bytes, expected_envelope);
     }
 
     #[test]

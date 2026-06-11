@@ -38,6 +38,39 @@ fn empty_row_value_record_appends_and_reads() {
     assert_eq!(read.truncation(), None);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn append_records_wal_encode_buffer_reuse_counters() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = StoredWalBackend::new();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+    let first = record(1, b"first".to_vec());
+    let second = record(2, b"second".to_vec());
+
+    service.append(&first).expect("append first record");
+    service.append(&second).expect("append second record");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert!(perf.commit_wal_record_bytes() > 0);
+    assert!(perf.commit_wal_payload_bytes() > 0);
+    assert!(perf.commit_wal_row_encode_bytes() > 0);
+    assert!(perf.commit_wal_record_bytes() > perf.commit_wal_payload_bytes());
+    assert!(perf.commit_wal_payload_bytes() > perf.commit_wal_row_encode_bytes());
+    assert!(
+        perf.commit_wal_encode_buffer_allocations() + perf.commit_wal_encode_buffer_reuses() >= 8
+    );
+    assert!(perf.commit_wal_encode_buffer_reuses() > 0);
+}
+
 #[test]
 fn append_that_exactly_fills_segment_stays_in_current_segment() {
     let segment_size = 1024;

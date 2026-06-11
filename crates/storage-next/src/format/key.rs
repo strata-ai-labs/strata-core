@@ -7,18 +7,20 @@ const PHYSICAL_KEY_FORMAT: &str = "physical_key";
 const INTERNAL_KEY_FORMAT: &str = "internal_key";
 
 pub(crate) fn encode_physical_key(key: &PhysicalKey) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(physical_key_encode_capacity(key));
+    append_physical_key(key, &mut bytes);
+    bytes
+}
+
+pub(crate) fn append_physical_key(key: &PhysicalKey, bytes: &mut Vec<u8>) {
     // Layout: branch id, NUL-terminated space, one-byte storage-space id, then
     // an escaped user key. The escaped user key preserves arbitrary bytes while
     // still giving the physical key a single unambiguous terminator.
-    let mut bytes = Vec::with_capacity(
-        BranchId::BYTE_LEN + key.space().len() + 1 + 1 + key.user_key().len() + 2,
-    );
     bytes.extend_from_slice(key.branch_id().as_bytes());
     bytes.extend_from_slice(key.space().as_bytes());
     bytes.push(0x00);
     bytes.push(key.storage_space_id().raw());
-    encode_escaped(key.user_key(), &mut bytes);
-    bytes
+    encode_escaped(key.user_key(), bytes);
 }
 
 pub(crate) fn decode_physical_key(bytes: &[u8]) -> Result<PhysicalKey, FormatError> {
@@ -107,6 +109,15 @@ fn encode_escaped(source: &[u8], target: &mut Vec<u8>) {
     }
     target.push(0x00);
     target.push(0x00);
+}
+
+fn physical_key_encode_capacity(key: &PhysicalKey) -> usize {
+    BranchId::BYTE_LEN
+        .saturating_add(key.space().len())
+        .saturating_add(1)
+        .saturating_add(1)
+        .saturating_add(key.user_key().len())
+        .saturating_add(2)
 }
 
 fn decode_escaped(bytes: &[u8], field: &'static str) -> Result<(Vec<u8>, usize), FormatError> {
