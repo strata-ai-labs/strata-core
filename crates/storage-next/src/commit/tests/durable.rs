@@ -1285,11 +1285,19 @@ fn durable_guard_contention_rejects_before_allocation_or_wal_append() {
 
 #[test]
 fn durable_rejects_unpublished_branch_rows_before_allocation_or_wal_append() {
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(65);
     let hidden_key = physical_key(branch, 0x20, b"durable-hidden".to_vec());
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
     let mut fixture = DurableFixture::new(
         branch,
-        CommitRuntimeConfig::default(),
+        config,
         DurabilityPolicy::Standard,
         FakeWalMode::Succeed {
             forced_durable: false,
@@ -1328,6 +1336,25 @@ fn durable_rejects_unpublished_branch_rows_before_allocation_or_wal_append() {
     );
     assert_eq!(fixture.wal.append_attempts, 0);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.commit_admission_pressure_facts(), 1);
+        assert_eq!(perf.commit_admission_under_pressure(), 1);
+        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+        assert_eq!(perf.commit_admission_mutations(), 1);
+        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+        assert_eq!(perf.commit_branch_guard_attempts(), 1);
+        assert_eq!(perf.commit_branch_guard_acquired(), 1);
+        assert_eq!(perf.commit_branch_guard_rejected(), 0);
+        assert_eq!(perf.commit_conflict_validation_calls(), 0);
+        assert_eq!(perf.commit_batches_prepared(), 0);
+        assert_eq!(perf.commit_wal_records_built(), 0);
+        assert_eq!(perf.commit_wal_appends(), 0);
+        assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    }
     let guard = fixture
         .guard_set
         .try_acquire_branch_guard(branch)

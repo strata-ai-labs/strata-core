@@ -1847,9 +1847,17 @@ fn cache_commit_visibility_gap_blocks_cross_branch_visible_advance() {
 
 #[test]
 fn cache_commit_rejects_unpublished_branch_rows_before_allocation() {
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(33);
     let hidden_key = physical_key(branch, 0x20, b"hidden".to_vec());
-    let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
+    let mut fixture = CacheFixture::new(branch, config);
     fixture
         .state
         .append_committed_row(StorageRow::put(
@@ -1890,6 +1898,23 @@ fn cache_commit_rejects_unpublished_branch_rows_before_allocation() {
         .latest(&hidden_key)
         .expect("latest read")
         .is_some());
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.commit_admission_pressure_facts(), 1);
+        assert_eq!(perf.commit_admission_under_pressure(), 1);
+        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+        assert_eq!(perf.commit_admission_mutations(), 1);
+        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
+        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
+        assert_eq!(perf.commit_branch_guard_attempts(), 1);
+        assert_eq!(perf.commit_branch_guard_acquired(), 1);
+        assert_eq!(perf.commit_branch_guard_rejected(), 0);
+        assert_eq!(perf.commit_conflict_validation_calls(), 0);
+        assert_eq!(perf.commit_batches_prepared(), 0);
+        assert_eq!(perf.commit_visible_publish_attempts(), 0);
+    }
 }
 
 #[test]

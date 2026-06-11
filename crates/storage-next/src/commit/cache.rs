@@ -85,9 +85,6 @@ where
         // primitive.
         let _admission_guard =
             admit_mutating_commit(self.registry, self.guard_set, &batch, generation_guard)?;
-        perf_trace::record_commit_admission_accepted_under_pressure(
-            admission_pressure.under_pressure(),
-        );
         let current_visible_version = self.visible.visible_version();
         require_branch_not_ahead_of_visible(
             self.branch.max_commit_version(),
@@ -106,6 +103,9 @@ where
             validate_commit_conflicts_without_source(&batch)?;
         }
 
+        perf_trace::record_commit_admission_accepted_under_pressure(
+            admission_pressure.under_pressure(),
+        );
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
         require_allocated_after_visible(stamp, current_visible_version)?;
