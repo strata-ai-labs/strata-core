@@ -425,6 +425,14 @@ fn cache_global_flush_task_drains_branches_in_deterministic_order() {
         .rotate_active_for_branch_for_maintenance(branch_b)
         .expect("rotate branch-b active table");
 
+    let drain_order = runtime
+        .branch_catalog()
+        .list_branches(false)
+        .into_iter()
+        .map(|descriptor| descriptor.branch_id())
+        .collect::<Vec<_>>();
+    assert_eq!(drain_order, vec![branch_a, branch_b]);
+
     runtime
         .enqueue_maintenance(
             MaintenanceTaskRequest::new(

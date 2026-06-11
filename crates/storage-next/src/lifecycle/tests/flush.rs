@@ -923,6 +923,76 @@ fn durable_flush_manifest_publish_failure_keeps_rows_visible_and_records_debt() 
 }
 
 #[test]
+fn durable_flush_drain_manifest_publish_failure_records_partial_progress_health_debt() {
+    let branch = branch_id(0x89);
+    let backend = FlushBackend::with_table_manifest_publish_failure(
+        PublishFailureKind::FailedBeforeVisibility,
+    );
+    let mut runtime = open_durable_runtime(&backend, branch);
+    let first_key = physical_key(branch, b"drain-manifest-fail-first");
+    let second_key = physical_key(branch, b"drain-manifest-fail-second");
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, first_key.clone(), b"first".to_vec()),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("first commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate first active");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, second_key.clone(), b"second".to_vec()),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("second commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate second active");
+    assert_eq!(runtime.branch_state().frozen_table_count(), 2);
+
+    let outcome = runtime
+        .run_next_flush_maintenance()
+        .expect("flush maintenance")
+        .expect("flush outcome");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(outcome.stats().maintenance_tasks(), 2);
+    assert_eq!(
+        outcome.reason(),
+        Some("flush drain left deferred frozen state")
+    );
+    assert!(outcome.source_error().is_some());
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(runtime.current_recovery_health().fault_count(), 1);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 1);
+    assert!(TableManifestService::new(&backend)
+        .load_current(branch)
+        .expect("load table manifest")
+        .is_none());
+
+    let view = runtime.read_view().expect("read view");
+    assert_eq!(
+        view.latest(&first_key)
+            .expect("first read")
+            .expect("first visible")
+            .row()
+            .value(),
+        b"first"
+    );
+    assert_eq!(
+        view.latest(&second_key)
+            .expect("second read")
+            .expect("second visible")
+            .row()
+            .value(),
+        b"second"
+    );
+}
+
+#[test]
 fn durable_flush_manifest_publish_uncertain_reports_uncertainty() {
     let branch = branch_id(0x88);
     let backend =
