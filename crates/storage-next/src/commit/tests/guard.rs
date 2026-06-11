@@ -181,6 +181,25 @@ fn commit_runtime_sources_do_not_start_maintenance_work() {
         "tokio::time::sleep",
     ];
     let roadmap_labels = [["M", "4", "P"].concat(), ["L", "7"].concat()];
+    let test_sources = [
+        ("tests.rs", include_str!("../tests.rs")),
+        ("tests/allocator.rs", include_str!("allocator.rs")),
+        ("tests/batch.rs", include_str!("batch.rs")),
+        (
+            "tests/branch_registry.rs",
+            include_str!("branch_registry.rs"),
+        ),
+        ("tests/cache.rs", include_str!("cache.rs")),
+        ("tests/conflict.rs", include_str!("conflict.rs")),
+        ("tests/durable.rs", include_str!("durable.rs")),
+        ("tests/durable_gate.rs", include_str!("durable_gate.rs")),
+        ("tests/guard.rs", include_str!("guard.rs")),
+        ("tests/outcome.rs", include_str!("outcome.rs")),
+        ("tests/replay.rs", include_str!("replay.rs")),
+        ("tests/scaffold.rs", include_str!("scaffold.rs")),
+        ("tests/timeline.rs", include_str!("timeline.rs")),
+        ("tests/visibility.rs", include_str!("visibility.rs")),
+    ];
 
     for (name, source) in production_sources {
         for label in &roadmap_labels {
@@ -193,6 +212,15 @@ fn commit_runtime_sources_do_not_start_maintenance_work() {
             assert!(
                 !source.contains(forbidden),
                 "{name} unexpectedly references {forbidden}"
+            );
+        }
+    }
+
+    for (name, source) in test_sources {
+        for label in &roadmap_labels {
+            assert!(
+                !source.contains(label),
+                "{name} contains roadmap label text"
             );
         }
     }

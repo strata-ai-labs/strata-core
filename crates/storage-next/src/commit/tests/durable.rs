@@ -2173,6 +2173,12 @@ fn durable_unresolved_gate_perf_trace_stops_before_source_capture_and_wal() {
 #[test]
 fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
     let branch = branch_id(76);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
     let mut registry = CommitBranchRegistry::new();
     register_active_branch(&mut registry, branch);
     let guard_set = CommitBranchGuardSet::new();
@@ -2197,7 +2203,7 @@ fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
         .expect("first durable admission");
 
     let error = CommitDurableRuntime::new(
-        &CommitRuntimeConfig::default(),
+        &config,
         &registry,
         &guard_set,
         &mut allocator,
@@ -2243,9 +2249,9 @@ fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
         assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
         assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
         assert_eq!(perf.commit_admission_pressure_facts(), 1);
-        assert_eq!(perf.commit_admission_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_under_pressure(), 1);
         assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
-        assert_eq!(perf.commit_admission_requires_maintenance(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
         assert_eq!(perf.commit_admission_mutations(), 1);
         assert!(perf.commit_admission_approx_bytes() > 0);
         assert_eq!(perf.commit_branch_guard_attempts(), 0);
@@ -2264,6 +2270,12 @@ fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
 fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
     let active_branch = branch_id(76);
     let target_branch = branch_id(77);
+    let config = CommitRuntimeConfig::default()
+        .with_admission_pressure_thresholds(
+            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
+                .expect("thresholds"),
+        )
+        .expect("config");
     let mut registry = CommitBranchRegistry::new();
     register_active_branch(&mut registry, active_branch);
     register_active_branch(&mut registry, target_branch);
@@ -2290,7 +2302,7 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
         .expect("first branch durable admission");
 
     let error = CommitDurableRuntime::new(
-        &CommitRuntimeConfig::default(),
+        &config,
         &registry,
         &guard_set,
         &mut allocator,
@@ -2335,6 +2347,12 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
         assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
         assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
         assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
+        assert_eq!(perf.commit_admission_pressure_facts(), 1);
+        assert_eq!(perf.commit_admission_under_pressure(), 1);
+        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
+        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
+        assert_eq!(perf.commit_admission_mutations(), 1);
+        assert!(perf.commit_admission_approx_bytes() > 0);
         assert_eq!(perf.commit_branch_guard_attempts(), 0);
         assert_eq!(perf.conflict_sources_built(), 0);
         assert_eq!(perf.read_view_captures(), 0);
