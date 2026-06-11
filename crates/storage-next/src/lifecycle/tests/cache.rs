@@ -404,26 +404,26 @@ fn cache_post_commit_flush_coalescing_is_branch_scoped() {
 
 #[test]
 fn cache_global_flush_task_drains_branches_in_deterministic_order() {
-    let branch_a = branch_id(0x61);
-    let branch_b = branch_id(0x62);
+    let branch_high = branch_id(0x62);
+    let branch_low = branch_id(0x61);
     let backend = MemoryBackend::new();
-    let mut runtime = open_runtime(branch_a, &backend);
+    let mut runtime = open_runtime(branch_high, &backend);
     runtime
         .create_branch(
-            branch_b,
+            branch_low,
             CommitBranchGeneration::new(1).expect("generation"),
             None,
         )
         .expect("create second branch");
 
-    commit_cache_put(&mut runtime, branch_a, b"global-flush-a", 1_000);
+    commit_cache_put(&mut runtime, branch_high, b"global-flush-high", 1_000);
     runtime
-        .rotate_active_for_branch_for_maintenance(branch_a)
-        .expect("rotate branch-a active table");
-    commit_cache_put(&mut runtime, branch_b, b"global-flush-b", 2_000);
+        .rotate_active_for_branch_for_maintenance(branch_high)
+        .expect("rotate high branch active table");
+    commit_cache_put(&mut runtime, branch_low, b"global-flush-low", 2_000);
     runtime
-        .rotate_active_for_branch_for_maintenance(branch_b)
-        .expect("rotate branch-b active table");
+        .rotate_active_for_branch_for_maintenance(branch_low)
+        .expect("rotate low branch active table");
 
     let drain_order = runtime
         .branch_catalog()
@@ -431,7 +431,7 @@ fn cache_global_flush_task_drains_branches_in_deterministic_order() {
         .into_iter()
         .map(|descriptor| descriptor.branch_id())
         .collect::<Vec<_>>();
-    assert_eq!(drain_order, vec![branch_a, branch_b]);
+    assert_eq!(drain_order, vec![branch_low, branch_high]);
 
     runtime
         .enqueue_maintenance(
@@ -457,24 +457,24 @@ fn cache_global_flush_task_drains_branches_in_deterministic_order() {
     assert_eq!(
         runtime
             .branch_catalog()
-            .branch_state(branch_a)
-            .expect("branch-a")
+            .branch_state(branch_high)
+            .expect("high branch")
             .frozen_table_count(),
         0
     );
     assert_eq!(
         runtime
             .branch_catalog()
-            .branch_state(branch_b)
-            .expect("branch-b")
+            .branch_state(branch_low)
+            .expect("low branch")
             .frozen_table_count(),
         0
     );
     assert_eq!(
         runtime
             .branch_catalog()
-            .branch_state(branch_a)
-            .expect("branch-a")
+            .branch_state(branch_high)
+            .expect("high branch")
             .owned_levels()[0]
             .len(),
         1
@@ -482,8 +482,8 @@ fn cache_global_flush_task_drains_branches_in_deterministic_order() {
     assert_eq!(
         runtime
             .branch_catalog()
-            .branch_state(branch_b)
-            .expect("branch-b")
+            .branch_state(branch_low)
+            .expect("low branch")
             .owned_levels()[0]
             .len(),
         1
