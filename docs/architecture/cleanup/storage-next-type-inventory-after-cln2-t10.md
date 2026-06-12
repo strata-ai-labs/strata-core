@@ -47,9 +47,9 @@ Counts are conservative text matches, not a Rust AST parse.
 | observability/perf_trace.rs | 5605 |
 | lifecycle/tests/compaction/mod.rs | 4079 |
 | branch/tests/owned_compaction.rs | 3998 |
+| lifecycle/tests/cache.rs | 3951 |
 | table/tests/reader.rs | 3926 |
 | branch/read.rs | 3911 |
-| lifecycle/tests/cache.rs | 3845 |
 | api/runtime.rs | 3449 |
 | lifecycle/tests/durable.rs | 3413 |
 | service/manifest.rs | 3333 |
@@ -65,9 +65,9 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/tests/table_manifest_recovery.rs | 2014 |
 | lifecycle/tests/compaction/publication_plan.rs | 1990 |
 | table/tests/compaction.rs | 1979 |
+| lifecycle/tests/retention.rs | 1913 |
 | backend/local_fs.rs | 1849 |
 | lifecycle/checkpoint.rs | 1835 |
-| lifecycle/tests/retention.rs | 1826 |
 | table/reader.rs | 1792 |
 | lifecycle/tests/compaction/remaining.rs | 1766 |
 | testkit/commit_runtime.rs | 1631 |

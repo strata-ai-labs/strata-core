@@ -498,6 +498,93 @@ fn snapshot_pruning_with_proof_records_counters_without_floor_advancement() {
     assert_eq!(perf.lifecycle_snapshot_floor_implicit_rejections(), 0);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn snapshot_pruning_with_proof_records_failed_delete_counter() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    backend.fail_delete_on_call(1);
+
+    let outcome = snapshot_pruning(&backend, 3, 1);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert!(outcome.completed_with_health_debt());
+    assert_eq!(snapshot_ids(outcome.deleted()), [2]);
+    assert_eq!(snapshot_ids(outcome.protected()), [3]);
+    assert_eq!(outcome.failed().len(), 1);
+    assert_eq!(perf.lifecycle_snapshot_pruning_with_proof(), 1);
+    assert_eq!(perf.lifecycle_snapshot_pruning_deleted(), 1);
+    assert_eq!(perf.lifecycle_snapshot_pruning_protected(), 1);
+    assert_eq!(perf.lifecycle_snapshot_pruning_failed(), 1);
+    assert_eq!(perf.lifecycle_snapshot_floor_advancements(), 0);
+    assert_eq!(perf.lifecycle_snapshot_floor_implicit_rejections(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn generated_snapshot_pruning_proof_sweep_preserves_retained_snapshots() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+
+    for (case, live_snapshot_id, snapshot_watermark, retain_newest, snapshots) in [
+        ("stale-watermark", 3, 1, 1, [1, 2, 3, 4, 5]),
+        ("exact-watermark", 3, 7, 2, [1, 2, 3, 4, 5]),
+        ("future-watermark", 4, 99, 3, [1, 2, 3, 4, 5]),
+    ] {
+        crate::observability::perf_trace::reset();
+        let backend = RetentionBackend::with_snapshots(snapshots);
+        let request = LifecycleRetentionRequest::snapshot_pruning(retain_newest);
+        let proof = build_retention_proof_from_facts(
+            &request,
+            Some(live_snapshot_id),
+            Some(snapshot_watermark),
+            Some(CommitVersion::new(snapshot_watermark)),
+            &RecoveryHealth::Healthy,
+            snapshots.len(),
+        );
+        let pruning =
+            LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
+                .expect(case);
+
+        let outcome =
+            prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect(case);
+        let protected = snapshot_ids(outcome.protected());
+        let deleted = snapshot_ids(outcome.deleted());
+        let perf = crate::observability::perf_trace::snapshot();
+
+        assert!(
+            outcome.completed(),
+            "proof-backed pruning should complete for {case}"
+        );
+        assert!(
+            protected.contains(&live_snapshot_id),
+            "live snapshot must be protected for {case}"
+        );
+        assert!(
+            !deleted.contains(&live_snapshot_id),
+            "live snapshot must not be deleted for {case}"
+        );
+        assert_eq!(outcome.failed().len(), 0, "{case}");
+        assert_eq!(perf.lifecycle_snapshot_pruning_with_proof(), 1, "{case}");
+        assert_eq!(
+            perf.lifecycle_snapshot_pruning_deleted(),
+            deleted.len() as u64,
+            "{case}"
+        );
+        assert_eq!(
+            perf.lifecycle_snapshot_pruning_protected(),
+            protected.len() as u64,
+            "{case}"
+        );
+        assert_eq!(perf.lifecycle_snapshot_pruning_failed(), 0, "{case}");
+        assert_eq!(perf.lifecycle_snapshot_floor_advancements(), 0, "{case}");
+        assert_eq!(
+            perf.lifecycle_snapshot_floor_implicit_rejections(),
+            0,
+            "{case}"
+        );
+    }
+}
+
 #[test]
 fn snapshot_pruning_noops_when_under_retain_count() {
     let backend = RetentionBackend::with_snapshots([1, 2]);

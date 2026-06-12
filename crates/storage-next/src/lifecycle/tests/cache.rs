@@ -516,6 +516,101 @@ fn cache_post_commit_coverage_discovers_quiet_inherited_backlog() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn automatic_flush_does_not_advance_snapshot_floor_or_prune_snapshots() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x91);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"snapshot-floor-flush-a", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active table");
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(&mut runtime, branch, b"snapshot-floor-flush-b", 2_000);
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run automatic flush maintenance")
+        .expect("flush outcome");
+
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_no_snapshot_floor_or_pruning_counters();
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn automatic_compaction_does_not_advance_snapshot_floor_or_prune_snapshots() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x92);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(&mut runtime, branch, b"snapshot-floor-compaction", 20_000);
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run automatic compaction maintenance")
+        .expect("compaction outcome");
+
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+    assert_no_snapshot_floor_or_pruning_counters();
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn automatic_materialization_does_not_advance_snapshot_floor_or_prune_snapshots() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let parent = branch_id(0x93);
+    let child = branch_id(0x94);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+
+    commit_cache_put(&mut runtime, parent, b"snapshot-floor-parent-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(parent)
+        .expect("rotate parent active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(parent))
+        .expect("enqueue parent flush");
+    run_queued_flush(&mut runtime);
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child from flushed parent");
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(
+        &mut runtime,
+        child,
+        b"snapshot-floor-materialization",
+        2_000,
+    );
+    let materialization = runtime
+        .run_next_materialization_maintenance()
+        .expect("run automatic materialization maintenance")
+        .expect("materialization outcome");
+
+    assert_eq!(
+        materialization.task_kind(),
+        MaintenanceTaskKind::Materialization
+    );
+    assert_eq!(
+        materialization.status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_no_snapshot_floor_or_pruning_counters();
+}
+
 #[test]
 fn cache_post_commit_coverage_flush_preempts_quiet_branch_compaction() {
     let active = branch_id(0x63);
@@ -3446,6 +3541,17 @@ fn storage_budget_pool_sum(parts: StorageRuntimeBudgetParts) -> u64 {
         + parts.maintenance_queue_bytes
         + parts.generated_artifact_bytes
         + parts.manifest_catalog_bytes
+}
+
+#[cfg(feature = "perf-trace")]
+fn assert_no_snapshot_floor_or_pruning_counters() {
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_snapshot_floor_advancements(), 0);
+    assert_eq!(perf.lifecycle_snapshot_floor_implicit_rejections(), 0);
+    assert_eq!(perf.lifecycle_snapshot_pruning_with_proof(), 0);
+    assert_eq!(perf.lifecycle_snapshot_pruning_deleted(), 0);
+    assert_eq!(perf.lifecycle_snapshot_pruning_protected(), 0);
+    assert_eq!(perf.lifecycle_snapshot_pruning_failed(), 0);
 }
 
 fn build_l0_tables_with_scheduled_flushes(
