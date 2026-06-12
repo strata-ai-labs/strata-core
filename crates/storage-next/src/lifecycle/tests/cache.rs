@@ -565,6 +565,41 @@ fn automatic_compaction_does_not_advance_snapshot_floor_or_prune_snapshots() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn automatic_compaction_preserves_historical_reads_without_snapshot_pruning() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x95);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let history_key = b"snapshot-floor-compaction-history";
+
+    build_l0_history_tables_with_manual_flushes(&mut runtime, branch, history_key, 4);
+    let before = cache_history_facts(&runtime, branch, history_key);
+    assert_eq!(
+        before.len(),
+        4,
+        "fixture must prove compaction preserves retained history, not only latest state"
+    );
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(
+        &mut runtime,
+        branch,
+        b"snapshot-floor-compaction-trigger",
+        20_000,
+    );
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run automatic compaction maintenance")
+        .expect("compaction outcome");
+
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(cache_history_facts(&runtime, branch, history_key), before);
+    assert_no_snapshot_floor_or_pruning_counters();
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn automatic_materialization_does_not_advance_snapshot_floor_or_prune_snapshots() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let parent = branch_id(0x93);
@@ -608,6 +643,55 @@ fn automatic_materialization_does_not_advance_snapshot_floor_or_prune_snapshots(
         materialization.status(),
         MaintenanceOutcomeStatus::Completed
     );
+    assert_no_snapshot_floor_or_pruning_counters();
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn automatic_materialization_preserves_historical_reads_without_snapshot_pruning() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let parent = branch_id(0x96);
+    let child = branch_id(0x97);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+    let history_key = b"snapshot-floor-materialization-history";
+
+    build_l0_history_tables_with_manual_flushes(&mut runtime, parent, history_key, 3);
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child from flushed parent");
+    let before = cache_history_facts(&runtime, child, history_key);
+    assert_eq!(
+        before.len(),
+        3,
+        "fixture must prove materialization preserves inherited history"
+    );
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(
+        &mut runtime,
+        child,
+        b"snapshot-floor-materialization-trigger",
+        20_000,
+    );
+    let materialization = runtime
+        .run_next_materialization_maintenance()
+        .expect("run automatic materialization maintenance")
+        .expect("materialization outcome");
+
+    assert_eq!(
+        materialization.task_kind(),
+        MaintenanceTaskKind::Materialization
+    );
+    assert_eq!(
+        materialization.status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+    assert_eq!(cache_history_facts(&runtime, child, history_key), before);
     assert_no_snapshot_floor_or_pruning_counters();
 }
 
@@ -3552,6 +3636,67 @@ fn assert_no_snapshot_floor_or_pruning_counters() {
     assert_eq!(perf.lifecycle_snapshot_pruning_deleted(), 0);
     assert_eq!(perf.lifecycle_snapshot_pruning_protected(), 0);
     assert_eq!(perf.lifecycle_snapshot_pruning_failed(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+fn cache_history_facts(
+    runtime: &LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    user_key: &[u8],
+) -> Vec<(PhysicalKey, u64, u64, u64, Vec<u8>, bool)> {
+    runtime
+        .read_view_for_branch(branch)
+        .expect("read view")
+        .history(
+            &physical_key(branch, user_key),
+            crate::branch::read::BranchHistoryOptions::all(),
+        )
+        .expect("history")
+        .iter()
+        .map(|row| {
+            (
+                row.row().physical_key().clone(),
+                row.row().commit_version().as_u64(),
+                row.row().commit_timestamp().as_micros(),
+                row.row().expires_at().as_micros(),
+                row.row().value().to_vec(),
+                row.row().is_tombstone(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "perf-trace")]
+fn build_l0_history_tables_with_manual_flushes(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    user_key: &[u8],
+    table_count: usize,
+) {
+    assert!(table_count > 0);
+    for index in 0..table_count {
+        runtime
+            .execute_cache_commit(
+                put_batch(
+                    branch,
+                    physical_key(branch, user_key),
+                    format!("history-value-{index}").into_bytes(),
+                    Timestamp::from_micros(10_000 + u64::try_from(index).expect("index fits")),
+                ),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("cache history put commit");
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate history table");
+        runtime
+            .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+            .expect("enqueue history flush");
+        run_queued_flush(runtime);
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    }
 }
 
 fn build_l0_tables_with_scheduled_flushes(

@@ -404,6 +404,31 @@ fn automatic_storage_pressure_does_not_suggest_pruning_tasks() {
 }
 
 #[test]
+fn recovery_preserves_snapshot_floor_ownership_boundary() {
+    let root = common::crate_root();
+    for relative in [
+        "src/lifecycle/recovery.rs",
+        "src/lifecycle/durable/bootstrap.rs",
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path).expect("read lifecycle recovery source");
+
+        for forbidden in [
+            "prune_snapshots_with_proof",
+            "reject_implicit_snapshot_floor_advancement",
+            "record_lifecycle_snapshot_floor_implicit_rejection",
+            "record_lifecycle_snapshot_pruning_with_proof",
+            "LIFECYCLE_SNAPSHOT_FLOOR_ADVANCEMENTS",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "{relative} must not advance snapshot floors or prune snapshots during recovery: {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
 fn maintenance_coverage_semantic_decisions_are_recorded() {
     let root = common::crate_root();
     let repo = root
