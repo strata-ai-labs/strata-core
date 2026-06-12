@@ -17,6 +17,7 @@ pub(crate) struct LifecycleConfig {
     storage_budget: StorageRuntimeBudget,
     wal_growth_policy: LifecycleWalGrowthPolicy,
     maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy,
+    compaction_io_policy: LifecycleCompactionIoPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +48,15 @@ pub(crate) enum LifecycleMaintenanceSchedulingPolicy {
     DeterministicInline,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LifecycleCompactionIoPolicy {
+    #[default]
+    Unlimited,
+    PerTaskByteBudget {
+        max_bytes: u64,
+    },
+}
+
 impl LifecycleConfig {
     pub(crate) fn new(
         max_maintenance_queue_depth: usize,
@@ -62,6 +72,7 @@ impl LifecycleConfig {
             storage_budget: StorageRuntimeBudget::default(),
             wal_growth_policy: LifecycleWalGrowthPolicy::default(),
             maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy::default(),
+            compaction_io_policy: LifecycleCompactionIoPolicy::default(),
         };
         config.validate()?;
         Ok(config)
@@ -96,6 +107,16 @@ impl LifecycleConfig {
         Ok(self)
     }
 
+    pub(crate) fn with_compaction_io_policy(
+        mut self,
+        compaction_io_policy: LifecycleCompactionIoPolicy,
+    ) -> LifecycleResult<Self> {
+        compaction_io_policy.validate()?;
+        self.compaction_io_policy = compaction_io_policy;
+        self.validate()?;
+        Ok(self)
+    }
+
     pub(crate) const fn max_maintenance_queue_depth(self) -> usize {
         self.max_maintenance_queue_depth
     }
@@ -126,6 +147,10 @@ impl LifecycleConfig {
         self.maintenance_scheduling_policy
     }
 
+    pub(crate) const fn compaction_io_policy(self) -> LifecycleCompactionIoPolicy {
+        self.compaction_io_policy
+    }
+
     pub(crate) fn validate(self) -> LifecycleResult<()> {
         if self.max_maintenance_queue_depth == 0 {
             return Err(LifecycleError::InvalidConfig {
@@ -141,6 +166,7 @@ impl LifecycleConfig {
         }
         self.storage_budget.validate()?;
         self.wal_growth_policy.validate()?;
+        self.compaction_io_policy.validate()?;
         Ok(())
     }
 }
@@ -220,6 +246,32 @@ impl Default for LifecycleWalGrowthPolicy {
 impl LifecycleMaintenanceSchedulingPolicy {
     pub(crate) const fn enabled(self) -> bool {
         matches!(self, Self::EvaluateAndEnqueue | Self::DeterministicInline)
+    }
+}
+
+impl LifecycleCompactionIoPolicy {
+    pub(crate) const fn per_task_byte_budget(max_bytes: u64) -> Self {
+        Self::PerTaskByteBudget { max_bytes }
+    }
+
+    pub(crate) const fn max_bytes_per_task(self) -> Option<u64> {
+        match self {
+            Self::Unlimited => None,
+            Self::PerTaskByteBudget { max_bytes } => Some(max_bytes),
+        }
+    }
+
+    pub(crate) const fn validate(self) -> LifecycleResult<()> {
+        match self {
+            Self::Unlimited => Ok(()),
+            Self::PerTaskByteBudget { max_bytes } if max_bytes == 0 => {
+                Err(LifecycleError::InvalidConfig {
+                    field: "compaction_io_policy.max_bytes_per_task",
+                    reason: "must be nonzero",
+                })
+            }
+            Self::PerTaskByteBudget { .. } => Ok(()),
+        }
     }
 }
 

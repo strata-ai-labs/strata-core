@@ -306,6 +306,49 @@ fn compaction_shape_semantic_decisions_are_recorded() {
 }
 
 #[test]
+fn compaction_resource_semantic_decisions_and_benchmark_fields_are_recorded() {
+    let root = common::crate_root();
+    let repo = root
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate has repository root");
+    let doc_path = repo.join("docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md");
+    let doc = fs::read_to_string(&doc_path).expect("read lifecycle architecture doc");
+    let normalized_doc = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let runner_path = repo.join("benchmarks/src/bin/storage_next_l9_scale.rs");
+    let runner = fs::read_to_string(&runner_path).expect("read storage-next scale runner");
+
+    for required in [
+        "Lifecycle compaction records table bytes read for rewrite operations",
+        "Metadata-only promotion reports the source bytes it avoided rewriting",
+        "Queued and explicit fixed-point compaction drains share this policy",
+        "Flush pressure preempts queued compaction for the same branch",
+        "Memory release remains measure-first",
+    ] {
+        assert!(
+            normalized_doc.contains(required),
+            "missing compaction resource semantic decision text: {required}"
+        );
+    }
+
+    for required in [
+        "lifecycle_compaction_input_bytes",
+        "lifecycle_compaction_output_bytes",
+        "lifecycle_compaction_metadata_bytes_avoided",
+        "lifecycle_compaction_rewrite_bytes_per_row",
+        "lifecycle_compaction_io_budget_consumed_bytes",
+        "lifecycle_compaction_io_budget_deferrals",
+        "lifecycle_compaction_flush_preemptions",
+        "\"lifecycle_compaction\"",
+    ] {
+        assert!(
+            runner.contains(required),
+            "storage-next scale runner does not emit compaction resource metric: {required}"
+        );
+    }
+}
+
+#[test]
 fn maintenance_coverage_semantic_decisions_are_recorded() {
     let root = common::crate_root();
     let repo = root

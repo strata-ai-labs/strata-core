@@ -15,10 +15,9 @@ use crate::lifecycle::{
     collect_storage_pressure, CloseOutcome, CloseOutcomeStatus, FlushFrozenRequest,
     FlushTableIdentitySeed, FlushTableObjectId, LifecycleBranchCatalog, LifecycleBranchDescriptor,
     LifecycleBranchStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
-    LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionDrainRequest,
-    LifecycleCompactionRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
-    LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
-    LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
+    LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionDrainRequest, LifecycleConfig,
+    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
+    LifecycleError, LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
     LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
     LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions,
@@ -834,23 +833,34 @@ impl<'a> StorageRuntime<'a> {
         if !self.storage_pressure_suggests_compaction(branch_id)? {
             return Ok(());
         }
-        let compaction = LifecycleCompactionRequest::new(
-            branch_id,
-            crate::branch::state::compaction::BranchCompactionKind::CompactL0ToLevelOne,
-            format!("storage-boundary-flush-followup-compaction-{branch_id}"),
-        )
-        .map_err(map_lifecycle_error)?;
+        let task = LifecycleMaintenanceTaskRequest::compaction(branch_id, 0);
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.compact_branch_tables(&compaction),
-            StorageRuntimeInner::Durable(runtime) => runtime.compact_branch_tables(&compaction),
+            StorageRuntimeInner::Cache(runtime) => {
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                runtime
+                    .run_compaction_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?
+            }
+            StorageRuntimeInner::Durable(runtime) => {
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                runtime
+                    .run_compaction_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "flush follow-up compaction requires an open runtime",
                 });
             }
         }
-        .map_err(map_lifecycle_error)?;
-        match outcome.maintenance_outcome().status() {
+        .ok_or(StorageApiError::InvalidRuntimeState {
+            reason: "flush follow-up compaction task was not runnable",
+        })?;
+        match outcome.status() {
             LifecycleMaintenanceOutcomeStatus::Completed
             | LifecycleMaintenanceOutcomeStatus::Deferred => Ok(()),
             LifecycleMaintenanceOutcomeStatus::Failed

@@ -16,13 +16,14 @@ use crate::lifecycle::checkpoint::{
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure,
-    compact_branch_to_fixed_point_with, compaction_score_key_for_task,
-    current_compaction_request_from_maintenance_task,
-    materialization_request_from_maintenance_task,
+    compact_branch_to_fixed_point_with_resource_policy, compaction_score_key_for_task,
+    current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
+    materialization_request_from_maintenance_task, record_lifecycle_compaction_outcome,
     record_lifecycle_table_rewrite_post_operation_score, stale_compaction_maintenance_outcome,
-    table_rewrite_outcome_allows_chain_resubmit, table_rewrite_score_key_for_branch,
-    table_rewrite_score_key_for_task, table_rewrite_task_request_for_branch,
-    LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
+    table_rewrite_outcome_allows_chain_resubmit, table_rewrite_outcome_was_flush_preempted,
+    table_rewrite_score_key_for_branch, table_rewrite_score_key_for_task,
+    table_rewrite_task_request_for_branch, LifecycleCompactionScoreKey,
+    LifecycleTableRewriteScoreKey,
 };
 use crate::lifecycle::flush::{
     flush_branch_drain_with, flush_drain_maintenance_outcome_for_scope,
@@ -57,16 +58,16 @@ use crate::lifecycle::{
     repair_quarantine_family as repair_lifecycle_quarantine_family,
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
     FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionDrainOutcome,
-    LifecycleCompactionDrainRequest, LifecycleCompactionOutcome, LifecycleCompactionRequest,
-    LifecycleError, LifecycleLowerLayer, LifecycleMaintenanceSchedulingPolicy,
-    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
-    LifecyclePostCommitMaintenanceOutcome, LifecyclePurgeOutcome, LifecycleQuarantineOutcome,
-    LifecycleQuarantineRepairOutcome, LifecycleQuarantineRequest, LifecycleResult, LifecycleStats,
-    LifecycleStoragePressure, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, RecoveryDegradationClass,
-    RecoveryHealth,
+    LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
+    LifecycleMaintenanceSchedulingPolicy, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePostCommitMaintenanceOutcome,
+    LifecyclePurgeOutcome, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
+    LifecycleQuarantineRequest, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
+    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
+    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
@@ -195,6 +196,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 Some(&self.budget),
             )
         };
+        if let Ok(compaction) = &outcome {
+            record_lifecycle_compaction_outcome(compaction);
+        }
         outcome
     }
 
@@ -221,17 +225,22 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-            compact_branch_to_fixed_point_with(branch, request, |branch, compaction| {
-                compact_durable_branch_manifest_backed(
-                    branch,
-                    services.table_object(),
-                    services.table_reader(),
-                    services.table_manifest(),
-                    table_catalog,
-                    compaction,
-                    Some(budget),
-                )
-            })
+            compact_branch_to_fixed_point_with_resource_policy(
+                branch,
+                request,
+                self.open_plan.lifecycle_config().compaction_io_policy(),
+                |branch, compaction| {
+                    compact_durable_branch_manifest_backed(
+                        branch,
+                        services.table_object(),
+                        services.table_reader(),
+                        services.table_manifest(),
+                        table_catalog,
+                        compaction,
+                        Some(budget),
+                    )
+                },
+            )
         };
         outcome
     }
@@ -1099,7 +1108,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         compaction_score_key_for_task(branch, task)
     }
 
-    fn run_compaction_maintenance_task(
+    pub(crate) fn run_compaction_maintenance_task(
         &mut self,
         task_id: MaintenanceTaskId,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
@@ -1109,7 +1118,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }) else {
             return Ok(None);
         };
-        let branch_id = branch_id_from_table_level_task(task)?;
+        let (branch_id, level) = table_level_scope_from_task(task)?;
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
         let generation = self
@@ -1135,16 +1144,40 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 table_manifest,
                 table_catalog,
                 budget,
+                compaction_io_policy: self.open_plan.lifecycle_config().compaction_io_policy(),
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         }?;
         if outcome
+            .as_ref()
+            .is_some_and(table_rewrite_outcome_was_flush_preempted)
+        {
+            self.requeue_flush_preempted_compaction(branch_id, level);
+        } else if outcome
             .as_ref()
             .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
         {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
         Ok(outcome)
+    }
+
+    fn requeue_flush_preempted_compaction(
+        &mut self,
+        branch_id: strata_core_next::BranchId,
+        level: u8,
+    ) {
+        let _ = self.enqueue_maintenance(MaintenanceTaskRequest::flush(branch_id));
+        match self.enqueue_maintenance(MaintenanceTaskRequest::compaction(branch_id, level)) {
+            Ok(enqueue) => {
+                crate::observability::perf_trace::record_lifecycle_compaction_resubmit(
+                    enqueue.was_coalesced(),
+                );
+            }
+            Err(_error) => {
+                crate::observability::perf_trace::record_lifecycle_compaction_resubmit_deferred();
+            }
+        }
     }
 
     fn resubmit_table_rewrite_if_any_branch_still_unhealthy(&mut self, branch_id: BranchId) {
@@ -1666,6 +1699,7 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
+    compaction_io_policy: LifecycleCompactionIoPolicy,
 }
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
@@ -1674,6 +1708,11 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
         else {
             return Ok(stale_compaction_maintenance_outcome());
         };
+        if let Some(outcome) =
+            defer_compaction_for_resource_policy(self.branch, &request, self.compaction_io_policy)?
+        {
+            return Ok(outcome);
+        }
         let compaction = compact_durable_branch_manifest_backed(
             self.branch,
             self.table_object,
@@ -1683,7 +1722,7 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
             &request,
             Some(self.budget),
         )?;
-        crate::lifecycle::compaction::record_lifecycle_compaction_outcome(&compaction);
+        record_lifecycle_compaction_outcome(&compaction);
         Ok(compaction.maintenance_outcome())
     }
 }
@@ -2308,6 +2347,17 @@ const fn branch_id_from_table_level_task(
 ) -> LifecycleResult<strata_core_next::BranchId> {
     match task.scope() {
         MaintenanceTaskScope::TableLevel { branch_id, .. } => Ok(branch_id),
+        _ => Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "compaction task must target a table level",
+        }),
+    }
+}
+
+const fn table_level_scope_from_task(
+    task: MaintenanceTask,
+) -> LifecycleResult<(strata_core_next::BranchId, u8)> {
+    match task.scope() {
+        MaintenanceTaskScope::TableLevel { branch_id, level } => Ok((branch_id, level)),
         _ => Err(LifecycleError::MaintenanceTaskFailed {
             reason: "compaction task must target a table level",
         }),

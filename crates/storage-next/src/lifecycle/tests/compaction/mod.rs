@@ -17,7 +17,8 @@ use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
     compact_cache_branch_to_fixed_point, current_compaction_request_from_maintenance_task,
-    nonzero_compaction_pressure, nonzero_level_target_bytes, LifecycleCompactionDrainRequest,
+    defer_compaction_for_resource_policy, nonzero_compaction_pressure, nonzero_level_target_bytes,
+    LifecycleCompactionDrainRequest,
 };
 use crate::lifecycle::flush::{
     flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
@@ -3135,6 +3136,493 @@ fn cache_compaction_score_perf_trace_records_candidates_selection_and_operation(
     assert_eq!(perf.lifecycle_compaction_operations_completed(), 1);
     assert!(perf.lifecycle_compaction_input_tables() > 0);
     assert!(perf.lifecycle_compaction_output_tables() > 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_compaction_perf_trace_records_io_budget_and_elapsed_facts() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x5e);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_l0_table(
+                state,
+                branch,
+                &format!("io-account-l0-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("io-account-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    &[0x5a; 512],
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 1);
+    assert!(perf.lifecycle_compaction_input_bytes() > 0);
+    assert!(perf.lifecycle_compaction_output_bytes() > 0);
+    assert!(
+        perf.lifecycle_compaction_io_budget_consumed_bytes()
+            >= perf.lifecycle_compaction_input_bytes()
+    );
+    assert!(perf.lifecycle_compaction_elapsed_ns() > 0);
+    assert!(perf.lifecycle_compaction_input_rows() > 0);
+    assert_eq!(
+        perf.lifecycle_compaction_rewrite_bytes_per_row(),
+        perf.lifecycle_compaction_io_budget_consumed_bytes()
+            / perf.lifecycle_compaction_input_rows()
+    );
+    assert!(perf.lifecycle_compaction_rewrite_bytes_per_row() > 0);
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn metadata_promotion_compaction_records_avoided_rewrite_bytes() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x5f);
+    let config = LifecycleConfig::default()
+        .with_compaction_io_policy(LifecycleCompactionIoPolicy::per_task_byte_budget(1))
+        .expect("compaction IO policy");
+    let mut runtime = cache_runtime_with_config(branch, config);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        install_owned_table(
+            state,
+            branch,
+            BranchLevel::ZERO,
+            "metadata-avoid-l0",
+            vec![put_row(branch, b"metadata-avoid", 1, 1_000, &[0x61; 512])],
+        );
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(perf.lifecycle_compaction_trivial_moves(), 1);
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 0);
+    assert_eq!(perf.lifecycle_compaction_output_bytes(), 0);
+    assert_eq!(perf.lifecycle_compaction_input_bytes(), 0);
+    assert!(perf.lifecycle_compaction_metadata_bytes_avoided() > 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn compaction_perf_trace_bytes_per_row_is_weighted_across_operations() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x62);
+    let mut runtime = cache_runtime(branch);
+    crate::observability::perf_trace::reset();
+
+    for pass in 0..2 {
+        {
+            let state = runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(
+                    branch,
+                    crate::commit::CommitBranchGenerationGuard::exact(
+                        crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("branch state");
+            for index in 0..4 {
+                let key = format!("weighted-pass-{pass}-l0-{index}");
+                install_l0_table(
+                    state,
+                    branch,
+                    &key,
+                    vec![put_row(
+                        branch,
+                        key.as_bytes(),
+                        (pass * 10 + index + 1) as u64,
+                        ((pass * 10 + index + 1) * 1_000) as u64,
+                        &[0x66; 512],
+                    )],
+                );
+            }
+        }
+        runtime
+            .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+            .expect("enqueue compaction");
+        let outcome = runtime
+            .run_next_compaction_maintenance()
+            .expect("run compaction")
+            .expect("compaction outcome");
+        assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 2);
+    assert!(perf.lifecycle_compaction_input_rows() > 0);
+    assert_eq!(
+        perf.lifecycle_compaction_rewrite_bytes_per_row(),
+        perf.lifecycle_compaction_io_budget_consumed_bytes()
+            / perf.lifecycle_compaction_input_rows()
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn constrained_compaction_io_budget_defers_without_mutating_sources() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x60);
+    let config = LifecycleConfig::default()
+        .with_compaction_io_policy(LifecycleCompactionIoPolicy::per_task_byte_budget(1))
+        .expect("compaction IO policy");
+    let mut runtime = cache_runtime_with_config(branch, config);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_l0_table(
+                state,
+                branch,
+                &format!("io-budget-l0-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("io-budget-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    &[0x62; 512],
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let state = runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            branch,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state after defer");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert!(outcome.retryable());
+    assert!(outcome.recovery_health().is_some());
+    assert_eq!(
+        outcome.reason(),
+        Some("compaction IO byte budget deferred table rewrite")
+    );
+    assert_eq!(state.owned_levels()[0].len(), 4);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 1);
+    assert!(perf.lifecycle_compaction_io_budget_deferred_bytes() > 1);
+    assert_eq!(perf.lifecycle_compaction_io_budget_limit_bytes(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn compaction_resource_policy_is_deterministic_for_repeated_budget_checks() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x61);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
+    )
+    .expect("branch state");
+    for index in 0..4 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("deterministic-budget-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("deterministic-budget-l0-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                &[0x63; 512],
+            )],
+        );
+    }
+    let task = MaintenanceTask::new_for_test(1, MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("task");
+    let request = current_compaction_request_from_maintenance_task(&task, &state)
+        .expect("request")
+        .expect("current request");
+    crate::observability::perf_trace::reset();
+
+    let first = defer_compaction_for_resource_policy(
+        &state,
+        &request,
+        LifecycleCompactionIoPolicy::per_task_byte_budget(1),
+    )
+    .expect("first policy")
+    .expect("first defer");
+    let second = defer_compaction_for_resource_policy(
+        &state,
+        &request,
+        LifecycleCompactionIoPolicy::per_task_byte_budget(1),
+    )
+    .expect("second policy")
+    .expect("second defer");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(first.reason(), second.reason());
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 2);
+    assert_eq!(
+        perf.lifecycle_compaction_io_budget_deferred_bytes() % 2,
+        0,
+        "repeated checks should emit the same estimated byte cost"
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn generated_compaction_io_budget_sweep_defers_rewrites_by_estimated_size() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    crate::observability::perf_trace::reset();
+    let mut previous_deferred_bytes = 0;
+
+    for (case_index, value_len) in [64usize, 256, 1024, 4096].into_iter().enumerate() {
+        let branch = branch_id(0x80 + u8::try_from(case_index).expect("case fits"));
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
+        )
+        .expect("branch state");
+        for table_index in 0..4 {
+            let key = format!("budget-sweep-{case_index}-{table_index}");
+            install_l0_table(
+                &mut state,
+                branch,
+                &key,
+                vec![put_row(
+                    branch,
+                    key.as_bytes(),
+                    (table_index + 1) as u64,
+                    ((table_index + 1) * 1_000) as u64,
+                    &vec![0x67; value_len],
+                )],
+            );
+        }
+        let task = MaintenanceTask::new_for_test(1, MaintenanceTaskRequest::compaction(branch, 0))
+            .expect("task");
+        let request = current_compaction_request_from_maintenance_task(&task, &state)
+            .expect("request")
+            .expect("current request");
+        assert!(
+            defer_compaction_for_resource_policy(
+                &state,
+                &request,
+                LifecycleCompactionIoPolicy::Unlimited,
+            )
+            .expect("unlimited policy")
+            .is_none(),
+            "unlimited policy must not defer rewrite case {case_index}"
+        );
+        let deferred = defer_compaction_for_resource_policy(
+            &state,
+            &request,
+            LifecycleCompactionIoPolicy::per_task_byte_budget(1),
+        )
+        .expect("budget policy")
+        .expect("budget should defer rewrite");
+        let perf = crate::observability::perf_trace::snapshot();
+
+        assert_eq!(deferred.status(), MaintenanceOutcomeStatus::Deferred);
+        assert!(deferred.retryable());
+        assert_eq!(
+            deferred.reason(),
+            Some("compaction IO byte budget deferred table rewrite")
+        );
+        assert!(
+            perf.lifecycle_compaction_io_budget_deferred_bytes() > previous_deferred_bytes,
+            "larger generated payloads should increase deferred byte accounting"
+        );
+        previous_deferred_bytes = perf.lifecycle_compaction_io_budget_deferred_bytes();
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 4);
+    assert_eq!(perf.lifecycle_compaction_io_budget_limit_bytes(), 4);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn generated_flush_and_compaction_pressure_overlap_preempts_rewrites() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    crate::observability::perf_trace::reset();
+
+    for frozen_tables in 1..=3 {
+        let branch = branch_id(0x88 + frozen_tables as u8);
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
+        )
+        .expect("branch state");
+        for table_index in 0..4 {
+            let key = format!("overlap-l0-{frozen_tables}-{table_index}");
+            install_l0_table(
+                &mut state,
+                branch,
+                &key,
+                vec![put_row(
+                    branch,
+                    key.as_bytes(),
+                    (table_index + 1) as u64,
+                    ((table_index + 1) * 1_000) as u64,
+                    &[0x68; 512],
+                )],
+            );
+        }
+        for frozen_index in 0..frozen_tables {
+            state
+                .append_committed_rows_atomically(vec![put_row(
+                    branch,
+                    format!("overlap-frozen-{frozen_tables}-{frozen_index}").as_bytes(),
+                    100 + frozen_index as u64,
+                    100_000 + frozen_index as u64,
+                    &[0x69; 512],
+                )])
+                .expect("append frozen row");
+            state.rotate_active();
+        }
+        let task = MaintenanceTask::new_for_test(1, MaintenanceTaskRequest::compaction(branch, 0))
+            .expect("task");
+        let request = current_compaction_request_from_maintenance_task(&task, &state)
+            .expect("request")
+            .expect("current request");
+        let preempted = defer_compaction_for_resource_policy(
+            &state,
+            &request,
+            LifecycleCompactionIoPolicy::Unlimited,
+        )
+        .expect("policy")
+        .expect("flush pressure should preempt compaction");
+
+        assert_eq!(preempted.status(), MaintenanceOutcomeStatus::Deferred);
+        assert!(preempted.retryable());
+        assert_eq!(
+            preempted.reason(),
+            Some("flush pressure preempted compaction")
+        );
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_compaction_flush_preemptions(), 3);
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 0);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn generated_metadata_promotion_and_rewrite_candidates_follow_io_budget_policy() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    crate::observability::perf_trace::reset();
+
+    for (case_index, table_count) in [(0usize, 1usize), (1, 2)] {
+        let branch = branch_id(0x90 + u8::try_from(case_index).expect("case fits"));
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
+        )
+        .expect("branch state");
+        for table_index in 0..table_count {
+            let key = format!("promotion-vs-rewrite-{case_index}-{table_index}");
+            install_l0_table(
+                &mut state,
+                branch,
+                &key,
+                vec![put_row(
+                    branch,
+                    key.as_bytes(),
+                    (table_index + 1) as u64,
+                    ((table_index + 1) * 1_000) as u64,
+                    &[0x6a; 1024],
+                )],
+            );
+        }
+        let task = MaintenanceTask::new_for_test(1, MaintenanceTaskRequest::compaction(branch, 0))
+            .expect("task");
+        let request = current_compaction_request_from_maintenance_task(&task, &state)
+            .expect("request")
+            .expect("current request");
+        let outcome = defer_compaction_for_resource_policy(
+            &state,
+            &request,
+            LifecycleCompactionIoPolicy::per_task_byte_budget(1),
+        )
+        .expect("policy");
+
+        if table_count == 1 {
+            assert!(
+                outcome.is_none(),
+                "metadata promotion should avoid rewrite IO budget deferral"
+            );
+        } else {
+            let deferred = outcome.expect("rewrite should be budget deferred");
+            assert_eq!(deferred.status(), MaintenanceOutcomeStatus::Deferred);
+            assert_eq!(
+                deferred.reason(),
+                Some("compaction IO byte budget deferred table rewrite")
+            );
+        }
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 1);
+    assert!(perf.lifecycle_compaction_io_budget_deferred_bytes() > 1);
 }
 
 #[cfg(feature = "perf-trace")]

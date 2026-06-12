@@ -13,6 +13,20 @@ pub(in crate::lifecycle::tests) fn open_runtime(
     shell.complete_recovery(&outcome).expect("open runtime")
 }
 
+pub(in crate::lifecycle::tests) fn open_runtime_with_lifecycle_config(
+    branch: BranchId,
+    backend: &CheckpointTestBackend,
+    config: LifecycleConfig,
+) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    let mut shell = assemble_shell_with_lifecycle_config(branch, backend, config).expect("shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    shell.complete_recovery(&outcome).expect("open runtime")
+}
+
 pub(super) fn open_runtime_with_wal_segment_size(
     branch: BranchId,
     backend: &CheckpointTestBackend,
@@ -39,9 +53,36 @@ pub(in crate::lifecycle::tests) fn assemble_shell(
     )
 }
 
+fn assemble_shell_with_lifecycle_config(
+    branch: BranchId,
+    backend: &CheckpointTestBackend,
+    config: LifecycleConfig,
+) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+    assemble_shell_with_config_and_wal_segment_size(
+        branch,
+        backend,
+        config,
+        crate::service::WalServiceConfig::default().segment_size(),
+    )
+}
+
 pub(super) fn assemble_shell_with_wal_segment_size(
     branch: BranchId,
     backend: &CheckpointTestBackend,
+    segment_size: u64,
+) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+    assemble_shell_with_config_and_wal_segment_size(
+        branch,
+        backend,
+        LifecycleConfig::default(),
+        segment_size,
+    )
+}
+
+fn assemble_shell_with_config_and_wal_segment_size(
+    branch: BranchId,
+    backend: &CheckpointTestBackend,
+    config: LifecycleConfig,
     segment_size: u64,
 ) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
     LifecycleDurableLocalShell::assemble(
@@ -50,7 +91,7 @@ pub(super) fn assemble_shell_with_wal_segment_size(
                 StorageMode::DurableLocalStandard,
                 LifecycleCodecId::identity(),
                 RecoveryStrictness::Strict,
-                LifecycleConfig::default(),
+                config,
             )
             .expect("open plan"),
             DATABASE_ID,

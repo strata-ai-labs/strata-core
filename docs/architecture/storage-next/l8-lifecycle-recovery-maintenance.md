@@ -86,6 +86,31 @@ table compaction layers. L8 records deeper-overlap bytes and a deferred
 split-budget fact, but metadata-promotion eligibility does not imply lifecycle
 ownership of output splitting.
 
+### Resource Throttling And Memory Release
+
+Lifecycle compaction records table bytes read for rewrite operations, output
+bytes written, metadata-only bytes avoided, elapsed time, and weighted bytes
+rewritten per input row for completed rewrites. Metadata-only promotion reports
+the source bytes it avoided rewriting without consuming the compaction IO byte
+budget. The default compaction IO policy is unlimited, but
+`LifecycleCompactionIoPolicy::PerTaskByteBudget` can bound a single maintenance
+task deterministically. A compaction whose estimated input-plus-output bytes
+exceed that per-task budget is deferred with a retryable maintenance outcome and
+telemetry health debt rather than reported as a failure.
+Queued and explicit fixed-point compaction drains share this policy. Crate-internal
+single-rewrite helpers remain raw building blocks, but still emit
+compaction facts when used directly.
+
+Flush pressure preempts queued compaction for the same branch. If frozen mutable
+state is present when a compaction task starts, lifecycle defers the compaction
+with a retryable outcome so the flush drain can make progress first.
+
+Memory release remains measure-first. Flush drains record active and frozen
+mutable bytes before and after the drain plus a retained-byte re-evaluation
+threshold. Storage-next does not call nonportable allocator release hooks in V1;
+the counter surface is the handoff for deciding whether such a hook belongs in
+storage-next or a lower allocator/backend layer.
+
 ### Maintenance Coverage Trigger Model
 
 Storage-next runs an in-process maintenance coverage pass after a successful

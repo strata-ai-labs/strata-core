@@ -77,6 +77,7 @@ pub(crate) struct FlushDrainOutcome {
 }
 
 const DEFAULT_FLUSH_DRAIN_FREEZE_RETRY_LIMIT: usize = 4;
+const MEMORY_RELEASE_REEVALUATION_RETAINED_BYTES: u64 = 512 * 1024 * 1024;
 
 impl FlushFrozenRequest {
     pub(crate) fn new(
@@ -705,6 +706,8 @@ pub(crate) fn flush_branch_drain_with(
             reason: "flush drain branch id must match branch state",
         });
     }
+    let active_bytes_before = branch.active_byte_count();
+    let frozen_bytes_before = branch.frozen_byte_count();
     let frozen_tables_discovered = branch.frozen_table_count();
     crate::observability::perf_trace::record_lifecycle_flush_drain_frozen_tables_discovered(
         frozen_tables_discovered,
@@ -712,6 +715,12 @@ pub(crate) fn flush_branch_drain_with(
     if frozen_tables_discovered == 0 {
         let outcome = FlushDrainOutcome::new(request.branch_id(), 0).skipped(0);
         record_flush_drain_outcome_counters(&outcome);
+        record_flush_memory_retention(
+            active_bytes_before,
+            frozen_bytes_before,
+            branch.active_byte_count(),
+            branch.frozen_byte_count(),
+        );
         return Ok(outcome);
     }
 
@@ -746,6 +755,12 @@ pub(crate) fn flush_branch_drain_with(
         .with_freeze_during_drain_retries(freeze_during_drain_retries)
         .with_post_drain_frozen_tables(branch.frozen_table_count());
     record_flush_drain_outcome_counters(&outcome);
+    record_flush_memory_retention(
+        active_bytes_before,
+        frozen_bytes_before,
+        branch.active_byte_count(),
+        branch.frozen_byte_count(),
+    );
     Ok(outcome)
 }
 
@@ -890,6 +905,21 @@ fn record_flush_drain_outcome_counters(outcome: &FlushDrainOutcome) {
     );
     crate::observability::perf_trace::record_lifecycle_flush_drain_post_drain_frozen_tables(
         outcome.post_drain_frozen_tables(),
+    );
+}
+
+fn record_flush_memory_retention(
+    active_bytes_before: u64,
+    frozen_bytes_before: u64,
+    active_bytes_after: u64,
+    frozen_bytes_after: u64,
+) {
+    crate::observability::perf_trace::record_lifecycle_flush_memory_retention(
+        active_bytes_before,
+        frozen_bytes_before,
+        active_bytes_after,
+        frozen_bytes_after,
+        MEMORY_RELEASE_REEVALUATION_RETAINED_BYTES,
     );
 }
 

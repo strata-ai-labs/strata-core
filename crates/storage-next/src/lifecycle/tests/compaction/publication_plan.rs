@@ -14,7 +14,8 @@ use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource};
 use crate::lifecycle::tests::checkpoint::shared::{
     assemble_shell, durable_batch, generation_guard, open_runtime,
-    physical_key as checkpoint_physical_key, CheckpointTestBackend,
+    open_runtime_with_lifecycle_config, physical_key as checkpoint_physical_key,
+    CheckpointTestBackend,
 };
 use crate::row::StorageSpaceId;
 use strata_core_next::{CommitVersion, Timestamp};
@@ -516,6 +517,55 @@ fn durable_compaction_metadata_promotion_manifest_failure_uses_previous_manifest
         latest_value_from_state(reopened.branch_state(), branch, b"right"),
         Some(b"right".to_vec())
     );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_explicit_compaction_drain_obeys_io_budget_policy_before_publish() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x6d);
+    let backend = CheckpointTestBackend::new();
+    let config = LifecycleConfig::default()
+        .with_compaction_io_policy(LifecycleCompactionIoPolicy::per_task_byte_budget(1))
+        .expect("compaction IO policy");
+    let mut runtime = open_runtime_with_lifecycle_config(branch, &backend, config);
+    for index in 0..4 {
+        install_l0_table(
+            runtime.branch_state_mut(),
+            branch,
+            &format!("durable-explicit-budget-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("durable-explicit-budget-l0-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                &[0x6d; 1024],
+            )],
+        );
+    }
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .compact_branch_tables_to_fixed_point(
+            &LifecycleCompactionDrainRequest::new(branch, "durable-explicit-budget")
+                .expect("drain request"),
+        )
+        .expect("explicit durable compaction drain");
+    let maintenance = outcome.maintenance_outcome();
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        maintenance.reason(),
+        Some("compaction IO byte budget deferred table rewrite")
+    );
+    assert!(maintenance.retryable());
+    assert_eq!(outcome.operations_attempted(), 1);
+    assert_eq!(outcome.operations_installed(), 0);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 4);
+    assert_eq!(backend.table_object_create_calls(), 0);
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 1);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
 }
 
 #[test]

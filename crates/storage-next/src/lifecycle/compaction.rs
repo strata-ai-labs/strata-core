@@ -1,12 +1,15 @@
 //! Branch table rewrite scheduling.
 
 use super::{
-    telemetry_health_debt, LifecycleError, LifecycleLowerLayer, LifecycleResult, LifecycleStats,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskScope, RecoveryHealth,
+    telemetry_health_debt, LifecycleCompactionIoPolicy, LifecycleError, LifecycleLowerLayer,
+    LifecycleResult, LifecycleStats, MaintenanceExecutorStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
+    MaintenanceTaskScope, RecoveryHealth,
 };
 use crate::branch::error::BranchRuntimeError;
-use crate::branch::facts::{BranchLevel, BranchReachabilitySnapshot, BranchSourceLayout};
+use crate::branch::facts::{
+    BranchLevel, BranchReachabilitySnapshot, BranchSourceLayout, BranchTableRef,
+};
 use crate::branch::pruning::BranchCompactionPruningProof;
 use crate::branch::state::compaction::{
     BranchCompactionCandidate, BranchCompactionKind, BranchCompactionOperation,
@@ -63,6 +66,8 @@ pub(crate) struct LifecycleCompactionOutcome {
     branch_id: BranchId,
     plan: BranchCompactionPlan,
     branch_outcome: BranchCompactionOutcome,
+    io_facts: LifecycleCompactionIoFacts,
+    elapsed: std::time::Duration,
     checkpoint_required: bool,
     recovery_health: Option<RecoveryHealth>,
     durable_output_objects: Vec<ObjectName>,
@@ -77,6 +82,19 @@ pub(crate) struct LifecycleCompactionDrainRequest {
     max_passes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LifecycleCompactionIoFacts {
+    input_bytes: u64,
+    estimated_output_bytes: u64,
+    metadata_bytes_avoided: u64,
+    input_rows: u64,
+}
+
+pub(crate) const COMPACTION_IO_BUDGET_DEFERRED_REASON: &str =
+    "compaction IO byte budget deferred table rewrite";
+pub(crate) const FLUSH_PRESSURE_PREEMPTED_COMPACTION_REASON: &str =
+    "flush pressure preempted compaction";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleCompactionDrainOutcome {
     branch_id: BranchId,
@@ -90,6 +108,8 @@ pub(crate) struct LifecycleCompactionDrainOutcome {
     final_source_layout: BranchSourceLayout,
     affected_object_names: Vec<String>,
     checkpoint_required: bool,
+    deferred_reason: Option<&'static str>,
+    retryable: bool,
     recovery_health: Option<RecoveryHealth>,
     failure: Option<LifecycleError>,
 }
@@ -446,6 +466,8 @@ impl LifecycleCompactionDrainOutcome {
             final_source_layout,
             affected_object_names: Vec::new(),
             checkpoint_required: false,
+            deferred_reason: None,
+            retryable: false,
             recovery_health: None,
             failure: None,
         }
@@ -476,11 +498,23 @@ impl LifecycleCompactionDrainOutcome {
             }
         }
         self.checkpoint_required |= maintenance.checkpoint_required();
+        self.retryable |= maintenance.retryable();
         if self.recovery_health.is_none() {
             self.recovery_health = maintenance.recovery_health().cloned();
         }
         if self.failure.is_none() {
             self.failure = maintenance.source_error().cloned();
+        }
+    }
+
+    fn record_deferred(&mut self, outcome: &MaintenanceOutcome) {
+        self.deferred_reason = outcome.reason();
+        self.retryable |= outcome.retryable();
+        if self.recovery_health.is_none() {
+            self.recovery_health = outcome.recovery_health().cloned();
+        }
+        if self.failure.is_none() {
+            self.failure = outcome.source_error().cloned();
         }
     }
 
@@ -551,17 +585,20 @@ impl LifecycleCompactionDrainOutcome {
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
-        let status = if self.operations_installed == 0 {
+        let status = if self.deferred_reason.is_some() || self.operations_installed == 0 {
             MaintenanceOutcomeStatus::Deferred
         } else {
             MaintenanceOutcomeStatus::Completed
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Compaction, status)
             .with_affected_object_names(self.affected_object_names.clone())
+            .with_effects(self.affected_object_names.len(), 0, self.retryable)
             .with_state_changes(self.operations_installed)
             .with_checkpoint_required(self.checkpoint_required)
             .with_stats(LifecycleStats::new(0, 0, self.operations_attempted, 0, 0));
-        if self.operations_installed == 0 {
+        if let Some(reason) = self.deferred_reason {
+            outcome = outcome.with_reason(reason);
+        } else if self.operations_installed == 0 {
             outcome = outcome.with_reason("compaction drain has no candidate tables");
         }
         if let Some(health) = &self.recovery_health {
@@ -579,6 +616,8 @@ impl LifecycleCompactionOutcome {
         request: &LifecycleCompactionRequest,
         plan: BranchCompactionPlan,
         branch_outcome: BranchCompactionOutcome,
+        io_facts: LifecycleCompactionIoFacts,
+        elapsed: std::time::Duration,
     ) -> Self {
         let no_candidate = branch_outcome.noop_reason().is_some();
         let checkpoint_required = !no_candidate
@@ -596,6 +635,8 @@ impl LifecycleCompactionOutcome {
             branch_id: branch_outcome.branch_id(),
             plan,
             branch_outcome,
+            io_facts,
+            elapsed,
             checkpoint_required,
             recovery_health: None,
             durable_output_objects: Vec::new(),
@@ -607,6 +648,8 @@ impl LifecycleCompactionOutcome {
     pub(super) fn completed_durable(
         plan: BranchCompactionPlan,
         branch_outcome: BranchCompactionOutcome,
+        io_facts: LifecycleCompactionIoFacts,
+        elapsed: std::time::Duration,
         durable_output_objects: Vec<ObjectName>,
         retained_input_objects: Vec<String>,
     ) -> Self {
@@ -615,6 +658,8 @@ impl LifecycleCompactionOutcome {
             branch_id: branch_outcome.branch_id(),
             plan,
             branch_outcome,
+            io_facts,
+            elapsed,
             checkpoint_required: false,
             recovery_health: None,
             durable_output_objects,
@@ -645,6 +690,14 @@ impl LifecycleCompactionOutcome {
 
     pub(crate) const fn branch_outcome(&self) -> &BranchCompactionOutcome {
         &self.branch_outcome
+    }
+
+    pub(crate) const fn io_facts(&self) -> LifecycleCompactionIoFacts {
+        self.io_facts
+    }
+
+    pub(crate) const fn elapsed(&self) -> std::time::Duration {
+        self.elapsed
     }
 
     pub(crate) const fn checkpoint_required(&self) -> bool {
@@ -717,6 +770,70 @@ impl LifecycleCompactionOutcome {
         }
         outcome
     }
+}
+
+impl LifecycleCompactionIoFacts {
+    pub(super) fn from_plan(branch: &BranchLocalState, plan: &BranchCompactionPlan) -> Self {
+        let Some(candidate) = plan.candidate() else {
+            return Self::default();
+        };
+        let source_bytes = candidate
+            .input_refs()
+            .iter()
+            .chain(candidate.overlap_refs())
+            .fold(0u64, |bytes, table_ref| {
+                bytes.saturating_add(table_ref_byte_count(branch, table_ref))
+            });
+        let input_bytes = if candidate.requires_table_rewrite() {
+            source_bytes
+        } else {
+            0
+        };
+        let estimated_output_bytes = if candidate.requires_table_rewrite() {
+            source_bytes
+        } else {
+            0
+        };
+        let metadata_bytes_avoided = if candidate.is_metadata_promotion() {
+            source_bytes
+        } else {
+            0
+        };
+        Self {
+            input_bytes,
+            estimated_output_bytes,
+            metadata_bytes_avoided,
+            input_rows: candidate.input_row_count(),
+        }
+    }
+
+    pub(crate) const fn input_bytes(self) -> u64 {
+        self.input_bytes
+    }
+
+    pub(crate) const fn estimated_budget_bytes(self) -> u64 {
+        self.input_bytes.saturating_add(self.estimated_output_bytes)
+    }
+
+    pub(crate) const fn metadata_bytes_avoided(self) -> u64 {
+        self.metadata_bytes_avoided
+    }
+
+    pub(crate) const fn input_rows(self) -> u64 {
+        self.input_rows
+    }
+}
+
+fn table_ref_byte_count(branch: &BranchLocalState, table_ref: &BranchTableRef) -> u64 {
+    if table_ref.table_branch_id() != branch.branch_id() {
+        return 0;
+    }
+    branch
+        .owned_levels()
+        .get(usize::from(table_ref.level().raw()))
+        .and_then(|tables| tables.get(table_ref.table_index()))
+        .filter(|table| table.descriptor().identity() == table_ref.table_identity())
+        .map_or(0, |table| table.facts().byte_count())
 }
 
 impl LifecycleMaterializationRequest {
@@ -1029,7 +1146,19 @@ pub(crate) fn compact_cache_branch_to_fixed_point(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionDrainRequest,
 ) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
-    compact_branch_to_fixed_point_with(branch, request, compact_branch)
+    compact_cache_branch_to_fixed_point_with_policy(
+        branch,
+        request,
+        LifecycleCompactionIoPolicy::Unlimited,
+    )
+}
+
+pub(crate) fn compact_cache_branch_to_fixed_point_with_policy(
+    branch: &mut BranchLocalState,
+    request: &LifecycleCompactionDrainRequest,
+    policy: LifecycleCompactionIoPolicy,
+) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
+    compact_branch_to_fixed_point_with_resource_policy(branch, request, policy, compact_branch)
 }
 
 pub(crate) fn compact_durable_branch(
@@ -1042,10 +1171,37 @@ pub(crate) fn compact_durable_branch(
     compact_branch(branch, &request)
 }
 
+pub(crate) fn defer_compaction_for_resource_policy(
+    branch: &BranchLocalState,
+    request: &LifecycleCompactionRequest,
+    policy: LifecycleCompactionIoPolicy,
+) -> LifecycleResult<Option<MaintenanceOutcome>> {
+    if branch.frozen_table_count() > 0 {
+        return Ok(Some(flush_pressure_preempted_compaction_outcome()));
+    }
+    let Some(limit_bytes) = policy.max_bytes_per_task() else {
+        return Ok(None);
+    };
+    let branch_request = request.branch_request()?;
+    let plan = branch
+        .plan_branch_compaction(&branch_request)
+        .map_err(branch_error)?;
+    let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
+    let estimated_bytes = io_facts.estimated_budget_bytes();
+    if estimated_bytes > limit_bytes {
+        return Ok(Some(compaction_io_budget_deferred_outcome(
+            estimated_bytes,
+            limit_bytes,
+        )));
+    }
+    Ok(None)
+}
+
 pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionOutcome) {
     let Some(candidate) = outcome.branch_outcome().candidate() else {
         return;
     };
+    let io_facts = outcome.io_facts();
     let output_bytes = outcome
         .branch_outcome()
         .table_report()
@@ -1055,7 +1211,11 @@ pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionO
         candidate.input_refs().len(),
         candidate.overlap_refs().len(),
         outcome.branch_outcome().output_refs().len(),
+        io_facts.input_bytes(),
         output_bytes,
+        io_facts.metadata_bytes_avoided(),
+        outcome.elapsed(),
+        io_facts.input_rows(),
         candidate.is_metadata_promotion(),
     );
 }
@@ -1065,6 +1225,12 @@ pub(crate) fn table_rewrite_outcome_allows_chain_resubmit(outcome: &MaintenanceO
         outcome.status(),
         MaintenanceOutcomeStatus::Completed | MaintenanceOutcomeStatus::Deferred
     ) && outcome.recovery_health().is_none()
+        && outcome.source_error().is_none()
+}
+
+pub(crate) fn table_rewrite_outcome_was_flush_preempted(outcome: &MaintenanceOutcome) -> bool {
+    outcome.status() == MaintenanceOutcomeStatus::Deferred
+        && outcome.reason() == Some(FLUSH_PRESSURE_PREEMPTED_COMPACTION_REASON)
         && outcome.source_error().is_none()
 }
 
@@ -1217,6 +1383,40 @@ pub(crate) fn stale_compaction_maintenance_outcome() -> MaintenanceOutcome {
         MaintenanceOutcomeStatus::Deferred,
     )
     .with_reason("compaction task no longer has a pressure candidate")
+}
+
+pub(crate) fn compaction_io_budget_deferred_outcome(
+    estimated_bytes: u64,
+    limit_bytes: u64,
+) -> MaintenanceOutcome {
+    crate::observability::perf_trace::record_lifecycle_compaction_io_budget_deferred(
+        estimated_bytes,
+        limit_bytes,
+    );
+    let mut outcome = MaintenanceOutcome::new(
+        MaintenanceTaskKind::Compaction,
+        MaintenanceOutcomeStatus::Deferred,
+    )
+    .with_effects(0, 0, true)
+    .with_reason(COMPACTION_IO_BUDGET_DEFERRED_REASON);
+    if let Ok(health) = telemetry_health_debt(COMPACTION_IO_BUDGET_DEFERRED_REASON) {
+        outcome = outcome.with_recovery_health(health);
+    }
+    outcome
+}
+
+pub(crate) fn flush_pressure_preempted_compaction_outcome() -> MaintenanceOutcome {
+    crate::observability::perf_trace::record_lifecycle_compaction_flush_preempted();
+    let mut outcome = MaintenanceOutcome::new(
+        MaintenanceTaskKind::Compaction,
+        MaintenanceOutcomeStatus::Deferred,
+    )
+    .with_effects(0, 0, true)
+    .with_reason(FLUSH_PRESSURE_PREEMPTED_COMPACTION_REASON);
+    if let Ok(health) = telemetry_health_debt(FLUSH_PRESSURE_PREEMPTED_COMPACTION_REASON) {
+        outcome = outcome.with_recovery_health(health);
+    }
+    outcome
 }
 
 pub(crate) fn materialization_request_from_maintenance_task(
@@ -1917,10 +2117,12 @@ fn compact_branch(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionRequest,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
+    let started = std::time::Instant::now();
     let branch_request = request.branch_request()?;
     let plan = branch
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
+    let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
     let branch_outcome = branch
         .install_branch_compaction_plan(&branch_request, &plan)
         .map_err(branch_error)?;
@@ -1928,12 +2130,15 @@ fn compact_branch(
         request,
         plan,
         branch_outcome,
+        io_facts,
+        started.elapsed(),
     ))
 }
 
-pub(crate) fn compact_branch_to_fixed_point_with<F>(
+pub(crate) fn compact_branch_to_fixed_point_with_resource_policy<F>(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionDrainRequest,
+    policy: LifecycleCompactionIoPolicy,
     mut compact_once: F,
 ) -> LifecycleResult<LifecycleCompactionDrainOutcome>
 where
@@ -1965,7 +2170,14 @@ where
                     outcome.operations_attempted(),
                 )?;
                 outcome.record_attempt();
+                if let Some(deferred) =
+                    defer_compaction_for_resource_policy(branch, &request_for_level, policy)?
+                {
+                    outcome.record_deferred(&deferred);
+                    return Ok(outcome.with_final_source_layout(branch.source_layout()));
+                }
                 let compaction = compact_once(branch, &request_for_level)?;
+                record_lifecycle_compaction_outcome(&compaction);
                 if compaction.branch_outcome().noop_reason().is_some() {
                     break;
                 }

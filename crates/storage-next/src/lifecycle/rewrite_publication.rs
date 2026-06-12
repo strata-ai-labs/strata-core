@@ -1,8 +1,8 @@
 //! Durable table rewrite publication.
 
 use super::compaction::{
-    branch_error, LifecycleCompactionOutcome, LifecycleCompactionRequest,
-    LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
+    branch_error, LifecycleCompactionIoFacts, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
     LifecycleTableRewriteDurability,
 };
 use super::{
@@ -36,6 +36,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     request: &LifecycleCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
+    let started = std::time::Instant::now();
     let request = request
         .clone()
         .with_durability(LifecycleTableRewriteDurability::DurableTableManifestBacked);
@@ -43,6 +44,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     let plan = branch
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
+    let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
     let Some((artifacts, report)) = branch
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .map_err(branch_error)?
@@ -59,6 +61,8 @@ pub(crate) fn compact_durable_branch_manifest_backed(
             let outcome = LifecycleCompactionOutcome::completed_durable(
                 plan,
                 branch_outcome,
+                io_facts,
+                started.elapsed(),
                 Vec::new(),
                 retained_input_objects,
             );
@@ -76,6 +80,8 @@ pub(crate) fn compact_durable_branch_manifest_backed(
             &request,
             plan,
             branch_outcome,
+            io_facts,
+            started.elapsed(),
         ));
     };
     let Some(output_level) = plan.output_level() else {
@@ -127,6 +133,8 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     let outcome = LifecycleCompactionOutcome::completed_durable(
         plan,
         branch_outcome,
+        io_facts,
+        started.elapsed(),
         output_objects,
         retained_input_objects,
     );

@@ -1446,6 +1446,233 @@ fn cache_flush_drain_perf_trace_counts_discovered_completed_and_remaining_tables
     assert_eq!(perf.lifecycle_flush_drain_freeze_retries(), 0);
     assert_eq!(perf.lifecycle_flush_drain_failures(), 0);
     assert_eq!(perf.lifecycle_flush_drain_post_drain_frozen_tables(), 0);
+    assert_eq!(perf.lifecycle_flush_memory_measurements(), 1);
+    assert!(perf.lifecycle_flush_frozen_bytes_before() > 0);
+    assert_eq!(perf.lifecycle_flush_frozen_bytes_after(), 0);
+    assert_eq!(
+        perf.lifecycle_flush_active_bytes_after(),
+        perf.lifecycle_flush_active_bytes_before()
+    );
+    assert_eq!(perf.lifecycle_memory_release_deferrals(), 1);
+    assert!(perf.lifecycle_memory_release_threshold_bytes() > 0);
+    assert_eq!(perf.lifecycle_memory_release_attempts(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn generated_repeated_flush_cycles_record_retained_memory_measurements() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x7c);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    crate::observability::perf_trace::reset();
+
+    for cycle in 0..4 {
+        let frozen_timestamp = 10_000 + cycle as u64 * 10_000;
+        let active_timestamp = frozen_timestamp + 5_000;
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            format!("flush-cycle-frozen-{cycle}").as_bytes(),
+            frozen_timestamp,
+        );
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate frozen table");
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            format!("flush-cycle-active-{cycle}").as_bytes(),
+            active_timestamp,
+        );
+
+        let flush = runtime
+            .run_next_flush_maintenance()
+            .expect("run flush maintenance")
+            .expect("flush task");
+        assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+        assert_eq!(
+            runtime
+                .branch_catalog_mut_for_test()
+                .branch_state(branch)
+                .expect("branch state")
+                .frozen_table_count(),
+            0
+        );
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_flush_memory_measurements(), 4);
+    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 4);
+    assert_eq!(perf.lifecycle_flush_frozen_bytes_after(), 0);
+    assert!(perf.lifecycle_flush_frozen_bytes_before() > 0);
+    assert!(perf.lifecycle_flush_active_bytes_after() > 0);
+    assert_eq!(perf.lifecycle_memory_release_deferrals(), 4);
+    assert!(perf.lifecycle_memory_release_retained_bytes() > 0);
+    assert_eq!(
+        perf.lifecycle_memory_release_threshold_bytes()
+            % perf.lifecycle_flush_memory_measurements(),
+        0
+    );
+    assert_eq!(perf.lifecycle_memory_release_attempts(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_compaction_is_preempted_when_flush_pressure_exists() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x7b);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    for index in 0..4 {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        install_owned_table_for_cache_test(
+            state,
+            branch,
+            BranchLevel::ZERO,
+            &format!("flush-preempt-l0-{index}"),
+            vec![active_pressure_put_row(
+                branch,
+                format!("flush-preempt-l0-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                512,
+                0x64,
+            )],
+        );
+    }
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        state
+            .append_committed_rows_atomically(vec![active_pressure_put_row(
+                branch,
+                b"flush-preempt-frozen",
+                99,
+                99_000,
+                512,
+                0x65,
+            )])
+            .expect("append frozen pressure row");
+        state.rotate_active();
+        assert_eq!(state.frozen_table_count(), 1);
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction maintenance")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert!(outcome.retryable());
+    assert_eq!(
+        outcome.reason(),
+        Some("flush pressure preempted compaction")
+    );
+    assert_eq!(
+        runtime.maintenance_status().pending_tasks(),
+        2,
+        "preemption must keep compaction reachable behind the flush task"
+    );
+    assert_eq!(perf.lifecycle_compaction_flush_preemptions(), 1);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
+
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush maintenance")
+        .expect("flush outcome");
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction maintenance after flush")
+        .expect("compaction outcome after flush");
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_explicit_compaction_drain_obeys_io_budget_policy() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x7d);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::default()
+        .with_compaction_io_policy(LifecycleCompactionIoPolicy::per_task_byte_budget(1))
+        .expect("compaction IO policy");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_owned_table_for_cache_test(
+                state,
+                branch,
+                BranchLevel::ZERO,
+                &format!("explicit-budget-l0-{index}"),
+                vec![active_pressure_put_row(
+                    branch,
+                    format!("explicit-budget-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    1024,
+                    0x6b,
+                )],
+            );
+        }
+    }
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .compact_branch_tables_to_fixed_point(
+            &LifecycleCompactionDrainRequest::new(branch, "explicit-budget-drain")
+                .expect("drain request"),
+        )
+        .expect("explicit compaction drain");
+    let maintenance = outcome.maintenance_outcome();
+    let state = runtime
+        .branch_catalog_mut_for_test()
+        .branch_state(branch)
+        .expect("branch state after defer");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        maintenance.reason(),
+        Some("compaction IO byte budget deferred table rewrite")
+    );
+    assert!(maintenance.retryable());
+    assert_eq!(outcome.operations_attempted(), 1);
+    assert_eq!(outcome.operations_installed(), 0);
+    assert_eq!(state.owned_levels()[0].len(), 4);
+    assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 1);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
 }
 
 #[cfg(feature = "perf-trace")]

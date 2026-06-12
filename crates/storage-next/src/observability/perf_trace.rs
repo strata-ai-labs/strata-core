@@ -152,6 +152,15 @@ pub struct StoragePerfSnapshot {
     lifecycle_flush_drain_freeze_retries: u64,
     lifecycle_flush_drain_failures: u64,
     lifecycle_flush_drain_post_drain_frozen_tables: u64,
+    lifecycle_flush_memory_measurements: u64,
+    lifecycle_flush_active_bytes_before: u64,
+    lifecycle_flush_frozen_bytes_before: u64,
+    lifecycle_flush_active_bytes_after: u64,
+    lifecycle_flush_frozen_bytes_after: u64,
+    lifecycle_memory_release_deferrals: u64,
+    lifecycle_memory_release_retained_bytes: u64,
+    lifecycle_memory_release_threshold_bytes: u64,
+    lifecycle_memory_release_attempts: u64,
     lifecycle_compaction_score_candidates: u64,
     lifecycle_compaction_selected: u64,
     lifecycle_compaction_selected_level_sum: u64,
@@ -177,7 +186,17 @@ pub struct StoragePerfSnapshot {
     lifecycle_compaction_input_tables: u64,
     lifecycle_compaction_overlap_tables: u64,
     lifecycle_compaction_output_tables: u64,
+    lifecycle_compaction_input_bytes: u64,
     lifecycle_compaction_output_bytes: u64,
+    lifecycle_compaction_metadata_bytes_avoided: u64,
+    lifecycle_compaction_elapsed_ns: u64,
+    lifecycle_compaction_input_rows: u64,
+    lifecycle_compaction_rewrite_bytes_per_row: u64,
+    lifecycle_compaction_io_budget_consumed_bytes: u64,
+    lifecycle_compaction_io_budget_deferrals: u64,
+    lifecycle_compaction_io_budget_deferred_bytes: u64,
+    lifecycle_compaction_io_budget_limit_bytes: u64,
+    lifecycle_compaction_flush_preemptions: u64,
     lifecycle_compaction_trivial_moves: u64,
     lifecycle_compaction_resubmits: u64,
     lifecycle_compaction_resubmit_coalesces: u64,
@@ -799,6 +818,51 @@ impl StoragePerfSnapshot {
         self.lifecycle_flush_drain_post_drain_frozen_tables
     }
 
+    /// Flush memory-retention measurements recorded after branch drains.
+    pub const fn lifecycle_flush_memory_measurements(self) -> u64 {
+        self.lifecycle_flush_memory_measurements
+    }
+
+    /// Active mutable bytes observed before flush drains.
+    pub const fn lifecycle_flush_active_bytes_before(self) -> u64 {
+        self.lifecycle_flush_active_bytes_before
+    }
+
+    /// Frozen mutable bytes observed before flush drains.
+    pub const fn lifecycle_flush_frozen_bytes_before(self) -> u64 {
+        self.lifecycle_flush_frozen_bytes_before
+    }
+
+    /// Active mutable bytes observed after flush drains.
+    pub const fn lifecycle_flush_active_bytes_after(self) -> u64 {
+        self.lifecycle_flush_active_bytes_after
+    }
+
+    /// Frozen mutable bytes observed after flush drains.
+    pub const fn lifecycle_flush_frozen_bytes_after(self) -> u64 {
+        self.lifecycle_flush_frozen_bytes_after
+    }
+
+    /// Memory-release decisions deferred by lifecycle maintenance.
+    pub const fn lifecycle_memory_release_deferrals(self) -> u64 {
+        self.lifecycle_memory_release_deferrals
+    }
+
+    /// Retained bytes observed when memory release remains measure-first.
+    pub const fn lifecycle_memory_release_retained_bytes(self) -> u64 {
+        self.lifecycle_memory_release_retained_bytes
+    }
+
+    /// Retained-byte thresholds attached to memory-release deferral decisions.
+    pub const fn lifecycle_memory_release_threshold_bytes(self) -> u64 {
+        self.lifecycle_memory_release_threshold_bytes
+    }
+
+    /// Portable memory-release attempts made by lifecycle maintenance.
+    pub const fn lifecycle_memory_release_attempts(self) -> u64 {
+        self.lifecycle_memory_release_attempts
+    }
+
     /// Compaction score candidates evaluated by lifecycle maintenance.
     pub const fn lifecycle_compaction_score_candidates(self) -> u64 {
         self.lifecycle_compaction_score_candidates
@@ -924,9 +988,59 @@ impl StoragePerfSnapshot {
         self.lifecycle_compaction_output_tables
     }
 
+    /// Estimated input bytes read by completed lifecycle compactions.
+    pub const fn lifecycle_compaction_input_bytes(self) -> u64 {
+        self.lifecycle_compaction_input_bytes
+    }
+
     /// Output bytes produced by completed lifecycle compactions.
     pub const fn lifecycle_compaction_output_bytes(self) -> u64 {
         self.lifecycle_compaction_output_bytes
+    }
+
+    /// Input bytes not rewritten because lifecycle selected metadata promotion.
+    pub const fn lifecycle_compaction_metadata_bytes_avoided(self) -> u64 {
+        self.lifecycle_compaction_metadata_bytes_avoided
+    }
+
+    /// Elapsed nanoseconds spent in completed lifecycle compactions.
+    pub const fn lifecycle_compaction_elapsed_ns(self) -> u64 {
+        self.lifecycle_compaction_elapsed_ns
+    }
+
+    /// Committed input rows processed by completed lifecycle compactions.
+    pub const fn lifecycle_compaction_input_rows(self) -> u64 {
+        self.lifecycle_compaction_input_rows
+    }
+
+    /// Weighted completed compaction bytes per committed input row.
+    pub const fn lifecycle_compaction_rewrite_bytes_per_row(self) -> u64 {
+        self.lifecycle_compaction_rewrite_bytes_per_row
+    }
+
+    /// Compaction IO bytes consumed under lifecycle budget accounting.
+    pub const fn lifecycle_compaction_io_budget_consumed_bytes(self) -> u64 {
+        self.lifecycle_compaction_io_budget_consumed_bytes
+    }
+
+    /// Compaction tasks deferred by lifecycle IO byte budget.
+    pub const fn lifecycle_compaction_io_budget_deferrals(self) -> u64 {
+        self.lifecycle_compaction_io_budget_deferrals
+    }
+
+    /// Estimated compaction IO bytes attached to budget deferrals.
+    pub const fn lifecycle_compaction_io_budget_deferred_bytes(self) -> u64 {
+        self.lifecycle_compaction_io_budget_deferred_bytes
+    }
+
+    /// Compaction IO byte limits attached to budget decisions.
+    pub const fn lifecycle_compaction_io_budget_limit_bytes(self) -> u64 {
+        self.lifecycle_compaction_io_budget_limit_bytes
+    }
+
+    /// Compactions preempted because flush pressure was present.
+    pub const fn lifecycle_compaction_flush_preemptions(self) -> u64 {
+        self.lifecycle_compaction_flush_preemptions
     }
 
     /// Metadata-only table promotions completed by lifecycle compactions.
@@ -1957,6 +2071,24 @@ static LIFECYCLE_FLUSH_DRAIN_FAILURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_MEMORY_MEASUREMENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_ACTIVE_BYTES_BEFORE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_FROZEN_BYTES_BEFORE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_ACTIVE_BYTES_AFTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FLUSH_FROZEN_BYTES_AFTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MEMORY_RELEASE_DEFERRALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MEMORY_RELEASE_RETAINED_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MEMORY_RELEASE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SCORE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SELECTED: AtomicU64 = AtomicU64::new(0);
@@ -2007,7 +2139,25 @@ static LIFECYCLE_COMPACTION_OVERLAP_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_OUTPUT_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_INPUT_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_OUTPUT_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_METADATA_BYTES_AVOIDED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_ELAPSED_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_INPUT_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_IO_BUDGET_CONSUMED_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRED_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_IO_BUDGET_LIMIT_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_FLUSH_PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_TRIVIAL_MOVES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -2476,6 +2626,15 @@ pub fn reset() {
     LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FAILURES.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_MEMORY_MEASUREMENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_ACTIVE_BYTES_BEFORE.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_FROZEN_BYTES_BEFORE.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_ACTIVE_BYTES_AFTER.store(0, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_FROZEN_BYTES_AFTER.store(0, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_DEFERRALS.store(0, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_RETAINED_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SCORE_CANDIDATES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM.store(0, Ordering::Relaxed);
@@ -2501,7 +2660,16 @@ pub fn reset() {
     LIFECYCLE_COMPACTION_INPUT_TABLES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OVERLAP_TABLES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_TABLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_INPUT_BYTES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_METADATA_BYTES_AVOIDED.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_ELAPSED_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_INPUT_ROWS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_CONSUMED_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRALS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRED_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_LIMIT_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_FLUSH_PREEMPTIONS.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_TRIVIAL_MOVES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_RESUBMITS.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_RESUBMIT_COALESCES.store(0, Ordering::Relaxed);
@@ -2675,6 +2843,14 @@ pub fn reset() {
 #[cfg(feature = "perf-trace")]
 #[allow(clippy::too_many_lines)]
 pub fn snapshot() -> StoragePerfSnapshot {
+    let lifecycle_compaction_io_budget_consumed_bytes =
+        LIFECYCLE_COMPACTION_IO_BUDGET_CONSUMED_BYTES.load(Ordering::Relaxed);
+    let lifecycle_compaction_input_rows = LIFECYCLE_COMPACTION_INPUT_ROWS.load(Ordering::Relaxed);
+    let lifecycle_compaction_rewrite_bytes_per_row = if lifecycle_compaction_input_rows == 0 {
+        0
+    } else {
+        lifecycle_compaction_io_budget_consumed_bytes / lifecycle_compaction_input_rows
+    };
     StoragePerfSnapshot {
         api_commit_map_ns: API_COMMIT_MAP_NS.load(Ordering::Relaxed),
         api_commit_runtime_ns: API_COMMIT_RUNTIME_NS.load(Ordering::Relaxed),
@@ -2820,6 +2996,24 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_flush_drain_failures: LIFECYCLE_FLUSH_DRAIN_FAILURES.load(Ordering::Relaxed),
         lifecycle_flush_drain_post_drain_frozen_tables:
             LIFECYCLE_FLUSH_DRAIN_POST_DRAIN_FROZEN_TABLES.load(Ordering::Relaxed),
+        lifecycle_flush_memory_measurements: LIFECYCLE_FLUSH_MEMORY_MEASUREMENTS
+            .load(Ordering::Relaxed),
+        lifecycle_flush_active_bytes_before: LIFECYCLE_FLUSH_ACTIVE_BYTES_BEFORE
+            .load(Ordering::Relaxed),
+        lifecycle_flush_frozen_bytes_before: LIFECYCLE_FLUSH_FROZEN_BYTES_BEFORE
+            .load(Ordering::Relaxed),
+        lifecycle_flush_active_bytes_after: LIFECYCLE_FLUSH_ACTIVE_BYTES_AFTER
+            .load(Ordering::Relaxed),
+        lifecycle_flush_frozen_bytes_after: LIFECYCLE_FLUSH_FROZEN_BYTES_AFTER
+            .load(Ordering::Relaxed),
+        lifecycle_memory_release_deferrals: LIFECYCLE_MEMORY_RELEASE_DEFERRALS
+            .load(Ordering::Relaxed),
+        lifecycle_memory_release_retained_bytes: LIFECYCLE_MEMORY_RELEASE_RETAINED_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_memory_release_threshold_bytes: LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_memory_release_attempts: LIFECYCLE_MEMORY_RELEASE_ATTEMPTS
+            .load(Ordering::Relaxed),
         lifecycle_compaction_score_candidates: LIFECYCLE_COMPACTION_SCORE_CANDIDATES
             .load(Ordering::Relaxed),
         lifecycle_compaction_selected: LIFECYCLE_COMPACTION_SELECTED.load(Ordering::Relaxed),
@@ -2869,7 +3063,23 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_compaction_output_tables: LIFECYCLE_COMPACTION_OUTPUT_TABLES
             .load(Ordering::Relaxed),
+        lifecycle_compaction_input_bytes: LIFECYCLE_COMPACTION_INPUT_BYTES.load(Ordering::Relaxed),
         lifecycle_compaction_output_bytes: LIFECYCLE_COMPACTION_OUTPUT_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_metadata_bytes_avoided: LIFECYCLE_COMPACTION_METADATA_BYTES_AVOIDED
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_elapsed_ns: LIFECYCLE_COMPACTION_ELAPSED_NS.load(Ordering::Relaxed),
+        lifecycle_compaction_input_rows,
+        lifecycle_compaction_rewrite_bytes_per_row,
+        lifecycle_compaction_io_budget_consumed_bytes:
+            lifecycle_compaction_io_budget_consumed_bytes,
+        lifecycle_compaction_io_budget_deferrals: LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRALS
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_io_budget_deferred_bytes:
+            LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRED_BYTES.load(Ordering::Relaxed),
+        lifecycle_compaction_io_budget_limit_bytes: LIFECYCLE_COMPACTION_IO_BUDGET_LIMIT_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_flush_preemptions: LIFECYCLE_COMPACTION_FLUSH_PREEMPTIONS
             .load(Ordering::Relaxed),
         lifecycle_compaction_trivial_moves: LIFECYCLE_COMPACTION_TRIVIAL_MOVES
             .load(Ordering::Relaxed),
@@ -3870,6 +4080,38 @@ pub(crate) fn record_lifecycle_flush_drain_post_drain_frozen_tables(count: usize
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_memory_retention(
+    _active_bytes_before: u64,
+    _frozen_bytes_before: u64,
+    _active_bytes_after: u64,
+    _frozen_bytes_after: u64,
+    _release_threshold_bytes: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_memory_retention(
+    active_bytes_before: u64,
+    frozen_bytes_before: u64,
+    active_bytes_after: u64,
+    frozen_bytes_after: u64,
+    release_threshold_bytes: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    let retained_bytes = active_bytes_after.saturating_add(frozen_bytes_after);
+    LIFECYCLE_FLUSH_MEMORY_MEASUREMENTS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_ACTIVE_BYTES_BEFORE.fetch_add(active_bytes_before, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_FROZEN_BYTES_BEFORE.fetch_add(frozen_bytes_before, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_ACTIVE_BYTES_AFTER.fetch_add(active_bytes_after, Ordering::Relaxed);
+    LIFECYCLE_FLUSH_FROZEN_BYTES_AFTER.fetch_add(frozen_bytes_after, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_DEFERRALS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_RETAINED_BYTES.fetch_add(retained_bytes, Ordering::Relaxed);
+    LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES.fetch_add(release_threshold_bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_lifecycle_compaction_score_candidate(
     _level: u8,
     _score: u64,
@@ -3992,7 +4234,11 @@ pub(crate) fn record_lifecycle_compaction_operation(
     _input_tables: usize,
     _overlap_tables: usize,
     _output_tables: usize,
+    _input_bytes: u64,
     _output_bytes: u64,
+    _metadata_bytes_avoided: u64,
+    _elapsed: std::time::Duration,
+    _input_rows: u64,
     _trivial_move: bool,
 ) {
 }
@@ -4003,20 +4249,65 @@ pub(crate) fn record_lifecycle_compaction_operation(
     input_tables: usize,
     overlap_tables: usize,
     output_tables: usize,
+    input_bytes: u64,
     output_bytes: u64,
+    metadata_bytes_avoided: u64,
+    elapsed: std::time::Duration,
+    input_rows: u64,
     trivial_move: bool,
 ) {
     if !recording_enabled() {
         return;
     }
+    let budget_consumed = input_bytes.saturating_add(output_bytes);
     LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED.fetch_add(1, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_INPUT_TABLES.fetch_add(as_u64(input_tables), Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OVERLAP_TABLES.fetch_add(as_u64(overlap_tables), Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_TABLES.fetch_add(as_u64(output_tables), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_INPUT_BYTES.fetch_add(input_bytes, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_BYTES.fetch_add(output_bytes, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_METADATA_BYTES_AVOIDED
+        .fetch_add(metadata_bytes_avoided, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_ELAPSED_NS.fetch_add(
+        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+    LIFECYCLE_COMPACTION_INPUT_ROWS.fetch_add(input_rows, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_CONSUMED_BYTES.fetch_add(budget_consumed, Ordering::Relaxed);
     if trivial_move {
         LIFECYCLE_COMPACTION_TRIVIAL_MOVES.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_io_budget_deferred(
+    _estimated_bytes: u64,
+    _limit_bytes: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_io_budget_deferred(
+    estimated_bytes: u64,
+    limit_bytes: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRALS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRED_BYTES.fetch_add(estimated_bytes, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_IO_BUDGET_LIMIT_BYTES.fetch_add(limit_bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_flush_preempted() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_flush_preempted() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_FLUSH_PREEMPTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

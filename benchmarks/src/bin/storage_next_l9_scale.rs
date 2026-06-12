@@ -1773,6 +1773,50 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.branch_compaction_peak_buffered_rows()
     );
     field!(
+        "lifecycle_compaction_input_bytes",
+        perf_trace.lifecycle_compaction_input_bytes()
+    );
+    field!(
+        "lifecycle_compaction_output_bytes",
+        perf_trace.lifecycle_compaction_output_bytes()
+    );
+    field!(
+        "lifecycle_compaction_metadata_bytes_avoided",
+        perf_trace.lifecycle_compaction_metadata_bytes_avoided()
+    );
+    field!(
+        "lifecycle_compaction_elapsed_ns",
+        perf_trace.lifecycle_compaction_elapsed_ns()
+    );
+    field!(
+        "lifecycle_compaction_input_rows",
+        perf_trace.lifecycle_compaction_input_rows()
+    );
+    field!(
+        "lifecycle_compaction_rewrite_bytes_per_row",
+        perf_trace.lifecycle_compaction_rewrite_bytes_per_row()
+    );
+    field!(
+        "lifecycle_compaction_io_budget_consumed_bytes",
+        perf_trace.lifecycle_compaction_io_budget_consumed_bytes()
+    );
+    field!(
+        "lifecycle_compaction_io_budget_deferrals",
+        perf_trace.lifecycle_compaction_io_budget_deferrals()
+    );
+    field!(
+        "lifecycle_compaction_io_budget_deferred_bytes",
+        perf_trace.lifecycle_compaction_io_budget_deferred_bytes()
+    );
+    field!(
+        "lifecycle_compaction_io_budget_limit_bytes",
+        perf_trace.lifecycle_compaction_io_budget_limit_bytes()
+    );
+    field!(
+        "lifecycle_compaction_flush_preemptions",
+        perf_trace.lifecycle_compaction_flush_preemptions()
+    );
+    field!(
         "branch_materialization_source_opens",
         perf_trace.branch_materialization_source_opens()
     );
@@ -2315,6 +2359,19 @@ fn source_shape_metrics_json(
         "maintenance_scheduled_tasks": maintenance_scheduled_tasks,
         "maintenance_coalesced_tasks": maintenance_coalesced_tasks,
         "maintenance_deferred_tasks": maintenance_deferred_tasks,
+        "lifecycle_compaction": {
+            "input_bytes": perf_trace.lifecycle_compaction_input_bytes(),
+            "output_bytes": perf_trace.lifecycle_compaction_output_bytes(),
+            "metadata_bytes_avoided": perf_trace.lifecycle_compaction_metadata_bytes_avoided(),
+            "elapsed_ns": perf_trace.lifecycle_compaction_elapsed_ns(),
+            "input_rows": perf_trace.lifecycle_compaction_input_rows(),
+            "rewrite_bytes_per_row": perf_trace.lifecycle_compaction_rewrite_bytes_per_row(),
+            "io_budget_consumed_bytes": perf_trace.lifecycle_compaction_io_budget_consumed_bytes(),
+            "io_budget_deferrals": perf_trace.lifecycle_compaction_io_budget_deferrals(),
+            "io_budget_deferred_bytes": perf_trace.lifecycle_compaction_io_budget_deferred_bytes(),
+            "io_budget_limit_bytes": perf_trace.lifecycle_compaction_io_budget_limit_bytes(),
+            "flush_preemptions": perf_trace.lifecycle_compaction_flush_preemptions(),
+        },
         "post_load_compaction_mode": post_load_compaction_mode,
         "post_load_source_shape": source_shape_context.map(source_shape_context_json),
         "point_probe_shape": point_shape,
