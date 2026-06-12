@@ -263,14 +263,11 @@ impl LifecycleCompactionIoPolicy {
 
     pub(crate) const fn validate(self) -> LifecycleResult<()> {
         match self {
-            Self::Unlimited => Ok(()),
-            Self::PerTaskByteBudget { max_bytes } if max_bytes == 0 => {
-                Err(LifecycleError::InvalidConfig {
-                    field: "compaction_io_policy.max_bytes_per_task",
-                    reason: "must be nonzero",
-                })
-            }
-            Self::PerTaskByteBudget { .. } => Ok(()),
+            Self::PerTaskByteBudget { max_bytes: 0 } => Err(LifecycleError::InvalidConfig {
+                field: "compaction_io_policy.max_bytes_per_task",
+                reason: "must be nonzero",
+            }),
+            Self::Unlimited | Self::PerTaskByteBudget { .. } => Ok(()),
         }
     }
 }

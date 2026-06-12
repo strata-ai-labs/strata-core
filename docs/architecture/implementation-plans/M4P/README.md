@@ -78,6 +78,14 @@ reason, and replacement proof or later slice that will close it.
 20. `m4p-l8-automatic-maintenance-scheduling-followup.md`
 21. `m4p-l8-lifecycle-maintenance-parity-implementation-plan.md`
 22. `m4p-l8-lifecycle-maintenance-parity-test-plan.md`
+23. `m4p-l8b-lifecycle-maintenance-followup-implementation-plan.md`
+24. `m4p-l8b-lifecycle-maintenance-followup-test-plan.md`
+25. `m4p-l8e-background-maintenance-executor-implementation-plan.md`
+26. `m4p-l8e-background-maintenance-executor-test-plan.md`
+27. `m4p-l8c-lifecycle-recovery-close-parity-implementation-plan.md`
+28. `m4p-l8c-lifecycle-recovery-close-parity-test-plan.md`
+29. `m4p-l8d-durable-table-manifest-row-pruning-parity-implementation-plan.md`
+30. `m4p-l8d-durable-table-manifest-row-pruning-parity-test-plan.md`
 
 ## Initial Slice Queue
 

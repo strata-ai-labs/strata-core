@@ -10,15 +10,24 @@ use std::path::{Path, PathBuf};
 #[test]
 fn lifecycle_source_does_not_import_engine_product_or_raw_io() {
     let root = common::crate_root();
+    let background_scheduler = root.join("src/lifecycle/background.rs");
 
     for file in lifecycle_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read lifecycle source");
+        let guarded_text = if file == background_scheduler {
+            text.replace("crates/engine/src/background.rs", "")
+        } else {
+            text.clone()
+        };
         assert!(
-            !contains_forbidden_import_or_io_text(&text),
+            !contains_forbidden_import_or_io_text(&guarded_text),
             "{} uses forbidden lifecycle dependency or grouped IO surface",
             file.strip_prefix(&root).unwrap_or(&file).display()
         );
         for (line_number, line) in text.lines().enumerate() {
+            if file == background_scheduler && line.contains("crates/engine/src/background.rs") {
+                continue;
+            }
             assert!(
                 !contains_forbidden_import_or_io(line),
                 "{}:{} uses forbidden lifecycle dependency or IO surface: {line}",
@@ -99,6 +108,75 @@ fn lifecycle_maintenance_tests_avoid_sleeps_and_thread_spawns() {
                 line_number + 1
             );
         }
+    }
+}
+
+#[test]
+fn lifecycle_background_scheduler_records_engine_port_safety_hooks() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/background.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle background scheduler source");
+
+    for required in [
+        "crates/engine/src/background.rs",
+        "Authoritative shutdown check under lock",
+        "catch_unwind",
+        "ActiveTaskGuard",
+        "fetch_sub(1, AtomicOrdering::AcqRel)",
+        "work_ready.notify_all()",
+        "drain_cond.notify_all()",
+    ] {
+        assert!(
+            text.contains(required),
+            "background scheduler port is missing required safety hook: {required}"
+        );
+    }
+}
+
+#[test]
+fn lifecycle_compaction_io_budget_tests_explicitly_configure_byte_budget() {
+    let root = common::crate_root();
+    let checks = [
+        (
+            root.join("src/lifecycle/tests/cache.rs"),
+            "cache_explicit_compaction_drain_obeys_io_budget_policy",
+        ),
+        (
+            root.join("src/lifecycle/tests/compaction/publication_plan.rs"),
+            "durable_explicit_compaction_drain_obeys_io_budget_policy_before_publish",
+        ),
+        (
+            root.join("src/lifecycle/tests/compaction/mod.rs"),
+            "metadata_promotion_compaction_records_avoided_rewrite_bytes",
+        ),
+        (
+            root.join("src/lifecycle/tests/compaction/mod.rs"),
+            "constrained_compaction_io_budget_defers_without_mutating_sources",
+        ),
+        (
+            root.join("src/lifecycle/tests/compaction/mod.rs"),
+            "compaction_resource_policy_is_deterministic_for_repeated_budget_checks",
+        ),
+        (
+            root.join("src/lifecycle/tests/compaction/mod.rs"),
+            "generated_compaction_io_budget_sweep_defers_rewrites_by_estimated_size",
+        ),
+        (
+            root.join("src/lifecycle/tests/compaction/mod.rs"),
+            "generated_metadata_promotion_and_rewrite_candidates_follow_io_budget_policy",
+        ),
+    ];
+
+    for (file, function_name) in checks {
+        let text = fs::read_to_string(&file).expect("read lifecycle compaction test source");
+        let function_source = rust_function_source(&text, function_name)
+            .unwrap_or_else(|| panic!("missing test function {function_name}"));
+        assert!(
+            function_source.contains("LifecycleCompactionIoPolicy::per_task_byte_budget("),
+            "{}::{function_name} must explicitly opt into a byte budget; \
+             LifecycleCompactionIoPolicy defaults to Unlimited",
+            file.strip_prefix(&root).unwrap_or(&file).display()
+        );
     }
 }
 
@@ -2869,6 +2947,17 @@ fn uncommented_text(text: &str) -> String {
         uncommented.push('\n');
     }
     uncommented
+}
+
+fn rust_function_source<'a>(text: &'a str, function_name: &str) -> Option<&'a str> {
+    let marker = format!("fn {function_name}");
+    let start = text.find(&marker)?;
+    let rest = &text[start..];
+    let end = rest.find("\n#[cfg").or_else(|| rest.find("\n#[test]"));
+    Some(match end {
+        Some(end) => &rest[..end],
+        None => rest,
+    })
 }
 
 fn is_public_surface_leak(line: &str) -> bool {

@@ -1020,6 +1020,16 @@ fn commit_storage_pressure_rejection_maps_to_retryable_api_error() {
 }
 
 #[test]
+fn public_open_uses_deterministic_inline_maintenance_policy() {
+    let runtime = open_runtime();
+
+    assert_eq!(
+        runtime.maintenance_scheduling_policy_for_test(),
+        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::DeterministicInline
+    );
+}
+
+#[test]
 fn commit_api_has_no_public_transaction_session_type() {
     let source = include_str!("../commit.rs").to_ascii_lowercase();
 

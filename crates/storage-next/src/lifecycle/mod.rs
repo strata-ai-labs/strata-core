@@ -8,6 +8,7 @@
     )
 )]
 
+mod background;
 mod branch_lifecycle;
 mod budget;
 mod cache;
@@ -33,6 +34,14 @@ mod table_manifest;
 mod table_reachability;
 mod wal_growth;
 
+#[allow(
+    unused_imports,
+    reason = "background scheduler exports define the local lifecycle surface"
+)]
+pub(crate) use background::{
+    BackgroundBackpressureError, BackgroundScheduler, BackgroundSchedulerStats,
+    BackgroundTaskPriority,
+};
 #[allow(
     unused_imports,
     reason = "branch lifecycle catalog exports define the local surface for branch completion"

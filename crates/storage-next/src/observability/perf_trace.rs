@@ -141,7 +141,7 @@ pub struct StoragePerfSnapshot {
     lifecycle_maintenance_coverage_tasks_enqueued: u64,
     lifecycle_maintenance_coverage_tasks_coalesced: u64,
     lifecycle_maintenance_coverage_idle_rounds_consumed: u64,
-    lifecycle_maintenance_coverage_stop_healthy: u64,
+    lifecycle_maintenance_coverage_stop_no_pressure: u64,
     lifecycle_maintenance_coverage_stop_idle_limit: u64,
     lifecycle_maintenance_coverage_stop_queue_full: u64,
     lifecycle_maintenance_coverage_stop_failure: u64,
@@ -168,6 +168,10 @@ pub struct StoragePerfSnapshot {
     lifecycle_snapshot_pruning_protected: u64,
     lifecycle_snapshot_pruning_failed: u64,
     lifecycle_compaction_score_candidates: u64,
+    lifecycle_materialization_score_candidates: u64,
+    lifecycle_materialization_score_layer_index_sum: u64,
+    lifecycle_materialization_score_table_count: u64,
+    lifecycle_materialization_score_byte_count: u64,
     lifecycle_compaction_selected: u64,
     lifecycle_compaction_selected_level_sum: u64,
     lifecycle_compaction_selected_score_sum: u64,
@@ -769,9 +773,9 @@ impl StoragePerfSnapshot {
         self.lifecycle_maintenance_coverage_idle_rounds_consumed
     }
 
-    /// Coverage passes that stopped because all inspected branches were healthy.
-    pub const fn lifecycle_maintenance_coverage_stop_healthy(self) -> u64 {
-        self.lifecycle_maintenance_coverage_stop_healthy
+    /// Coverage passes that found no pressure in the inspected quiet branches.
+    pub const fn lifecycle_maintenance_coverage_stop_no_pressure(self) -> u64 {
+        self.lifecycle_maintenance_coverage_stop_no_pressure
     }
 
     /// Coverage passes that reached the bounded idle-round limit.
@@ -902,6 +906,26 @@ impl StoragePerfSnapshot {
     /// Compaction score candidates evaluated by lifecycle maintenance.
     pub const fn lifecycle_compaction_score_candidates(self) -> u64 {
         self.lifecycle_compaction_score_candidates
+    }
+
+    /// Materialization score candidates evaluated by lifecycle maintenance.
+    pub const fn lifecycle_materialization_score_candidates(self) -> u64 {
+        self.lifecycle_materialization_score_candidates
+    }
+
+    /// Sum of materialization candidate inherited layer indexes.
+    pub const fn lifecycle_materialization_score_layer_index_sum(self) -> u64 {
+        self.lifecycle_materialization_score_layer_index_sum
+    }
+
+    /// Tables considered by materialization score candidates.
+    pub const fn lifecycle_materialization_score_table_count(self) -> u64 {
+        self.lifecycle_materialization_score_table_count
+    }
+
+    /// Bytes considered by materialization score candidates.
+    pub const fn lifecycle_materialization_score_byte_count(self) -> u64 {
+        self.lifecycle_materialization_score_byte_count
     }
 
     /// Compaction candidates selected by lifecycle maintenance.
@@ -2085,7 +2109,7 @@ static LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED: AtomicU64 = AtomicU64::ne
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY: AtomicU64 = AtomicU64::new(0);
+static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_NO_PRESSURE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -2138,6 +2162,14 @@ static LIFECYCLE_SNAPSHOT_PRUNING_PROTECTED: AtomicU64 = AtomicU64::new(0);
 static LIFECYCLE_SNAPSHOT_PRUNING_FAILED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SCORE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MATERIALIZATION_SCORE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MATERIALIZATION_SCORE_LAYER_INDEX_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MATERIALIZATION_SCORE_TABLE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MATERIALIZATION_SCORE_BYTE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SELECTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -2663,7 +2695,7 @@ pub fn reset() {
     LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_ENQUEUED.store(0, Ordering::Relaxed);
     LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED.store(0, Ordering::Relaxed);
     LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED.store(0, Ordering::Relaxed);
-    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_NO_PRESSURE.store(0, Ordering::Relaxed);
     LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT.store(0, Ordering::Relaxed);
     LIFECYCLE_MAINTENANCE_COVERAGE_STOP_QUEUE_FULL.store(0, Ordering::Relaxed);
     LIFECYCLE_MAINTENANCE_COVERAGE_STOP_FAILURE.store(0, Ordering::Relaxed);
@@ -2690,6 +2722,10 @@ pub fn reset() {
     LIFECYCLE_SNAPSHOT_PRUNING_PROTECTED.store(0, Ordering::Relaxed);
     LIFECYCLE_SNAPSHOT_PRUNING_FAILED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SCORE_CANDIDATES.store(0, Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_CANDIDATES.store(0, Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_LAYER_INDEX_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_TABLE_COUNT.store(0, Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_BYTE_COUNT.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM.store(0, Ordering::Relaxed);
@@ -3030,8 +3066,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
             LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED.load(Ordering::Relaxed),
         lifecycle_maintenance_coverage_idle_rounds_consumed:
             LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED.load(Ordering::Relaxed),
-        lifecycle_maintenance_coverage_stop_healthy: LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY
-            .load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_stop_no_pressure:
+            LIFECYCLE_MAINTENANCE_COVERAGE_STOP_NO_PRESSURE.load(Ordering::Relaxed),
         lifecycle_maintenance_coverage_stop_idle_limit:
             LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT.load(Ordering::Relaxed),
         lifecycle_maintenance_coverage_stop_queue_full:
@@ -3081,6 +3117,14 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_snapshot_pruning_failed: LIFECYCLE_SNAPSHOT_PRUNING_FAILED
             .load(Ordering::Relaxed),
         lifecycle_compaction_score_candidates: LIFECYCLE_COMPACTION_SCORE_CANDIDATES
+            .load(Ordering::Relaxed),
+        lifecycle_materialization_score_candidates: LIFECYCLE_MATERIALIZATION_SCORE_CANDIDATES
+            .load(Ordering::Relaxed),
+        lifecycle_materialization_score_layer_index_sum:
+            LIFECYCLE_MATERIALIZATION_SCORE_LAYER_INDEX_SUM.load(Ordering::Relaxed),
+        lifecycle_materialization_score_table_count: LIFECYCLE_MATERIALIZATION_SCORE_TABLE_COUNT
+            .load(Ordering::Relaxed),
+        lifecycle_materialization_score_byte_count: LIFECYCLE_MATERIALIZATION_SCORE_BYTE_COUNT
             .load(Ordering::Relaxed),
         lifecycle_compaction_selected: LIFECYCLE_COMPACTION_SELECTED.load(Ordering::Relaxed),
         lifecycle_compaction_selected_level_sum: LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM
@@ -3137,8 +3181,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_compaction_elapsed_ns: LIFECYCLE_COMPACTION_ELAPSED_NS.load(Ordering::Relaxed),
         lifecycle_compaction_input_rows,
         lifecycle_compaction_rewrite_bytes_per_row,
-        lifecycle_compaction_io_budget_consumed_bytes:
-            lifecycle_compaction_io_budget_consumed_bytes,
+        lifecycle_compaction_io_budget_consumed_bytes,
         lifecycle_compaction_io_budget_deferrals: LIFECYCLE_COMPACTION_IO_BUDGET_DEFERRALS
             .load(Ordering::Relaxed),
         lifecycle_compaction_io_budget_deferred_bytes:
@@ -3893,14 +3936,14 @@ pub(crate) fn record_lifecycle_maintenance_coverage_idle_round() {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_lifecycle_maintenance_coverage_stop_healthy() {}
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_no_pressure() {}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_lifecycle_maintenance_coverage_stop_healthy() {
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_no_pressure() {
     if !recording_enabled() {
         return;
     }
-    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_NO_PRESSURE.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -4231,6 +4274,32 @@ pub(crate) fn record_lifecycle_compaction_score_candidate(
         return;
     }
     LIFECYCLE_COMPACTION_SCORE_CANDIDATES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_materialization_score_candidate(
+    _layer_index: usize,
+    _score: u64,
+    _table_count: usize,
+    _byte_count: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_materialization_score_candidate(
+    layer_index: usize,
+    _score: u64,
+    table_count: usize,
+    byte_count: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MATERIALIZATION_SCORE_CANDIDATES.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_LAYER_INDEX_SUM
+        .fetch_add(as_u64(layer_index), Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_TABLE_COUNT.fetch_add(as_u64(table_count), Ordering::Relaxed);
+    LIFECYCLE_MATERIALIZATION_SCORE_BYTE_COUNT.fetch_add(byte_count, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

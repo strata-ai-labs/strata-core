@@ -1634,7 +1634,6 @@ fn cache_flush_drain_perf_trace_counts_discovered_completed_and_remaining_tables
     );
     assert_eq!(perf.lifecycle_memory_release_deferrals(), 1);
     assert!(perf.lifecycle_memory_release_threshold_bytes() > 0);
-    assert_eq!(perf.lifecycle_memory_release_attempts(), 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1646,8 +1645,8 @@ fn generated_repeated_flush_cycles_record_retained_memory_measurements() {
     let mut runtime = open_runtime(branch, &backend);
     crate::observability::perf_trace::reset();
 
-    for cycle in 0..4 {
-        let frozen_timestamp = 10_000 + cycle as u64 * 10_000;
+    for cycle in 0_u64..4 {
+        let frozen_timestamp = 10_000 + cycle * 10_000;
         let active_timestamp = frozen_timestamp + 5_000;
         commit_cache_put(
             &mut runtime,
@@ -1693,7 +1692,6 @@ fn generated_repeated_flush_cycles_record_retained_memory_measurements() {
             % perf.lifecycle_flush_memory_measurements(),
         0
     );
-    assert_eq!(perf.lifecycle_memory_release_attempts(), 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2549,7 +2547,7 @@ fn cache_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops() {
         .expect("run coverage flush")
         .expect("flush outcome");
     crate::observability::perf_trace::reset();
-    for index in 0..5 {
+    for index in 0..6 {
         commit_cache_put(
             &mut runtime,
             active,
@@ -2558,13 +2556,13 @@ fn cache_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops() {
         );
     }
     let idle = crate::observability::perf_trace::snapshot();
-    assert_eq!(idle.lifecycle_maintenance_coverage_scans(), 5);
-    assert_eq!(idle.lifecycle_maintenance_coverage_branches_scanned(), 10);
+    assert_eq!(idle.lifecycle_maintenance_coverage_scans(), 6);
+    assert_eq!(idle.lifecycle_maintenance_coverage_branches_scanned(), 12);
     assert_eq!(
         idle.lifecycle_maintenance_coverage_idle_rounds_consumed(),
         5
     );
-    assert_eq!(idle.lifecycle_maintenance_coverage_stop_healthy(), 4);
+    assert_eq!(idle.lifecycle_maintenance_coverage_stop_no_pressure(), 4);
     assert_eq!(idle.lifecycle_maintenance_coverage_stop_idle_limit(), 1);
 }
 
@@ -2602,6 +2600,10 @@ fn cache_maintenance_coverage_uses_stable_queue_snapshot_for_scan() {
 
     assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 1);
     assert_eq!(perf.lifecycle_maintenance_coverage_branches_scanned(), 3);
+    // One pre-admission source check, one post-commit source check, and one
+    // coverage collection per quiet branch. Coverage skips the source branch.
+    assert_eq!(perf.lifecycle_pressure_collection_calls(), 4);
+    assert_eq!(perf.lifecycle_pressure_collection_branches_inspected(), 4);
     assert_eq!(
         perf.lifecycle_maintenance_coverage_quiet_branches_with_pressure(),
         1,

@@ -11,6 +11,7 @@ use crate::branch::facts::{
     BranchLevel, BranchReachabilitySnapshot, BranchSourceLayout, BranchTableRef,
 };
 use crate::branch::pruning::BranchCompactionPruningProof;
+use crate::branch::read::BranchInheritedLayer;
 use crate::branch::state::compaction::{
     BranchCompactionCandidate, BranchCompactionKind, BranchCompactionOperation,
     BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
@@ -438,6 +439,10 @@ impl LifecycleCompactionDrainRequest {
 }
 
 pub(crate) fn nonzero_level_target_bytes(level: BranchLevel) -> u64 {
+    debug_assert!(
+        level.raw() >= 1,
+        "nonzero level target bytes requires a nonzero level"
+    );
     let growth_steps = level.raw().saturating_sub(1);
     (0..growth_steps).fold(NONZERO_LEVEL_BASE_TARGET_BYTES, |target, _| {
         target.saturating_mul(NONZERO_LEVEL_TARGET_GROWTH_FACTOR)
@@ -1679,7 +1684,7 @@ fn active_mutable_byte_pressure(
     let rotation_bytes = u64::try_from(branch.config().active_rotation_bytes()).unwrap_or(u64::MAX);
     let background_threshold = proportional_threshold(rotation_bytes, 1, 2);
     let urgent_threshold = proportional_threshold(rotation_bytes, 3, 4);
-    if active_bytes >= rotation_bytes {
+    if active_bytes >= rotation_bytes && branch.frozen_table_count() > 0 {
         Some(LifecycleStoragePressureSeverity::BlockMutatingAdmission)
     } else if active_bytes >= urgent_threshold {
         Some(LifecycleStoragePressureSeverity::Urgent)
@@ -1727,7 +1732,7 @@ pub(crate) fn table_rewrite_score_key_for_task(
             && task.kind() == MaintenanceTaskKind::Materialization
             && layer_index < branch.inherited_layer_count() =>
         {
-            materialization_score(branch)?
+            materialization_score_for_layer(branch, layer_index)?
         }
         _ => return None,
     }))
@@ -1908,10 +1913,19 @@ pub(super) fn nonzero_compaction_pressure(
 }
 
 fn materialization_score(branch: &BranchLocalState) -> Option<LifecycleTableRewriteScore> {
+    let (layer_index, _, _) = selected_materialization_layer(branch)?;
+    materialization_score_for_layer(branch, layer_index)
+}
+
+fn materialization_score_for_layer(
+    branch: &BranchLocalState,
+    layer_index: usize,
+) -> Option<LifecycleTableRewriteScore> {
     let layer_count = branch.inherited_layer_count();
     if layer_count < INHERITED_LAYER_MATERIALIZATION_THRESHOLD {
         return None;
     }
+    let layer = branch.inherited_layers().get(layer_index)?;
     let severity = if layer_count >= INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD {
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
     } else if layer_count >= INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD {
@@ -1920,13 +1934,36 @@ fn materialization_score(branch: &BranchLocalState) -> Option<LifecycleTableRewr
         LifecycleStoragePressureSeverity::Background
     };
     Some(LifecycleTableRewriteScore {
-        work: LifecycleTableRewriteWork::Materialization { layer_index: 0 },
+        work: LifecycleTableRewriteWork::Materialization { layer_index },
         score: count_pressure_score(layer_count, INHERITED_LAYER_MATERIALIZATION_THRESHOLD),
         severity,
         reason: LifecycleStoragePressureReason::InheritedLayerBacklog,
         item_count: layer_count,
-        byte_count: 0,
+        byte_count: inherited_layer_byte_count(layer),
     })
+}
+
+fn selected_materialization_layer(branch: &BranchLocalState) -> Option<(usize, usize, u64)> {
+    branch
+        .inherited_layers()
+        .iter()
+        .enumerate()
+        .map(|(layer_index, layer)| {
+            let table_count = layer.table_count();
+            let byte_count = inherited_layer_byte_count(layer);
+            let score =
+                count_pressure_score(table_count, INHERITED_LAYER_MATERIALIZATION_THRESHOLD);
+            crate::observability::perf_trace::record_lifecycle_materialization_score_candidate(
+                layer_index,
+                score,
+                table_count,
+                byte_count,
+            );
+            (layer_index, table_count, byte_count)
+        })
+        .max_by_key(|(layer_index, table_count, byte_count)| {
+            (*table_count, *byte_count, std::cmp::Reverse(*layer_index))
+        })
 }
 
 impl From<LifecycleCompactionScore> for LifecycleTableRewriteScore {
@@ -2014,6 +2051,16 @@ fn level_byte_count(tables: &[crate::branch::read::BranchOwnedTable]) -> u64 {
     })
 }
 
+fn inherited_layer_byte_count(layer: &BranchInheritedLayer) -> u64 {
+    layer
+        .owned_levels()
+        .iter()
+        .flat_map(|tables| tables.iter())
+        .fold(0u64, |total, table| {
+            total.saturating_add(table.facts().byte_count())
+        })
+}
+
 fn selected_nonzero_compaction_table_index(
     tables: &[crate::branch::read::BranchOwnedTable],
 ) -> Option<usize> {
@@ -2053,9 +2100,11 @@ fn record_selected_nonzero_input_policy(
         level.raw(),
         deeper_overlap_bytes,
     );
-    crate::observability::perf_trace::record_lifecycle_compaction_output_split_budget_deferred(
-        deeper_overlap_bytes,
-    );
+    if deeper_overlap_bytes > 0 {
+        crate::observability::perf_trace::record_lifecycle_compaction_output_split_budget_deferred(
+            deeper_overlap_bytes,
+        );
+    }
 }
 
 fn selected_nonzero_deeper_overlap_bytes(

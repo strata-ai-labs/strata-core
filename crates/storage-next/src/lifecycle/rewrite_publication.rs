@@ -14,6 +14,7 @@ use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
+use crate::branch::state::compaction::{BranchCompactionOutcome, BranchCompactionPlan};
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
     BranchMaterializationRecovery, BranchMaterializationRequest,
@@ -53,28 +54,16 @@ pub(crate) fn compact_durable_branch_manifest_backed(
             .install_branch_compaction_plan(&branch_request, &plan)
             .map_err(branch_error)?;
         if plan.is_metadata_promotion() {
-            let retained_input_objects = branch_outcome
-                .removed_refs()
-                .iter()
-                .map(|table_ref| table_ref.table_identity().as_str().to_owned())
-                .collect::<Vec<_>>();
-            let outcome = LifecycleCompactionOutcome::completed_durable(
+            return Ok(finish_metadata_promotion_compaction(
+                branch,
+                manifest_service,
+                catalog,
                 plan,
                 branch_outcome,
                 io_facts,
                 started.elapsed(),
-                Vec::new(),
-                retained_input_objects,
-            );
-            return match publish_table_manifest_for_branch_with_budget(
-                branch,
-                manifest_service,
-                catalog,
                 budget,
-            ) {
-                Ok(_) => Ok(outcome),
-                Err(error) => Ok(outcome.manifest_debt(error)),
-            };
+            ));
         }
         return Ok(LifecycleCompactionOutcome::new(
             &request,
@@ -141,6 +130,35 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
         Ok(_) => Ok(outcome),
         Err(error) => Ok(outcome.manifest_debt(error)),
+    }
+}
+
+fn finish_metadata_promotion_compaction(
+    branch: &BranchLocalState,
+    manifest_service: &TableManifestService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    plan: BranchCompactionPlan,
+    branch_outcome: BranchCompactionOutcome,
+    io_facts: LifecycleCompactionIoFacts,
+    elapsed: std::time::Duration,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleCompactionOutcome {
+    let retained_input_objects = branch_outcome
+        .removed_refs()
+        .iter()
+        .map(|table_ref| table_ref.table_identity().as_str().to_owned())
+        .collect::<Vec<_>>();
+    let outcome = LifecycleCompactionOutcome::completed_durable(
+        plan,
+        branch_outcome,
+        io_facts,
+        elapsed,
+        Vec::new(),
+        retained_input_objects,
+    );
+    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
+        Ok(_) => outcome,
+        Err(error) => outcome.manifest_debt(error),
     }
 }
 

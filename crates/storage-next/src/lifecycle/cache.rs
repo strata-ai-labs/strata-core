@@ -55,6 +55,7 @@ use crate::lifecycle::maintenance::{
     MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT,
 };
 use crate::row::PhysicalKey;
+use std::collections::HashSet;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,7 +80,7 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
     maintenance_coverage_idle_rounds: usize,
-    pressure_rejected_commit_branches: Vec<BranchId>,
+    pressure_rejected_commit_branches: HashSet<BranchId>,
     last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
     budget: StorageBudgetLedger,
     // The CloseOutcome from the first successful close is preserved here so
@@ -194,7 +195,7 @@ impl<S> LifecycleCacheRuntime<S> {
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
             maintenance_coverage_idle_rounds: 0,
-            pressure_rejected_commit_branches: Vec::new(),
+            pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
             budget,
             last_close_outcome: None,
@@ -690,15 +691,15 @@ impl<S> LifecycleCacheRuntime<S> {
         let mut saw_eligible_work = false;
         for descriptor in descriptors {
             let branch_id = descriptor.branch_id();
+            if branch_id == source_branch_id {
+                continue;
+            }
             let Ok(branch) = self.branch_catalog.branch_state(branch_id) else {
                 crate::observability::perf_trace::
                     record_lifecycle_maintenance_coverage_stop_failure();
                 return;
             };
             let pressure = collect_storage_pressure(branch, maintenance_status);
-            if branch_id == source_branch_id {
-                continue;
-            }
             let Some(request) = pressure.suggested_task() else {
                 continue;
             };
@@ -734,16 +735,20 @@ impl<S> LifecycleCacheRuntime<S> {
     }
 
     fn record_maintenance_coverage_idle_stop(&mut self) {
+        let mut reached_idle_limit = false;
         if self.maintenance_coverage_idle_rounds < MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT {
             self.maintenance_coverage_idle_rounds =
                 self.maintenance_coverage_idle_rounds.saturating_add(1);
             crate::observability::perf_trace::record_lifecycle_maintenance_coverage_idle_round();
+            reached_idle_limit =
+                self.maintenance_coverage_idle_rounds >= MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT;
         }
-        if self.maintenance_coverage_idle_rounds >= MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT {
+        if reached_idle_limit {
             crate::observability::perf_trace::record_lifecycle_maintenance_coverage_stop_idle_limit(
             );
-        } else {
-            crate::observability::perf_trace::record_lifecycle_maintenance_coverage_stop_healthy();
+        } else if self.maintenance_coverage_idle_rounds < MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT {
+            crate::observability::perf_trace::
+                record_lifecycle_maintenance_coverage_stop_no_pressure();
         }
     }
 

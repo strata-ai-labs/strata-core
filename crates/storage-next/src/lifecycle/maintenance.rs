@@ -14,6 +14,7 @@ use super::{
 };
 use crate::branch::state::materialization::BranchMaterializationHandle;
 use crate::observability::perf_trace;
+use std::collections::HashSet;
 use strata_core_next::{BranchId, CommitVersion};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -995,7 +996,7 @@ pub(crate) fn schedule_post_commit_maintenance(
 
 pub(crate) fn evaluate_mutating_write_admission(
     pressure: LifecycleStoragePressure,
-    pressure_rejected_branches: &mut Vec<BranchId>,
+    pressure_rejected_branches: &mut HashSet<BranchId>,
 ) -> LifecycleResult<LifecycleWriteAdmissionOutcome> {
     let branch_id = pressure.branch_id();
     match pressure.severity() {
@@ -1037,21 +1038,12 @@ pub(crate) fn evaluate_mutating_write_admission(
     }
 }
 
-fn remember_pressure_rejected_branch(branches: &mut Vec<BranchId>, branch_id: BranchId) {
-    if !branches.contains(&branch_id) {
-        branches.push(branch_id);
-    }
+fn remember_pressure_rejected_branch(branches: &mut HashSet<BranchId>, branch_id: BranchId) {
+    branches.insert(branch_id);
 }
 
-fn clear_pressure_rejected_branch(branches: &mut Vec<BranchId>, branch_id: BranchId) -> bool {
-    let Some(position) = branches
-        .iter()
-        .position(|candidate| *candidate == branch_id)
-    else {
-        return false;
-    };
-    branches.swap_remove(position);
-    true
+fn clear_pressure_rejected_branch(branches: &mut HashSet<BranchId>, branch_id: BranchId) -> bool {
+    branches.remove(&branch_id)
 }
 
 impl LifecycleMaintenanceExecutor {

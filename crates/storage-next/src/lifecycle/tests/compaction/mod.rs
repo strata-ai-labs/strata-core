@@ -1781,6 +1781,17 @@ fn storage_pressure_prefers_clearable_table_rewrite_when_active_block_has_no_flu
     assert_eq!(state.frozen_table_count(), 0);
     assert!(state.active_byte_count() >= u64::try_from(rotation_bytes).expect("threshold fits"));
 
+    let active_only_pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(
+        active_only_pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        active_only_pressure.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert!(active_only_pressure.suggested_task().is_none());
+
     for index in 0..16 {
         install_l0_table(
             &mut state,
@@ -2697,11 +2708,54 @@ fn materialization_pressure_competes_with_compaction_score() {
     assert_eq!(pressure.level_zero_tables(), 4);
     assert!(matches!(
         pressure.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::InheritedLayer { branch_id, .. }) if branch_id == child
+    ));
+}
+
+#[test]
+fn materialization_pressure_selects_highest_pressure_inherited_layer() {
+    let far = branch_id(0xa6);
+    let near = branch_id(0xa7);
+    let child = branch_id(0xa8);
+    let child_state = inherited_chain_state_with_far_backlog(far, near, child, 3);
+
+    let pressure = collect_storage_pressure(&child_state, empty_maintenance_status());
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::InheritedLayerBacklog
+    );
+    assert_eq!(pressure.inherited_layers(), 2);
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::scope),
         Some(MaintenanceTaskScope::InheritedLayer {
             branch_id,
-            layer_index: 0
+            layer_index: 1
         }) if branch_id == child
     ));
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn materialization_score_perf_trace_records_layer_candidates() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let far = branch_id(0xa9);
+    let near = branch_id(0xaa);
+    let child = branch_id(0xab);
+    let child_state = inherited_chain_state_with_far_backlog(far, near, child, 3);
+    crate::observability::perf_trace::reset();
+
+    let pressure = collect_storage_pressure(&child_state, empty_maintenance_status());
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::InheritedLayerBacklog
+    );
+    assert_eq!(perf.lifecycle_materialization_score_candidates(), 2);
+    assert_eq!(perf.lifecycle_materialization_score_layer_index_sum(), 1);
+    assert_eq!(perf.lifecycle_materialization_score_table_count(), 4);
+    assert!(perf.lifecycle_materialization_score_byte_count() > 0);
 }
 
 #[test]
@@ -2871,19 +2925,36 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
 }
 
 fn inherited_chain_state(far: BranchId, near: BranchId, child: BranchId) -> BranchLocalState {
+    inherited_chain_state_with_far_backlog(far, near, child, 1)
+}
+
+fn inherited_chain_state_with_far_backlog(
+    far: BranchId,
+    near: BranchId,
+    child: BranchId,
+    far_table_count: usize,
+) -> BranchLocalState {
     let mut far_state = BranchLocalState::empty(far);
-    install_l0_table(
-        &mut far_state,
-        far,
-        "scored-materialization-far",
-        vec![put_row(far, b"far", 1, 1_000, b"far")],
-    );
+    for index in 0..far_table_count {
+        install_l0_table(
+            &mut far_state,
+            far,
+            &format!("scored-materialization-far-{index}"),
+            vec![put_row(
+                far,
+                format!("far-{index}").as_bytes(),
+                1 + u64::try_from(index).expect("index fits"),
+                1_000 + u64::try_from(index).expect("index fits"),
+                b"far",
+            )],
+        );
+    }
     let (mut near_state, _) = far_state.fork_into_empty_child(near).expect("fork near");
     install_l0_table(
         &mut near_state,
         near,
         "scored-materialization-near",
-        vec![put_row(near, b"near", 2, 2_000, b"near")],
+        vec![put_row(near, b"near", 100, 100_000, b"near")],
     );
     let (child_state, outcome) = near_state.fork_into_empty_child(child).expect("fork child");
     assert_eq!(outcome.inherited_layer_count(), 2);
@@ -3253,7 +3324,7 @@ fn compaction_perf_trace_bytes_per_row_is_weighted_across_operations() {
     let mut runtime = cache_runtime(branch);
     crate::observability::perf_trace::reset();
 
-    for pass in 0..2 {
+    for pass in 0_u64..2 {
         {
             let state = runtime
                 .branch_catalog_mut_for_test()
@@ -3264,7 +3335,7 @@ fn compaction_perf_trace_bytes_per_row_is_weighted_across_operations() {
                     ),
                 )
                 .expect("branch state");
-            for index in 0..4 {
+            for index in 0_u64..4 {
                 let key = format!("weighted-pass-{pass}-l0-{index}");
                 install_l0_table(
                     state,
@@ -3273,8 +3344,8 @@ fn compaction_perf_trace_bytes_per_row_is_weighted_across_operations() {
                     vec![put_row(
                         branch,
                         key.as_bytes(),
-                        (pass * 10 + index + 1) as u64,
-                        ((pass * 10 + index + 1) * 1_000) as u64,
+                        pass * 10 + index + 1,
+                        (pass * 10 + index + 1) * 1_000,
                         &[0x66; 512],
                     )],
                 );
@@ -3440,7 +3511,7 @@ fn generated_compaction_io_budget_sweep_defers_rewrites_by_estimated_size() {
             BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
         )
         .expect("branch state");
-        for table_index in 0..4 {
+        for table_index in 0_u64..4 {
             let key = format!("budget-sweep-{case_index}-{table_index}");
             install_l0_table(
                 &mut state,
@@ -3449,8 +3520,8 @@ fn generated_compaction_io_budget_sweep_defers_rewrites_by_estimated_size() {
                 vec![put_row(
                     branch,
                     key.as_bytes(),
-                    (table_index + 1) as u64,
-                    ((table_index + 1) * 1_000) as u64,
+                    table_index + 1,
+                    (table_index + 1) * 1_000,
                     &vec![0x67; value_len],
                 )],
             );
@@ -3504,14 +3575,14 @@ fn generated_flush_and_compaction_pressure_overlap_preempts_rewrites() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     crate::observability::perf_trace::reset();
 
-    for frozen_tables in 1..=3 {
-        let branch = branch_id(0x88 + frozen_tables as u8);
+    for frozen_tables in 1_usize..=3 {
+        let branch = branch_id(0x88 + u8::try_from(frozen_tables).expect("case fits"));
         let mut state = BranchLocalState::new(
             branch,
             BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
         )
         .expect("branch state");
-        for table_index in 0..4 {
+        for table_index in 0_u64..4 {
             let key = format!("overlap-l0-{frozen_tables}-{table_index}");
             install_l0_table(
                 &mut state,
@@ -3520,19 +3591,20 @@ fn generated_flush_and_compaction_pressure_overlap_preempts_rewrites() {
                 vec![put_row(
                     branch,
                     key.as_bytes(),
-                    (table_index + 1) as u64,
-                    ((table_index + 1) * 1_000) as u64,
+                    table_index + 1,
+                    (table_index + 1) * 1_000,
                     &[0x68; 512],
                 )],
             );
         }
         for frozen_index in 0..frozen_tables {
+            let frozen_index_u64 = u64::try_from(frozen_index).expect("index fits");
             state
                 .append_committed_rows_atomically(vec![put_row(
                     branch,
                     format!("overlap-frozen-{frozen_tables}-{frozen_index}").as_bytes(),
-                    100 + frozen_index as u64,
-                    100_000 + frozen_index as u64,
+                    100 + frozen_index_u64,
+                    100_000 + frozen_index_u64,
                     &[0x69; 512],
                 )])
                 .expect("append frozen row");
@@ -3748,14 +3820,15 @@ fn generated_deeper_overlap_layouts_record_split_budget_decision() {
         assert_eq!(perf.lifecycle_compaction_nonzero_input_selections(), 1);
         assert_eq!(perf.lifecycle_compaction_deeper_overlap_evaluations(), 1);
         assert_eq!(perf.lifecycle_compaction_output_split_budget_applied(), 0);
-        assert_eq!(perf.lifecycle_compaction_output_split_budget_deferred(), 1);
         if *expects_overlap {
             assert!(
                 perf.lifecycle_compaction_deeper_overlap_bytes() > 0,
                 "case {branch_byte:#x} should record deeper overlap bytes"
             );
+            assert_eq!(perf.lifecycle_compaction_output_split_budget_deferred(), 1);
         } else {
             assert_eq!(perf.lifecycle_compaction_deeper_overlap_bytes(), 0);
+            assert_eq!(perf.lifecycle_compaction_output_split_budget_deferred(), 0);
         }
         assert_eq!(
             perf.lifecycle_compaction_output_split_budget_deferred_bytes(),

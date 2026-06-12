@@ -1817,6 +1817,10 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.lifecycle_compaction_flush_preemptions()
     );
     field!(
+        "lifecycle_materialization_score_candidates",
+        perf_trace.lifecycle_materialization_score_candidates()
+    );
+    field!(
         "lifecycle_snapshot_floor_advancements",
         perf_trace.lifecycle_snapshot_floor_advancements()
     );
@@ -2395,6 +2399,12 @@ fn source_shape_metrics_json(
             "io_budget_deferred_bytes": perf_trace.lifecycle_compaction_io_budget_deferred_bytes(),
             "io_budget_limit_bytes": perf_trace.lifecycle_compaction_io_budget_limit_bytes(),
             "flush_preemptions": perf_trace.lifecycle_compaction_flush_preemptions(),
+        },
+        "lifecycle_materialization": {
+            "score_candidates": perf_trace.lifecycle_materialization_score_candidates(),
+            "score_layer_index_sum": perf_trace.lifecycle_materialization_score_layer_index_sum(),
+            "score_table_count": perf_trace.lifecycle_materialization_score_table_count(),
+            "score_byte_count": perf_trace.lifecycle_materialization_score_byte_count(),
         },
         "lifecycle_snapshot_pruning": {
             "floor_advancements": perf_trace.lifecycle_snapshot_floor_advancements(),

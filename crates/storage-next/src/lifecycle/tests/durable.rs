@@ -1251,26 +1251,27 @@ fn durable_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops()
         .expect("run coverage flush")
         .expect("flush outcome");
     crate::observability::perf_trace::reset();
-    for index in 0..5 {
+    for index in 0..6 {
         let key: &'static [u8] = match index {
             0 => b"durable-coverage-idle-0",
             1 => b"durable-coverage-idle-1",
             2 => b"durable-coverage-idle-2",
             3 => b"durable-coverage-idle-3",
-            _ => b"durable-coverage-idle-4",
+            4 => b"durable-coverage-idle-4",
+            _ => b"durable-coverage-idle-5",
         };
         runtime
             .execute_durable_commit(durable_put_batch(active, key, b"value"), generation_guard())
             .expect("idle durable commit");
     }
     let idle = crate::observability::perf_trace::snapshot();
-    assert_eq!(idle.lifecycle_maintenance_coverage_scans(), 5);
-    assert_eq!(idle.lifecycle_maintenance_coverage_branches_scanned(), 10);
+    assert_eq!(idle.lifecycle_maintenance_coverage_scans(), 6);
+    assert_eq!(idle.lifecycle_maintenance_coverage_branches_scanned(), 12);
     assert_eq!(
         idle.lifecycle_maintenance_coverage_idle_rounds_consumed(),
         5
     );
-    assert_eq!(idle.lifecycle_maintenance_coverage_stop_healthy(), 4);
+    assert_eq!(idle.lifecycle_maintenance_coverage_stop_no_pressure(), 4);
     assert_eq!(idle.lifecycle_maintenance_coverage_stop_idle_limit(), 1);
 }
 

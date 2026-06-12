@@ -27,7 +27,7 @@ use crate::lifecycle::{
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
 use crate::table::TableRuntimeError;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Debug)]
@@ -50,7 +50,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) next_checkpoint_snapshot_id: u64,
     pub(super) current_recovery_health: RecoveryHealth,
     pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
-    pub(super) pressure_rejected_commit_branches: Vec<BranchId>,
+    pub(super) pressure_rejected_commit_branches: HashSet<BranchId>,
     pub(super) last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
     // Released table references from `clear_branch`/`delete_branch` queue
     // here until the next retention pass drains them. In-memory only —
@@ -180,7 +180,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             next_checkpoint_snapshot_id,
             current_recovery_health: recovery.health().clone(),
             last_wal_growth_outcome: None,
-            pressure_rejected_commit_branches: Vec::new(),
+            pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
             pending_releases,
             branch_catalog_sequence,

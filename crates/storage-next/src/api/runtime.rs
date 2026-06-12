@@ -17,11 +17,12 @@ use crate::lifecycle::{
     LifecycleBranchStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
     LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionDrainRequest, LifecycleConfig,
     LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
-    LifecycleError, LifecycleRecoveryRuntime, LifecycleRetentionRequest, LifecycleRetentionScope,
-    LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
-    LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
-    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions,
-    MaintenanceExecutorStatus, MaintenanceOutcome as LifecycleMaintenanceOutcome,
+    LifecycleError, LifecycleMaintenanceSchedulingPolicy, LifecycleRecoveryRuntime,
+    LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressureReason,
+    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy,
+    LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
+    LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
+    MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
     MaintenanceTaskKind as LifecycleMaintenanceTaskKind,
@@ -1569,6 +1570,23 @@ impl<'a> StorageRuntime<'a> {
         DEFAULT_BRANCH_ID
     }
 
+    #[cfg(test)]
+    pub(crate) fn maintenance_scheduling_policy_for_test(
+        &self,
+    ) -> LifecycleMaintenanceSchedulingPolicy {
+        match &self.inner {
+            StorageRuntimeInner::Cache(runtime) => runtime
+                .open_plan()
+                .lifecycle_config()
+                .maintenance_scheduling_policy(),
+            StorageRuntimeInner::Durable(runtime) => runtime
+                .open_plan()
+                .lifecycle_config()
+                .maintenance_scheduling_policy(),
+            StorageRuntimeInner::Closed => LifecycleMaintenanceSchedulingPolicy::Disabled,
+        }
+    }
+
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn commit_for_test(
         &mut self,
@@ -1916,6 +1934,11 @@ fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPl
         .map_err(map_lifecycle_error)?;
     config = config
         .with_wal_growth_policy(map_wal_growth_policy(options.wal_growth_policy()))
+        .map_err(map_lifecycle_error)?;
+    config = config
+        .with_maintenance_scheduling_policy(
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        )
         .map_err(map_lifecycle_error)?;
     StorageOpenPlan::new(mode, LifecycleCodecId::identity(), recovery, config)
         .map_err(map_lifecycle_error)
