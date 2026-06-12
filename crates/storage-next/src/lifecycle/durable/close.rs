@@ -9,8 +9,9 @@ use crate::lifecycle::checkpoint::{
     wal_truncation_request_from_maintenance_task,
 };
 use crate::lifecycle::compaction::{
-    compact_durable_branch, compaction_request_from_maintenance_task,
+    compact_durable_branch, current_compaction_request_from_maintenance_task,
     materialization_request_from_maintenance_task, materialize_durable_branch,
+    record_lifecycle_compaction_outcome, stale_compaction_maintenance_outcome,
 };
 use crate::lifecycle::durable::maintenance::{
     checkpoint_created_at, durable_quarantine_service_error, publish_table_manifest_after_flush,
@@ -326,8 +327,14 @@ impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
             .with_reason("flush watermark maintenance is deferred during close")),
             MaintenanceTaskKind::WalTruncation => self.run_wal_truncation(task),
             MaintenanceTaskKind::Compaction => {
-                let request = compaction_request_from_maintenance_task(task)?;
-                Ok(compact_durable_branch(self.branch, &request)?.maintenance_outcome())
+                let Some(request) =
+                    current_compaction_request_from_maintenance_task(task, self.branch)?
+                else {
+                    return Ok(stale_compaction_maintenance_outcome());
+                };
+                let compaction = compact_durable_branch(self.branch, &request)?;
+                record_lifecycle_compaction_outcome(&compaction);
+                Ok(compaction.maintenance_outcome())
             }
             MaintenanceTaskKind::Materialization => {
                 let request = materialization_request_from_maintenance_task(task)?;

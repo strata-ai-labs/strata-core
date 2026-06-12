@@ -47,10 +47,14 @@ Required decisions:
    - If largest-input is chosen, the decision must record byte-count
      descending, row-count descending, and the final stable table-index
      direction.
+   - Current decision: deterministic largest-input; final tie chooses the lower
+     table index.
    - Test failure: selected index is always zero without a decision.
 2. **Grandparent-overlap ownership**
    - Allowed outcomes: L8 passes split-budget facts, or L5/L6 owns output
      split budgeting with a linked follow-up.
+   - Current decision: lower layers own split budgeting; L8 records
+     deeper-overlap bytes and deferred split-budget counters.
    - Test failure: deeper-overlap bytes are ignored without a decision.
 3. **Write-stall policy**
    - Allowed outcomes: fail-fast retryable, bounded wait, or L9-owned retry.
@@ -85,7 +89,7 @@ Correctness tests:
    level-specific target facts.
 5. A queued nonzero compaction uses the selected current input table for that
    level, never a hardcoded table-zero fallback.
-6. If compact-pointer or round-robin is implemented, repeated eligible
+6. If compact-pointer or round-robin is implemented later, repeated eligible
    compactions advance the selected index deterministically.
 7. If largest-input is the policy, fixtures with unequal table sizes choose the
    largest table and tie-break by the recorded byte-count, row-count, and
@@ -102,8 +106,7 @@ Mechanical counter tests:
 1. Level target evaluations by level and target bytes increment once per
    inspected level.
 2. Selected nonzero table index is recorded for every nonzero compaction.
-3. Rotation advances or largest-input selections increment the configured
-   policy counter.
+3. Largest-input selections increment the configured policy counter.
 4. Deeper-overlap bytes are recorded when overlap facts exist.
 5. Output split budget applied/deferred counters match the semantic decision.
 

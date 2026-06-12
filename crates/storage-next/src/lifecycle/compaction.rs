@@ -19,7 +19,7 @@ use crate::branch::state::materialization::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::object::ObjectName;
-use crate::table::TableIdentity;
+use crate::table::{TableCompactionConfig, TableIdentity, TablePhysicalKeyBytes};
 use strata_core_next::BranchId;
 
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
@@ -28,9 +28,10 @@ const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
-const NONZERO_LEVEL_TARGET_BYTES: u64 = 64 * 1024 * 1024;
-const NONZERO_LEVEL_URGENT_BYTES: u64 = NONZERO_LEVEL_TARGET_BYTES * 2;
-const NONZERO_LEVEL_BLOCKING_BYTES: u64 = NONZERO_LEVEL_TARGET_BYTES * 4;
+const NONZERO_LEVEL_BASE_TARGET_BYTES: u64 = 64 * 1024 * 1024;
+const NONZERO_LEVEL_TARGET_GROWTH_FACTOR: u64 = 10;
+const NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER: u64 = 2;
+const NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER: u64 = 4;
 const INHERITED_LAYER_MATERIALIZATION_THRESHOLD: usize = 1;
 const INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD: usize = 4;
 const INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD: usize = 16;
@@ -162,6 +163,7 @@ struct LifecycleCompactionScore {
     reason: LifecycleStoragePressureReason,
     table_count: usize,
     byte_count: u64,
+    target_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -306,12 +308,42 @@ impl LifecycleCompactionRequest {
             self.output_identity_seed.clone(),
         )
         .map_err(branch_error)?
+        .with_table_compaction_config(table_compaction_config_for_kind(self.kind)?)
         .with_retention_policy(self.retention_policy);
         if let Some(proof) = self.pruning_proof {
             request = request.with_pruning_proof(proof);
         }
         Ok(request)
     }
+}
+
+fn table_compaction_config_for_kind(
+    kind: BranchCompactionKind,
+) -> LifecycleResult<TableCompactionConfig> {
+    let output_level = match kind {
+        BranchCompactionKind::CompactL0 => BranchLevel::ZERO,
+        BranchCompactionKind::CompactL0ToLevelOne => BranchLevel::new(1),
+        BranchCompactionKind::CompactLevel { level, .. } => {
+            BranchLevel::new(level.raw().checked_add(1).ok_or(
+                LifecycleError::MaintenanceTaskFailed {
+                    reason: "compaction output level overflow",
+                },
+            )?)
+        }
+    };
+    let default = TableCompactionConfig::default();
+    let target_output_bytes = if output_level == BranchLevel::ZERO {
+        default.target_output_bytes()
+    } else {
+        nonzero_level_target_bytes(output_level)
+    };
+    TableCompactionConfig::new(target_output_bytes, default.max_output_tables()).map_err(|source| {
+        LifecycleError::lower_layer_with(
+            LifecycleLowerLayer::TableRuntime,
+            "table runtime failed",
+            source,
+        )
+    })
 }
 
 impl LifecycleCompactionDrainRequest {
@@ -383,6 +415,21 @@ impl LifecycleCompactionDrainRequest {
             ),
         )
     }
+}
+
+pub(crate) fn nonzero_level_target_bytes(level: BranchLevel) -> u64 {
+    let growth_steps = level.raw().saturating_sub(1);
+    (0..growth_steps).fold(NONZERO_LEVEL_BASE_TARGET_BYTES, |target, _| {
+        target.saturating_mul(NONZERO_LEVEL_TARGET_GROWTH_FACTOR)
+    })
+}
+
+fn nonzero_level_urgent_bytes(level: BranchLevel) -> u64 {
+    nonzero_level_target_bytes(level).saturating_mul(NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER)
+}
+
+fn nonzero_level_blocking_bytes(level: BranchLevel) -> u64 {
+    nonzero_level_target_bytes(level).saturating_mul(NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER)
 }
 
 impl LifecycleCompactionDrainOutcome {
@@ -1054,10 +1101,9 @@ pub(crate) fn compaction_request_from_maintenance_task(
     let kind = if level == 0 {
         BranchCompactionKind::CompactL0ToLevelOne
     } else {
-        BranchCompactionKind::CompactLevel {
-            level: BranchLevel::new(level),
-            table_index: 0,
-        }
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "nonzero compaction task requires current branch state",
+        });
     };
     LifecycleCompactionRequest::new(
         branch_id,
@@ -1089,7 +1135,7 @@ pub(crate) fn current_compaction_request_from_maintenance_task(
         });
     }
     if let Some(score) = selected_compaction_score_for_task(branch, task) {
-        return compaction_request_from_score(branch_id, score).map(Some);
+        return compaction_request_from_score(branch, score).map(Some);
     }
     let Some(kind) = direct_compaction_kind_for_task(branch, level) else {
         return Ok(None);
@@ -1106,26 +1152,28 @@ pub(crate) fn current_compaction_request_from_maintenance_task(
 }
 
 fn compaction_request_from_score(
-    branch_id: BranchId,
+    branch: &BranchLocalState,
     score: LifecycleCompactionScore,
 ) -> LifecycleResult<LifecycleCompactionRequest> {
+    let branch_id = branch.branch_id();
     let kind = if score.level == 0 {
         BranchCompactionKind::CompactL0ToLevelOne
     } else {
-        BranchCompactionKind::CompactLevel {
-            level: BranchLevel::new(score.level),
-            table_index: score
-                .table_index
-                .ok_or(LifecycleError::MaintenanceTaskFailed {
-                    reason: "scored nonzero compaction requires a table index",
-                })?,
-        }
+        let level = BranchLevel::new(score.level);
+        let table_index = score
+            .table_index
+            .ok_or(LifecycleError::MaintenanceTaskFailed {
+                reason: "scored nonzero compaction requires a table index",
+            })?;
+        record_selected_nonzero_input_policy(branch, level, table_index);
+        BranchCompactionKind::CompactLevel { level, table_index }
     };
     crate::observability::perf_trace::record_lifecycle_compaction_selected(
         score.level,
         score.score,
         score.table_count,
         score.byte_count,
+        score.target_bytes.unwrap_or(0),
     );
     LifecycleCompactionRequest::new(
         branch_id,
@@ -1156,6 +1204,7 @@ fn direct_compaction_kind_for_task(
     }
     let table_index =
         selected_nonzero_compaction_table_index(branch.owned_levels().get(level_index)?)?;
+    record_selected_nonzero_input_policy(branch, BranchLevel::new(level), table_index);
     Some(BranchCompactionKind::CompactLevel {
         level: BranchLevel::new(level),
         table_index,
@@ -1255,97 +1304,13 @@ pub(crate) fn collect_storage_pressure(
     let inherited_tables = branch.inherited_table_count();
     let pending_maintenance = maintenance.pending_tasks();
     let active_byte_pressure = active_mutable_byte_pressure(branch, active_bytes);
-    let active_byte_suggested_task =
-        (frozen_tables > 0).then_some(MaintenanceTaskRequest::flush(branch_id));
-
-    let (severity, reason, suggested_task) = if frozen_tables >= FROZEN_BLOCKING_FLUSH_THRESHOLD {
-        (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            LifecycleStoragePressureReason::FrozenBacklog,
-            Some(MaintenanceTaskRequest::flush(branch_id)),
-        )
-    } else if active_byte_pressure.is_some_and(|severity| {
-        severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
-    }) && active_byte_suggested_task.is_some()
-    {
-        (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            LifecycleStoragePressureReason::ActiveMutableBytes,
-            active_byte_suggested_task,
-        )
-    } else if frozen_tables > 0 {
-        (
-            LifecycleStoragePressureSeverity::Urgent,
-            LifecycleStoragePressureReason::FrozenBacklog,
-            Some(MaintenanceTaskRequest::flush(branch_id)),
-        )
-    } else if table_rewrite_score.is_some_and(|score| {
-        score.severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
-    }) {
-        let score = table_rewrite_score.expect("checked table rewrite pressure");
-        (
-            score.severity,
-            score.reason,
-            Some(score.task_request(branch_id)),
-        )
-    } else if pending_maintenance >= PENDING_MAINTENANCE_BLOCKING_THRESHOLD {
-        (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            LifecycleStoragePressureReason::MaintenanceQueueBacklog,
-            None,
-        )
-    } else if active_byte_pressure.is_some_and(|severity| {
-        severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
-    }) {
-        (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            LifecycleStoragePressureReason::ActiveMutableBytes,
-            active_byte_suggested_task,
-        )
-    } else if table_rewrite_score
-        .is_some_and(|score| score.severity == LifecycleStoragePressureSeverity::Urgent)
-    {
-        let score = table_rewrite_score.expect("checked table rewrite pressure");
-        (
-            score.severity,
-            score.reason,
-            Some(score.task_request(branch_id)),
-        )
-    } else if active_byte_pressure
-        .is_some_and(|severity| severity == LifecycleStoragePressureSeverity::Urgent)
-    {
-        (
-            LifecycleStoragePressureSeverity::Urgent,
-            LifecycleStoragePressureReason::ActiveMutableBytes,
-            None,
-        )
-    } else if let Some(score) = table_rewrite_score {
-        (
-            score.severity,
-            score.reason,
-            Some(score.task_request(branch_id)),
-        )
-    } else if active_byte_pressure
-        .is_some_and(|severity| severity == LifecycleStoragePressureSeverity::Background)
-    {
-        (
-            LifecycleStoragePressureSeverity::Background,
-            LifecycleStoragePressureReason::ActiveMutableBytes,
-            None,
-        )
-    } else if pending_maintenance > 0 {
-        (
-            LifecycleStoragePressureSeverity::Background,
-            LifecycleStoragePressureReason::MaintenanceQueueBacklog,
-            None,
-        )
-    } else {
-        (
-            LifecycleStoragePressureSeverity::None,
-            LifecycleStoragePressureReason::None,
-            None,
-        )
-    };
+    let (severity, reason, suggested_task) = storage_pressure_decision(
+        branch_id,
+        frozen_tables,
+        table_rewrite_score,
+        pending_maintenance,
+        active_byte_pressure,
+    );
 
     record_active_byte_pressure(active_byte_pressure);
     crate::observability::perf_trace::record_lifecycle_pressure_collection(
@@ -1372,6 +1337,136 @@ pub(crate) fn collect_storage_pressure(
         inherited_layers,
         pending_maintenance,
     }
+}
+
+fn storage_pressure_decision(
+    branch_id: BranchId,
+    frozen_tables: usize,
+    table_rewrite_score: Option<LifecycleTableRewriteScore>,
+    pending_maintenance: usize,
+    active_byte_pressure: Option<LifecycleStoragePressureSeverity>,
+) -> (
+    LifecycleStoragePressureSeverity,
+    LifecycleStoragePressureReason,
+    Option<MaintenanceTaskRequest>,
+) {
+    let active_byte_suggested_task =
+        (frozen_tables > 0).then_some(MaintenanceTaskRequest::flush(branch_id));
+    if frozen_tables >= FROZEN_BLOCKING_FLUSH_THRESHOLD {
+        return (
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureReason::FrozenBacklog,
+            Some(MaintenanceTaskRequest::flush(branch_id)),
+        );
+    }
+    if active_byte_pressure.is_some_and(|severity| {
+        severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    }) && active_byte_suggested_task.is_some()
+    {
+        return (
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureReason::ActiveMutableBytes,
+            active_byte_suggested_task,
+        );
+    }
+    if frozen_tables > 0 {
+        return (
+            LifecycleStoragePressureSeverity::Urgent,
+            LifecycleStoragePressureReason::FrozenBacklog,
+            Some(MaintenanceTaskRequest::flush(branch_id)),
+        );
+    }
+    if table_rewrite_score.is_some_and(|score| {
+        score.severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    }) {
+        let score = table_rewrite_score.expect("checked table rewrite pressure");
+        return (
+            score.severity,
+            score.reason,
+            Some(score.task_request(branch_id)),
+        );
+    }
+    if pending_maintenance >= PENDING_MAINTENANCE_BLOCKING_THRESHOLD {
+        return (
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureReason::MaintenanceQueueBacklog,
+            None,
+        );
+    }
+    if active_byte_pressure.is_some_and(|severity| {
+        severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    }) {
+        return (
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureReason::ActiveMutableBytes,
+            active_byte_suggested_task,
+        );
+    }
+    storage_pressure_nonblocking_decision(
+        branch_id,
+        table_rewrite_score,
+        pending_maintenance,
+        active_byte_pressure,
+    )
+}
+
+fn storage_pressure_nonblocking_decision(
+    branch_id: BranchId,
+    table_rewrite_score: Option<LifecycleTableRewriteScore>,
+    pending_maintenance: usize,
+    active_byte_pressure: Option<LifecycleStoragePressureSeverity>,
+) -> (
+    LifecycleStoragePressureSeverity,
+    LifecycleStoragePressureReason,
+    Option<MaintenanceTaskRequest>,
+) {
+    if table_rewrite_score
+        .is_some_and(|score| score.severity == LifecycleStoragePressureSeverity::Urgent)
+    {
+        let score = table_rewrite_score.expect("checked table rewrite pressure");
+        return (
+            score.severity,
+            score.reason,
+            Some(score.task_request(branch_id)),
+        );
+    }
+    if active_byte_pressure
+        .is_some_and(|severity| severity == LifecycleStoragePressureSeverity::Urgent)
+    {
+        return (
+            LifecycleStoragePressureSeverity::Urgent,
+            LifecycleStoragePressureReason::ActiveMutableBytes,
+            None,
+        );
+    }
+    if let Some(score) = table_rewrite_score {
+        return (
+            score.severity,
+            score.reason,
+            Some(score.task_request(branch_id)),
+        );
+    }
+    if active_byte_pressure
+        .is_some_and(|severity| severity == LifecycleStoragePressureSeverity::Background)
+    {
+        return (
+            LifecycleStoragePressureSeverity::Background,
+            LifecycleStoragePressureReason::ActiveMutableBytes,
+            None,
+        );
+    }
+    if pending_maintenance > 0 {
+        return (
+            LifecycleStoragePressureSeverity::Background,
+            LifecycleStoragePressureReason::MaintenanceQueueBacklog,
+            None,
+        );
+    }
+    (
+        LifecycleStoragePressureSeverity::None,
+        LifecycleStoragePressureReason::None,
+        None,
+    )
 }
 
 fn active_mutable_byte_pressure(
@@ -1553,6 +1648,7 @@ fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCom
         reason: LifecycleStoragePressureReason::LevelZeroTableBacklog,
         table_count,
         byte_count,
+        target_bytes: None,
     })
 }
 
@@ -1561,25 +1657,13 @@ fn nonzero_compaction_score(
     tables: &[crate::branch::read::BranchOwnedTable],
 ) -> Option<LifecycleCompactionScore> {
     let level = u8::try_from(level_index).ok()?;
+    let branch_level = BranchLevel::new(level);
+    let target_bytes = nonzero_level_target_bytes(branch_level);
+    crate::observability::perf_trace::record_lifecycle_compaction_level_target(level, target_bytes);
     let table_count = tables.len();
     let byte_count = level_byte_count(tables);
-    if table_count < NONZERO_LEVEL_COMPACTION_THRESHOLD && byte_count < NONZERO_LEVEL_TARGET_BYTES {
-        return None;
-    }
-    let severity = if table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
-        || byte_count >= NONZERO_LEVEL_BLOCKING_BYTES
-    {
-        LifecycleStoragePressureSeverity::BlockMutatingAdmission
-    } else if table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
-        || byte_count >= NONZERO_LEVEL_URGENT_BYTES
-    {
-        LifecycleStoragePressureSeverity::Urgent
-    } else {
-        LifecycleStoragePressureSeverity::Background
-    };
-    let count_score = count_pressure_score(table_count, NONZERO_LEVEL_COMPACTION_THRESHOLD);
-    let byte_score = byte_pressure_score(byte_count, NONZERO_LEVEL_TARGET_BYTES);
-    let score = count_score.max(byte_score);
+    let (severity, score, target_bytes) =
+        nonzero_compaction_pressure(branch_level, table_count, byte_count)?;
     crate::observability::perf_trace::record_lifecycle_compaction_score_candidate(
         level,
         score,
@@ -1594,7 +1678,33 @@ fn nonzero_compaction_score(
         reason: LifecycleStoragePressureReason::NonZeroLevelTableBacklog,
         table_count,
         byte_count,
+        target_bytes: Some(target_bytes),
     })
+}
+
+pub(super) fn nonzero_compaction_pressure(
+    level: BranchLevel,
+    table_count: usize,
+    byte_count: u64,
+) -> Option<(LifecycleStoragePressureSeverity, u64, u64)> {
+    let target_bytes = nonzero_level_target_bytes(level);
+    if table_count < NONZERO_LEVEL_COMPACTION_THRESHOLD && byte_count < target_bytes {
+        return None;
+    }
+    let severity = if table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
+        || byte_count >= nonzero_level_blocking_bytes(level)
+    {
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    } else if table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
+        || byte_count >= nonzero_level_urgent_bytes(level)
+    {
+        LifecycleStoragePressureSeverity::Urgent
+    } else {
+        LifecycleStoragePressureSeverity::Background
+    };
+    let count_score = count_pressure_score(table_count, NONZERO_LEVEL_COMPACTION_THRESHOLD);
+    let byte_score = byte_pressure_score(byte_count, target_bytes);
+    Some((severity, count_score.max(byte_score), target_bytes))
 }
 
 fn materialization_score(branch: &BranchLocalState) -> Option<LifecycleTableRewriteScore> {
@@ -1718,6 +1828,89 @@ fn selected_nonzero_compaction_table_index(
             )
         })
         .map(|(index, _)| index)
+}
+
+fn record_selected_nonzero_input_policy(
+    branch: &BranchLocalState,
+    level: BranchLevel,
+    table_index: usize,
+) {
+    let Some(table) = branch
+        .owned_levels()
+        .get(usize::from(level.raw()))
+        .and_then(|level_tables| level_tables.get(table_index))
+    else {
+        return;
+    };
+    crate::observability::perf_trace::record_lifecycle_compaction_nonzero_input_selected(
+        level.raw(),
+        table_index,
+        table.facts().byte_count(),
+        table.facts().row_count(),
+    );
+    let deeper_overlap_bytes = selected_nonzero_deeper_overlap_bytes(branch, level, table_index);
+    crate::observability::perf_trace::record_lifecycle_compaction_deeper_overlap_considered(
+        level.raw(),
+        deeper_overlap_bytes,
+    );
+    crate::observability::perf_trace::record_lifecycle_compaction_output_split_budget_deferred(
+        deeper_overlap_bytes,
+    );
+}
+
+fn selected_nonzero_deeper_overlap_bytes(
+    branch: &BranchLocalState,
+    level: BranchLevel,
+    table_index: usize,
+) -> u64 {
+    let level_index = usize::from(level.raw());
+    let Some(input) = branch
+        .owned_levels()
+        .get(level_index)
+        .and_then(|level_tables| level_tables.get(table_index))
+    else {
+        return 0;
+    };
+    branch
+        .owned_levels()
+        .get(level_index.saturating_add(2))
+        .map_or(0, |deeper_tables| {
+            deeper_tables
+                .iter()
+                .filter(|deeper| table_key_ranges_overlap(input, deeper))
+                .fold(0u64, |bytes, table| {
+                    bytes.saturating_add(table.facts().byte_count())
+                })
+        })
+}
+
+fn table_key_ranges_overlap(
+    left: &crate::branch::read::BranchOwnedTable,
+    right: &crate::branch::read::BranchOwnedTable,
+) -> bool {
+    let Some((left_first, left_last)) = table_physical_key_bounds(left) else {
+        return false;
+    };
+    let Some((right_first, right_last)) = table_physical_key_bounds(right) else {
+        return false;
+    };
+    left_first <= right_last && right_first <= left_last
+}
+
+fn table_physical_key_bounds(
+    table: &crate::branch::read::BranchOwnedTable,
+) -> Option<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
+    let mut keys = table
+        .rows()
+        .iter()
+        .map(|row| TablePhysicalKeyBytes::from_row(row.row()));
+    let first = keys.next()?;
+    let (min, max) = keys.fold((first.clone(), first), |(min, max), key| {
+        let next_min = if key < min { key.clone() } else { min };
+        let next_max = if key > max { key } else { max };
+        (next_min, next_max)
+    });
+    Some((min, max))
 }
 
 fn compact_branch(

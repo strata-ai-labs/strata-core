@@ -4,8 +4,8 @@ use super::{
     branch_config_with_storage_budget,
     compaction::{
         bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
-        compact_cache_branch_to_fixed_point, compaction_request_from_maintenance_task,
-        compaction_score_key_for_task, current_compaction_request_from_maintenance_task,
+        compact_cache_branch_to_fixed_point, compaction_score_key_for_task,
+        current_compaction_request_from_maintenance_task,
         materialization_request_from_maintenance_task, materialize_cache_branch,
         record_lifecycle_compaction_outcome, record_lifecycle_table_rewrite_post_operation_score,
         stale_compaction_maintenance_outcome, table_rewrite_outcome_allows_chain_resubmit,
@@ -1149,8 +1149,14 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
                 )
             }
             MaintenanceTaskKind::Compaction => {
-                let request = compaction_request_from_maintenance_task(task)?;
-                Ok(compact_cache_branch(self.branch, &request)?.maintenance_outcome())
+                let Some(request) =
+                    current_compaction_request_from_maintenance_task(task, self.branch)?
+                else {
+                    return Ok(stale_compaction_maintenance_outcome());
+                };
+                let compaction = compact_cache_branch(self.branch, &request)?;
+                record_lifecycle_compaction_outcome(&compaction);
+                Ok(compaction.maintenance_outcome())
             }
             MaintenanceTaskKind::Materialization => {
                 let request = materialization_request_from_maintenance_task(task)?;

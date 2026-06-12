@@ -8,6 +8,9 @@ use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationRecovery,
 };
 use crate::branch::state::BranchLocalState;
+use crate::lifecycle::compaction::{
+    current_compaction_request_from_maintenance_task, stale_compaction_maintenance_outcome,
+};
 use crate::lifecycle::tests::checkpoint::shared::{
     open_runtime, CheckpointBackendEvent, CheckpointTestBackend,
 };
@@ -1747,7 +1750,10 @@ struct TestCompactionRunner<'a> {
 
 impl MaintenanceTaskRunner for TestCompactionRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let request = compaction_request_from_maintenance_task(task)?;
+        let Some(request) = current_compaction_request_from_maintenance_task(task, self.branch)?
+        else {
+            return Ok(stale_compaction_maintenance_outcome());
+        };
         Ok(compact_cache_branch(self.branch, &request)?.maintenance_outcome())
     }
 }

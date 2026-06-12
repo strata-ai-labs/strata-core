@@ -16,7 +16,8 @@ use crate::branch::state::compaction::{
 use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
-    compact_cache_branch_to_fixed_point, LifecycleCompactionDrainRequest,
+    compact_cache_branch_to_fixed_point, current_compaction_request_from_maintenance_task,
+    nonzero_compaction_pressure, nonzero_level_target_bytes, LifecycleCompactionDrainRequest,
 };
 use crate::lifecycle::flush::{
     flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
@@ -68,6 +69,10 @@ fn maintenance_tasks_map_to_table_rewrite_requests() {
     assert!(compaction
         .output_identity_seed()
         .contains("maintenance-compaction"));
+    let nonzero_compaction_task =
+        MaintenanceTask::new_for_test(4, MaintenanceTaskRequest::compaction(branch, 1))
+            .expect("task");
+    assert!(compaction_request_from_maintenance_task(&nonzero_compaction_task).is_err());
 
     let materialization_task =
         MaintenanceTask::new_for_test(2, MaintenanceTaskRequest::materialization_layer(branch, 2))
@@ -84,6 +89,149 @@ fn maintenance_tasks_map_to_table_rewrite_requests() {
         MaintenanceTask::new_for_test(3, MaintenanceTaskRequest::flush(branch)).expect("task");
     assert!(compaction_request_from_maintenance_task(&wrong_kind).is_err());
     assert!(materialization_request_from_maintenance_task(&wrong_kind).is_err());
+}
+
+#[test]
+fn nonzero_compaction_level_targets_form_static_pyramid() {
+    let level_one = nonzero_level_target_bytes(BranchLevel::new(1));
+    let level_two = nonzero_level_target_bytes(BranchLevel::new(2));
+    let level_three = nonzero_level_target_bytes(BranchLevel::new(3));
+
+    assert_eq!(level_one, 64 * 1024 * 1024);
+    assert_eq!(level_two, level_one * 10);
+    assert_eq!(level_three, level_two * 10);
+    assert_eq!(nonzero_level_target_bytes(BranchLevel::new(2)), level_two);
+}
+
+#[test]
+fn compaction_requests_use_output_level_target_bytes() {
+    let branch = branch_id(0x5a);
+
+    let l0_rewrite =
+        LifecycleCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "target-l0")
+            .expect("l0 request")
+            .branch_request()
+            .expect("l0 branch request");
+    assert_eq!(
+        l0_rewrite.table_compaction_config().target_output_bytes(),
+        crate::table::TableCompactionConfig::default().target_output_bytes()
+    );
+
+    let l0_to_l1 = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "target-l1",
+    )
+    .expect("l0 to l1 request")
+    .branch_request()
+    .expect("l0 to l1 branch request");
+    assert_eq!(
+        l0_to_l1.table_compaction_config().target_output_bytes(),
+        nonzero_level_target_bytes(BranchLevel::new(1))
+    );
+
+    let l1_to_l2 = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "target-l2",
+    )
+    .expect("l1 to l2 request")
+    .branch_request()
+    .expect("l1 to l2 branch request");
+    assert_eq!(
+        l1_to_l2.table_compaction_config().target_output_bytes(),
+        nonzero_level_target_bytes(BranchLevel::new(2))
+    );
+}
+
+#[test]
+fn generated_nonzero_level_target_sweep_is_static_and_monotonic() {
+    let sampled_levels = [1, 2, 3, 4, 8, 16, 32, 64, 128, 255];
+    let mut previous = 0;
+    for raw_level in sampled_levels {
+        let level = BranchLevel::new(raw_level);
+        let target = nonzero_level_target_bytes(level);
+
+        assert!(
+            target >= previous,
+            "target for level {raw_level} regressed below prior sampled level"
+        );
+        if raw_level == 1 {
+            assert_eq!(target, 64 * 1024 * 1024);
+        }
+        if previous != 0 && previous <= u64::MAX / 10 {
+            assert!(target >= previous.saturating_mul(10));
+        }
+        assert_eq!(target, nonzero_level_target_bytes(level));
+        previous = target;
+    }
+}
+
+#[test]
+fn nonzero_byte_pressure_threshold_boundaries_match_level_targets() {
+    for raw_level in [1, 2, 3, 4] {
+        let level = BranchLevel::new(raw_level);
+        let target = nonzero_level_target_bytes(level);
+        let just_below_target = target.saturating_sub(1);
+        let urgent_threshold = target.saturating_mul(2);
+        let blocking_threshold = target.saturating_mul(4);
+
+        assert!(
+            nonzero_compaction_pressure(level, 1, just_below_target).is_none(),
+            "level {raw_level} should not report byte pressure below target"
+        );
+
+        let (severity, score, target_bytes) =
+            nonzero_compaction_pressure(level, 1, target).expect("target pressure");
+        assert_eq!(target_bytes, target);
+        assert_eq!(severity, LifecycleStoragePressureSeverity::Background);
+        assert_eq!(score, 1_000);
+
+        let (severity, score, _) = nonzero_compaction_pressure(level, 1, urgent_threshold - 1)
+            .expect("pre-urgent pressure");
+        assert_eq!(severity, LifecycleStoragePressureSeverity::Background);
+        assert!(score < 2_000);
+
+        let (severity, score, _) =
+            nonzero_compaction_pressure(level, 1, urgent_threshold).expect("urgent pressure");
+        assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
+        assert_eq!(score, 2_000);
+
+        let (severity, score, _) = nonzero_compaction_pressure(level, 1, blocking_threshold - 1)
+            .expect("pre-blocking pressure");
+        assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
+        assert!(score < 4_000);
+
+        let (severity, score, _) =
+            nonzero_compaction_pressure(level, 1, blocking_threshold).expect("blocking pressure");
+        assert_eq!(
+            severity,
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission
+        );
+        assert_eq!(score, 4_000);
+    }
+
+    let level = BranchLevel::new(1);
+    let (severity, score, _) =
+        nonzero_compaction_pressure(level, 4, 1).expect("count pressure at background threshold");
+    assert_eq!(severity, LifecycleStoragePressureSeverity::Background);
+    assert_eq!(score, 1_000);
+
+    let (severity, score, _) =
+        nonzero_compaction_pressure(level, 8, 1).expect("count pressure at urgent threshold");
+    assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
+    assert_eq!(score, 2_000);
+
+    let (severity, score, _) =
+        nonzero_compaction_pressure(level, 16, 1).expect("count pressure at blocking threshold");
+    assert_eq!(
+        severity,
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert_eq!(score, 4_000);
 }
 
 #[test]
@@ -1940,7 +2088,7 @@ fn scheduler_enqueues_nonzero_level_compaction_with_selected_level() {
                 ),
             )
             .expect("branch state");
-        for index in 0..4 {
+        for index in 0_u64..4 {
             install_owned_table(
                 state,
                 branch,
@@ -2081,6 +2229,81 @@ fn compaction_pressure_selects_highest_scored_level() {
 }
 
 #[test]
+fn generated_mixed_pressure_changes_selected_level_after_rewrite() {
+    let branch = branch_id(0x5f);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0_u64..4 {
+            install_l0_table(
+                state,
+                branch,
+                &format!("mixed-pressure-l0-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("mixed-pressure-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        for index in 0_u64..5 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("mixed-pressure-l1-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("mixed-pressure-l1-{index}").as_bytes(),
+                    index + 20,
+                    (index + 20) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+    }
+
+    let first = runtime.storage_pressure();
+    assert!(matches!(
+        first.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id,
+            level: 1
+        }) if branch_id == branch
+    ));
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue nonzero compaction");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run nonzero compaction")
+        .expect("nonzero outcome");
+    let second = runtime.storage_pressure();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(matches!(
+        second.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id,
+            level: 0
+        }) if branch_id == branch
+    ));
+    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 4);
+    assert_eq!(runtime.branch_state().owned_levels()[2].len(), 1);
+}
+
+#[test]
 fn queued_compaction_runs_highest_scored_branch_first() {
     let branch_a = branch_id(0x6c);
     let branch_b = branch_id(0x6d);
@@ -2189,6 +2412,7 @@ fn queued_nonzero_compaction_selects_largest_input_table() {
         .into_iter()
         .enumerate()
         {
+            let version = u64::try_from(index).expect("fixture index fits in u64") + 1;
             install_owned_table(
                 state,
                 branch,
@@ -2197,8 +2421,8 @@ fn queued_nonzero_compaction_selects_largest_input_table() {
                 vec![put_row(
                     branch,
                     format!("largest-input-{index}").as_bytes(),
-                    index as u64 + 1,
-                    (index as u64 + 1) * 1_000,
+                    version,
+                    version * 1_000,
                     value,
                 )],
             );
@@ -2221,6 +2445,99 @@ fn queued_nonzero_compaction_selects_largest_input_table() {
     assert_eq!(state.owned_levels()[1].len(), 3);
     assert_eq!(state.owned_levels()[2].len(), 1);
     assert_eq!(promoted_key, b"largest-input-2");
+}
+
+#[test]
+fn queued_nonzero_compaction_tiebreaks_by_lowest_stable_index() {
+    let branch = branch_id(0x5b);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0_u64..4 {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("score-tie-input-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("tie-input-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"same-size",
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let state = runtime.branch_state();
+    let promoted_key = state.owned_levels()[2][0].rows()[0]
+        .physical_key()
+        .user_key();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(state.owned_levels()[1].len(), 3);
+    assert_eq!(promoted_key, b"tie-input-0");
+}
+
+#[test]
+fn current_nonzero_compaction_request_uses_selected_input_table() {
+    let branch = branch_id(0x5c);
+    let mut state = BranchLocalState::empty(branch);
+    let small_value = vec![b's'; 16];
+    let large_value = vec![b'l'; 4096];
+    for (index, value) in [
+        small_value.as_slice(),
+        small_value.as_slice(),
+        large_value.as_slice(),
+        small_value.as_slice(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        install_owned_table(
+            &mut state,
+            branch,
+            BranchLevel::new(1),
+            &format!("selected-request-input-{index}"),
+            vec![put_row(
+                branch,
+                format!("selected-request-{index}").as_bytes(),
+                index as u64 + 1,
+                (index as u64 + 1) * 1_000,
+                value,
+            )],
+        );
+    }
+    let task = MaintenanceTask::new_for_test(1, MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("task");
+
+    let request = current_compaction_request_from_maintenance_task(&task, &state)
+        .expect("request")
+        .expect("current compaction request");
+
+    assert_eq!(
+        request.kind(),
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 2,
+        }
+    );
 }
 
 #[test]
@@ -2818,6 +3135,262 @@ fn cache_compaction_score_perf_trace_records_candidates_selection_and_operation(
     assert_eq!(perf.lifecycle_compaction_operations_completed(), 1);
     assert!(perf.lifecycle_compaction_input_tables() > 0);
     assert!(perf.lifecycle_compaction_output_tables() > 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn compaction_shape_perf_trace_records_targets_and_input_policy() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x5d);
+    let mut runtime = cache_runtime(branch);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                crate::commit::CommitBranchGenerationGuard::exact(
+                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        let small_value = vec![b's'; 16];
+        let large_value = vec![b'l'; 4096];
+        for (index, value) in [
+            small_value.as_slice(),
+            small_value.as_slice(),
+            large_value.as_slice(),
+            small_value.as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            install_owned_table(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("perf-input-policy-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("perf-input-policy-{index}").as_bytes(),
+                    index as u64 + 1,
+                    (index as u64 + 1) * 1_000,
+                    value,
+                )],
+            );
+        }
+        install_owned_table(
+            state,
+            branch,
+            BranchLevel::new(3),
+            "perf-deeper-overlap",
+            vec![put_row(
+                branch,
+                b"perf-input-policy-2",
+                20,
+                20_000,
+                b"deeper",
+            )],
+        );
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue compaction");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(perf.lifecycle_compaction_level_target_evaluations() >= 1);
+    assert!(
+        perf.lifecycle_compaction_level_target_bytes()
+            >= nonzero_level_target_bytes(BranchLevel::new(1))
+    );
+    assert_eq!(perf.lifecycle_compaction_nonzero_input_selections(), 1);
+    assert_eq!(perf.lifecycle_compaction_largest_input_selections(), 1);
+    assert_eq!(perf.lifecycle_compaction_nonzero_input_table_index_sum(), 2);
+    assert!(perf.lifecycle_compaction_nonzero_input_bytes() > 4096);
+    assert_eq!(perf.lifecycle_compaction_nonzero_input_rows(), 1);
+    assert_eq!(perf.lifecycle_compaction_deeper_overlap_evaluations(), 1);
+    assert!(perf.lifecycle_compaction_deeper_overlap_bytes() > 0);
+    assert_eq!(perf.lifecycle_compaction_output_split_budget_applied(), 0);
+    assert_eq!(perf.lifecycle_compaction_output_split_budget_deferred(), 1);
+    assert_eq!(
+        perf.lifecycle_compaction_output_split_budget_deferred_bytes(),
+        perf.lifecycle_compaction_deeper_overlap_bytes()
+    );
+    assert_eq!(
+        perf.lifecycle_compaction_selected_target_bytes(),
+        nonzero_level_target_bytes(BranchLevel::new(1))
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn generated_deeper_overlap_layouts_record_split_budget_decision() {
+    let cases: &[(u8, &[&[u8]], bool)] = &[
+        (0x80, &[b"a-10", b"z-10"], false),
+        (0x81, &[b"m-50"], true),
+        (0x82, &[b"m-30", b"m-70"], true),
+    ];
+
+    for (branch_byte, deeper_keys, expects_overlap) in cases {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let branch = branch_id(*branch_byte);
+        let state = compaction_shape_state_with_deeper_overlap(branch, deeper_keys);
+        let task = MaintenanceTask::new_for_test(1, MaintenanceTaskRequest::compaction(branch, 1))
+            .expect("task");
+        crate::observability::perf_trace::reset();
+
+        let request = current_compaction_request_from_maintenance_task(&task, &state)
+            .expect("request")
+            .expect("current request");
+        let perf = crate::observability::perf_trace::snapshot();
+
+        assert_eq!(
+            request.kind(),
+            BranchCompactionKind::CompactLevel {
+                level: BranchLevel::new(1),
+                table_index: 2,
+            }
+        );
+        assert_eq!(perf.lifecycle_compaction_nonzero_input_selections(), 1);
+        assert_eq!(perf.lifecycle_compaction_deeper_overlap_evaluations(), 1);
+        assert_eq!(perf.lifecycle_compaction_output_split_budget_applied(), 0);
+        assert_eq!(perf.lifecycle_compaction_output_split_budget_deferred(), 1);
+        if *expects_overlap {
+            assert!(
+                perf.lifecycle_compaction_deeper_overlap_bytes() > 0,
+                "case {branch_byte:#x} should record deeper overlap bytes"
+            );
+        } else {
+            assert_eq!(perf.lifecycle_compaction_deeper_overlap_bytes(), 0);
+        }
+        assert_eq!(
+            perf.lifecycle_compaction_output_split_budget_deferred_bytes(),
+            perf.lifecycle_compaction_deeper_overlap_bytes()
+        );
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+fn compaction_shape_state_with_deeper_overlap(
+    branch: BranchId,
+    deeper_keys: &[&[u8]],
+) -> BranchLocalState {
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
+    )
+    .expect("branch state");
+    for (index, key) in [b"a-00".as_slice(), b"b-00".as_slice()]
+        .into_iter()
+        .enumerate()
+    {
+        let version = u64::try_from(index).expect("fixture index fits in u64") + 1;
+        install_owned_table(
+            &mut state,
+            branch,
+            BranchLevel::new(1),
+            &format!("overlap-small-left-{index}"),
+            vec![put_row(branch, key, version, version * 1_000, b"small")],
+        );
+    }
+    install_owned_table(
+        &mut state,
+        branch,
+        BranchLevel::new(1),
+        "overlap-selected",
+        vec![
+            put_row(branch, b"m-20", 10, 10_000, &[0x10; 512]),
+            put_row(branch, b"m-80", 11, 11_000, &[0x11; 512]),
+        ],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        BranchLevel::new(1),
+        "overlap-small-right",
+        vec![put_row(branch, b"z-00", 12, 12_000, b"small")],
+    );
+    for (index, key) in deeper_keys.iter().enumerate() {
+        let version = u64::try_from(index).expect("fixture index fits in u64") + 20;
+        install_owned_table(
+            &mut state,
+            branch,
+            BranchLevel::new(3),
+            &format!("overlap-deeper-{index}"),
+            vec![put_row(branch, key, version, version * 1_000, b"deeper")],
+        );
+    }
+    state
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn storage_pressure_perf_trace_records_level_specific_targets() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x5e);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(5, 64, 32).expect("branch config"),
+    )
+    .expect("branch state");
+    for index in 0..4 {
+        install_owned_table(
+            &mut state,
+            branch,
+            BranchLevel::new(1),
+            &format!("target-facts-l1-{index}"),
+            vec![put_row(
+                branch,
+                format!("target-facts-l1-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                b"value",
+            )],
+        );
+        install_owned_table(
+            &mut state,
+            branch,
+            BranchLevel::new(2),
+            &format!("target-facts-l2-{index}"),
+            vec![put_row(
+                branch,
+                format!("target-facts-l2-{index}").as_bytes(),
+                index + 10,
+                (index + 10) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    crate::observability::perf_trace::reset();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog
+    );
+    assert_eq!(perf.lifecycle_compaction_level_target_evaluations(), 3);
+    assert_eq!(
+        perf.lifecycle_compaction_level_target_level_sum(),
+        1 + 2 + 3
+    );
+    assert_eq!(
+        perf.lifecycle_compaction_level_target_bytes(),
+        nonzero_level_target_bytes(BranchLevel::new(1))
+            + nonzero_level_target_bytes(BranchLevel::new(2))
+            + nonzero_level_target_bytes(BranchLevel::new(3))
+    );
+    assert_ne!(
+        nonzero_level_target_bytes(BranchLevel::new(1)),
+        nonzero_level_target_bytes(BranchLevel::new(2))
+    );
 }
 
 #[cfg(feature = "perf-trace")]

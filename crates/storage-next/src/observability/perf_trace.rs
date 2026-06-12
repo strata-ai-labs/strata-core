@@ -148,6 +148,21 @@ pub struct StoragePerfSnapshot {
     lifecycle_compaction_selected_score_sum: u64,
     lifecycle_compaction_selected_table_count: u64,
     lifecycle_compaction_selected_byte_count: u64,
+    lifecycle_compaction_selected_target_bytes: u64,
+    lifecycle_compaction_level_target_evaluations: u64,
+    lifecycle_compaction_level_target_level_sum: u64,
+    lifecycle_compaction_level_target_bytes: u64,
+    lifecycle_compaction_nonzero_input_selections: u64,
+    lifecycle_compaction_nonzero_input_level_sum: u64,
+    lifecycle_compaction_nonzero_input_table_index_sum: u64,
+    lifecycle_compaction_nonzero_input_bytes: u64,
+    lifecycle_compaction_nonzero_input_rows: u64,
+    lifecycle_compaction_largest_input_selections: u64,
+    lifecycle_compaction_deeper_overlap_evaluations: u64,
+    lifecycle_compaction_deeper_overlap_bytes: u64,
+    lifecycle_compaction_output_split_budget_applied: u64,
+    lifecycle_compaction_output_split_budget_deferred: u64,
+    lifecycle_compaction_output_split_budget_deferred_bytes: u64,
     lifecycle_compaction_operations_completed: u64,
     lifecycle_compaction_input_tables: u64,
     lifecycle_compaction_overlap_tables: u64,
@@ -752,6 +767,81 @@ impl StoragePerfSnapshot {
     /// Bytes in selected compaction source levels.
     pub const fn lifecycle_compaction_selected_byte_count(self) -> u64 {
         self.lifecycle_compaction_selected_byte_count
+    }
+
+    /// Target bytes associated with selected compaction source levels.
+    pub const fn lifecycle_compaction_selected_target_bytes(self) -> u64 {
+        self.lifecycle_compaction_selected_target_bytes
+    }
+
+    /// Nonzero level target evaluations made during compaction scoring.
+    pub const fn lifecycle_compaction_level_target_evaluations(self) -> u64 {
+        self.lifecycle_compaction_level_target_evaluations
+    }
+
+    /// Sum of levels whose target bytes were evaluated.
+    pub const fn lifecycle_compaction_level_target_level_sum(self) -> u64 {
+        self.lifecycle_compaction_level_target_level_sum
+    }
+
+    /// Sum of evaluated nonzero level target bytes.
+    pub const fn lifecycle_compaction_level_target_bytes(self) -> u64 {
+        self.lifecycle_compaction_level_target_bytes
+    }
+
+    /// Nonzero compaction input table selections.
+    pub const fn lifecycle_compaction_nonzero_input_selections(self) -> u64 {
+        self.lifecycle_compaction_nonzero_input_selections
+    }
+
+    /// Sum of levels selected by nonzero input policy.
+    pub const fn lifecycle_compaction_nonzero_input_level_sum(self) -> u64 {
+        self.lifecycle_compaction_nonzero_input_level_sum
+    }
+
+    /// Sum of selected nonzero input table indexes.
+    pub const fn lifecycle_compaction_nonzero_input_table_index_sum(self) -> u64 {
+        self.lifecycle_compaction_nonzero_input_table_index_sum
+    }
+
+    /// Bytes in nonzero input tables selected by lifecycle policy.
+    pub const fn lifecycle_compaction_nonzero_input_bytes(self) -> u64 {
+        self.lifecycle_compaction_nonzero_input_bytes
+    }
+
+    /// Rows in nonzero input tables selected by lifecycle policy.
+    pub const fn lifecycle_compaction_nonzero_input_rows(self) -> u64 {
+        self.lifecycle_compaction_nonzero_input_rows
+    }
+
+    /// Nonzero inputs selected by deterministic largest-input policy.
+    pub const fn lifecycle_compaction_largest_input_selections(self) -> u64 {
+        self.lifecycle_compaction_largest_input_selections
+    }
+
+    /// Deeper-overlap checks made for selected nonzero compaction inputs.
+    pub const fn lifecycle_compaction_deeper_overlap_evaluations(self) -> u64 {
+        self.lifecycle_compaction_deeper_overlap_evaluations
+    }
+
+    /// Bytes of deeper-level overlap seen for selected nonzero compaction inputs.
+    pub const fn lifecycle_compaction_deeper_overlap_bytes(self) -> u64 {
+        self.lifecycle_compaction_deeper_overlap_bytes
+    }
+
+    /// Output split budgets applied by lifecycle compaction policy.
+    pub const fn lifecycle_compaction_output_split_budget_applied(self) -> u64 {
+        self.lifecycle_compaction_output_split_budget_applied
+    }
+
+    /// Output split budgets deferred to lower table/branch layers.
+    pub const fn lifecycle_compaction_output_split_budget_deferred(self) -> u64 {
+        self.lifecycle_compaction_output_split_budget_deferred
+    }
+
+    /// Deeper-overlap bytes attached to deferred output split budget decisions.
+    pub const fn lifecycle_compaction_output_split_budget_deferred_bytes(self) -> u64 {
+        self.lifecycle_compaction_output_split_budget_deferred_bytes
     }
 
     /// Completed compaction operations recorded by lifecycle maintenance.
@@ -1799,6 +1889,36 @@ static LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_SELECTED_TARGET_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_LEVEL_TARGET_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_LEVEL_TARGET_LEVEL_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_LEVEL_TARGET_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_NONZERO_INPUT_SELECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_NONZERO_INPUT_LEVEL_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_NONZERO_INPUT_TABLE_INDEX_SUM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_NONZERO_INPUT_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_NONZERO_INPUT_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_LARGEST_INPUT_SELECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_DEEPER_OVERLAP_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_DEEPER_OVERLAP_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_APPLIED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_INPUT_TABLES: AtomicU64 = AtomicU64::new(0);
@@ -2272,6 +2392,21 @@ pub fn reset() {
     LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_TARGET_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LEVEL_TARGET_EVALUATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LEVEL_TARGET_LEVEL_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LEVEL_TARGET_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_SELECTIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_LEVEL_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_TABLE_INDEX_SUM.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_ROWS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LARGEST_INPUT_SELECTIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_DEEPER_OVERLAP_EVALUATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_DEEPER_OVERLAP_BYTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_APPLIED.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_INPUT_TABLES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OVERLAP_TABLES.store(0, Ordering::Relaxed);
@@ -2586,6 +2721,36 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_compaction_selected_byte_count: LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT
             .load(Ordering::Relaxed),
+        lifecycle_compaction_selected_target_bytes: LIFECYCLE_COMPACTION_SELECTED_TARGET_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_level_target_evaluations:
+            LIFECYCLE_COMPACTION_LEVEL_TARGET_EVALUATIONS.load(Ordering::Relaxed),
+        lifecycle_compaction_level_target_level_sum: LIFECYCLE_COMPACTION_LEVEL_TARGET_LEVEL_SUM
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_level_target_bytes: LIFECYCLE_COMPACTION_LEVEL_TARGET_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_nonzero_input_selections:
+            LIFECYCLE_COMPACTION_NONZERO_INPUT_SELECTIONS.load(Ordering::Relaxed),
+        lifecycle_compaction_nonzero_input_level_sum: LIFECYCLE_COMPACTION_NONZERO_INPUT_LEVEL_SUM
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_nonzero_input_table_index_sum:
+            LIFECYCLE_COMPACTION_NONZERO_INPUT_TABLE_INDEX_SUM.load(Ordering::Relaxed),
+        lifecycle_compaction_nonzero_input_bytes: LIFECYCLE_COMPACTION_NONZERO_INPUT_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_nonzero_input_rows: LIFECYCLE_COMPACTION_NONZERO_INPUT_ROWS
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_largest_input_selections:
+            LIFECYCLE_COMPACTION_LARGEST_INPUT_SELECTIONS.load(Ordering::Relaxed),
+        lifecycle_compaction_deeper_overlap_evaluations:
+            LIFECYCLE_COMPACTION_DEEPER_OVERLAP_EVALUATIONS.load(Ordering::Relaxed),
+        lifecycle_compaction_deeper_overlap_bytes: LIFECYCLE_COMPACTION_DEEPER_OVERLAP_BYTES
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_output_split_budget_applied:
+            LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_APPLIED.load(Ordering::Relaxed),
+        lifecycle_compaction_output_split_budget_deferred:
+            LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED.load(Ordering::Relaxed),
+        lifecycle_compaction_output_split_budget_deferred_bytes:
+            LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES.load(Ordering::Relaxed),
         lifecycle_compaction_operations_completed: LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED
             .load(Ordering::Relaxed),
         lifecycle_compaction_input_tables: LIFECYCLE_COMPACTION_INPUT_TABLES
@@ -3522,11 +3687,25 @@ pub(crate) fn record_lifecycle_compaction_score_candidate(
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_level_target(_level: u8, _target_bytes: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_level_target(level: u8, target_bytes: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_LEVEL_TARGET_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LEVEL_TARGET_LEVEL_SUM.fetch_add(u64::from(level), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LEVEL_TARGET_BYTES.fetch_add(target_bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_lifecycle_compaction_selected(
     _level: u8,
     _score: u64,
     _table_count: usize,
     _byte_count: u64,
+    _target_bytes: u64,
 ) {
 }
 
@@ -3536,6 +3715,7 @@ pub(crate) fn record_lifecycle_compaction_selected(
     score: u64,
     table_count: usize,
     byte_count: u64,
+    target_bytes: u64,
 ) {
     if !recording_enabled() {
         return;
@@ -3545,6 +3725,60 @@ pub(crate) fn record_lifecycle_compaction_selected(
     LIFECYCLE_COMPACTION_SELECTED_SCORE_SUM.fetch_add(score, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_TABLE_COUNT.fetch_add(as_u64(table_count), Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_BYTE_COUNT.fetch_add(byte_count, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_SELECTED_TARGET_BYTES.fetch_add(target_bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_nonzero_input_selected(
+    _level: u8,
+    _table_index: usize,
+    _byte_count: u64,
+    _row_count: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_nonzero_input_selected(
+    level: u8,
+    table_index: usize,
+    byte_count: u64,
+    row_count: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_SELECTIONS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_LEVEL_SUM.fetch_add(u64::from(level), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_TABLE_INDEX_SUM
+        .fetch_add(as_u64(table_index), Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_BYTES.fetch_add(byte_count, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_INPUT_ROWS.fetch_add(row_count, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_LARGEST_INPUT_SELECTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_deeper_overlap_considered(_level: u8, _byte_count: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_deeper_overlap_considered(_level: u8, byte_count: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_DEEPER_OVERLAP_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_DEEPER_OVERLAP_BYTES.fetch_add(byte_count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_output_split_budget_deferred(_byte_count: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_output_split_budget_deferred(byte_count: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES
+        .fetch_add(byte_count, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

@@ -66,6 +66,26 @@ or recovery.
 
 L8 should make those operations observable and testable storage internals.
 
+## Semantic Decisions
+
+### Compaction Shape Policy
+
+Storage-next uses a deterministic nonzero-level target pyramid for lifecycle
+compaction pressure: L1 starts at 64 MiB and each deeper nonzero level multiplies
+the previous target by 10. Adaptive target recalculation is deferred until
+benchmark data shows the static pyramid is not sufficient.
+
+Queued nonzero compaction selects the deterministic largest current input table
+for the requested level. The tie-breaker is byte count descending, row count
+descending, then lower table index first. Stateless maintenance-task conversion
+is only allowed to build L0 compaction requests; nonzero queued execution must
+inspect current branch state before producing a branch compaction request.
+
+Grandparent-overlap output split budgeting remains owned by the lower branch and
+table compaction layers. L8 records deeper-overlap bytes and a deferred
+split-budget fact, but metadata-promotion eligibility does not imply lifecycle
+ownership of output splitting.
+
 ## Responsibilities
 
 L8 owns:

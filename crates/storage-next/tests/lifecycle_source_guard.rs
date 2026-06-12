@@ -256,6 +256,56 @@ fn cache_rewrite_path_does_not_import_table_object_publication() {
 }
 
 #[test]
+fn stateless_compaction_task_conversion_does_not_select_nonzero_table_zero() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/compaction.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle compaction source");
+    let body = text
+        .split("pub(crate) fn compaction_request_from_maintenance_task")
+        .nth(1)
+        .expect("find stateless compaction task converter")
+        .split("pub(crate) fn current_compaction_request_from_maintenance_task")
+        .next()
+        .expect("find current compaction task converter");
+
+    assert!(
+        !body.contains("BranchCompactionKind::CompactLevel"),
+        "stateless compaction task conversion must not build nonzero table requests"
+    );
+    assert!(
+        !body.contains("table_index: 0"),
+        "stateless compaction task conversion must not choose a nonzero input table"
+    );
+}
+
+#[test]
+fn compaction_shape_semantic_decisions_are_recorded() {
+    let root = common::crate_root();
+    let repo = root
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate has repository root");
+    let path = repo.join("docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md");
+    let text = fs::read_to_string(&path).expect("read lifecycle architecture doc");
+    let normalized_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "deterministic nonzero-level target pyramid",
+        "L1 starts at 64 MiB",
+        "multiplies the previous target by 10",
+        "deterministic largest current input table",
+        "byte count descending, row count descending, then lower table index first",
+        "lower branch and table compaction layers",
+        "deferred split-budget fact",
+    ] {
+        assert!(
+            normalized_text.contains(required),
+            "missing compaction shape semantic decision text: {required}"
+        );
+    }
+}
+
+#[test]
 fn lifecycle_flush_source_does_not_manage_watermarks_or_log_retention() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/flush.rs");

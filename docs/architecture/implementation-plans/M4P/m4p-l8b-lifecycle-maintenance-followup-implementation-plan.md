@@ -90,6 +90,22 @@ Gaps covered: PF1, PF2, PF12.
 Goal: make scheduled compaction produce an old-engine-like level shape, or
 record explicit semantic decisions where storage-next intentionally differs.
 
+Implementation decisions for this slice:
+
+1. Nonzero level targets use a static deterministic pyramid: L1 = 64 MiB and
+   each deeper nonzero level multiplies the previous target by 10. Adaptive
+   target recalculation remains deferred until a benchmark shows the static
+   pyramid is not enough.
+2. Nonzero queued compaction uses deterministic largest-input selection rather
+   than compact-pointer rotation. The tie-breaker is byte count descending, row
+   count descending, then lower table index first. Stateless maintenance-task
+   conversion is L0-only; nonzero queued execution must inspect current branch
+   state.
+3. Grandparent-overlap output split budgeting remains owned by the lower table
+   and branch compaction layers. Lifecycle records deeper-overlap bytes and an
+   output-split-budget-deferred counter, but does not infer split budgets from
+   metadata-promotion eligibility.
+
 Tasks:
 
 1. Replace fixed nonzero-level target bytes with level-specific target bytes.
