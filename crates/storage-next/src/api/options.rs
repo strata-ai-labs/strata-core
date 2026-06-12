@@ -44,12 +44,22 @@ pub enum StorageWalGrowthPolicy {
     },
 }
 
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageMaintenanceSchedulingPolicy {
+    Background,
+    DeterministicInline,
+    EvaluateAndEnqueue,
+    Disabled,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageOpenOptions {
     mode: StorageMode,
     strict_recovery: bool,
     budget_policy: StorageBudgetPolicy,
     wal_growth_policy: StorageWalGrowthPolicy,
+    maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
 }
 
 impl StorageOpenOptions {
@@ -64,6 +74,7 @@ impl StorageOpenOptions {
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
+            maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
         }
     }
 
@@ -83,6 +94,7 @@ impl StorageOpenOptions {
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
+            maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
         }
     }
 
@@ -93,6 +105,7 @@ impl StorageOpenOptions {
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
+            maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
         }
     }
 
@@ -103,6 +116,7 @@ impl StorageOpenOptions {
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
+            maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
         }
     }
 
@@ -124,6 +138,15 @@ impl StorageOpenOptions {
         wal_growth_policy: StorageWalGrowthPolicy,
     ) -> Self {
         self.wal_growth_policy = wal_growth_policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_maintenance_scheduling_policy(
+        mut self,
+        maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
+    ) -> Self {
+        self.maintenance_scheduling_policy = maintenance_scheduling_policy;
         self
     }
 
@@ -169,6 +192,11 @@ impl StorageOpenOptions {
     #[must_use]
     pub const fn wal_growth_policy(&self) -> StorageWalGrowthPolicy {
         self.wal_growth_policy
+    }
+
+    #[must_use]
+    pub const fn maintenance_scheduling_policy(&self) -> StorageMaintenanceSchedulingPolicy {
+        self.maintenance_scheduling_policy
     }
 }
 

@@ -271,6 +271,33 @@ fn diagnostics_reports_memory_budget_limits() {
 }
 
 #[test]
+fn diagnostics_reports_background_scheduler_facts() {
+    let runtime = open_runtime();
+
+    let report = diagnostics(&runtime);
+    let queue = report.maintenance().expect("maintenance diagnostics");
+
+    assert_eq!(report.maintenance_state(), DiagnosticsFactState::Known);
+    assert_eq!(queue.background_worker_count(), 1);
+    assert_eq!(queue.background_queue_depth(), 0);
+    assert_eq!(queue.background_active_tasks(), 0);
+}
+
+#[cfg(feature = "localfs")]
+#[test]
+fn diagnostics_reports_durable_background_scheduler_facts() {
+    let runtime = open_durable_runtime("diagnostics-durable-background");
+
+    let report = diagnostics(&runtime);
+    let queue = report.maintenance().expect("maintenance diagnostics");
+
+    assert_eq!(report.maintenance_state(), DiagnosticsFactState::Known);
+    assert_eq!(queue.background_worker_count(), 1);
+    assert_eq!(queue.background_queue_depth(), 0);
+    assert_eq!(queue.background_active_tasks(), 0);
+}
+
+#[test]
 fn diagnostics_reports_memory_budget_usage() {
     let mut runtime = open_runtime();
     runtime

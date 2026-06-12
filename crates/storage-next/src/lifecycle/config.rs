@@ -46,6 +46,7 @@ pub(crate) enum LifecycleMaintenanceSchedulingPolicy {
     #[default]
     EvaluateAndEnqueue,
     DeterministicInline,
+    Background,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -245,7 +246,10 @@ impl Default for LifecycleWalGrowthPolicy {
 
 impl LifecycleMaintenanceSchedulingPolicy {
     pub(crate) const fn enabled(self) -> bool {
-        matches!(self, Self::EvaluateAndEnqueue | Self::DeterministicInline)
+        matches!(
+            self,
+            Self::EvaluateAndEnqueue | Self::DeterministicInline | Self::Background
+        )
     }
 }
 

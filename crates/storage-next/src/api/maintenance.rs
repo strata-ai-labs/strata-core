@@ -121,6 +121,10 @@ pub struct MaintenanceQueueSummary {
     canceled: usize,
     drained: usize,
     queue_full: usize,
+    background_worker_count: usize,
+    background_queue_depth: usize,
+    background_active_tasks: usize,
+    background_tasks_completed: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -368,6 +372,10 @@ impl MaintenanceQueueSummary {
         canceled: usize,
         drained: usize,
         queue_full: usize,
+        background_worker_count: usize,
+        background_queue_depth: usize,
+        background_active_tasks: usize,
+        background_tasks_completed: u64,
     ) -> Self {
         Self {
             pending_tasks,
@@ -382,6 +390,10 @@ impl MaintenanceQueueSummary {
             canceled,
             drained,
             queue_full,
+            background_worker_count,
+            background_queue_depth,
+            background_active_tasks,
+            background_tasks_completed,
         }
     }
 
@@ -443,6 +455,26 @@ impl MaintenanceQueueSummary {
     #[must_use]
     pub const fn queue_full(self) -> usize {
         self.queue_full
+    }
+
+    #[must_use]
+    pub const fn background_worker_count(self) -> usize {
+        self.background_worker_count
+    }
+
+    #[must_use]
+    pub const fn background_queue_depth(self) -> usize {
+        self.background_queue_depth
+    }
+
+    #[must_use]
+    pub const fn background_active_tasks(self) -> usize {
+        self.background_active_tasks
+    }
+
+    #[must_use]
+    pub const fn background_tasks_completed(self) -> u64 {
+        self.background_tasks_completed
     }
 }
 

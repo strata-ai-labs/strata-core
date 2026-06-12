@@ -25,7 +25,10 @@ The test suite must fail if:
 2. background mode accepts work and loses it during shutdown;
 3. foreground commits still pay full flush/compaction/materialization cost;
 4. source shape only becomes healthy through explicit benchmark drains;
-5. deterministic tests lose their ability to opt out of background execution.
+5. deterministic tests lose their ability to opt out of background execution;
+6. WAL retention grows without a background checkpoint wake;
+7. sustained max-rate writes fail permanently instead of slowing to the
+   background drain rate.
 
 ## Test Matrix
 
@@ -36,7 +39,9 @@ The test suite must fail if:
 | Wake/coalesce integration | Lifecycle enqueue/coalesce wakes workers without flooding scheduler queue. | Queue grows unbounded or tasks remain pending forever. |
 | Nonblocking execution | Long task build/merge work occurs outside foreground critical sections. | Background thread merely moves the inline tax behind a mutex. |
 | Close/shutdown | Close drains or cancels tasks according to lifecycle policy and joins workers. | Dropped tasks, deadlocks, submit-after-shutdown races. |
-| Benchmark proof | 5M/10M reach reads with bounded source shape and bounded foreground wait. | Compaction cliff remains hidden behind final drain or timeout. |
+| WAL retention | WAL-growth thresholds wake checkpoint work and covered segments are deleted. | Durable standard load retains hundreds of MB or many segments with no failing gate. |
+| Closed-loop overload | Writer rate converges to background drain rate under sustained pressure. | One worker falls behind until a nonzero-level Block error terminates the run. |
+| Benchmark proof | 5M/10M reach reads with bounded source shape, bounded WAL, and bounded foreground wait. | Compaction cliff or WAL-retention cliff remains hidden behind final drain or timeout. |
 
 ## Scheduler Port Parity Tests
 
@@ -145,11 +150,21 @@ Correctness tests:
 8. Explicit API `enqueue_maintenance` wakes the worker in background mode.
 9. Explicit API `run_next_maintenance` still works in deterministic/manual
    modes and is not needed for public background mode.
-10. Background wake priority maps lifecycle work correctly:
+10. WAL growth threshold crossings wake checkpoint work:
+    - sustained commits past `max_commits_since_checkpoint` enqueue checkpoint;
+    - retained-byte and retained-segment thresholds enqueue checkpoint or
+      flush-watermark work;
+    - the background worker executes the checkpoint;
+    - durable `delete_covered_segments` fires and retained segments decrease.
+11. Background wake priority maps lifecycle work correctly:
     - flush/checkpoint close-required or pressure-clearing work is High;
     - compaction/materialization is Normal;
     - health/retention/purge/quarantine repair is Low unless upgraded by
       policy.
+12. Urgent pressure wakes the worker and enters the configured slowdown path
+    without running full maintenance inline.
+13. Block pressure waits for background progress until the configured deadline
+    before returning the typed pressure error.
 
 Mechanical counter tests:
 
@@ -159,6 +174,11 @@ Mechanical counter tests:
 4. `background_stale_wake_noop` increments when a wake finds no task.
 5. `background_drain_rounds` increments per worker drain round.
 6. `background_tasks_completed` matches lifecycle completed task facts.
+7. WAL-growth wake counters distinguish threshold evaluation, checkpoint
+   enqueue, checkpoint wake submission, and covered-segment deletion.
+8. Admission-throttle counters record slowdown attempts, slowdown nanoseconds,
+   block waits, block-wait nanoseconds, deadline expirations, and wakeups from
+   background progress.
 
 Generated tests:
 
@@ -166,12 +186,20 @@ Generated tests:
 2. Random maintenance queue capacity limits.
 3. Random chain resubmission depth.
 4. Random task priority mixes.
+5. Random WAL-growth threshold crossings interleaved with flush and checkpoint
+   tasks.
+6. Random sustained-overload scripts where writer production exceeds initial
+   drain rate.
 
 Pass gates:
 
 1. Pending maintenance eventually reaches zero after `drain_background()`.
 2. Scheduler wake queue depth remains bounded under duplicate pressure.
 3. No maintenance task requires inline post-commit execution to start.
+4. WAL retention converges after checkpoint wake without an explicit benchmark
+   drain.
+5. Sustained overload slows commits or waits with deadline; it must not run
+   until a permanent Block failure without prior measured slowdown.
 
 ## Nonblocking Execution Tests
 
@@ -203,6 +231,10 @@ Mechanical counter tests:
 4. `foreground_wait_background_lock_ns` remains bounded in synthetic long-build
    fixtures.
 5. `background_candidate_stale_deferred` increments for stale candidate tests.
+6. Checkpoint/WAL deletion background task time is reported separately from
+   foreground commit time.
+7. WAL delete/rename tripwire records no unexpected `wal/` mutations outside
+   `delete_covered_segments` during local durable tests.
 
 Generated tests:
 
@@ -216,6 +248,53 @@ Pass gates:
 1. No full compaction build holds the foreground runtime lock.
 2. Stale background candidates cannot publish.
 3. Foreground wait time is measured and bounded.
+4. WAL checkpoint and covered-segment deletion do not hold foreground locks for
+   object deletion or segment scanning.
+
+## Closed-Loop Liveness Tests
+
+Correctness tests:
+
+1. Scaled-constants sustained load:
+   - shrink WAL segment size, memtable rotation, L0 thresholds, and nonzero
+     level targets so 50K rows exercise the 5M/10M trajectory;
+   - run through the public background runtime path;
+   - do not call public fixed-point drain;
+   - assert every commit either succeeds normally or enters the bounded
+     slowdown/wait path and then succeeds;
+   - assert no permanent `StoragePressureRejected` occurs before the configured
+     deadline policy says the system is unhealthy.
+2. The same scaled load in durable standard mode:
+   - retained WAL segment count remains bounded throughout the load;
+   - retained WAL bytes remain bounded throughout the load;
+   - at least one checkpoint executes in the background;
+   - at least one `delete_covered_segments` call deletes covered segments.
+3. Queue convergence after scaled load:
+   - final pending lifecycle tasks are zero, or every remaining task has an
+     explicit close/failure/deferred fact;
+   - L0 table count is bounded;
+   - nonzero fanout is bounded.
+4. Writer-faster-than-drain fixture:
+   - inject a slow background merge/build phase;
+   - drive foreground commits faster than the worker can initially drain;
+   - assert foreground commit latency includes bounded slowdown/wait facts;
+   - assert the run converges without a permanent Block error.
+
+Mechanical counter tests:
+
+1. Scaled liveness records nonzero background wake submissions.
+2. Scaled liveness records nonzero background task completions.
+3. Scaled liveness records WAL checkpoint and covered-segment deletion facts in
+   durable standard mode.
+4. Sustained-overload fixtures record slowdown or block-wait facts before any
+   deadline expiration.
+
+Pass gates:
+
+1. This suite is a normal CI gate once L8E-C/D/F land.
+2. Before the full L8E closeout it may be marked expected-fail only with the
+   exact missing slice named in the failure message.
+3. It becomes a hard gate before the 5M/10M benchmark is accepted.
 
 ## Close And Shutdown Tests
 
@@ -241,6 +320,8 @@ Race tests:
 3. Race worker drain round resubmission against close.
 4. Race scheduler shutdown against wake submit, preserving the old
    submit/shutdown TOCTOU guarantee.
+5. Race WAL-growth checkpoint wake against close and commit admission.
+6. Race slowdown/block-wait wakeup against background task failure.
 
 Mechanical counter tests:
 
@@ -270,6 +351,10 @@ Correctness tests:
 4. Explicit diagnostic drains remain available but are not required for normal
    source-shape convergence.
 5. Product-facing APIs do not expose old engine internals or thread handles.
+6. Diagnostics report retained WAL bytes and segments for durable standard
+   runs.
+7. Diagnostics report admission slowdown/wait time separately from foreground
+   commit work.
 
 Source guard tests:
 
@@ -284,6 +369,8 @@ Pass gates:
 
 1. Diagnostics can explain where maintenance time ran.
 2. Benchmark output cannot mislabel background work as foreground commit cost.
+3. Diagnostics can explain whether WAL retention was bounded by background
+   checkpoint/deletion work.
 
 ## Benchmark Tests
 
@@ -316,6 +403,14 @@ Required assertions:
 8. Foreground commit time excludes background build/merge/IO time.
 9. Foreground wait on background critical sections is bounded.
 10. Background maintenance time is reported separately.
+11. Retained WAL segment count remains bounded throughout standard durable
+    load.
+12. Retained WAL bytes remain bounded throughout standard durable load.
+13. Standard durable benchmark reports checkpoint executions and covered
+    segment deletions when WAL thresholds are crossed.
+14. Sustained pressure does not terminate the benchmark with
+    `NonZeroLevelTableBacklog` or another permanent Block error unless the
+    configured deadline expires and the result is reported as a failed gate.
 
 Failure interpretation:
 
@@ -326,6 +421,28 @@ Failure interpretation:
 3. If source shape is unbounded despite background completion, L8B scoring or
    chaining regressed.
 4. If close or shutdown loses accepted work, L8E-E failed.
+5. If retained WAL bytes or segments grow without checkpoint/delete progress,
+   WAL-growth wake or durable checkpoint/deletion integration failed.
+6. If backlog grows monotonically until Block rejection under max-rate writes,
+   graduated slowdown/block-wait admission failed.
+7. If all scheduler/admission/WAL facts are correct but background row-merge
+   drain rate is still too low, execute the L8E-G merge-cost fallback slice:
+   facts-computed-during-build, decoded reader handoff, and merge-loop
+   allocation reuse.
+
+## Sanitizer And Tripwire Tests
+
+Required checks:
+
+1. Run ThreadSanitizer on the lifecycle background test target in CI or in the
+   L8E closeout job.
+2. Local durable debug/test builds must include a WAL mutation tripwire for the
+   benchmark gate:
+   - any `wal/` delete, rename, or truncate outside `delete_covered_segments`
+     fails or emits a structured diagnostic;
+   - the diagnostic includes object name, operation, and caller context;
+   - the tripwire is disabled for product release builds.
+3. The WAL tripwire must be active during the 5M/10M standard reruns.
 
 ## Verification Commands
 
@@ -335,12 +452,20 @@ Focused:
 cargo test -p strata-storage-next lifecycle_background --all-features --locked
 cargo test -p strata-storage-next api_background_maintenance --all-features --locked
 cargo test -p strata-storage-next lifecycle_source_guard --all-features --locked
+cargo test -p strata-storage-next l8e_scaled_liveness --all-features --locked
 ```
 
 Lint:
 
 ```bash
 cargo clippy -p strata-storage-next --lib --all-features --locked -- -D warnings
+```
+
+Thread-safety closeout:
+
+```bash
+RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p strata-storage-next \
+  lifecycle_background --all-features --target x86_64-apple-darwin --locked
 ```
 
 Full closeout:

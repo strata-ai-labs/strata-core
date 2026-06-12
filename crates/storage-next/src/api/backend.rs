@@ -57,6 +57,14 @@ impl StorageBackend {
     }
 
     #[cfg(feature = "localfs")]
+    pub(crate) fn to_owned_backend_handle(&self) -> Option<BackendHandle<'static>> {
+        match &self.inner {
+            StorageBackendInner::Memory(_) => None,
+            StorageBackendInner::LocalFs(backend) => Some(BackendHandle::owned(backend.clone())),
+        }
+    }
+
+    #[cfg(feature = "localfs")]
     pub(crate) fn into_backend_handle(self) -> BackendHandle<'static> {
         match self.inner {
             StorageBackendInner::Memory(backend) => BackendHandle::owned(backend),

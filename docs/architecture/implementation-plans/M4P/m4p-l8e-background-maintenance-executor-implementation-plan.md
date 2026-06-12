@@ -39,7 +39,8 @@ thread decision. The background executor is required for L9 scale closeout.
 | L8E-C. Wake And Drain Policy | Wake background workers from lifecycle enqueue/coalesce and pressure transitions. | Queued maintenance drains without public `run_next_maintenance` or inline post-commit calls. |
 | L8E-D. Nonblocking Maintenance Execution | Split long flush/compaction/materialization work into snapshot/build/publish phases. | Public commits do not block on full compaction build/merge work except documented close/blocking-pressure cases. |
 | L8E-E. Close And Failure Integration | Shut down workers through lifecycle close, drain required tasks, and surface worker failures. | Close is deterministic; no accepted background task is lost during shutdown. |
-| L8E-F. Diagnostics And Benchmark Gate | Expose background scheduler metrics and rerun 100K/1M/5M/10M. | 5M/10M reach point-read measurement without a large inline or final fixed-point compaction cliff. |
+| L8E-F. Diagnostics And Benchmark Gate | Expose background scheduler, WAL, and closed-loop liveness metrics; rerun 100K/1M/5M/10M. | 5M/10M reach point-read measurement with bounded WAL retention, bounded source shape, and no large inline or final fixed-point compaction cliff. |
+| L8E-G. Merge-Cost Fallback | Optimize table-rewrite merge cost if L8E-F proves the single worker cannot keep up after throttling. | Background maintenance drain rate is high enough for the 10M standard gate without adding benchmark shortcuts. |
 
 ## Existing Baseline
 
@@ -109,10 +110,24 @@ continuing.
 8. **Admission**
    - Background mode removes normal post-commit inline maintenance from the
      hot write path.
-   - Block severity may still reject or drive bounded recovery according to the
-     existing typed pressure contract.
    - Urgent severity in background mode wakes workers and records accepted-
      under-pressure facts; it must not run full maintenance inline.
+   - Urgent severity also applies graduated foreground slowdown. The delay is
+     bounded, recorded, and designed to converge foreground write rate toward
+     observed background drain rate.
+   - Block severity waits for background maintenance progress until a
+     configured deadline. It returns the existing typed pressure error only
+     after the deadline expires or when maintenance is not making progress.
+   - The L9 benchmark must not add retry loops to hide Block errors; the
+     runtime admission policy itself must keep sustained load live.
+9. **WAL retention is a background-maintenance trigger**
+   - WAL growth policy evaluation is a wake source, not just a passive
+     diagnostic.
+   - Crossing `max_commits_since_checkpoint`, retained-byte, or retained-
+     segment thresholds must enqueue checkpoint/flush-watermark work and wake a
+     High-priority background drain.
+   - Standard durable load is not closed out until retained WAL bytes and
+     segments remain bounded throughout the run.
 
 ## Non-Goals
 
@@ -212,6 +227,8 @@ Tasks:
    - successful maintenance enqueue;
    - coalesced enqueue when pending work exists;
    - post-commit pressure scheduling;
+   - WAL growth policy evaluation that enqueues checkpoint or flush-watermark
+     work;
    - urgent accepted-under-pressure admission;
    - explicit maintenance enqueue API calls;
    - branch coverage enqueue;
@@ -233,6 +250,22 @@ Tasks:
 6. Ensure scheduling remains deterministic under a single worker:
    - lifecycle queue order and coalescing remain authoritative;
    - scheduler priority only decides which wake class runs first.
+7. Add closed-loop admission support for sustained overload:
+   - maintain moving counters for foreground commit production rate,
+     background task completion rate, and queue/source-shape backlog;
+   - when Urgent pressure persists, inject a bounded per-commit delay before
+     admission instead of running full maintenance inline;
+   - when Block pressure is reached, wait on a background-progress signal until
+     the configured deadline before returning `StoragePressureRejected`;
+   - wake blocked/slow-path writers when a background task clears pressure,
+     checkpoint/WAL debt, or queue debt.
+8. Record admission-throttle facts:
+   - slowdown attempts;
+   - slowdown sleep nanoseconds;
+   - block waits;
+   - block wait nanoseconds;
+   - deadline expirations;
+   - wakeups from background progress.
 
 Exit gates:
 
@@ -240,6 +273,12 @@ Exit gates:
    `run_next_maintenance`.
 2. Coalesced pressure does not create unbounded background scheduler depth.
 3. Chain resubmission wakes the worker until source shape is healthy.
+4. WAL growth threshold crossings wake checkpoint work and durable WAL
+   retention is able to delete covered segments without an explicit benchmark
+   drain.
+5. A writer that is permanently faster than the maintenance worker slows down
+   and eventually converges instead of running until a nonzero-level Block
+   rejection.
 
 ## L8E-D. Split Long Maintenance Work
 
@@ -261,14 +300,17 @@ Tasks:
 4. Split materialization execution with the same snapshot/build/publish shape.
 5. Split checkpoint/WAL growth work enough that foreground commits are blocked
    only for metadata publication and WAL service synchronization windows.
-6. Add a foreground admission counter for time waiting on background-owned
+6. Split checkpoint execution so `delete_covered_segments` and any durable
+   object deletion run on the background worker, with only the checkpoint
+   publication/watermark proof under foreground-visible locks.
+7. Add a foreground admission counter for time waiting on background-owned
    critical sections.
-7. Add a background critical-section counter for:
+8. Add a background critical-section counter for:
    - snapshot lock time;
    - publish lock time;
    - unlocked build time;
    - total task time.
-8. Keep branch and table publication proofs intact. If a candidate snapshot
+9. Keep branch and table publication proofs intact. If a candidate snapshot
    becomes stale before publish, the task must complete as deferred/stale and
    resubmit current pressure rather than publishing stale output.
 
@@ -278,6 +320,8 @@ Exit gates:
    the unlocked merge/build phase.
 2. A stale compaction candidate never publishes over newer branch state.
 3. Source shape still converges under sustained writes.
+4. WAL checkpoint and covered-segment deletion do not hold the foreground
+   runtime lock for object deletion or segment scanning work.
 
 ## L8E-E. Close, Shutdown, And Failure Integration
 
@@ -346,8 +390,23 @@ Tasks:
    - foreground commit time;
    - foreground wait on background critical sections;
    - background maintenance task time;
-   - final diagnostic drain time.
-5. Run the L9 scale benchmark:
+   - final diagnostic drain time;
+   - retained WAL bytes and segments over time;
+   - admission slowdown/wait time.
+5. Add a debug-mode WAL tripwire for local durable benchmarks:
+   - log or assert any `wal/` delete, rename, or truncate not routed through
+     `delete_covered_segments`;
+   - include the operation, object name, and caller context in the diagnostic;
+   - keep the tripwire test-only/debug-only so product release paths are not
+     changed.
+6. Add a scaled-constants closed-loop liveness test:
+   - shrink WAL segment size, memtable rotation, and level targets so a
+     50K-row run exercises the same flush/checkpoint/compaction trajectory as
+     the 5M/10M benchmark;
+   - run under normal CI;
+   - assert no permanent commit failure, bounded WAL retention, bounded L0,
+     bounded nonzero fanout, and final queue convergence.
+7. Run the L9 scale benchmark:
 
 ```bash
 cargo run --release --manifest-path benchmarks/Cargo.toml \
@@ -371,6 +430,49 @@ Exit gates:
    commit time.
 5. Foreground wait on background critical sections is bounded and materially
    smaller than the previous inline maintenance cost.
+6. Retained WAL bytes and segment counts remain below configured thresholds
+   throughout standard durable load.
+7. The scaled-constants closed-loop liveness test is a hard CI gate.
+
+## L8E-G. Merge-Cost Fallback
+
+Goal: provide the named, implementation-ready fallback if L8E-F shows that the
+background worker still cannot drain table rewrites fast enough after wake,
+nonblocking, and graduated admission policies are correct.
+
+Trigger:
+
+1. The scaled-constants liveness test or 5M/10M standard benchmark shows
+   sustained queue/source-shape backlog even though:
+   - WAL retention is bounded;
+   - background wakes are accepted and completed;
+   - foreground commits are slowed according to policy rather than failing
+     immediately;
+   - foreground wait is not dominated by long lock holds.
+
+Tasks:
+
+1. Compute immutable table facts during table build and hand them directly to
+   publication so compaction does not re-decode tables just to recover facts.
+2. Handoff decoded table metadata/readers from the build phase to the publish
+   phase where correctness permits, avoiding open-bytes re-parse work.
+3. Reuse merge-loop row buffers and allocation arenas across table-rewrite
+   tasks.
+4. Add counters for:
+   - facts decoded during build;
+   - redundant fact decodes avoided;
+   - table reader reopens avoided;
+   - merge-loop allocations and reuses;
+   - row merge nanoseconds per input row.
+5. Rerun the scaled liveness test and 5M/10M standard benchmark after each
+   merge-cost change.
+
+Exit gates:
+
+1. Background row-merge cost falls enough for the single worker plus
+   graduated admission to keep source shape bounded at 10M standard scale.
+2. The fallback does not weaken table publication, manifest, watermark, or
+   stale-candidate proofs.
 
 ## Stop Conditions
 
@@ -382,10 +484,14 @@ Stop and revise this plan only if:
    correctness-critical public APIs;
 3. durable owned backend handles cannot be made `Send + Sync + 'static`;
 4. branch publication proofs cannot detect stale background candidates;
-5. close cannot join workers without violating already-landed close contracts.
+5. close cannot join workers without violating already-landed close contracts;
+6. graduated slowdown and block-wait admission cannot be implemented without
+   changing public retry semantics;
+7. WAL retention cannot be bounded without moving ownership of checkpoint or
+   segment deletion out of storage-next.
 
-Any stop condition must produce a new implementation plan before L8C or L8D
-continues.
+Any stop condition must produce a new implementation plan before L8E, L8C, or
+L8D continues.
 
 ## Verification Commands
 
@@ -395,7 +501,15 @@ Focused commands:
 cargo test -p strata-storage-next lifecycle_background --all-features --locked
 cargo test -p strata-storage-next api_background_maintenance --all-features --locked
 cargo test -p strata-storage-next lifecycle_source_guard --all-features --locked
+cargo test -p strata-storage-next l8e_scaled_liveness --all-features --locked
 cargo clippy -p strata-storage-next --lib --all-features --locked -- -D warnings
+```
+
+Thread-safety closeout:
+
+```bash
+RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p strata-storage-next \
+  lifecycle_background --all-features --target x86_64-apple-darwin --locked
 ```
 
 Benchmark command:

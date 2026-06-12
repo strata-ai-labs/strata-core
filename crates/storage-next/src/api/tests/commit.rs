@@ -1020,12 +1020,12 @@ fn commit_storage_pressure_rejection_maps_to_retryable_api_error() {
 }
 
 #[test]
-fn public_open_uses_deterministic_inline_maintenance_policy() {
+fn public_open_uses_background_maintenance_policy() {
     let runtime = open_runtime();
 
     assert_eq!(
         runtime.maintenance_scheduling_policy_for_test(),
-        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::DeterministicInline
+        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
     );
 }
 

@@ -569,6 +569,77 @@ fn open_options_preserves_budget_policy() {
 }
 
 #[test]
+fn open_options_default_to_background_maintenance_policy() {
+    for options in [
+        StorageOpenOptions::cache(),
+        StorageOpenOptions::ephemeral(),
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        StorageOpenOptions::object_durable_candidate(),
+        StorageOpenOptions::distributed_candidate(),
+    ] {
+        assert_eq!(
+            options.maintenance_scheduling_policy(),
+            StorageMaintenanceSchedulingPolicy::Background
+        );
+    }
+}
+
+#[test]
+fn open_options_preserves_explicit_maintenance_policy() {
+    let options = StorageOpenOptions::cache()
+        .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue);
+
+    assert_eq!(
+        options.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue
+    );
+    assert!(options.validate().is_ok());
+}
+
+#[test]
+fn source_guard_public_open_options_do_not_default_to_deterministic_inline() {
+    let options_source = include_str!("../options.rs");
+
+    assert!(
+        !options_source
+            .contains("maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::DeterministicInline"),
+        "public open option constructors must not default to deterministic inline maintenance"
+    );
+}
+
+#[test]
+fn source_guard_api_does_not_export_background_scheduler_internals() {
+    let api_mod_source = include_str!("../mod.rs");
+
+    for private_symbol in [
+        "BackgroundScheduler",
+        "BackgroundSchedulerStats",
+        "BackgroundTaskPriority",
+        "BackgroundBackpressureError",
+    ] {
+        assert!(
+            !api_mod_source.contains(private_symbol),
+            "public API module must not expose old-engine/background scheduler internals: {private_symbol}"
+        );
+    }
+}
+
+#[test]
+fn source_guard_background_scheduler_is_local_storage_next_port() {
+    let background_source = include_str!("../../lifecycle/background.rs");
+
+    assert!(
+        background_source.contains("storage-next port of `crates/engine/src/background.rs`"),
+        "background scheduler must document the old-engine source it ports"
+    );
+    assert!(
+        !background_source.contains("strata_engine")
+            && !background_source.contains("strata-engine"),
+        "storage-next background scheduler must be a local port, not a strata-engine dependency"
+    );
+}
+
+#[test]
 fn open_options_reject_cache_lossy_recovery() {
     let options = StorageOpenOptions::cache().with_strict_recovery(false);
     let validation = options
@@ -614,8 +685,20 @@ fn open_cache_returns_open_runtime_and_cache_summary() {
     assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Healthy);
     assert_eq!(summary.recovered_visible_version(), None);
     assert!(summary.maintenance_ready());
+    assert_eq!(
+        summary.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::Background
+    );
     assert!(!summary.has_durable_recovery_facts());
     assert!(summary.backend_capabilities_used());
+    assert_eq!(
+        runtime.maintenance_scheduling_policy_for_test(),
+        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
+    );
+    let queue = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(queue.background_worker_count(), 1);
+    assert_eq!(queue.background_queue_depth(), 0);
+    assert_eq!(queue.background_active_tasks(), 0);
 }
 
 #[test]
@@ -628,7 +711,22 @@ fn open_ephemeral_returns_open_runtime_and_cache_summary() {
     assert_eq!(summary.mode(), StorageMode::Cache);
     assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
     assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Healthy);
+    assert_eq!(
+        summary.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::Background
+    );
     assert!(!summary.has_durable_recovery_facts());
+    assert_eq!(
+        runtime.maintenance_scheduling_policy_for_test(),
+        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
+    );
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .background_worker_count(),
+        1
+    );
 }
 
 #[test]
@@ -640,6 +738,221 @@ fn open_cache_helper_returns_open_runtime_and_cache_summary() {
     assert_eq!(runtime.state(), StorageRuntimeState::Open);
     assert_eq!(summary.mode(), StorageMode::Cache);
     assert_eq!(summary.disposition(), StorageOpenDisposition::Created);
+    assert_eq!(
+        summary.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::Background
+    );
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .background_worker_count(),
+        1
+    );
+}
+
+#[test]
+fn open_cache_can_select_non_background_maintenance_policies_for_tests() {
+    for (api_policy, lifecycle_policy) in [
+        (
+            StorageMaintenanceSchedulingPolicy::DeterministicInline,
+            crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        ),
+        (
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+        (
+            StorageMaintenanceSchedulingPolicy::Disabled,
+            crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Disabled,
+        ),
+    ] {
+        let outcome = StorageRuntime::open(
+            StorageOpenOptions::cache().with_maintenance_scheduling_policy(api_policy),
+        )
+        .expect("cache open should preserve explicit maintenance policy");
+        let summary = outcome.summary();
+        let runtime = outcome.into_runtime();
+
+        assert_eq!(summary.maintenance_scheduling_policy(), api_policy);
+        assert_eq!(
+            runtime.maintenance_scheduling_policy_for_test(),
+            lifecycle_policy
+        );
+        assert_eq!(
+            runtime
+                .maintenance_status()
+                .expect("maintenance status")
+                .background_worker_count(),
+            0
+        );
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn disabled_maintenance_policy_skips_api_post_commit_enqueue_and_worker_wake() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::Disabled),
+    )
+    .expect("disabled cache open")
+    .into_runtime();
+    let batch = CommitBatch::new(
+        StorageRuntime::default_branch_id_for_test(),
+        vec![CommitMutation::Put {
+            storage_space: StorageSpaceId::new(vec![0x20]).expect("engine storage space"),
+            key: key(b"disabled-maintenance"),
+            value: StorageValue::new(b"value".to_vec()),
+            ttl: None,
+        }],
+        CommitOptions::default(),
+    )
+    .expect("valid commit batch");
+
+    runtime.commit(&batch).expect("disabled commit");
+
+    let queue = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(queue.pending_tasks(), 0);
+    assert_eq!(queue.background_worker_count(), 0);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_post_commit_maintenance_evaluations(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_disabled(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_background_runtimes_created(), 0);
+}
+
+#[test]
+fn maintenance_status_reports_queue_state_without_background_worker_in_manual_mode() {
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+    )
+    .expect("manual maintenance cache open")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+
+    let queue = runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch),
+        ))
+        .expect("enqueue maintenance");
+
+    assert_eq!(queue.pending_tasks(), 1);
+    assert_eq!(queue.enqueued(), 1);
+    assert_eq!(queue.background_worker_count(), 0);
+    assert_eq!(queue.background_queue_depth(), 0);
+    assert_eq!(queue.background_active_tasks(), 0);
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.background_worker_count(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_runtime_creation_perf_trace_records_only_background_opens() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+
+    let background = StorageRuntime::open_cache().expect("background cache open");
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_runtimes_created(), 1);
+    assert_eq!(perf.lifecycle_background_runtime_workers_created(), 1);
+
+    let enqueue = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+    )
+    .expect("explicit enqueue cache open");
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_runtimes_created(), 1);
+    assert_eq!(perf.lifecycle_background_runtime_workers_created(), 1);
+
+    drop(enqueue);
+    drop(background);
+}
+
+#[test]
+fn background_close_drains_queued_work_before_lifecycle_close() {
+    let runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    assert_background_close_drains_queued_work_before_lifecycle_close(runtime);
+}
+
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_background_close_drains_queued_work_before_lifecycle_close() {
+    let runtime = StorageRuntime::open_local(temp_dir_for_api_test("durable-background-close"))
+        .expect("durable background open")
+        .into_runtime();
+
+    assert_background_close_drains_queued_work_before_lifecycle_close(runtime);
+}
+
+fn assert_background_close_drains_queued_work_before_lifecycle_close(
+    mut runtime: StorageRuntime<'static>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+
+    let shutdown_requested = runtime
+        .background_shutdown_requested_flag_for_test()
+        .expect("background runtime should expose shutdown flag");
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let observed_open = Arc::new(AtomicBool::new(false));
+    let close_returned = Arc::new(AtomicBool::new(false));
+
+    assert!(
+        runtime.submit_runtime_state_background_probe_for_test(
+            Arc::clone(&ready),
+            Arc::clone(&release),
+            Arc::clone(&observed_open),
+        ),
+        "background runtime should accept the probe task"
+    );
+    ready.wait();
+
+    std::thread::scope(|scope| {
+        let close_returned_worker = Arc::clone(&close_returned);
+        let runtime_ref = &mut runtime;
+        let close_handle = scope.spawn(move || {
+            let summary = runtime_ref.close().expect("close background runtime");
+            close_returned_worker.store(true, Ordering::Release);
+            summary
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !shutdown_requested.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "background close did not request scheduler shutdown"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            !close_returned.load(Ordering::Acquire),
+            "close returned before the accepted background task was released"
+        );
+
+        release.wait();
+        let summary = close_handle.join().expect("join close thread");
+        assert_eq!(summary.state(), StorageRuntimeState::Closed);
+    });
+
+    assert!(
+        observed_open.load(Ordering::Acquire),
+        "queued background task must run before lifecycle close transitions the runtime"
+    );
+    assert_eq!(runtime.state(), StorageRuntimeState::Closed);
 }
 
 #[test]
@@ -661,7 +974,22 @@ fn open_local_returns_durable_standard_runtime() {
     assert!(summary.recovered_visible_version().is_some());
     assert!(summary.has_durable_recovery_facts());
     assert!(summary.backend_capabilities_used());
+    assert_eq!(
+        summary.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::Background
+    );
     assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert_eq!(
+        runtime.maintenance_scheduling_policy_for_test(),
+        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
+    );
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .background_worker_count(),
+        1
+    );
 
     let close = runtime.close().expect("local durable close");
     assert!(close.durable_synced());
@@ -957,7 +1285,18 @@ fn open_durable_local_with_backend_returns_open_runtime() {
     );
     assert!(summary.has_durable_recovery_facts());
     assert!(summary.backend_capabilities_used());
+    assert_eq!(
+        summary.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::Background
+    );
     assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .background_worker_count(),
+        1
+    );
 }
 
 #[test]
@@ -1045,6 +1384,7 @@ fn durable_open_degraded_health_survives_boundary_mapping() {
         RecoveryHealthSummary::Degraded,
         Some(CommitVersion::new(3)),
         true,
+        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
         true,
         true,
     );
@@ -1054,10 +1394,31 @@ fn durable_open_degraded_health_survives_boundary_mapping() {
 }
 
 #[test]
-fn durable_open_failure_returns_storage_api_error() {
+fn borrowed_memory_durable_background_open_rejects_with_policy_error() {
     let backend = StorageBackend::memory();
     let error = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect_err("background durable borrowed memory backend cannot be promoted");
+
+    match error {
+        StorageApiError::InvalidArgument { field, reason } => {
+            assert_eq!(field, "maintenance_scheduling_policy");
+            assert!(reason.contains("background durable opens with borrowed backend handles"));
+        }
+        _ => panic!("expected invalid maintenance scheduling policy argument"),
+    }
+}
+
+#[test]
+fn durable_open_failure_returns_storage_api_error() {
+    let backend = StorageBackend::memory();
+    let error = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            ),
         &backend,
     )
     .expect_err("memory backend cannot satisfy durable local mode");
@@ -1116,7 +1477,10 @@ fn open_existing_durable_local_returns_opened_disposition() {
 fn durable_open_with_memory_backend_returns_storage_api_error() {
     let backend = StorageBackend::memory();
     let error = StorageRuntime::open_with_backend(
-        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            ),
         &backend,
     )
     .expect_err("memory backend cannot satisfy durable local mode");
@@ -1214,6 +1578,10 @@ fn outcome_summaries_expose_stored_fields() {
     assert_eq!(
         open.recovered_visible_version(),
         Some(CommitVersion::new(42))
+    );
+    assert_eq!(
+        open.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::Background
     );
 
     let close = StorageCloseSummary::new(StorageRuntimeState::Closed, true);

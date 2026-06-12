@@ -12,16 +12,18 @@ use crate::commit::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
-    collect_storage_pressure, CloseOutcome, CloseOutcomeStatus, FlushFrozenRequest,
-    FlushTableIdentitySeed, FlushTableObjectId, LifecycleBranchCatalog, LifecycleBranchDescriptor,
-    LifecycleBranchStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
-    LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionDrainRequest, LifecycleConfig,
-    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
-    LifecycleError, LifecycleMaintenanceSchedulingPolicy, LifecycleRecoveryRuntime,
-    LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressureReason,
-    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy,
-    LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
-    LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
+    collect_storage_pressure, BackgroundBackpressureError, BackgroundScheduler,
+    BackgroundSchedulerStats, BackgroundTaskPriority, CloseOutcome, CloseOutcomeStatus,
+    FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId, LifecycleBranchCatalog,
+    LifecycleBranchDescriptor, LifecycleBranchStatus, LifecycleCacheOpenRequest,
+    LifecycleCacheRuntime, LifecycleCheckpointOutcome, LifecycleCodecId,
+    LifecycleCompactionDrainRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
+    LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
+    LifecycleMaintenanceSchedulingPolicy, LifecycleRecoveryRuntime, LifecycleRetentionRequest,
+    LifecycleRetentionScope, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
+    LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus,
+    LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus,
+    MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
     MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
@@ -59,13 +61,16 @@ use super::{
     PointReadOutcome, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
     RecoveryHealthSummary, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiErrorClass,
     StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBudgetPolicy,
-    StorageCloseSummary, StorageDurabilityPolicy, StorageKey, StorageMode, StorageOpenDisposition,
-    StorageOpenOptions, StorageOpenOutcome, StorageOpenSummary, StorageReadRow,
-    StorageRuntimeState, StorageSpaceId, StorageValue, StorageWalGrowthPolicy,
-    TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
-    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
+    StorageCloseSummary, StorageDurabilityPolicy, StorageKey, StorageMaintenanceSchedulingPolicy,
+    StorageMode, StorageOpenDisposition, StorageOpenOptions, StorageOpenOutcome,
+    StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId, StorageValue,
+    StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss,
+    TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
+use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_DATABASE_ID: [u8; 16] = [0x53; 16];
@@ -73,6 +78,7 @@ const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_L
 const DEFAULT_BRANCH_GENERATION: u64 = 1;
 const DEFAULT_TIMESTAMP: Timestamp = Timestamp::from_micros(1);
 const API_PHYSICAL_SPACE: &str = "api";
+const DEFAULT_BACKGROUND_WORKERS: usize = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResolvedReadBound {
@@ -90,9 +96,146 @@ pub struct StorageRuntime<'a> {
 
 #[derive(Debug)]
 enum StorageRuntimeInner<'a> {
-    Cache(Box<LifecycleCacheRuntime<ApiTimestampSource>>),
-    Durable(Box<LifecycleDurableLocalRuntime<'a, ApiTimestampSource>>),
+    Cache(Box<RuntimeSlot<LifecycleCacheRuntime<ApiTimestampSource>>>),
+    Durable(Box<RuntimeSlot<LifecycleDurableLocalRuntime<'a, ApiTimestampSource>>>),
     Closed,
+}
+
+#[derive(Debug)]
+struct RuntimeSlot<R> {
+    runtime: Arc<ParkingMutex<R>>,
+    background: Option<BackgroundRuntimeController>,
+}
+
+#[derive(Debug)]
+struct BackgroundRuntimeController {
+    scheduler: BackgroundScheduler,
+    close_requested: Arc<AtomicBool>,
+}
+
+impl<R> RuntimeSlot<R> {
+    fn new(runtime: R, config: LifecycleConfig) -> Self {
+        let background = if config.maintenance_scheduling_policy()
+            == LifecycleMaintenanceSchedulingPolicy::Background
+        {
+            Some(BackgroundRuntimeController::new(
+                config.max_maintenance_queue_depth(),
+            ))
+        } else {
+            None
+        };
+        Self {
+            runtime: Arc::new(ParkingMutex::new(runtime)),
+            background,
+        }
+    }
+
+    fn lock(&self) -> ParkingMutexGuard<'_, R> {
+        self.runtime.lock()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "L8E-C submits lifecycle drain work through this handle"
+    )]
+    fn runtime_handle(&self) -> Arc<ParkingMutex<R>> {
+        Arc::clone(&self.runtime)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "L8E-C wires lifecycle queue wakeups through this hook"
+    )]
+    fn submit_background(
+        &self,
+        priority: BackgroundTaskPriority,
+        work: impl FnOnce(Arc<ParkingMutex<R>>) + Send + 'static,
+    ) -> Result<(), BackgroundBackpressureError>
+    where
+        R: Send + 'static,
+    {
+        let runtime = self.runtime_handle();
+        self.background
+            .as_ref()
+            .ok_or(BackgroundBackpressureError)?
+            .submit(priority, move || work(runtime))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "L8E-C drains queued background lifecycle work through this hook"
+    )]
+    fn drain_background(&self) {
+        if let Some(background) = &self.background {
+            background.drain();
+        }
+    }
+
+    fn background_stats(&self) -> Option<BackgroundSchedulerStats> {
+        self.background
+            .as_ref()
+            .map(BackgroundRuntimeController::stats)
+    }
+
+    fn shutdown_background(&self) {
+        if let Some(background) = &self.background {
+            background.shutdown();
+        }
+    }
+
+    #[cfg(test)]
+    fn background_shutdown_requested_flag(&self) -> Option<Arc<AtomicBool>> {
+        self.background
+            .as_ref()
+            .map(BackgroundRuntimeController::close_requested_flag)
+    }
+}
+
+impl<R> Drop for RuntimeSlot<R> {
+    fn drop(&mut self) {
+        self.shutdown_background();
+    }
+}
+
+impl BackgroundRuntimeController {
+    fn new(max_queue_depth: usize) -> Self {
+        perf_trace::record_lifecycle_background_runtime_created(DEFAULT_BACKGROUND_WORKERS);
+        Self {
+            scheduler: BackgroundScheduler::new(DEFAULT_BACKGROUND_WORKERS, max_queue_depth),
+            close_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn stats(&self) -> BackgroundSchedulerStats {
+        self.scheduler.stats()
+    }
+
+    fn submit(
+        &self,
+        priority: BackgroundTaskPriority,
+        work: impl FnOnce() + Send + 'static,
+    ) -> Result<(), BackgroundBackpressureError> {
+        self.scheduler.submit(priority, work)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "L8E-C drains queued background lifecycle work through this hook"
+    )]
+    fn drain(&self) {
+        self.scheduler.drain();
+    }
+
+    fn shutdown(&self) {
+        if !self.close_requested.swap(true, Ordering::AcqRel) {
+            self.scheduler.shutdown();
+        }
+    }
+
+    #[cfg(test)]
+    fn close_requested_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.close_requested)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,6 +325,51 @@ impl StorageRuntime<'static> {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn submit_runtime_state_background_probe_for_test(
+        &self,
+        ready: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+        observed_open: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> bool {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot
+                .submit_background(BackgroundTaskPriority::High, move |runtime| {
+                    ready.wait();
+                    release.wait();
+                    let runtime = runtime.lock();
+                    observed_open.store(
+                        runtime.state() == crate::lifecycle::LifecycleState::Open,
+                        std::sync::atomic::Ordering::Release,
+                    );
+                })
+                .is_ok(),
+            StorageRuntimeInner::Durable(slot) => slot
+                .submit_background(BackgroundTaskPriority::High, move |runtime| {
+                    ready.wait();
+                    release.wait();
+                    let runtime = runtime.lock();
+                    observed_open.store(
+                        runtime.state() == crate::lifecycle::LifecycleState::Open,
+                        std::sync::atomic::Ordering::Release,
+                    );
+                })
+                .is_ok(),
+            StorageRuntimeInner::Closed => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn background_shutdown_requested_flag_for_test(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.background_shutdown_requested_flag(),
+            StorageRuntimeInner::Durable(slot) => slot.background_shutdown_requested_flag(),
+            StorageRuntimeInner::Closed => None,
+        }
+    }
 }
 
 #[cfg(feature = "localfs")]
@@ -226,9 +414,10 @@ impl<'a> StorageRuntime<'a> {
         options.validate()?;
         match options.mode() {
             StorageMode::Cache => Self::open_cache_with_backend(options, backend),
-            StorageMode::DurableLocal { .. } => {
-                Self::open_durable_with_backend_handle(options, backend.as_backend_handle())
-            }
+            StorageMode::DurableLocal { .. } => Self::open_durable_with_backend_handle(
+                options,
+                durable_backend_handle_for_open(options, backend)?,
+            ),
             StorageMode::ObjectDurableCandidate | StorageMode::DistributedCandidate => {
                 unreachable!("unsupported modes are rejected during validation")
             }
@@ -263,18 +452,24 @@ impl<'a> StorageRuntime<'a> {
     ) -> StorageApiResult<StorageCloseSummary> {
         match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
+                runtime.shutdown_background();
+                let mut runtime = runtime.lock();
                 let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
                 let close = runtime.close().map_err(map_lifecycle_error)?;
                 let summary = map_close_summary(close, false);
+                drop(runtime);
                 self.inner = StorageRuntimeInner::Closed;
                 self.last_recovery = Some(recovery);
                 self.last_close = Some(summary);
                 Ok(summary)
             }
             StorageRuntimeInner::Durable(runtime) => {
+                runtime.shutdown_background();
+                let mut runtime = runtime.lock();
                 let close = runtime.close().map_err(map_lifecycle_error)?;
                 let recovery = map_diagnostics_recovery(runtime.current_recovery_health());
                 let summary = map_close_summary(close, false);
+                drop(runtime);
                 self.inner = StorageRuntimeInner::Closed;
                 self.last_recovery = Some(recovery);
                 self.last_close = Some(summary);
@@ -379,11 +574,19 @@ impl<'a> StorageRuntime<'a> {
 
     pub fn maintenance_status(&self) -> StorageApiResult<MaintenanceQueueSummary> {
         match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
-                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                Ok(map_maintenance_queue_summary(
+                    runtime.maintenance_status(),
+                    slot.background_stats(),
+                ))
             }
-            StorageRuntimeInner::Durable(runtime) => {
-                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                Ok(map_maintenance_queue_summary(
+                    runtime.maintenance_status(),
+                    slot.background_stats(),
+                ))
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "maintenance status requires an open runtime",
@@ -422,10 +625,13 @@ impl<'a> StorageRuntime<'a> {
     fn cache_diagnostics<S>(
         &self,
         request: DiagnosticsRequest,
-        runtime: &LifecycleCacheRuntime<S>,
+        slot: &RuntimeSlot<LifecycleCacheRuntime<S>>,
     ) -> StorageApiResult<DiagnosticsOutcome> {
         let branch_id = branch_for_diagnostics_scope(request.scope());
         let branches = self.list_branches(true)?;
+        let visible = current_visible(self);
+        let timeline = self.diagnostics_timeline(branch_id);
+        let runtime = slot.lock();
         let wal_growth = runtime.evaluate_wal_growth_policy();
         Ok(DiagnosticsOutcome::new(
             request.scope(),
@@ -434,9 +640,12 @@ impl<'a> StorageRuntime<'a> {
                 self.open_summary,
                 runtime.open_plan(),
             )),
-            current_visible(self),
+            visible,
             map_diagnostics_recovery(runtime.open_outcome().recovery_health()),
-            Some(map_maintenance_queue_summary(runtime.maintenance_status())),
+            Some(map_maintenance_queue_summary(
+                runtime.maintenance_status(),
+                slot.background_stats(),
+            )),
             map_budget_report(&runtime.budget_snapshot()),
             diagnostics_pressure_report(
                 runtime.branch_catalog(),
@@ -454,17 +663,20 @@ impl<'a> StorageRuntime<'a> {
                 Some(map_wal_growth_summary(&wal_growth)),
             ),
             map_branch_catalog_report(&branches),
-            self.diagnostics_timeline(branch_id),
+            timeline,
         ))
     }
 
     fn durable_diagnostics<S>(
         &self,
         request: DiagnosticsRequest,
-        runtime: &LifecycleDurableLocalRuntime<'_, S>,
+        slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'_, S>>,
     ) -> StorageApiResult<DiagnosticsOutcome> {
         let branch_id = branch_for_diagnostics_scope(request.scope());
         let branches = self.list_branches(true)?;
+        let visible = current_visible(self);
+        let timeline = self.diagnostics_timeline(branch_id);
+        let runtime = slot.lock();
         let table_catalog = runtime.table_catalog();
         Ok(DiagnosticsOutcome::new(
             request.scope(),
@@ -473,9 +685,12 @@ impl<'a> StorageRuntime<'a> {
                 self.open_summary,
                 runtime.open_plan(),
             )),
-            current_visible(self),
+            visible,
             map_diagnostics_recovery(runtime.current_recovery_health()),
-            Some(map_maintenance_queue_summary(runtime.maintenance_status())),
+            Some(map_maintenance_queue_summary(
+                runtime.maintenance_status(),
+                slot.background_stats(),
+            )),
             map_budget_report(&runtime.budget_snapshot()),
             diagnostics_pressure_report(
                 runtime.branch_catalog(),
@@ -491,7 +706,7 @@ impl<'a> StorageRuntime<'a> {
             ),
             DiagnosticsRetentionReport::known(None, Some(runtime.pending_releases().len()), None),
             DiagnosticsQuarantineReport::unknown(),
-            durable_checkpoint_report(runtime),
+            durable_checkpoint_report(&runtime),
             map_wal_growth_report(
                 runtime.open_plan().lifecycle_config().wal_growth_policy(),
                 runtime
@@ -499,7 +714,7 @@ impl<'a> StorageRuntime<'a> {
                     .map(map_wal_growth_summary),
             ),
             map_branch_catalog_report(&branches),
-            self.diagnostics_timeline(branch_id),
+            timeline,
         ))
     }
 
@@ -511,17 +726,25 @@ impl<'a> StorageRuntime<'a> {
         validate_maintenance_request(request)?;
         let task = map_maintenance_task_request(self, request)?;
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
-                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+                Ok(map_maintenance_queue_summary(
+                    runtime.maintenance_status(),
+                    slot.background_stats(),
+                ))
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
-                Ok(map_maintenance_queue_summary(runtime.maintenance_status()))
+                Ok(map_maintenance_queue_summary(
+                    runtime.maintenance_status(),
+                    slot.background_stats(),
+                ))
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "maintenance enqueue requires an open runtime",
@@ -531,8 +754,14 @@ impl<'a> StorageRuntime<'a> {
 
     pub fn run_next_maintenance(&mut self) -> StorageApiResult<Option<MaintenanceSummary>> {
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => run_next_cache_maintenance(runtime)?,
-            StorageRuntimeInner::Durable(runtime) => run_next_durable_maintenance(runtime)?,
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
+                run_next_cache_maintenance(&mut runtime)?
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                run_next_durable_maintenance(&mut runtime)?
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "maintenance run requires an open runtime",
@@ -573,12 +802,18 @@ impl<'a> StorageRuntime<'a> {
     fn read_latest_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
         let row = match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime
-                .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                .map_err(map_lifecycle_error)?,
-            StorageRuntimeInner::Durable(runtime) => runtime
-                .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                .map_err(map_lifecycle_error)?,
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
+                    .map_err(map_lifecycle_error)?
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
+                    .map_err(map_lifecycle_error)?
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "read requires an open runtime",
@@ -785,7 +1020,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable checkpoint maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let outcome = runtime
                     .checkpoint_for_explicit_maintenance(branch_id, false)
                     .map_err(map_lifecycle_error)?;
@@ -804,13 +1040,15 @@ impl<'a> StorageRuntime<'a> {
         let branch_id = self.branch_for_maintenance_scope(request.scope())?;
         let flush_request = flush_request_for_boundary(branch_id)?;
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_branch_for_maintenance(branch_id)
                     .map_err(map_lifecycle_error)?;
                 runtime.flush_frozen(&flush_request)
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_branch_for_maintenance(branch_id)
                     .map_err(map_lifecycle_error)?;
@@ -836,7 +1074,8 @@ impl<'a> StorageRuntime<'a> {
         }
         let task = LifecycleMaintenanceTaskRequest::compaction(branch_id, 0);
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -844,7 +1083,8 @@ impl<'a> StorageRuntime<'a> {
                     .run_compaction_maintenance_task(enqueue.task_id())
                     .map_err(map_lifecycle_error)?
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -875,8 +1115,14 @@ impl<'a> StorageRuntime<'a> {
 
     fn storage_pressure_suggests_compaction(&self, branch_id: BranchId) -> StorageApiResult<bool> {
         let suggested_task = match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.storage_pressure().suggested_task(),
-            StorageRuntimeInner::Durable(runtime) => runtime.storage_pressure().suggested_task(),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime.storage_pressure().suggested_task()
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime.storage_pressure().suggested_task()
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "flush follow-up compaction requires an open runtime",
@@ -906,10 +1152,12 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(map_lifecycle_error)?;
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 runtime.compact_branch_tables_to_fixed_point(&compaction)
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime.compact_branch_tables_to_fixed_point(&compaction)
             }
             StorageRuntimeInner::Closed => {
@@ -931,16 +1179,22 @@ impl<'a> StorageRuntime<'a> {
         branch_id: BranchId,
     ) -> StorageApiResult<crate::branch::facts::BranchSourceLayout> {
         match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => Ok(runtime
-                .branch_catalog()
-                .branch_state(branch_id)
-                .map_err(map_lifecycle_error)?
-                .source_layout()),
-            StorageRuntimeInner::Durable(runtime) => Ok(runtime
-                .branch_catalog()
-                .branch_state(branch_id)
-                .map_err(map_lifecycle_error)?
-                .source_layout()),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                Ok(runtime
+                    .branch_catalog()
+                    .branch_state(branch_id)
+                    .map_err(map_lifecycle_error)?
+                    .source_layout())
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                Ok(runtime
+                    .branch_catalog()
+                    .branch_state(branch_id)
+                    .map_err(map_lifecycle_error)?
+                    .source_layout())
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "source layout requires an open runtime",
             }),
@@ -954,7 +1208,8 @@ impl<'a> StorageRuntime<'a> {
         let branch_id = self.branch_for_maintenance_scope(request.scope())?;
         let task = LifecycleMaintenanceTaskRequest::materialization(branch_id);
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -962,7 +1217,8 @@ impl<'a> StorageRuntime<'a> {
                     .run_materialization_maintenance_task(enqueue.task_id())
                     .map_err(map_lifecycle_error)?
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -996,7 +1252,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable retention maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let outcome = runtime
                     .prove_retention(&LifecycleRetentionRequest::global(1))
                     .map_err(map_lifecycle_error)?;
@@ -1020,7 +1277,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable snapshot pruning maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let retention = LifecycleRetentionRequest::snapshot_pruning(1);
                 let outcome = runtime
                     .prune_snapshots(&retention)
@@ -1046,7 +1304,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable reclaim maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let retention = LifecycleRetentionRequest::new(
                     LifecycleRetentionScope::TableObjects { branch_id },
                     1,
@@ -1075,7 +1334,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable quarantine maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -1108,7 +1368,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable purge maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -1136,7 +1397,8 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support quarantine repair maintenance",
             )),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
                     .map_err(map_lifecycle_error)?;
@@ -1159,8 +1421,14 @@ impl<'a> StorageRuntime<'a> {
         request: &MaintenanceRequest,
     ) -> StorageApiResult<MaintenanceSummary> {
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => Ok(runtime.evaluate_wal_growth_policy()),
-            StorageRuntimeInner::Durable(runtime) => runtime.evaluate_wal_growth_policy(),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                Ok(runtime.evaluate_wal_growth_policy())
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime.evaluate_wal_growth_policy()
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "WAL growth maintenance requires an open runtime",
@@ -1188,10 +1456,12 @@ impl<'a> StorageRuntime<'a> {
         created_at: Option<CommitVersion>,
     ) -> StorageApiResult<crate::lifecycle::LifecycleBranchCreateOutcome> {
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 runtime.create_branch(branch_id, generation, created_at)
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime.create_branch(branch_id, generation, created_at)
             }
             StorageRuntimeInner::Closed => {
@@ -1231,8 +1501,14 @@ impl<'a> StorageRuntime<'a> {
 
     fn list_branches(&self, include_deleted: bool) -> StorageApiResult<Vec<BranchSummary>> {
         let descriptors = match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.list_branches(include_deleted),
-            StorageRuntimeInner::Durable(runtime) => runtime.list_branches(include_deleted),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime.list_branches(include_deleted)
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime.list_branches(include_deleted)
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "branch operation requires an open runtime",
@@ -1244,8 +1520,14 @@ impl<'a> StorageRuntime<'a> {
 
     fn describe_branch(&self, branch_id: BranchId) -> StorageApiResult<BranchSummary> {
         let descriptor = match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.branch_catalog().lookup(branch_id),
-            StorageRuntimeInner::Durable(runtime) => runtime.branch_catalog().lookup(branch_id),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime.branch_catalog().lookup(branch_id)
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime.branch_catalog().lookup(branch_id)
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "branch operation requires an open runtime",
@@ -1332,20 +1614,26 @@ impl<'a> StorageRuntime<'a> {
         let generation = branch_generation_or_default(request.expected_generation())?;
         let retained_floor = self.retained_floor(source)?;
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.fork_at_retained_version(
-                source,
-                request.branch_id(),
-                generation,
-                version,
-                retained_floor,
-            ),
-            StorageRuntimeInner::Durable(runtime) => runtime.fork_at_retained_version(
-                source,
-                request.branch_id(),
-                generation,
-                version,
-                retained_floor,
-            ),
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
+                runtime.fork_at_retained_version(
+                    source,
+                    request.branch_id(),
+                    generation,
+                    version,
+                    retained_floor,
+                )
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime.fork_at_retained_version(
+                    source,
+                    request.branch_id(),
+                    generation,
+                    version,
+                    retained_floor,
+                )
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "branch operation requires an open runtime",
@@ -1368,8 +1656,12 @@ impl<'a> StorageRuntime<'a> {
         let before = self.describe_branch(request.branch_id())?;
         let guard = map_generation_guard(request.expected_generation())?;
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime.clear_branch(request.branch_id(), guard),
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
+                runtime.clear_branch(request.branch_id(), guard)
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime.clear_branch(request.branch_id(), guard)
             }
             StorageRuntimeInner::Closed => {
@@ -1399,10 +1691,12 @@ impl<'a> StorageRuntime<'a> {
         let guard = map_generation_guard(request.expected_generation())?;
         let deleted_at = current_visible(self);
         let outcome = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 runtime.delete_branch(request.branch_id(), guard, deleted_at)
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime.delete_branch(request.branch_id(), guard, deleted_at)
             }
             StorageRuntimeInner::Closed => {
@@ -1436,11 +1730,12 @@ impl<'a> StorageRuntime<'a> {
             default_timestamp_source(),
         )
         .map_err(map_lifecycle_error)?;
-        let summary = map_open_summary(runtime.open_outcome(), options.mode());
+        let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
         let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
+        let config = runtime.open_plan().lifecycle_config();
         Ok(StorageOpenOutcome::new(
             Self {
-                inner: StorageRuntimeInner::Cache(Box::new(runtime)),
+                inner: StorageRuntimeInner::Cache(Box::new(RuntimeSlot::new(runtime, config))),
                 open_summary: Some(summary),
                 last_recovery: Some(recovery),
                 last_close: None,
@@ -1476,11 +1771,12 @@ impl<'a> StorageRuntime<'a> {
         let runtime = shell
             .complete_recovery(&recovery)
             .map_err(map_lifecycle_error)?;
-        let summary = map_open_summary(runtime.open_outcome(), options.mode());
+        let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
         let recovery_report = map_diagnostics_recovery(runtime.current_recovery_health());
+        let config = runtime.open_plan().lifecycle_config();
         Ok(StorageOpenOutcome::new(
             Self {
-                inner: StorageRuntimeInner::Durable(Box::new(runtime)),
+                inner: StorageRuntimeInner::Durable(Box::new(RuntimeSlot::new(runtime, config))),
                 open_summary: Some(summary),
                 last_recovery: Some(recovery_report),
                 last_close: None,
@@ -1492,19 +1788,28 @@ impl<'a> StorageRuntime<'a> {
     #[cfg(all(test, feature = "localfs"))]
     pub(crate) fn release_writer_guard_for_test(&mut self) -> bool {
         match &mut self.inner {
-            StorageRuntimeInner::Durable(runtime) => runtime.release_writer_guard_for_test(),
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime.release_writer_guard_for_test()
+            }
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
         }
     }
 
     fn read_view_for_branch(&self, branch_id: BranchId) -> StorageApiResult<BranchReadView> {
         match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime
-                .read_view_for_branch(branch_id)
-                .map_err(map_lifecycle_error),
-            StorageRuntimeInner::Durable(runtime) => runtime
-                .read_view_for_branch(branch_id)
-                .map_err(map_lifecycle_error),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .read_view_for_branch(branch_id)
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .read_view_for_branch(branch_id)
+                    .map_err(map_lifecycle_error)
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "read requires an open runtime",
             }),
@@ -1518,12 +1823,18 @@ impl<'a> StorageRuntime<'a> {
         visible_limit: Option<usize>,
     ) -> StorageApiResult<Vec<crate::branch::read::BranchHistoryRow>> {
         match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime
-                .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                .map_err(map_lifecycle_error),
-            StorageRuntimeInner::Durable(runtime) => runtime
-                .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                .map_err(map_lifecycle_error),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
+                    .map_err(map_lifecycle_error)
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "read requires an open runtime",
             }),
@@ -1575,14 +1886,20 @@ impl<'a> StorageRuntime<'a> {
         &self,
     ) -> LifecycleMaintenanceSchedulingPolicy {
         match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime
-                .open_plan()
-                .lifecycle_config()
-                .maintenance_scheduling_policy(),
-            StorageRuntimeInner::Durable(runtime) => runtime
-                .open_plan()
-                .lifecycle_config()
-                .maintenance_scheduling_policy(),
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .open_plan()
+                    .lifecycle_config()
+                    .maintenance_scheduling_policy()
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .open_plan()
+                    .lifecycle_config()
+                    .maintenance_scheduling_policy()
+            }
             StorageRuntimeInner::Closed => LifecycleMaintenanceSchedulingPolicy::Disabled,
         }
     }
@@ -1616,7 +1933,8 @@ impl<'a> StorageRuntime<'a> {
         health: &RecoveryHealth,
     ) -> StorageApiResult<()> {
         match &mut self.inner {
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime.record_recovery_health_for_test(health);
                 self.last_recovery = Some(map_diagnostics_recovery(health));
                 Ok(())
@@ -1648,11 +1966,13 @@ impl<'a> StorageRuntime<'a> {
 
         let runtime_timer = perf_trace::start_timer();
         let (outcome_result, admission) = match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 let result = runtime.execute_cache_commit(runtime_batch, generation_guard);
                 (result, runtime.last_write_admission())
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let result = runtime.execute_durable_commit(runtime_batch, generation_guard);
                 (result, runtime.last_write_admission())
             }
@@ -1683,7 +2003,8 @@ impl<'a> StorageRuntime<'a> {
                     })
                 }
             },
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
                 match (runtime.open_plan().storage_mode(), requested) {
                     (
                         LifecycleStorageMode::DurableLocalStandard,
@@ -1726,10 +2047,12 @@ impl<'a> StorageRuntime<'a> {
 
     fn next_commit_timestamp(&self) -> Timestamp {
         let last_allocated = match &self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let runtime = slot.lock();
                 runtime.allocator().timestamp_guard().last_allocated()
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
                 runtime.allocator().timestamp_guard().last_allocated()
             }
             StorageRuntimeInner::Closed => None,
@@ -1749,7 +2072,8 @@ impl<'a> StorageRuntime<'a> {
         coverage: crate::branch::read::BranchTimestampCoverage,
     ) -> StorageApiResult<()> {
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 let generation = runtime
                     .branch_catalog()
                     .registry()
@@ -1763,7 +2087,8 @@ impl<'a> StorageRuntime<'a> {
                     .set_timestamp_coverage(coverage);
                 Ok(())
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let generation = runtime
                     .branch_catalog()
                     .registry()
@@ -1792,11 +2117,13 @@ impl<'a> StorageRuntime<'a> {
             crate::commit::CommitBranchGeneration::new(DEFAULT_BRANCH_GENERATION)
                 .map_err(commit_error)?;
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime
+            StorageRuntimeInner::Cache(slot) => slot
+                .lock()
                 .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
-            StorageRuntimeInner::Durable(runtime) => runtime
+            StorageRuntimeInner::Durable(slot) => slot
+                .lock()
                 .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
@@ -1814,7 +2141,8 @@ impl<'a> StorageRuntime<'a> {
     #[cfg(test)]
     pub(crate) fn flush_branch_for_test(&mut self, branch_id: BranchId) -> StorageApiResult<()> {
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_maintenance()
                     .map_err(map_lifecycle_error)?;
@@ -1823,7 +2151,8 @@ impl<'a> StorageRuntime<'a> {
                     .map(|_| ())
                     .map_err(map_lifecycle_error)
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_maintenance()
                     .map_err(map_lifecycle_error)?;
@@ -1844,12 +2173,14 @@ impl<'a> StorageRuntime<'a> {
         branch_id: BranchId,
     ) -> StorageApiResult<()> {
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => runtime
+            StorageRuntimeInner::Cache(slot) => slot
+                .lock()
                 .branch_catalog_mut_for_test()
                 .pin_reachability(branch_id)
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
-            StorageRuntimeInner::Durable(runtime) => runtime
+            StorageRuntimeInner::Durable(slot) => slot
+                .lock()
                 .branch_catalog_mut_for_test()
                 .pin_reachability(branch_id)
                 .map(|_| ())
@@ -1864,7 +2195,8 @@ impl<'a> StorageRuntime<'a> {
     pub(crate) fn append_raw_row_for_test(&mut self, row: StorageRow) -> StorageApiResult<()> {
         let branch_id = row.physical_key().branch_id();
         match &mut self.inner {
-            StorageRuntimeInner::Cache(runtime) => {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
                 let generation = runtime
                     .branch_catalog()
                     .registry()
@@ -1879,7 +2211,8 @@ impl<'a> StorageRuntime<'a> {
                     .map(|_| ())
                     .map_err(branch_error)
             }
-            StorageRuntimeInner::Durable(runtime) => {
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
                 let generation = runtime
                     .branch_catalog()
                     .registry()
@@ -1936,12 +2269,31 @@ fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPl
         .with_wal_growth_policy(map_wal_growth_policy(options.wal_growth_policy()))
         .map_err(map_lifecycle_error)?;
     config = config
-        .with_maintenance_scheduling_policy(
-            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
-        )
+        .with_maintenance_scheduling_policy(map_maintenance_scheduling_policy(
+            options.maintenance_scheduling_policy(),
+        ))
         .map_err(map_lifecycle_error)?;
     StorageOpenPlan::new(mode, LifecycleCodecId::identity(), recovery, config)
         .map_err(map_lifecycle_error)
+}
+
+fn durable_backend_handle_for_open(
+    options: StorageOpenOptions,
+    backend: &StorageBackend,
+) -> StorageApiResult<BackendHandle<'_>> {
+    if options.maintenance_scheduling_policy() != StorageMaintenanceSchedulingPolicy::Background {
+        return Ok(backend.as_backend_handle());
+    }
+
+    #[cfg(feature = "localfs")]
+    if let Some(handle) = backend.to_owned_backend_handle() {
+        return Ok(handle);
+    }
+
+    Err(StorageApiError::InvalidArgument {
+        field: "maintenance_scheduling_policy",
+        reason: "background durable opens with borrowed backend handles require an owned thread-safe backend; select deterministic inline or evaluate-and-enqueue for borrowed backend tests",
+    })
 }
 
 fn map_budget_policy(policy: StorageBudgetPolicy) -> StorageRuntimeBudget {
@@ -1967,9 +2319,29 @@ fn map_wal_growth_policy(policy: StorageWalGrowthPolicy) -> LifecycleWalGrowthPo
     }
 }
 
+const fn map_maintenance_scheduling_policy(
+    policy: StorageMaintenanceSchedulingPolicy,
+) -> LifecycleMaintenanceSchedulingPolicy {
+    match policy {
+        StorageMaintenanceSchedulingPolicy::Background => {
+            LifecycleMaintenanceSchedulingPolicy::Background
+        }
+        StorageMaintenanceSchedulingPolicy::DeterministicInline => {
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline
+        }
+        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue => {
+            LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue
+        }
+        StorageMaintenanceSchedulingPolicy::Disabled => {
+            LifecycleMaintenanceSchedulingPolicy::Disabled
+        }
+    }
+}
+
 fn map_open_summary(
     outcome: &LifecycleStorageOpenOutcome,
     mode: StorageMode,
+    options: StorageOpenOptions,
 ) -> StorageOpenSummary {
     StorageOpenSummary::with_open_facts(
         mode,
@@ -1982,6 +2354,7 @@ fn map_open_summary(
         map_recovery_health(outcome.recovery_health()),
         outcome.recovered_visible_version(),
         outcome.maintenance_ready(),
+        options.maintenance_scheduling_policy(),
         outcome.bootstrap().is_some()
             || outcome.checkpoint().is_some()
             || outcome.wal().is_some()
@@ -2175,8 +2548,22 @@ const fn map_wal_growth_trigger(trigger: LifecycleWalGrowthTrigger) -> Maintenan
 
 fn map_maintenance_queue_summary(
     executor_status: MaintenanceExecutorStatus,
+    background_stats: Option<BackgroundSchedulerStats>,
 ) -> MaintenanceQueueSummary {
     let stats = executor_status.stats();
+    let (
+        background_worker_count,
+        background_queue_depth,
+        background_active_tasks,
+        background_tasks_completed,
+    ) = background_stats.map_or((0, 0, 0, 0), |stats| {
+        (
+            stats.worker_count,
+            stats.queue_depth,
+            stats.active_tasks,
+            stats.tasks_completed,
+        )
+    });
     MaintenanceQueueSummary::new(
         executor_status.pending_tasks(),
         executor_status
@@ -2192,6 +2579,10 @@ fn map_maintenance_queue_summary(
         stats.canceled(),
         stats.drained(),
         stats.queue_full(),
+        background_worker_count,
+        background_queue_depth,
+        background_active_tasks,
+        background_tasks_completed,
     )
 }
 
@@ -2430,8 +2821,14 @@ fn require_valid_branch_identifier(
 
 fn current_visible(runtime: &StorageRuntime<'_>) -> Option<CommitVersion> {
     let version = match &runtime.inner {
-        StorageRuntimeInner::Cache(runtime) => runtime.visible_version(),
-        StorageRuntimeInner::Durable(runtime) => runtime.visible_version(),
+        StorageRuntimeInner::Cache(slot) => {
+            let runtime = slot.lock();
+            runtime.visible_version()
+        }
+        StorageRuntimeInner::Durable(slot) => {
+            let runtime = slot.lock();
+            runtime.visible_version()
+        }
         StorageRuntimeInner::Closed => CommitVersion::ZERO,
     };
     (version != CommitVersion::ZERO).then_some(version)

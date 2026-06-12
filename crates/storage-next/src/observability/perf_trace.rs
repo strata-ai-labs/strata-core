@@ -147,6 +147,8 @@ pub struct StoragePerfSnapshot {
     lifecycle_maintenance_coverage_stop_failure: u64,
     lifecycle_inline_maintenance_attempts: u64,
     lifecycle_inline_maintenance_ns: u64,
+    lifecycle_background_runtimes_created: u64,
+    lifecycle_background_runtime_workers_created: u64,
     lifecycle_flush_drain_frozen_tables_discovered: u64,
     lifecycle_flush_drain_operations_completed: u64,
     lifecycle_flush_drain_freeze_retries: u64,
@@ -801,6 +803,16 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent running inline automatic maintenance during commit handling.
     pub const fn lifecycle_inline_maintenance_ns(self) -> u64 {
         self.lifecycle_inline_maintenance_ns
+    }
+
+    /// Background maintenance runtime controllers created by public API opens.
+    pub const fn lifecycle_background_runtimes_created(self) -> u64 {
+        self.lifecycle_background_runtimes_created
+    }
+
+    /// Background maintenance worker threads requested by created runtimes.
+    pub const fn lifecycle_background_runtime_workers_created(self) -> u64 {
+        self.lifecycle_background_runtime_workers_created
     }
 
     /// Frozen tables observed at flush-drain start.
@@ -2121,6 +2133,10 @@ static LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_INLINE_MAINTENANCE_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_RUNTIMES_CREATED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
@@ -2701,6 +2717,8 @@ pub fn reset() {
     LIFECYCLE_MAINTENANCE_COVERAGE_STOP_FAILURE.store(0, Ordering::Relaxed);
     LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_INLINE_MAINTENANCE_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_RUNTIMES_CREATED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
@@ -3077,6 +3095,10 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_inline_maintenance_attempts: LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS
             .load(Ordering::Relaxed),
         lifecycle_inline_maintenance_ns: LIFECYCLE_INLINE_MAINTENANCE_NS.load(Ordering::Relaxed),
+        lifecycle_background_runtimes_created: LIFECYCLE_BACKGROUND_RUNTIMES_CREATED
+            .load(Ordering::Relaxed),
+        lifecycle_background_runtime_workers_created: LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED
+            .load(Ordering::Relaxed),
         lifecycle_flush_drain_frozen_tables_discovered:
             LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.load(Ordering::Relaxed),
         lifecycle_flush_drain_operations_completed: LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED
@@ -4131,6 +4153,18 @@ pub(crate) fn record_lifecycle_inline_maintenance(duration: std::time::Duration)
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_runtime_created(_worker_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_runtime_created(worker_count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_RUNTIMES_CREATED.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED.fetch_add(as_u64(worker_count), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

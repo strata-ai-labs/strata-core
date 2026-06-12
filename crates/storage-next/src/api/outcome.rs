@@ -2,7 +2,7 @@
 
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
-use super::StorageMode;
+use super::{StorageMaintenanceSchedulingPolicy, StorageMode};
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,6 +34,7 @@ pub struct StorageOpenSummary {
     recovery_health: RecoveryHealthSummary,
     recovered_visible_version: Option<CommitVersion>,
     maintenance_ready: bool,
+    maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
     durable_recovery_facts: bool,
     backend_capabilities_used: bool,
 }
@@ -52,6 +53,7 @@ impl StorageOpenSummary {
             recovery_health,
             recovered_visible_version,
             maintenance_ready: true,
+            maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             durable_recovery_facts: false,
             backend_capabilities_used: false,
         }
@@ -64,6 +66,7 @@ impl StorageOpenSummary {
         recovery_health: RecoveryHealthSummary,
         recovered_visible_version: Option<CommitVersion>,
         maintenance_ready: bool,
+        maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
         durable_recovery_facts: bool,
         backend_capabilities_used: bool,
     ) -> Self {
@@ -73,6 +76,7 @@ impl StorageOpenSummary {
             recovery_health,
             recovered_visible_version,
             maintenance_ready,
+            maintenance_scheduling_policy,
             durable_recovery_facts,
             backend_capabilities_used,
         }
@@ -101,6 +105,11 @@ impl StorageOpenSummary {
     #[must_use]
     pub const fn maintenance_ready(self) -> bool {
         self.maintenance_ready
+    }
+
+    #[must_use]
+    pub const fn maintenance_scheduling_policy(self) -> StorageMaintenanceSchedulingPolicy {
+        self.maintenance_scheduling_policy
     }
 
     #[must_use]
