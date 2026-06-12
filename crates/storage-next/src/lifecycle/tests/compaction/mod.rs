@@ -18,6 +18,9 @@ use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
     compact_cache_branch_to_fixed_point, LifecycleCompactionDrainRequest,
 };
+use crate::lifecycle::flush::{
+    flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
+};
 use strata_core_next::{BranchId, Timestamp};
 
 #[test]
@@ -1270,6 +1273,8 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
         LifecycleStoragePressureSeverity::Urgent
     );
     assert_eq!(frozen_pressure.frozen_tables(), 1);
+    assert_eq!(frozen_pressure.active_bytes(), 0);
+    assert!(frozen_pressure.frozen_bytes() > 0);
     assert!(matches!(
         frozen_pressure
             .suggested_task()
@@ -1367,6 +1372,295 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
     );
     assert_eq!(idle_pressure.pending_maintenance(), 1);
     assert!(idle_pressure.suggested_task().is_none());
+}
+
+#[test]
+fn storage_pressure_reports_active_mutable_byte_pressure_before_rotation() {
+    let branch = branch_id(0x68);
+    let rotation_bytes = 1024 * 1024;
+
+    let mut background = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::default()
+            .with_active_rotation_bytes(rotation_bytes)
+            .expect("custom active rotation threshold"),
+    )
+    .expect("branch state");
+    let background_value = vec![0x41; 600 * 1024];
+    background
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-background",
+            1,
+            1_000,
+            &background_value,
+        ))
+        .expect("append background pressure row");
+    let background_pressure = collect_storage_pressure(&background, empty_maintenance_status());
+    assert_eq!(
+        background_pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        background_pressure.severity(),
+        LifecycleStoragePressureSeverity::Background
+    );
+    assert_eq!(background_pressure.frozen_tables(), 0);
+    assert_eq!(background_pressure.frozen_bytes(), 0);
+    assert!(background_pressure.active_bytes() >= 600 * 1024);
+    assert!(background_pressure.suggested_task().is_none());
+
+    let mut urgent = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::default()
+            .with_active_rotation_bytes(rotation_bytes)
+            .expect("custom active rotation threshold"),
+    )
+    .expect("branch state");
+    let urgent_value = vec![0x42; 850 * 1024];
+    urgent
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-urgent",
+            2,
+            2_000,
+            &urgent_value,
+        ))
+        .expect("append urgent pressure row");
+    let urgent_pressure = collect_storage_pressure(&urgent, empty_maintenance_status());
+    assert_eq!(
+        urgent_pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        urgent_pressure.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert_eq!(urgent_pressure.frozen_tables(), 0);
+    assert_eq!(urgent_pressure.frozen_bytes(), 0);
+    assert!(urgent_pressure.active_bytes() >= 850 * 1024);
+    assert!(urgent_pressure.suggested_task().is_none());
+}
+
+#[test]
+fn storage_pressure_generated_active_byte_threshold_sweep_matches_policy() {
+    let rotation_bytes = 1024 * 1024;
+    for (case_index, value_bytes, expected_severity) in [
+        (0_u8, 128 * 1024, LifecycleStoragePressureSeverity::None),
+        (1, 600 * 1024, LifecycleStoragePressureSeverity::Background),
+        (2, 850 * 1024, LifecycleStoragePressureSeverity::Urgent),
+    ] {
+        let branch = branch_id(0x90 + case_index);
+        let state = active_byte_pressure_state(branch, rotation_bytes, value_bytes, case_index);
+        let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+
+        assert_eq!(pressure.severity(), expected_severity);
+        if expected_severity == LifecycleStoragePressureSeverity::None {
+            assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+        } else {
+            assert_eq!(
+                pressure.reason(),
+                LifecycleStoragePressureReason::ActiveMutableBytes
+            );
+        }
+        assert_eq!(pressure.frozen_tables(), 0);
+        assert_eq!(pressure.frozen_bytes(), 0);
+        assert!(pressure.active_bytes() < u64::try_from(rotation_bytes).expect("threshold fits"));
+    }
+
+    let blocked_branch = branch_id(0x93);
+    let blocked = blocked_active_byte_pressure_state(blocked_branch, 512 * 1024);
+    let blocked_pressure = collect_storage_pressure(&blocked, empty_maintenance_status());
+    assert_eq!(
+        blocked_pressure.severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert_eq!(
+        blocked_pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert!(blocked_pressure.frozen_tables() > 0);
+    assert!(blocked_pressure.frozen_bytes() > 0);
+}
+
+#[test]
+fn storage_pressure_blocks_active_bytes_when_rotation_is_backed_up() {
+    let branch = branch_id(0x69);
+    let rotation_bytes = 512 * 1024;
+    let config = BranchRuntimeConfig::new(8, 64, 1)
+        .expect("branch config")
+        .with_active_rotation_bytes(rotation_bytes)
+        .expect("custom active rotation threshold");
+    let mut state = BranchLocalState::new(branch, config).expect("branch state");
+    let first_value = vec![0x43; 600 * 1024];
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-rotates-to-frozen",
+            1,
+            1_000,
+            &first_value,
+        ))
+        .expect("append first large row");
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(state.active_row_count(), 0);
+
+    let second_value = vec![0x44; 600 * 1024];
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-blocked-by-frozen-limit",
+            2,
+            2_000,
+            &second_value,
+        ))
+        .expect("append second large row");
+    assert_eq!(state.frozen_table_count(), 1);
+    assert_eq!(state.active_row_count(), 1);
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert!(pressure.active_bytes() >= u64::try_from(rotation_bytes).expect("threshold fits"));
+    assert!(pressure.frozen_bytes() > 0);
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    ));
+}
+
+fn active_byte_pressure_state(
+    branch: BranchId,
+    rotation_bytes: usize,
+    value_bytes: usize,
+    case_index: u8,
+) -> BranchLocalState {
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::default()
+            .with_active_rotation_bytes(rotation_bytes)
+            .expect("custom active rotation threshold"),
+    )
+    .expect("branch state");
+    state
+        .append_committed_row(put_row(
+            branch,
+            format!("active-byte-sweep-{case_index}").as_bytes(),
+            u64::from(case_index) + 1,
+            (u64::from(case_index) + 1) * 1_000,
+            &vec![case_index; value_bytes],
+        ))
+        .expect("append active pressure row");
+    state
+}
+
+fn blocked_active_byte_pressure_state(branch: BranchId, rotation_bytes: usize) -> BranchLocalState {
+    let config = BranchRuntimeConfig::new(8, 64, 1)
+        .expect("branch config")
+        .with_active_rotation_bytes(rotation_bytes)
+        .expect("custom active rotation threshold");
+    let mut state = BranchLocalState::new(branch, config).expect("branch state");
+    let value_bytes = rotation_bytes.saturating_add(64 * 1024);
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-sweep-frozen",
+            1,
+            1_000,
+            &vec![0x71; value_bytes],
+        ))
+        .expect("append first large row");
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-sweep-blocked",
+            2,
+            2_000,
+            &vec![0x72; value_bytes],
+        ))
+        .expect("append second large row");
+    state
+}
+
+#[test]
+fn storage_pressure_prefers_clearable_table_rewrite_when_active_block_has_no_flush_candidate() {
+    let branch = branch_id(0x6a);
+    let rotation_bytes = 512 * 1024;
+    let config = BranchRuntimeConfig::new(8, 64, 1)
+        .expect("branch config")
+        .with_active_rotation_bytes(rotation_bytes)
+        .expect("custom active rotation threshold");
+    let mut state = BranchLocalState::new(branch, config).expect("branch state");
+    let first_value = vec![0x45; 600 * 1024];
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-fill-frozen-capacity",
+            1,
+            1_000,
+            &first_value,
+        ))
+        .expect("append first large row");
+    let second_value = vec![0x46; 600 * 1024];
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"active-byte-over-threshold-with-full-frozen",
+            2,
+            2_000,
+            &second_value,
+        ))
+        .expect("append second large row");
+    assert_eq!(state.frozen_table_count(), 1);
+    assert!(state.active_byte_count() >= u64::try_from(rotation_bytes).expect("threshold fits"));
+
+    let flush = FlushFrozenRequest::new(
+        branch,
+        Some(0),
+        FlushTableIdentitySeed::new("active-block-flush-seed").expect("flush seed"),
+        FlushTableObjectId::new("active-block-flush-object").expect("flush object"),
+    )
+    .expect("flush request");
+    flush_cache_branch(&mut state, &flush).expect("flush frozen table");
+    assert_eq!(state.frozen_table_count(), 0);
+    assert!(state.active_byte_count() >= u64::try_from(rotation_bytes).expect("threshold fits"));
+
+    for index in 0..16 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("clearable-table-rewrite-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("clearable-table-rewrite-{index}").as_bytes(),
+                index + 10,
+                (index + 10) * 1_000,
+                b"value",
+            )],
+        );
+    }
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::LevelZeroTableBacklog
+    );
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Compaction)
+    ));
 }
 
 #[test]
@@ -2291,6 +2585,170 @@ fn single_inherited_state(parent: BranchId, child: BranchId) -> BranchLocalState
         .expect("fork child from parent");
     assert_eq!(outcome.inherited_layer_count(), 1);
     child_state
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn storage_pressure_perf_trace_records_collection_shape_and_active_bytes() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xb1);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::default()
+            .with_active_rotation_bytes(1024 * 1024)
+            .expect("custom active rotation threshold"),
+    )
+    .expect("branch state");
+    let value = vec![0x51; 850 * 1024];
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"pressure-collection-active-bytes",
+            1,
+            1_000,
+            &value,
+        ))
+        .expect("append active pressure row");
+    for index in 0..2 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("pressure-collection-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("pressure-collection-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    crate::observability::perf_trace::reset();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert_eq!(perf.lifecycle_pressure_collection_calls(), 1);
+    assert_eq!(perf.lifecycle_pressure_collection_branches_inspected(), 1);
+    assert_eq!(
+        perf.lifecycle_pressure_collection_levels_inspected(),
+        u64::try_from(state.owned_levels().len()).expect("level count fits u64")
+    );
+    assert_eq!(perf.lifecycle_pressure_collection_tables_inspected(), 2);
+    assert_eq!(perf.lifecycle_pressure_collection_sampling_skips(), 0);
+    assert_eq!(perf.lifecycle_pressure_collection_full_scans(), 1);
+    assert_eq!(perf.lifecycle_active_byte_pressure_urgent(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn storage_pressure_perf_trace_records_generated_active_byte_observations() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let rotation_bytes = 1024 * 1024;
+    let states = [
+        active_byte_pressure_state(branch_id(0xb3), rotation_bytes, 128 * 1024, 0),
+        active_byte_pressure_state(branch_id(0xb4), rotation_bytes, 600 * 1024, 1),
+        active_byte_pressure_state(branch_id(0xb5), rotation_bytes, 850 * 1024, 2),
+        blocked_active_byte_pressure_state(branch_id(0xb6), 512 * 1024),
+    ];
+    crate::observability::perf_trace::reset();
+
+    let pressures = states
+        .iter()
+        .map(|state| collect_storage_pressure(state, empty_maintenance_status()))
+        .collect::<Vec<_>>();
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(
+        pressures
+            .iter()
+            .map(|pressure| pressure.severity())
+            .collect::<Vec<_>>(),
+        vec![
+            LifecycleStoragePressureSeverity::None,
+            LifecycleStoragePressureSeverity::Background,
+            LifecycleStoragePressureSeverity::Urgent,
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+        ]
+    );
+    assert_eq!(perf.lifecycle_pressure_collection_calls(), 4);
+    assert_eq!(perf.lifecycle_pressure_collection_branches_inspected(), 4);
+    assert_eq!(
+        perf.lifecycle_pressure_collection_levels_inspected(),
+        states
+            .iter()
+            .map(|state| u64::try_from(state.owned_levels().len()).expect("level count fits"))
+            .sum::<u64>()
+    );
+    assert_eq!(perf.lifecycle_pressure_collection_tables_inspected(), 1);
+    assert!(perf.lifecycle_pressure_collection_ns() > 0);
+    assert_eq!(perf.lifecycle_pressure_collection_sampling_skips(), 0);
+    assert_eq!(perf.lifecycle_pressure_collection_full_scans(), 4);
+    assert_eq!(perf.lifecycle_active_byte_pressure_background(), 1);
+    assert_eq!(perf.lifecycle_active_byte_pressure_urgent(), 1);
+    assert_eq!(perf.lifecycle_active_byte_pressure_blocking(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn storage_pressure_counts_active_byte_signal_when_table_rewrite_wins() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xb2);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::default()
+            .with_active_rotation_bytes(1024 * 1024)
+            .expect("custom active rotation threshold"),
+    )
+    .expect("branch state");
+    let value = vec![0x52; 850 * 1024];
+    state
+        .append_committed_row(put_row(
+            branch,
+            b"pressure-active-byte-l0-precedence",
+            1,
+            1_000,
+            &value,
+        ))
+        .expect("append active pressure row");
+    for index in 0..8 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("active-byte-counter-l0-{index}"),
+            vec![put_row(
+                branch,
+                format!("active-byte-counter-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    crate::observability::perf_trace::reset();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::LevelZeroTableBacklog
+    );
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert_eq!(perf.lifecycle_active_byte_pressure_urgent(), 1);
+    assert_eq!(perf.lifecycle_active_byte_pressure_background(), 0);
+    assert_eq!(perf.lifecycle_active_byte_pressure_blocking(), 0);
 }
 
 #[cfg(feature = "perf-trace")]

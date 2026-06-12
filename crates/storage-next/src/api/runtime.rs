@@ -2588,7 +2588,9 @@ fn diagnostics_pressure_report(
         map_storage_pressure_severity(pressure.severity()),
         map_storage_pressure_reason(pressure.reason()),
         pressure.active_rows(),
+        pressure.active_bytes(),
         pressure.frozen_tables(),
+        pressure.frozen_bytes(),
         pressure.level_zero_tables(),
         pressure.owned_tables(),
         pressure.inherited_layers(),
@@ -2649,6 +2651,9 @@ const fn map_storage_pressure_reason(
 ) -> DiagnosticsStoragePressureReason {
     match reason {
         LifecycleStoragePressureReason::None => DiagnosticsStoragePressureReason::None,
+        LifecycleStoragePressureReason::ActiveMutableBytes => {
+            DiagnosticsStoragePressureReason::ActiveMutableBytes
+        }
         LifecycleStoragePressureReason::FrozenBacklog => {
             DiagnosticsStoragePressureReason::FrozenBacklog
         }
@@ -2788,6 +2793,7 @@ const fn map_commit_admission_summary(
                 map_commit_admission_pressure_reason(admission.pressure().reason()),
                 admission.cleared_prior_rejection(),
             )
+            .with_inline_maintenance_driven(admission.inline_maintenance_driven())
         }
     }
 }
@@ -2810,6 +2816,9 @@ const fn map_commit_admission_pressure_reason(
 ) -> CommitAdmissionPressureReason {
     match reason {
         LifecycleStoragePressureReason::None => CommitAdmissionPressureReason::None,
+        LifecycleStoragePressureReason::ActiveMutableBytes => {
+            CommitAdmissionPressureReason::ActiveMutableBytes
+        }
         LifecycleStoragePressureReason::FrozenBacklog => {
             CommitAdmissionPressureReason::FrozenBacklog
         }

@@ -120,6 +120,7 @@ pub enum DiagnosticsStoragePressureSeverity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticsStoragePressureReason {
     None,
+    ActiveMutableBytes,
     FrozenBacklog,
     LevelZeroTableBacklog,
     NonZeroLevelTableBacklog,
@@ -134,7 +135,9 @@ pub struct DiagnosticsStoragePressureReport {
     severity: DiagnosticsStoragePressureSeverity,
     reason: DiagnosticsStoragePressureReason,
     active_rows: usize,
+    active_bytes: u64,
     frozen_tables: usize,
+    frozen_bytes: u64,
     level_zero_tables: usize,
     owned_tables: usize,
     inherited_layers: usize,
@@ -441,7 +444,9 @@ impl DiagnosticsStoragePressureReport {
         severity: DiagnosticsStoragePressureSeverity,
         reason: DiagnosticsStoragePressureReason,
         active_rows: usize,
+        active_bytes: u64,
         frozen_tables: usize,
+        frozen_bytes: u64,
         level_zero_tables: usize,
         owned_tables: usize,
         inherited_layers: usize,
@@ -453,7 +458,9 @@ impl DiagnosticsStoragePressureReport {
             severity,
             reason,
             active_rows,
+            active_bytes,
             frozen_tables,
+            frozen_bytes,
             level_zero_tables,
             owned_tables,
             inherited_layers,
@@ -469,7 +476,9 @@ impl DiagnosticsStoragePressureReport {
             severity: DiagnosticsStoragePressureSeverity::None,
             reason: DiagnosticsStoragePressureReason::None,
             active_rows: 0,
+            active_bytes: 0,
             frozen_tables: 0,
+            frozen_bytes: 0,
             level_zero_tables: 0,
             owned_tables: 0,
             inherited_layers: 0,
@@ -503,8 +512,18 @@ impl DiagnosticsStoragePressureReport {
     }
 
     #[must_use]
+    pub const fn active_bytes(self) -> u64 {
+        self.active_bytes
+    }
+
+    #[must_use]
     pub const fn frozen_tables(self) -> usize {
         self.frozen_tables
+    }
+
+    #[must_use]
+    pub const fn frozen_bytes(self) -> u64 {
+        self.frozen_bytes
     }
 
     #[must_use]

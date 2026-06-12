@@ -135,6 +135,7 @@ pub(crate) struct LifecycleWriteAdmissionOutcome {
     status: LifecycleWriteAdmissionStatus,
     pressure: LifecycleStoragePressure,
     cleared_prior_rejection: bool,
+    inline_maintenance_driven: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -934,6 +935,7 @@ impl LifecycleWriteAdmissionOutcome {
             status,
             pressure,
             cleared_prior_rejection,
+            inline_maintenance_driven: false,
         }
     }
 
@@ -947,6 +949,15 @@ impl LifecycleWriteAdmissionOutcome {
 
     pub(crate) const fn cleared_prior_rejection(self) -> bool {
         self.cleared_prior_rejection
+    }
+
+    pub(crate) const fn inline_maintenance_driven(self) -> bool {
+        self.inline_maintenance_driven
+    }
+
+    pub(crate) const fn with_inline_maintenance_driven(mut self) -> Self {
+        self.inline_maintenance_driven = true;
+        self
     }
 }
 

@@ -1223,6 +1223,7 @@ const fn storage_pressure_severity_name(
 const fn storage_pressure_reason_name(reason: LifecycleStoragePressureReason) -> &'static str {
     match reason {
         LifecycleStoragePressureReason::None => "no backlog",
+        LifecycleStoragePressureReason::ActiveMutableBytes => "active mutable byte pressure",
         LifecycleStoragePressureReason::FrozenBacklog => "frozen table backlog",
         LifecycleStoragePressureReason::LevelZeroTableBacklog => "level-zero table backlog",
         LifecycleStoragePressureReason::NonZeroLevelTableBacklog => "nonzero-level table backlog",

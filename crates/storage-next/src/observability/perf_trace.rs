@@ -108,11 +108,26 @@ pub struct StoragePerfSnapshot {
     lifecycle_write_admission_evaluations: u64,
     lifecycle_write_admission_clean_accepts: u64,
     lifecycle_write_admission_under_pressure_accepts: u64,
+    lifecycle_write_admission_urgent_accepts: u64,
     lifecycle_write_admission_requires_maintenance: u64,
     lifecycle_write_admission_inline_attempts: u64,
+    lifecycle_write_admission_urgent_inline_attempts: u64,
     lifecycle_write_admission_pressure_rejects: u64,
     lifecycle_write_admission_retryable_rejects: u64,
     lifecycle_write_admission_pressure_cleared_retries: u64,
+    lifecycle_write_admission_wait_attempts: u64,
+    lifecycle_write_admission_wait_timeouts: u64,
+    lifecycle_pressure_clear_wakes: u64,
+    lifecycle_pressure_collection_calls: u64,
+    lifecycle_pressure_collection_branches_inspected: u64,
+    lifecycle_pressure_collection_levels_inspected: u64,
+    lifecycle_pressure_collection_tables_inspected: u64,
+    lifecycle_pressure_collection_ns: u64,
+    lifecycle_pressure_collection_sampling_skips: u64,
+    lifecycle_pressure_collection_full_scans: u64,
+    lifecycle_active_byte_pressure_background: u64,
+    lifecycle_active_byte_pressure_urgent: u64,
+    lifecycle_active_byte_pressure_blocking: u64,
     lifecycle_post_commit_maintenance_evaluations: u64,
     lifecycle_post_commit_maintenance_disabled: u64,
     lifecycle_post_commit_maintenance_no_task: u64,
@@ -539,6 +554,11 @@ impl StoragePerfSnapshot {
         self.lifecycle_write_admission_under_pressure_accepts
     }
 
+    /// Urgent pressure admissions accepted without rejecting the caller.
+    pub const fn lifecycle_write_admission_urgent_accepts(self) -> u64 {
+        self.lifecycle_write_admission_urgent_accepts
+    }
+
     /// Admission evaluations that found maintenance required before more writes.
     pub const fn lifecycle_write_admission_requires_maintenance(self) -> u64 {
         self.lifecycle_write_admission_requires_maintenance
@@ -547,6 +567,11 @@ impl StoragePerfSnapshot {
     /// Bounded inline maintenance attempts made before write admission.
     pub const fn lifecycle_write_admission_inline_attempts(self) -> u64 {
         self.lifecycle_write_admission_inline_attempts
+    }
+
+    /// Inline maintenance attempts made specifically for urgent admission pressure.
+    pub const fn lifecycle_write_admission_urgent_inline_attempts(self) -> u64 {
+        self.lifecycle_write_admission_urgent_inline_attempts
     }
 
     /// Mutating commit admissions rejected by storage pressure.
@@ -562,6 +587,71 @@ impl StoragePerfSnapshot {
     /// Later admissions accepted after a prior pressure rejection for that branch.
     pub const fn lifecycle_write_admission_pressure_cleared_retries(self) -> u64 {
         self.lifecycle_write_admission_pressure_cleared_retries
+    }
+
+    /// Admission attempts that entered a pressure wait policy.
+    pub const fn lifecycle_write_admission_wait_attempts(self) -> u64 {
+        self.lifecycle_write_admission_wait_attempts
+    }
+
+    /// Pressure wait attempts that timed out.
+    pub const fn lifecycle_write_admission_wait_timeouts(self) -> u64 {
+        self.lifecycle_write_admission_wait_timeouts
+    }
+
+    /// Notifications emitted after storage pressure cleared.
+    pub const fn lifecycle_pressure_clear_wakes(self) -> u64 {
+        self.lifecycle_pressure_clear_wakes
+    }
+
+    /// Storage pressure collection passes.
+    pub const fn lifecycle_pressure_collection_calls(self) -> u64 {
+        self.lifecycle_pressure_collection_calls
+    }
+
+    /// Branch states inspected during storage pressure collection.
+    pub const fn lifecycle_pressure_collection_branches_inspected(self) -> u64 {
+        self.lifecycle_pressure_collection_branches_inspected
+    }
+
+    /// Level vectors inspected during storage pressure collection.
+    pub const fn lifecycle_pressure_collection_levels_inspected(self) -> u64 {
+        self.lifecycle_pressure_collection_levels_inspected
+    }
+
+    /// Table descriptors inspected during storage pressure collection.
+    pub const fn lifecycle_pressure_collection_tables_inspected(self) -> u64 {
+        self.lifecycle_pressure_collection_tables_inspected
+    }
+
+    /// Nanoseconds spent collecting storage pressure.
+    pub const fn lifecycle_pressure_collection_ns(self) -> u64 {
+        self.lifecycle_pressure_collection_ns
+    }
+
+    /// Pressure collection scans skipped by sampling.
+    pub const fn lifecycle_pressure_collection_sampling_skips(self) -> u64 {
+        self.lifecycle_pressure_collection_sampling_skips
+    }
+
+    /// Full pressure collection scans executed instead of sampled skips.
+    pub const fn lifecycle_pressure_collection_full_scans(self) -> u64 {
+        self.lifecycle_pressure_collection_full_scans
+    }
+
+    /// Active mutable byte pressure observations at background severity.
+    pub const fn lifecycle_active_byte_pressure_background(self) -> u64 {
+        self.lifecycle_active_byte_pressure_background
+    }
+
+    /// Active mutable byte pressure observations at urgent severity.
+    pub const fn lifecycle_active_byte_pressure_urgent(self) -> u64 {
+        self.lifecycle_active_byte_pressure_urgent
+    }
+
+    /// Active mutable byte pressure observations at blocking severity.
+    pub const fn lifecycle_active_byte_pressure_blocking(self) -> u64 {
+        self.lifecycle_active_byte_pressure_blocking
     }
 
     /// Post-commit maintenance pressure evaluations.
@@ -1629,15 +1719,45 @@ static LIFECYCLE_WRITE_ADMISSION_CLEAN_ACCEPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_URGENT_ACCEPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_URGENT_INLINE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_CLEAR_WAKES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_BRANCHES_INSPECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_LEVELS_INSPECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_TABLES_INSPECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_SAMPLING_SKIPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_PRESSURE_COLLECTION_FULL_SCANS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ACTIVE_BYTE_PRESSURE_BACKGROUND: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ACTIVE_BYTE_PRESSURE_URGENT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ACTIVE_BYTE_PRESSURE_BLOCKING: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -2112,11 +2232,26 @@ pub fn reset() {
     LIFECYCLE_WRITE_ADMISSION_EVALUATIONS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_CLEAN_ACCEPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_URGENT_ACCEPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_URGENT_INLINE_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_CLEAR_WAKES.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_CALLS.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_BRANCHES_INSPECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_LEVELS_INSPECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_TABLES_INSPECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_SAMPLING_SKIPS.store(0, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_FULL_SCANS.store(0, Ordering::Relaxed);
+    LIFECYCLE_ACTIVE_BYTE_PRESSURE_BACKGROUND.store(0, Ordering::Relaxed);
+    LIFECYCLE_ACTIVE_BYTE_PRESSURE_URGENT.store(0, Ordering::Relaxed);
+    LIFECYCLE_ACTIVE_BYTE_PRESSURE_BLOCKING.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_NO_TASK.store(0, Ordering::Relaxed);
@@ -2376,16 +2511,44 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_write_admission_under_pressure_accepts:
             LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS.load(Ordering::Relaxed),
+        lifecycle_write_admission_urgent_accepts: LIFECYCLE_WRITE_ADMISSION_URGENT_ACCEPTS
+            .load(Ordering::Relaxed),
         lifecycle_write_admission_requires_maintenance:
             LIFECYCLE_WRITE_ADMISSION_REQUIRES_MAINTENANCE.load(Ordering::Relaxed),
         lifecycle_write_admission_inline_attempts: LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS
             .load(Ordering::Relaxed),
+        lifecycle_write_admission_urgent_inline_attempts:
+            LIFECYCLE_WRITE_ADMISSION_URGENT_INLINE_ATTEMPTS.load(Ordering::Relaxed),
         lifecycle_write_admission_pressure_rejects: LIFECYCLE_WRITE_ADMISSION_PRESSURE_REJECTS
             .load(Ordering::Relaxed),
         lifecycle_write_admission_retryable_rejects: LIFECYCLE_WRITE_ADMISSION_RETRYABLE_REJECTS
             .load(Ordering::Relaxed),
         lifecycle_write_admission_pressure_cleared_retries:
             LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.load(Ordering::Relaxed),
+        lifecycle_write_admission_wait_attempts: LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_wait_timeouts: LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS
+            .load(Ordering::Relaxed),
+        lifecycle_pressure_clear_wakes: LIFECYCLE_PRESSURE_CLEAR_WAKES.load(Ordering::Relaxed),
+        lifecycle_pressure_collection_calls: LIFECYCLE_PRESSURE_COLLECTION_CALLS
+            .load(Ordering::Relaxed),
+        lifecycle_pressure_collection_branches_inspected:
+            LIFECYCLE_PRESSURE_COLLECTION_BRANCHES_INSPECTED.load(Ordering::Relaxed),
+        lifecycle_pressure_collection_levels_inspected:
+            LIFECYCLE_PRESSURE_COLLECTION_LEVELS_INSPECTED.load(Ordering::Relaxed),
+        lifecycle_pressure_collection_tables_inspected:
+            LIFECYCLE_PRESSURE_COLLECTION_TABLES_INSPECTED.load(Ordering::Relaxed),
+        lifecycle_pressure_collection_ns: LIFECYCLE_PRESSURE_COLLECTION_NS.load(Ordering::Relaxed),
+        lifecycle_pressure_collection_sampling_skips: LIFECYCLE_PRESSURE_COLLECTION_SAMPLING_SKIPS
+            .load(Ordering::Relaxed),
+        lifecycle_pressure_collection_full_scans: LIFECYCLE_PRESSURE_COLLECTION_FULL_SCANS
+            .load(Ordering::Relaxed),
+        lifecycle_active_byte_pressure_background: LIFECYCLE_ACTIVE_BYTE_PRESSURE_BACKGROUND
+            .load(Ordering::Relaxed),
+        lifecycle_active_byte_pressure_urgent: LIFECYCLE_ACTIVE_BYTE_PRESSURE_URGENT
+            .load(Ordering::Relaxed),
+        lifecycle_active_byte_pressure_blocking: LIFECYCLE_ACTIVE_BYTE_PRESSURE_BLOCKING
+            .load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_evaluations:
             LIFECYCLE_POST_COMMIT_MAINTENANCE_EVALUATIONS.load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_disabled: LIFECYCLE_POST_COMMIT_MAINTENANCE_DISABLED
@@ -3024,6 +3187,7 @@ pub(crate) fn record_lifecycle_write_admission_under_pressure(cleared_retry: boo
     }
     LIFECYCLE_WRITE_ADMISSION_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_UNDER_PRESSURE_ACCEPTS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_URGENT_ACCEPTS.fetch_add(1, Ordering::Relaxed);
     if cleared_retry {
         LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.fetch_add(1, Ordering::Relaxed);
     }
@@ -3124,6 +3288,145 @@ pub(crate) fn record_lifecycle_post_commit_maintenance_deferred() {
         return;
     }
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_inline_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_inline_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_INLINE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_urgent_inline_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_urgent_inline_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_URGENT_INLINE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(
+    dead_code,
+    reason = "bounded pressure waits are not implemented by the current fail-fast policy"
+)]
+pub(crate) fn record_lifecycle_write_admission_wait_attempt() {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(
+    dead_code,
+    reason = "bounded pressure waits are not implemented by the current fail-fast policy"
+)]
+pub(crate) fn record_lifecycle_write_admission_wait_attempt() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(
+    dead_code,
+    reason = "bounded pressure waits are not implemented by the current fail-fast policy"
+)]
+pub(crate) fn record_lifecycle_write_admission_wait_timeout() {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(
+    dead_code,
+    reason = "bounded pressure waits are not implemented by the current fail-fast policy"
+)]
+pub(crate) fn record_lifecycle_write_admission_wait_timeout() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+#[allow(
+    dead_code,
+    reason = "pressure-clear wakeups are not implemented by the current fail-fast policy"
+)]
+pub(crate) fn record_lifecycle_pressure_clear_wake() {}
+
+#[cfg(feature = "perf-trace")]
+#[allow(
+    dead_code,
+    reason = "pressure-clear wakeups are not implemented by the current fail-fast policy"
+)]
+pub(crate) fn record_lifecycle_pressure_clear_wake() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_PRESSURE_CLEAR_WAKES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_pressure_collection(
+    _branches: usize,
+    _levels: usize,
+    _tables: usize,
+    _start: PerfTraceTimer,
+    _sampled_skip: bool,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_pressure_collection(
+    branches: usize,
+    levels: usize,
+    tables: usize,
+    start: PerfTraceTimer,
+    sampled_skip: bool,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_PRESSURE_COLLECTION_CALLS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_BRANCHES_INSPECTED.fetch_add(as_u64(branches), Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_LEVELS_INSPECTED.fetch_add(as_u64(levels), Ordering::Relaxed);
+    LIFECYCLE_PRESSURE_COLLECTION_TABLES_INSPECTED.fetch_add(as_u64(tables), Ordering::Relaxed);
+    if sampled_skip {
+        LIFECYCLE_PRESSURE_COLLECTION_SAMPLING_SKIPS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        LIFECYCLE_PRESSURE_COLLECTION_FULL_SCANS.fetch_add(1, Ordering::Relaxed);
+    }
+    record_elapsed(&LIFECYCLE_PRESSURE_COLLECTION_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_active_byte_pressure(
+    _severity: crate::lifecycle::LifecycleStoragePressureSeverity,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_active_byte_pressure(
+    severity: crate::lifecycle::LifecycleStoragePressureSeverity,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    match severity {
+        crate::lifecycle::LifecycleStoragePressureSeverity::None => {}
+        crate::lifecycle::LifecycleStoragePressureSeverity::Background => {
+            LIFECYCLE_ACTIVE_BYTE_PRESSURE_BACKGROUND.fetch_add(1, Ordering::Relaxed);
+        }
+        crate::lifecycle::LifecycleStoragePressureSeverity::Urgent => {
+            LIFECYCLE_ACTIVE_BYTE_PRESSURE_URGENT.fetch_add(1, Ordering::Relaxed);
+        }
+        crate::lifecycle::LifecycleStoragePressureSeverity::BlockMutatingAdmission => {
+            LIFECYCLE_ACTIVE_BYTE_PRESSURE_BLOCKING.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(not(feature = "perf-trace"))]

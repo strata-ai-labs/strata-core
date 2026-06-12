@@ -16,11 +16,13 @@ use crate::lifecycle::checkpoint::{
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure,
-    compact_branch_to_fixed_point_with, compaction_score_key_for_branch,
+    compact_branch_to_fixed_point_with, compaction_score_key_for_task,
+    current_compaction_request_from_maintenance_task,
     materialization_request_from_maintenance_task,
-    record_lifecycle_table_rewrite_post_operation_score,
-    scored_compaction_request_from_maintenance_task, table_rewrite_outcome_allows_chain_resubmit,
-    table_rewrite_score_key_for_task, LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
+    record_lifecycle_table_rewrite_post_operation_score, stale_compaction_maintenance_outcome,
+    table_rewrite_outcome_allows_chain_resubmit, table_rewrite_score_key_for_branch,
+    table_rewrite_score_key_for_task, table_rewrite_task_request_for_branch,
+    LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
 };
 use crate::lifecycle::flush::{
     flush_branch_drain_with, flush_drain_maintenance_outcome_for_scope,
@@ -285,10 +287,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<()> {
         self.last_write_admission = None;
         let pressure = self.storage_pressure_for_branch(branch_id);
-        let outcome = evaluate_mutating_write_admission(
+        let mut outcome = evaluate_mutating_write_admission(
             pressure,
             &mut self.pressure_rejected_commit_branches,
         )?;
+        if self
+            .open_plan
+            .lifecycle_config()
+            .maintenance_scheduling_policy()
+            == LifecycleMaintenanceSchedulingPolicy::DeterministicInline
+            && outcome.status()
+                == crate::lifecycle::LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+            && outcome.pressure().severity()
+                == crate::lifecycle::LifecycleStoragePressureSeverity::Urgent
+            && self.run_inline_admission_maintenance(outcome.pressure())
+        {
+            outcome = outcome.with_inline_maintenance_driven();
+        }
         self.last_write_admission = Some(outcome);
         Ok(())
     }
@@ -367,6 +382,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             });
         }
         Ok(())
+    }
+
+    fn run_inline_admission_maintenance(&mut self, pressure: LifecycleStoragePressure) -> bool {
+        let Some(request) = pressure.suggested_task() else {
+            return false;
+        };
+        crate::observability::perf_trace::record_lifecycle_write_admission_inline_attempt();
+        crate::observability::perf_trace::record_lifecycle_write_admission_urgent_inline_attempt();
+        let Ok(enqueue) = self.enqueue_maintenance(request) else {
+            return false;
+        };
+        let inline_start = std::time::Instant::now();
+        let result = self.run_inline_maintenance_task(request, enqueue.task_id());
+        crate::observability::perf_trace::record_lifecycle_inline_maintenance(
+            inline_start.elapsed(),
+        );
+        result.is_ok()
     }
 
     #[allow(
@@ -969,7 +1001,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> Option<LifecycleCompactionScoreKey> {
         let branch_id = branch_id_from_table_level_task(task).ok()?;
         let branch = self.branch_catalog.branch_state(branch_id).ok()?;
-        compaction_score_key_for_branch(branch)
+        compaction_score_key_for_task(branch, task)
     }
 
     fn run_compaction_maintenance_task(
@@ -1015,25 +1047,18 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .as_ref()
             .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
         {
-            self.resubmit_table_rewrite_if_branch_still_unhealthy(branch_id);
+            self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
         Ok(outcome)
     }
 
-    fn resubmit_table_rewrite_if_branch_still_unhealthy(&mut self, branch_id: BranchId) {
+    fn resubmit_table_rewrite_if_any_branch_still_unhealthy(&mut self, branch_id: BranchId) {
         if let Ok(branch) = self.branch_catalog.branch_state(branch_id) {
             record_lifecycle_table_rewrite_post_operation_score(branch);
         }
-        let pressure = self.storage_pressure_for_branch(branch_id);
-        let Some(request) = pressure.suggested_task() else {
+        let Some(request) = self.highest_scored_table_rewrite_request() else {
             return;
         };
-        if !matches!(
-            request.kind(),
-            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
-        ) {
-            return;
-        }
         let request_kind = request.kind();
         match self.enqueue_maintenance(request) {
             Ok(enqueue) => {
@@ -1050,6 +1075,25 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                 }
             }
         }
+    }
+
+    fn highest_scored_table_rewrite_request(&self) -> Option<MaintenanceTaskRequest> {
+        self.branch_catalog
+            .list_branches(false)
+            .into_iter()
+            .filter_map(|descriptor| {
+                let branch = self
+                    .branch_catalog
+                    .branch_state(descriptor.branch_id())
+                    .ok()?;
+                Some((
+                    table_rewrite_score_key_for_branch(branch)?,
+                    std::cmp::Reverse(*descriptor.branch_id().as_bytes()),
+                    table_rewrite_task_request_for_branch(branch)?,
+                ))
+            })
+            .max_by_key(|(score, branch_tiebreaker, _)| (*score, *branch_tiebreaker))
+            .map(|(_, _, request)| request)
     }
 
     #[allow(
@@ -1112,7 +1156,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .as_ref()
             .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
         {
-            self.resubmit_table_rewrite_if_branch_still_unhealthy(branch_id);
+            self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
         Ok(outcome)
     }
@@ -1531,7 +1575,10 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let request = scored_compaction_request_from_maintenance_task(task, self.branch)?;
+        let Some(request) = current_compaction_request_from_maintenance_task(task, self.branch)?
+        else {
+            return Ok(stale_compaction_maintenance_outcome());
+        };
         let compaction = compact_durable_branch_manifest_backed(
             self.branch,
             self.table_object,

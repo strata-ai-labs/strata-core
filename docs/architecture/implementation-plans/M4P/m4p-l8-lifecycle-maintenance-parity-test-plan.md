@@ -211,6 +211,43 @@ Required assertions:
     unresolved-durable gate counters.
 14. Durable failure tests increment maintenance health-debt counters.
 
+## Follow-Up Gate Tests
+
+Detailed follow-up implementation plan:
+`docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-implementation-plan.md`
+
+Detailed follow-up test plan:
+`docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-test-plan.md`
+
+Before treating the 5M/10M benchmark as full lifecycle parity proof, add or
+explicitly defer the following tests:
+
+1. Level-target pyramid tests prove that nonzero-level target bytes grow by
+   level, or the fixed-target decision is recorded and benchmark source fanout
+   remains bounded.
+2. Multi-branch coverage tests create one active committing branch and at least
+   one quiet branch with stranded frozen or table backlog; automatic
+   maintenance must either clear both or record the documented V1 deferral.
+3. Compaction IO-rate tests record load throughput and compaction bytes under
+   sustained maintenance so an IO throttle can be justified or skipped.
+4. Nonzero input policy tests assert the chosen V1 behavior: either
+   compact-pointer/round-robin variation or deterministic largest-input
+   selection with no hardcoded table-zero fallback.
+5. Memtable-byte pressure tests grow active mutable bytes without crossing
+   frozen-table thresholds and assert whether the pressure model reports a
+   distinct mutable-memory condition.
+6. Write-stall policy tests assert one documented behavior: fail-fast retryable
+   rejection, bounded wait, or condition-variable wake on pressure clear.
+7. Snapshot-floor tests assert that automatic pruning never advances beyond a
+   retained snapshot unless the lifecycle or engine-next ownership decision
+   provides a proof.
+8. Grandparent-overlap tests use deeper-level overlap fixtures to assert either
+   split-budget enforcement or a documented lower-layer deferral.
+9. Pressure-collection sampling tests record pressure collection calls and
+   level-iteration counters before adding old-style sampling intervals.
+10. Memory-release tests measure post-flush RSS or allocator facts before
+    requiring an explicit freed-memory release hook.
+
 ## Source Guards
 
 Add or update source guards to reject:

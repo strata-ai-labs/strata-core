@@ -295,6 +295,7 @@ pub enum CommitAdmissionPressureSeverity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitAdmissionPressureReason {
     None,
+    ActiveMutableBytes,
     FrozenBacklog,
     LevelZeroTableBacklog,
     NonZeroLevelTableBacklog,
@@ -349,6 +350,12 @@ impl CommitAdmissionSummary {
             inline_maintenance_driven: false,
             cleared_prior_pressure_rejection,
         }
+    }
+
+    #[must_use]
+    pub const fn with_inline_maintenance_driven(mut self, driven: bool) -> Self {
+        self.inline_maintenance_driven = driven;
+        self
     }
 
     #[must_use]

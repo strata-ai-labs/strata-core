@@ -7,6 +7,7 @@ use crate::backend::{
     DURABLE_LOCAL_MODE_REQUIREMENTS,
 };
 use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
@@ -20,7 +21,7 @@ use crate::format::{
 };
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
-use crate::row::{PhysicalKey, StorageSpaceId};
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::service::{TableManifestService, WalServiceConfig};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1541,6 +1542,128 @@ fn durable_commit_deterministic_inline_runs_suggested_flush() {
 }
 
 #[test]
+fn durable_commit_urgent_active_bytes_records_accept_without_inline_attempt() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x89);
+    let storage_budget = storage_budget_with_active_limit(1024 * 1024, 4);
+    let config = LifecycleConfig::default()
+        .with_storage_budget(storage_budget)
+        .expect("storage budget")
+        .with_maintenance_scheduling_policy(
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        )
+        .expect("inline maintenance scheduling");
+    let mut runtime =
+        open_runtime_with_config(StorageMode::DurableLocalStandard, branch, &backend, config);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch_owned(
+                branch,
+                b"durable-active-byte-urgent-seed",
+                vec![0x61; 850 * 1024],
+            ),
+            generation_guard(),
+        )
+        .expect("seed urgent active-byte pressure");
+    assert_eq!(
+        runtime.storage_pressure().reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+
+    let outcome = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-active-byte-urgent-admission", b"value"),
+            generation_guard(),
+        )
+        .expect("urgent active-byte pressure accepts durable commit");
+
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(2)));
+    let admission = runtime
+        .last_write_admission()
+        .expect("active-byte admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+    );
+    assert_eq!(
+        admission.pressure().reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        admission.pressure().severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert!(admission.pressure().suggested_task().is_none());
+    assert!(!admission.inline_maintenance_driven());
+}
+
+#[test]
+fn durable_commit_rejects_blocking_active_bytes_before_allocating_version() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x8a);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(branch, generation_guard())
+        .expect("branch state") = blocked_active_byte_pressure_state(branch, 512 * 1024);
+    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    let pressure = runtime.storage_pressure();
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert!(pressure.suggested_task().is_some());
+
+    let error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"durable-active-byte-blocked-rejected", b"value"),
+            generation_guard(),
+        )
+        .expect_err("blocking active bytes reject durable commit");
+
+    assert!(matches!(
+        error,
+        LifecycleError::StoragePressureRejected {
+            branch_id: rejected_branch,
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::ActiveMutableBytes,
+            retryable: true,
+            ..
+        } if rejected_branch == branch
+    ));
+    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&physical_key(
+                branch,
+                b"durable-active-byte-blocked-rejected"
+            ))
+            .expect("latest read")
+            .is_none(),
+        "rejected active-byte admission must not append durable rows"
+    );
+}
+
+#[test]
 fn durable_close_does_not_truncate_wal_unless_drain_task_did_so() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x37);
@@ -2320,6 +2443,30 @@ fn durable_put_batch(
     durable_put_batch_with_mode(branch, user_key, value, CommitDurabilityMode::Standard)
 }
 
+fn durable_put_batch_owned(
+    branch: BranchId,
+    user_key: &'static [u8],
+    value: Vec<u8>,
+) -> CommitBatch {
+    CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::put(
+            physical_key(branch, user_key),
+            value,
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Standard,
+            CommitConflictValidationMode::Skip,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGenerated,
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+}
+
 fn durable_put_batch_with_mode(
     branch: BranchId,
     user_key: &'static [u8],
@@ -2343,6 +2490,89 @@ fn durable_put_batch_with_mode(
             CommitOrigin::StorageRuntime,
         ),
     )
+}
+
+fn blocked_active_byte_pressure_state(branch: BranchId, rotation_bytes: usize) -> BranchLocalState {
+    let branch_config = BranchRuntimeConfig::new(8, 64, 1)
+        .expect("branch config")
+        .with_active_rotation_bytes(rotation_bytes)
+        .expect("custom active rotation threshold");
+    let mut state = BranchLocalState::new(branch, branch_config).expect("branch state");
+    let value_len = rotation_bytes.saturating_add(64 * 1024);
+    state
+        .append_committed_rows_atomically(vec![active_pressure_put_row(
+            branch,
+            b"durable-active-byte-blocking-frozen",
+            1,
+            1_000,
+            value_len,
+            0x62,
+        )])
+        .expect("append frozen pressure row");
+    assert_eq!(state.frozen_table_count(), 1);
+    state
+        .append_committed_rows_atomically(vec![active_pressure_put_row(
+            branch,
+            b"durable-active-byte-blocking-active",
+            2,
+            2_000,
+            value_len,
+            0x63,
+        )])
+        .expect("append active pressure row");
+    assert_eq!(state.frozen_table_count(), 1);
+    assert!(state.active_byte_count() >= rotation_bytes as u64);
+    state
+}
+
+fn active_pressure_put_row(
+    branch: BranchId,
+    user_key: &'static [u8],
+    version: u64,
+    timestamp: u64,
+    value_len: usize,
+    byte: u8,
+) -> StorageRow {
+    StorageRow::put(
+        physical_key(branch, user_key),
+        CommitVersion::new(version),
+        Timestamp::from_micros(timestamp),
+        Timestamp::EPOCH,
+        vec![byte; value_len],
+    )
+}
+
+fn storage_budget_with_active_limit(
+    active_bytes: u64,
+    max_frozen_tables: u32,
+) -> StorageRuntimeBudget {
+    let mut parts = StorageRuntimeBudgetParts {
+        block_cache_bytes: 0,
+        table_reader_bytes: 8 * 1024,
+        active_mutable_bytes: active_bytes,
+        frozen_mutable_bytes: active_bytes
+            .saturating_mul(u64::from(max_frozen_tables))
+            .max(active_bytes),
+        maintenance_queue_bytes: 1024,
+        generated_artifact_bytes: 8 * 1024,
+        manifest_catalog_bytes: 1024,
+        max_open_readers: 4,
+        max_frozen_tables,
+        max_pending_maintenance_tasks: 4,
+        ..StorageRuntimeBudgetParts::default()
+    };
+    parts.total_bytes = storage_budget_pool_sum(parts);
+    StorageRuntimeBudget::from_parts(parts).expect("storage budget")
+}
+
+fn storage_budget_pool_sum(parts: StorageRuntimeBudgetParts) -> u64 {
+    parts.block_cache_bytes
+        + parts.table_reader_bytes
+        + parts.active_mutable_bytes
+        + parts.frozen_mutable_bytes
+        + parts.maintenance_queue_bytes
+        + parts.generated_artifact_bytes
+        + parts.manifest_catalog_bytes
 }
 
 fn cache_put_batch(branch: BranchId, user_key: &'static [u8], value: &'static [u8]) -> CommitBatch {

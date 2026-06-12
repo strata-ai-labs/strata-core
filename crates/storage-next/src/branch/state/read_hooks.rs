@@ -91,8 +91,18 @@ impl BranchLocalState {
         self.active.len()
     }
 
+    pub(crate) fn active_byte_count(&self) -> u64 {
+        u64::try_from(self.active.approximate_size_bytes()).unwrap_or(u64::MAX)
+    }
+
     pub(crate) fn frozen_table_count(&self) -> usize {
         self.frozen.len()
+    }
+
+    pub(crate) fn frozen_byte_count(&self) -> u64 {
+        self.frozen.iter().fold(0u64, |total, table| {
+            total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
+        })
     }
 
     pub(crate) fn owned_table_count(&self) -> usize {

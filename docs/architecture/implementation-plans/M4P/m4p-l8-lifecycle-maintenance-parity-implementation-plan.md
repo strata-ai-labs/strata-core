@@ -48,6 +48,32 @@ to restore the old mechanical invariant: normal writes must not strand frozen
 state, L0 tables, or shallow-level backlog until a benchmark or user manually
 runs a fixed-point maintenance drain.
 
+## Status Update
+
+The first-pass L8 implementation has landed the immediate maintenance loop:
+
+1. post-commit maintenance scheduling evaluates pressure and enqueues/coalesces
+   work;
+2. flush drain can drain all eligible frozen state for the selected scope;
+3. compaction and materialization tasks are scored, executed, and re-scored for
+   chaining;
+4. write admission emits pressure facts and can reject blocking pressure before
+   avoidable commit allocation;
+5. deterministic-inline urgent admission can drive one suggested maintenance
+   task when the runtime policy allows it;
+6. benchmark diagnostics expose maintenance queue, source shape, and point-read
+   probe facts.
+
+Residual parity work is tracked in:
+
+1. `docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-implementation-plan.md`
+2. `docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-test-plan.md`
+
+The audit findings below are the historical starting point for L8. Treat the
+L8B follow-up docs as the current owner for remaining level-shape,
+cross-branch coverage, pressure/admission, resource-throttling, and
+snapshot/pruning gaps.
+
 ## Audit Findings
 
 Primary audit section:
@@ -391,6 +417,90 @@ Exit gate:
 - `l0_tables_per_million_rows_after_load` and
   `point_source_probes_per_read` do not scale linearly with key count after
   automatic maintenance has run.
+
+## Post-Verification Follow-Up Slices
+
+Detailed follow-up plan:
+`docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-implementation-plan.md`
+
+Detailed follow-up test plan:
+`docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-test-plan.md`
+
+The L8-A through L8-E implementation closes the immediate maintenance loop,
+but the verification review identified additional old-engine parity gaps that
+must be either implemented or explicitly deferred before the 5M/10M benchmark
+gate can be treated as a full lifecycle parity proof.
+
+Required before benchmark closeout:
+
+1. **L8-F. Level Target Pyramid And Adaptive Targets**
+   - Current storage-next scoring uses a fixed nonzero-level target size.
+   - Old storage used level-specific target growth and recalculated level
+     targets from live shape.
+   - Implement level-specific target bytes or record a semantic decision that
+     the fixed target is a V1 simplification, then prove that 5M/10M source
+     fanout remains bounded anyway.
+2. **L8-G. Cross-Branch Maintenance Coverage**
+   - Post-commit scheduling starts from the committing branch.
+   - Compaction chaining must continue to select the highest-scored live
+     branch, but quiet branches with stranded frozen state or table backlog
+     still need an explicit coverage policy.
+   - Add a fairness/coverage sweep, an idle maintenance pass, or a documented
+     V1 deferral with counters showing no quiet-branch backlog in benchmark
+     workloads.
+3. **L8-H. Compaction IO Rate Limiting**
+   - Old storage had a rate limiter for background compaction IO.
+   - Storage-next deterministic maintenance currently has no IO throttle.
+   - Add a budgeted compaction IO limiter or prove with benchmark counters
+     that compaction does not starve writes at 5M/10M.
+
+High-priority decision slices:
+
+1. **L8-I. Nonzero Input Rotation Policy**
+   - The current direct and scored nonzero compaction path deterministically
+     chooses the largest input table.
+   - Decide whether always-largest is the V1 policy or whether storage-next
+     should restore compact-pointer or round-robin advancement.
+   - Update the mechanical counter test that currently expects selected table
+     index variation.
+2. **L8-J. Memtable-Bytes Pressure Signal**
+   - Current pressure facts emphasize frozen tables and table counts.
+   - Old backpressure also considered mutable-memory growth.
+   - Add an active/mutable byte signal or record why the storage-next active
+     table budget is sufficient without a separate pressure tier.
+3. **L8-K. Write Stall Budget And Wake Policy**
+   - Current blocking pressure rejects with retryable facts.
+   - Decide whether lifecycle owns a bounded wait API, a condition-variable
+     wake on pressure clear, or leaves retry policy entirely to L9.
+4. **L8-L. Snapshot Floor And Pruning Coupling**
+   - Old storage coupled safe-point advancement with maintenance before flush
+     and compaction pruning.
+   - Storage-next pruning is currently proof-driven per request.
+   - Record a semantic decision assigning snapshot-floor ownership to L8 or
+     engine-next before enabling broader automatic pruning.
+5. **L8-M. Grandparent Overlap Output Splitting**
+   - Storage-next tracks deeper overlap facts, but does not yet use them as an
+     output split budget.
+   - Decide whether to restore old grandparent-overlap split behavior in L8 or
+     keep it as an L5/L6 compaction-output enhancement.
+
+Measure-first follow-ups:
+
+1. **L8-N. Pressure Collection Sampling Counters**
+   - Add counters for pressure-collection calls and level iterations before
+     reintroducing old-style expensive-check sampling.
+2. **L8-O. Idle-Round Chain Anchor**
+   - Old background maintenance allowed several idle rounds before stopping a
+     chain.
+   - Keep this deferred unless benchmark or production counters show repeated
+     near-immediate resubmission after the branch first appears healthy.
+3. **L8-P. Flush Memory Release**
+   - Old storage released freed memory after flush.
+   - Keep this deferred unless RSS or allocator counters show long-load memory
+     retention after frozen tables drain.
+4. **L8-Q. Pressure-Clear Wake Signal**
+   - A wake signal is useful only if L8/L9 grows a blocking wait API.
+   - Keep it deferred while pressure rejection remains fail-fast and retryable.
 
 ## Expected Counter Movement
 

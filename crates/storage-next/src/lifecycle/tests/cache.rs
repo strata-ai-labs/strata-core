@@ -6,6 +6,7 @@ use crate::backend::{
     PublishOutcome, PublishResult, CACHE_MODE_REQUIREMENTS,
 };
 use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation,
@@ -13,7 +14,7 @@ use crate::commit::{
     CommitRuntimeError, CommitTimestampPolicy, CommitValidationFacts,
 };
 use crate::object::{ObjectName, ObjectPrefix};
-use crate::row::{PhysicalKey, StorageSpaceId};
+use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -574,6 +575,135 @@ fn cache_post_commit_schedules_l0_compaction_after_flushable_state_is_drained() 
 }
 
 #[test]
+fn queued_cache_compaction_defers_when_pressure_clears_before_run() {
+    let branch = branch_id(0x88);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue stale compaction");
+
+    let outcome = runtime
+        .run_next_compaction_maintenance()
+        .expect("run stale compaction")
+        .expect("stale compaction outcome");
+
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(
+        outcome.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: branch,
+            level: 1,
+        })
+    );
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        outcome.reason(),
+        Some("compaction task no longer has a pressure candidate")
+    );
+    assert_eq!(runtime.maintenance_status().stats().deferred(), 1);
+    assert!(runtime.branch_state().owned_levels()[1].is_empty());
+}
+
+#[test]
+fn stale_compaction_level_resubmits_current_scored_level() {
+    let branch = branch_id(0x8c);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
+        .expect("enqueue obsolete nonzero-level compaction");
+
+    let stale = runtime
+        .run_next_compaction_maintenance()
+        .expect("run obsolete compaction")
+        .expect("obsolete compaction outcome");
+    assert_eq!(stale.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        stale.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: branch,
+            level: 1,
+        })
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let current = runtime
+        .run_next_compaction_maintenance()
+        .expect("run resubmitted compaction")
+        .expect("resubmitted compaction outcome");
+    assert_eq!(current.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        current.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: branch,
+            level: 0,
+        })
+    );
+    assert!(runtime.branch_state().owned_levels()[0].is_empty());
+}
+
+#[test]
+fn compaction_chain_resubmits_highest_scored_branch() {
+    let branch_low = branch_id(0x89);
+    let branch_high = branch_id(0x8a);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch_low, &backend);
+    runtime
+        .create_branch(
+            branch_high,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create high-pressure branch");
+
+    build_l0_tables_with_scheduled_flushes_from(&mut runtime, branch_low, 4, 10_000);
+    build_l0_tables_with_scheduled_flushes_from(&mut runtime, branch_high, 8, 20_000);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch_low, 0))
+        .expect("enqueue low-pressure compaction");
+
+    let first = runtime
+        .run_next_compaction_maintenance()
+        .expect("run first compaction")
+        .expect("first compaction outcome");
+    assert_eq!(
+        first.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: branch_low,
+            level: 0,
+        })
+    );
+    assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let second = runtime
+        .run_next_compaction_maintenance()
+        .expect("run resubmitted compaction")
+        .expect("resubmitted compaction outcome");
+    assert_eq!(
+        second.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: branch_high,
+            level: 0,
+        })
+    );
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_high)
+            .expect("high branch")
+            .owned_levels()[0]
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn cache_commit_deterministic_inline_runs_suggested_flush() {
     let branch = branch_id(0x76);
     let backend = MemoryBackend::new();
@@ -595,7 +725,121 @@ fn cache_commit_deterministic_inline_runs_suggested_flush() {
     assert_eq!(status.stats().enqueued(), 1);
     assert_eq!(status.stats().started(), 1);
     assert_eq!(status.stats().completed(), 1);
+    let admission = runtime
+        .last_write_admission()
+        .expect("inline admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+    );
+    assert!(admission.inline_maintenance_driven());
     assert!(runtime.storage_pressure().suggested_task().is_none());
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_commit_deterministic_inline_records_admission_maintenance_attempt() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x8b);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        )
+        .expect("inline maintenance scheduling");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+
+    commit_cache_put(&mut runtime, branch, b"inline-counter-a", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active table");
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(&mut runtime, branch, b"inline-counter-b", 2_000);
+
+    let admission = runtime
+        .last_write_admission()
+        .expect("inline admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+    );
+    assert!(admission.inline_maintenance_driven());
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_evaluations(), 1);
+    assert_eq!(perf.lifecycle_write_admission_under_pressure_accepts(), 1);
+    assert_eq!(perf.lifecycle_write_admission_urgent_accepts(), 1);
+    assert_eq!(perf.lifecycle_write_admission_inline_attempts(), 1);
+    assert_eq!(perf.lifecycle_write_admission_urgent_inline_attempts(), 1);
+    assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_commit_urgent_active_bytes_records_accept_without_inline_attempt() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x8c);
+    let backend = MemoryBackend::new();
+    let storage_budget = storage_budget_with_active_limit(1024 * 1024, 4);
+    let lifecycle_config = LifecycleConfig::default()
+        .with_storage_budget(storage_budget)
+        .expect("storage budget")
+        .with_maintenance_scheduling_policy(
+            LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+        )
+        .expect("inline maintenance scheduling");
+    let mut runtime = open_runtime_with_config(branch, &backend, lifecycle_config);
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"active-byte-urgent-seed"),
+                vec![0x61; 850 * 1024],
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("seed urgent active-byte pressure");
+    assert_eq!(
+        runtime.storage_pressure().reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        runtime.storage_pressure().severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(&mut runtime, branch, b"active-byte-urgent-admission", 2_000);
+
+    let admission = runtime
+        .last_write_admission()
+        .expect("active-byte admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+    );
+    assert_eq!(
+        admission.pressure().reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        admission.pressure().severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert!(admission.pressure().suggested_task().is_none());
+    assert!(!admission.inline_maintenance_driven());
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_evaluations(), 1);
+    assert_eq!(perf.lifecycle_write_admission_under_pressure_accepts(), 1);
+    assert_eq!(perf.lifecycle_write_admission_urgent_accepts(), 1);
+    assert_eq!(perf.lifecycle_write_admission_inline_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_urgent_inline_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_wait_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+    assert_eq!(perf.lifecycle_pressure_clear_wakes(), 0);
 }
 
 #[test]
@@ -924,6 +1168,72 @@ fn cache_commit_rejects_blocking_table_pressure_before_allocating_version() {
             .expect("latest read")
             .is_none(),
         "rejected admission must not append rows"
+    );
+}
+
+#[test]
+fn cache_commit_rejects_blocking_active_bytes_before_allocating_version() {
+    let branch = branch_id(0x8d);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            branch,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("branch state") = blocked_active_byte_pressure_state(branch, 512 * 1024);
+    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    let pressure = runtime.storage_pressure();
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::ActiveMutableBytes
+    );
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert!(pressure.suggested_task().is_some());
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"active-byte-blocked-rejected"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(3_000),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("blocking active bytes reject commit");
+
+    assert!(matches!(
+        error,
+        LifecycleError::StoragePressureRejected {
+            branch_id: rejected_branch,
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::ActiveMutableBytes,
+            retryable: true,
+            ..
+        } if rejected_branch == branch
+    ));
+    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::ZERO
+    );
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&physical_key(branch, b"active-byte-blocked-rejected"))
+            .expect("latest read")
+            .is_none(),
+        "rejected active-byte admission must not append rows"
     );
 }
 
@@ -1306,7 +1616,11 @@ fn cache_write_admission_perf_trace_records_pressure_policy() {
     let urgent = crate::observability::perf_trace::snapshot();
     assert_eq!(urgent.lifecycle_write_admission_evaluations(), 1);
     assert_eq!(urgent.lifecycle_write_admission_under_pressure_accepts(), 1);
+    assert_eq!(urgent.lifecycle_write_admission_urgent_accepts(), 1);
     assert_eq!(urgent.lifecycle_write_admission_pressure_rejects(), 0);
+    assert_eq!(urgent.lifecycle_write_admission_wait_attempts(), 0);
+    assert_eq!(urgent.lifecycle_write_admission_wait_timeouts(), 0);
+    assert_eq!(urgent.lifecycle_pressure_clear_wakes(), 0);
     runtime
         .run_next_flush_maintenance()
         .expect("run scheduled flush")
@@ -1334,6 +1648,9 @@ fn cache_write_admission_perf_trace_records_pressure_policy() {
     assert_eq!(rejected.lifecycle_write_admission_requires_maintenance(), 1);
     assert_eq!(rejected.lifecycle_write_admission_pressure_rejects(), 1);
     assert_eq!(rejected.lifecycle_write_admission_retryable_rejects(), 1);
+    assert_eq!(rejected.lifecycle_write_admission_wait_attempts(), 0);
+    assert_eq!(rejected.lifecycle_write_admission_wait_timeouts(), 0);
+    assert_eq!(rejected.lifecycle_pressure_clear_wakes(), 0);
 
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
@@ -2148,6 +2465,91 @@ fn commit_cache_put(
             CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
         )
         .expect("cache put commit");
+}
+
+fn blocked_active_byte_pressure_state(branch: BranchId, rotation_bytes: usize) -> BranchLocalState {
+    let branch_config = BranchRuntimeConfig::new(8, 64, 1)
+        .expect("branch config")
+        .with_active_rotation_bytes(rotation_bytes)
+        .expect("custom active rotation threshold");
+    let mut state = BranchLocalState::new(branch, branch_config).expect("branch state");
+    let value_len = rotation_bytes.saturating_add(64 * 1024);
+    state
+        .append_committed_rows_atomically(vec![active_pressure_put_row(
+            branch,
+            b"active-byte-blocking-frozen",
+            1,
+            1_000,
+            value_len,
+            0x62,
+        )])
+        .expect("append frozen pressure row");
+    assert_eq!(state.frozen_table_count(), 1);
+    state
+        .append_committed_rows_atomically(vec![active_pressure_put_row(
+            branch,
+            b"active-byte-blocking-active",
+            2,
+            2_000,
+            value_len,
+            0x63,
+        )])
+        .expect("append active pressure row");
+    assert_eq!(state.frozen_table_count(), 1);
+    assert!(state.active_byte_count() >= rotation_bytes as u64);
+    state
+}
+
+fn active_pressure_put_row(
+    branch: BranchId,
+    user_key: &[u8],
+    version: u64,
+    timestamp: u64,
+    value_len: usize,
+    byte: u8,
+) -> StorageRow {
+    StorageRow::put(
+        physical_key(branch, user_key),
+        CommitVersion::new(version),
+        Timestamp::from_micros(timestamp),
+        Timestamp::EPOCH,
+        vec![byte; value_len],
+    )
+}
+
+#[cfg(feature = "perf-trace")]
+fn storage_budget_with_active_limit(
+    active_bytes: u64,
+    max_frozen_tables: u32,
+) -> StorageRuntimeBudget {
+    let mut parts = StorageRuntimeBudgetParts {
+        block_cache_bytes: 0,
+        table_reader_bytes: 8 * 1024,
+        active_mutable_bytes: active_bytes,
+        frozen_mutable_bytes: active_bytes
+            .saturating_mul(u64::from(max_frozen_tables))
+            .max(active_bytes),
+        maintenance_queue_bytes: 1024,
+        generated_artifact_bytes: 8 * 1024,
+        manifest_catalog_bytes: 1024,
+        max_open_readers: 4,
+        max_frozen_tables,
+        max_pending_maintenance_tasks: 4,
+        ..StorageRuntimeBudgetParts::default()
+    };
+    parts.total_bytes = storage_budget_pool_sum(parts);
+    StorageRuntimeBudget::from_parts(parts).expect("storage budget")
+}
+
+#[cfg(feature = "perf-trace")]
+fn storage_budget_pool_sum(parts: StorageRuntimeBudgetParts) -> u64 {
+    parts.block_cache_bytes
+        + parts.table_reader_bytes
+        + parts.active_mutable_bytes
+        + parts.frozen_mutable_bytes
+        + parts.maintenance_queue_bytes
+        + parts.generated_artifact_bytes
+        + parts.manifest_catalog_bytes
 }
 
 fn build_l0_tables_with_scheduled_flushes(
