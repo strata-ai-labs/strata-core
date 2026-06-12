@@ -6,6 +6,8 @@ use crate::backend::{
     PublishOutcome, PublishResult, CACHE_MODE_REQUIREMENTS,
 };
 use crate::branch::config::BranchRuntimeConfig;
+use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
+use crate::branch::read::BranchOwnedTable;
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
@@ -15,6 +17,10 @@ use crate::commit::{
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::table::{
+    sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig,
+    TableIdentity, TableReaderConfig, TableRow,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -326,6 +332,427 @@ fn cache_commit_coalesces_repeated_post_commit_flush_suggestions() {
 }
 
 #[test]
+fn cache_post_commit_coverage_discovers_quiet_branch_flush_backlog() {
+    let active = branch_id(0x5f);
+    let quiet = branch_id(0x60);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+
+    commit_cache_put(&mut runtime, quiet, b"quiet-flush-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-trigger", 2_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run coverage flush")
+        .expect("flush outcome");
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(
+        flush.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet))
+    );
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(quiet)
+            .expect("quiet branch")
+            .frozen_table_count(),
+        0
+    );
+}
+
+#[test]
+fn cache_post_commit_coverage_discovers_quiet_l0_backlog() {
+    let active = branch_id(0x5d);
+    let quiet = branch_id(0x5e);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    build_l0_tables_with_scheduled_flushes(&mut runtime, quiet, 4);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-l0-trigger", 20_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run coverage compaction")
+        .expect("compaction outcome");
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(
+        compaction.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: quiet,
+            level: 0,
+        })
+    );
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[test]
+fn cache_post_commit_coverage_discovers_quiet_nonzero_backlog() {
+    let active = branch_id(0x65);
+    let quiet = branch_id(0x66);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    {
+        let quiet_state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                quiet,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("quiet branch state");
+        for index in 0_u64..4 {
+            install_owned_table_for_cache_test(
+                quiet_state,
+                quiet,
+                BranchLevel::new(1),
+                &format!("coverage-quiet-nonzero-{index}"),
+                vec![active_pressure_put_row(
+                    quiet,
+                    format!("coverage-quiet-nonzero-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    32,
+                    0x6e,
+                )],
+            );
+        }
+    }
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-nonzero-trigger", 20_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let compaction = runtime
+        .run_next_compaction_maintenance()
+        .expect("run coverage compaction")
+        .expect("compaction outcome");
+    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(
+        compaction.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: quiet,
+            level: 1,
+        })
+    );
+    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[test]
+fn cache_post_commit_coverage_discovers_quiet_inherited_backlog() {
+    let active = branch_id(0x67);
+    let quiet = branch_id(0x68);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+
+    commit_cache_put(&mut runtime, active, b"coverage-parent-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(active)
+        .expect("rotate parent active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(active))
+        .expect("enqueue parent flush");
+    run_queued_flush(&mut runtime);
+    runtime
+        .fork_current(
+            active,
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork quiet branch");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-inherited-trigger", 2_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let materialization = runtime
+        .run_next_materialization_maintenance()
+        .expect("run coverage materialization")
+        .expect("materialization outcome");
+    assert_eq!(
+        materialization.task_kind(),
+        MaintenanceTaskKind::Materialization
+    );
+    assert_eq!(
+        materialization.task_scope(),
+        Some(MaintenanceTaskScope::InheritedLayer {
+            branch_id: quiet,
+            layer_index: 0,
+        })
+    );
+    assert_eq!(
+        materialization.status(),
+        MaintenanceOutcomeStatus::Completed
+    );
+}
+
+#[test]
+fn cache_post_commit_coverage_flush_preempts_quiet_branch_compaction() {
+    let active = branch_id(0x63);
+    let quiet = branch_id(0x64);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    build_l0_tables_with_scheduled_flushes(&mut runtime, quiet, 4);
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-flush-first", 21_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert!(
+        runtime
+            .run_next_compaction_maintenance()
+            .expect("compaction lookup")
+            .is_none(),
+        "coverage must queue flush before compaction for the same branch"
+    );
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run coverage flush")
+        .expect("flush outcome");
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(
+        flush.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet))
+    );
+}
+
+#[test]
+fn cache_post_commit_coverage_coalesces_existing_quiet_branch_task() {
+    let active = branch_id(0x65);
+    let quiet = branch_id(0x66);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    commit_cache_put(&mut runtime, quiet, b"quiet-coalesce-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(quiet))
+        .expect("enqueue existing quiet flush");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    commit_cache_put(&mut runtime, active, b"coverage-coalesce-trigger", 2_000);
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 1);
+    assert_eq!(status.stats().enqueued(), 1);
+    assert_eq!(status.stats().coalesced(), 1);
+}
+
+#[test]
+fn cache_post_commit_coverage_runs_quiet_branch_flushes_in_deterministic_order() {
+    let active = branch_id(0x69);
+    let quiet_high = branch_id(0x6b);
+    let quiet_low = branch_id(0x6a);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    for (branch, seed) in [
+        (quiet_high, b"coverage-order-high".as_slice()),
+        (quiet_low, b"coverage-order-low".as_slice()),
+    ] {
+        runtime
+            .create_branch(
+                branch,
+                CommitBranchGeneration::new(1).expect("generation"),
+                None,
+            )
+            .expect("create quiet branch");
+        let quiet_state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("quiet branch state");
+        quiet_state
+            .append_committed_rows_atomically(vec![active_pressure_put_row(
+                branch, seed, 1, 1_000, 32, 0x69,
+            )])
+            .expect("append quiet row");
+        quiet_state.rotate_active();
+    }
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-order-trigger", 2_000);
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
+    let first = runtime
+        .run_next_flush_maintenance()
+        .expect("run first coverage flush")
+        .expect("first flush outcome");
+    let second = runtime
+        .run_next_flush_maintenance()
+        .expect("run second coverage flush")
+        .expect("second flush outcome");
+
+    assert_eq!(
+        first.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet_low))
+    );
+    assert_eq!(
+        second.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet_high))
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn cache_post_commit_coverage_scales_across_many_quiet_branches() {
+    let active = branch_id(0xa0);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    for index in 0_u8..64 {
+        let quiet = branch_id(0xa1_u8.saturating_add(index));
+        runtime
+            .create_branch(
+                quiet,
+                CommitBranchGeneration::new(1).expect("generation"),
+                None,
+            )
+            .expect("create quiet branch");
+        let quiet_state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                quiet,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("quiet branch state");
+        quiet_state
+            .append_committed_rows_atomically(vec![active_pressure_put_row(
+                quiet,
+                format!("coverage-scale-{index}").as_bytes(),
+                100 + u64::from(index),
+                1_000 + u64::from(index),
+                32,
+                index,
+            )])
+            .expect("append quiet row");
+        quiet_state.rotate_active();
+        assert_eq!(quiet_state.frozen_table_count(), 1);
+    }
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    commit_cache_put(&mut runtime, active, b"coverage-scale-trigger", 10_000);
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 64);
+    assert_eq!(status.stats().enqueued(), 64);
+    assert_eq!(status.stats().coalesced(), 0);
+}
+
+#[test]
+fn cache_maintenance_coverage_handles_generated_mixed_backlog_placement() {
+    for (case_index, quiet_count) in [1_usize, 2, 7, 17, 64].into_iter().enumerate() {
+        let case_byte = u8::try_from(case_index).expect("case index fits in u8");
+        let active = branch_id(0x30_u8.saturating_add(case_byte));
+        let backend = MemoryBackend::new();
+        let mut runtime = open_runtime(active, &backend);
+        let mut expected_backlog = 0_usize;
+
+        for index in 0..quiet_count {
+            let index_byte = u8::try_from(index).expect("branch index fits in u8");
+            let quiet = branch_id(0x80_u8.saturating_add(index_byte));
+            runtime
+                .create_branch(
+                    quiet,
+                    CommitBranchGeneration::new(1).expect("generation"),
+                    None,
+                )
+                .expect("create quiet branch");
+            if (index.saturating_mul(37).saturating_add(quiet_count)) % 3 == 0 {
+                continue;
+            }
+
+            let quiet_state = runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(
+                    quiet,
+                    CommitBranchGenerationGuard::exact(
+                        CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("quiet branch state");
+            quiet_state
+                .append_committed_rows_atomically(vec![active_pressure_put_row(
+                    quiet,
+                    format!("coverage-generated-{case_index}-{index}").as_bytes(),
+                    100 + u64::try_from(index).expect("index fits"),
+                    1_000 + u64::try_from(index).expect("index fits"),
+                    32,
+                    index_byte,
+                )])
+                .expect("append quiet row");
+            quiet_state.rotate_active();
+            expected_backlog = expected_backlog.saturating_add(1);
+        }
+
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+        commit_cache_put(
+            &mut runtime,
+            active,
+            format!("coverage-generated-trigger-{case_index}").as_bytes(),
+            10_000 + u64::try_from(case_index).expect("case index fits"),
+        );
+
+        let status = runtime.maintenance_status();
+        assert_eq!(status.pending_tasks(), expected_backlog);
+        assert_eq!(status.stats().enqueued(), expected_backlog);
+        assert_eq!(status.stats().coalesced(), 0);
+    }
+}
+
+#[test]
 fn cache_coalesced_flush_task_drains_all_currently_frozen_tables() {
     let branch = branch_id(0x79);
     let backend = MemoryBackend::new();
@@ -400,7 +827,7 @@ fn cache_post_commit_flush_coalescing_is_branch_scoped() {
     let status = runtime.maintenance_status();
     assert_eq!(status.pending_tasks(), 2);
     assert_eq!(status.stats().enqueued(), 2);
-    assert_eq!(status.stats().coalesced(), 1);
+    assert_eq!(status.stats().coalesced(), 4);
 }
 
 #[test]
@@ -408,7 +835,10 @@ fn cache_global_flush_task_drains_branches_in_deterministic_order() {
     let branch_high = branch_id(0x62);
     let branch_low = branch_id(0x61);
     let backend = MemoryBackend::new();
-    let mut runtime = open_runtime(branch_high, &backend);
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
+        .expect("disabled automatic maintenance");
+    let mut runtime = open_runtime_with_config(branch_high, &backend, config);
     runtime
         .create_branch(
             branch_low,
@@ -651,7 +1081,10 @@ fn compaction_chain_resubmits_highest_scored_branch() {
     let branch_low = branch_id(0x89);
     let branch_high = branch_id(0x8a);
     let backend = MemoryBackend::new();
-    let mut runtime = open_runtime(branch_low, &backend);
+    let config = LifecycleConfig::default()
+        .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
+        .expect("disabled automatic maintenance");
+    let mut runtime = open_runtime_with_config(branch_low, &backend, config);
     runtime
         .create_branch(
             branch_high,
@@ -660,8 +1093,8 @@ fn compaction_chain_resubmits_highest_scored_branch() {
         )
         .expect("create high-pressure branch");
 
-    build_l0_tables_with_scheduled_flushes_from(&mut runtime, branch_low, 4, 10_000);
-    build_l0_tables_with_scheduled_flushes_from(&mut runtime, branch_high, 8, 20_000);
+    build_l0_tables_with_manual_flushes_from(&mut runtime, branch_low, 4, 10_000);
+    build_l0_tables_with_manual_flushes_from(&mut runtime, branch_high, 8, 20_000);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch_low, 0))
         .expect("enqueue low-pressure compaction");
@@ -1669,6 +2102,203 @@ fn cache_write_admission_perf_trace_records_pressure_policy() {
     );
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let active = branch_id(0x8d);
+    let quiet = branch_id(0x8e);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    commit_cache_put(&mut runtime, quiet, b"coverage-counter-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+
+    crate::observability::perf_trace::reset();
+    commit_cache_put(&mut runtime, active, b"coverage-counter-trigger", 2_000);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_branches_scanned(), 2);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_quiet_branches_with_pressure(),
+        1
+    );
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_idle_rounds_consumed(),
+        0
+    );
+
+    runtime
+        .run_next_flush_maintenance()
+        .expect("run coverage flush")
+        .expect("flush outcome");
+    crate::observability::perf_trace::reset();
+    for index in 0..5 {
+        commit_cache_put(
+            &mut runtime,
+            active,
+            format!("coverage-idle-{index}").as_bytes(),
+            3_000 + u64::try_from(index).expect("index fits") * 1_000,
+        );
+    }
+    let idle = crate::observability::perf_trace::snapshot();
+    assert_eq!(idle.lifecycle_maintenance_coverage_scans(), 5);
+    assert_eq!(idle.lifecycle_maintenance_coverage_branches_scanned(), 10);
+    assert_eq!(
+        idle.lifecycle_maintenance_coverage_idle_rounds_consumed(),
+        5
+    );
+    assert_eq!(idle.lifecycle_maintenance_coverage_stop_healthy(), 4);
+    assert_eq!(idle.lifecycle_maintenance_coverage_stop_idle_limit(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_maintenance_coverage_uses_stable_queue_snapshot_for_scan() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let active = branch_id(0x9a);
+    let quiet_pressure = branch_id(0x9b);
+    let quiet_healthy = branch_id(0x9c);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    for branch in [quiet_pressure, quiet_healthy] {
+        runtime
+            .create_branch(
+                branch,
+                CommitBranchGeneration::new(1).expect("generation"),
+                None,
+            )
+            .expect("create quiet branch");
+    }
+    commit_cache_put(
+        &mut runtime,
+        quiet_pressure,
+        b"coverage-snapshot-seed",
+        1_000,
+    );
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet_pressure)
+        .expect("rotate quiet pressure branch");
+
+    crate::observability::perf_trace::reset();
+    commit_cache_put(&mut runtime, active, b"coverage-snapshot-trigger", 2_000);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_branches_scanned(), 3);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_quiet_branches_with_pressure(),
+        1,
+        "a healthy branch must not inherit pressure from a task enqueued earlier in the scan"
+    );
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_maintenance_coverage_queue_full_records_stop_without_failing_commit() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let active = branch_id(0x9d);
+    let quiet = branch_id(0x9e);
+    let backend = MemoryBackend::new();
+    let config = LifecycleConfig::new(
+        1,
+        64,
+        LifecycleCloseTimeoutPolicy::ReturnTypedTimeout,
+        LifecycleLossyRecoveryPolicy::Disabled,
+    )
+    .expect("single-slot maintenance queue config");
+    let mut runtime = open_runtime_with_config(active, &backend, config);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    commit_cache_put(&mut runtime, quiet, b"coverage-queue-full-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("fill maintenance queue");
+
+    crate::observability::perf_trace::reset();
+    commit_cache_put(&mut runtime, active, b"coverage-queue-full-trigger", 2_000);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_branches_scanned(), 2);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_quiet_branches_with_pressure(),
+        1
+    );
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_queue_full(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_failure(), 0);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let key = physical_key(active, b"coverage-queue-full-trigger");
+    assert!(
+        runtime
+            .read_view()
+            .expect("read view")
+            .latest(&key)
+            .expect("latest read")
+            .is_some(),
+        "coverage queue pressure must not roll back the successful commit"
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_maintenance_coverage_closing_state_records_failure_without_enqueue() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let active = branch_id(0x9f);
+    let quiet = branch_id(0xa0);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    commit_cache_put(&mut runtime, quiet, b"coverage-closing-seed", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    runtime
+        .force_close_requested_for_test()
+        .expect("force closing state");
+
+    crate::observability::perf_trace::reset();
+    let _ = runtime.schedule_post_commit_maintenance_for_test(active);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_queue_full(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_failure(), 1);
+}
+
 #[test]
 fn cache_runtime_generated_timestamp_proves_zero_allocator_and_empty_timestamp_guard() {
     let branch = branch_id(0x4c);
@@ -2517,6 +3147,45 @@ fn active_pressure_put_row(
     )
 }
 
+fn install_owned_table_for_cache_test(
+    state: &mut BranchLocalState,
+    branch: BranchId,
+    level: BranchLevel,
+    identity: &str,
+    rows: Vec<StorageRow>,
+) {
+    state
+        .install_owned_table_at_level(
+            level,
+            owned_table_for_cache_test(branch, level, identity, rows),
+        )
+        .expect("install owned table");
+}
+
+fn owned_table_for_cache_test(
+    branch: BranchId,
+    level: BranchLevel,
+    identity: &str,
+    rows: Vec<StorageRow>,
+) -> BranchOwnedTable {
+    let identity = TableIdentity::new(identity).expect("identity");
+    let mut table_rows = rows.into_iter().map(TableRow::new).collect::<Vec<_>>();
+    sort_table_rows_by_key(&mut table_rows);
+    let artifact = ImmutableTableBuilder::new(TableBuilderConfig::default())
+        .expect("builder")
+        .build_from_rows(identity.clone(), &table_rows)
+        .expect("built table");
+    let reader = ImmutableTableReader::open_bytes(
+        identity.clone(),
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .expect("reader");
+    let descriptor =
+        BranchTableDescriptor::new(identity, reader.facts().clone(), level).expect("descriptor");
+    BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")
+}
+
 #[cfg(feature = "perf-trace")]
 fn storage_budget_with_active_limit(
     active_bytes: u64,
@@ -2579,6 +3248,34 @@ fn build_l0_tables_with_scheduled_flushes_from(
             key.as_bytes(),
             base_timestamp_micros + 1 + index as u64,
         );
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+        run_queued_flush(runtime);
+        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    }
+}
+
+fn build_l0_tables_with_manual_flushes_from(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    table_count: usize,
+    base_timestamp_micros: u64,
+) {
+    assert!(table_count > 0);
+    commit_cache_put(runtime, branch, b"manual-l0-seed", base_timestamp_micros);
+    for index in 0..table_count {
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate active table");
+        let key = format!("manual-l0-trigger-{index}");
+        commit_cache_put(
+            runtime,
+            branch,
+            key.as_bytes(),
+            base_timestamp_micros + 1 + index as u64,
+        );
+        runtime
+            .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+            .expect("enqueue manual flush");
         assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
         run_queued_flush(runtime);
         assert_eq!(runtime.maintenance_status().pending_tasks(), 0);

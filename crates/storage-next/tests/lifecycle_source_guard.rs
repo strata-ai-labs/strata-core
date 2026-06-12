@@ -306,6 +306,36 @@ fn compaction_shape_semantic_decisions_are_recorded() {
 }
 
 #[test]
+fn maintenance_coverage_semantic_decisions_are_recorded() {
+    let root = common::crate_root();
+    let repo = root
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate has repository root");
+    let path = repo.join("docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md");
+    let text = fs::read_to_string(&path).expect("read lifecycle architecture doc");
+    let normalized_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "Maintenance Coverage Trigger Model",
+        "after a successful mutating commit",
+        "deterministic live branch list",
+        "quiet branches with frozen-table, L0, nonzero-level, or inherited-layer backlog",
+        "committing branch is inspected for scan accounting but is not enqueued",
+        "flush-before-compaction ordering",
+        "Cross-branch coverage work is queued deterministically and is not driven inline",
+        "Idle rounds therefore mean consecutive coverage passes",
+        "at most five idle rounds",
+        "close-required drain or closing state owns the lifecycle",
+    ] {
+        assert!(
+            normalized_text.contains(required),
+            "missing maintenance coverage semantic decision text: {required}"
+        );
+    }
+}
+
+#[test]
 fn lifecycle_flush_source_does_not_manage_watermarks_or_log_retention() {
     let root = common::crate_root();
     let path = root.join("src/lifecycle/flush.rs");

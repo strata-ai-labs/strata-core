@@ -157,6 +157,13 @@ Gaps covered: PF3, PF4.
 Goal: prevent automatic maintenance from depending only on the currently
 committing branch.
 
+Implementation decision: the V1 trigger is the next successful mutating commit
+on any branch. The committing branch is handled by the existing post-commit
+scheduler, then the coverage pass scans the deterministic live branch list and
+queues current pressure suggestions for quiet branches. Idle rounds are
+consecutive coverage passes with no eligible quiet-branch work, capped at five;
+there is no implicit background scheduler clock in this slice.
+
 Tasks:
 
 1. Add a maintenance coverage pass that can discover quiet branches with:

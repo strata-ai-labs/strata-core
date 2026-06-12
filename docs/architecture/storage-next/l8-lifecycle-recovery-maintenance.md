@@ -86,6 +86,34 @@ table compaction layers. L8 records deeper-overlap bytes and a deferred
 split-budget fact, but metadata-promotion eligibility does not imply lifecycle
 ownership of output splitting.
 
+### Maintenance Coverage Trigger Model
+
+Storage-next runs an in-process maintenance coverage pass after a successful
+mutating commit has evaluated the committing branch's post-commit maintenance
+pressure. The pass scans the deterministic live branch list and can discover
+quiet branches with frozen-table, L0, nonzero-level, or inherited-layer
+backlog.
+
+The committing branch is inspected for scan accounting but is not enqueued by
+the coverage pass, because the source branch was already handled by the normal
+post-commit scheduler. Quiet branches enqueue only the current pressure
+suggestion returned by the storage pressure model, preserving the existing
+flush-before-compaction ordering for each branch. Coverage tasks coalesce by
+their branch and maintenance scope, so repeated coverage passes cannot grow an
+unbounded duplicate queue.
+
+`DeterministicInline` policy still runs only the source branch's post-commit
+task inline. Cross-branch coverage work is queued deterministically and is not
+driven inline by the coverage pass. `Disabled` policy skips coverage entirely.
+
+Storage-next has no implicit background scheduler clock. Idle rounds therefore
+mean consecutive coverage passes, triggered by later mutating commits, that find
+no eligible quiet-branch work. The in-process idle anchor consumes at most five
+idle rounds before recording an idle-limit stop. Healthy, idle-limit,
+queue-full, and failure stops are recorded separately. Coverage does not enqueue
+ordinary maintenance when close-required drain or closing state owns the
+lifecycle.
+
 ## Responsibilities
 
 L8 owns:

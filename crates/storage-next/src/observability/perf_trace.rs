@@ -135,6 +135,16 @@ pub struct StoragePerfSnapshot {
     lifecycle_post_commit_maintenance_tasks_enqueued: u64,
     lifecycle_post_commit_maintenance_tasks_coalesced: u64,
     lifecycle_post_commit_maintenance_tasks_deferred: u64,
+    lifecycle_maintenance_coverage_scans: u64,
+    lifecycle_maintenance_coverage_branches_scanned: u64,
+    lifecycle_maintenance_coverage_quiet_branches_with_pressure: u64,
+    lifecycle_maintenance_coverage_tasks_enqueued: u64,
+    lifecycle_maintenance_coverage_tasks_coalesced: u64,
+    lifecycle_maintenance_coverage_idle_rounds_consumed: u64,
+    lifecycle_maintenance_coverage_stop_healthy: u64,
+    lifecycle_maintenance_coverage_stop_idle_limit: u64,
+    lifecycle_maintenance_coverage_stop_queue_full: u64,
+    lifecycle_maintenance_coverage_stop_failure: u64,
     lifecycle_inline_maintenance_attempts: u64,
     lifecycle_inline_maintenance_ns: u64,
     lifecycle_flush_drain_frozen_tables_discovered: u64,
@@ -702,6 +712,56 @@ impl StoragePerfSnapshot {
     /// Post-commit maintenance tasks deferred by queue/admission failure.
     pub const fn lifecycle_post_commit_maintenance_tasks_deferred(self) -> u64 {
         self.lifecycle_post_commit_maintenance_tasks_deferred
+    }
+
+    /// Cross-branch maintenance coverage scans.
+    pub const fn lifecycle_maintenance_coverage_scans(self) -> u64 {
+        self.lifecycle_maintenance_coverage_scans
+    }
+
+    /// Live branches inspected by cross-branch maintenance coverage.
+    pub const fn lifecycle_maintenance_coverage_branches_scanned(self) -> u64 {
+        self.lifecycle_maintenance_coverage_branches_scanned
+    }
+
+    /// Non-committing branches that had maintenance pressure during coverage.
+    pub const fn lifecycle_maintenance_coverage_quiet_branches_with_pressure(self) -> u64 {
+        self.lifecycle_maintenance_coverage_quiet_branches_with_pressure
+    }
+
+    /// Coverage-discovered tasks admitted to the maintenance queue.
+    pub const fn lifecycle_maintenance_coverage_tasks_enqueued(self) -> u64 {
+        self.lifecycle_maintenance_coverage_tasks_enqueued
+    }
+
+    /// Coverage-discovered tasks coalesced with existing queued tasks.
+    pub const fn lifecycle_maintenance_coverage_tasks_coalesced(self) -> u64 {
+        self.lifecycle_maintenance_coverage_tasks_coalesced
+    }
+
+    /// No-work coverage rounds consumed by the in-process idle anchor.
+    pub const fn lifecycle_maintenance_coverage_idle_rounds_consumed(self) -> u64 {
+        self.lifecycle_maintenance_coverage_idle_rounds_consumed
+    }
+
+    /// Coverage passes that stopped because all inspected branches were healthy.
+    pub const fn lifecycle_maintenance_coverage_stop_healthy(self) -> u64 {
+        self.lifecycle_maintenance_coverage_stop_healthy
+    }
+
+    /// Coverage passes that reached the bounded idle-round limit.
+    pub const fn lifecycle_maintenance_coverage_stop_idle_limit(self) -> u64 {
+        self.lifecycle_maintenance_coverage_stop_idle_limit
+    }
+
+    /// Coverage passes that stopped because the queue was full.
+    pub const fn lifecycle_maintenance_coverage_stop_queue_full(self) -> u64 {
+        self.lifecycle_maintenance_coverage_stop_queue_full
+    }
+
+    /// Coverage passes that stopped because enqueue or branch inspection failed.
+    pub const fn lifecycle_maintenance_coverage_stop_failure(self) -> u64 {
+        self.lifecycle_maintenance_coverage_stop_failure
     }
 
     /// Inline automatic maintenance attempts made during commit handling.
@@ -1863,6 +1923,26 @@ static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED: AtomicU64 = AtomicU64:
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_SCANS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_BRANCHES_SCANNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_QUIET_BRANCHES_WITH_PRESSURE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_ENQUEUED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_QUEUE_FULL: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_MAINTENANCE_COVERAGE_STOP_FAILURE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_INLINE_MAINTENANCE_NS: AtomicU64 = AtomicU64::new(0);
@@ -2379,6 +2459,16 @@ pub fn reset() {
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_SCANS.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_BRANCHES_SCANNED.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_QUIET_BRANCHES_WITH_PRESSURE.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_ENQUEUED.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_QUEUE_FULL.store(0, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_FAILURE.store(0, Ordering::Relaxed);
     LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_INLINE_MAINTENANCE_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.store(0, Ordering::Relaxed);
@@ -2698,6 +2788,26 @@ pub fn snapshot() -> StoragePerfSnapshot {
             LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_tasks_deferred:
             LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_scans: LIFECYCLE_MAINTENANCE_COVERAGE_SCANS
+            .load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_branches_scanned:
+            LIFECYCLE_MAINTENANCE_COVERAGE_BRANCHES_SCANNED.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_quiet_branches_with_pressure:
+            LIFECYCLE_MAINTENANCE_COVERAGE_QUIET_BRANCHES_WITH_PRESSURE.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_tasks_enqueued:
+            LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_ENQUEUED.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_tasks_coalesced:
+            LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_idle_rounds_consumed:
+            LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_stop_healthy: LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY
+            .load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_stop_idle_limit:
+            LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_stop_queue_full:
+            LIFECYCLE_MAINTENANCE_COVERAGE_STOP_QUEUE_FULL.load(Ordering::Relaxed),
+        lifecycle_maintenance_coverage_stop_failure: LIFECYCLE_MAINTENANCE_COVERAGE_STOP_FAILURE
+            .load(Ordering::Relaxed),
         lifecycle_inline_maintenance_attempts: LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS
             .load(Ordering::Relaxed),
         lifecycle_inline_maintenance_ns: LIFECYCLE_INLINE_MAINTENANCE_NS.load(Ordering::Relaxed),
@@ -3453,6 +3563,101 @@ pub(crate) fn record_lifecycle_post_commit_maintenance_deferred() {
         return;
     }
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_scan(_branches_scanned: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_scan(branches_scanned: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_SCANS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_MAINTENANCE_COVERAGE_BRANCHES_SCANNED
+        .fetch_add(as_u64(branches_scanned), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_quiet_branch_pressure() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_quiet_branch_pressure() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_QUIET_BRANCHES_WITH_PRESSURE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_enqueue(_enqueued: bool, _coalesced: bool) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_enqueue(enqueued: bool, coalesced: bool) {
+    if !recording_enabled() {
+        return;
+    }
+    if enqueued {
+        LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_ENQUEUED.fetch_add(1, Ordering::Relaxed);
+    }
+    if coalesced {
+        LIFECYCLE_MAINTENANCE_COVERAGE_TASKS_COALESCED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_idle_round() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_idle_round() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_IDLE_ROUNDS_CONSUMED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_healthy() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_healthy() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_HEALTHY.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_idle_limit() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_idle_limit() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_IDLE_LIMIT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_queue_full() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_queue_full() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_QUEUE_FULL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_failure() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_maintenance_coverage_stop_failure() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_MAINTENANCE_COVERAGE_STOP_FAILURE.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

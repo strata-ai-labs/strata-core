@@ -30,13 +30,13 @@ use super::{
     LifecycleError, LifecycleMaintenanceExecutor, LifecycleMaintenanceSchedulingPolicy,
     LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
     LifecyclePostCommitMaintenanceOutcome, LifecycleResult, LifecycleState, LifecycleStateMachine,
-    LifecycleStats, LifecycleStoragePressure, LifecycleTransitionTrigger,
-    LifecycleWalGrowthOutcome, LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, RecoveryHealth,
-    StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenDisposition,
-    StorageOpenOutcome, StorageOpenPlan,
+    LifecycleStats, LifecycleStoragePressure, LifecycleStoragePressureSeverity,
+    LifecycleTransitionTrigger, LifecycleWalGrowthOutcome, LifecycleWriteAdmissionOutcome,
+    MaintenanceCancelOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
+    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
@@ -49,7 +49,10 @@ use crate::commit::{
     CommitTimestampGuard, CommitTimestampSource, CommitUnresolvedDurable,
     CommitUnresolvedDurableGate, CommitVersionAllocator, VisibleVersionTracker,
 };
-use crate::lifecycle::maintenance::schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance;
+use crate::lifecycle::maintenance::{
+    schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance,
+    MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT,
+};
 use crate::row::PhysicalKey;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -74,6 +77,7 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
+    maintenance_coverage_idle_rounds: usize,
     pressure_rejected_commit_branches: Vec<BranchId>,
     last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
     budget: StorageBudgetLedger,
@@ -188,6 +192,7 @@ impl<S> LifecycleCacheRuntime<S> {
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            maintenance_coverage_idle_rounds: 0,
             pressure_rejected_commit_branches: Vec::new(),
             last_write_admission: None,
             budget,
@@ -636,10 +641,101 @@ impl<S> LifecycleCacheRuntime<S> {
         let outcome = schedule_suggested_post_commit_maintenance(policy, pressure, |request| {
             self.enqueue_maintenance(request)
         });
-        if policy == LifecycleMaintenanceSchedulingPolicy::DeterministicInline {
+        let outcome = if policy == LifecycleMaintenanceSchedulingPolicy::DeterministicInline {
             self.run_inline_post_commit_maintenance(outcome)
         } else {
             outcome
+        };
+        self.schedule_maintenance_coverage_after_branch(branch_id, policy);
+        outcome
+    }
+
+    #[cfg(test)]
+    pub(crate) fn schedule_post_commit_maintenance_for_test(
+        &mut self,
+        branch_id: BranchId,
+    ) -> LifecyclePostCommitMaintenanceOutcome {
+        self.schedule_post_commit_maintenance_for_branch(branch_id)
+    }
+
+    fn schedule_maintenance_coverage_after_branch(
+        &mut self,
+        source_branch_id: BranchId,
+        policy: LifecycleMaintenanceSchedulingPolicy,
+    ) {
+        if policy == LifecycleMaintenanceSchedulingPolicy::Disabled {
+            return;
+        }
+        if !self
+            .state
+            .admit(LifecycleOperationKind::OrdinaryMaintenance)
+            .is_allowed()
+        {
+            crate::observability::perf_trace::record_lifecycle_maintenance_coverage_stop_failure();
+            return;
+        }
+        let descriptors = self.branch_catalog.list_branches(false);
+        crate::observability::perf_trace::record_lifecycle_maintenance_coverage_scan(
+            descriptors.len(),
+        );
+        let maintenance_status = self.maintenance.status();
+        let mut saw_eligible_work = false;
+        for descriptor in descriptors {
+            let branch_id = descriptor.branch_id();
+            let Ok(branch) = self.branch_catalog.branch_state(branch_id) else {
+                crate::observability::perf_trace::
+                    record_lifecycle_maintenance_coverage_stop_failure();
+                return;
+            };
+            let pressure = collect_storage_pressure(branch, maintenance_status);
+            if branch_id == source_branch_id {
+                continue;
+            }
+            let Some(request) = pressure.suggested_task() else {
+                continue;
+            };
+            if pressure.severity() != LifecycleStoragePressureSeverity::None {
+                crate::observability::perf_trace::
+                    record_lifecycle_maintenance_coverage_quiet_branch_pressure();
+            }
+            saw_eligible_work = true;
+            match self.enqueue_maintenance(request) {
+                Ok(enqueue) => {
+                    crate::observability::perf_trace::record_lifecycle_maintenance_coverage_enqueue(
+                        enqueue.was_enqueued(),
+                        enqueue.was_coalesced(),
+                    );
+                }
+                Err(LifecycleError::MaintenanceQueueFull { .. }) => {
+                    crate::observability::perf_trace::
+                        record_lifecycle_maintenance_coverage_stop_queue_full();
+                    return;
+                }
+                Err(_) => {
+                    crate::observability::perf_trace::
+                        record_lifecycle_maintenance_coverage_stop_failure();
+                    return;
+                }
+            }
+        }
+        if saw_eligible_work {
+            self.maintenance_coverage_idle_rounds = 0;
+        } else {
+            self.record_maintenance_coverage_idle_stop();
+        }
+    }
+
+    fn record_maintenance_coverage_idle_stop(&mut self) {
+        if self.maintenance_coverage_idle_rounds < MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT {
+            self.maintenance_coverage_idle_rounds =
+                self.maintenance_coverage_idle_rounds.saturating_add(1);
+            crate::observability::perf_trace::record_lifecycle_maintenance_coverage_idle_round();
+        }
+        if self.maintenance_coverage_idle_rounds >= MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT {
+            crate::observability::perf_trace::record_lifecycle_maintenance_coverage_stop_idle_limit(
+            );
+        } else {
+            crate::observability::perf_trace::record_lifecycle_maintenance_coverage_stop_healthy();
         }
     }
 

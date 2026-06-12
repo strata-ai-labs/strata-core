@@ -207,6 +207,8 @@ pub(crate) trait MaintenanceFaultHook {
     ) -> LifecycleResult<()>;
 }
 
+pub(crate) const MAINTENANCE_COVERAGE_IDLE_ROUND_LIMIT: usize = 5;
+
 #[derive(Default)]
 pub(crate) struct NoopMaintenanceFaultHook;
 

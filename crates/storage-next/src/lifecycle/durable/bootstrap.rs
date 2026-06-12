@@ -72,6 +72,7 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
     pub(super) maintenance: LifecycleMaintenanceExecutor,
+    pub(super) maintenance_coverage_idle_rounds: usize,
     // Opaque close-session retry state owned by `lifecycle/durable/close.rs`.
     // Bootstrap stores the snapshot but does not interpret it; subsequent
     // idempotent close calls inside `close.rs` deconstruct it through
@@ -185,6 +186,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             branch_catalog_sequence,
             pending_releases_sequence,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            maintenance_coverage_idle_rounds: 0,
             close_retry_state: None,
         })
     }

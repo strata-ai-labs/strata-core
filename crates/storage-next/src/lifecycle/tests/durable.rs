@@ -1089,6 +1089,302 @@ fn durable_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
 }
 
 #[test]
+fn durable_post_commit_coverage_discovers_quiet_branch_flush_backlog() {
+    let backend = DurableTestBackend::new();
+    let active = branch_id(0x8a);
+    let quiet = branch_id(0x8b);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(quiet, b"durable-quiet-flush-seed", b"value"),
+            generation_guard(),
+        )
+        .expect("quiet durable commit");
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(active, b"durable-coverage-trigger", b"value"),
+            generation_guard(),
+        )
+        .expect("active durable commit");
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run coverage flush")
+        .expect("flush outcome");
+    assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(
+        flush.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet))
+    );
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(quiet)
+            .expect("quiet branch")
+            .frozen_table_count(),
+        0
+    );
+}
+
+#[test]
+fn durable_post_commit_coverage_runs_quiet_branch_flushes_in_deterministic_order() {
+    let backend = DurableTestBackend::new();
+    let active = branch_id(0x92);
+    let quiet_high = branch_id(0x94);
+    let quiet_low = branch_id(0x93);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, &backend);
+    for (branch, seed) in [
+        (quiet_high, b"durable-coverage-order-high".as_slice()),
+        (quiet_low, b"durable-coverage-order-low".as_slice()),
+    ] {
+        runtime
+            .create_branch(
+                branch,
+                CommitBranchGeneration::new(1).expect("generation"),
+                None,
+            )
+            .expect("create quiet branch");
+        let quiet_state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(branch, generation_guard())
+            .expect("quiet branch state");
+        quiet_state
+            .append_committed_rows_atomically(vec![active_pressure_put_row(
+                branch, seed, 1, 1_000, 32, 0x92,
+            )])
+            .expect("append quiet row");
+        quiet_state.rotate_active();
+    }
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(active, b"durable-coverage-order-trigger", b"value"),
+            generation_guard(),
+        )
+        .expect("active durable commit");
+
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
+    let first = runtime
+        .run_next_flush_maintenance()
+        .expect("run first coverage flush")
+        .expect("first flush outcome");
+    let second = runtime
+        .run_next_flush_maintenance()
+        .expect("run second coverage flush")
+        .expect("second flush outcome");
+
+    assert_eq!(
+        first.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet_low))
+    );
+    assert_eq!(
+        second.task_scope(),
+        Some(MaintenanceTaskScope::Branch(quiet_high))
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = DurableTestBackend::new();
+    let active = branch_id(0x8c);
+    let quiet = branch_id(0x8d);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(quiet, b"durable-coverage-counter-seed", b"value"),
+            generation_guard(),
+        )
+        .expect("quiet durable commit");
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+
+    crate::observability::perf_trace::reset();
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(active, b"durable-coverage-counter-trigger", b"value"),
+            generation_guard(),
+        )
+        .expect("active durable commit");
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_branches_scanned(), 2);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_quiet_branches_with_pressure(),
+        1
+    );
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_idle_rounds_consumed(),
+        0
+    );
+
+    runtime
+        .run_next_flush_maintenance()
+        .expect("run coverage flush")
+        .expect("flush outcome");
+    crate::observability::perf_trace::reset();
+    for index in 0..5 {
+        let key: &'static [u8] = match index {
+            0 => b"durable-coverage-idle-0",
+            1 => b"durable-coverage-idle-1",
+            2 => b"durable-coverage-idle-2",
+            3 => b"durable-coverage-idle-3",
+            _ => b"durable-coverage-idle-4",
+        };
+        runtime
+            .execute_durable_commit(durable_put_batch(active, key, b"value"), generation_guard())
+            .expect("idle durable commit");
+    }
+    let idle = crate::observability::perf_trace::snapshot();
+    assert_eq!(idle.lifecycle_maintenance_coverage_scans(), 5);
+    assert_eq!(idle.lifecycle_maintenance_coverage_branches_scanned(), 10);
+    assert_eq!(
+        idle.lifecycle_maintenance_coverage_idle_rounds_consumed(),
+        5
+    );
+    assert_eq!(idle.lifecycle_maintenance_coverage_stop_healthy(), 4);
+    assert_eq!(idle.lifecycle_maintenance_coverage_stop_idle_limit(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_maintenance_coverage_queue_full_records_stop_without_failing_commit() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = DurableTestBackend::new();
+    let active = branch_id(0x8e);
+    let quiet = branch_id(0x8f);
+    let config = LifecycleConfig::new(
+        1,
+        64,
+        LifecycleCloseTimeoutPolicy::ReturnTypedTimeout,
+        LifecycleLossyRecoveryPolicy::Disabled,
+    )
+    .expect("single-slot maintenance queue config");
+    let mut runtime =
+        open_runtime_with_config(StorageMode::DurableLocalStandard, active, &backend, config);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(quiet, b"durable-coverage-queue-full-seed", b"value"),
+            generation_guard(),
+        )
+        .expect("quiet durable commit");
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::health_collection())
+        .expect("fill maintenance queue");
+
+    crate::observability::perf_trace::reset();
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(active, b"durable-coverage-queue-full-trigger", b"value"),
+            generation_guard(),
+        )
+        .expect("active durable commit");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_branches_scanned(), 2);
+    assert_eq!(
+        perf.lifecycle_maintenance_coverage_quiet_branches_with_pressure(),
+        1
+    );
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_queue_full(), 1);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_failure(), 0);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let key = physical_key(active, b"durable-coverage-queue-full-trigger");
+    assert!(
+        runtime
+            .read_view_for_branch(active)
+            .expect("read view")
+            .latest(&key)
+            .expect("latest read")
+            .is_some(),
+        "coverage queue pressure must not roll back the successful commit"
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_maintenance_coverage_closing_state_records_failure_without_enqueue() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = DurableTestBackend::new();
+    let active = branch_id(0x90);
+    let quiet = branch_id(0x91);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, &backend);
+    runtime
+        .create_branch(
+            quiet,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create quiet branch");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(quiet, b"durable-coverage-closing-seed", b"value"),
+            generation_guard(),
+        )
+        .expect("quiet durable commit");
+    runtime
+        .rotate_active_for_branch_for_maintenance(quiet)
+        .expect("rotate quiet branch");
+    runtime
+        .force_close_requested_for_test()
+        .expect("force closing state");
+
+    crate::observability::perf_trace::reset();
+    let _ = runtime.schedule_post_commit_maintenance_for_test(active);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(runtime.state(), LifecycleState::Closing);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_scans(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_tasks_coalesced(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_queue_full(), 0);
+    assert_eq!(perf.lifecycle_maintenance_coverage_stop_failure(), 1);
+}
+
+#[test]
 fn durable_coalesced_flush_task_drains_all_currently_frozen_tables() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x6f);

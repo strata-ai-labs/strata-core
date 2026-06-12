@@ -21,7 +21,7 @@ Counts are conservative text matches, not a Rust AST parse.
 |---|---|---|
 | api/diagnostics.rs | 25 | 1218 |
 | branch/read.rs | 22 | 3911 |
-| lifecycle/maintenance.rs | 22 | 1473 |
+| lifecycle/maintenance.rs | 22 | 1475 |
 | table/reader.rs | 20 | 1792 |
 | table/compaction.rs | 19 | 1192 |
 | commit/batch.rs | 18 | 774 |
@@ -44,20 +44,20 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | File | LOC |
 |---|---|
-| observability/perf_trace.rs | 5009 |
+| observability/perf_trace.rs | 5214 |
 | branch/tests/owned_compaction.rs | 3998 |
 | table/tests/reader.rs | 3926 |
 | branch/read.rs | 3911 |
+| lifecycle/tests/cache.rs | 3618 |
 | lifecycle/tests/compaction/mod.rs | 3591 |
 | api/runtime.rs | 3439 |
+| lifecycle/tests/durable.rs | 3413 |
 | service/manifest.rs | 3333 |
-| lifecycle/tests/durable.rs | 3117 |
 | commit/tests/durable.rs | 3013 |
 | lifecycle/tests/recovery.rs | 3007 |
 | service/table.rs | 2990 |
-| lifecycle/tests/cache.rs | 2921 |
 | commit/tests/cache.rs | 2503 |
-| lifecycle/durable/maintenance.rs | 2308 |
+| lifecycle/durable/maintenance.rs | 2403 |
 | branch/tests/read_view.rs | 2202 |
 | lifecycle/compaction.rs | 2113 |
 | testkit/integration_harness.rs | 2111 |
@@ -75,6 +75,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | service/wal.rs | 1621 |
 | lifecycle/quarantine.rs | 1614 |
 | lifecycle/tests/budget_runtime.rs | 1586 |
+| lifecycle/cache.rs | 1555 |
 | lifecycle/tests/table_object_retention/plan.rs | 1550 |
 | branch/state/compaction.rs | 1538 |
 
