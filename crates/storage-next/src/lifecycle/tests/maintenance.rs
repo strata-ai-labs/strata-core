@@ -212,6 +212,7 @@ fn maintenance_enqueue_requires_open_and_enforces_capacity() {
         }
     );
     assert_eq!(executor.stats().queue_full(), 1);
+    assert_eq!(executor.stats().max_pending_tasks(), 1);
 }
 
 #[test]
@@ -1280,6 +1281,7 @@ fn maintenance_fault_after_enqueue_keeps_pending_task_observable() {
     );
     assert_eq!(executor.status().pending_tasks(), 1);
     assert_eq!(executor.stats().enqueued(), 1);
+    assert_eq!(executor.stats().max_pending_tasks(), 1);
 }
 
 #[test]

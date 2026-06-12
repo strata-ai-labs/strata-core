@@ -638,7 +638,12 @@ impl<S> LifecycleCacheRuntime<S> {
         let (Some(request), Some(enqueue)) = (outcome.suggested_task(), outcome.enqueue()) else {
             return outcome;
         };
-        match self.run_inline_maintenance_task(request, enqueue.task_id()) {
+        let inline_start = std::time::Instant::now();
+        let result = self.run_inline_maintenance_task(request, enqueue.task_id());
+        crate::observability::perf_trace::record_lifecycle_inline_maintenance(
+            inline_start.elapsed(),
+        );
+        match result {
             Ok(()) => outcome,
             Err(error) => {
                 crate::observability::perf_trace::record_lifecycle_post_commit_maintenance_deferred(

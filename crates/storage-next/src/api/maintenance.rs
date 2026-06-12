@@ -113,6 +113,7 @@ pub struct MaintenanceQueueSummary {
     active_task: Option<u64>,
     enqueued: usize,
     coalesced: usize,
+    max_pending_tasks: usize,
     started: usize,
     completed: usize,
     deferred: usize,
@@ -359,6 +360,7 @@ impl MaintenanceQueueSummary {
         active_task: Option<u64>,
         enqueued: usize,
         coalesced: usize,
+        max_pending_tasks: usize,
         started: usize,
         completed: usize,
         deferred: usize,
@@ -372,6 +374,7 @@ impl MaintenanceQueueSummary {
             active_task,
             enqueued,
             coalesced,
+            max_pending_tasks,
             started,
             completed,
             deferred,
@@ -400,6 +403,11 @@ impl MaintenanceQueueSummary {
     #[must_use]
     pub const fn coalesced(self) -> usize {
         self.coalesced
+    }
+
+    #[must_use]
+    pub const fn max_pending_tasks(self) -> usize {
+        self.max_pending_tasks
     }
 
     #[must_use]

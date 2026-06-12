@@ -165,6 +165,7 @@ pub(crate) struct MaintenanceExecutorStatus {
 pub(crate) struct LifecycleMaintenanceStats {
     enqueued: usize,
     coalesced: usize,
+    max_pending_tasks: usize,
     started: usize,
     completed: usize,
     deferred: usize,
@@ -886,6 +887,10 @@ impl LifecycleMaintenanceStats {
         self.coalesced
     }
 
+    pub(crate) const fn max_pending_tasks(self) -> usize {
+        self.max_pending_tasks
+    }
+
     pub(crate) const fn started(self) -> usize {
         self.started
     }
@@ -1123,6 +1128,7 @@ impl LifecycleMaintenanceExecutor {
         let task = MaintenanceTask::new(id, sequence, request);
         self.queue.push(task);
         self.stats.enqueued = self.stats.enqueued.saturating_add(1);
+        self.stats.max_pending_tasks = self.stats.max_pending_tasks.max(self.queue.len());
         fault.check(MaintenanceFaultPoint::AfterEnqueue, Some(&task))?;
         Ok(MaintenanceEnqueueOutcome::enqueued(
             id,

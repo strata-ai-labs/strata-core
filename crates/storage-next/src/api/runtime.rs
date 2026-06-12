@@ -2151,6 +2151,7 @@ fn map_maintenance_queue_summary(
             .map(crate::lifecycle::MaintenanceTaskId::get),
         stats.enqueued(),
         stats.coalesced(),
+        stats.max_pending_tasks(),
         stats.started(),
         stats.completed(),
         stats.deferred(),

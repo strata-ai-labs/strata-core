@@ -17,11 +17,11 @@ use strata_benchmarks::schema::{
 use strata_storage_next::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
     CommitOptions, DiagnosticsFactState, DiagnosticsRequest, DiagnosticsScope,
-    DiagnosticsSourceLayoutReport, MaintenanceRequest, MaintenanceScope, MaintenanceSummary,
-    MaintenanceSummaryStatus, MaintenanceTask, PointReadRequest, PrefixScanReadRequest, ReadBound,
-    ReadLimit, ScanRange, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiResult,
-    StorageDurabilityPolicy, StorageKey, StorageOpenOutcome, StorageRuntime, StorageSpaceId,
-    StorageValue,
+    DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest, MaintenanceScope,
+    MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask, PointReadRequest,
+    PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome, ScanReadRequest,
+    StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey, StorageOpenOutcome,
+    StorageRuntime, StorageSpaceId, StorageValue,
 };
 use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
@@ -84,6 +84,10 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
         config.branch_samples,
         config.scan_limit
     );
+    eprintln!(
+        "diagnostic_final_drain={}",
+        config.diagnostic_final_drain
+    );
     eprintln!();
 
     for &scale in &config.scales {
@@ -110,6 +114,7 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
                     &mut open.runtime,
                     branch_id,
                     scale,
+                    &config,
                 )?);
             }
 
@@ -247,14 +252,50 @@ fn run_load_seq(
     }
 
     let elapsed = start.elapsed();
+    let perf_trace = perf_trace::snapshot();
+    load_phase.record_automatic_maintenance(perf_trace);
     Ok(
         RunResult::throughput(Workload::LoadSeq, engine, scale, scale, elapsed)
             .with_load_phase_trace(load_phase)
-            .with_perf_trace(perf_trace::snapshot()),
+            .with_perf_trace(perf_trace),
     )
 }
 
 fn prepare_loaded_source_shape(
+    runtime: &mut StorageRuntime<'_>,
+    branch_id: BranchId,
+    scale: usize,
+    config: &Config,
+) -> Result<SourceShapeContext, BenchmarkError> {
+    if config.diagnostic_final_drain {
+        return drain_loaded_source_shape(runtime, branch_id, scale);
+    }
+    observe_loaded_source_shape(runtime, branch_id, scale)
+}
+
+fn observe_loaded_source_shape(
+    runtime: &StorageRuntime<'_>,
+    branch_id: BranchId,
+    scale: usize,
+) -> Result<SourceShapeContext, BenchmarkError> {
+    let diagnostics =
+        runtime.diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Branch(branch_id)))?;
+    let layout = diagnostics.source_layout();
+    if layout.state() != DiagnosticsFactState::Known {
+        return Err(BenchmarkError::SourceLayoutUnavailable);
+    }
+
+    let context = SourceShapeContext::from_observed_report(
+        scale,
+        SourceShapeCompactionMode::AutomaticScheduling,
+        diagnostics.maintenance(),
+        layout,
+    );
+    print_source_shape_context(&context);
+    Ok(context)
+}
+
+fn drain_loaded_source_shape(
     runtime: &mut StorageRuntime<'_>,
     branch_id: BranchId,
     scale: usize,
@@ -289,6 +330,7 @@ fn prepare_loaded_source_shape(
         compact,
         compact_elapsed,
         SourceShapeCompactionMode::ExplicitFixedPointDrain,
+        diagnostics.maintenance(),
         layout,
     );
     print_source_shape_context(&context);
@@ -861,23 +903,35 @@ fn print_result(result: &RunResult) {
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
-            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={}",
+            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={} automatic_maintenance_ns={} automatic_maintenance_attempts={} maintenance_suggested={} maintenance_scheduled={} maintenance_coalesced={} maintenance_deferred={}",
             load_phase.batch_build_ns,
             load_phase.commit_call_ns,
             load_phase.maintenance_call_ns,
             load_phase.maintenance_runs,
             load_phase.maintenance_rows,
+            load_phase.automatic_maintenance_ns,
+            load_phase.automatic_maintenance_attempts,
+            load_phase.maintenance_suggested_tasks,
+            load_phase.maintenance_scheduled_tasks,
+            load_phase.maintenance_coalesced_tasks,
+            load_phase.maintenance_deferred_tasks,
         );
     }
     if let Some(source_shape) = result.source_shape_context.as_ref() {
         eprintln!(
-            "    post-load-source-shape passed={} compaction_mode={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} interpretation={}",
+            "    post-load-source-shape passed={} compaction_mode={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} queue_final={} queue_max={} interpretation={}",
             source_shape.source_shape_passed,
             source_shape.compaction_mode.as_str(),
             source_shape.final_layout.owned_l0_tables,
             format_level_counts(&source_shape.final_layout.owned_nonzero_level_table_counts),
             source_shape.final_layout.inherited_l0_tables,
             format_level_counts(&source_shape.final_layout.inherited_nonzero_level_table_counts),
+            source_shape
+                .maintenance_queue
+                .map_or_else(|| "unknown".to_string(), |queue| queue.pending_tasks.to_string()),
+            source_shape
+                .maintenance_queue
+                .map_or_else(|| "unknown".to_string(), |queue| queue.max_pending_tasks.to_string()),
             source_shape
                 .source_shape_passed
                 .then_some("source-shape-passed-evaluate-filter-cache")
@@ -938,6 +992,8 @@ Options:
   --seed N               Deterministic sampling seed.
   --root PATH            Benchmark scratch root. Default: benchmarks/.benchmark/storage-next-l9
   --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-next-l9
+  --diagnostic-final-drain
+                         Run final Flush+Compact before read workloads and report it separately.
   --keep-dir             Keep durable scratch directories after the run.
   --progress             Print load progress.
   -h, --help             Show this help.
@@ -963,6 +1019,7 @@ struct Config {
     seed: u64,
     root: PathBuf,
     results_dir: Option<PathBuf>,
+    diagnostic_final_drain: bool,
     keep_dir: bool,
     progress: bool,
 }
@@ -984,6 +1041,7 @@ impl Config {
                 .join(".benchmark")
                 .join("storage-next-l9"),
             results_dir: None,
+            diagnostic_final_drain: false,
             keep_dir: false,
             progress: false,
         };
@@ -1042,6 +1100,7 @@ impl Config {
                     config.results_dir =
                         Some(PathBuf::from(value(args.get(index), "--results-dir")?));
                 }
+                "--diagnostic-final-drain" => config.diagnostic_final_drain = true,
                 "--keep-dir" => config.keep_dir = true,
                 "--progress" => config.progress = true,
                 other => return Err(CliError::UnknownFlag(other.to_string())),
@@ -1332,6 +1391,10 @@ impl RunResult {
             serde_json::json!(config.scan_limit),
         );
         parameters.insert("seed".to_string(), serde_json::json!(config.seed));
+        parameters.insert(
+            "diagnostic_final_drain".to_string(),
+            serde_json::json!(config.diagnostic_final_drain),
+        );
         if let Some(load_phase) = load_phase_trace {
             parameters.insert(
                 "load_phase_trace".to_string(),
@@ -1341,6 +1404,12 @@ impl RunResult {
                     "maintenance_call_ns": load_phase.maintenance_call_ns,
                     "maintenance_runs": load_phase.maintenance_runs,
                     "maintenance_rows": load_phase.maintenance_rows,
+                    "automatic_maintenance_ns": load_phase.automatic_maintenance_ns,
+                    "automatic_maintenance_attempts": load_phase.automatic_maintenance_attempts,
+                    "maintenance_suggested_tasks": load_phase.maintenance_suggested_tasks,
+                    "maintenance_scheduled_tasks": load_phase.maintenance_scheduled_tasks,
+                    "maintenance_coalesced_tasks": load_phase.maintenance_coalesced_tasks,
+                    "maintenance_deferred_tasks": load_phase.maintenance_deferred_tasks,
                 }),
             );
         }
@@ -1607,6 +1676,74 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "commit_replay_source_probes",
         perf_trace.commit_replay_source_probes()
+    );
+    field!(
+        "lifecycle_write_admission_evaluations",
+        perf_trace.lifecycle_write_admission_evaluations()
+    );
+    field!(
+        "lifecycle_write_admission_clean_accepts",
+        perf_trace.lifecycle_write_admission_clean_accepts()
+    );
+    field!(
+        "lifecycle_write_admission_under_pressure_accepts",
+        perf_trace.lifecycle_write_admission_under_pressure_accepts()
+    );
+    field!(
+        "lifecycle_write_admission_requires_maintenance",
+        perf_trace.lifecycle_write_admission_requires_maintenance()
+    );
+    field!(
+        "lifecycle_write_admission_inline_attempts",
+        perf_trace.lifecycle_write_admission_inline_attempts()
+    );
+    field!(
+        "lifecycle_write_admission_pressure_rejects",
+        perf_trace.lifecycle_write_admission_pressure_rejects()
+    );
+    field!(
+        "lifecycle_write_admission_retryable_rejects",
+        perf_trace.lifecycle_write_admission_retryable_rejects()
+    );
+    field!(
+        "lifecycle_write_admission_pressure_cleared_retries",
+        perf_trace.lifecycle_write_admission_pressure_cleared_retries()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_evaluations",
+        perf_trace.lifecycle_post_commit_maintenance_evaluations()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_disabled",
+        perf_trace.lifecycle_post_commit_maintenance_disabled()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_no_task",
+        perf_trace.lifecycle_post_commit_maintenance_no_task()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_tasks_suggested",
+        perf_trace.lifecycle_post_commit_maintenance_tasks_suggested()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_tasks_enqueued",
+        perf_trace.lifecycle_post_commit_maintenance_tasks_enqueued()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_tasks_coalesced",
+        perf_trace.lifecycle_post_commit_maintenance_tasks_coalesced()
+    );
+    field!(
+        "lifecycle_post_commit_maintenance_tasks_deferred",
+        perf_trace.lifecycle_post_commit_maintenance_tasks_deferred()
+    );
+    field!(
+        "lifecycle_inline_maintenance_attempts",
+        perf_trace.lifecycle_inline_maintenance_attempts()
+    );
+    field!(
+        "lifecycle_inline_maintenance_ns",
+        perf_trace.lifecycle_inline_maintenance_ns()
     );
     field!("append_rows_applied", perf_trace.append_rows_applied());
     field!(
@@ -2036,7 +2173,7 @@ fn source_shape_metrics_json(
     scale: usize,
     operation_count: u64,
     perf_trace: StoragePerfSnapshot,
-    _load_phase_trace: Option<LoadPhaseTrace>,
+    load_phase_trace: Option<LoadPhaseTrace>,
     source_shape_context: Option<&SourceShapeContext>,
 ) -> serde_json::Value {
     let point_source_probes = perf_trace
@@ -2073,12 +2210,65 @@ fn source_shape_metrics_json(
         .map_or(serde_json::Value::Null, |context| {
             serde_json::json!(context.compaction_mode.as_str())
         });
+    let maintenance_queue_depth_final =
+        source_shape_context.and_then(|context| context.maintenance_queue.map(|queue| {
+            serde_json::json!(queue.pending_tasks)
+        })).unwrap_or(serde_json::Value::Null);
+    let maintenance_queue_depth_max =
+        source_shape_context.and_then(|context| context.maintenance_queue.map(|queue| {
+            serde_json::json!(queue.max_pending_tasks)
+        })).unwrap_or(serde_json::Value::Null);
+    let maintenance_queue_deferred_outcomes_per_million_rows =
+        source_shape_context.and_then(|context| context.maintenance_queue.map(|queue| {
+            ratio_json((queue.deferred as u64).saturating_mul(1_000_000), scale as u64)
+        })).unwrap_or(serde_json::Value::Null);
+    let load_maintenance_ms_per_million_rows =
+        load_phase_trace.map_or(serde_json::Value::Null, |trace| {
+            ns_per_row_as_ms_per_million_rows_json(trace.maintenance_call_ns, scale as u64)
+        });
+    let automatic_maintenance_ns =
+        load_phase_trace.map_or(perf_trace.lifecycle_inline_maintenance_ns(), |trace| {
+            trace.automatic_maintenance_ns
+        });
+    let automatic_maintenance_attempts =
+        load_phase_trace.map_or(perf_trace.lifecycle_inline_maintenance_attempts(), |trace| {
+            trace.automatic_maintenance_attempts
+        });
+    let maintenance_suggested_tasks = load_phase_trace.map_or(
+        perf_trace.lifecycle_post_commit_maintenance_tasks_suggested(),
+        |trace| trace.maintenance_suggested_tasks,
+    );
+    let maintenance_scheduled_tasks = load_phase_trace.map_or(
+        perf_trace.lifecycle_post_commit_maintenance_tasks_enqueued(),
+        |trace| trace.maintenance_scheduled_tasks,
+    );
+    let maintenance_coalesced_tasks = load_phase_trace.map_or(
+        perf_trace.lifecycle_post_commit_maintenance_tasks_coalesced(),
+        |trace| trace.maintenance_coalesced_tasks,
+    );
+    let maintenance_deferred_tasks = load_phase_trace.map_or(
+        perf_trace.lifecycle_post_commit_maintenance_tasks_deferred(),
+        |trace| trace.maintenance_deferred_tasks,
+    );
+    let automatic_maintenance_ms_per_million_rows =
+        ns_per_row_as_ms_per_million_rows_json(automatic_maintenance_ns, scale as u64);
+    let scheduled_maintenance_tasks_per_explicit_flush =
+        load_phase_trace.map_or(serde_json::Value::Null, |trace| {
+            ratio_json(
+                trace
+                    .maintenance_scheduled_tasks
+                    .saturating_add(trace.maintenance_coalesced_tasks),
+                trace.maintenance_runs,
+            )
+        });
     let point_shape = source_shape_context.map(|context| {
         point_probe_shape_json(
             operation_count,
             perf_trace,
+            context.final_layout.owned_l0_tables as u64,
             context.final_layout.owned_nonzero_level_count(),
             context.final_layout.inherited_layers as u64,
+            context.final_layout.inherited_l0_tables as u64,
             context.final_layout.inherited_nonzero_level_count(),
         )
     });
@@ -2112,7 +2302,19 @@ fn source_shape_metrics_json(
             perf_trace.scan_rows_visited(),
             perf_trace.scan_rows_returned(),
         ),
+        "load_maintenance_ms_per_million_rows": load_maintenance_ms_per_million_rows,
+        "automatic_maintenance_ns": automatic_maintenance_ns,
+        "automatic_maintenance_attempts": automatic_maintenance_attempts,
+        "automatic_maintenance_ms_per_million_rows": automatic_maintenance_ms_per_million_rows,
         "l0_tables_per_million_rows_after_load": l0_tables_per_million_rows_after_load,
+        "scheduled_maintenance_tasks_per_explicit_flush": scheduled_maintenance_tasks_per_explicit_flush,
+        "maintenance_queue_depth_final": maintenance_queue_depth_final,
+        "maintenance_queue_depth_max": maintenance_queue_depth_max,
+        "maintenance_queue_deferred_outcomes_per_million_rows": maintenance_queue_deferred_outcomes_per_million_rows,
+        "maintenance_suggested_tasks": maintenance_suggested_tasks,
+        "maintenance_scheduled_tasks": maintenance_scheduled_tasks,
+        "maintenance_coalesced_tasks": maintenance_coalesced_tasks,
+        "maintenance_deferred_tasks": maintenance_deferred_tasks,
         "post_load_compaction_mode": post_load_compaction_mode,
         "post_load_source_shape": source_shape_context.map(source_shape_context_json),
         "point_probe_shape": point_shape,
@@ -2142,15 +2344,19 @@ fn source_shape_metrics_json(
 fn point_probe_shape_json(
     operation_count: u64,
     perf_trace: StoragePerfSnapshot,
+    owned_l0_table_count: u64,
     owned_nonzero_level_count: u64,
     inherited_layers: u64,
+    inherited_l0_table_count: u64,
     inherited_nonzero_level_count: u64,
 ) -> serde_json::Value {
     point_probe_shape_json_from_counts(
         operation_count,
         PointProbeShapeCounters::from_perf_trace(perf_trace),
+        owned_l0_table_count,
         owned_nonzero_level_count,
         inherited_layers,
+        inherited_l0_table_count,
         inherited_nonzero_level_count,
     )
 }
@@ -2158,16 +2364,21 @@ fn point_probe_shape_json(
 fn point_probe_shape_json_from_counts(
     operation_count: u64,
     counters: PointProbeShapeCounters,
+    owned_l0_table_count: u64,
     owned_nonzero_level_count: u64,
     inherited_layers: u64,
+    inherited_l0_table_count: u64,
     inherited_nonzero_level_count: u64,
 ) -> serde_json::Value {
     if operation_count == 0 {
         return serde_json::Value::Null;
     }
 
+    let max_owned_l0_table_probes = operation_count.saturating_mul(owned_l0_table_count);
     let max_owned_nonzero_level_searches =
         operation_count.saturating_mul(owned_nonzero_level_count);
+    let max_inherited_l0_table_probes =
+        operation_count.saturating_mul(inherited_l0_table_count);
     let inherited_level_bound =
         inherited_nonzero_level_count.saturating_mul(if inherited_nonzero_level_count == 0 {
             0
@@ -2177,11 +2388,11 @@ fn point_probe_shape_json_from_counts(
     let max_inherited_nonzero_level_searches =
         operation_count.saturating_mul(inherited_level_bound);
     let mut failures = Vec::new();
-    if counters.owned_l0_table_probes != 0 {
-        failures.push("owned_l0_table_probes_nonzero");
+    if counters.owned_l0_table_probes > max_owned_l0_table_probes {
+        failures.push("owned_l0_table_probes_exceed_layout_bound");
     }
-    if counters.inherited_l0_table_probes != 0 {
-        failures.push("inherited_l0_table_probes_nonzero");
+    if counters.inherited_l0_table_probes > max_inherited_l0_table_probes {
+        failures.push("inherited_l0_table_probes_exceed_layout_bound");
     }
     if counters.owned_nonzero_level_searches > max_owned_nonzero_level_searches {
         failures.push("owned_nonzero_level_searches_exceed_layout_bound");
@@ -2199,7 +2410,9 @@ fn point_probe_shape_json_from_counts(
     serde_json::json!({
         "passed": failures.is_empty(),
         "failures": failures,
+        "owned_l0_table_bound": max_owned_l0_table_probes,
         "owned_nonzero_level_bound": max_owned_nonzero_level_searches,
+        "inherited_l0_table_bound": max_inherited_l0_table_probes,
         "inherited_nonzero_level_bound": max_inherited_nonzero_level_searches,
     })
 }
@@ -2235,22 +2448,54 @@ fn ratio_json(numerator: u64, denominator: u64) -> serde_json::Value {
     }
 }
 
+fn ns_per_row_as_ms_per_million_rows_json(
+    nanoseconds: u64,
+    rows: u64,
+) -> serde_json::Value {
+    ratio_json(nanoseconds, rows)
+}
+
 #[derive(Clone, Debug)]
 struct SourceShapeContext {
     scale: usize,
     compaction_mode: SourceShapeCompactionMode,
-    flush_status: MaintenanceSummaryStatus,
+    flush_status: Option<MaintenanceSummaryStatus>,
     flush_rows: u64,
-    flush_maintenance_ns: u64,
-    compact_status: MaintenanceSummaryStatus,
+    flush_maintenance_ns: Option<u64>,
+    compact_status: Option<MaintenanceSummaryStatus>,
     compact_state_changes: usize,
-    compact_maintenance_ns: u64,
+    compact_maintenance_ns: Option<u64>,
+    maintenance_queue: Option<MaintenanceQueueSnapshot>,
     final_layout: SourceLayoutSnapshot,
     source_shape_passed: bool,
     failures: Vec<String>,
 }
 
 impl SourceShapeContext {
+    fn from_observed_report(
+        scale: usize,
+        compaction_mode: SourceShapeCompactionMode,
+        queue: Option<MaintenanceQueueSummary>,
+        report: &DiagnosticsSourceLayoutReport,
+    ) -> Self {
+        let final_layout = SourceLayoutSnapshot::from_report(report);
+        let failures = compaction_mode.source_shape_failures(&final_layout);
+        Self {
+            scale,
+            compaction_mode,
+            flush_status: None,
+            flush_rows: 0,
+            flush_maintenance_ns: None,
+            compact_status: None,
+            compact_state_changes: 0,
+            compact_maintenance_ns: None,
+            maintenance_queue: queue.map(MaintenanceQueueSnapshot::from_summary),
+            final_layout,
+            source_shape_passed: failures.is_empty(),
+            failures,
+        }
+    }
+
     fn from_report(
         scale: usize,
         flush: MaintenanceSummary,
@@ -2258,19 +2503,21 @@ impl SourceShapeContext {
         compact: MaintenanceSummary,
         compact_elapsed: Duration,
         compaction_mode: SourceShapeCompactionMode,
+        queue: Option<MaintenanceQueueSummary>,
         report: &DiagnosticsSourceLayoutReport,
     ) -> Self {
         let final_layout = SourceLayoutSnapshot::from_report(report);
-        let failures = final_layout.compacted_shape_failures();
+        let failures = compaction_mode.source_shape_failures(&final_layout);
         Self {
             scale,
             compaction_mode,
-            flush_status: flush.status(),
+            flush_status: Some(flush.status()),
             flush_rows: flush.rows_processed(),
-            flush_maintenance_ns: nanos_u64(flush_elapsed),
-            compact_status: compact.status(),
+            flush_maintenance_ns: Some(nanos_u64(flush_elapsed)),
+            compact_status: Some(compact.status()),
             compact_state_changes: compact.state_changes(),
-            compact_maintenance_ns: nanos_u64(compact_elapsed),
+            compact_maintenance_ns: Some(nanos_u64(compact_elapsed)),
+            maintenance_queue: queue.map(MaintenanceQueueSnapshot::from_summary),
             final_layout,
             source_shape_passed: failures.is_empty(),
             failures,
@@ -2303,8 +2550,52 @@ impl SourceShapeCompactionMode {
                 "diagnostics source layout after final flush and explicit fixed-point compaction drain"
             }
             Self::AutomaticScheduling => {
-                "diagnostics source layout after final flush and automatic compaction scheduling"
+                "diagnostics source layout after normal load path and automatic maintenance scheduling"
             }
+        }
+    }
+
+    fn source_shape_failures(self, layout: &SourceLayoutSnapshot) -> Vec<String> {
+        match self {
+            Self::SingleSelectedOperation | Self::ExplicitFixedPointDrain => {
+                layout.compacted_shape_failures()
+            }
+            Self::AutomaticScheduling => Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MaintenanceQueueSnapshot {
+    pending_tasks: usize,
+    active_task: Option<u64>,
+    enqueued: usize,
+    coalesced: usize,
+    max_pending_tasks: usize,
+    started: usize,
+    completed: usize,
+    deferred: usize,
+    failed: usize,
+    canceled: usize,
+    drained: usize,
+    queue_full: usize,
+}
+
+impl MaintenanceQueueSnapshot {
+    fn from_summary(summary: MaintenanceQueueSummary) -> Self {
+        Self {
+            pending_tasks: summary.pending_tasks(),
+            active_task: summary.active_task(),
+            enqueued: summary.enqueued(),
+            coalesced: summary.coalesced(),
+            max_pending_tasks: summary.max_pending_tasks(),
+            started: summary.started(),
+            completed: summary.completed(),
+            deferred: summary.deferred(),
+            failed: summary.failed(),
+            canceled: summary.canceled(),
+            drained: summary.drained(),
+            queue_full: summary.queue_full(),
         }
     }
 }
@@ -2403,15 +2694,21 @@ struct LevelTableCountSnapshot {
 
 fn print_source_shape_context(context: &SourceShapeContext) {
     eprintln!(
-        "  source-shape         passed={} compaction_mode={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} flush_status={} compact_status={} compact_changes={}",
+        "  source-shape         passed={} compaction_mode={} final_l0={} owned_nonzero={} inherited_l0={} inherited_nonzero={} queue_final={} queue_max={} flush_status={} compact_status={} compact_changes={}",
         context.source_shape_passed,
         context.compaction_mode.as_str(),
         context.final_layout.owned_l0_tables,
         format_level_counts(&context.final_layout.owned_nonzero_level_table_counts),
         context.final_layout.inherited_l0_tables,
         format_level_counts(&context.final_layout.inherited_nonzero_level_table_counts),
-        format_maintenance_status(context.flush_status),
-        format_maintenance_status(context.compact_status),
+        context
+            .maintenance_queue
+            .map_or_else(|| "unknown".to_string(), |queue| queue.pending_tasks.to_string()),
+        context
+            .maintenance_queue
+            .map_or_else(|| "unknown".to_string(), |queue| queue.max_pending_tasks.to_string()),
+        format_optional_maintenance_status(context.flush_status),
+        format_optional_maintenance_status(context.compact_status),
         context.compact_state_changes,
     );
     if !context.failures.is_empty() {
@@ -2431,16 +2728,34 @@ fn source_shape_context_json(context: &SourceShapeContext) -> serde_json::Value 
             &context.final_layout.owned_nonzero_level_table_counts,
         ),
         "flush": {
-            "status": format_maintenance_status(context.flush_status),
+            "status": format_optional_maintenance_status(context.flush_status),
             "rows_processed": context.flush_rows,
             "maintenance_ns": context.flush_maintenance_ns,
         },
         "compact": {
             "mode": context.compaction_mode.as_str(),
-            "status": format_maintenance_status(context.compact_status),
+            "status": format_optional_maintenance_status(context.compact_status),
             "state_changes": context.compact_state_changes,
             "maintenance_ns": context.compact_maintenance_ns,
         },
+        "maintenance_queue": context.maintenance_queue.map(maintenance_queue_json),
+    })
+}
+
+fn maintenance_queue_json(queue: MaintenanceQueueSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "pending_tasks": queue.pending_tasks,
+        "active_task": queue.active_task,
+        "enqueued": queue.enqueued,
+        "coalesced": queue.coalesced,
+        "max_pending_tasks": queue.max_pending_tasks,
+        "started": queue.started,
+        "completed": queue.completed,
+        "deferred": queue.deferred,
+        "failed": queue.failed,
+        "canceled": queue.canceled,
+        "drained": queue.drained,
+        "queue_full": queue.queue_full,
     })
 }
 
@@ -2496,6 +2811,10 @@ fn format_maintenance_status(status: MaintenanceSummaryStatus) -> &'static str {
     }
 }
 
+fn format_optional_maintenance_status(status: Option<MaintenanceSummaryStatus>) -> &'static str {
+    status.map_or("not-run", format_maintenance_status)
+}
+
 fn nanos_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -2507,6 +2826,12 @@ struct LoadPhaseTrace {
     maintenance_call_ns: u64,
     maintenance_runs: u64,
     maintenance_rows: u64,
+    automatic_maintenance_ns: u64,
+    automatic_maintenance_attempts: u64,
+    maintenance_suggested_tasks: u64,
+    maintenance_scheduled_tasks: u64,
+    maintenance_coalesced_tasks: u64,
+    maintenance_deferred_tasks: u64,
 }
 
 impl LoadPhaseTrace {
@@ -2528,6 +2853,19 @@ impl LoadPhaseTrace {
             .saturating_add(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX));
         self.maintenance_runs = self.maintenance_runs.saturating_add(1);
         self.maintenance_rows = self.maintenance_rows.saturating_add(rows_processed);
+    }
+
+    fn record_automatic_maintenance(&mut self, perf_trace: StoragePerfSnapshot) {
+        self.automatic_maintenance_ns = perf_trace.lifecycle_inline_maintenance_ns();
+        self.automatic_maintenance_attempts = perf_trace.lifecycle_inline_maintenance_attempts();
+        self.maintenance_suggested_tasks =
+            perf_trace.lifecycle_post_commit_maintenance_tasks_suggested();
+        self.maintenance_scheduled_tasks =
+            perf_trace.lifecycle_post_commit_maintenance_tasks_enqueued();
+        self.maintenance_coalesced_tasks =
+            perf_trace.lifecycle_post_commit_maintenance_tasks_coalesced();
+        self.maintenance_deferred_tasks =
+            perf_trace.lifecycle_post_commit_maintenance_tasks_deferred();
     }
 }
 
@@ -2824,6 +3162,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn diagnostic_final_drain_is_opt_in() {
+        let default_config = Config::parse(std::iter::empty()).expect("default config");
+        assert!(!default_config.diagnostic_final_drain);
+
+        let draining_config =
+            Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
+                .expect("diagnostic drain config");
+        assert!(draining_config.diagnostic_final_drain);
+    }
+
+    #[test]
     fn benchmark_result_records_source_shape_metrics_with_load_context() {
         perf_trace::reset();
         let config = Config::parse(std::iter::empty()).expect("default config");
@@ -2866,7 +3215,19 @@ mod tests {
             Some(0.0)
         );
         assert!(metrics["scan_rows_visited_per_row_returned"].is_null());
+        assert_eq!(
+            metrics["load_maintenance_ms_per_million_rows"].as_f64(),
+            Some(0.0)
+        );
+        assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(0));
+        assert_eq!(metrics["automatic_maintenance_attempts"].as_u64(), Some(0));
+        assert_eq!(
+            metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
+            Some(0.0)
+        );
         assert!(metrics["l0_tables_per_million_rows_after_load"].is_null());
+        assert!(metrics["maintenance_queue_depth_final"].is_null());
+        assert!(metrics["maintenance_queue_depth_max"].is_null());
         assert!(metrics["post_load_compaction_mode"].is_null());
         assert_eq!(metrics["assumptions"]["operation_count"].as_u64(), Some(5));
         assert_eq!(
@@ -2905,17 +3266,129 @@ mod tests {
     }
 
     #[test]
+    fn source_shape_metrics_preserve_load_maintenance_after_read_trace_reset() {
+        perf_trace::reset();
+        let metrics = source_shape_metrics_json(
+            1_000,
+            10,
+            perf_trace::snapshot(),
+            Some(LoadPhaseTrace {
+                maintenance_runs: 2,
+                automatic_maintenance_ns: 4_000,
+                automatic_maintenance_attempts: 3,
+                maintenance_suggested_tasks: 5,
+                maintenance_scheduled_tasks: 2,
+                maintenance_coalesced_tasks: 1,
+                maintenance_deferred_tasks: 1,
+                ..LoadPhaseTrace::default()
+            }),
+            None,
+        );
+
+        assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(4_000));
+        assert_eq!(metrics["automatic_maintenance_attempts"].as_u64(), Some(3));
+        assert_eq!(
+            metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
+            Some(4.0)
+        );
+        assert_eq!(metrics["maintenance_suggested_tasks"].as_u64(), Some(5));
+        assert_eq!(metrics["maintenance_scheduled_tasks"].as_u64(), Some(2));
+        assert_eq!(metrics["maintenance_coalesced_tasks"].as_u64(), Some(1));
+        assert_eq!(metrics["maintenance_deferred_tasks"].as_u64(), Some(1));
+        assert_eq!(metrics["scheduled_maintenance_tasks_per_explicit_flush"].as_f64(), Some(1.5));
+    }
+
+    #[test]
+    fn benchmark_result_records_diagnostic_drain_and_scheduler_metadata() {
+        perf_trace::reset();
+        let config =
+            Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
+                .expect("diagnostic drain config");
+        let load_phase = LoadPhaseTrace {
+            batch_build_ns: 11,
+            commit_call_ns: 22,
+            maintenance_call_ns: 33,
+            maintenance_runs: 4,
+            maintenance_rows: 800,
+            automatic_maintenance_ns: 5_000,
+            automatic_maintenance_attempts: 6,
+            maintenance_suggested_tasks: 7,
+            maintenance_scheduled_tasks: 3,
+            maintenance_coalesced_tasks: 2,
+            maintenance_deferred_tasks: 1,
+        };
+
+        let result = RunResult::throughput(
+            Workload::PointLatestThroughput,
+            Engine::Cache,
+            2_000,
+            8,
+            Duration::from_secs(1),
+        )
+        .with_load_phase_trace(load_phase)
+        .with_perf_trace(perf_trace::snapshot())
+        .into_benchmark_result(&config);
+
+        assert_eq!(
+            result.parameters["diagnostic_final_drain"].as_bool(),
+            Some(true)
+        );
+        let trace = &result.parameters["load_phase_trace"];
+        assert_eq!(trace["batch_build_ns"].as_u64(), Some(11));
+        assert_eq!(trace["commit_call_ns"].as_u64(), Some(22));
+        assert_eq!(trace["maintenance_call_ns"].as_u64(), Some(33));
+        assert_eq!(trace["maintenance_runs"].as_u64(), Some(4));
+        assert_eq!(trace["maintenance_rows"].as_u64(), Some(800));
+        assert_eq!(trace["automatic_maintenance_ns"].as_u64(), Some(5_000));
+        assert_eq!(trace["automatic_maintenance_attempts"].as_u64(), Some(6));
+        assert_eq!(trace["maintenance_suggested_tasks"].as_u64(), Some(7));
+        assert_eq!(trace["maintenance_scheduled_tasks"].as_u64(), Some(3));
+        assert_eq!(trace["maintenance_coalesced_tasks"].as_u64(), Some(2));
+        assert_eq!(trace["maintenance_deferred_tasks"].as_u64(), Some(1));
+
+        let metrics = &result.parameters["source_shape_metrics"];
+        assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(5_000));
+        assert_eq!(metrics["automatic_maintenance_attempts"].as_u64(), Some(6));
+        assert_eq!(
+            metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
+            Some(2.5)
+        );
+        assert_eq!(metrics["maintenance_suggested_tasks"].as_u64(), Some(7));
+        assert_eq!(metrics["maintenance_scheduled_tasks"].as_u64(), Some(3));
+        assert_eq!(metrics["maintenance_coalesced_tasks"].as_u64(), Some(2));
+        assert_eq!(metrics["maintenance_deferred_tasks"].as_u64(), Some(1));
+        assert_eq!(
+            metrics["scheduled_maintenance_tasks_per_explicit_flush"].as_f64(),
+            Some(1.25)
+        );
+    }
+
+    #[test]
     fn source_shape_metrics_use_final_layout_for_l0_density() {
         perf_trace::reset();
         let source_shape = SourceShapeContext {
             scale: 1_000,
             compaction_mode: SourceShapeCompactionMode::ExplicitFixedPointDrain,
-            flush_status: MaintenanceSummaryStatus::Completed,
+            flush_status: Some(MaintenanceSummaryStatus::Completed),
             flush_rows: 1_000,
-            flush_maintenance_ns: 1,
-            compact_status: MaintenanceSummaryStatus::Completed,
+            flush_maintenance_ns: Some(1),
+            compact_status: Some(MaintenanceSummaryStatus::Completed),
             compact_state_changes: 1,
-            compact_maintenance_ns: 1,
+            compact_maintenance_ns: Some(1),
+            maintenance_queue: Some(MaintenanceQueueSnapshot {
+                pending_tasks: 0,
+                active_task: None,
+                enqueued: 2,
+                coalesced: 1,
+                max_pending_tasks: 3,
+                started: 2,
+                completed: 2,
+                deferred: 2,
+                failed: 0,
+                canceled: 0,
+                drained: 0,
+                queue_full: 0,
+            }),
             final_layout: SourceLayoutSnapshot {
                 active_rows: 0,
                 frozen_table_count: 0,
@@ -2952,6 +3425,15 @@ mod tests {
             Some("explicit-fixed-point-drain")
         );
         assert_eq!(
+            metrics["maintenance_queue_depth_final"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(metrics["maintenance_queue_depth_max"].as_u64(), Some(3));
+        assert_eq!(
+            metrics["maintenance_queue_deferred_outcomes_per_million_rows"].as_f64(),
+            Some(2_000.0)
+        );
+        assert_eq!(
             metrics["assumptions"]["l0_tables_after_load"].as_str(),
             Some(
                 "diagnostics source layout after final flush and explicit fixed-point compaction drain"
@@ -2985,11 +3467,165 @@ mod tests {
     }
 
     #[test]
+    fn automatic_source_shape_observation_does_not_require_compacted_sources() {
+        let layout = SourceLayoutSnapshot {
+            active_rows: 2,
+            frozen_table_count: 1,
+            frozen_rows: 3,
+            owned_l0_tables: 4,
+            owned_nonzero_level_table_counts: vec![LevelTableCountSnapshot {
+                level: 2,
+                table_count: 1,
+            }],
+            owned_total_tables: 5,
+            inherited_layers: 1,
+            inherited_l0_tables: 1,
+            inherited_nonzero_level_table_counts: Vec::new(),
+            inherited_total_tables: 1,
+        };
+
+        assert!(
+            SourceShapeCompactionMode::AutomaticScheduling
+                .source_shape_failures(&layout)
+                .is_empty()
+        );
+
+        let explicit_failures =
+            SourceShapeCompactionMode::ExplicitFixedPointDrain.source_shape_failures(&layout);
+        assert!(explicit_failures.contains(&"active_rows_nonzero".to_string()));
+        assert!(explicit_failures.contains(&"frozen_table_count_nonzero".to_string()));
+        assert!(explicit_failures.contains(&"frozen_rows_nonzero".to_string()));
+        assert!(explicit_failures.contains(&"owned_l0_tables_nonzero".to_string()));
+        assert!(explicit_failures.contains(&"inherited_l0_tables_nonzero".to_string()));
+    }
+
+    #[test]
+    fn source_shape_context_json_separates_observation_from_diagnostic_drain() {
+        let automatic_context = SourceShapeContext {
+            scale: 1_000,
+            compaction_mode: SourceShapeCompactionMode::AutomaticScheduling,
+            flush_status: None,
+            flush_rows: 0,
+            flush_maintenance_ns: None,
+            compact_status: None,
+            compact_state_changes: 0,
+            compact_maintenance_ns: None,
+            maintenance_queue: None,
+            final_layout: SourceLayoutSnapshot {
+                active_rows: 1,
+                frozen_table_count: 0,
+                frozen_rows: 0,
+                owned_l0_tables: 1,
+                owned_nonzero_level_table_counts: Vec::new(),
+                owned_total_tables: 1,
+                inherited_layers: 0,
+                inherited_l0_tables: 0,
+                inherited_nonzero_level_table_counts: Vec::new(),
+                inherited_total_tables: 0,
+            },
+            source_shape_passed: true,
+            failures: Vec::new(),
+        };
+        let automatic_json = source_shape_context_json(&automatic_context);
+
+        assert_eq!(
+            automatic_json["compaction_mode"].as_str(),
+            Some("automatic-scheduling")
+        );
+        assert_eq!(automatic_json["flush"]["status"].as_str(), Some("not-run"));
+        assert!(automatic_json["flush"]["maintenance_ns"].is_null());
+        assert_eq!(
+            automatic_json["compact"]["status"].as_str(),
+            Some("not-run")
+        );
+        assert_eq!(
+            automatic_json["compact"]["mode"].as_str(),
+            Some("automatic-scheduling")
+        );
+        assert!(automatic_json["compact"]["maintenance_ns"].is_null());
+        assert!(automatic_json["maintenance_queue"].is_null());
+
+        let drained_context = SourceShapeContext {
+            scale: 1_000,
+            compaction_mode: SourceShapeCompactionMode::ExplicitFixedPointDrain,
+            flush_status: Some(MaintenanceSummaryStatus::Completed),
+            flush_rows: 1_000,
+            flush_maintenance_ns: Some(12),
+            compact_status: Some(MaintenanceSummaryStatus::Completed),
+            compact_state_changes: 3,
+            compact_maintenance_ns: Some(34),
+            maintenance_queue: Some(MaintenanceQueueSnapshot {
+                pending_tasks: 1,
+                active_task: Some(42),
+                enqueued: 5,
+                coalesced: 2,
+                max_pending_tasks: 4,
+                started: 3,
+                completed: 2,
+                deferred: 1,
+                failed: 0,
+                canceled: 0,
+                drained: 1,
+                queue_full: 0,
+            }),
+            final_layout: SourceLayoutSnapshot {
+                active_rows: 0,
+                frozen_table_count: 0,
+                frozen_rows: 0,
+                owned_l0_tables: 0,
+                owned_nonzero_level_table_counts: vec![LevelTableCountSnapshot {
+                    level: 7,
+                    table_count: 2,
+                }],
+                owned_total_tables: 2,
+                inherited_layers: 0,
+                inherited_l0_tables: 0,
+                inherited_nonzero_level_table_counts: Vec::new(),
+                inherited_total_tables: 0,
+            },
+            source_shape_passed: true,
+            failures: Vec::new(),
+        };
+        let drained_json = source_shape_context_json(&drained_context);
+
+        assert_eq!(
+            drained_json["compaction_mode"].as_str(),
+            Some("explicit-fixed-point-drain")
+        );
+        assert_eq!(drained_json["flush"]["status"].as_str(), Some("completed"));
+        assert_eq!(drained_json["flush"]["rows_processed"].as_u64(), Some(1_000));
+        assert_eq!(drained_json["flush"]["maintenance_ns"].as_u64(), Some(12));
+        assert_eq!(
+            drained_json["compact"]["status"].as_str(),
+            Some("completed")
+        );
+        assert_eq!(
+            drained_json["compact"]["mode"].as_str(),
+            Some("explicit-fixed-point-drain")
+        );
+        assert_eq!(drained_json["compact"]["state_changes"].as_u64(), Some(3));
+        assert_eq!(drained_json["compact"]["maintenance_ns"].as_u64(), Some(34));
+        assert_eq!(
+            drained_json["maintenance_queue"]["pending_tasks"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            drained_json["maintenance_queue"]["active_task"].as_u64(),
+            Some(42)
+        );
+        assert_eq!(
+            drained_json["maintenance_queue"]["max_pending_tasks"].as_u64(),
+            Some(4)
+        );
+    }
+
+    #[test]
     fn point_probe_shape_uses_layout_bound() {
         perf_trace::reset();
-        let shape = point_probe_shape_json(10, perf_trace::snapshot(), 1, 0, 0);
+        let shape = point_probe_shape_json(10, perf_trace::snapshot(), 0, 1, 0, 0, 0);
 
         assert_eq!(shape["passed"].as_bool(), Some(true));
+        assert_eq!(shape["owned_l0_table_bound"].as_u64(), Some(0));
         assert_eq!(shape["owned_nonzero_level_bound"].as_u64(), Some(10));
     }
 
@@ -3003,7 +3639,9 @@ mod tests {
                 ..PointProbeShapeCounters::default()
             },
             0,
+            0,
             2,
+            0,
             1,
         );
 
@@ -3018,7 +3656,9 @@ mod tests {
                 ..PointProbeShapeCounters::default()
             },
             0,
+            0,
             2,
+            0,
             1,
         );
 
@@ -3029,5 +3669,47 @@ mod tests {
             .iter()
             .any(|failure| failure.as_str()
                 == Some("inherited_nonzero_level_searches_exceed_layout_bound")));
+    }
+
+    #[test]
+    fn point_probe_shape_allows_l0_probes_with_observed_l0_tables() {
+        let shape = point_probe_shape_json_from_counts(
+            10,
+            PointProbeShapeCounters {
+                owned_l0_table_probes: 20,
+                inherited_l0_table_probes: 10,
+                ..PointProbeShapeCounters::default()
+            },
+            2,
+            0,
+            1,
+            1,
+            0,
+        );
+
+        assert_eq!(shape["passed"].as_bool(), Some(true));
+        assert_eq!(shape["owned_l0_table_bound"].as_u64(), Some(20));
+        assert_eq!(shape["inherited_l0_table_bound"].as_u64(), Some(10));
+
+        let failed = point_probe_shape_json_from_counts(
+            10,
+            PointProbeShapeCounters {
+                owned_l0_table_probes: 21,
+                ..PointProbeShapeCounters::default()
+            },
+            2,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        assert_eq!(failed["passed"].as_bool(), Some(false));
+        assert!(failed["failures"]
+            .as_array()
+            .expect("failures")
+            .iter()
+            .any(|failure| failure.as_str()
+                == Some("owned_l0_table_probes_exceed_layout_bound")));
     }
 }

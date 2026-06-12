@@ -562,7 +562,8 @@ fn assert_model_matches(
             && stats.failed() == model.stats.failed()
             && stats.canceled() == model.stats.canceled()
             && stats.drained() == model.stats.drained()
-            && stats.queue_full() == model.stats.queue_full(),
+            && stats.queue_full() == model.stats.queue_full()
+            && stats.max_pending_tasks() == model.stats.max_pending_tasks(),
         "maintenance model stats diverged",
     )?;
     Ok(())
@@ -727,6 +728,7 @@ struct MaintenanceModel {
 struct ModelStats {
     enqueued: usize,
     coalesced: usize,
+    max_pending_tasks: usize,
     started: usize,
     completed: usize,
     deferred: usize,
@@ -772,6 +774,7 @@ impl MaintenanceModel {
             coalesce_key: request.coalesce_key(),
         });
         self.stats = increment_enqueued(self.stats);
+        self.stats = record_max_pending(self.stats, self.pending.len());
     }
 
     fn run_next(&mut self, status: MaintenanceOutcomeStatus) {
@@ -835,6 +838,10 @@ impl ModelStats {
         self.coalesced
     }
 
+    const fn max_pending_tasks(self) -> usize {
+        self.max_pending_tasks
+    }
+
     const fn started(self) -> usize {
         self.started
     }
@@ -866,6 +873,11 @@ impl ModelStats {
 
 fn increment_enqueued(mut stats: ModelStats) -> ModelStats {
     stats.enqueued = stats.enqueued.saturating_add(1);
+    stats
+}
+
+fn record_max_pending(mut stats: ModelStats, pending_tasks: usize) -> ModelStats {
+    stats.max_pending_tasks = stats.max_pending_tasks.max(pending_tasks);
     stats
 }
 

@@ -120,6 +120,8 @@ pub struct StoragePerfSnapshot {
     lifecycle_post_commit_maintenance_tasks_enqueued: u64,
     lifecycle_post_commit_maintenance_tasks_coalesced: u64,
     lifecycle_post_commit_maintenance_tasks_deferred: u64,
+    lifecycle_inline_maintenance_attempts: u64,
+    lifecycle_inline_maintenance_ns: u64,
     lifecycle_flush_drain_frozen_tables_discovered: u64,
     lifecycle_flush_drain_operations_completed: u64,
     lifecycle_flush_drain_freeze_retries: u64,
@@ -595,6 +597,16 @@ impl StoragePerfSnapshot {
     /// Post-commit maintenance tasks deferred by queue/admission failure.
     pub const fn lifecycle_post_commit_maintenance_tasks_deferred(self) -> u64 {
         self.lifecycle_post_commit_maintenance_tasks_deferred
+    }
+
+    /// Inline automatic maintenance attempts made during commit handling.
+    pub const fn lifecycle_inline_maintenance_attempts(self) -> u64 {
+        self.lifecycle_inline_maintenance_attempts
+    }
+
+    /// Nanoseconds spent running inline automatic maintenance during commit handling.
+    pub const fn lifecycle_inline_maintenance_ns(self) -> u64 {
+        self.lifecycle_inline_maintenance_ns
     }
 
     /// Frozen tables observed at flush-drain start.
@@ -1641,6 +1653,10 @@ static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED: AtomicU64 = AtomicU64:
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_INLINE_MAINTENANCE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
@@ -2108,6 +2124,8 @@ pub fn reset() {
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_ENQUEUED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.store(0, Ordering::Relaxed);
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.store(0, Ordering::Relaxed);
+    LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_INLINE_MAINTENANCE_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
@@ -2382,6 +2400,9 @@ pub fn snapshot() -> StoragePerfSnapshot {
             LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_COALESCED.load(Ordering::Relaxed),
         lifecycle_post_commit_maintenance_tasks_deferred:
             LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.load(Ordering::Relaxed),
+        lifecycle_inline_maintenance_attempts: LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS
+            .load(Ordering::Relaxed),
+        lifecycle_inline_maintenance_ns: LIFECYCLE_INLINE_MAINTENANCE_NS.load(Ordering::Relaxed),
         lifecycle_flush_drain_frozen_tables_discovered:
             LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.load(Ordering::Relaxed),
         lifecycle_flush_drain_operations_completed: LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED
@@ -3103,6 +3124,21 @@ pub(crate) fn record_lifecycle_post_commit_maintenance_deferred() {
         return;
     }
     LIFECYCLE_POST_COMMIT_MAINTENANCE_TASKS_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_inline_maintenance(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_inline_maintenance(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_INLINE_MAINTENANCE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_INLINE_MAINTENANCE_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
 }
 
 #[cfg(not(feature = "perf-trace"))]
