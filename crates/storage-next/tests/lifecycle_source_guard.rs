@@ -340,10 +340,65 @@ fn compaction_resource_semantic_decisions_and_benchmark_fields_are_recorded() {
         "lifecycle_compaction_io_budget_deferrals",
         "lifecycle_compaction_flush_preemptions",
         "\"lifecycle_compaction\"",
+        "lifecycle_snapshot_floor_advancements",
+        "lifecycle_snapshot_floor_implicit_rejections",
+        "lifecycle_snapshot_pruning_with_proof",
+        "\"lifecycle_snapshot_pruning\"",
     ] {
         assert!(
             runner.contains(required),
             "storage-next scale runner does not emit compaction resource metric: {required}"
+        );
+    }
+}
+
+#[test]
+fn snapshot_pruning_ownership_semantic_decisions_are_recorded() {
+    let root = common::crate_root();
+    let repo = root
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate has repository root");
+    let path = repo.join("docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md");
+    let text = fs::read_to_string(&path).expect("read lifecycle architecture doc");
+    let normalized_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "Snapshot object pruning is separate from source-shape maintenance",
+        "does not implement an implicit `set_snapshot_floor` or `gc_safe_point`",
+        "Snapshot-floor advancement is owned by the caller-supplied retention proof",
+        "Allowed pruning callers are explicit retention and snapshot-pruning maintenance requests",
+        "current manifest snapshot id plus snapshot watermark",
+        "Automatic post-commit maintenance, flush drains, compaction chains, materialization, and benchmark source-shape drains must not advance the floor or prune snapshots implicitly",
+        "Benchmarks must report source-shape maintenance separately from pruning",
+    ] {
+        assert!(
+            normalized_text.contains(required),
+            "missing snapshot pruning ownership decision text: {required}"
+        );
+    }
+}
+
+#[test]
+fn automatic_storage_pressure_does_not_suggest_pruning_tasks() {
+    let root = common::crate_root();
+    let path = root.join("src/lifecycle/compaction.rs");
+    let text = fs::read_to_string(&path).expect("read lifecycle compaction source");
+    let pressure_body = text
+        .split("pub(crate) fn collect_storage_pressure")
+        .nth(1)
+        .expect("find storage pressure collector")
+        .split("pub(crate) fn table_rewrite_task_request_for_branch")
+        .next()
+        .expect("find storage pressure region");
+
+    for forbidden in [
+        "MaintenanceTaskRequest::snapshot_pruning",
+        "MaintenanceTaskRequest::retention",
+    ] {
+        assert!(
+            !pressure_body.contains(forbidden),
+            "automatic storage pressure must not suggest pruning task: {forbidden}"
         );
     }
 }

@@ -7,8 +7,8 @@ use crate::backend::{
 use crate::format::DatabaseManifest;
 use crate::layout::ObjectLayout;
 use crate::lifecycle::retention::{
-    retention_outcome_for_delegated_families, retention_outcome_for_scope,
-    table_quarantine_candidate,
+    reject_implicit_snapshot_floor_advancement, retention_outcome_for_delegated_families,
+    retention_outcome_for_scope, table_quarantine_candidate,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::SnapshotService;
@@ -57,6 +57,21 @@ fn retention_request_rejects_product_vocabulary_scope() {
     for forbidden in ["Database::open", "VersionedValue", "StrataHub", "EntityRef"] {
         assert!(!debug.contains(forbidden));
     }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn implicit_snapshot_floor_advancement_is_rejected_and_counted() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+
+    let error = reject_implicit_snapshot_floor_advancement(None, CommitVersion::new(7))
+        .expect_err("implicit floor advancement");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.retention");
+    assert_eq!(perf.lifecycle_snapshot_floor_implicit_rejections(), 1);
+    assert_eq!(perf.lifecycle_snapshot_floor_advancements(), 0);
+    assert_eq!(perf.lifecycle_snapshot_pruning_with_proof(), 0);
 }
 
 #[test]
@@ -461,6 +476,26 @@ fn snapshot_pruning_deletes_old_non_live_snapshots() {
     assert!(outcome.completed());
     assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
     assert_eq!(backend.delete_calls(), 2);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn snapshot_pruning_with_proof_records_counters_without_floor_advancement() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+
+    let outcome = snapshot_pruning(&backend, 3, 1);
+    let perf = crate::observability::perf_trace::snapshot();
+
+    assert!(outcome.completed());
+    assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
+    assert_eq!(snapshot_ids(outcome.protected()), [3]);
+    assert_eq!(perf.lifecycle_snapshot_pruning_with_proof(), 1);
+    assert_eq!(perf.lifecycle_snapshot_pruning_deleted(), 2);
+    assert_eq!(perf.lifecycle_snapshot_pruning_protected(), 1);
+    assert_eq!(perf.lifecycle_snapshot_pruning_failed(), 0);
+    assert_eq!(perf.lifecycle_snapshot_floor_advancements(), 0);
+    assert_eq!(perf.lifecycle_snapshot_floor_implicit_rejections(), 0);
 }
 
 #[test]

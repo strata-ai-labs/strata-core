@@ -161,6 +161,12 @@ pub struct StoragePerfSnapshot {
     lifecycle_memory_release_retained_bytes: u64,
     lifecycle_memory_release_threshold_bytes: u64,
     lifecycle_memory_release_attempts: u64,
+    lifecycle_snapshot_floor_advancements: u64,
+    lifecycle_snapshot_floor_implicit_rejections: u64,
+    lifecycle_snapshot_pruning_with_proof: u64,
+    lifecycle_snapshot_pruning_deleted: u64,
+    lifecycle_snapshot_pruning_protected: u64,
+    lifecycle_snapshot_pruning_failed: u64,
     lifecycle_compaction_score_candidates: u64,
     lifecycle_compaction_selected: u64,
     lifecycle_compaction_selected_level_sum: u64,
@@ -861,6 +867,36 @@ impl StoragePerfSnapshot {
     /// Portable memory-release attempts made by lifecycle maintenance.
     pub const fn lifecycle_memory_release_attempts(self) -> u64 {
         self.lifecycle_memory_release_attempts
+    }
+
+    /// Snapshot floor advancement operations accepted by lifecycle.
+    pub const fn lifecycle_snapshot_floor_advancements(self) -> u64 {
+        self.lifecycle_snapshot_floor_advancements
+    }
+
+    /// Implicit snapshot floor advancement attempts rejected by lifecycle.
+    pub const fn lifecycle_snapshot_floor_implicit_rejections(self) -> u64 {
+        self.lifecycle_snapshot_floor_implicit_rejections
+    }
+
+    /// Snapshot pruning operations executed with a complete retention proof.
+    pub const fn lifecycle_snapshot_pruning_with_proof(self) -> u64 {
+        self.lifecycle_snapshot_pruning_with_proof
+    }
+
+    /// Snapshot objects deleted by proof-backed snapshot pruning.
+    pub const fn lifecycle_snapshot_pruning_deleted(self) -> u64 {
+        self.lifecycle_snapshot_pruning_deleted
+    }
+
+    /// Snapshot objects protected by proof-backed snapshot pruning.
+    pub const fn lifecycle_snapshot_pruning_protected(self) -> u64 {
+        self.lifecycle_snapshot_pruning_protected
+    }
+
+    /// Snapshot object deletions that failed after proof-backed pruning began.
+    pub const fn lifecycle_snapshot_pruning_failed(self) -> u64 {
+        self.lifecycle_snapshot_pruning_failed
     }
 
     /// Compaction score candidates evaluated by lifecycle maintenance.
@@ -2089,6 +2125,18 @@ static LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_MEMORY_RELEASE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_SNAPSHOT_FLOOR_ADVANCEMENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_SNAPSHOT_FLOOR_IMPLICIT_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_SNAPSHOT_PRUNING_WITH_PROOF: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_SNAPSHOT_PRUNING_DELETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_SNAPSHOT_PRUNING_PROTECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_SNAPSHOT_PRUNING_FAILED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SCORE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_SELECTED: AtomicU64 = AtomicU64::new(0);
@@ -2635,6 +2683,12 @@ pub fn reset() {
     LIFECYCLE_MEMORY_RELEASE_RETAINED_BYTES.store(0, Ordering::Relaxed);
     LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES.store(0, Ordering::Relaxed);
     LIFECYCLE_MEMORY_RELEASE_ATTEMPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_FLOOR_ADVANCEMENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_FLOOR_IMPLICIT_REJECTIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_WITH_PROOF.store(0, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_DELETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_PROTECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_FAILED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SCORE_CANDIDATES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_SELECTED_LEVEL_SUM.store(0, Ordering::Relaxed);
@@ -3013,6 +3067,18 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_memory_release_threshold_bytes: LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES
             .load(Ordering::Relaxed),
         lifecycle_memory_release_attempts: LIFECYCLE_MEMORY_RELEASE_ATTEMPTS
+            .load(Ordering::Relaxed),
+        lifecycle_snapshot_floor_advancements: LIFECYCLE_SNAPSHOT_FLOOR_ADVANCEMENTS
+            .load(Ordering::Relaxed),
+        lifecycle_snapshot_floor_implicit_rejections: LIFECYCLE_SNAPSHOT_FLOOR_IMPLICIT_REJECTIONS
+            .load(Ordering::Relaxed),
+        lifecycle_snapshot_pruning_with_proof: LIFECYCLE_SNAPSHOT_PRUNING_WITH_PROOF
+            .load(Ordering::Relaxed),
+        lifecycle_snapshot_pruning_deleted: LIFECYCLE_SNAPSHOT_PRUNING_DELETED
+            .load(Ordering::Relaxed),
+        lifecycle_snapshot_pruning_protected: LIFECYCLE_SNAPSHOT_PRUNING_PROTECTED
+            .load(Ordering::Relaxed),
+        lifecycle_snapshot_pruning_failed: LIFECYCLE_SNAPSHOT_PRUNING_FAILED
             .load(Ordering::Relaxed),
         lifecycle_compaction_score_candidates: LIFECYCLE_COMPACTION_SCORE_CANDIDATES
             .load(Ordering::Relaxed),
@@ -4109,6 +4175,40 @@ pub(crate) fn record_lifecycle_flush_memory_retention(
     LIFECYCLE_MEMORY_RELEASE_DEFERRALS.fetch_add(1, Ordering::Relaxed);
     LIFECYCLE_MEMORY_RELEASE_RETAINED_BYTES.fetch_add(retained_bytes, Ordering::Relaxed);
     LIFECYCLE_MEMORY_RELEASE_THRESHOLD_BYTES.fetch_add(release_threshold_bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_snapshot_floor_implicit_rejection() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_snapshot_floor_implicit_rejection() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_SNAPSHOT_FLOOR_IMPLICIT_REJECTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_snapshot_pruning_with_proof(
+    _deleted: usize,
+    _protected: usize,
+    _failed: usize,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_snapshot_pruning_with_proof(
+    deleted: usize,
+    protected: usize,
+    failed: usize,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_SNAPSHOT_PRUNING_WITH_PROOF.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_DELETED.fetch_add(as_u64(deleted), Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_PROTECTED.fetch_add(as_u64(protected), Ordering::Relaxed);
+    LIFECYCLE_SNAPSHOT_PRUNING_FAILED.fetch_add(as_u64(failed), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

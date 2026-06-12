@@ -35,7 +35,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | api/outcome.rs | 12 | 502 |
 | backend/mod.rs | 12 | 878 |
 | api/maintenance.rs | 11 | 553 |
-| lifecycle/retention.rs | 11 | 983 |
+| lifecycle/retention.rs | 11 | 999 |
 | table/cache.rs | 11 | 698 |
 | testkit/commit_runtime_model.rs | 11 | 824 |
 | branch/state/compaction.rs | 10 | 1538 |
@@ -44,7 +44,7 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | File | LOC |
 |---|---|
-| observability/perf_trace.rs | 5505 |
+| observability/perf_trace.rs | 5605 |
 | lifecycle/tests/compaction/mod.rs | 4079 |
 | branch/tests/owned_compaction.rs | 3998 |
 | table/tests/reader.rs | 3926 |
@@ -67,8 +67,8 @@ Counts are conservative text matches, not a Rust AST parse.
 | table/tests/compaction.rs | 1979 |
 | backend/local_fs.rs | 1849 |
 | lifecycle/checkpoint.rs | 1835 |
+| lifecycle/tests/retention.rs | 1826 |
 | table/reader.rs | 1792 |
-| lifecycle/tests/retention.rs | 1791 |
 | lifecycle/tests/compaction/remaining.rs | 1766 |
 | testkit/commit_runtime.rs | 1631 |
 | commit/tests/replay.rs | 1621 |

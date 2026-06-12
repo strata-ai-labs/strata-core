@@ -187,6 +187,16 @@ impl LifecycleRetentionRequest {
     }
 }
 
+pub(crate) fn reject_implicit_snapshot_floor_advancement(
+    _current_floor: Option<CommitVersion>,
+    _requested_floor: CommitVersion,
+) -> LifecycleResult<()> {
+    crate::observability::perf_trace::record_lifecycle_snapshot_floor_implicit_rejection();
+    Err(LifecycleError::RetentionBlocked {
+        reason: "snapshot floor advancement requires caller-supplied retention proof",
+    })
+}
+
 impl LifecycleRetentionProof {
     pub(crate) const fn new(
         status: LifecycleRetentionProofStatus,
@@ -759,7 +769,13 @@ pub(crate) fn prune_snapshots_with_proof(
             request.effective_retain_newest(),
         )
         .map_err(snapshot_error)?;
-    LifecycleSnapshotPruningOutcome::from_completed_report(&report)
+    let outcome = LifecycleSnapshotPruningOutcome::from_completed_report(&report)?;
+    crate::observability::perf_trace::record_lifecycle_snapshot_pruning_with_proof(
+        outcome.deleted().len(),
+        outcome.protected().len(),
+        outcome.failed().len(),
+    );
+    Ok(outcome)
 }
 
 pub(crate) fn retention_request_from_maintenance_task(

@@ -1817,6 +1817,30 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.lifecycle_compaction_flush_preemptions()
     );
     field!(
+        "lifecycle_snapshot_floor_advancements",
+        perf_trace.lifecycle_snapshot_floor_advancements()
+    );
+    field!(
+        "lifecycle_snapshot_floor_implicit_rejections",
+        perf_trace.lifecycle_snapshot_floor_implicit_rejections()
+    );
+    field!(
+        "lifecycle_snapshot_pruning_with_proof",
+        perf_trace.lifecycle_snapshot_pruning_with_proof()
+    );
+    field!(
+        "lifecycle_snapshot_pruning_deleted",
+        perf_trace.lifecycle_snapshot_pruning_deleted()
+    );
+    field!(
+        "lifecycle_snapshot_pruning_protected",
+        perf_trace.lifecycle_snapshot_pruning_protected()
+    );
+    field!(
+        "lifecycle_snapshot_pruning_failed",
+        perf_trace.lifecycle_snapshot_pruning_failed()
+    );
+    field!(
         "branch_materialization_source_opens",
         perf_trace.branch_materialization_source_opens()
     );
@@ -2371,6 +2395,14 @@ fn source_shape_metrics_json(
             "io_budget_deferred_bytes": perf_trace.lifecycle_compaction_io_budget_deferred_bytes(),
             "io_budget_limit_bytes": perf_trace.lifecycle_compaction_io_budget_limit_bytes(),
             "flush_preemptions": perf_trace.lifecycle_compaction_flush_preemptions(),
+        },
+        "lifecycle_snapshot_pruning": {
+            "floor_advancements": perf_trace.lifecycle_snapshot_floor_advancements(),
+            "floor_implicit_rejections": perf_trace.lifecycle_snapshot_floor_implicit_rejections(),
+            "with_proof": perf_trace.lifecycle_snapshot_pruning_with_proof(),
+            "deleted": perf_trace.lifecycle_snapshot_pruning_deleted(),
+            "protected": perf_trace.lifecycle_snapshot_pruning_protected(),
+            "failed": perf_trace.lifecycle_snapshot_pruning_failed(),
         },
         "post_load_compaction_mode": post_load_compaction_mode,
         "post_load_source_shape": source_shape_context.map(source_shape_context_json),

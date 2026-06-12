@@ -111,6 +111,29 @@ threshold. Storage-next does not call nonportable allocator release hooks in V1;
 the counter surface is the handoff for deciding whether such a hook belongs in
 storage-next or a lower allocator/backend layer.
 
+### Snapshot And Pruning Ownership
+
+Snapshot object pruning is separate from source-shape maintenance. Storage-next
+does not implement an implicit `set_snapshot_floor` or `gc_safe_point`
+equivalent during flush, compaction, materialization, checkpoint, or close.
+Snapshot-floor advancement is owned by the caller-supplied retention proof: the
+public snapshot lifecycle above storage decides the floor, persists any public
+snapshot state, and passes manifest-derived proof facts down to lifecycle.
+
+Allowed pruning callers are explicit retention and snapshot-pruning maintenance
+requests. Their proof shape is the current manifest snapshot id plus snapshot
+watermark, with recovery-health facts attached. A complete proof may prune
+snapshot objects according to the requested newest-snapshot window; incomplete
+or unsafe proofs defer before backend deletion. Automatic post-commit
+maintenance, flush drains, compaction chains, materialization, and benchmark
+source-shape drains must not advance the floor or prune snapshots implicitly.
+
+Durability and recovery remain tied to the manifest proof. Recovery reloads the
+current manifest snapshot facts and rebuilds retention proof state on demand
+rather than replaying a lifecycle-owned floor variable. Benchmarks must report
+source-shape maintenance separately from pruning; pruning counters are proof
+diagnostics, not evidence that compaction or flush moved the retention floor.
+
 ### Maintenance Coverage Trigger Model
 
 Storage-next runs an in-process maintenance coverage pass after a successful
