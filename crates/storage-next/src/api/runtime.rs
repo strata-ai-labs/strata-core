@@ -69,9 +69,10 @@ use super::{
 };
 use crate::api::outcome::StorageCloseEffects;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_DATABASE_ID: [u8; 16] = [0x53; 16];
 const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
@@ -79,6 +80,11 @@ const DEFAULT_BRANCH_GENERATION: u64 = 1;
 const DEFAULT_TIMESTAMP: Timestamp = Timestamp::from_micros(1);
 const API_PHYSICAL_SPACE: &str = "api";
 const DEFAULT_BACKGROUND_WORKERS: usize = 1;
+const DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE: usize = 8;
+const DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE: Duration = Duration::from_millis(25);
+const DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN: Duration = Duration::from_micros(50);
+const DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN: Duration = Duration::from_millis(5);
+const DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResolvedReadBound {
@@ -98,35 +104,68 @@ pub struct StorageRuntime<'a> {
 enum StorageRuntimeInner<'a> {
     Cache(Box<RuntimeSlot<LifecycleCacheRuntime<ApiTimestampSource>>>),
     Durable(Box<RuntimeSlot<LifecycleDurableLocalRuntime<'a, ApiTimestampSource>>>),
+    DurableOwned(Box<RuntimeSlot<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>),
     Closed,
 }
 
-#[derive(Debug)]
 struct RuntimeSlot<R> {
     runtime: Arc<ParkingMutex<R>>,
     background: Option<BackgroundRuntimeController>,
+    background_drain: Option<BackgroundDrainFn>,
+}
+
+type BackgroundDrainFn = Arc<dyn Fn(BackgroundDrainLimits) -> BackgroundDrainRound + Send + Sync>;
+
+impl<R> fmt::Debug for RuntimeSlot<R>
+where
+    R: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeSlot")
+            .field("runtime", &self.runtime)
+            .field("background", &self.background)
+            .field("background_drain", &self.background_drain.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug)]
 struct BackgroundRuntimeController {
-    scheduler: BackgroundScheduler,
+    scheduler: Arc<BackgroundScheduler>,
     close_requested: Arc<AtomicBool>,
+    wake_scheduled: Arc<AtomicBool>,
+    wake_requested: Arc<AtomicBool>,
+    wake_priority: Arc<AtomicUsize>,
+    max_tasks_per_wake: usize,
+    max_runtime_per_wake: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackgroundDrainRound {
+    tasks_completed: usize,
+    pending_tasks: usize,
+    made_progress: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackgroundDrainLimits {
+    max_tasks: usize,
+    max_runtime: Duration,
+}
+
+enum DurableBackendHandleForOpen<'a> {
+    Borrowed(BackendHandle<'a>),
+    #[cfg(feature = "localfs")]
+    Owned(BackendHandle<'static>),
 }
 
 impl<R> RuntimeSlot<R> {
-    fn new(runtime: R, config: LifecycleConfig) -> Self {
-        let background = if config.maintenance_scheduling_policy()
-            == LifecycleMaintenanceSchedulingPolicy::Background
-        {
-            Some(BackgroundRuntimeController::new(
-                config.max_maintenance_queue_depth(),
-            ))
-        } else {
-            None
-        };
+    fn new(runtime: R, _config: LifecycleConfig) -> Self {
         Self {
             runtime: Arc::new(ParkingMutex::new(runtime)),
-            background,
+            background: None,
+            background_drain: None,
         }
     }
 
@@ -161,14 +200,20 @@ impl<R> RuntimeSlot<R> {
             .submit(priority, move || work(runtime))
     }
 
-    #[allow(
-        dead_code,
-        reason = "L8E-C drains queued background lifecycle work through this hook"
-    )]
-    fn drain_background(&self) {
-        if let Some(background) = &self.background {
-            background.drain();
+    fn notify_background_drain(&self, priority: BackgroundTaskPriority) {
+        if let (Some(background), Some(drain)) = (&self.background, &self.background_drain) {
+            background.notify_drain(priority, Arc::clone(drain));
         }
+    }
+
+    fn wait_background_progress_until(&self, deadline: Instant) -> bool {
+        self.background
+            .as_ref()
+            .is_some_and(|background| background.wait_for_progress_until(deadline))
+    }
+
+    fn has_background(&self) -> bool {
+        self.background.is_some()
     }
 
     fn background_stats(&self) -> Option<BackgroundSchedulerStats> {
@@ -189,6 +234,47 @@ impl<R> RuntimeSlot<R> {
             .as_ref()
             .map(BackgroundRuntimeController::close_requested_flag)
     }
+
+    #[cfg(test)]
+    fn wait_background_idle(&self) {
+        if let Some(background) = &self.background {
+            background.drain_scheduler();
+        }
+    }
+}
+
+impl<R> RuntimeSlot<R>
+where
+    R: Send + 'static,
+{
+    fn new_with_background(
+        runtime: R,
+        config: LifecycleConfig,
+        drain: fn(&mut R, BackgroundDrainLimits) -> BackgroundDrainRound,
+    ) -> Self {
+        let runtime = Arc::new(ParkingMutex::new(runtime));
+        let background = if config.maintenance_scheduling_policy()
+            == LifecycleMaintenanceSchedulingPolicy::Background
+        {
+            Some(BackgroundRuntimeController::new(
+                config.max_maintenance_queue_depth(),
+            ))
+        } else {
+            None
+        };
+        let background_drain = background.as_ref().map(|_| {
+            let runtime = Arc::clone(&runtime);
+            Arc::new(move |limits| {
+                let mut runtime = runtime.lock();
+                drain(&mut runtime, limits)
+            }) as BackgroundDrainFn
+        });
+        Self {
+            runtime,
+            background,
+            background_drain,
+        }
+    }
 }
 
 impl<R> Drop for RuntimeSlot<R> {
@@ -201,8 +287,18 @@ impl BackgroundRuntimeController {
     fn new(max_queue_depth: usize) -> Self {
         perf_trace::record_lifecycle_background_runtime_created(DEFAULT_BACKGROUND_WORKERS);
         Self {
-            scheduler: BackgroundScheduler::new(DEFAULT_BACKGROUND_WORKERS, max_queue_depth),
+            scheduler: Arc::new(BackgroundScheduler::new(
+                DEFAULT_BACKGROUND_WORKERS,
+                max_queue_depth,
+            )),
             close_requested: Arc::new(AtomicBool::new(false)),
+            wake_scheduled: Arc::new(AtomicBool::new(false)),
+            wake_requested: Arc::new(AtomicBool::new(false)),
+            wake_priority: Arc::new(AtomicUsize::new(background_priority_value(
+                BackgroundTaskPriority::Low,
+            ))),
+            max_tasks_per_wake: DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE,
+            max_runtime_per_wake: DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE,
         }
     }
 
@@ -215,15 +311,98 @@ impl BackgroundRuntimeController {
         priority: BackgroundTaskPriority,
         work: impl FnOnce() + Send + 'static,
     ) -> Result<(), BackgroundBackpressureError> {
-        self.scheduler.submit(priority, work)
+        let capture_enabled = perf_trace::test_capture_enabled_for_current_thread();
+        self.scheduler.submit(priority, move || {
+            perf_trace::with_test_capture_enabled_for_current_thread(capture_enabled, work);
+        })
     }
 
-    #[allow(
-        dead_code,
-        reason = "L8E-C drains queued background lifecycle work through this hook"
-    )]
-    fn drain(&self) {
+    fn wait_for_progress_until(&self, deadline: Instant) -> bool {
+        let completed_before_wait = self.scheduler.stats().tasks_completed;
+        self.scheduler
+            .wait_for_progress_until(completed_before_wait, deadline)
+    }
+
+    #[cfg(test)]
+    fn drain_scheduler(&self) {
         self.scheduler.drain();
+    }
+
+    fn notify_drain(
+        &self,
+        priority: BackgroundTaskPriority,
+        drain: Arc<dyn Fn(BackgroundDrainLimits) -> BackgroundDrainRound + Send + Sync>,
+    ) {
+        if self.close_requested.load(Ordering::Acquire) {
+            perf_trace::record_lifecycle_background_wake_rejected();
+            return;
+        }
+        if self.wake_scheduled.swap(true, Ordering::AcqRel) {
+            self.record_requested_priority(priority);
+            self.wake_requested.store(true, Ordering::Release);
+            perf_trace::record_lifecycle_background_wake_coalesced();
+            return;
+        }
+        self.wake_priority
+            .store(background_priority_value(priority), Ordering::Release);
+        self.submit_drain(priority, drain);
+    }
+
+    fn record_requested_priority(&self, priority: BackgroundTaskPriority) {
+        let requested = background_priority_value(priority);
+        let mut current = self.wake_priority.load(Ordering::Acquire);
+        while requested > current {
+            match self.wake_priority.compare_exchange_weak(
+                current,
+                requested,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn requested_priority_or(&self, fallback: BackgroundTaskPriority) -> BackgroundTaskPriority {
+        let fallback_value = background_priority_value(fallback);
+        let value = self.wake_priority.swap(fallback_value, Ordering::AcqRel);
+        background_priority_from_value(value.max(fallback_value))
+    }
+
+    fn submit_drain(
+        &self,
+        priority: BackgroundTaskPriority,
+        drain: Arc<dyn Fn(BackgroundDrainLimits) -> BackgroundDrainRound + Send + Sync>,
+    ) {
+        let controller = self.clone();
+        let capture_enabled = perf_trace::test_capture_enabled_for_current_thread();
+        let submit = self.scheduler.submit(priority, move || {
+            perf_trace::with_test_capture_enabled_for_current_thread(capture_enabled, || {
+                let limits = BackgroundDrainLimits {
+                    max_tasks: controller.max_tasks_per_wake,
+                    max_runtime: controller.max_runtime_per_wake,
+                };
+                let round = drain(limits);
+                perf_trace::record_lifecycle_background_drain_round(round.tasks_completed);
+                if round.tasks_completed > 0 {
+                    perf_trace::record_lifecycle_pressure_clear_wake();
+                }
+                controller.wake_scheduled.store(false, Ordering::Release);
+                let requested = controller.wake_requested.swap(false, Ordering::AcqRel);
+                if (round.pending_tasks > 0 && round.made_progress) || requested {
+                    let next_priority = controller.requested_priority_or(priority);
+                    controller.notify_drain(next_priority, drain);
+                }
+            });
+        });
+        if let Ok(()) = submit {
+            perf_trace::record_lifecycle_background_wake_submitted();
+        } else {
+            self.wake_scheduled.store(false, Ordering::Release);
+            self.wake_requested.store(false, Ordering::Release);
+            perf_trace::record_lifecycle_background_wake_rejected();
+        }
     }
 
     fn shutdown(&self) {
@@ -235,6 +414,36 @@ impl BackgroundRuntimeController {
     #[cfg(test)]
     fn close_requested_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.close_requested)
+    }
+}
+
+impl Clone for BackgroundRuntimeController {
+    fn clone(&self) -> Self {
+        Self {
+            scheduler: Arc::clone(&self.scheduler),
+            close_requested: Arc::clone(&self.close_requested),
+            wake_scheduled: Arc::clone(&self.wake_scheduled),
+            wake_requested: Arc::clone(&self.wake_requested),
+            wake_priority: Arc::clone(&self.wake_priority),
+            max_tasks_per_wake: self.max_tasks_per_wake,
+            max_runtime_per_wake: self.max_runtime_per_wake,
+        }
+    }
+}
+
+const fn background_priority_value(priority: BackgroundTaskPriority) -> usize {
+    match priority {
+        BackgroundTaskPriority::Low => 0,
+        BackgroundTaskPriority::Normal => 1,
+        BackgroundTaskPriority::High => 2,
+    }
+}
+
+const fn background_priority_from_value(value: usize) -> BackgroundTaskPriority {
+    match value {
+        0 => BackgroundTaskPriority::Low,
+        1 => BackgroundTaskPriority::Normal,
+        _ => BackgroundTaskPriority::High,
     }
 }
 
@@ -356,6 +565,17 @@ impl StorageRuntime<'static> {
                     );
                 })
                 .is_ok(),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .submit_background(BackgroundTaskPriority::High, move |runtime| {
+                    ready.wait();
+                    release.wait();
+                    let runtime = runtime.lock();
+                    observed_open.store(
+                        runtime.state() == crate::lifecycle::LifecycleState::Open,
+                        std::sync::atomic::Ordering::Release,
+                    );
+                })
+                .is_ok(),
             StorageRuntimeInner::Closed => false,
         }
     }
@@ -367,9 +587,93 @@ impl StorageRuntime<'static> {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.background_shutdown_requested_flag(),
             StorageRuntimeInner::Durable(slot) => slot.background_shutdown_requested_flag(),
+            StorageRuntimeInner::DurableOwned(slot) => slot.background_shutdown_requested_flag(),
             StorageRuntimeInner::Closed => None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn wait_background_idle_for_test(&self) {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.wait_background_idle(),
+            StorageRuntimeInner::Durable(slot) => slot.wait_background_idle(),
+            StorageRuntimeInner::DurableOwned(slot) => slot.wait_background_idle(),
+            StorageRuntimeInner::Closed => {}
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_background_for_test(&self) {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.shutdown_background(),
+            StorageRuntimeInner::Durable(slot) => slot.shutdown_background(),
+            StorageRuntimeInner::DurableOwned(slot) => slot.shutdown_background(),
+            StorageRuntimeInner::Closed => {}
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit_stale_background_wake_for_test(&self) {
+        self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::Low);
+    }
+}
+
+fn assemble_durable_runtime(
+    options: StorageOpenOptions,
+    backend: BackendHandle<'_>,
+) -> StorageApiResult<(
+    LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+    StorageOpenSummary,
+    DiagnosticsRecoveryReport,
+    LifecycleConfig,
+)> {
+    let plan = lifecycle_plan(options)?;
+    let request = LifecycleDurableLocalOpenRequest::new(
+        plan,
+        DEFAULT_DATABASE_ID,
+        DEFAULT_BRANCH_ID,
+        default_branch_generation()?,
+        BranchRuntimeConfig::default(),
+        CommitRuntimeConfig::default(),
+        WalServiceConfig::default(),
+    )
+    .map_err(map_lifecycle_error)?;
+    let mut shell =
+        LifecycleDurableLocalShell::assemble(request, backend, default_timestamp_source())
+            .map_err(map_lifecycle_error)?;
+    let recovery_request =
+        crate::lifecycle::LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
+            .map_err(map_lifecycle_error)?;
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .map_err(map_lifecycle_error)?;
+    let runtime = shell
+        .complete_recovery(&recovery)
+        .map_err(map_lifecycle_error)?;
+    let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
+    let recovery_report = map_diagnostics_recovery(runtime.current_recovery_health());
+    let config = runtime.open_plan().lifecycle_config();
+    Ok((runtime, summary, recovery_report, config))
+}
+
+fn open_durable_with_owned_backend_handle<'runtime>(
+    options: StorageOpenOptions,
+    backend: BackendHandle<'static>,
+) -> StorageApiResult<StorageOpenOutcome<'runtime>> {
+    let (runtime, summary, recovery_report, config) = assemble_durable_runtime(options, backend)?;
+    Ok(StorageOpenOutcome::new(
+        StorageRuntime {
+            inner: StorageRuntimeInner::DurableOwned(Box::new(RuntimeSlot::new_with_background(
+                runtime,
+                config,
+                drain_durable_background_round,
+            ))),
+            open_summary: Some(summary),
+            last_recovery: Some(recovery_report),
+            last_close: None,
+        },
+        summary,
+    ))
 }
 
 #[cfg(feature = "localfs")]
@@ -378,7 +682,7 @@ fn open_durable_local_owned(
     policy: StorageDurabilityPolicy,
 ) -> StorageApiResult<StorageOpenOutcome<'static>> {
     let backend = StorageBackend::local_fs(root);
-    StorageRuntime::open_durable_with_backend_handle(
+    open_durable_with_owned_backend_handle(
         StorageOpenOptions::durable_local(policy),
         backend.into_backend_handle(),
     )
@@ -395,6 +699,10 @@ fn open_durable_local_owned(
     })
 }
 
+#[allow(
+    clippy::match_same_arms,
+    reason = "borrowed and owned durable runtime variants share behavior but carry different backend lifetimes"
+)]
 impl<'a> StorageRuntime<'a> {
     /// Open durable local storage with an explicit backend handle.
     ///
@@ -414,10 +722,17 @@ impl<'a> StorageRuntime<'a> {
         options.validate()?;
         match options.mode() {
             StorageMode::Cache => Self::open_cache_with_backend(options, backend),
-            StorageMode::DurableLocal { .. } => Self::open_durable_with_backend_handle(
-                options,
-                durable_backend_handle_for_open(options, backend)?,
-            ),
+            StorageMode::DurableLocal { .. } => {
+                match durable_backend_handle_for_open(options, backend)? {
+                    DurableBackendHandleForOpen::Borrowed(handle) => {
+                        Self::open_durable_with_backend_handle(options, handle)
+                    }
+                    #[cfg(feature = "localfs")]
+                    DurableBackendHandleForOpen::Owned(handle) => {
+                        open_durable_with_owned_backend_handle(options, handle)
+                    }
+                }
+            }
             StorageMode::ObjectDurableCandidate | StorageMode::DistributedCandidate => {
                 unreachable!("unsupported modes are rejected during validation")
             }
@@ -427,9 +742,9 @@ impl<'a> StorageRuntime<'a> {
     #[must_use]
     pub const fn state(&self) -> StorageRuntimeState {
         match self.inner {
-            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Durable(_) => {
-                StorageRuntimeState::Open
-            }
+            StorageRuntimeInner::Cache(_)
+            | StorageRuntimeInner::Durable(_)
+            | StorageRuntimeInner::DurableOwned(_) => StorageRuntimeState::Open,
             StorageRuntimeInner::Closed => StorageRuntimeState::Closed,
         }
     }
@@ -438,7 +753,9 @@ impl<'a> StorageRuntime<'a> {
     pub const fn is_open(&self) -> bool {
         matches!(
             self.inner,
-            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Durable(_)
+            StorageRuntimeInner::Cache(_)
+                | StorageRuntimeInner::Durable(_)
+                | StorageRuntimeInner::DurableOwned(_)
         )
     }
 
@@ -464,6 +781,18 @@ impl<'a> StorageRuntime<'a> {
                 Ok(summary)
             }
             StorageRuntimeInner::Durable(runtime) => {
+                runtime.shutdown_background();
+                let mut runtime = runtime.lock();
+                let close = runtime.close().map_err(map_lifecycle_error)?;
+                let recovery = map_diagnostics_recovery(runtime.current_recovery_health());
+                let summary = map_close_summary(close, false);
+                drop(runtime);
+                self.inner = StorageRuntimeInner::Closed;
+                self.last_recovery = Some(recovery);
+                self.last_close = Some(summary);
+                Ok(summary)
+            }
+            StorageRuntimeInner::DurableOwned(runtime) => {
                 runtime.shutdown_background();
                 let mut runtime = runtime.lock();
                 let close = runtime.close().map_err(map_lifecycle_error)?;
@@ -588,6 +917,13 @@ impl<'a> StorageRuntime<'a> {
                     slot.background_stats(),
                 ))
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let runtime = slot.lock();
+                Ok(map_maintenance_queue_summary(
+                    runtime.maintenance_status(),
+                    slot.background_stats(),
+                ))
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "maintenance status requires an open runtime",
             }),
@@ -598,6 +934,9 @@ impl<'a> StorageRuntime<'a> {
         match &self.inner {
             StorageRuntimeInner::Cache(runtime) => self.cache_diagnostics(request, runtime),
             StorageRuntimeInner::Durable(runtime) => self.durable_diagnostics(request, runtime),
+            StorageRuntimeInner::DurableOwned(runtime) => {
+                self.durable_diagnostics(request, runtime)
+            }
             StorageRuntimeInner::Closed => Ok(DiagnosticsOutcome::new(
                 request.scope(),
                 StorageRuntimeState::Closed,
@@ -727,22 +1066,44 @@ impl<'a> StorageRuntime<'a> {
         let task = map_maintenance_task_request(self, request)?;
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
+                let status = {
+                    let mut runtime = slot.lock();
+                    runtime
+                        .enqueue_maintenance(task)
+                        .map_err(map_lifecycle_error)?;
+                    runtime.maintenance_status()
+                };
+                slot.notify_background_drain(background_priority_for_task_request(task));
                 Ok(map_maintenance_queue_summary(
-                    runtime.maintenance_status(),
+                    status,
                     slot.background_stats(),
                 ))
             }
             StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
+                let status = {
+                    let mut runtime = slot.lock();
+                    runtime
+                        .enqueue_maintenance(task)
+                        .map_err(map_lifecycle_error)?;
+                    runtime.maintenance_status()
+                };
+                slot.notify_background_drain(background_priority_for_task_request(task));
                 Ok(map_maintenance_queue_summary(
-                    runtime.maintenance_status(),
+                    status,
+                    slot.background_stats(),
+                ))
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let status = {
+                    let mut runtime = slot.lock();
+                    runtime
+                        .enqueue_maintenance(task)
+                        .map_err(map_lifecycle_error)?;
+                    runtime.maintenance_status()
+                };
+                slot.notify_background_drain(background_priority_for_task_request(task));
+                Ok(map_maintenance_queue_summary(
+                    status,
                     slot.background_stats(),
                 ))
             }
@@ -759,6 +1120,10 @@ impl<'a> StorageRuntime<'a> {
                 run_next_cache_maintenance(&mut runtime)?
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                run_next_durable_maintenance(&mut runtime)?
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 run_next_durable_maintenance(&mut runtime)?
             }
@@ -809,6 +1174,12 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
             }
             StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
+                    .map_err(map_lifecycle_error)?
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime
                     .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
@@ -1027,6 +1398,13 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?;
                 Ok(map_checkpoint_summary(request, &outcome))
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let outcome = runtime
+                    .checkpoint_for_explicit_maintenance(branch_id, false)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_checkpoint_summary(request, &outcome))
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "checkpoint maintenance requires an open runtime",
             }),
@@ -1048,6 +1426,13 @@ impl<'a> StorageRuntime<'a> {
                 runtime.flush_frozen(&flush_request)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime
+                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .map_err(map_lifecycle_error)?;
+                runtime.flush_frozen(&flush_request)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_branch_for_maintenance(branch_id)
@@ -1092,6 +1477,15 @@ impl<'a> StorageRuntime<'a> {
                     .run_compaction_maintenance_task(enqueue.task_id())
                     .map_err(map_lifecycle_error)?
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                runtime
+                    .run_compaction_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "flush follow-up compaction requires an open runtime",
@@ -1120,6 +1514,10 @@ impl<'a> StorageRuntime<'a> {
                 runtime.storage_pressure().suggested_task()
             }
             StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime.storage_pressure().suggested_task()
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime.storage_pressure().suggested_task()
             }
@@ -1160,6 +1558,10 @@ impl<'a> StorageRuntime<'a> {
                 let mut runtime = slot.lock();
                 runtime.compact_branch_tables_to_fixed_point(&compaction)
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                runtime.compact_branch_tables_to_fixed_point(&compaction)
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "compaction maintenance requires an open runtime",
@@ -1195,6 +1597,14 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .source_layout())
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let runtime = slot.lock();
+                Ok(runtime
+                    .branch_catalog()
+                    .branch_state(branch_id)
+                    .map_err(map_lifecycle_error)?
+                    .source_layout())
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "source layout requires an open runtime",
             }),
@@ -1218,6 +1628,15 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                runtime
+                    .run_materialization_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
@@ -1262,6 +1681,16 @@ impl<'a> StorageRuntime<'a> {
                     &outcome.maintenance_outcome(),
                 ))
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let outcome = runtime
+                    .prove_retention(&LifecycleRetentionRequest::global(1))
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_summary(
+                    *request,
+                    &outcome.maintenance_outcome(),
+                ))
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "retention maintenance requires an open runtime",
             }),
@@ -1278,6 +1707,17 @@ impl<'a> StorageRuntime<'a> {
                 "cache runtime does not support durable snapshot pruning maintenance",
             )),
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                let retention = LifecycleRetentionRequest::snapshot_pruning(1);
+                let outcome = runtime
+                    .prune_snapshots(&retention)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_summary(
+                    *request,
+                    &outcome.maintenance_outcome(),
+                ))
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let retention = LifecycleRetentionRequest::snapshot_pruning(1);
                 let outcome = runtime
@@ -1305,6 +1745,20 @@ impl<'a> StorageRuntime<'a> {
                 "cache runtime does not support durable reclaim maintenance",
             )),
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                let retention = LifecycleRetentionRequest::new(
+                    LifecycleRetentionScope::TableObjects { branch_id },
+                    1,
+                );
+                let outcome = runtime
+                    .prove_retention(&retention)
+                    .map_err(map_lifecycle_error)?;
+                Ok(map_maintenance_summary(
+                    *request,
+                    &outcome.maintenance_outcome(),
+                ))
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let retention = LifecycleRetentionRequest::new(
                     LifecycleRetentionScope::TableObjects { branch_id },
@@ -1352,6 +1806,24 @@ impl<'a> StorageRuntime<'a> {
                     |outcome| map_maintenance_summary(*request, &outcome),
                 ))
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                let outcome = runtime
+                    .run_quarantine_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?;
+                Ok(outcome.map_or_else(
+                    || {
+                        unsupported_maintenance_summary(
+                            request,
+                            "quarantine maintenance was deferred",
+                        )
+                    },
+                    |outcome| map_maintenance_summary(*request, &outcome),
+                ))
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "quarantine maintenance requires an open runtime",
             }),
@@ -1369,6 +1841,19 @@ impl<'a> StorageRuntime<'a> {
                 "cache runtime does not support durable purge maintenance",
             )),
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                let outcome = runtime
+                    .run_purge_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?;
+                Ok(outcome.map_or_else(
+                    || unsupported_maintenance_summary(request, "purge maintenance was deferred"),
+                    |outcome| map_maintenance_summary(*request, &outcome),
+                ))
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
@@ -1410,6 +1895,19 @@ impl<'a> StorageRuntime<'a> {
                     |outcome| map_maintenance_summary(*request, &outcome),
                 ))
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let enqueue = runtime
+                    .enqueue_maintenance(task)
+                    .map_err(map_lifecycle_error)?;
+                let outcome = runtime
+                    .run_quarantine_repair_maintenance_task(enqueue.task_id())
+                    .map_err(map_lifecycle_error)?;
+                Ok(outcome.map_or_else(
+                    || unsupported_maintenance_summary(request, "repair maintenance was deferred"),
+                    |outcome| map_maintenance_summary(*request, &outcome),
+                ))
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "repair maintenance requires an open runtime",
             }),
@@ -1429,6 +1927,10 @@ impl<'a> StorageRuntime<'a> {
                 let mut runtime = slot.lock();
                 runtime.evaluate_wal_growth_policy()
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                runtime.evaluate_wal_growth_policy()
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "WAL growth maintenance requires an open runtime",
@@ -1436,6 +1938,13 @@ impl<'a> StorageRuntime<'a> {
             }
         }
         .map_err(map_lifecycle_error)?;
+        if matches!(
+            outcome.status(),
+            LifecycleWalGrowthStatus::CheckpointEnqueued
+                | LifecycleWalGrowthStatus::CheckpointCoalesced
+        ) {
+            self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+        }
         Ok(map_wal_growth_maintenance_summary(*request, &outcome))
     }
 
@@ -1461,6 +1970,10 @@ impl<'a> StorageRuntime<'a> {
                 runtime.create_branch(branch_id, generation, created_at)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime.create_branch(branch_id, generation, created_at)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime.create_branch(branch_id, generation, created_at)
             }
@@ -1509,6 +2022,10 @@ impl<'a> StorageRuntime<'a> {
                 let runtime = slot.lock();
                 runtime.list_branches(include_deleted)
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let runtime = slot.lock();
+                runtime.list_branches(include_deleted)
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "branch operation requires an open runtime",
@@ -1525,6 +2042,10 @@ impl<'a> StorageRuntime<'a> {
                 runtime.branch_catalog().lookup(branch_id)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime.branch_catalog().lookup(branch_id)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime.branch_catalog().lookup(branch_id)
             }
@@ -1634,6 +2155,16 @@ impl<'a> StorageRuntime<'a> {
                     retained_floor,
                 )
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                runtime.fork_at_retained_version(
+                    source,
+                    request.branch_id(),
+                    generation,
+                    version,
+                    retained_floor,
+                )
+            }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
                     reason: "branch operation requires an open runtime",
@@ -1661,6 +2192,10 @@ impl<'a> StorageRuntime<'a> {
                 runtime.clear_branch(request.branch_id(), guard)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime.clear_branch(request.branch_id(), guard)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime.clear_branch(request.branch_id(), guard)
             }
@@ -1696,6 +2231,10 @@ impl<'a> StorageRuntime<'a> {
                 runtime.delete_branch(request.branch_id(), guard, deleted_at)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime.delete_branch(request.branch_id(), guard, deleted_at)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime.delete_branch(request.branch_id(), guard, deleted_at)
             }
@@ -1735,7 +2274,11 @@ impl<'a> StorageRuntime<'a> {
         let config = runtime.open_plan().lifecycle_config();
         Ok(StorageOpenOutcome::new(
             Self {
-                inner: StorageRuntimeInner::Cache(Box::new(RuntimeSlot::new(runtime, config))),
+                inner: StorageRuntimeInner::Cache(Box::new(RuntimeSlot::new_with_background(
+                    runtime,
+                    config,
+                    drain_cache_background_round,
+                ))),
                 open_summary: Some(summary),
                 last_recovery: Some(recovery),
                 last_close: None,
@@ -1748,32 +2291,8 @@ impl<'a> StorageRuntime<'a> {
         options: StorageOpenOptions,
         backend: BackendHandle<'a>,
     ) -> StorageApiResult<StorageOpenOutcome<'a>> {
-        let plan = lifecycle_plan(options)?;
-        let request = LifecycleDurableLocalOpenRequest::new(
-            plan,
-            DEFAULT_DATABASE_ID,
-            DEFAULT_BRANCH_ID,
-            default_branch_generation()?,
-            BranchRuntimeConfig::default(),
-            CommitRuntimeConfig::default(),
-            WalServiceConfig::default(),
-        )
-        .map_err(map_lifecycle_error)?;
-        let mut shell =
-            LifecycleDurableLocalShell::assemble(request, backend, default_timestamp_source())
-                .map_err(map_lifecycle_error)?;
-        let recovery_request =
-            crate::lifecycle::LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
-                .map_err(map_lifecycle_error)?;
-        let recovery = LifecycleRecoveryRuntime::new(&mut shell)
-            .recover(&recovery_request)
-            .map_err(map_lifecycle_error)?;
-        let runtime = shell
-            .complete_recovery(&recovery)
-            .map_err(map_lifecycle_error)?;
-        let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
-        let recovery_report = map_diagnostics_recovery(runtime.current_recovery_health());
-        let config = runtime.open_plan().lifecycle_config();
+        let (runtime, summary, recovery_report, config) =
+            assemble_durable_runtime(options, backend)?;
         Ok(StorageOpenOutcome::new(
             Self {
                 inner: StorageRuntimeInner::Durable(Box::new(RuntimeSlot::new(runtime, config))),
@@ -1792,6 +2311,10 @@ impl<'a> StorageRuntime<'a> {
                 let mut runtime = slot.lock();
                 runtime.release_writer_guard_for_test()
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                runtime.release_writer_guard_for_test()
+            }
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
         }
     }
@@ -1805,6 +2328,12 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .read_view_for_branch(branch_id)
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime
                     .read_view_for_branch(branch_id)
@@ -1830,6 +2359,12 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime
                     .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
@@ -1900,6 +2435,13 @@ impl<'a> StorageRuntime<'a> {
                     .lifecycle_config()
                     .maintenance_scheduling_policy()
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let runtime = slot.lock();
+                runtime
+                    .open_plan()
+                    .lifecycle_config()
+                    .maintenance_scheduling_policy()
+            }
             StorageRuntimeInner::Closed => LifecycleMaintenanceSchedulingPolicy::Disabled,
         }
     }
@@ -1939,6 +2481,12 @@ impl<'a> StorageRuntime<'a> {
                 self.last_recovery = Some(map_diagnostics_recovery(health));
                 Ok(())
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                runtime.record_recovery_health_for_test(health);
+                self.last_recovery = Some(map_diagnostics_recovery(health));
+                Ok(())
+            }
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {
                 Err(StorageApiError::InvalidRuntimeState {
                     reason: "durable recovery health test hook requires an open durable runtime",
@@ -1965,26 +2513,201 @@ impl<'a> StorageRuntime<'a> {
         let runtime_batch = runtime_batch_result?;
 
         let runtime_timer = perf_trace::start_timer();
-        let (outcome_result, admission) = match &mut self.inner {
+        let mut pressure_wait_deadline = None;
+        loop {
+            let (outcome_result, admission, pending_tasks) = match &mut self.inner {
+                StorageRuntimeInner::Cache(slot) => {
+                    let mut runtime = slot.lock();
+                    let result =
+                        runtime.execute_cache_commit(runtime_batch.clone(), generation_guard);
+                    (
+                        result,
+                        runtime.last_write_admission(),
+                        runtime.maintenance_status().pending_tasks(),
+                    )
+                }
+                StorageRuntimeInner::Durable(slot) => {
+                    let mut runtime = slot.lock();
+                    let result =
+                        runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
+                    (
+                        result,
+                        runtime.last_write_admission(),
+                        runtime.maintenance_status().pending_tasks(),
+                    )
+                }
+                StorageRuntimeInner::DurableOwned(slot) => {
+                    let mut runtime = slot.lock();
+                    let result =
+                        runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
+                    (
+                        result,
+                        runtime.last_write_admission(),
+                        runtime.maintenance_status().pending_tasks(),
+                    )
+                }
+                StorageRuntimeInner::Closed => {
+                    return Err(StorageApiError::InvalidRuntimeState {
+                        reason: "commit requires an open runtime",
+                    });
+                }
+            };
+            if pending_tasks > 0 {
+                self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+            }
+            match outcome_result {
+                Ok(outcome) => {
+                    if let Some(slowdown) = self.background_slowdown_duration(admission) {
+                        std::thread::sleep(slowdown);
+                        perf_trace::record_lifecycle_write_admission_slowdown(slowdown);
+                    }
+                    perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
+                    return map_commit_summary(&outcome, admission);
+                }
+                Err(error)
+                    if self.background_wait_after_pressure_rejection(
+                        &error,
+                        &mut pressure_wait_deadline,
+                    ) => {}
+                Err(error) => {
+                    perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
+                    return Err(map_lifecycle_error(error));
+                }
+            }
+        }
+    }
+
+    fn notify_background_drain_for_current_runtime(&self, priority: BackgroundTaskPriority) {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => {
+                slot.notify_background_drain(priority);
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                slot.notify_background_drain(priority);
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                slot.notify_background_drain(priority);
+            }
+            StorageRuntimeInner::Closed => {}
+        }
+    }
+
+    fn background_slowdown_duration(
+        &self,
+        admission: Option<LifecycleWriteAdmissionOutcome>,
+    ) -> Option<Duration> {
+        if !self.has_background_runtime() {
+            return None;
+        }
+        let admission = admission?;
+        if admission.status() != LifecycleWriteAdmissionStatus::AcceptedUnderPressure
+            || admission.pressure().severity() != LifecycleStoragePressureSeverity::Urgent
+            || admission.inline_maintenance_driven()
+        {
+            return None;
+        }
+        let pressure = admission.pressure();
+        let queue_depth = self
+            .background_stats_for_current_runtime()
+            .map_or(0, |stats| {
+                stats.queue_depth.saturating_add(stats.active_tasks)
+            });
+        let pressure_units = 1usize
+            .saturating_add(pressure.pending_maintenance())
+            .saturating_add(pressure.frozen_tables())
+            .saturating_add(pressure.level_zero_tables() / 4)
+            .saturating_add(pressure.owned_tables() / 8)
+            .saturating_add(queue_depth);
+        let capped_pressure_units =
+            u32::try_from(pressure_units.min(100)).expect("pressure unit cap fits in u32");
+        Some(
+            DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN
+                .saturating_mul(capped_pressure_units)
+                .min(DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN),
+        )
+    }
+
+    fn has_background_runtime(&self) -> bool {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.has_background(),
+            StorageRuntimeInner::Durable(slot) => slot.has_background(),
+            StorageRuntimeInner::DurableOwned(slot) => slot.has_background(),
+            StorageRuntimeInner::Closed => false,
+        }
+    }
+
+    fn background_stats_for_current_runtime(&self) -> Option<BackgroundSchedulerStats> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.background_stats(),
+            StorageRuntimeInner::Durable(slot) => slot.background_stats(),
+            StorageRuntimeInner::DurableOwned(slot) => slot.background_stats(),
+            StorageRuntimeInner::Closed => None,
+        }
+    }
+
+    fn background_wait_after_pressure_rejection(
+        &mut self,
+        error: &LifecycleError,
+        deadline: &mut Option<Instant>,
+    ) -> bool {
+        let LifecycleError::StoragePressureRejected {
+            branch_id,
+            retryable: true,
+            ..
+        } = error
+        else {
+            return false;
+        };
+        if !self.has_background_runtime() {
+            return false;
+        }
+        let deadline = *deadline
+            .get_or_insert_with(|| Instant::now() + DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE);
+        if Instant::now() >= deadline {
+            perf_trace::record_lifecycle_write_admission_wait_timeout();
+            return false;
+        }
+        let pending_tasks = self.enqueue_pressure_maintenance_for_background_wait(*branch_id);
+        if pending_tasks == 0 {
+            return false;
+        }
+        let wait_start = Instant::now();
+        self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+        let progressed = match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.wait_background_progress_until(deadline),
+            StorageRuntimeInner::Durable(slot) => slot.wait_background_progress_until(deadline),
+            StorageRuntimeInner::DurableOwned(slot) => {
+                slot.wait_background_progress_until(deadline)
+            }
+            StorageRuntimeInner::Closed => return false,
+        };
+        perf_trace::record_lifecycle_write_admission_block_wait(wait_start.elapsed());
+        if !progressed {
+            perf_trace::record_lifecycle_write_admission_wait_timeout();
+            return false;
+        }
+        true
+    }
+
+    fn enqueue_pressure_maintenance_for_background_wait(&mut self, branch_id: BranchId) -> usize {
+        match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
-                let result = runtime.execute_cache_commit(runtime_batch, generation_guard);
-                (result, runtime.last_write_admission())
+                let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
+                runtime.maintenance_status().pending_tasks()
             }
             StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
-                let result = runtime.execute_durable_commit(runtime_batch, generation_guard);
-                (result, runtime.last_write_admission())
+                let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
+                runtime.maintenance_status().pending_tasks()
             }
-            StorageRuntimeInner::Closed => {
-                return Err(StorageApiError::InvalidRuntimeState {
-                    reason: "commit requires an open runtime",
-                });
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
+                runtime.maintenance_status().pending_tasks()
             }
-        };
-        perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
-        let outcome = outcome_result.map_err(map_lifecycle_error)?;
-        map_commit_summary(&outcome, admission)
+            StorageRuntimeInner::Closed => 0,
+        }
     }
 
     fn resolve_commit_durability(
@@ -2039,6 +2762,42 @@ impl<'a> StorageRuntime<'a> {
                     }),
                 }
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let runtime = slot.lock();
+                match (runtime.open_plan().storage_mode(), requested) {
+                    (
+                        LifecycleStorageMode::DurableLocalStandard,
+                        CommitDurability::RuntimeDefault | CommitDurability::Standard,
+                    ) => Ok(crate::commit::CommitDurabilityMode::Standard),
+                    (
+                        LifecycleStorageMode::DurableLocalAlways,
+                        CommitDurability::RuntimeDefault | CommitDurability::Always,
+                    ) => Ok(crate::commit::CommitDurabilityMode::Always),
+                    (_, CommitDurability::NotDurable) => {
+                        Err(StorageApiError::UnsupportedCapability {
+                            capability: "commit_durability",
+                            reason: "durable runtime cannot accept cache-only commit requests",
+                        })
+                    }
+                    (LifecycleStorageMode::DurableLocalStandard, CommitDurability::Always) => {
+                        Err(StorageApiError::UnsupportedCapability {
+                            capability: "commit_durability",
+                            reason: "always commit durability requires an always-durable runtime",
+                        })
+                    }
+                    (LifecycleStorageMode::DurableLocalAlways, CommitDurability::Standard) => {
+                        Err(StorageApiError::UnsupportedCapability {
+                            capability: "commit_durability",
+                            reason:
+                                "standard commit durability cannot weaken an always-durable runtime",
+                        })
+                    }
+                    _ => Err(StorageApiError::UnsupportedCapability {
+                        capability: "commit_durability",
+                        reason: "commit durability is unsupported for this runtime mode",
+                    }),
+                }
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "commit requires an open runtime",
             }),
@@ -2052,6 +2811,10 @@ impl<'a> StorageRuntime<'a> {
                 runtime.allocator().timestamp_guard().last_allocated()
             }
             StorageRuntimeInner::Durable(slot) => {
+                let runtime = slot.lock();
+                runtime.allocator().timestamp_guard().last_allocated()
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime.allocator().timestamp_guard().last_allocated()
             }
@@ -2102,6 +2865,21 @@ impl<'a> StorageRuntime<'a> {
                     .set_timestamp_coverage(coverage);
                 Ok(())
             }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                let generation = runtime
+                    .branch_catalog()
+                    .registry()
+                    .lookup(branch_id)
+                    .map_err(commit_error)?
+                    .generation();
+                runtime
+                    .branch_catalog_mut_for_test()
+                    .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+                    .map_err(map_lifecycle_error)?
+                    .set_timestamp_coverage(coverage);
+                Ok(())
+            }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "timestamp coverage update requires an open runtime",
             }),
@@ -2127,6 +2905,11 @@ impl<'a> StorageRuntime<'a> {
                 .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .lock()
+                .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
+                .map(|_| ())
+                .map_err(map_lifecycle_error),
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "fork requires an open runtime",
             }),
@@ -2136,6 +2919,41 @@ impl<'a> StorageRuntime<'a> {
     #[cfg(test)]
     pub(crate) fn flush_default_branch_for_test(&mut self) -> StorageApiResult<()> {
         self.flush_branch_for_test(DEFAULT_BRANCH_ID)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rotate_default_branch_for_test(&mut self) -> StorageApiResult<()> {
+        self.rotate_branch_for_test(DEFAULT_BRANCH_ID)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rotate_branch_for_test(&mut self, branch_id: BranchId) -> StorageApiResult<()> {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(slot) => {
+                let mut runtime = slot.lock();
+                runtime
+                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .map(|_| ())
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime
+                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .map(|_| ())
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let mut runtime = slot.lock();
+                runtime
+                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .map(|_| ())
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "rotation requires an open runtime",
+            }),
+        }
     }
 
     #[cfg(test)]
@@ -2152,6 +2970,16 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                runtime
+                    .rotate_active_for_maintenance()
+                    .map_err(map_lifecycle_error)?;
+                runtime
+                    .flush_frozen(&flush_request_for_boundary(branch_id)?)
+                    .map(|_| ())
+                    .map_err(map_lifecycle_error)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_maintenance()
@@ -2185,6 +3013,12 @@ impl<'a> StorageRuntime<'a> {
                 .pin_reachability(branch_id)
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .lock()
+                .branch_catalog_mut_for_test()
+                .pin_reachability(branch_id)
+                .map(|_| ())
+                .map_err(map_lifecycle_error),
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "pin requires an open runtime",
             }),
@@ -2212,6 +3046,22 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(branch_error)
             }
             StorageRuntimeInner::Durable(slot) => {
+                let mut runtime = slot.lock();
+                let generation = runtime
+                    .branch_catalog()
+                    .registry()
+                    .lookup(branch_id)
+                    .map_err(commit_error)?
+                    .generation();
+                runtime
+                    .branch_catalog_mut_for_test()
+                    .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+                    .map_err(map_lifecycle_error)?
+                    .append_committed_row(row)
+                    .map(|_| ())
+                    .map_err(branch_error)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let generation = runtime
                     .branch_catalog()
@@ -2280,14 +3130,16 @@ fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPl
 fn durable_backend_handle_for_open(
     options: StorageOpenOptions,
     backend: &StorageBackend,
-) -> StorageApiResult<BackendHandle<'_>> {
+) -> StorageApiResult<DurableBackendHandleForOpen<'_>> {
     if options.maintenance_scheduling_policy() != StorageMaintenanceSchedulingPolicy::Background {
-        return Ok(backend.as_backend_handle());
+        return Ok(DurableBackendHandleForOpen::Borrowed(
+            backend.as_backend_handle(),
+        ));
     }
 
     #[cfg(feature = "localfs")]
     if let Some(handle) = backend.to_owned_backend_handle() {
-        return Ok(handle);
+        return Ok(DurableBackendHandleForOpen::Owned(handle));
     }
 
     Err(StorageApiError::InvalidArgument {
@@ -2703,6 +3555,25 @@ fn map_maintenance_task_request(
     }
 }
 
+const fn background_priority_for_task_request(
+    request: LifecycleMaintenanceTaskRequest,
+) -> BackgroundTaskPriority {
+    match request.kind() {
+        LifecycleMaintenanceTaskKind::Flush
+        | LifecycleMaintenanceTaskKind::Checkpoint
+        | LifecycleMaintenanceTaskKind::FlushWatermark
+        | LifecycleMaintenanceTaskKind::WalTruncation => BackgroundTaskPriority::High,
+        LifecycleMaintenanceTaskKind::Compaction
+        | LifecycleMaintenanceTaskKind::Materialization => BackgroundTaskPriority::Normal,
+        LifecycleMaintenanceTaskKind::HealthCollection
+        | LifecycleMaintenanceTaskKind::Retention
+        | LifecycleMaintenanceTaskKind::SnapshotPruning
+        | LifecycleMaintenanceTaskKind::Quarantine
+        | LifecycleMaintenanceTaskKind::Purge
+        | LifecycleMaintenanceTaskKind::Repair => BackgroundTaskPriority::Low,
+    }
+}
+
 fn run_next_cache_maintenance(
     runtime: &mut LifecycleCacheRuntime<ApiTimestampSource>,
 ) -> StorageApiResult<Option<LifecycleMaintenanceOutcome>> {
@@ -2715,6 +3586,34 @@ fn run_next_cache_maintenance(
     runtime
         .run_next_table_rewrite_maintenance()
         .map_err(map_lifecycle_error)
+}
+
+fn drain_cache_background_round(
+    runtime: &mut LifecycleCacheRuntime<ApiTimestampSource>,
+    limits: BackgroundDrainLimits,
+) -> BackgroundDrainRound {
+    let start = Instant::now();
+    let mut tasks_completed = 0;
+    let mut made_progress = false;
+    while tasks_completed < limits.max_tasks && start.elapsed() < limits.max_runtime {
+        let pending_before = runtime.maintenance_status().pending_tasks();
+        match run_next_cache_maintenance(runtime) {
+            Ok(Some(_outcome)) => {
+                tasks_completed += 1;
+                made_progress = true;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                made_progress |= runtime.maintenance_status().pending_tasks() < pending_before;
+                break;
+            }
+        }
+    }
+    BackgroundDrainRound {
+        tasks_completed,
+        pending_tasks: runtime.maintenance_status().pending_tasks(),
+        made_progress,
+    }
 }
 
 fn run_next_durable_maintenance(
@@ -2773,6 +3672,34 @@ fn run_next_durable_maintenance(
         .map_err(map_lifecycle_error)
 }
 
+fn drain_durable_background_round(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+    limits: BackgroundDrainLimits,
+) -> BackgroundDrainRound {
+    let start = Instant::now();
+    let mut tasks_completed = 0;
+    let mut made_progress = false;
+    while tasks_completed < limits.max_tasks && start.elapsed() < limits.max_runtime {
+        let pending_before = runtime.maintenance_status().pending_tasks();
+        match run_next_durable_maintenance(runtime) {
+            Ok(Some(_outcome)) => {
+                tasks_completed += 1;
+                made_progress = true;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                made_progress |= runtime.maintenance_status().pending_tasks() < pending_before;
+                break;
+            }
+        }
+    }
+    BackgroundDrainRound {
+        tasks_completed,
+        pending_tasks: runtime.maintenance_status().pending_tasks(),
+        made_progress,
+    }
+}
+
 fn map_generation_guard(
     generation: Option<BranchGeneration>,
 ) -> StorageApiResult<CommitBranchGenerationGuard> {
@@ -2819,6 +3746,10 @@ fn require_valid_branch_identifier(
     }
 }
 
+#[allow(
+    clippy::match_same_arms,
+    reason = "borrowed and owned durable runtime variants share behavior but carry different backend lifetimes"
+)]
 fn current_visible(runtime: &StorageRuntime<'_>) -> Option<CommitVersion> {
     let version = match &runtime.inner {
         StorageRuntimeInner::Cache(slot) => {
@@ -2826,6 +3757,10 @@ fn current_visible(runtime: &StorageRuntime<'_>) -> Option<CommitVersion> {
             runtime.visible_version()
         }
         StorageRuntimeInner::Durable(slot) => {
+            let runtime = slot.lock();
+            runtime.visible_version()
+        }
+        StorageRuntimeInner::DurableOwned(slot) => {
             let runtime = slot.lock();
             runtime.visible_version()
         }

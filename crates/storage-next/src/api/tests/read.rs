@@ -14,6 +14,17 @@ fn open_runtime() -> StorageRuntime<'static> {
         .into_runtime()
 }
 
+#[cfg(feature = "perf-trace")]
+fn open_manual_runtime() -> StorageRuntime<'static> {
+    StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+    )
+    .expect("open manual runtime")
+    .into_runtime()
+}
+
 #[cfg(feature = "localfs")]
 fn open_durable_runtime(root: std::path::PathBuf) -> StorageRuntime<'static> {
     StorageRuntime::open_local(root)
@@ -156,7 +167,7 @@ fn read_latest_returns_tombstone_fact_for_visible_delete() {
 #[cfg(feature = "perf-trace")]
 #[test]
 fn read_latest_uses_borrowed_bounded_point_path() {
-    let mut runtime = open_runtime();
+    let mut runtime = open_manual_runtime();
     for index in 0..64u8 {
         let key = vec![b'k', index];
         let value = vec![b'v', index];
@@ -918,7 +929,7 @@ fn timeline_lookup_survives_durable_recovery() {
 #[test]
 fn timeline_lookup_over_many_user_rows_scans_no_user_rows() {
     let _capture = perf_trace::begin_test_capture();
-    let mut runtime = open_runtime();
+    let mut runtime = open_manual_runtime();
     let retained_commits = 32usize;
     for index in 0..retained_commits {
         let key = format!("user-row-{index:03}");

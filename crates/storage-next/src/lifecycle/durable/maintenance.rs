@@ -331,7 +331,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id)
     }
 
-    pub(super) fn schedule_post_commit_maintenance_for_branch(
+    pub(crate) fn schedule_post_commit_maintenance_for_branch(
         &mut self,
         branch_id: BranchId,
     ) -> LifecyclePostCommitMaintenanceOutcome {

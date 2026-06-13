@@ -6,6 +6,16 @@ fn open_runtime() -> StorageRuntime<'static> {
         .into_runtime()
 }
 
+fn open_manual_runtime() -> StorageRuntime<'static> {
+    StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+    )
+    .expect("open manual cache runtime")
+    .into_runtime()
+}
+
 #[cfg(feature = "localfs")]
 fn open_durable_runtime(name: &str) -> StorageRuntime<'static> {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test(name));
@@ -299,7 +309,7 @@ fn diagnostics_reports_durable_background_scheduler_facts() {
 
 #[test]
 fn diagnostics_reports_memory_budget_usage() {
-    let mut runtime = open_runtime();
+    let mut runtime = open_manual_runtime();
     runtime
         .enqueue_maintenance(&MaintenanceRequest::new(
             MaintenanceTask::Flush,

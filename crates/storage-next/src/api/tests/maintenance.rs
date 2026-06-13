@@ -6,6 +6,16 @@ fn open_runtime() -> StorageRuntime<'static> {
         .into_runtime()
 }
 
+fn open_manual_runtime() -> StorageRuntime<'static> {
+    StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+    )
+    .expect("open manual runtime")
+    .into_runtime()
+}
+
 #[cfg(feature = "localfs")]
 fn open_durable_runtime_with_options(
     name: &str,
@@ -374,7 +384,7 @@ fn api_materialization_uses_stable_handle() {
 
 #[test]
 fn api_materialization_direct_call_runs_requested_task_not_prior_queue_entry() {
-    let mut runtime = open_runtime();
+    let mut runtime = open_manual_runtime();
     runtime
         .commit(&put_batch(b"direct-stable", b"value"))
         .expect("commit parent");
@@ -611,6 +621,7 @@ fn api_wal_growth_policy_status_reports_disabled() {
 #[cfg(feature = "localfs")]
 fn api_wal_growth_policy_status_reports_checkpoint_due() {
     let options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+        .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue)
         .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(u64::MAX, usize::MAX, 1));
     let mut runtime = open_durable_runtime_with_options("maintenance-wal-growth-due", options);
     runtime
@@ -743,7 +754,7 @@ fn api_cache_durable_only_enqueue_rejects_without_stranding_tasks() {
 
 #[test]
 fn api_maintenance_drain_is_deterministic() {
-    let mut runtime = open_runtime();
+    let mut runtime = open_manual_runtime();
     runtime
         .commit(&put_batch(b"first", b"value"))
         .expect("first commit");

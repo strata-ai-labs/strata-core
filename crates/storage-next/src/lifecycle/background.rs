@@ -11,6 +11,7 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// Priority levels for background lifecycle work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -225,6 +226,42 @@ impl BackgroundScheduler {
         }
     }
 
+    /// Blocks until at least one accepted task completes, the scheduler becomes
+    /// idle, or `deadline` is reached.
+    pub(crate) fn wait_for_progress_until(
+        &self,
+        completed_before_wait: u64,
+        deadline: Instant,
+    ) -> bool {
+        let mut queue = self.inner.queue.lock();
+        loop {
+            if self.inner.tasks_completed.load(AtomicOrdering::Acquire) > completed_before_wait {
+                return true;
+            }
+            if self.inner.queue_depth.load(AtomicOrdering::Acquire) == 0
+                && self.inner.active_tasks.load(AtomicOrdering::Acquire) == 0
+            {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let timeout = deadline.saturating_duration_since(now);
+            if self
+                .inner
+                .drain_cond
+                .wait_for(&mut queue, timeout)
+                .timed_out()
+            {
+                return self.inner.tasks_completed.load(AtomicOrdering::Acquire)
+                    > completed_before_wait
+                    || (self.inner.queue_depth.load(AtomicOrdering::Acquire) == 0
+                        && self.inner.active_tasks.load(AtomicOrdering::Acquire) == 0);
+            }
+        }
+    }
+
     /// Signals workers to drain accepted work and exit.
     ///
     /// Repeated shutdown calls are allowed.
@@ -282,15 +319,13 @@ struct ActiveTaskGuard<'a> {
 
 impl Drop for ActiveTaskGuard<'_> {
     fn drop(&mut self) {
-        let previous_active = self.inner.active_tasks.fetch_sub(1, AtomicOrdering::AcqRel);
+        self.inner.active_tasks.fetch_sub(1, AtomicOrdering::AcqRel);
         self.inner
             .tasks_completed
             .fetch_add(1, AtomicOrdering::Relaxed);
 
-        if previous_active == 1 && self.inner.queue_depth.load(AtomicOrdering::Acquire) == 0 {
-            let _queue = self.inner.queue.lock();
-            self.inner.drain_cond.notify_all();
-        }
+        let _queue = self.inner.queue.lock();
+        self.inner.drain_cond.notify_all();
     }
 }
 
@@ -594,6 +629,52 @@ mod tests {
         assert_eq!(stats.queue_depth, 0);
         assert_eq!(stats.active_tasks, 0);
         assert_eq!(stats.worker_count, 2);
+        scheduler.shutdown();
+    }
+
+    #[test]
+    fn background_wait_for_progress_observes_task_completion() {
+        let scheduler = BackgroundScheduler::new(1, 4096);
+        let completed_before_wait = scheduler.stats().tasks_completed;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&counter);
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, move || {
+                observed.fetch_add(1, AtomicOrdering::Relaxed);
+            })
+            .expect("submit task");
+
+        assert!(scheduler.wait_for_progress_until(
+            completed_before_wait,
+            Instant::now() + std::time::Duration::from_secs(5)
+        ));
+        assert_eq!(counter.load(AtomicOrdering::Relaxed), 1);
+        scheduler.shutdown();
+    }
+
+    #[test]
+    fn background_wait_for_progress_times_out_without_progress() {
+        let scheduler = BackgroundScheduler::new(1, 4096);
+        let worker_started = Arc::new(Barrier::new(2));
+        let worker_release = Arc::new(Barrier::new(2));
+        let started = Arc::clone(&worker_started);
+        let release = Arc::clone(&worker_release);
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, move || {
+                started.wait();
+                release.wait();
+            })
+            .expect("submit barrier task");
+        worker_started.wait();
+
+        let completed_before_wait = scheduler.stats().tasks_completed;
+        assert!(!scheduler.wait_for_progress_until(
+            completed_before_wait,
+            Instant::now() + std::time::Duration::from_millis(25)
+        ));
+
+        worker_release.wait();
+        scheduler.drain();
         scheduler.shutdown();
     }
 

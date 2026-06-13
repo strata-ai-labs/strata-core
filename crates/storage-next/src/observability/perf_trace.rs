@@ -149,6 +149,15 @@ pub struct StoragePerfSnapshot {
     lifecycle_inline_maintenance_ns: u64,
     lifecycle_background_runtimes_created: u64,
     lifecycle_background_runtime_workers_created: u64,
+    lifecycle_background_wake_submitted: u64,
+    lifecycle_background_wake_coalesced: u64,
+    lifecycle_background_wake_rejected: u64,
+    lifecycle_background_stale_wake_noop: u64,
+    lifecycle_background_drain_rounds: u64,
+    lifecycle_background_tasks_completed: u64,
+    lifecycle_write_admission_slowdown_attempts: u64,
+    lifecycle_write_admission_slowdown_ns: u64,
+    lifecycle_write_admission_block_wait_ns: u64,
     lifecycle_flush_drain_frozen_tables_discovered: u64,
     lifecycle_flush_drain_operations_completed: u64,
     lifecycle_flush_drain_freeze_retries: u64,
@@ -813,6 +822,51 @@ impl StoragePerfSnapshot {
     /// Background maintenance worker threads requested by created runtimes.
     pub const fn lifecycle_background_runtime_workers_created(self) -> u64 {
         self.lifecycle_background_runtime_workers_created
+    }
+
+    /// Accepted background lifecycle wake submissions.
+    pub const fn lifecycle_background_wake_submitted(self) -> u64 {
+        self.lifecycle_background_wake_submitted
+    }
+
+    /// Background lifecycle wake requests coalesced with an active wake.
+    pub const fn lifecycle_background_wake_coalesced(self) -> u64 {
+        self.lifecycle_background_wake_coalesced
+    }
+
+    /// Background lifecycle wake submissions rejected by shutdown/backpressure.
+    pub const fn lifecycle_background_wake_rejected(self) -> u64 {
+        self.lifecycle_background_wake_rejected
+    }
+
+    /// Background wakes that found no eligible lifecycle task.
+    pub const fn lifecycle_background_stale_wake_noop(self) -> u64 {
+        self.lifecycle_background_stale_wake_noop
+    }
+
+    /// Background lifecycle drain rounds executed by worker wakes.
+    pub const fn lifecycle_background_drain_rounds(self) -> u64 {
+        self.lifecycle_background_drain_rounds
+    }
+
+    /// Lifecycle maintenance tasks completed by background drain rounds.
+    pub const fn lifecycle_background_tasks_completed(self) -> u64 {
+        self.lifecycle_background_tasks_completed
+    }
+
+    /// Urgent admission attempts that entered the slowdown path.
+    pub const fn lifecycle_write_admission_slowdown_attempts(self) -> u64 {
+        self.lifecycle_write_admission_slowdown_attempts
+    }
+
+    /// Nanoseconds spent in urgent admission slowdown.
+    pub const fn lifecycle_write_admission_slowdown_ns(self) -> u64 {
+        self.lifecycle_write_admission_slowdown_ns
+    }
+
+    /// Nanoseconds spent waiting for background progress under Block pressure.
+    pub const fn lifecycle_write_admission_block_wait_ns(self) -> u64 {
+        self.lifecycle_write_admission_block_wait_ns
     }
 
     /// Frozen tables observed at flush-drain start.
@@ -2137,6 +2191,24 @@ static LIFECYCLE_BACKGROUND_RUNTIMES_CREATED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_WAKE_SUBMITTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_WAKE_COALESCED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_STALE_WAKE_NOOP: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_DRAIN_ROUNDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASKS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
@@ -2590,12 +2662,11 @@ static TABLE_BOUND_CHECKS: AtomicU64 = AtomicU64::new(0);
 static TABLE_BOUND_CHECK_NS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(test, feature = "perf-trace"))]
-thread_local! {
-    static TEST_CAPTURE_ENABLED: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(all(test, feature = "perf-trace"))]
 static TEST_CAPTURE_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(all(test, feature = "perf-trace"))]
+thread_local! {
+    static TEST_CAPTURE_THREAD_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
 
 #[cfg(all(test, feature = "perf-trace"))]
 pub(crate) struct PerfTraceTestGuard {
@@ -2606,17 +2677,17 @@ pub(crate) struct PerfTraceTestGuard {
 #[cfg(all(test, feature = "perf-trace"))]
 impl Drop for PerfTraceTestGuard {
     fn drop(&mut self) {
-        TEST_CAPTURE_ENABLED.with(|enabled| enabled.set(self.previous_enabled));
+        TEST_CAPTURE_THREAD_ENABLED.with(|enabled| enabled.set(self.previous_enabled));
     }
 }
 
-/// Start an isolated counter capture for a single unit-test thread.
+/// Start an isolated counter capture for a unit test and its worker threads.
 #[cfg(all(test, feature = "perf-trace"))]
 pub(crate) fn begin_test_capture() -> PerfTraceTestGuard {
     let lock = TEST_CAPTURE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let previous_enabled = TEST_CAPTURE_ENABLED.with(|enabled| {
+    let previous_enabled = TEST_CAPTURE_THREAD_ENABLED.with(|enabled| {
         let previous = enabled.get();
         enabled.set(true);
         previous
@@ -2626,6 +2697,44 @@ pub(crate) fn begin_test_capture() -> PerfTraceTestGuard {
         _lock: lock,
         previous_enabled,
     }
+}
+
+/// Return whether the current test thread is capturing perf-trace counters.
+///
+/// Tests run in parallel. The capture mutex serializes tests that explicitly
+/// capture counters, but unrelated tests may still be executing at the same
+/// time. Keeping the flag thread-local prevents those unrelated tests from
+/// contributing to an isolated snapshot.
+#[cfg(all(test, feature = "perf-trace"))]
+pub(crate) fn test_capture_enabled_for_current_thread() -> bool {
+    TEST_CAPTURE_THREAD_ENABLED.with(Cell::get)
+}
+
+/// Run a worker closure with the submitting test thread's capture state.
+#[cfg(all(test, feature = "perf-trace"))]
+pub(crate) fn with_test_capture_enabled_for_current_thread<T>(
+    enabled: bool,
+    work: impl FnOnce() -> T,
+) -> T {
+    TEST_CAPTURE_THREAD_ENABLED.with(|thread_enabled| {
+        let previous = thread_enabled.replace(enabled);
+        let result = work();
+        thread_enabled.set(previous);
+        result
+    })
+}
+
+#[cfg(any(not(test), not(feature = "perf-trace")))]
+pub(crate) const fn test_capture_enabled_for_current_thread() -> bool {
+    false
+}
+
+#[cfg(any(not(test), not(feature = "perf-trace")))]
+pub(crate) fn with_test_capture_enabled_for_current_thread<T>(
+    _enabled: bool,
+    work: impl FnOnce() -> T,
+) -> T {
+    work()
 }
 
 /// Reset all performance proof counters.
@@ -2719,6 +2828,15 @@ pub fn reset() {
     LIFECYCLE_INLINE_MAINTENANCE_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_RUNTIMES_CREATED.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_WAKE_SUBMITTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_WAKE_COALESCED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_WAKE_REJECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_STALE_WAKE_NOOP.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_DRAIN_ROUNDS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASKS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
@@ -3098,6 +3216,24 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_background_runtimes_created: LIFECYCLE_BACKGROUND_RUNTIMES_CREATED
             .load(Ordering::Relaxed),
         lifecycle_background_runtime_workers_created: LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED
+            .load(Ordering::Relaxed),
+        lifecycle_background_wake_submitted: LIFECYCLE_BACKGROUND_WAKE_SUBMITTED
+            .load(Ordering::Relaxed),
+        lifecycle_background_wake_coalesced: LIFECYCLE_BACKGROUND_WAKE_COALESCED
+            .load(Ordering::Relaxed),
+        lifecycle_background_wake_rejected: LIFECYCLE_BACKGROUND_WAKE_REJECTED
+            .load(Ordering::Relaxed),
+        lifecycle_background_stale_wake_noop: LIFECYCLE_BACKGROUND_STALE_WAKE_NOOP
+            .load(Ordering::Relaxed),
+        lifecycle_background_drain_rounds: LIFECYCLE_BACKGROUND_DRAIN_ROUNDS
+            .load(Ordering::Relaxed),
+        lifecycle_background_tasks_completed: LIFECYCLE_BACKGROUND_TASKS_COMPLETED
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_slowdown_attempts: LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_slowdown_ns: LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS
+            .load(Ordering::Relaxed),
+        lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
             .load(Ordering::Relaxed),
         lifecycle_flush_drain_frozen_tables_discovered:
             LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.load(Ordering::Relaxed),
@@ -4165,6 +4301,92 @@ pub(crate) fn record_lifecycle_background_runtime_created(worker_count: usize) {
     }
     LIFECYCLE_BACKGROUND_RUNTIMES_CREATED.fetch_add(1, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_RUNTIME_WORKERS_CREATED.fetch_add(as_u64(worker_count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_wake_submitted() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_wake_submitted() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_WAKE_SUBMITTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_wake_coalesced() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_wake_coalesced() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_WAKE_COALESCED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_wake_rejected() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_wake_rejected() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_stale_wake_noop() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_STALE_WAKE_NOOP.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_drain_round(_tasks_completed: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_drain_round(tasks_completed: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_DRAIN_ROUNDS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASKS_COMPLETED.fetch_add(as_u64(tasks_completed), Ordering::Relaxed);
+    if tasks_completed == 0 {
+        record_lifecycle_background_stale_wake_noop();
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_slowdown(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_slowdown(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_block_wait(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_block_wait(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -5685,7 +5907,7 @@ pub(crate) fn record_table_bound_check_elapsed(start: PerfTraceTimer) {
 
 #[cfg(all(test, feature = "perf-trace"))]
 fn recording_enabled() -> bool {
-    TEST_CAPTURE_ENABLED.with(Cell::get)
+    test_capture_enabled_for_current_thread()
 }
 
 #[cfg(all(not(test), feature = "perf-trace"))]

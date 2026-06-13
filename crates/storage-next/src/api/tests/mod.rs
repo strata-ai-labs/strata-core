@@ -27,6 +27,55 @@ fn key(name: &[u8]) -> StorageKey {
     StorageKey::new(name.to_vec()).expect("valid key")
 }
 
+fn background_space() -> StorageSpaceId {
+    StorageSpaceId::new(vec![0x20]).expect("engine storage space")
+}
+
+fn background_put_batch(name: &[u8], value: Vec<u8>) -> CommitBatch {
+    CommitBatch::new(
+        StorageRuntime::default_branch_id_for_test(),
+        vec![CommitMutation::Put {
+            storage_space: background_space(),
+            key: key(name),
+            value: StorageValue::new(value),
+            ttl: None,
+        }],
+        CommitOptions::default(),
+    )
+    .expect("valid background put batch")
+}
+
+fn background_raw_row(name: &[u8], version: u64) -> crate::row::StorageRow {
+    let physical_key = crate::row::PhysicalKey::new(
+        StorageRuntime::default_branch_id_for_test(),
+        "api",
+        crate::row::StorageSpaceId::engine(0x20).expect("engine-owned row storage space"),
+        name,
+    )
+    .expect("valid raw row key");
+    crate::row::StorageRow::put(
+        physical_key,
+        CommitVersion::new(version),
+        Timestamp::from_micros(version),
+        Timestamp::EPOCH,
+        b"value",
+    )
+}
+
+fn background_owned_table_count_at(
+    layout: &crate::branch::facts::BranchSourceLayout,
+    level: u8,
+) -> usize {
+    if level == 0 {
+        return layout.owned_l0_tables();
+    }
+    layout
+        .owned_nonzero_level_table_counts()
+        .iter()
+        .find(|count| count.level().raw() == level)
+        .map_or(0, |count| count.table_count())
+}
+
 #[cfg(feature = "localfs")]
 fn temp_dir_for_api_test(name: &str) -> PathBuf {
     static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -640,6 +689,38 @@ fn source_guard_background_scheduler_is_local_storage_next_port() {
 }
 
 #[test]
+fn source_guard_background_priority_maps_lifecycle_work_by_pressure_cost() {
+    let runtime_source = include_str!("../runtime.rs");
+    let priority_mapping = runtime_source
+        .split("const fn background_priority_for_task_request")
+        .nth(1)
+        .expect("background priority mapping function is present")
+        .split("fn drain_cache_background_round")
+        .next()
+        .expect("priority mapping precedes background drain");
+    let compact_source = priority_mapping.split_whitespace().collect::<String>();
+
+    assert!(
+        compact_source.contains(
+            "LifecycleMaintenanceTaskKind::Flush|LifecycleMaintenanceTaskKind::Checkpoint|LifecycleMaintenanceTaskKind::FlushWatermark|LifecycleMaintenanceTaskKind::WalTruncation=>BackgroundTaskPriority::High"
+        ),
+        "flush/checkpoint/WAL-retention work must wake the background worker at high priority"
+    );
+    assert!(
+        compact_source.contains(
+            "LifecycleMaintenanceTaskKind::Compaction|LifecycleMaintenanceTaskKind::Materialization=>BackgroundTaskPriority::Normal"
+        ),
+        "compaction and materialization must use normal background priority"
+    );
+    assert!(
+        compact_source.contains(
+            "LifecycleMaintenanceTaskKind::HealthCollection|LifecycleMaintenanceTaskKind::Retention|LifecycleMaintenanceTaskKind::SnapshotPruning|LifecycleMaintenanceTaskKind::Quarantine|LifecycleMaintenanceTaskKind::Purge|LifecycleMaintenanceTaskKind::Repair=>BackgroundTaskPriority::Low"
+        ),
+        "health, retention, pruning, quarantine, purge, and repair work must stay low priority"
+    );
+}
+
+#[test]
 fn open_options_reject_cache_lossy_recovery() {
     let options = StorageOpenOptions::cache().with_strict_recovery(false);
     let validation = options
@@ -851,6 +932,481 @@ fn maintenance_status_reports_queue_state_without_background_worker_in_manual_mo
     let status = runtime.maintenance_status().expect("maintenance status");
     assert_eq!(status.pending_tasks(), 1);
     assert_eq!(status.background_worker_count(), 0);
+}
+
+#[test]
+fn background_manual_mode_run_next_maintenance_drains_explicit_work_without_worker() {
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+        ),
+    )
+    .expect("manual maintenance cache open")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+
+    runtime
+        .commit(&background_put_batch(b"manual-run-next", b"value".to_vec()))
+        .expect("seed active table data");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("rotate active table into frozen source");
+
+    let queue = runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch),
+        ))
+        .expect("enqueue manual flush maintenance");
+    assert_eq!(queue.pending_tasks(), 1);
+    assert_eq!(queue.background_worker_count(), 0);
+
+    let outcome = runtime
+        .run_next_maintenance()
+        .expect("manual run-next maintenance")
+        .expect("queued flush maintenance outcome");
+    assert_eq!(outcome.task(), MaintenanceTask::Flush);
+    assert_eq!(outcome.scope(), MaintenanceScope::Branch(branch));
+    assert_eq!(outcome.status(), MaintenanceSummaryStatus::Completed);
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_explicit_enqueue_wakes_and_drains_queue() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+
+    let queue = runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch),
+        ))
+        .expect("enqueue background maintenance");
+    assert_eq!(queue.pending_tasks(), 1);
+
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 1);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() >= 1);
+    assert!(perf.lifecycle_background_drain_rounds() >= 1);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_compaction_enqueue_wakes_and_drains_table_rewrite() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+
+    for index in 0..2 {
+        let key = format!("background-compact-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(
+                key.as_bytes(),
+                u64::try_from(index + 1).expect("index fits"),
+            ))
+            .expect("seed raw active row");
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush raw row into L0 table");
+    }
+    let before = runtime
+        .branch_source_layout_for_test(branch)
+        .expect("pre-compaction source layout");
+    assert_eq!(before.owned_l0_tables(), 2);
+
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Compact,
+            MaintenanceScope::Branch(branch),
+        ))
+        .expect("enqueue background compaction");
+    runtime.wait_background_idle_for_test();
+
+    let after = runtime
+        .branch_source_layout_for_test(branch)
+        .expect("post-compaction source layout");
+    assert_eq!(after.owned_l0_tables(), 0);
+    assert_eq!(background_owned_table_count_at(&after, 1), 1);
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        0
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() >= 1);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.lifecycle_compaction_operations_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_materialization_enqueue_wakes_and_drains_table_rewrite() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let parent = StorageRuntime::default_branch_id_for_test();
+    let child = branch_id(0x91);
+
+    runtime
+        .append_raw_row_for_test(background_raw_row(b"background-materialize", 1))
+        .expect("seed parent row");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush parent row into an inheritable table");
+    runtime
+        .fork_default_branch_for_test(child)
+        .expect("fork child from parent");
+
+    let before = runtime
+        .branch_source_layout_for_test(child)
+        .expect("pre-materialization child layout");
+    assert_eq!(before.inherited_layers(), 1);
+    assert_eq!(before.inherited_total_tables(), 1);
+
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Materialize,
+            MaintenanceScope::Branch(child),
+        ))
+        .expect("enqueue background materialization");
+    runtime.wait_background_idle_for_test();
+
+    let after = runtime
+        .branch_source_layout_for_test(child)
+        .expect("post-materialization child layout");
+    assert_eq!(after.inherited_total_tables(), 0);
+    assert_eq!(after.owned_total_tables(), 1);
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        0
+    );
+    let read = runtime
+        .read_point(&PointReadRequest::new(
+            child,
+            background_space(),
+            key(b"background-materialize"),
+            ReadBound::Latest,
+        ))
+        .expect("read materialized child row");
+    assert_eq!(
+        read.row()
+            .expect("materialized row")
+            .value()
+            .expect("value")
+            .as_bytes(),
+        b"value"
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() >= 1);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.branch_materialization_output_tables() >= 1);
+
+    let parent_layout = runtime
+        .branch_source_layout_for_test(parent)
+        .expect("parent layout");
+    assert_eq!(parent_layout.owned_total_tables(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_duplicate_enqueue_coalesces_wake_while_worker_busy() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let observed_open = Arc::new(AtomicBool::new(false));
+    assert!(
+        runtime.submit_runtime_state_background_probe_for_test(
+            Arc::clone(&ready),
+            Arc::clone(&release),
+            Arc::clone(&observed_open),
+        ),
+        "background runtime should accept probe"
+    );
+    ready.wait();
+
+    let branch = StorageRuntime::default_branch_id_for_test();
+    for _ in 0..2 {
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch),
+            ))
+            .expect("enqueue duplicate background maintenance");
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() >= 1);
+    assert!(perf.lifecycle_background_wake_coalesced() >= 1);
+
+    release.wait();
+    runtime.wait_background_idle_for_test();
+    assert!(observed_open.load(Ordering::Acquire));
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        0
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_stale_wake_records_noop_without_pending_task() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    runtime.submit_stale_background_wake_for_test();
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_stale_wake_noop(), 1);
+    assert_eq!(perf.lifecycle_background_drain_rounds(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_wake_after_shutdown_records_rejected_without_running_task() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    runtime.shutdown_background_for_test();
+    runtime.submit_stale_background_wake_for_test();
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_wake_rejected(), 1);
+    assert_eq!(perf.lifecycle_background_stale_wake_noop(), 0);
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn background_wal_growth_checkpoint_wakes_and_drains() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
+        "background-wal-growth",
+    ))));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(u64::MAX, usize::MAX, 1)),
+        backend,
+    )
+    .expect("durable background open")
+    .into_runtime();
+
+    runtime
+        .commit(&background_put_batch(b"wal-growth", b"value".to_vec()))
+        .expect("commit below WAL growth threshold");
+    let commit = runtime
+        .commit(&background_put_batch(b"wal-growth-next", b"value".to_vec()))
+        .expect("commit crossing WAL growth threshold");
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("diagnostics");
+    assert_eq!(report.wal_growth().state(), DiagnosticsFactState::Known);
+    assert!(matches!(
+        report
+            .wal_growth()
+            .last_status()
+            .map(|summary| summary.status()),
+        Some(
+            MaintenanceWalGrowthStatus::CheckpointEnqueued
+                | MaintenanceWalGrowthStatus::CheckpointCoalesced
+        )
+    ));
+    assert_eq!(report.checkpoint().state(), DiagnosticsFactState::Known);
+    assert!(
+        report
+            .checkpoint()
+            .checkpoint_watermark()
+            .is_some_and(|watermark| watermark >= commit.commit_version()),
+        "background checkpoint did not advance to the WAL-growth commit"
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() >= 1);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_budget_policy(StorageBudgetPolicy::LowMemory),
+    )
+    .expect("low-memory background cache open")
+    .into_runtime();
+
+    runtime
+        .commit(&background_put_batch(b"urgent-seed", b"value".to_vec()))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create frozen pressure");
+    runtime
+        .commit(&background_put_batch(b"urgent-followup", b"value".to_vec()))
+        .expect("urgent commit should be accepted");
+    runtime.wait_background_idle_for_test();
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_slowdown_attempts() >= 1);
+    assert!(perf.lifecycle_write_admission_slowdown_ns() > 0);
+    assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        0
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_block_pressure_waits_for_flush_progress_before_retry() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    for index in 0..4 {
+        let key = format!("block-seed-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .expect("seed raw active row before rotation");
+        runtime
+            .rotate_default_branch_for_test()
+            .expect("create frozen table");
+    }
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status before block")
+            .pending_tasks(),
+        0
+    );
+
+    runtime
+        .commit(&background_put_batch(b"block-followup", b"value".to_vec()))
+        .expect("block pressure should wait and retry after background flush");
+    runtime.wait_background_idle_for_test();
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_wait_attempts() >= 1);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+    assert!(perf.lifecycle_write_admission_block_wait_ns() > 0);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.lifecycle_pressure_clear_wakes() >= 1);
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        0
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let observed_open = Arc::new(AtomicBool::new(false));
+    assert!(
+        runtime.submit_runtime_state_background_probe_for_test(
+            Arc::clone(&ready),
+            Arc::clone(&release),
+            Arc::clone(&observed_open),
+        ),
+        "background runtime should accept probe"
+    );
+    ready.wait();
+
+    for index in 0..4 {
+        let key = format!("block-timeout-seed-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .expect("seed raw active row before rotation");
+        runtime
+            .rotate_default_branch_for_test()
+            .expect("create frozen table");
+    }
+
+    let start = Instant::now();
+    let error = runtime
+        .commit(&background_put_batch(b"block-timeout", b"value".to_vec()))
+        .expect_err("blocked background worker should leave pressure rejected");
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "pressure wait ignored its bounded deadline"
+    );
+    assert!(matches!(
+        error,
+        StorageApiError::StoragePressure {
+            severity: CommitAdmissionPressureSeverity::Blocking,
+            retryable: true,
+            ..
+        }
+    ));
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_wait_attempts() >= 1);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 1);
+    assert!(perf.lifecycle_write_admission_block_wait_ns() > 0);
+
+    release.wait();
+    runtime.wait_background_idle_for_test();
+    assert!(observed_open.load(Ordering::Acquire));
 }
 
 #[cfg(feature = "perf-trace")]
