@@ -3,22 +3,27 @@
 use super::{
     branch_config_with_storage_budget,
     compaction::{
-        bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
+        begin_cache_materialization_build, bind_materialization_task_for_enqueue,
+        collect_storage_pressure, compact_cache_branch,
         compact_cache_branch_to_fixed_point_with_policy, compaction_score_key_for_task,
         current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
+        install_prepared_cache_compaction, install_prepared_cache_materialization,
         materialization_request_from_maintenance_task, materialize_cache_branch,
-        record_lifecycle_compaction_outcome, record_lifecycle_table_rewrite_post_operation_score,
-        stale_compaction_maintenance_outcome, table_rewrite_outcome_allows_chain_resubmit,
-        table_rewrite_outcome_was_flush_preempted, table_rewrite_score_key_for_branch,
-        table_rewrite_score_key_for_task, table_rewrite_task_request_for_branch,
-        LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
+        prepare_cache_compaction, record_lifecycle_compaction_outcome,
+        record_lifecycle_table_rewrite_post_operation_score, stale_compaction_maintenance_outcome,
+        table_rewrite_outcome_allows_chain_resubmit, table_rewrite_outcome_was_flush_preempted,
+        table_rewrite_score_key_for_branch, table_rewrite_score_key_for_task,
+        table_rewrite_task_request_for_branch, CacheMaterializationBegin,
+        CacheMaterializationBuild, LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
+        PreparedCacheCompaction, PreparedCacheMaterialization,
     },
     evaluate_mutating_write_admission,
     flush::{
         flush_branch_drain_with, flush_cache_branch_with_budget,
         flush_drain_maintenance_outcome_for_scope,
         flush_drain_request_for_branch_from_maintenance_task,
-        flush_drain_request_from_maintenance_task,
+        flush_drain_request_from_maintenance_task, install_prepared_cache_flush,
+        prepare_cache_flush_with_budget, PreparedCacheFlush,
     },
     require_maintenance_enqueue_budget, require_rotate_budget, snapshot_with_runtime_usage,
     validate_backend_capabilities_for_open, BudgetedCommitBranch, CloseOutcome,
@@ -91,6 +96,227 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     // returned facts here, a second close would invent stats that diverge
     // from what callers already observed on the first call.
     last_close_outcome: Option<CloseOutcome>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CacheBackgroundMaintenanceStep {
+    Completed(MaintenanceOutcome),
+    Build(CacheBackgroundMaintenanceBuild),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CacheBackgroundMaintenanceBuild {
+    Flush {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        request: FlushFrozenRequest,
+        branch_snapshot: BranchLocalState,
+        budget: StorageBudgetLedger,
+        started_at: std::time::Instant,
+    },
+    Compaction {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        request: LifecycleCompactionRequest,
+        branch_snapshot: BranchLocalState,
+        started_at: std::time::Instant,
+    },
+    Materialization {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        build: CacheMaterializationBuild,
+        started_at: std::time::Instant,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CacheBackgroundMaintenanceBuilt {
+    Flush {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        request: FlushFrozenRequest,
+        prepared: Option<PreparedCacheFlush>,
+        elapsed: std::time::Duration,
+    },
+    Compaction {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedCacheCompaction,
+        elapsed: std::time::Duration,
+    },
+    Materialization {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedCacheMaterialization,
+        elapsed: std::time::Duration,
+    },
+}
+
+#[cfg(all(test, feature = "perf-trace"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CacheBackgroundBuildKind {
+    Flush,
+    Compaction,
+    Materialization,
+}
+
+#[cfg(all(test, feature = "perf-trace"))]
+pub(crate) struct CacheBackgroundBuildPauseGuard {
+    entered: std::sync::mpsc::Receiver<()>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+}
+
+#[cfg(all(test, feature = "perf-trace"))]
+pub(crate) fn pause_next_cache_background_build_for_test(
+    kind: CacheBackgroundBuildKind,
+) -> CacheBackgroundBuildPauseGuard {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    background_build_pause::install(kind, entered_tx, release_rx);
+    CacheBackgroundBuildPauseGuard {
+        entered: entered_rx,
+        release: Some(release_tx),
+    }
+}
+
+#[cfg(all(test, feature = "perf-trace"))]
+impl CacheBackgroundBuildPauseGuard {
+    pub(crate) fn wait_until_entered(&self) {
+        self.entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("background build did not enter test pause hook");
+    }
+
+    pub(crate) fn release(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
+#[cfg(all(test, feature = "perf-trace"))]
+impl Drop for CacheBackgroundBuildPauseGuard {
+    fn drop(&mut self) {
+        self.release();
+        background_build_pause::clear();
+    }
+}
+
+#[cfg(all(test, feature = "perf-trace"))]
+mod background_build_pause {
+    use super::CacheBackgroundBuildKind;
+    use std::sync::{mpsc, Mutex, OnceLock};
+
+    struct PauseHook {
+        kind: CacheBackgroundBuildKind,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    static PAUSE_HOOK: OnceLock<Mutex<Option<PauseHook>>> = OnceLock::new();
+
+    fn slot() -> &'static Mutex<Option<PauseHook>> {
+        PAUSE_HOOK.get_or_init(|| Mutex::new(None))
+    }
+
+    pub(super) fn install(
+        kind: CacheBackgroundBuildKind,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    ) {
+        *slot().lock().expect("cache background build pause hook") = Some(PauseHook {
+            kind,
+            entered,
+            release,
+        });
+    }
+
+    pub(super) fn clear() {
+        *slot().lock().expect("cache background build pause hook") = None;
+    }
+
+    pub(super) fn maybe_pause(kind: CacheBackgroundBuildKind) {
+        let hook = {
+            let mut hook = slot().lock().expect("cache background build pause hook");
+            if hook.as_ref().is_some_and(|hook| hook.kind == kind) {
+                hook.take()
+            } else {
+                None
+            }
+        };
+        if let Some(hook) = hook {
+            let _ = hook.entered.send(());
+            let _ = hook.release.recv();
+        }
+    }
+}
+
+impl CacheBackgroundMaintenanceBuild {
+    pub(crate) const fn task(&self) -> MaintenanceTask {
+        match self {
+            Self::Flush { task, .. }
+            | Self::Compaction { task, .. }
+            | Self::Materialization { task, .. } => *task,
+        }
+    }
+
+    pub(crate) fn build(self) -> LifecycleResult<CacheBackgroundMaintenanceBuilt> {
+        match self {
+            Self::Flush {
+                task,
+                branch_id,
+                request,
+                branch_snapshot,
+                budget,
+                started_at,
+            } => {
+                #[cfg(all(test, feature = "perf-trace"))]
+                background_build_pause::maybe_pause(CacheBackgroundBuildKind::Flush);
+                Ok(CacheBackgroundMaintenanceBuilt::Flush {
+                    task,
+                    branch_id,
+                    request: request.clone(),
+                    prepared: prepare_cache_flush_with_budget(
+                        &branch_snapshot,
+                        &request,
+                        Some(&budget),
+                    )?,
+                    elapsed: started_at.elapsed(),
+                })
+            }
+            Self::Compaction {
+                task,
+                branch_id,
+                request,
+                branch_snapshot,
+                started_at,
+            } => {
+                #[cfg(all(test, feature = "perf-trace"))]
+                background_build_pause::maybe_pause(CacheBackgroundBuildKind::Compaction);
+                Ok(CacheBackgroundMaintenanceBuilt::Compaction {
+                    task,
+                    branch_id,
+                    prepared: prepare_cache_compaction(&branch_snapshot, &request)?,
+                    elapsed: started_at.elapsed(),
+                })
+            }
+            Self::Materialization {
+                task,
+                branch_id,
+                build,
+                started_at,
+            } => {
+                #[cfg(all(test, feature = "perf-trace"))]
+                background_build_pause::maybe_pause(CacheBackgroundBuildKind::Materialization);
+                Ok(CacheBackgroundMaintenanceBuilt::Materialization {
+                    task,
+                    branch_id,
+                    prepared: build.build()?,
+                    elapsed: started_at.elapsed(),
+                })
+            }
+        }
+    }
 }
 
 impl LifecycleCacheOpenRequest {
@@ -898,6 +1124,64 @@ impl<S> LifecycleCacheRuntime<S> {
         }
     }
 
+    pub(crate) fn start_next_background_flush_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<CacheBackgroundMaintenanceStep>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
+        else {
+            return Ok(None);
+        };
+        let MaintenanceTaskScope::Branch(branch_id) = task.scope() else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let flush_operation_index = usize::try_from(task.sequence()).unwrap_or(usize::MAX);
+        let request = flush_drain_request_for_branch_from_maintenance_task(&task, branch_id)?
+            .flush_request(flush_operation_index)?;
+        let generation = match self.branch_catalog.registry().lookup(branch_id) {
+            Ok(descriptor) => descriptor.generation(),
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), commit_error(error));
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let branch = match self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), error);
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        Ok(Some(CacheBackgroundMaintenanceStep::Build(
+            CacheBackgroundMaintenanceBuild::Flush {
+                task,
+                branch_id,
+                request,
+                branch_snapshot: branch.clone(),
+                budget: self.budget.clone(),
+                started_at: std::time::Instant::now(),
+            },
+        )))
+    }
+
     #[allow(
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
@@ -926,6 +1210,337 @@ impl<S> LifecycleCacheRuntime<S> {
             }
             _ => Ok(None),
         }
+    }
+
+    pub(crate) fn start_next_background_table_rewrite_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<CacheBackgroundMaintenanceStep>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self.next_scored_table_rewrite_task() else {
+            return Ok(None);
+        };
+        match task.kind() {
+            MaintenanceTaskKind::Compaction => self.start_background_compaction_task(task),
+            MaintenanceTaskKind::Materialization => {
+                self.start_background_materialization_task(task)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn start_background_compaction_task(
+        &mut self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<CacheBackgroundMaintenanceStep>> {
+        let state = self.state;
+        let (branch_id, _level) = table_level_scope_from_task(task)?;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let compaction_io_policy = self.open_plan.lifecycle_config().compaction_io_policy();
+        let generation = match self.branch_catalog.registry().lookup(branch_id) {
+            Ok(descriptor) => descriptor.generation(),
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), commit_error(error));
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let branch = match self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), error);
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let request = match current_compaction_request_from_maintenance_task(&task, branch) {
+            Ok(Some(request)) => request,
+            Ok(None) => {
+                crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
+                );
+                let outcome = stale_compaction_maintenance_outcome();
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), error);
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let deferred =
+            match defer_compaction_for_resource_policy(branch, &request, compaction_io_policy) {
+                Ok(deferred) => deferred,
+                Err(error) => {
+                    let outcome = background_candidate_failed_outcome(task.kind(), error);
+                    return self
+                        .maintenance
+                        .finish_started(task, outcome, false)
+                        .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                }
+            };
+        if let Some(outcome) = deferred {
+            return self
+                .maintenance
+                .finish_started(task, outcome, false)
+                .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+        }
+        Ok(Some(CacheBackgroundMaintenanceStep::Build(
+            CacheBackgroundMaintenanceBuild::Compaction {
+                task,
+                branch_id,
+                request,
+                branch_snapshot: branch.clone(),
+                started_at: std::time::Instant::now(),
+            },
+        )))
+    }
+
+    fn start_background_materialization_task(
+        &mut self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<CacheBackgroundMaintenanceStep>> {
+        let state = self.state;
+        let branch_id = branch_id_from_inherited_layer_task(task)?;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let request = materialization_request_from_maintenance_task(&task)?;
+        let generation = match self.branch_catalog.registry().lookup(branch_id) {
+            Ok(descriptor) => descriptor.generation(),
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), commit_error(error));
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let branch = match self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), error);
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let begin = match begin_cache_materialization_build(branch, &request) {
+            Ok(begin) => begin,
+            Err(error) => {
+                let outcome = background_candidate_failed_outcome(task.kind(), error);
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        match begin {
+            CacheMaterializationBegin::Deferred(outcome) => self
+                .maintenance
+                .finish_started(task, outcome.maintenance_outcome(), false)
+                .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome))),
+            CacheMaterializationBegin::Build(build) => {
+                Ok(Some(CacheBackgroundMaintenanceStep::Build(
+                    CacheBackgroundMaintenanceBuild::Materialization {
+                        task,
+                        branch_id,
+                        build,
+                        started_at: std::time::Instant::now(),
+                    },
+                )))
+            }
+        }
+    }
+
+    pub(crate) fn finish_background_maintenance(
+        &mut self,
+        built: CacheBackgroundMaintenanceBuilt,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        match built {
+            CacheBackgroundMaintenanceBuilt::Flush {
+                task,
+                branch_id,
+                request,
+                prepared,
+                elapsed,
+            } => self.finish_background_flush_task(task, branch_id, &request, prepared, elapsed),
+            CacheBackgroundMaintenanceBuilt::Compaction {
+                task,
+                branch_id,
+                prepared,
+                elapsed,
+            } => self.finish_background_compaction_task(task, branch_id, prepared, elapsed),
+            CacheBackgroundMaintenanceBuilt::Materialization {
+                task,
+                branch_id,
+                prepared,
+                elapsed,
+            } => self.finish_background_materialization_task(task, branch_id, prepared, elapsed),
+        }
+    }
+
+    pub(crate) fn finish_background_build_error(
+        &mut self,
+        task: MaintenanceTask,
+        error: LifecycleError,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let outcome = background_candidate_failed_outcome(task.kind(), error);
+        self.maintenance.finish_started(task, outcome, false)
+    }
+
+    fn finish_background_flush_task(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        request: &FlushFrozenRequest,
+        prepared: Option<PreparedCacheFlush>,
+        _elapsed: std::time::Duration,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let result: LifecycleResult<FlushFrozenOutcome> = match prepared {
+            Some(prepared) => (|| {
+                let generation = self
+                    .branch_catalog
+                    .registry()
+                    .lookup(branch_id)
+                    .map_err(commit_error)?
+                    .generation();
+                let branch = self
+                    .branch_catalog
+                    .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+                install_prepared_cache_flush(branch, prepared)
+            })(),
+            None => Ok(FlushFrozenOutcome::deferred(request)),
+        };
+        let outcome = match result {
+            Ok(flush) if flush.failure().is_none() => flush.maintenance_outcome(),
+            Ok(flush) => {
+                crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
+                );
+                let error = LifecycleError::MaintenanceTaskFailed {
+                    reason: if flush.failure().is_some() {
+                        "background flush candidate became stale before publish"
+                    } else {
+                        "background flush publish failed"
+                    },
+                };
+                background_candidate_stale_outcome(task.kind(), error)
+            }
+            Err(error) => {
+                crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
+                );
+                background_candidate_stale_outcome(task.kind(), error)
+            }
+        };
+        let outcome = self.maintenance.finish_started(task, outcome, false)?;
+        if let Ok(branch) = self.branch_catalog.branch_state(branch_id) {
+            if branch.frozen_table_count() > 0 {
+                let _ = self.enqueue_maintenance(MaintenanceTaskRequest::flush(branch_id));
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn finish_background_compaction_task(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedCacheCompaction,
+        elapsed: std::time::Duration,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let (_, level) = table_level_scope_from_task(task)?;
+        let result: LifecycleResult<LifecycleCompactionOutcome> = (|| {
+            let generation = self
+                .branch_catalog
+                .registry()
+                .lookup(branch_id)
+                .map_err(commit_error)?
+                .generation();
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            install_prepared_cache_compaction(branch, prepared, elapsed)
+        })();
+        let mut stale_deferred = false;
+        let outcome = match result {
+            Ok(compaction) => {
+                record_lifecycle_compaction_outcome(&compaction);
+                compaction.maintenance_outcome()
+            }
+            Err(error) => {
+                crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
+                );
+                stale_deferred = true;
+                background_candidate_stale_outcome(task.kind(), error)
+            }
+        };
+        let outcome = self.maintenance.finish_started(task, outcome, false)?;
+        if stale_deferred {
+            self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+        } else if table_rewrite_outcome_was_flush_preempted(&outcome) {
+            self.requeue_flush_preempted_compaction(branch_id, level);
+        } else if table_rewrite_outcome_allows_chain_resubmit(&outcome) {
+            self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+        }
+        Ok(outcome)
+    }
+
+    fn finish_background_materialization_task(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedCacheMaterialization,
+        _elapsed: std::time::Duration,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let result: LifecycleResult<LifecycleMaterializationOutcome> = (|| {
+            let generation = self
+                .branch_catalog
+                .registry()
+                .lookup(branch_id)
+                .map_err(commit_error)?
+                .generation();
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            install_prepared_cache_materialization(branch, prepared)
+        })();
+        let mut stale_deferred = false;
+        let outcome = match result {
+            Ok(materialization) => materialization.maintenance_outcome(),
+            Err(error) => {
+                crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
+                );
+                stale_deferred = true;
+                background_candidate_stale_outcome(task.kind(), error)
+            }
+        };
+        let outcome = self.maintenance.finish_started(task, outcome, false)?;
+        if stale_deferred || table_rewrite_outcome_allows_chain_resubmit(&outcome) {
+            self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+        }
+        Ok(outcome)
     }
 
     fn next_scored_table_rewrite_task(&self) -> Option<MaintenanceTask> {
@@ -1311,6 +1926,23 @@ const fn cache_unsupported_drain_reason(_kind: MaintenanceTaskKind) -> &'static 
     // path that bypassed the enqueue-time guard — surface a typed
     // failure rather than running it.
     "cache drain rejected a task kind that cache mode does not implement"
+}
+
+fn background_candidate_stale_outcome(
+    kind: MaintenanceTaskKind,
+    error: LifecycleError,
+) -> MaintenanceOutcome {
+    MaintenanceOutcome::new(kind, MaintenanceOutcomeStatus::Deferred)
+        .with_reason("background maintenance candidate became stale before publish")
+        .with_effects(0, 0, true)
+        .with_source_error(error)
+}
+
+fn background_candidate_failed_outcome(
+    kind: MaintenanceTaskKind,
+    error: LifecycleError,
+) -> MaintenanceOutcome {
+    MaintenanceOutcome::new(kind, MaintenanceOutcomeStatus::Failed).with_source_error(error)
 }
 
 struct CacheFlushMaintenanceRunner<'a> {

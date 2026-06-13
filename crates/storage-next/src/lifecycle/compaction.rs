@@ -11,19 +11,21 @@ use crate::branch::facts::{
     BranchLevel, BranchReachabilitySnapshot, BranchSourceLayout, BranchTableRef,
 };
 use crate::branch::pruning::BranchCompactionPruningProof;
-use crate::branch::read::BranchInheritedLayer;
+use crate::branch::read::{BranchInheritedLayer, BranchOwnedTable};
 use crate::branch::state::compaction::{
     BranchCompactionCandidate, BranchCompactionKind, BranchCompactionOperation,
     BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
     BranchCompactionRetentionPolicy,
 };
 use crate::branch::state::materialization::{
-    BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationRecovery,
-    BranchMaterializationRequest,
+    BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
+    BranchMaterializationRecovery, BranchMaterializationRequest,
 };
 use crate::branch::state::BranchLocalState;
 use crate::object::ObjectName;
-use crate::table::{TableCompactionConfig, TableIdentity, TablePhysicalKeyBytes};
+use crate::table::{
+    TableCompactionConfig, TableCompactionReport, TableIdentity, TablePhysicalKeyBytes,
+};
 use strata_core_next::BranchId;
 
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
@@ -2184,6 +2186,77 @@ fn compact_branch(
     ))
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedCacheCompaction {
+    request: LifecycleCompactionRequest,
+    branch_request: BranchCompactionRequest,
+    plan: BranchCompactionPlan,
+    io_facts: LifecycleCompactionIoFacts,
+    prepared_output: Option<(Vec<BranchOwnedTable>, TableCompactionReport)>,
+}
+
+pub(crate) fn prepare_cache_compaction(
+    branch: &BranchLocalState,
+    request: &LifecycleCompactionRequest,
+) -> LifecycleResult<PreparedCacheCompaction> {
+    let branch_request = request.branch_request()?;
+    let plan = branch
+        .plan_branch_compaction(&branch_request)
+        .map_err(branch_error)?;
+    let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
+    let prepared_output = match branch
+        .prepare_branch_compaction_plan(&branch_request, &plan)
+        .map_err(branch_error)?
+    {
+        Some((artifacts, report)) => {
+            let Some(output_level) = plan.output_level() else {
+                return Err(LifecycleError::MaintenanceTaskFailed {
+                    reason: "prepared compaction output requires a candidate output level",
+                });
+            };
+            let output_tables = branch
+                .compaction_output_tables(output_level, artifacts, plan.materialization_source())
+                .map_err(branch_error)?;
+            Some((output_tables, report))
+        }
+        None => None,
+    };
+    Ok(PreparedCacheCompaction {
+        request: request.clone(),
+        branch_request,
+        plan,
+        io_facts,
+        prepared_output,
+    })
+}
+
+pub(crate) fn install_prepared_cache_compaction(
+    branch: &mut BranchLocalState,
+    prepared: PreparedCacheCompaction,
+    elapsed: std::time::Duration,
+) -> LifecycleResult<LifecycleCompactionOutcome> {
+    let branch_outcome = match prepared.prepared_output {
+        Some((output_tables, report)) => branch
+            .install_branch_compaction_prepared_plan(
+                &prepared.branch_request,
+                &prepared.plan,
+                output_tables,
+                report,
+            )
+            .map_err(branch_error)?,
+        None => branch
+            .install_branch_compaction_plan(&prepared.branch_request, &prepared.plan)
+            .map_err(branch_error)?,
+    };
+    Ok(LifecycleCompactionOutcome::new(
+        &prepared.request,
+        prepared.plan,
+        branch_outcome,
+        prepared.io_facts,
+        elapsed,
+    ))
+}
+
 pub(crate) fn compact_branch_to_fixed_point_with_resource_policy<F>(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionDrainRequest,
@@ -2328,6 +2401,148 @@ fn materialize_branch(
         request,
         materialization_handle,
         reachability_snapshot,
+        branch_outcome,
+    ))
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CacheMaterializationBegin {
+    Deferred(LifecycleMaterializationOutcome),
+    Build(CacheMaterializationBuild),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CacheMaterializationBuild {
+    request: LifecycleMaterializationRequest,
+    materialization_handle: BranchMaterializationHandle,
+    reachability_snapshot: BranchReachabilitySnapshot,
+    branch_request: BranchMaterializationRequest,
+    branch_snapshot: BranchLocalState,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedCacheMaterialization {
+    request: LifecycleMaterializationRequest,
+    materialization_handle: BranchMaterializationHandle,
+    reachability_snapshot: BranchReachabilitySnapshot,
+    branch_request: BranchMaterializationRequest,
+    prepared: Option<BranchMaterializationPreparedOutput>,
+    replacement_tables: Vec<BranchOwnedTable>,
+}
+
+pub(crate) fn begin_cache_materialization_build(
+    branch: &mut BranchLocalState,
+    request: &LifecycleMaterializationRequest,
+) -> LifecycleResult<CacheMaterializationBegin> {
+    if branch.branch_id() != request.child_branch_id() {
+        return Err(branch_error(BranchRuntimeError::InvalidBranchState {
+            reason: "materialization request branch id must match branch state",
+        }));
+    }
+    if branch
+        .inherited_layers()
+        .get(request.layer_index())
+        .is_none()
+        && request.handle().is_none()
+    {
+        return Ok(CacheMaterializationBegin::Deferred(
+            LifecycleMaterializationOutcome::deferred(request),
+        ));
+    }
+    let (materialization_handle, reachability_snapshot, branch_request) =
+        if let Some(handle) = request.handle() {
+            if let Some(layer_index) = materialization_layer_index_for_handle(branch, handle) {
+                let (bound_handle, snapshot) = branch
+                    .mark_inherited_layer_materializing(layer_index)
+                    .map_err(branch_error)?;
+                if bound_handle.child_branch_id() != handle.child_branch_id()
+                    || bound_handle.source_branch_id() != handle.source_branch_id()
+                    || bound_handle.fork_version() != handle.fork_version()
+                {
+                    return Err(branch_error(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "materialization handle must match target layer",
+                    }));
+                }
+                let branch_request = BranchMaterializationRequest::from_handle(
+                    bound_handle,
+                    request.output_identity_prefix().to_owned(),
+                )
+                .map_err(branch_error)?;
+                (bound_handle, snapshot, branch_request)
+            } else {
+                let snapshot = branch.reachability_snapshot().map_err(branch_error)?;
+                (handle, snapshot, request.branch_request()?)
+            }
+        } else {
+            let (handle, snapshot) = branch
+                .mark_inherited_layer_materializing(request.layer_index())
+                .map_err(branch_error)?;
+            let branch_request = BranchMaterializationRequest::from_handle(
+                handle,
+                request.output_identity_prefix().to_owned(),
+            )
+            .map_err(branch_error)?;
+            (handle, snapshot, branch_request)
+        };
+    Ok(CacheMaterializationBegin::Build(
+        CacheMaterializationBuild {
+            request: request.clone(),
+            materialization_handle,
+            reachability_snapshot,
+            branch_request,
+            branch_snapshot: branch.clone(),
+        },
+    ))
+}
+
+impl CacheMaterializationBuild {
+    pub(crate) fn build(self) -> LifecycleResult<PreparedCacheMaterialization> {
+        let prepared = self
+            .branch_snapshot
+            .prepare_materialization_output(&self.branch_request)
+            .map_err(branch_error)?;
+        let replacement_tables = match prepared.as_ref() {
+            Some(prepared) if !prepared.artifacts().is_empty() => self
+                .branch_snapshot
+                .materialization_tables_from_artifacts(
+                    prepared.layer_index(),
+                    prepared.materialization_source(),
+                    prepared.artifacts().to_vec(),
+                )
+                .map_err(branch_error)?,
+            _ => Vec::new(),
+        };
+        Ok(PreparedCacheMaterialization {
+            request: self.request,
+            materialization_handle: self.materialization_handle,
+            reachability_snapshot: self.reachability_snapshot,
+            branch_request: self.branch_request,
+            prepared,
+            replacement_tables,
+        })
+    }
+}
+
+pub(crate) fn install_prepared_cache_materialization(
+    branch: &mut BranchLocalState,
+    prepared: PreparedCacheMaterialization,
+) -> LifecycleResult<LifecycleMaterializationOutcome> {
+    let branch_outcome = match prepared.prepared {
+        Some(prepared_output) => branch
+            .install_materialization_prepared_output(
+                &prepared.branch_request,
+                &prepared_output,
+                prepared.replacement_tables,
+            )
+            .map_err(branch_error)?,
+        None => branch
+            .materialize_inherited_layer(&prepared.branch_request)
+            .map_err(branch_error)?,
+    };
+    Ok(LifecycleMaterializationOutcome::completed(
+        &prepared.request,
+        prepared.materialization_handle,
+        prepared.reachability_snapshot,
         branch_outcome,
     ))
 }

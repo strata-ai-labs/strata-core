@@ -41,6 +41,7 @@ thread decision. The background executor is required for L9 scale closeout.
 | L8E-E. Close And Failure Integration | Shut down workers through lifecycle close, drain required tasks, and surface worker failures. | Close is deterministic; no accepted background task is lost during shutdown. |
 | L8E-F. Diagnostics And Benchmark Gate | Expose background scheduler, WAL, and closed-loop liveness metrics; rerun 100K/1M/5M/10M. | 5M/10M reach point-read measurement with bounded WAL retention, bounded source shape, and no large inline or final fixed-point compaction cliff. |
 | L8E-G. Merge-Cost Fallback | Optimize table-rewrite merge cost if L8E-F proves the single worker cannot keep up after throttling. | Background maintenance drain rate is high enough for the 10M standard gate without adding benchmark shortcuts. |
+| L8E-H. Preserve The Simulation Boundary | Land the worker thread and maintenance clock behind swappable abstractions so the production drive path stays runnable single-threaded and deterministic. | Drive logic runs unchanged on threaded and inline executors; no `Instant::now()` in drive logic; deterministic-replay smoke test passes. |
 
 ## Existing Baseline
 
@@ -69,11 +70,16 @@ continuing.
      backpressure, drain, idempotent shutdown, panic containment, and the
      submit/shutdown TOCTOU fix.
    - Do not write a new scheduler from scratch.
+   - Expose the scheduler only through the `MaintenanceExecutor` trait
+     (decision 10); the concrete ported type is one implementation, never named
+     directly by the drive logic.
 2. **Public runtime default**
    - Public cache and owned durable local opens use background maintenance by
      default.
    - Deterministic inline remains only for deterministic unit tests and
-     explicit diagnostic modes.
+     explicit diagnostic modes, and must be realized as the `Background` drive
+     path running on the inline executor (decision 10), not as a parallel
+     maintenance-driving implementation.
    - Evaluate-and-enqueue remains for lower-level queue tests and explicit
      manual maintenance scenarios.
 3. **No global-lock compaction tax**
@@ -128,6 +134,30 @@ continuing.
      High-priority background drain.
    - Standard durable load is not closed out until retained WAL bytes and
      segments remain bounded throughout the run.
+10. **Simulation boundary (do not close the DST door)**
+    - **Problem.** storage-next is single-threaded with all I/O behind the
+      `Backend` trait and the data-plane clock injectable via
+      `CommitTimestampSource`. This satisfies the preconditions for
+      deterministic simulation testing (DST) — the highest-leverage technique
+      for the rare-interleaving and fault-combination bug class
+      (`docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`, class 9).
+      L8E introduces the first worker thread and the first wall-clock-dependent
+      control logic into the crate. If the scheduler is a concrete threaded type
+      that the drive logic calls directly, and timing reads `Instant::now()`
+      directly, the production maintenance path becomes unrunnable under a
+      single-threaded seeded simulation and the door closes. The retrofit is the
+      canonical near-impossible change once L8C, L8D, and M5 build on the
+      concrete shape.
+    - **Current status.** The first L8E pass landed a concrete
+      `BackgroundScheduler` held directly as `Arc<BackgroundScheduler>` by
+      `BackgroundRuntimeController`, raw `Instant::now()` throughout the drive
+      logic, and `DeterministicInline` as a separate drive path. This already
+      crosses the line. L8E-H is the corrective requirement; executing this plan
+      brings the existing code into compliance.
+    - **Rule.** The production maintenance drive logic must run unchanged on both
+      a threaded executor and a single-threaded inline executor, and must read
+      time from an injected clock, not `Instant::now()`. This decision refines
+      decisions 1 and 2. See L8E-H for the seams and exit gates.
 
 ## Non-Goals
 
@@ -142,7 +172,12 @@ L8E must not:
 7. implement parallel same-branch maintenance;
 8. implement retention policy semantics beyond running already-queued retention
    tasks in the background;
-9. move commit-runtime L7 into background threads.
+9. move commit-runtime L7 into background threads;
+10. close the deterministic-simulation door: the worker thread and maintenance
+    timing must stay abstracted per decision 10 and L8E-H;
+11. call `Instant::now()` directly inside maintenance drive logic;
+12. keep `DeterministicInline` as a permanent parallel drive path without a
+    deletion condition.
 
 ## L8E-A. Port The Engine Background Scheduler
 
@@ -474,6 +509,79 @@ Exit gates:
 2. The fallback does not weaken table publication, manifest, watermark, or
    stale-candidate proofs.
 
+## L8E-H. Preserve The Simulation Boundary
+
+Goal: land the worker thread and wall-clock-dependent control logic without
+making the production maintenance path unrunnable under deterministic
+single-threaded simulation. This is the enabling-seam slice for the future
+DST-lite test class (taxonomy class 9); it does not build the simulator, it
+keeps the simulator buildable. Because the first L8E pass already crossed the
+line (decision 10, "current status"), this group is corrective.
+
+### Problem restatement
+
+DST requires every source of nondeterminism — threads, time, randomness, I/O —
+behind a swappable abstraction so a seeded single-threaded run replays exactly.
+storage-next already isolates I/O (`Backend`) and the data-plane clock
+(`CommitTimestampSource`). The two new sources L8E introduces are the worker
+thread and wall-clock timing in the drive logic. Both must be abstracted now,
+while the drive logic is still localized in `BackgroundRuntimeController` and
+`drain_*_background_round`. Every dependent slice (L8C, L8D, M5) that builds on
+the concrete scheduler or `Instant::now()` enlarges the retrofit.
+
+### Targeted fixes
+
+1. **MaintenanceExecutor trait.**
+   - Define a `MaintenanceExecutor` trait whose surface is
+     submit(priority, work) / drain / shutdown / wait-for-idle / stats.
+   - The trait signature must not name `std::thread`, `JoinHandle`,
+     `parking_lot`, `Condvar`, or `Instant`.
+   - The ported `BackgroundScheduler` becomes one implementation
+     (`ThreadedMaintenanceExecutor`) behind the trait.
+   - `BackgroundRuntimeController` holds `Arc<dyn MaintenanceExecutor>` or a
+     generic `E: MaintenanceExecutor`, never the concrete scheduler type.
+2. **InlineMaintenanceExecutor.**
+   - Provide a single-threaded, step-driven executor: submit enqueues; an
+     explicit `drain`/`run_pending` runs queued work synchronously on the
+     calling thread in deterministic priority + FIFO order.
+   - No threads, condvars, or sleeps.
+3. **Unify the drive path.**
+   - The wake/drain/execute control logic (`drain_*_background_round`,
+     wake/coalesce, graduated slowdown, block-wait) must be identical regardless
+     of executor.
+   - Re-express `DeterministicInline` as `Background` +
+     `InlineMaintenanceExecutor` so deterministic tests exercise the production
+     drive logic. Any temporary separate path must be marked transitional with a
+     deletion condition (PR discipline rule 4).
+4. **Inject the maintenance clock.**
+   - Introduce a `MaintenanceClock` handle (monotonic now/elapsed) threaded
+     through all drive-logic timing: `max_runtime_per_wake`, drain-round limits,
+     the block-wait deadline, graduated slowdown, and any timing span that
+     affects control flow.
+   - Provide a real clock (wraps `Instant::now()`) and a manual/simulated clock
+     advanced explicitly by a harness.
+   - Drive-logic modules must not call `Instant::now()` directly. Raw wall-clock
+     reads may remain only in the threaded executor implementation and in
+     perf-trace spans that do not affect control flow.
+5. **Executor + clock selection.**
+   - Public cache and owned durable opens select the threaded executor + real
+     clock by default.
+   - A test/simulation construction path selects the inline executor + manual
+     clock with no other code differences.
+
+### Exit gates
+
+1. `BackgroundRuntimeController` and the drive logic name only the
+   `MaintenanceExecutor` trait, not the concrete `BackgroundScheduler`.
+2. No drive-logic module references `Instant::now()`; timing flows through
+   `MaintenanceClock` (source-guard enforced).
+3. The same closed-loop scenario run twice under the inline executor + manual
+   clock with identical inputs produces identical maintenance task order, queue
+   trajectory, and final source shape.
+4. Deterministic lifecycle tests run the `Background` drive path under the inline
+   executor, not a separate `DeterministicInline` implementation.
+5. The threaded path still passes all L8E-A scheduler parity tests.
+
 ## Stop Conditions
 
 Stop and revise this plan only if:
@@ -488,7 +596,10 @@ Stop and revise this plan only if:
 6. graduated slowdown and block-wait admission cannot be implemented without
    changing public retry semantics;
 7. WAL retention cannot be bounded without moving ownership of checkpoint or
-   segment deletion out of storage-next.
+   segment deletion out of storage-next;
+8. the `MaintenanceExecutor` trait cannot wrap the threaded scheduler without
+   exposing `std::thread`/`parking_lot` in its signature, or the inline executor
+   cannot run the production drive logic synchronously.
 
 Any stop condition must produce a new implementation plan before L8E, L8C, or
 L8D continues.
@@ -502,6 +613,7 @@ cargo test -p strata-storage-next lifecycle_background --all-features --locked
 cargo test -p strata-storage-next api_background_maintenance --all-features --locked
 cargo test -p strata-storage-next lifecycle_source_guard --all-features --locked
 cargo test -p strata-storage-next l8e_scaled_liveness --all-features --locked
+cargo test -p strata-storage-next lifecycle_simulation_boundary --all-features --locked
 cargo clippy -p strata-storage-next --lib --all-features --locked -- -D warnings
 ```
 

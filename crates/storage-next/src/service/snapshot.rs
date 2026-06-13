@@ -249,6 +249,7 @@ impl SnapshotPublishRequest {
 
 pub(crate) type SnapshotWrite = (SnapshotContainer, PublishOutcome);
 
+#[derive(Clone)]
 pub(crate) struct SnapshotService<'a> {
     backend: BackendHandle<'a>,
 }

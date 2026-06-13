@@ -1274,6 +1274,43 @@ impl LifecycleMaintenanceExecutor {
             .map(|index| self.queue[index])
     }
 
+    pub(crate) fn start_next_matching(
+        &mut self,
+        state: LifecycleStateMachine,
+        predicate: impl Fn(&MaintenanceTask) -> bool,
+    ) -> LifecycleResult<Option<MaintenanceTask>> {
+        require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(index) = self.next_task_index(predicate) else {
+            return Ok(None);
+        };
+        let task = self.queue.remove(index);
+        self.active = Some(task);
+        self.stats.started = self.stats.started.saturating_add(1);
+        Ok(Some(task))
+    }
+
+    pub(crate) fn finish_started(
+        &mut self,
+        task: MaintenanceTask,
+        outcome: MaintenanceOutcome,
+        draining: bool,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let Some(active) = self.active else {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "maintenance task completion requires an active task",
+            });
+        };
+        if active.id() != task.id() {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "maintenance task completion id must match active task",
+            });
+        }
+        self.active = None;
+        let outcome = attach_executor_facts(outcome, task)?;
+        self.record_outcome(outcome.status(), draining);
+        Ok(outcome)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_active_for_test(&mut self, task: MaintenanceTask) {
         self.active = Some(task);

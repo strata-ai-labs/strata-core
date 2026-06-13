@@ -849,6 +849,23 @@ impl<'a> WalService<'a> {
         self.durability_policy
     }
 
+    pub(crate) fn clone_for_background_retention(&self) -> Self {
+        Self {
+            backend: self.backend.clone(),
+            database_id: self.database_id,
+            active_segment_id: self.active_segment_id,
+            active_object: self.active_object.clone(),
+            active_segment_size: self.active_segment_size,
+            segment_size: self.segment_size,
+            codec_id: self.codec_id,
+            durability_policy: self.durability_policy,
+            dirty_bytes: 0,
+            dirty_records: 0,
+            active_metadata: self.active_metadata.clone(),
+            repair_uncertain: self.repair_uncertain,
+        }
+    }
+
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
         if self.repair_uncertain {
             return Err(WalServiceError::RepairUncertain {

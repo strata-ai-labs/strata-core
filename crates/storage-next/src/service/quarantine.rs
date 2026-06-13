@@ -342,6 +342,7 @@ impl QuarantineInventoryWrite {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct QuarantineService<'a> {
     backend: BackendHandle<'a>,
     publisher: ObjectPublisher<'a>,

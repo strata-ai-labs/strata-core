@@ -14,6 +14,7 @@ use crate::backend::{
 };
 use crate::object::ObjectName;
 
+#[derive(Clone)]
 pub(crate) struct ObjectPublisher<'a> {
     backend: BackendHandle<'a>,
 }

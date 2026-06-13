@@ -1355,6 +1355,17 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
     )
 }
 
+pub(crate) fn checkpoint_durable_rows_with_budget(
+    services: &LifecycleDurableLocalServices<'_>,
+    request: &LifecycleCheckpointRequest,
+    visible_version: CommitVersion,
+    rows: Vec<crate::row::StorageRow>,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleCheckpointOutcome> {
+    request.validate()?;
+    publish_checkpoint_rows(services, visible_version, request, budget, rows)
+}
+
 fn publish_checkpoint(
     services: &LifecycleDurableLocalServices<'_>,
     guard_set: &CommitBranchGuardSet,
@@ -1370,8 +1381,18 @@ fn publish_checkpoint(
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
     let rows = collect_rows(visible_version)?;
-    if rows.is_empty() {
-        drop(quiesce);
+    drop(quiesce);
+    publish_checkpoint_rows(services, visible_version, request, budget, rows)
+}
+
+fn publish_checkpoint_rows(
+    services: &LifecycleDurableLocalServices<'_>,
+    visible_version: CommitVersion,
+    request: &LifecycleCheckpointRequest,
+    budget: Option<&StorageBudgetLedger>,
+    rows: Vec<crate::row::StorageRow>,
+) -> LifecycleResult<LifecycleCheckpointOutcome> {
+    if visible_version == CommitVersion::ZERO || rows.is_empty() {
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
     let row_count =
@@ -1384,8 +1405,6 @@ fn publish_checkpoint(
     sections.extend(request.extra_sections().iter().cloned());
     require_checkpoint_artifact_budget(budget, &sections)?;
     let active_wal_segment = services.wal().active_segment_id();
-    drop(quiesce);
-
     let service_request = CheckpointRequest::new(
         *services.assembly_facts().database_id(),
         services.assembly_facts().codec_id().to_owned(),

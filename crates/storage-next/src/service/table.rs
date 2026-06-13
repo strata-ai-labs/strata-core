@@ -546,6 +546,7 @@ fn read_all_table_object_for_exact_match(
     read_table_object_exact_at(backend, object, byte_count, 0, len)
 }
 
+#[derive(Clone)]
 pub(crate) struct TableObjectService<'a> {
     backend: BackendHandle<'a>,
     block_cache: Option<Arc<TableBlockCache>>,

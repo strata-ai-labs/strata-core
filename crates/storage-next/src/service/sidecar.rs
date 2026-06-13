@@ -236,6 +236,7 @@ impl WalSegmentMetadataSidecarDelete {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct WalSegmentMetadataSidecarService<'a> {
     backend: BackendHandle<'a>,
     publisher: ObjectPublisher<'a>,

@@ -67,7 +67,9 @@ pub(crate) use budget::{
     unused_imports,
     reason = "lifecycle cache runtime exports define the local surface for later slices"
 )]
-pub(crate) use cache::{LifecycleCacheOpenRequest, LifecycleCacheRuntime};
+pub(crate) use cache::{
+    CacheBackgroundMaintenanceStep, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
+};
 #[allow(
     unused_imports,
     reason = "lifecycle scaffold exports define the local surface for later slices"
@@ -81,7 +83,8 @@ pub(crate) use capability::{
     reason = "checkpoint maintenance exports define the local surface for later slices"
 )]
 pub(crate) use checkpoint::{
-    checkpoint_durable_branch, checkpoint_request_from_maintenance_task, persist_flush_watermark,
+    checkpoint_durable_branch, checkpoint_durable_rows_with_budget,
+    checkpoint_request_from_maintenance_task, persist_flush_watermark,
     persist_flush_watermark_with_table_manifest_proof, truncate_wal, validate_wal_retention_proof,
     wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleCheckpointStatus, LifecycleFlushWatermarkOutcome,
@@ -116,8 +119,10 @@ pub(crate) use config::{
     reason = "durable lifecycle assembly exports define the local surface for recovery slices"
 )]
 pub(crate) use durable::{
-    LifecycleDurableAssemblyFacts, LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime,
-    LifecycleDurableLocalServices, LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport,
+    DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
+    DurableBackgroundMaintenanceStep, LifecycleDurableAssemblyFacts,
+    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
+    LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport,
 };
 #[allow(
     unused_imports,

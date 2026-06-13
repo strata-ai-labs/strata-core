@@ -721,6 +721,49 @@ fn source_guard_background_priority_maps_lifecycle_work_by_pressure_cost() {
 }
 
 #[test]
+fn source_guard_background_build_runs_before_publish_lock() {
+    let runtime_source = include_str!("../runtime.rs");
+    assert_background_drain_build_before_publish_lock(
+        runtime_source
+            .split("fn drain_cache_background_round")
+            .nth(1)
+            .expect("cache background drain function is present")
+            .split("fn run_next_durable_maintenance")
+            .next()
+            .expect("cache background drain precedes durable helpers"),
+        "cache",
+    );
+    assert_background_drain_build_before_publish_lock(
+        runtime_source
+            .split("fn drain_durable_background_round")
+            .nth(1)
+            .expect("durable background drain function is present")
+            .split("impl BackgroundDrainRound")
+            .next()
+            .expect("durable background drain precedes drain-round impl"),
+        "durable",
+    );
+}
+
+fn assert_background_drain_build_before_publish_lock(drain_source: &str, label: &str) {
+    let build_index = drain_source
+        .find("let built = build.build();")
+        .unwrap_or_else(|| panic!("{label} background drain must build the task"));
+    let publish_index = drain_source
+        .find("let publish = {")
+        .unwrap_or_else(|| panic!("{label} background drain must enter a publish section"));
+    let publish_lock_index = drain_source[publish_index..]
+        .find("let mut runtime = runtime.lock();")
+        .map(|index| publish_index + index)
+        .unwrap_or_else(|| panic!("{label} background drain must lock only for publish"));
+
+    assert!(
+        build_index < publish_index && build_index < publish_lock_index,
+        "{label} background drain must finish unlocked build work before acquiring the publish lock"
+    );
+}
+
+#[test]
 fn open_options_reject_cache_lossy_recovery() {
     let options = StorageOpenOptions::cache().with_strict_recovery(false);
     let validation = options
@@ -982,6 +1025,15 @@ fn background_explicit_enqueue_wakes_and_drains_queue() {
         .expect("background cache open")
         .into_runtime();
     let branch = StorageRuntime::default_branch_id_for_test();
+    runtime
+        .commit(&background_put_batch(
+            b"background-flush",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("rotate active table into frozen source");
 
     let queue = runtime
         .enqueue_maintenance(&MaintenanceRequest::new(
@@ -1001,6 +1053,10 @@ fn background_explicit_enqueue_wakes_and_drains_queue() {
     assert!(perf.lifecycle_background_wake_submitted() >= 1);
     assert!(perf.lifecycle_background_drain_rounds() >= 1);
     assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.lifecycle_background_task_snapshot_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_unlocked_build_ns() > 0);
+    assert!(perf.lifecycle_background_task_publish_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_total_ns() > 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1053,6 +1109,10 @@ fn background_compaction_enqueue_wakes_and_drains_table_rewrite() {
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_background_wake_submitted() >= 1);
     assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.lifecycle_background_task_snapshot_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_unlocked_build_ns() > 0);
+    assert!(perf.lifecycle_background_task_publish_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_total_ns() > 0);
     assert!(perf.lifecycle_compaction_operations_completed() >= 1);
 }
 
@@ -1122,6 +1182,10 @@ fn background_materialization_enqueue_wakes_and_drains_table_rewrite() {
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_background_wake_submitted() >= 1);
     assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.lifecycle_background_task_snapshot_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_unlocked_build_ns() > 0);
+    assert!(perf.lifecycle_background_task_publish_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_total_ns() > 0);
     assert!(perf.branch_materialization_output_tables() >= 1);
 
     let parent_layout = runtime
@@ -1177,6 +1241,52 @@ fn background_duplicate_enqueue_coalesces_wake_while_worker_busy() {
             .pending_tasks(),
         0
     );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_foreground_wait_counter_records_short_runtime_lock_waits() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let observed_open = Arc::new(AtomicBool::new(false));
+    assert!(
+        runtime.submit_runtime_state_background_probe_for_test(
+            Arc::clone(&ready),
+            Arc::clone(&release),
+            Arc::clone(&observed_open),
+        ),
+        "background runtime should accept probe"
+    );
+    ready.wait();
+
+    crate::observability::perf_trace::reset();
+    let commit_start = std::time::Instant::now();
+    runtime
+        .commit(&background_put_batch(
+            b"foreground-wait-counter",
+            b"value".to_vec(),
+        ))
+        .expect("foreground commit while worker is in unlocked wait phase");
+    assert!(
+        commit_start.elapsed() < std::time::Duration::from_secs(1),
+        "foreground commit must not wait for the background worker's unlocked phase"
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(
+        perf.lifecycle_foreground_wait_background_lock_ns() > 0,
+        "foreground runtime lock waits must be measured"
+    );
+
+    release.wait();
+    runtime.wait_background_idle_for_test();
+    assert!(observed_open.load(Ordering::Acquire));
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1264,6 +1374,47 @@ fn background_wal_growth_checkpoint_wakes_and_drains() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_background_wake_submitted() >= 1);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    assert!(perf.lifecycle_background_task_snapshot_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_unlocked_build_ns() > 0);
+    assert!(perf.lifecycle_background_task_publish_lock_ns() > 0);
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn background_wal_truncation_runs_retention_scan_outside_runtime_lock() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime =
+        StorageRuntime::open_local(temp_dir_for_api_test("background-wal-truncation-split"))
+            .expect("durable background open")
+            .into_runtime();
+
+    runtime
+        .commit(&background_put_batch(
+            b"wal-truncation-seed",
+            b"value".to_vec(),
+        ))
+        .expect("seed durable WAL row");
+    runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Global,
+        ))
+        .expect("publish checkpoint retention proof");
+    runtime
+        .enqueue_lifecycle_maintenance_for_test(
+            crate::lifecycle::MaintenanceTaskRequest::wal_truncation(),
+        )
+        .expect("enqueue internal WAL truncation");
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_task_snapshot_lock_ns() > 0);
+    assert!(perf.lifecycle_background_task_unlocked_build_ns() > 0);
+    assert!(perf.lifecycle_background_task_publish_lock_ns() > 0);
     assert!(perf.lifecycle_background_tasks_completed() >= 1);
 }
 

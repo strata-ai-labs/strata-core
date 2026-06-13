@@ -28,7 +28,9 @@ The test suite must fail if:
 5. deterministic tests lose their ability to opt out of background execution;
 6. WAL retention grows without a background checkpoint wake;
 7. sustained max-rate writes fail permanently instead of slowing to the
-   background drain rate.
+   background drain rate;
+8. the production maintenance drive path cannot run single-threaded and
+   deterministically (the deterministic-simulation door is closed).
 
 ## Test Matrix
 
@@ -42,6 +44,7 @@ The test suite must fail if:
 | WAL retention | WAL-growth thresholds wake checkpoint work and covered segments are deleted. | Durable standard load retains hundreds of MB or many segments with no failing gate. |
 | Closed-loop overload | Writer rate converges to background drain rate under sustained pressure. | One worker falls behind until a nonzero-level Block error terminates the run. |
 | Benchmark proof | 5M/10M reach reads with bounded source shape, bounded WAL, and bounded foreground wait. | Compaction cliff or WAL-retention cliff remains hidden behind final drain or timeout. |
+| Simulation boundary | Production drive logic runs unchanged under a single-threaded inline executor + manual clock and replays deterministically. | DST door closed: scheduler/clock baked into drive logic; deterministic tests run a parallel path. |
 
 ## Scheduler Port Parity Tests
 
@@ -296,6 +299,58 @@ Pass gates:
    exact missing slice named in the failure message.
 3. It becomes a hard gate before the 5M/10M benchmark is accepted.
 
+## Simulation Boundary Tests
+
+These tests prove L8E did not close the deterministic-simulation door (taxonomy
+class 9; see `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md` and
+implementation-plan group L8E-H). They are the enabling-seam proof, not the full
+simulator.
+
+Correctness tests:
+
+1. Inline-executor deterministic replay:
+   - run a fixed closed-loop scenario (open, fixed commit stream, drive
+     maintenance, close) under `InlineMaintenanceExecutor` + manual clock;
+   - run it twice with identical inputs;
+   - assert identical maintenance task execution order, lifecycle queue-depth
+     trajectory, final source shape, and final visible version.
+2. Executor parity:
+   - run the same scenario under the threaded executor and the inline executor;
+   - assert the same final source shape and the same set of completed
+     maintenance tasks (only timing/interleaving may differ).
+3. Unified drive path:
+   - deterministic lifecycle tests that previously used `DeterministicInline`
+     drive the `Background` path on the inline executor and still assert exact
+     task ordering.
+4. Manual-clock control:
+   - advancing the manual clock past `max_runtime_per_wake` ends a drain round
+     at the simulated deadline with no dependence on wall-clock time;
+   - a block-wait scenario resolves against the manual-clock deadline, not
+     `Instant::now()`;
+   - a graduated-slowdown scenario computes its bounded delay from the manual
+     clock.
+
+Source guard tests:
+
+1. The drive-logic modules (`BackgroundRuntimeController`,
+   `drain_*_background_round`, pressure wait/slowdown) must not reference
+   `std::time::Instant::now()`; all control-flow timing must flow through
+   `MaintenanceClock`. Raw reads are allowed only in the threaded executor
+   implementation and in non-control-flow perf-trace spans.
+2. `BackgroundRuntimeController` and the drive logic must name the
+   `MaintenanceExecutor` trait, not the concrete `BackgroundScheduler` type.
+3. The `MaintenanceExecutor` trait signature must not expose `std::thread`,
+   `JoinHandle`, `parking_lot`, `Condvar`, or `Instant`.
+4. Any remaining `DeterministicInline` drive path carries a deletion-condition
+   comment and is not referenced as a default product path.
+
+Pass gates:
+
+1. The production maintenance drive path is runnable single-threaded and
+   replays deterministically.
+2. Deterministic tests and production share one drive implementation.
+3. Maintenance control-flow timing is injectable.
+
 ## Close And Shutdown Tests
 
 Correctness tests:
@@ -453,6 +508,7 @@ cargo test -p strata-storage-next lifecycle_background --all-features --locked
 cargo test -p strata-storage-next api_background_maintenance --all-features --locked
 cargo test -p strata-storage-next lifecycle_source_guard --all-features --locked
 cargo test -p strata-storage-next l8e_scaled_liveness --all-features --locked
+cargo test -p strata-storage-next lifecycle_simulation_boundary --all-features --locked
 ```
 
 Lint:

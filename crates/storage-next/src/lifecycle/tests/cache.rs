@@ -8,12 +8,20 @@ use crate::backend::{
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
+#[cfg(feature = "perf-trace")]
+use crate::branch::read::BranchScanBounds;
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
     CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation,
     CommitObservedVersion, CommitOrigin, CommitReadFact, CommitRetentionHint, CommitRuntimeConfig,
     CommitRuntimeError, CommitTimestampPolicy, CommitValidationFacts,
+};
+#[cfg(feature = "perf-trace")]
+use crate::lifecycle::cache::{
+    pause_next_cache_background_build_for_test, CacheBackgroundBuildKind,
+    CacheBackgroundBuildPauseGuard, CacheBackgroundMaintenanceBuild,
+    CacheBackgroundMaintenanceBuilt,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
@@ -1785,6 +1793,617 @@ fn cache_compaction_is_preempted_when_flush_pressure_exists() {
         .expect("run compaction maintenance after flush")
         .expect("compaction outcome after flush");
     assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x7c);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_owned_table_for_cache_test(
+                state,
+                branch,
+                BranchLevel::ZERO,
+                &format!("background-stale-l0-{index}"),
+                vec![active_pressure_put_row(
+                    branch,
+                    format!("m-background-stale-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    256,
+                    0x71,
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background compaction")
+        .expect("background compaction step");
+    let build = match step {
+        CacheBackgroundMaintenanceStep::Build(build) => build,
+        CacheBackgroundMaintenanceStep::Completed(outcome) => {
+            panic!("expected background build step, got {outcome:?}")
+        }
+    };
+    let built = build
+        .build()
+        .expect("build compaction outside runtime lock");
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        install_owned_table_for_cache_test(
+            state,
+            branch,
+            BranchLevel::ZERO,
+            "background-stale-front",
+            vec![active_pressure_put_row(
+                branch,
+                b"a-background-stale-front",
+                99,
+                99_000,
+                256,
+                0x72,
+            )],
+        );
+    }
+
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish stale background compaction");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        outcome.reason(),
+        Some("background maintenance candidate became stale before publish")
+    );
+    assert!(outcome.retryable());
+    let status = runtime.maintenance_status();
+    assert_eq!(status.active_task(), None);
+    assert_eq!(
+        status.pending_tasks(),
+        1,
+        "stale publish must resubmit current table pressure"
+    );
+    let layout = runtime
+        .branch_catalog()
+        .branch_state(branch)
+        .expect("branch state")
+        .source_layout();
+    assert_eq!(
+        layout.owned_l0_tables(),
+        5,
+        "stale output must not be published over newer L0 state"
+    );
+    assert_eq!(
+        layout
+            .owned_nonzero_level_table_counts()
+            .iter()
+            .find(|count| count.level() == BranchLevel::new(1))
+            .map_or(0, |count| count.table_count()),
+        0
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_candidate_stale_deferred(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_background_flush_deleted_branch_finishes_stale_and_clears_active_task() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x9a);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"background-flush-delete", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+
+    let step = runtime
+        .start_next_background_flush_maintenance()
+        .expect("start split background flush")
+        .expect("background flush step");
+    let build = match step {
+        CacheBackgroundMaintenanceStep::Build(build) => build,
+        CacheBackgroundMaintenanceStep::Completed(outcome) => {
+            panic!("expected background build step, got {outcome:?}")
+        }
+    };
+    let built = build.build().expect("build flush outside runtime lock");
+    runtime
+        .delete_branch(
+            branch,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+            Some(runtime.visible_version()),
+        )
+        .expect("delete branch before publish");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish stale background flush");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        outcome.reason(),
+        Some("background maintenance candidate became stale before publish")
+    );
+    assert!(outcome.retryable());
+    let status = runtime.maintenance_status();
+    assert_eq!(status.active_task(), None);
+    assert_eq!(
+        status.pending_tasks(),
+        0,
+        "deleted branches must not receive stale flush requeues"
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_candidate_stale_deferred(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_background_compaction_deleted_branch_finishes_stale_and_clears_active_task() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x9b);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("branch state");
+        for index in 0..4 {
+            install_owned_table_for_cache_test(
+                state,
+                branch,
+                BranchLevel::ZERO,
+                &format!("background-delete-l0-{index}"),
+                vec![active_pressure_put_row(
+                    branch,
+                    format!("m-background-delete-l0-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    256,
+                    0x73,
+                )],
+            );
+        }
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background compaction")
+        .expect("background compaction step");
+    let build = match step {
+        CacheBackgroundMaintenanceStep::Build(build) => build,
+        CacheBackgroundMaintenanceStep::Completed(outcome) => {
+            panic!("expected background build step, got {outcome:?}")
+        }
+    };
+    let built = build
+        .build()
+        .expect("build compaction outside runtime lock");
+    runtime
+        .delete_branch(
+            branch,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+            Some(runtime.visible_version()),
+        )
+        .expect("delete branch before publish");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish stale background compaction");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        outcome.reason(),
+        Some("background maintenance candidate became stale before publish")
+    );
+    assert!(outcome.retryable());
+    let status = runtime.maintenance_status();
+    assert_eq!(status.active_task(), None);
+    assert_eq!(status.pending_tasks(), 0);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_candidate_stale_deferred(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_background_materialization_deleted_branch_finishes_stale_and_clears_active_task() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let parent = branch_id(0x9c);
+    let child = branch_id(0x9d);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+
+    commit_cache_put(
+        &mut runtime,
+        parent,
+        b"background-materialize-parent",
+        1_000,
+    );
+    runtime
+        .rotate_active_for_branch_for_maintenance(parent)
+        .expect("rotate parent active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(parent))
+        .expect("enqueue parent flush");
+    run_queued_flush(&mut runtime);
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child from flushed parent");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::materialization(child))
+        .expect("enqueue materialization");
+
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background materialization")
+        .expect("background materialization step");
+    let build = match step {
+        CacheBackgroundMaintenanceStep::Build(build) => build,
+        CacheBackgroundMaintenanceStep::Completed(outcome) => {
+            panic!("expected background build step, got {outcome:?}")
+        }
+    };
+    let built = build
+        .build()
+        .expect("build materialization outside runtime lock");
+    runtime
+        .delete_branch(
+            child,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+            Some(runtime.visible_version()),
+        )
+        .expect("delete child before publish");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish stale background materialization");
+
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(
+        outcome.reason(),
+        Some("background maintenance candidate became stale before publish")
+    );
+    assert!(outcome.retryable());
+    let status = runtime.maintenance_status();
+    assert_eq!(status.active_task(), None);
+    assert_eq!(status.pending_tasks(), 0);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_candidate_stale_deferred(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_foreground_commit_completes_while_background_flush_build_is_paused() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x9e);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"background-flush-snapshot", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+
+    let step = runtime
+        .start_next_background_flush_maintenance()
+        .expect("start split background flush")
+        .expect("background flush step");
+    let build = expect_cache_background_build(step);
+    assert!(
+        runtime.maintenance_status().active_task().is_some(),
+        "split build must leave the background task active while unlocked work is pending"
+    );
+    let (build_thread, mut pause) =
+        spawn_paused_cache_background_build(build, CacheBackgroundBuildKind::Flush);
+    pause.wait_until_entered();
+
+    commit_cache_put(&mut runtime, branch, b"background-flush-foreground", 2_000);
+    assert_eq!(
+        cache_latest_value(&runtime, branch, b"background-flush-foreground"),
+        b"background-flush-foreground".to_vec(),
+        "foreground commit must be visible before the background flush publishes"
+    );
+
+    pause.release();
+    let built = build_thread
+        .join()
+        .expect("background flush build thread")
+        .expect("build flush outside runtime lock");
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish background flush");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.maintenance_status().active_task(), None);
+    assert_eq!(
+        cache_latest_value(&runtime, branch, b"background-flush-foreground"),
+        b"background-flush-foreground".to_vec()
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_reads_and_commit_continue_while_background_compaction_build_is_paused() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x9f);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let history_key = b"background-compaction-history";
+
+    build_l0_history_tables_with_manual_flushes(&mut runtime, branch, history_key, 4);
+    let before_history = cache_history_facts(&runtime, branch, history_key);
+    let before_scan = cache_scan_user_keys(&runtime, branch, b"background-compaction-");
+    assert_eq!(before_scan, vec![history_key.to_vec()]);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background compaction")
+        .expect("background compaction step");
+    let build = expect_cache_background_build(step);
+    assert!(runtime.maintenance_status().active_task().is_some());
+    let (build_thread, mut pause) =
+        spawn_paused_cache_background_build(build, CacheBackgroundBuildKind::Compaction);
+    pause.wait_until_entered();
+
+    assert_eq!(
+        cache_history_facts(&runtime, branch, history_key),
+        before_history,
+        "history must be readable while compaction build is unfinished"
+    );
+    commit_cache_put(
+        &mut runtime,
+        branch,
+        b"background-compaction-foreground",
+        50_000,
+    );
+    assert_eq!(
+        cache_latest_value(&runtime, branch, b"background-compaction-foreground"),
+        b"background-compaction-foreground".to_vec()
+    );
+    let during_scan = cache_scan_user_keys(&runtime, branch, b"background-compaction-");
+    assert_eq!(
+        during_scan,
+        vec![
+            b"background-compaction-foreground".to_vec(),
+            history_key.to_vec()
+        ],
+        "scan order must remain valid while compaction is active"
+    );
+
+    pause.release();
+    let built = build_thread
+        .join()
+        .expect("background compaction build thread")
+        .expect("build compaction outside runtime lock");
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish background compaction");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.maintenance_status().active_task(), None);
+    assert_eq!(
+        cache_history_facts(&runtime, branch, history_key),
+        before_history
+    );
+    assert_eq!(
+        cache_scan_user_keys(&runtime, branch, b"background-compaction-"),
+        during_scan
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_foreground_commit_completes_while_background_materialization_build_is_paused() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let parent = branch_id(0xa0);
+    let child = branch_id(0xa1);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+
+    commit_cache_put(
+        &mut runtime,
+        parent,
+        b"background-materialization-parent",
+        1_000,
+    );
+    runtime
+        .rotate_active_for_branch_for_maintenance(parent)
+        .expect("rotate parent active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(parent))
+        .expect("enqueue parent flush");
+    run_queued_flush(&mut runtime);
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child from flushed parent");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::materialization(child))
+        .expect("enqueue materialization");
+
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background materialization")
+        .expect("background materialization step");
+    let build = expect_cache_background_build(step);
+    assert!(runtime.maintenance_status().active_task().is_some());
+    let (build_thread, mut pause) =
+        spawn_paused_cache_background_build(build, CacheBackgroundBuildKind::Materialization);
+    pause.wait_until_entered();
+
+    assert_eq!(
+        cache_latest_value(&runtime, child, b"background-materialization-parent"),
+        b"background-materialization-parent".to_vec(),
+        "inherited rows must remain readable while materialization is active"
+    );
+    commit_cache_put(
+        &mut runtime,
+        child,
+        b"background-materialization-child",
+        2_000,
+    );
+    assert_eq!(
+        cache_latest_value(&runtime, child, b"background-materialization-child"),
+        b"background-materialization-child".to_vec()
+    );
+
+    pause.release();
+    let built = build_thread
+        .join()
+        .expect("background materialization build thread")
+        .expect("build materialization outside runtime lock");
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish background materialization");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.maintenance_status().active_task(), None);
+    assert_eq!(
+        cache_latest_value(&runtime, child, b"background-materialization-parent"),
+        b"background-materialization-parent".to_vec()
+    );
+    assert_eq!(
+        cache_latest_value(&runtime, child, b"background-materialization-child"),
+        b"background-materialization-child".to_vec()
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_background_compaction_clear_branch_finishes_stale_without_publishing_output() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0xa2);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background compaction")
+        .expect("background compaction step");
+    let build = expect_cache_background_build(step);
+    let built = build
+        .build()
+        .expect("build compaction outside runtime lock");
+
+    runtime
+        .clear_branch(
+            branch,
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("clear branch before publish");
+    crate::observability::perf_trace::reset();
+
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish stale background compaction");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(runtime.maintenance_status().active_task(), None);
+    let layout = runtime
+        .branch_catalog()
+        .branch_state(branch)
+        .expect("branch state")
+        .source_layout();
+    assert_eq!(layout.owned_total_tables(), 0);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_candidate_stale_deferred(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_fork_during_background_compaction_keeps_child_reads_valid_after_publish() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let parent = branch_id(0xa3);
+    let child = branch_id(0xa4);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+    let inherited_key = b"background-fork-during-compaction";
+
+    build_l0_history_tables_with_manual_flushes(&mut runtime, parent, inherited_key, 4);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(parent, 0))
+        .expect("enqueue parent compaction");
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start split background compaction")
+        .expect("background compaction step");
+    let build = expect_cache_background_build(step);
+
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child while parent compaction is active");
+    let child_history_before = cache_history_facts(&runtime, child, inherited_key);
+    assert_eq!(child_history_before.len(), 4);
+
+    let built = build.build().expect("build parent compaction");
+    let outcome = runtime
+        .finish_background_maintenance(built)
+        .expect("finish parent compaction");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        cache_history_facts(&runtime, child, inherited_key),
+        child_history_before,
+        "forked child must not lose inherited history when parent publishes background output"
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -3638,6 +4257,67 @@ fn assert_no_snapshot_floor_or_pruning_counters() {
     assert_eq!(perf.lifecycle_snapshot_pruning_deleted(), 0);
     assert_eq!(perf.lifecycle_snapshot_pruning_protected(), 0);
     assert_eq!(perf.lifecycle_snapshot_pruning_failed(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+fn spawn_paused_cache_background_build(
+    build: CacheBackgroundMaintenanceBuild,
+    kind: CacheBackgroundBuildKind,
+) -> (
+    std::thread::JoinHandle<LifecycleResult<CacheBackgroundMaintenanceBuilt>>,
+    CacheBackgroundBuildPauseGuard,
+) {
+    let pause = pause_next_cache_background_build_for_test(kind);
+    let build_thread = std::thread::spawn(move || build.build());
+    (build_thread, pause)
+}
+
+#[cfg(feature = "perf-trace")]
+fn expect_cache_background_build(
+    step: CacheBackgroundMaintenanceStep,
+) -> CacheBackgroundMaintenanceBuild {
+    match step {
+        CacheBackgroundMaintenanceStep::Build(build) => build,
+        CacheBackgroundMaintenanceStep::Completed(outcome) => {
+            panic!("expected background build step, got {outcome:?}")
+        }
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+fn cache_latest_value(
+    runtime: &LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    user_key: &[u8],
+) -> Vec<u8> {
+    runtime
+        .read_view_for_branch(branch)
+        .expect("read view")
+        .latest(&physical_key(branch, user_key))
+        .expect("latest read")
+        .expect("visible row")
+        .row()
+        .value()
+        .to_vec()
+}
+
+#[cfg(feature = "perf-trace")]
+fn cache_scan_user_keys(
+    runtime: &LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    prefix: &[u8],
+) -> Vec<Vec<u8>> {
+    runtime
+        .read_view_for_branch(branch)
+        .expect("read view")
+        .scan_prefix(
+            &BranchScanBounds::prefix(&physical_key(branch, prefix)),
+            crate::branch::read::BranchReadBound::latest(),
+        )
+        .expect("prefix scan")
+        .iter()
+        .map(|row| row.row().physical_key().user_key().to_vec())
+        .collect()
 }
 
 #[cfg(feature = "perf-trace")]

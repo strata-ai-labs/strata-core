@@ -231,6 +231,7 @@ impl CheckpointWrite {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct CheckpointService<'a> {
     manifest: DatabaseManifestService<'a>,
     snapshot: SnapshotService<'a>,

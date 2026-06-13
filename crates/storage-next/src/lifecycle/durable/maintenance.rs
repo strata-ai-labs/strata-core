@@ -7,7 +7,7 @@ use crate::commit::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
 };
 use crate::lifecycle::checkpoint::{
-    checkpoint_durable_runtime_with_budget,
+    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
     persist_flush_watermark_with_table_manifest_proof, truncate_wal,
     wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
@@ -71,11 +71,81 @@ use crate::lifecycle::{
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
-    WalGrowthFacts,
+    WalGrowthFacts, WalRetentionProof, WalService,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
-impl<S> LifecycleDurableLocalRuntime<'_, S> {
+pub(crate) enum DurableBackgroundMaintenanceStep<'a> {
+    Completed(MaintenanceOutcome),
+    Build(DurableBackgroundMaintenanceBuild<'a>),
+}
+
+pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
+    Checkpoint {
+        task: MaintenanceTask,
+        request: LifecycleCheckpointRequest,
+        visible_version: CommitVersion,
+        branches: Vec<BranchLocalState>,
+    },
+    WalTruncation {
+        task: MaintenanceTask,
+        proof: WalRetentionProof,
+        wal: WalService<'a>,
+    },
+}
+
+pub(crate) enum DurableBackgroundMaintenanceBuilt {
+    Checkpoint {
+        task: MaintenanceTask,
+        request: LifecycleCheckpointRequest,
+        visible_version: CommitVersion,
+        rows: Vec<crate::row::StorageRow>,
+    },
+    WalTruncation {
+        task: MaintenanceTask,
+        outcome: LifecycleWalTruncationOutcome,
+    },
+}
+
+impl DurableBackgroundMaintenanceBuild<'_> {
+    pub(crate) const fn task(&self) -> MaintenanceTask {
+        match self {
+            Self::Checkpoint { task, .. } => *task,
+            Self::WalTruncation { task, .. } => *task,
+        }
+    }
+
+    pub(crate) fn build(self) -> LifecycleResult<DurableBackgroundMaintenanceBuilt> {
+        match self {
+            Self::Checkpoint {
+                task,
+                request,
+                visible_version,
+                branches,
+            } => {
+                let mut rows = Vec::new();
+                for branch in &branches {
+                    let mut branch_rows = branch
+                        .checkpoint_rows(visible_version)
+                        .map_err(branch_error)?;
+                    rows.append(&mut branch_rows);
+                }
+                Ok(DurableBackgroundMaintenanceBuilt::Checkpoint {
+                    task,
+                    request,
+                    visible_version,
+                    rows,
+                })
+            }
+            Self::WalTruncation { task, proof, wal } => {
+                let outcome = truncate_wal(&wal, proof)?;
+                Ok(DurableBackgroundMaintenanceBuilt::WalTruncation { task, outcome })
+            }
+        }
+    }
+}
+
+impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     #[allow(
         dead_code,
         reason = "durable maintenance tests and later dispatch use explicit active rotation"
@@ -983,6 +1053,65 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         })
     }
 
+    pub(crate) fn start_next_background_checkpoint_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Checkpoint)
+        else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let created_at = checkpoint_created_at(
+            self.allocator.timestamp_guard().last_allocated(),
+            self.recovered_checkpoint_timestamp_max,
+        );
+        let request = match checkpoint_request_from_maintenance_task_with_snapshot_id(
+            &task,
+            self.initial_branch_id,
+            self.services.manifest(),
+            created_at,
+            Some(self.next_checkpoint_snapshot_id),
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                let outcome = MaintenanceOutcome::new(
+                    crate::lifecycle::MaintenanceTaskKind::Checkpoint,
+                    MaintenanceOutcomeStatus::Failed,
+                )
+                .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::Completed(outcome)));
+            }
+        };
+        let visible_version = self.visible.visible_version();
+        let mut branches = Vec::new();
+        for descriptor in self.branch_catalog.list_branches(false) {
+            branches.push(
+                self.branch_catalog
+                    .branch_state(descriptor.branch_id())?
+                    .clone(),
+            );
+        }
+        Ok(Some(DurableBackgroundMaintenanceStep::Build(
+            DurableBackgroundMaintenanceBuild::Checkpoint {
+                task,
+                request,
+                visible_version,
+                branches,
+            },
+        )))
+    }
+
     #[allow(
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
@@ -998,6 +1127,113 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::WalTruncation
         })
+    }
+
+    pub(crate) fn start_next_background_wal_truncation_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::WalTruncation)
+        else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let proof =
+            match wal_truncation_request_from_maintenance_task(&task, self.services.manifest()) {
+                Ok(Some(proof)) => proof,
+                Ok(None) => {
+                    let outcome = MaintenanceOutcome::new(
+                        crate::lifecycle::MaintenanceTaskKind::WalTruncation,
+                        MaintenanceOutcomeStatus::Deferred,
+                    )
+                    .with_reason("WAL truncation has no retention proof");
+                    let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                    return Ok(Some(DurableBackgroundMaintenanceStep::Completed(outcome)));
+                }
+                Err(error) => {
+                    let outcome = MaintenanceOutcome::new(
+                        crate::lifecycle::MaintenanceTaskKind::WalTruncation,
+                        MaintenanceOutcomeStatus::Failed,
+                    )
+                    .with_source_error(error);
+                    let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                    self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                    return Ok(Some(DurableBackgroundMaintenanceStep::Completed(outcome)));
+                }
+            };
+        Ok(Some(DurableBackgroundMaintenanceStep::Build(
+            DurableBackgroundMaintenanceBuild::WalTruncation {
+                task,
+                proof,
+                wal: self.services.wal().clone_for_background_retention(),
+            },
+        )))
+    }
+
+    pub(crate) fn finish_background_maintenance(
+        &mut self,
+        built: DurableBackgroundMaintenanceBuilt,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let outcome = match built {
+            DurableBackgroundMaintenanceBuilt::Checkpoint {
+                task,
+                request,
+                visible_version,
+                rows,
+            } => {
+                let checkpoint = checkpoint_durable_rows_with_budget(
+                    &self.services,
+                    &request,
+                    visible_version,
+                    rows,
+                    Some(&self.budget),
+                );
+                match checkpoint {
+                    Ok(outcome) => {
+                        if let Some(snapshot_id) = outcome.snapshot_id() {
+                            self.next_checkpoint_snapshot_id = snapshot_id.checked_add(1).ok_or(
+                                LifecycleError::CheckpointPublicationFailed {
+                                    reason: "checkpoint snapshot id overflow",
+                                },
+                            )?;
+                        }
+                        self.maintenance
+                            .finish_started(task, outcome.maintenance_outcome(), false)
+                    }
+                    Err(error) => {
+                        let outcome =
+                            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                                .with_source_error(error);
+                        self.maintenance.finish_started(task, outcome, false)
+                    }
+                }
+            }
+            DurableBackgroundMaintenanceBuilt::WalTruncation { task, outcome } => self
+                .maintenance
+                .finish_started(task, outcome.maintenance_outcome(), false),
+        };
+        self.record_optional_maintenance_health(&outcome.clone().map(Some));
+        outcome
+    }
+
+    pub(crate) fn finish_background_build_error(
+        &mut self,
+        task: MaintenanceTask,
+        error: LifecycleError,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+            .with_source_error(error);
+        let outcome = self.maintenance.finish_started(task, outcome, false);
+        self.record_optional_maintenance_health(&outcome.clone().map(Some));
+        outcome
     }
 
     #[allow(

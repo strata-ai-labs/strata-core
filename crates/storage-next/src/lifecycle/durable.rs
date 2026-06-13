@@ -37,6 +37,10 @@ mod close;
 mod maintenance;
 
 pub(crate) use bootstrap::{LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport};
+pub(crate) use maintenance::{
+    DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
+    DurableBackgroundMaintenanceStep,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleDurableLocalOpenRequest {

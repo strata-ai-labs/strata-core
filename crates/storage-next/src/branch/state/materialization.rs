@@ -263,6 +263,10 @@ impl BranchMaterializationOutcome {
 }
 
 impl BranchMaterializationPreparedOutput {
+    pub(crate) const fn layer_index(&self) -> usize {
+        self.layer_index
+    }
+
     pub(crate) fn artifacts(&self) -> &[BuiltTableArtifact] {
         &self.artifacts
     }

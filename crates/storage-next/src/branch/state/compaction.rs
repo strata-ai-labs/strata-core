@@ -1088,7 +1088,7 @@ impl BranchLocalState {
             .collect()
     }
 
-    fn compaction_output_tables(
+    pub(crate) fn compaction_output_tables(
         &self,
         output_level: BranchLevel,
         artifacts: Vec<BuiltTableArtifact>,

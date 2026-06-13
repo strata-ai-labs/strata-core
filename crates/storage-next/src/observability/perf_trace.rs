@@ -155,6 +155,12 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_stale_wake_noop: u64,
     lifecycle_background_drain_rounds: u64,
     lifecycle_background_tasks_completed: u64,
+    lifecycle_background_task_snapshot_lock_ns: u64,
+    lifecycle_background_task_unlocked_build_ns: u64,
+    lifecycle_background_task_publish_lock_ns: u64,
+    lifecycle_background_task_total_ns: u64,
+    lifecycle_background_candidate_stale_deferred: u64,
+    lifecycle_foreground_wait_background_lock_ns: u64,
     lifecycle_write_admission_slowdown_attempts: u64,
     lifecycle_write_admission_slowdown_ns: u64,
     lifecycle_write_admission_block_wait_ns: u64,
@@ -852,6 +858,36 @@ impl StoragePerfSnapshot {
     /// Lifecycle maintenance tasks completed by background drain rounds.
     pub const fn lifecycle_background_tasks_completed(self) -> u64 {
         self.lifecycle_background_tasks_completed
+    }
+
+    /// Nanoseconds spent holding the runtime lock while snapshotting a background task.
+    pub const fn lifecycle_background_task_snapshot_lock_ns(self) -> u64 {
+        self.lifecycle_background_task_snapshot_lock_ns
+    }
+
+    /// Nanoseconds spent outside the runtime lock building background task output.
+    pub const fn lifecycle_background_task_unlocked_build_ns(self) -> u64 {
+        self.lifecycle_background_task_unlocked_build_ns
+    }
+
+    /// Nanoseconds spent holding the runtime lock while publishing background task output.
+    pub const fn lifecycle_background_task_publish_lock_ns(self) -> u64 {
+        self.lifecycle_background_task_publish_lock_ns
+    }
+
+    /// Total nanoseconds spent by split background maintenance tasks.
+    pub const fn lifecycle_background_task_total_ns(self) -> u64 {
+        self.lifecycle_background_task_total_ns
+    }
+
+    /// Background candidates deferred because source shape changed before publish.
+    pub const fn lifecycle_background_candidate_stale_deferred(self) -> u64 {
+        self.lifecycle_background_candidate_stale_deferred
+    }
+
+    /// Nanoseconds foreground commits spent waiting to acquire the runtime lock.
+    pub const fn lifecycle_foreground_wait_background_lock_ns(self) -> u64 {
+        self.lifecycle_foreground_wait_background_lock_ns
     }
 
     /// Urgent admission attempts that entered the slowdown path.
@@ -2203,6 +2239,18 @@ static LIFECYCLE_BACKGROUND_DRAIN_ROUNDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASKS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASK_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS: AtomicU64 = AtomicU64::new(0);
@@ -2834,6 +2882,12 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_STALE_WAKE_NOOP.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_DRAIN_ROUNDS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASKS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_TOTAL_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
+    LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
@@ -3228,6 +3282,18 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_background_drain_rounds: LIFECYCLE_BACKGROUND_DRAIN_ROUNDS
             .load(Ordering::Relaxed),
         lifecycle_background_tasks_completed: LIFECYCLE_BACKGROUND_TASKS_COMPLETED
+            .load(Ordering::Relaxed),
+        lifecycle_background_task_snapshot_lock_ns: LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS
+            .load(Ordering::Relaxed),
+        lifecycle_background_task_unlocked_build_ns: LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS
+            .load(Ordering::Relaxed),
+        lifecycle_background_task_publish_lock_ns: LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS
+            .load(Ordering::Relaxed),
+        lifecycle_background_task_total_ns: LIFECYCLE_BACKGROUND_TASK_TOTAL_NS
+            .load(Ordering::Relaxed),
+        lifecycle_background_candidate_stale_deferred:
+            LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.load(Ordering::Relaxed),
+        lifecycle_foreground_wait_background_lock_ns: LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS
             .load(Ordering::Relaxed),
         lifecycle_write_admission_slowdown_attempts: LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS
             .load(Ordering::Relaxed),
@@ -4357,6 +4423,87 @@ pub(crate) fn record_lifecycle_background_drain_round(tasks_completed: usize) {
     if tasks_completed == 0 {
         record_lifecycle_background_stale_wake_noop();
     }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_task_snapshot_lock(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_task_snapshot_lock(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_task_unlocked_build(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_task_unlocked_build(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_task_publish_lock(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_task_publish_lock(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_task_total(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_task_total(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_TASK_TOTAL_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_candidate_stale_deferred() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_candidate_stale_deferred() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_foreground_wait_background_lock(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_foreground_wait_background_lock(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
 }
 
 #[cfg(not(feature = "perf-trace"))]

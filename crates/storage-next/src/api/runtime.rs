@@ -13,17 +13,17 @@ use crate::commit::{
 };
 use crate::lifecycle::{
     collect_storage_pressure, BackgroundBackpressureError, BackgroundScheduler,
-    BackgroundSchedulerStats, BackgroundTaskPriority, CloseOutcome, CloseOutcomeStatus,
-    FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId, LifecycleBranchCatalog,
-    LifecycleBranchDescriptor, LifecycleBranchStatus, LifecycleCacheOpenRequest,
-    LifecycleCacheRuntime, LifecycleCheckpointOutcome, LifecycleCodecId,
-    LifecycleCompactionDrainRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
-    LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
-    LifecycleMaintenanceSchedulingPolicy, LifecycleRecoveryRuntime, LifecycleRetentionRequest,
-    LifecycleRetentionScope, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
-    LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus,
-    LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus,
-    MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
+    BackgroundSchedulerStats, BackgroundTaskPriority, CacheBackgroundMaintenanceStep, CloseOutcome,
+    CloseOutcomeStatus, DurableBackgroundMaintenanceStep, FlushFrozenRequest,
+    FlushTableIdentitySeed, FlushTableObjectId, LifecycleBranchCatalog, LifecycleBranchDescriptor,
+    LifecycleBranchStatus, LifecycleCacheOpenRequest, LifecycleCacheRuntime,
+    LifecycleCheckpointOutcome, LifecycleCodecId, LifecycleCompactionDrainRequest, LifecycleConfig,
+    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalShell,
+    LifecycleError, LifecycleMaintenanceSchedulingPolicy, LifecycleRecoveryRuntime,
+    LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressureReason,
+    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy,
+    LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
+    LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions, MaintenanceExecutorStatus,
     MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
@@ -170,7 +170,10 @@ impl<R> RuntimeSlot<R> {
     }
 
     fn lock(&self) -> ParkingMutexGuard<'_, R> {
-        self.runtime.lock()
+        let started = Instant::now();
+        let guard = self.runtime.lock();
+        perf_trace::record_lifecycle_foreground_wait_background_lock(started.elapsed());
+        guard
     }
 
     #[allow(
@@ -247,10 +250,10 @@ impl<R> RuntimeSlot<R>
 where
     R: Send + 'static,
 {
-    fn new_with_background(
+    fn new_with_background_arc_drain(
         runtime: R,
         config: LifecycleConfig,
-        drain: fn(&mut R, BackgroundDrainLimits) -> BackgroundDrainRound,
+        drain: fn(Arc<ParkingMutex<R>>, BackgroundDrainLimits) -> BackgroundDrainRound,
     ) -> Self {
         let runtime = Arc::new(ParkingMutex::new(runtime));
         let background = if config.maintenance_scheduling_policy()
@@ -264,10 +267,7 @@ where
         };
         let background_drain = background.as_ref().map(|_| {
             let runtime = Arc::clone(&runtime);
-            Arc::new(move |limits| {
-                let mut runtime = runtime.lock();
-                drain(&mut runtime, limits)
-            }) as BackgroundDrainFn
+            Arc::new(move |limits| drain(Arc::clone(&runtime), limits)) as BackgroundDrainFn
         });
         Self {
             runtime,
@@ -616,6 +616,61 @@ impl StorageRuntime<'static> {
     pub(crate) fn submit_stale_background_wake_for_test(&self) {
         self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::Low);
     }
+
+    #[cfg(test)]
+    pub(crate) fn enqueue_lifecycle_maintenance_for_test(
+        &mut self,
+        task: LifecycleMaintenanceTaskRequest,
+    ) -> StorageApiResult<MaintenanceQueueSummary> {
+        self.require_open("maintenance enqueue requires an open runtime")?;
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(slot) => {
+                let status = {
+                    let mut runtime = slot.lock();
+                    runtime
+                        .enqueue_maintenance(task)
+                        .map_err(map_lifecycle_error)?;
+                    runtime.maintenance_status()
+                };
+                slot.notify_background_drain(background_priority_for_task_request(task));
+                Ok(map_maintenance_queue_summary(
+                    status,
+                    slot.background_stats(),
+                ))
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let status = {
+                    let mut runtime = slot.lock();
+                    runtime
+                        .enqueue_maintenance(task)
+                        .map_err(map_lifecycle_error)?;
+                    runtime.maintenance_status()
+                };
+                slot.notify_background_drain(background_priority_for_task_request(task));
+                Ok(map_maintenance_queue_summary(
+                    status,
+                    slot.background_stats(),
+                ))
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let status = {
+                    let mut runtime = slot.lock();
+                    runtime
+                        .enqueue_maintenance(task)
+                        .map_err(map_lifecycle_error)?;
+                    runtime.maintenance_status()
+                };
+                slot.notify_background_drain(background_priority_for_task_request(task));
+                Ok(map_maintenance_queue_summary(
+                    status,
+                    slot.background_stats(),
+                ))
+            }
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "maintenance enqueue requires an open runtime",
+            }),
+        }
+    }
 }
 
 fn assemble_durable_runtime(
@@ -663,11 +718,13 @@ fn open_durable_with_owned_backend_handle<'runtime>(
     let (runtime, summary, recovery_report, config) = assemble_durable_runtime(options, backend)?;
     Ok(StorageOpenOutcome::new(
         StorageRuntime {
-            inner: StorageRuntimeInner::DurableOwned(Box::new(RuntimeSlot::new_with_background(
-                runtime,
-                config,
-                drain_durable_background_round,
-            ))),
+            inner: StorageRuntimeInner::DurableOwned(Box::new(
+                RuntimeSlot::new_with_background_arc_drain(
+                    runtime,
+                    config,
+                    drain_durable_background_round,
+                ),
+            )),
             open_summary: Some(summary),
             last_recovery: Some(recovery_report),
             last_close: None,
@@ -2274,11 +2331,13 @@ impl<'a> StorageRuntime<'a> {
         let config = runtime.open_plan().lifecycle_config();
         Ok(StorageOpenOutcome::new(
             Self {
-                inner: StorageRuntimeInner::Cache(Box::new(RuntimeSlot::new_with_background(
-                    runtime,
-                    config,
-                    drain_cache_background_round,
-                ))),
+                inner: StorageRuntimeInner::Cache(Box::new(
+                    RuntimeSlot::new_with_background_arc_drain(
+                        runtime,
+                        config,
+                        drain_cache_background_round,
+                    ),
+                )),
                 open_summary: Some(summary),
                 last_recovery: Some(recovery),
                 last_close: None,
@@ -3589,29 +3648,77 @@ fn run_next_cache_maintenance(
 }
 
 fn drain_cache_background_round(
-    runtime: &mut LifecycleCacheRuntime<ApiTimestampSource>,
+    runtime: Arc<ParkingMutex<LifecycleCacheRuntime<ApiTimestampSource>>>,
     limits: BackgroundDrainLimits,
 ) -> BackgroundDrainRound {
     let start = Instant::now();
     let mut tasks_completed = 0;
     let mut made_progress = false;
     while tasks_completed < limits.max_tasks && start.elapsed() < limits.max_runtime {
-        let pending_before = runtime.maintenance_status().pending_tasks();
-        match run_next_cache_maintenance(runtime) {
-            Ok(Some(_outcome)) => {
+        let task_start = Instant::now();
+        let snapshot_start = Instant::now();
+        let (step, pending_before) = {
+            let mut runtime = runtime.lock();
+            let pending_before = runtime.maintenance_status().pending_tasks();
+            let step = match runtime.start_next_background_flush_maintenance() {
+                Ok(Some(step)) => Ok(Some(step)),
+                Ok(None) => match runtime.run_next_flush_maintenance() {
+                    Ok(Some(outcome)) => {
+                        Ok(Some(CacheBackgroundMaintenanceStep::Completed(outcome)))
+                    }
+                    Ok(None) => runtime.start_next_background_table_rewrite_maintenance(),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            (step, pending_before)
+        };
+        perf_trace::record_lifecycle_background_task_snapshot_lock(snapshot_start.elapsed());
+        let Some(step) = (match step {
+            Ok(step) => step,
+            Err(_) => {
+                let pending_after = runtime.lock().maintenance_status().pending_tasks();
+                made_progress |= pending_after < pending_before;
+                break;
+            }
+        }) else {
+            break;
+        };
+        match step {
+            CacheBackgroundMaintenanceStep::Completed(_outcome) => {
+                perf_trace::record_lifecycle_background_task_total(task_start.elapsed());
                 tasks_completed += 1;
                 made_progress = true;
             }
-            Ok(None) => break,
-            Err(_) => {
-                made_progress |= runtime.maintenance_status().pending_tasks() < pending_before;
-                break;
+            CacheBackgroundMaintenanceStep::Build(build) => {
+                let task = build.task();
+                let build_start = Instant::now();
+                let built = build.build();
+                perf_trace::record_lifecycle_background_task_unlocked_build(build_start.elapsed());
+                let publish_start = Instant::now();
+                let publish = {
+                    let mut runtime = runtime.lock();
+                    match built {
+                        Ok(built) => runtime.finish_background_maintenance(built),
+                        Err(error) => runtime.finish_background_build_error(task, error),
+                    }
+                };
+                perf_trace::record_lifecycle_background_task_publish_lock(publish_start.elapsed());
+                perf_trace::record_lifecycle_background_task_total(task_start.elapsed());
+                match publish {
+                    Ok(_outcome) => {
+                        tasks_completed += 1;
+                        made_progress = true;
+                    }
+                    Err(_) => break,
+                }
             }
         }
     }
+    let pending_tasks = runtime.lock().maintenance_status().pending_tasks();
     BackgroundDrainRound {
         tasks_completed,
-        pending_tasks: runtime.maintenance_status().pending_tasks(),
+        pending_tasks,
         made_progress,
     }
 }
@@ -3673,29 +3780,76 @@ fn run_next_durable_maintenance(
 }
 
 fn drain_durable_background_round(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+    runtime: Arc<ParkingMutex<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>,
     limits: BackgroundDrainLimits,
 ) -> BackgroundDrainRound {
     let start = Instant::now();
     let mut tasks_completed = 0;
     let mut made_progress = false;
     while tasks_completed < limits.max_tasks && start.elapsed() < limits.max_runtime {
-        let pending_before = runtime.maintenance_status().pending_tasks();
-        match run_next_durable_maintenance(runtime) {
-            Ok(Some(_outcome)) => {
+        let task_start = Instant::now();
+        let snapshot_start = Instant::now();
+        let (step, pending_before) = {
+            let mut runtime = runtime.lock();
+            let pending_before = runtime.maintenance_status().pending_tasks();
+            let step = match runtime.start_next_background_checkpoint_maintenance() {
+                Ok(Some(step)) => Ok(Some(step)),
+                Ok(None) => match runtime.start_next_background_wal_truncation_maintenance() {
+                    Ok(Some(step)) => Ok(Some(step)),
+                    Ok(None) => run_next_durable_maintenance(&mut runtime)
+                        .map(|outcome| outcome.map(DurableBackgroundMaintenanceStep::Completed)),
+                    Err(error) => Err(map_lifecycle_error(error)),
+                },
+                Err(error) => Err(map_lifecycle_error(error)),
+            };
+            (step, pending_before)
+        };
+        perf_trace::record_lifecycle_background_task_snapshot_lock(snapshot_start.elapsed());
+        let Some(step) = (match step {
+            Ok(step) => step,
+            Err(_) => {
+                let pending_after = runtime.lock().maintenance_status().pending_tasks();
+                made_progress |= pending_after < pending_before;
+                break;
+            }
+        }) else {
+            break;
+        };
+        match step {
+            DurableBackgroundMaintenanceStep::Completed(_outcome) => {
+                perf_trace::record_lifecycle_background_task_total(task_start.elapsed());
                 tasks_completed += 1;
                 made_progress = true;
             }
-            Ok(None) => break,
-            Err(_) => {
-                made_progress |= runtime.maintenance_status().pending_tasks() < pending_before;
-                break;
+            DurableBackgroundMaintenanceStep::Build(build) => {
+                let task = build.task();
+                let build_start = Instant::now();
+                let built = build.build();
+                perf_trace::record_lifecycle_background_task_unlocked_build(build_start.elapsed());
+                let publish_start = Instant::now();
+                let publish = {
+                    let mut runtime = runtime.lock();
+                    match built {
+                        Ok(built) => runtime.finish_background_maintenance(built),
+                        Err(error) => runtime.finish_background_build_error(task, error),
+                    }
+                };
+                perf_trace::record_lifecycle_background_task_publish_lock(publish_start.elapsed());
+                perf_trace::record_lifecycle_background_task_total(task_start.elapsed());
+                match publish {
+                    Ok(_outcome) => {
+                        tasks_completed += 1;
+                        made_progress = true;
+                    }
+                    Err(_) => break,
+                }
             }
         }
     }
+    let pending_tasks = runtime.lock().maintenance_status().pending_tasks();
     BackgroundDrainRound {
         tasks_completed,
-        pending_tasks: runtime.maintenance_status().pending_tasks(),
+        pending_tasks,
         made_progress,
     }
 }

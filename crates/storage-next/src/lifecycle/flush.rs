@@ -76,6 +76,14 @@ pub(crate) struct FlushDrainOutcome {
     recovery_health: Option<RecoveryHealth>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedCacheFlush {
+    request: FlushFrozenRequest,
+    frozen_index: usize,
+    table_facts: TableRuntimeFacts,
+    table: BranchOwnedTable,
+}
+
 const DEFAULT_FLUSH_DRAIN_FREEZE_RETRY_LIMIT: usize = 4;
 const MEMORY_RELEASE_REEVALUATION_RETAINED_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -165,7 +173,10 @@ impl FlushDrainRequest {
         self.freeze_during_drain_retry_limit
     }
 
-    fn flush_request(&self, operation_index: usize) -> LifecycleResult<FlushFrozenRequest> {
+    pub(crate) fn flush_request(
+        &self,
+        operation_index: usize,
+    ) -> LifecycleResult<FlushFrozenRequest> {
         FlushFrozenRequest::new(
             self.branch_id,
             None,
@@ -206,7 +217,7 @@ impl FlushTableObjectId {
 }
 
 impl FlushFrozenOutcome {
-    fn deferred(request: &FlushFrozenRequest) -> Self {
+    pub(crate) fn deferred(request: &FlushFrozenRequest) -> Self {
         Self {
             branch_id: request.branch_id(),
             frozen_index: None,
@@ -595,6 +606,71 @@ pub(crate) fn flush_cache_branch_with_budget(
     };
     Ok(FlushFrozenOutcome::completed_outcome(
         request,
+        frozen_index,
+        table_facts,
+        None,
+        install_outcome,
+    ))
+}
+
+pub(crate) fn prepare_cache_flush_with_budget(
+    branch: &BranchLocalState,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<Option<PreparedCacheFlush>> {
+    let Some(frozen_index) = select_frozen_index(branch, request)? else {
+        return Ok(None);
+    };
+    let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    require_optional_generated_artifact_budget(
+        budget,
+        artifact.byte_count(),
+        "flush artifact exceeds generated artifact budget",
+    )?;
+    require_optional_table_reader_budget(
+        budget,
+        artifact.byte_count(),
+        "flush table reader exceeds storage budget",
+    )?;
+    let identity = artifact.facts().identity().clone();
+    let table_facts = artifact.facts().clone();
+    let reader = ImmutableTableReader::open_bytes(
+        identity.clone(),
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .map_err(table_error)?;
+    let table = branch_owned_table(branch.branch_id(), identity, reader)?;
+    Ok(Some(PreparedCacheFlush {
+        request: request.clone(),
+        frozen_index,
+        table_facts,
+        table,
+    }))
+}
+
+pub(crate) fn install_prepared_cache_flush(
+    branch: &mut BranchLocalState,
+    prepared: PreparedCacheFlush,
+) -> LifecycleResult<FlushFrozenOutcome> {
+    let PreparedCacheFlush {
+        request,
+        frozen_index,
+        table_facts,
+        table,
+    } = prepared;
+    let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(FlushFrozenOutcome::failed(
+                &request,
+                Some(frozen_index),
+                branch_error(error),
+            ));
+        }
+    };
+    Ok(FlushFrozenOutcome::completed_outcome(
+        &request,
         frozen_index,
         table_facts,
         None,

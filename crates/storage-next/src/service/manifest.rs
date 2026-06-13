@@ -231,6 +231,7 @@ pub(crate) type BranchCatalogManifestService<'a> =
 pub(crate) type PendingReleasesManifestService<'a> =
     ManifestService<'a, PENDING_RELEASES_MANIFEST_SERVICE>;
 
+#[derive(Clone)]
 pub(crate) struct ManifestService<'a, const ROLE: u8> {
     backend: BackendHandle<'a>,
 }
