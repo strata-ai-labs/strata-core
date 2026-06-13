@@ -3085,10 +3085,14 @@ fn borrowed_memory_durable_background_open_rejects_with_policy_error() {
     )
     .expect_err("background durable borrowed memory backend cannot be promoted");
 
+    // Assert on the structured field + stable class/code/remediation, not on
+    // display prose (error-contract testing rule).
+    assert_eq!(error.class(), StorageApiErrorClass::InvalidArgument);
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+    assert!(!error.remediation().trim().is_empty());
     match error {
-        StorageApiError::InvalidArgument { field, reason } => {
+        StorageApiError::InvalidArgument { field, .. } => {
             assert_eq!(field, "maintenance_scheduling_policy");
-            assert!(reason.contains("background durable opens with borrowed backend handles"));
         }
         _ => panic!("expected invalid maintenance scheduling policy argument"),
     }

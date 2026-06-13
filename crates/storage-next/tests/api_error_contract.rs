@@ -201,6 +201,9 @@ fn expected_code_prefix(class: StorageApiErrorClass) -> &'static str {
         StorageApiErrorClass::HistoryUnavailable => "history_unavailable",
         StorageApiErrorClass::AmbiguousCommit => "ambiguous_commit",
         StorageApiErrorClass::Internal => "internal",
+        // `StorageApiErrorClass` is `#[non_exhaustive]`; external code cannot
+        // match exhaustively. A new class must be given a code prefix here.
+        _ => panic!("unhandled StorageApiErrorClass; extend expected_code_prefix"),
     }
 }
 

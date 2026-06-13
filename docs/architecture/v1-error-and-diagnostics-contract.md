@@ -304,6 +304,44 @@ Rules:
 7. New codes require a product or architecture reason.
 8. `internal.*` codes should be rare and treated as bugs.
 
+### Error Surface (Stripe-Grade Fields)
+
+Every public failure is rendered to a caller as six fields. They are not all
+owned by the same layer; this is the contract for which layer produces which
+field.
+
+1. **Typed error class** — `ErrorClass`. Owned by the failing layer.
+2. **Error code** — `<class>.<area>.<detail>`. Owned by the failing layer;
+   registered.
+3. **Human-readable message** — owned in two parts. The failing layer (e.g.
+   storage) produces a *mechanical* message describing the technical failure.
+   Engine-next and the SDK produce the *user-facing* message. Storage-next must
+   not phrase for end users (see Layer Ownership).
+4. **Suggested fix (remediation)** — owned in two parts. The failing layer
+   produces a *mechanical remediation hint* (`StorageApiError::remediation()`):
+   a storage/engine instruction, never product or end-user phrasing, never
+   secrets. Engine-next/SDK translate it into user-facing guidance.
+5. **Reference ID** — an opaque token that ties a user-visible error to internal
+   logs. It is **assigned at the boundary/log sink, not at error construction**,
+   from an injected id source (the same injectable-source discipline as the
+   maintenance clock). The error value itself stays pure, `Clone`, and
+   deterministic; the boundary mints one id, writes it into both the rendered
+   status and the correlated internal log line. A deterministic id source must
+   be available so simulation/replay (deterministic-simulation testing) stays
+   reproducible. Construction-time random ids are prohibited because they break
+   replay and the pure-value error shape.
+6. **Doc link** — derived from the code at the boundary
+   (`<docs-base>/errors/<code>`), not stored on the error value. The code is the
+   stable doc anchor; codes must be URL-path-safe.
+
+Layer responsibilities for the surface:
+
+1. Storage-next owns fields 1, 2, the mechanical half of 3, and the mechanical
+   half of 4. It owns no reference id, no doc URL, and no user-facing phrasing.
+2. Engine-next composes product meaning: user-facing message and suggested fix.
+3. The boundary (command/IPC/SDK/CLI status renderer) assigns the reference id,
+   derives the doc link from the code, and emits the full six-field status.
+
 ### Retry Policy
 
 Retryability is not a property users should infer from messages.
@@ -692,6 +730,28 @@ The testing and conformance plan must include these error tests.
 4. Display output is non-empty and redacted.
 5. Structured details serialize and deserialize through the command boundary.
 
+### Error Surface Contract Tests
+
+Every public error type must have an exhaustive per-variant contract test that
+asserts the layer-owned half of the Stripe-grade surface. For storage-next this
+is `crates/storage-next/tests/api_error_contract.rs`:
+
+1. A fixture samples every variant; a count backstop plus the lib's exhaustive
+   `code()`/`class()`/`remediation()`/`Display` matches force a new variant to be
+   handled before it can ship.
+2. Each code is `<class>.<area>.<detail>`, lowercase snake_case, three segments,
+   URL-path-safe (doc-linkable).
+3. Each code's class prefix agrees with `class()`.
+4. The mechanical message is non-empty and redaction-clean.
+5. The mechanical remediation hint is non-empty, redaction-clean, and carries no
+   product/end-user phrasing.
+6. Source-bearing variants preserve their source chain.
+
+The boundary layer (engine/SDK status renderer) owns the complementary test:
+reference id is assigned from the injected id source, the same id appears in the
+status and the log line, the deterministic id source replays identically under a
+fixed seed, and the doc link is derived from the code.
+
 ### Mapping Tests
 
 1. Storage backend errors map into the expected engine codes.
@@ -799,3 +859,12 @@ These questions should be resolved before V1 implementation freezes:
    trace IDs?
 5. Which recovery health vocabulary is public product surface and which remains
    storage diagnostic detail?
+
+## Resolved Decisions
+
+1. **Reference id generation** (was implied by open question 4). Resolved:
+   reference ids are assigned at the boundary/log sink from an injected id
+   source, never minted at error construction. See "Error Surface (Stripe-Grade
+   Fields)". This keeps error values pure and deterministic and ties the
+   user-visible id to internal logs. A deterministic id source must exist so
+   deterministic-simulation testing replays identically.
