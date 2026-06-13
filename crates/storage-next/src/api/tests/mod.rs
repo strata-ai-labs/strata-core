@@ -764,6 +764,167 @@ fn assert_background_drain_build_before_publish_lock(drain_source: &str, label: 
 }
 
 #[test]
+fn source_guard_background_controller_uses_executor_trait_and_clock() {
+    let runtime_source = include_str!("../runtime.rs");
+    let controller_block = runtime_source
+        .split("struct BackgroundRuntimeController")
+        .nth(1)
+        .expect("background runtime controller is present")
+        .split("impl fmt::Debug for BackgroundRuntimeController")
+        .next()
+        .expect("controller field block precedes debug impl");
+
+    assert!(
+        controller_block.contains("Arc<dyn MaintenanceExecutor>"),
+        "controller must hold the maintenance executor trait"
+    );
+    assert!(
+        controller_block.contains("Arc<dyn MaintenanceClock>"),
+        "controller must hold the maintenance clock trait"
+    );
+    assert!(
+        !controller_block.contains("BackgroundScheduler"),
+        "controller must not hold the concrete threaded scheduler"
+    );
+}
+
+#[test]
+fn source_guard_background_drive_logic_uses_maintenance_clock() {
+    let runtime_source = include_str!("../runtime.rs");
+    for (label, source) in [
+        (
+            "cache",
+            runtime_source
+                .split("fn drain_cache_background_round")
+                .nth(1)
+                .expect("cache drain function is present")
+                .split("fn run_next_durable_maintenance")
+                .next()
+                .expect("cache drain precedes durable helper"),
+        ),
+        (
+            "durable",
+            runtime_source
+                .split("fn drain_durable_background_round")
+                .nth(1)
+                .expect("durable drain function is present")
+                .split("fn map_generation_guard")
+                .next()
+                .expect("durable drain precedes map_generation_guard"),
+        ),
+        (
+            "pressure-wait",
+            runtime_source
+                .split("fn background_wait_after_pressure_rejection")
+                .nth(1)
+                .expect("pressure wait function is present")
+                .split("fn enqueue_pressure_maintenance_for_background_wait")
+                .next()
+                .expect("pressure wait precedes enqueue helper"),
+        ),
+    ] {
+        assert!(
+            source.contains("MaintenanceClock") || source.contains("MaintenanceInstant"),
+            "{label} drive logic must use the maintenance clock boundary"
+        );
+        assert!(
+            !source.contains("Instant::now"),
+            "{label} drive logic must not read wall-clock time directly"
+        );
+    }
+}
+
+#[test]
+fn source_guard_maintenance_executor_trait_hides_threading_types() {
+    let background_source = include_str!("../../lifecycle/background.rs");
+    let trait_source = background_source
+        .split("pub(crate) trait MaintenanceExecutor")
+        .nth(1)
+        .expect("maintenance executor trait is present")
+        .split("struct TaskEnvelope")
+        .next()
+        .expect("trait precedes task envelope");
+
+    for forbidden in [
+        "std::thread",
+        "JoinHandle",
+        "parking_lot",
+        "Condvar",
+        "Instant",
+    ] {
+        assert!(
+            !trait_source.contains(forbidden),
+            "MaintenanceExecutor trait signature must not expose {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn source_guard_deterministic_inline_maps_to_background_drive_path() {
+    let runtime_source = include_str!("../runtime.rs");
+    let mapping = runtime_source
+        .split("const fn map_maintenance_scheduling_policy")
+        .nth(1)
+        .expect("maintenance policy mapping is present")
+        .split("const fn background_executor_mode")
+        .next()
+        .expect("mapping precedes executor mode helper");
+    let compact_mapping = mapping.split_whitespace().collect::<String>();
+
+    assert!(
+        compact_mapping.contains(
+            "StorageMaintenanceSchedulingPolicy::DeterministicInline=>{LifecycleMaintenanceSchedulingPolicy::Background}"
+        ),
+        "API deterministic-inline policy must run the Background lifecycle drive path"
+    );
+}
+
+#[test]
+fn source_guard_lifecycle_inline_paths_are_marked_transitional() {
+    for (label, source) in [
+        ("cache", include_str!("../../lifecycle/cache.rs")),
+        (
+            "durable",
+            include_str!("../../lifecycle/durable/maintenance.rs"),
+        ),
+    ] {
+        for function_name in [
+            "fn run_inline_post_commit_maintenance",
+            "fn run_inline_admission_maintenance",
+        ] {
+            let function_block = source
+                .split(function_name)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{label} {function_name} is present"))
+                .split("fn ")
+                .next()
+                .expect("function block precedes next function");
+            assert!(
+                function_block.contains("L8E-H deletion condition"),
+                "{label} {function_name} must be marked as transitional while it exists"
+            );
+        }
+    }
+}
+
+#[test]
+fn lifecycle_simulation_boundary_source_guards_are_registered() {
+    let api_tests_source = include_str!("mod.rs");
+    for guard_name in [
+        "source_guard_background_controller_uses_executor_trait_and_clock",
+        "source_guard_background_drive_logic_uses_maintenance_clock",
+        "source_guard_maintenance_executor_trait_hides_threading_types",
+        "source_guard_deterministic_inline_maps_to_background_drive_path",
+        "source_guard_lifecycle_inline_paths_are_marked_transitional",
+    ] {
+        assert!(
+            api_tests_source.contains(guard_name),
+            "lifecycle simulation boundary guard {guard_name} must stay registered"
+        );
+    }
+}
+
+#[test]
 fn open_options_reject_cache_lossy_recovery() {
     let options = StorageOpenOptions::cache().with_strict_recovery(false);
     let validation = options
@@ -877,18 +1038,21 @@ fn open_cache_helper_returns_open_runtime_and_cache_summary() {
 
 #[test]
 fn open_cache_can_select_non_background_maintenance_policies_for_tests() {
-    for (api_policy, lifecycle_policy) in [
+    for (api_policy, lifecycle_policy, worker_count) in [
         (
             StorageMaintenanceSchedulingPolicy::DeterministicInline,
-            crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+            crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background,
+            0,
         ),
         (
             StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
             crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            0,
         ),
         (
             StorageMaintenanceSchedulingPolicy::Disabled,
             crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Disabled,
+            0,
         ),
     ] {
         let outcome = StorageRuntime::open(
@@ -908,9 +1072,471 @@ fn open_cache_can_select_non_background_maintenance_policies_for_tests() {
                 .maintenance_status()
                 .expect("maintenance status")
                 .background_worker_count(),
-            0
+            worker_count
         );
     }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_uses_background_drive_path_without_worker_threads() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::DeterministicInline,
+        ),
+    )
+    .expect("deterministic inline cache open")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+
+    runtime
+        .commit(&background_put_batch(
+            b"deterministic-inline-background-drive",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("rotate active table");
+    runtime
+        .enqueue_lifecycle_maintenance_for_test(crate::lifecycle::MaintenanceTaskRequest::flush(
+            branch,
+        ))
+        .expect("enqueue flush through background drive path");
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert!(status.background_tasks_completed() >= 1);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_runtimes_created(), 1);
+    assert_eq!(perf.lifecycle_background_runtime_workers_created(), 0);
+    assert!(perf.lifecycle_background_drain_rounds() >= 1);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InlineReplayFacts {
+    maintenance_task_order: Vec<&'static str>,
+    queue_trajectory: Vec<usize>,
+    pending_tasks: usize,
+    background_worker_count: usize,
+    background_tasks_completed: u64,
+    owned_l0_tables: usize,
+    owned_l1_tables: usize,
+    visible_value: Vec<u8>,
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn inline_executor_replays_fixed_background_scenario_deterministically() {
+    let first = run_inline_replay_scenario();
+    let second = run_inline_replay_scenario();
+
+    assert_eq!(first, second);
+    assert_eq!(first.pending_tasks, 0);
+    assert_eq!(first.background_worker_count, 0);
+    assert!(first.background_tasks_completed >= 1);
+    assert_eq!(first.maintenance_task_order, vec!["flush", "compaction"]);
+    assert_eq!(first.owned_l0_tables, 0);
+    assert_eq!(first.owned_l1_tables, 1);
+}
+
+#[cfg(feature = "perf-trace")]
+fn run_inline_replay_scenario() -> InlineReplayFacts {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::DeterministicInline,
+        ),
+    )
+    .expect("inline cache open")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    let mut queue_trajectory = vec![runtime
+        .maintenance_status()
+        .expect("initial maintenance status")
+        .pending_tasks()];
+    let mut maintenance_task_order = Vec::new();
+
+    runtime
+        .commit(&background_put_batch(
+            b"inline-replay-background-flush",
+            b"value".to_vec(),
+        ))
+        .expect("seed background flush row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("rotate active table before background flush");
+    runtime
+        .enqueue_lifecycle_maintenance_for_test(crate::lifecycle::MaintenanceTaskRequest::flush(
+            branch,
+        ))
+        .expect("enqueue flush through background drive path");
+    maintenance_task_order.push("flush");
+    queue_trajectory.push(
+        runtime
+            .maintenance_status()
+            .expect("post-flush maintenance status")
+            .pending_tasks(),
+    );
+
+    for index in 0..2 {
+        let key = format!("inline-replay-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(
+                key.as_bytes(),
+                u64::try_from(index + 1).expect("index fits"),
+            ))
+            .expect("seed raw active row");
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush raw row into L0 table");
+        queue_trajectory.push(
+            runtime
+                .maintenance_status()
+                .expect("post-flush maintenance status")
+                .pending_tasks(),
+        );
+    }
+    runtime
+        .enqueue_lifecycle_maintenance_for_test(
+            crate::lifecycle::MaintenanceTaskRequest::compaction(branch, 0),
+        )
+        .expect("enqueue compaction through background drive path");
+    maintenance_task_order.push("compaction");
+    queue_trajectory.push(
+        runtime
+            .maintenance_status()
+            .expect("post-background maintenance status")
+            .pending_tasks(),
+    );
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    let layout = runtime
+        .branch_source_layout_for_test(branch)
+        .expect("source layout");
+    let read = runtime
+        .read_point(&PointReadRequest::new(
+            branch,
+            background_space(),
+            key(b"inline-replay-1"),
+            ReadBound::Latest,
+        ))
+        .expect("read compacted inline replay row");
+    let visible_value = read
+        .row()
+        .expect("visible inline replay row")
+        .value()
+        .expect("visible inline replay value")
+        .as_bytes()
+        .to_vec();
+    InlineReplayFacts {
+        maintenance_task_order,
+        queue_trajectory,
+        pending_tasks: status.pending_tasks(),
+        background_worker_count: status.background_worker_count(),
+        background_tasks_completed: status.background_tasks_completed(),
+        owned_l0_tables: layout.owned_l0_tables(),
+        owned_l1_tables: background_owned_table_count_at(&layout, 1),
+        visible_value,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BackgroundCompactionParityFacts {
+    completed_tasks: Vec<&'static str>,
+    pending_tasks: usize,
+    owned_l0_tables: usize,
+    owned_l1_tables: usize,
+    visible_value: Vec<u8>,
+}
+
+#[test]
+fn threaded_and_inline_background_executors_converge_on_compaction_shape() {
+    let threaded = run_background_compaction_parity_scenario(
+        StorageMaintenanceSchedulingPolicy::Background,
+        b"threaded-inline-parity-threaded",
+    );
+    let inline = run_background_compaction_parity_scenario(
+        StorageMaintenanceSchedulingPolicy::DeterministicInline,
+        b"threaded-inline-parity-inline",
+    );
+
+    assert_eq!(threaded, inline);
+}
+
+fn run_background_compaction_parity_scenario(
+    policy: StorageMaintenanceSchedulingPolicy,
+    key_prefix: &[u8],
+) -> BackgroundCompactionParityFacts {
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(policy),
+    )
+    .expect("cache open")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+
+    for index in 0..2 {
+        let mut key_bytes = key_prefix.to_vec();
+        key_bytes.extend_from_slice(format!("-{index}").as_bytes());
+        runtime
+            .append_raw_row_for_test(background_raw_row(
+                &key_bytes,
+                u64::try_from(index + 1).expect("index fits"),
+            ))
+            .expect("seed raw active row");
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush raw row into L0 table");
+    }
+    runtime
+        .enqueue_lifecycle_maintenance_for_test(
+            crate::lifecycle::MaintenanceTaskRequest::compaction(branch, 0),
+        )
+        .expect("enqueue compaction through background drive path");
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    let layout = runtime
+        .branch_source_layout_for_test(branch)
+        .expect("source layout");
+    let mut read_key = key_prefix.to_vec();
+    read_key.extend_from_slice(b"-1");
+    let read = runtime
+        .read_point(&PointReadRequest::new(
+            branch,
+            background_space(),
+            key(&read_key),
+            ReadBound::Latest,
+        ))
+        .expect("read compacted parity row");
+    let visible_value = read
+        .row()
+        .expect("visible parity row")
+        .value()
+        .expect("visible parity value")
+        .as_bytes()
+        .to_vec();
+
+    BackgroundCompactionParityFacts {
+        completed_tasks: vec!["compaction"],
+        pending_tasks: status.pending_tasks(),
+        owned_l0_tables: layout.owned_l0_tables(),
+        owned_l1_tables: background_owned_table_count_at(&layout, 1),
+        visible_value,
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_urgent_pressure_advances_manual_clock_for_slowdown() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::DeterministicInline,
+            ),
+    )
+    .expect("low-memory deterministic-inline cache open")
+    .into_runtime();
+
+    runtime
+        .commit(&background_put_batch(
+            b"inline-urgent-clock-seed",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create frozen urgent pressure");
+    let before = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+    runtime
+        .commit(&background_put_batch(
+            b"inline-urgent-clock-followup",
+            b"value".to_vec(),
+        ))
+        .expect("urgent commit should be accepted with bounded slowdown");
+    let after = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 1);
+    assert!(perf.lifecycle_write_admission_slowdown_ns() > 0);
+    assert_eq!(
+        after.saturating_duration_since(before),
+        std::time::Duration::from_nanos(perf.lifecycle_write_admission_slowdown_ns())
+    );
+    assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert!(status.background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::DeterministicInline,
+        ),
+    )
+    .expect("deterministic-inline cache open")
+    .into_runtime();
+
+    for index in 0..4 {
+        let key = format!("inline-block-clock-seed-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .expect("seed raw active row before rotation");
+        runtime
+            .rotate_default_branch_for_test()
+            .expect("create frozen table");
+    }
+    let before = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+    runtime
+        .commit(&background_put_batch(
+            b"inline-block-clock-followup",
+            b"value".to_vec(),
+        ))
+        .expect("block pressure should wait for inline background progress and retry");
+    let after = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_wait_attempts() >= 1);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+    assert!(perf.lifecycle_write_admission_block_wait_ns() > 0);
+    assert!(after > before);
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert!(status.background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progress() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::DeterministicInline,
+        ),
+    )
+    .expect("deterministic-inline cache open")
+    .into_runtime();
+    assert!(
+        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
+        "deterministic-inline background runtime should expose test drain limits"
+    );
+
+    for index in 0..4 {
+        let key = format!("inline-block-deadline-seed-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .expect("seed raw active row before rotation");
+        runtime
+            .rotate_default_branch_for_test()
+            .expect("create frozen table");
+    }
+    let before = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+    let error = runtime
+        .commit(&background_put_batch(
+            b"inline-block-deadline-followup",
+            b"value".to_vec(),
+        ))
+        .expect_err("manual-clock block wait should hit deterministic deadline");
+    let after = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+
+    assert!(matches!(
+        error,
+        StorageApiError::StoragePressure {
+            severity: CommitAdmissionPressureSeverity::Blocking,
+            retryable: true,
+            ..
+        }
+    ));
+    assert!(
+        after.saturating_duration_since(before) >= std::time::Duration::from_millis(250),
+        "manual clock should advance to the block wait deadline"
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_wait_attempts() >= 1);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 1);
+    assert!(perf.lifecycle_write_admission_block_wait_ns() > 0);
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert!(status.pending_tasks() >= 1);
+    assert_eq!(status.background_worker_count(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_manual_clock_runtime_limit_stops_and_resumes_drain_round() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache().with_maintenance_scheduling_policy(
+            StorageMaintenanceSchedulingPolicy::DeterministicInline,
+        ),
+    )
+    .expect("deterministic-inline cache open")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    assert!(
+        runtime.set_background_drain_limits_for_test(usize::MAX, std::time::Duration::ZERO),
+        "deterministic-inline background runtime should expose test drain limits"
+    );
+
+    runtime
+        .commit(&background_put_batch(
+            b"inline-runtime-limit-seed",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create frozen table");
+    runtime
+        .enqueue_lifecycle_maintenance_for_test(crate::lifecycle::MaintenanceTaskRequest::flush(
+            branch,
+        ))
+        .expect("enqueue flush with zero runtime budget");
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks(),
+        1
+    );
+
+    assert!(
+        runtime.set_background_drain_limits_for_test(usize::MAX, std::time::Duration::from_secs(1)),
+        "deterministic-inline background runtime should expose test drain limits"
+    );
+    runtime.submit_stale_background_wake_for_test();
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert!(status.background_tasks_completed() >= 2);
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_drain_rounds() >= 2);
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2004,6 +2630,61 @@ fn open_durable_local_with_backend_returns_open_runtime() {
             .background_worker_count(),
         1
     );
+}
+
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_with_backend_deterministic_inline_uses_inline_background_driver() {
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
+        "durable-inline-background",
+    ))));
+    let outcome = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::DeterministicInline,
+            ),
+        backend,
+    )
+    .expect("durable deterministic-inline open should use owned inline background driver");
+    let summary = outcome.summary();
+    let mut runtime = outcome.into_runtime();
+
+    assert_eq!(
+        summary.maintenance_scheduling_policy(),
+        StorageMaintenanceSchedulingPolicy::DeterministicInline
+    );
+    assert_eq!(
+        runtime.maintenance_scheduling_policy_for_test(),
+        crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
+    );
+    assert_eq!(
+        runtime
+            .maintenance_status()
+            .expect("initial maintenance status")
+            .background_worker_count(),
+        0
+    );
+
+    runtime
+        .commit(&background_put_batch(
+            b"durable-inline-background",
+            b"value".to_vec(),
+        ))
+        .expect("seed durable row");
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Global,
+        ))
+        .expect("enqueue checkpoint through inline background driver");
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime
+        .maintenance_status()
+        .expect("final maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert!(status.background_tasks_completed() >= 1);
 }
 
 #[test]

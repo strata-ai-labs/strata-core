@@ -39,8 +39,9 @@ mod wal_growth;
     reason = "background scheduler exports define the local lifecycle surface"
 )]
 pub(crate) use background::{
-    BackgroundBackpressureError, BackgroundScheduler, BackgroundSchedulerStats,
-    BackgroundTaskPriority,
+    BackgroundBackpressureError, BackgroundScheduler, BackgroundTaskPriority,
+    InlineMaintenanceExecutor, MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats,
+    MaintenanceInstant, ManualMaintenanceClock, RealMaintenanceClock, ThreadedMaintenanceExecutor,
 };
 #[allow(
     unused_imports,

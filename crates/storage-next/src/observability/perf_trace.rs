@@ -3651,6 +3651,16 @@ pub(crate) fn start_timer() -> PerfTraceTimer {
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn timer_elapsed(_start: PerfTraceTimer) -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn timer_elapsed(start: PerfTraceTimer) -> std::time::Duration {
+    start.elapsed()
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_api_commit_map_elapsed(_start: PerfTraceTimer) {}
 
 #[cfg(feature = "perf-trace")]

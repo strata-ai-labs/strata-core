@@ -11,7 +11,7 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Priority levels for background lifecycle work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,9 +36,87 @@ impl std::fmt::Display for BackgroundBackpressureError {
 
 impl std::error::Error for BackgroundBackpressureError {}
 
-/// Scheduler metrics snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, PartialOrd, Ord)]
+pub(crate) struct MaintenanceInstant {
+    elapsed: Duration,
+}
+
+impl MaintenanceInstant {
+    pub(crate) const fn from_elapsed(elapsed: Duration) -> Self {
+        Self { elapsed }
+    }
+
+    pub(crate) fn saturating_add(self, duration: Duration) -> Self {
+        Self {
+            elapsed: self.elapsed.saturating_add(duration),
+        }
+    }
+
+    pub(crate) fn saturating_duration_since(self, earlier: Self) -> Duration {
+        self.elapsed.saturating_sub(earlier.elapsed)
+    }
+}
+
+pub(crate) trait MaintenanceClock: Send + Sync {
+    fn now(&self) -> MaintenanceInstant;
+
+    fn sleep(&self, duration: Duration);
+}
+
+#[derive(Debug)]
+pub(crate) struct RealMaintenanceClock {
+    origin: Instant,
+}
+
+impl RealMaintenanceClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl MaintenanceClock for RealMaintenanceClock {
+    fn now(&self) -> MaintenanceInstant {
+        MaintenanceInstant::from_elapsed(self.origin.elapsed())
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ManualMaintenanceClock {
+    elapsed_nanos: Arc<AtomicU64>,
+}
+
+impl ManualMaintenanceClock {
+    pub(crate) fn advance(&self, duration: Duration) {
+        let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        self.elapsed_nanos
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+                Some(current.saturating_add(nanos))
+            })
+            .expect("manual maintenance clock update is infallible");
+    }
+}
+
+impl MaintenanceClock for ManualMaintenanceClock {
+    fn now(&self) -> MaintenanceInstant {
+        MaintenanceInstant::from_elapsed(Duration::from_nanos(
+            self.elapsed_nanos.load(AtomicOrdering::Acquire),
+        ))
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.advance(duration);
+    }
+}
+
+/// Maintenance executor metrics snapshot.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct BackgroundSchedulerStats {
+pub(crate) struct MaintenanceExecutorStats {
     /// Number of tasks waiting in the background queue.
     pub(crate) queue_depth: usize,
     /// Number of tasks currently being executed by workers.
@@ -47,6 +125,22 @@ pub(crate) struct BackgroundSchedulerStats {
     pub(crate) tasks_completed: u64,
     /// Number of worker threads.
     pub(crate) worker_count: usize,
+}
+
+pub(crate) trait MaintenanceExecutor: Send + Sync {
+    fn submit(
+        &self,
+        priority: BackgroundTaskPriority,
+        work: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<(), BackgroundBackpressureError>;
+
+    fn wait_for_idle(&self);
+
+    fn wait_for_progress(&self, completed_before_wait: u64, timeout: Duration) -> bool;
+
+    fn shutdown(&self);
+
+    fn stats(&self) -> MaintenanceExecutorStats;
 }
 
 struct TaskEnvelope {
@@ -303,12 +397,195 @@ impl BackgroundScheduler {
     }
 
     /// Returns an observational metrics snapshot.
-    pub(crate) fn stats(&self) -> BackgroundSchedulerStats {
-        BackgroundSchedulerStats {
+    pub(crate) fn stats(&self) -> MaintenanceExecutorStats {
+        MaintenanceExecutorStats {
             queue_depth: self.inner.queue_depth.load(AtomicOrdering::Relaxed),
             active_tasks: self.inner.active_tasks.load(AtomicOrdering::Relaxed),
             tasks_completed: self.inner.tasks_completed.load(AtomicOrdering::Relaxed),
             worker_count: self.worker_count,
+        }
+    }
+}
+
+/// Threaded executor implementation backed by the ported old-engine scheduler.
+pub(crate) struct ThreadedMaintenanceExecutor {
+    scheduler: BackgroundScheduler,
+}
+
+impl std::fmt::Debug for ThreadedMaintenanceExecutor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ThreadedMaintenanceExecutor")
+            .field("stats", &self.stats())
+            .finish()
+    }
+}
+
+impl ThreadedMaintenanceExecutor {
+    pub(crate) fn new(worker_count: usize, max_queue_depth: usize) -> Self {
+        Self {
+            scheduler: BackgroundScheduler::new(worker_count, max_queue_depth),
+        }
+    }
+}
+
+impl MaintenanceExecutor for ThreadedMaintenanceExecutor {
+    fn submit(
+        &self,
+        priority: BackgroundTaskPriority,
+        work: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<(), BackgroundBackpressureError> {
+        self.scheduler.submit(priority, work)
+    }
+
+    fn wait_for_idle(&self) {
+        self.scheduler.drain();
+    }
+
+    fn wait_for_progress(&self, completed_before_wait: u64, timeout: Duration) -> bool {
+        self.scheduler.wait_for_progress_until(
+            completed_before_wait,
+            Instant::now()
+                .checked_add(timeout)
+                .unwrap_or_else(Instant::now),
+        )
+    }
+
+    fn shutdown(&self) {
+        self.scheduler.shutdown();
+    }
+
+    fn stats(&self) -> MaintenanceExecutorStats {
+        self.scheduler.stats()
+    }
+}
+
+struct InlineExecutorInner {
+    queue: BinaryHeap<TaskEnvelope>,
+    shutdown: bool,
+    sequence: u64,
+    active_tasks: usize,
+    max_queue_depth: usize,
+    tasks_completed: u64,
+}
+
+/// Single-threaded executor that runs the production maintenance drive path
+/// synchronously when asked to drain.
+pub(crate) struct InlineMaintenanceExecutor {
+    inner: ParkingMutex<InlineExecutorInner>,
+    clock: Arc<dyn MaintenanceClock>,
+}
+
+impl std::fmt::Debug for InlineMaintenanceExecutor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InlineMaintenanceExecutor")
+            .field("stats", &self.stats())
+            .finish()
+    }
+}
+
+impl InlineMaintenanceExecutor {
+    pub(crate) fn new(max_queue_depth: usize, clock: Arc<dyn MaintenanceClock>) -> Self {
+        Self {
+            inner: ParkingMutex::new(InlineExecutorInner {
+                queue: BinaryHeap::new(),
+                shutdown: false,
+                sequence: 0,
+                active_tasks: 0,
+                max_queue_depth,
+                tasks_completed: 0,
+            }),
+            clock,
+        }
+    }
+
+    fn run_one(&self) -> bool {
+        let task = {
+            let mut inner = self.inner.lock();
+            let Some(task) = inner.queue.pop() else {
+                return false;
+            };
+            inner.active_tasks = inner.active_tasks.saturating_add(1);
+            task
+        };
+
+        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
+            tracing::error!(
+                "inline maintenance task panicked: {:?}",
+                error
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .unwrap_or("(non-string panic)")
+            );
+        }
+
+        let mut inner = self.inner.lock();
+        inner.active_tasks = inner.active_tasks.saturating_sub(1);
+        inner.tasks_completed = inner.tasks_completed.saturating_add(1);
+        true
+    }
+
+    fn idle(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.queue.is_empty() && inner.active_tasks == 0
+    }
+}
+
+impl MaintenanceExecutor for InlineMaintenanceExecutor {
+    fn submit(
+        &self,
+        priority: BackgroundTaskPriority,
+        work: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<(), BackgroundBackpressureError> {
+        let mut inner = self.inner.lock();
+        if inner.shutdown || inner.queue.len() >= inner.max_queue_depth {
+            return Err(BackgroundBackpressureError);
+        }
+        let sequence = inner.sequence;
+        inner.sequence = inner.sequence.saturating_add(1);
+        inner.queue.push(TaskEnvelope {
+            priority,
+            sequence,
+            work,
+        });
+        Ok(())
+    }
+
+    fn wait_for_idle(&self) {
+        while self.run_one() {}
+    }
+
+    fn wait_for_progress(&self, completed_before_wait: u64, timeout: Duration) -> bool {
+        if self.stats().tasks_completed > completed_before_wait || self.idle() {
+            return true;
+        }
+        if timeout.is_zero() {
+            return false;
+        }
+        let ran_task = self.run_one();
+        let progressed = self.stats().tasks_completed > completed_before_wait || self.idle();
+        if !progressed && !ran_task {
+            self.clock.sleep(timeout);
+        }
+        progressed
+    }
+
+    fn shutdown(&self) {
+        {
+            let mut inner = self.inner.lock();
+            inner.shutdown = true;
+        }
+        self.wait_for_idle();
+    }
+
+    fn stats(&self) -> MaintenanceExecutorStats {
+        let inner = self.inner.lock();
+        MaintenanceExecutorStats {
+            queue_depth: inner.queue.len(),
+            active_tasks: inner.active_tasks,
+            tasks_completed: inner.tasks_completed,
+            worker_count: 0,
         }
     }
 }
@@ -483,6 +760,79 @@ mod tests {
 
         assert_eq!(order.lock().clone(), vec![0, 1, 2, 3, 4]);
         scheduler.shutdown();
+    }
+
+    #[test]
+    fn inline_executor_runs_priority_then_fifo_order() {
+        let executor = InlineMaintenanceExecutor::new(
+            4096,
+            Arc::new(ManualMaintenanceClock::default()) as Arc<dyn MaintenanceClock>,
+        );
+        let order = Arc::new(ParkingMutex::new(Vec::new()));
+
+        for (priority, value) in [
+            (BackgroundTaskPriority::Low, "low-0"),
+            (BackgroundTaskPriority::Normal, "normal-0"),
+            (BackgroundTaskPriority::High, "high-0"),
+            (BackgroundTaskPriority::High, "high-1"),
+            (BackgroundTaskPriority::Normal, "normal-1"),
+        ] {
+            let observed = Arc::clone(&order);
+            executor
+                .submit(
+                    priority,
+                    Box::new(move || {
+                        observed.lock().push(value);
+                    }),
+                )
+                .expect("submit inline task");
+        }
+
+        executor.wait_for_idle();
+
+        assert_eq!(
+            order.lock().clone(),
+            vec!["high-0", "high-1", "normal-0", "normal-1", "low-0"]
+        );
+        let stats = executor.stats();
+        assert_eq!(stats.queue_depth, 0);
+        assert_eq!(stats.active_tasks, 0);
+        assert_eq!(stats.tasks_completed, 5);
+        assert_eq!(stats.worker_count, 0);
+    }
+
+    #[test]
+    fn inline_executor_wait_timeout_advances_manual_clock_without_progress() {
+        let clock = Arc::new(ManualMaintenanceClock::default());
+        let executor =
+            InlineMaintenanceExecutor::new(4096, Arc::clone(&clock) as Arc<dyn MaintenanceClock>);
+        {
+            let mut inner = executor.inner.lock();
+            inner.active_tasks = 1;
+        }
+        let start = clock.now();
+
+        assert!(!executor.wait_for_progress(0, Duration::from_millis(25)));
+
+        assert_eq!(
+            clock.now().saturating_duration_since(start),
+            Duration::from_millis(25)
+        );
+        let mut inner = executor.inner.lock();
+        inner.active_tasks = 0;
+    }
+
+    #[test]
+    fn manual_maintenance_clock_sleep_advances_simulated_time() {
+        let clock = ManualMaintenanceClock::default();
+        let start = clock.now();
+
+        clock.sleep(Duration::from_millis(7));
+
+        assert_eq!(
+            clock.now().saturating_duration_since(start),
+            Duration::from_millis(7)
+        );
     }
 
     #[test]
