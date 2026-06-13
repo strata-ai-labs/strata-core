@@ -1947,7 +1947,302 @@ fn background_wake_after_shutdown_records_rejected_without_running_task() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_wake_rejected(), 1);
+    assert_eq!(
+        perf.lifecycle_background_submit_after_shutdown_rejected(),
+        1
+    );
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
     assert_eq!(perf.lifecycle_background_stale_wake_noop(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_close_summary_includes_shutdown_stats() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    let close = runtime.close().expect("close background runtime");
+
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert_eq!(close.background_worker_count(), 1);
+    assert_eq!(close.background_queue_depth(), 0);
+    assert_eq!(close.background_active_tasks(), 0);
+    assert_eq!(close.background_tasks_completed(), 0);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_repeated_close_preserves_prior_background_facts() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    let first = runtime.close().expect("first close");
+    let second = runtime.close().expect("second close");
+
+    assert!(!first.idempotent());
+    assert!(second.idempotent());
+    assert_eq!(second.state(), first.state());
+    assert_eq!(
+        second.background_worker_count(),
+        first.background_worker_count()
+    );
+    assert_eq!(
+        second.background_queue_depth(),
+        first.background_queue_depth()
+    );
+    assert_eq!(
+        second.background_active_tasks(),
+        first.background_active_tasks()
+    );
+    assert_eq!(
+        second.background_tasks_completed(),
+        first.background_tasks_completed()
+    );
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_close_with_active_task_obeys_shutdown_deadline() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let observed_open = Arc::new(AtomicBool::new(false));
+    assert!(
+        runtime.submit_runtime_state_background_probe_for_test(
+            Arc::clone(&ready),
+            Arc::clone(&release),
+            Arc::clone(&observed_open),
+        ),
+        "background runtime should accept probe"
+    );
+    ready.wait();
+
+    let start = std::time::Instant::now();
+    let close = runtime
+        .close_with_options(
+            StorageCloseOptions::graceful()
+                .with_background_shutdown_timeout(std::time::Duration::from_millis(1)),
+        )
+        .expect("close detaches stuck background worker after deadline");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "close must not hang behind an active background worker"
+    );
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert_eq!(close.background_worker_count(), 1);
+    assert_eq!(close.background_active_tasks(), 1);
+    release.wait();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while crate::observability::perf_trace::snapshot()
+        .lifecycle_background_shutdown_executor_tasks_completed()
+        == 0
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached background task completion was not counted after shutdown"
+        );
+        std::thread::yield_now();
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 0);
+    assert_eq!(perf.lifecycle_background_shutdown_detached_workers(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_executor_tasks_completed(),
+        1
+    );
+    assert!(
+        !observed_open.load(Ordering::Acquire),
+        "detached probe must observe the lifecycle runtime closed after timeout close returns"
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_close_succeeds_after_pre_shutdown_background_panic() {
+    use std::sync::{Arc, Barrier};
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+
+    assert!(
+        runtime.submit_panicking_background_task_for_test(Arc::clone(&ready), Arc::clone(&release)),
+        "background runtime should accept panic probe"
+    );
+    ready.wait();
+    release.wait();
+    runtime.wait_background_idle_for_test();
+
+    let before_close = crate::observability::perf_trace::snapshot();
+    assert_eq!(before_close.lifecycle_background_worker_panics(), 1);
+    assert_eq!(
+        before_close.lifecycle_background_shutdown_executor_tasks_completed(),
+        0
+    );
+
+    let close = runtime
+        .close()
+        .expect("ordinary pre-shutdown background panic must not poison close");
+
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_worker_panics(), 1);
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_close_reports_shutdown_panic_once_then_retry_closes() {
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+    let shutdown_requested = runtime
+        .background_shutdown_requested_flag_for_test()
+        .expect("background runtime exposes shutdown flag in tests");
+    let ready = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+
+    assert!(
+        runtime.submit_panicking_background_task_for_test(Arc::clone(&ready), Arc::clone(&release)),
+        "background runtime should accept panic probe"
+    );
+    ready.wait();
+
+    let release_thread = {
+        let shutdown_requested = Arc::clone(&shutdown_requested);
+        let release = Arc::clone(&release);
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !shutdown_requested.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "close did not request background shutdown"
+                );
+                std::thread::yield_now();
+            }
+            release.wait();
+        })
+    };
+
+    let error = runtime
+        .close()
+        .expect_err("shutdown-time background panic must fail the first close");
+    release_thread.join().expect("release thread completes");
+
+    assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
+    assert_eq!(error.code(), "failed_precondition.storage_api.maintenance");
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_worker_panics(), 1);
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_executor_tasks_completed(),
+        1
+    );
+
+    let retry = runtime
+        .close()
+        .expect("retry close after reported shutdown panic");
+    assert_eq!(retry.state(), StorageRuntimeState::Closed);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn dropping_open_background_runtime_requests_shutdown() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    {
+        let runtime = StorageRuntime::open_cache()
+            .expect("background cache open")
+            .into_runtime();
+        assert!(runtime
+            .background_shutdown_requested_flag_for_test()
+            .is_some());
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_close_cancels_ordinary_lifecycle_tasks_and_records_counter() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    let queue = runtime
+        .enqueue_lifecycle_maintenance_for_test(
+            crate::lifecycle::MaintenanceTaskRequest::health_collection(),
+        )
+        .expect("enqueue ordinary health-collection task");
+    assert_eq!(queue.pending_tasks(), 1);
+
+    let close = runtime.close().expect("close cancels ordinary task");
+
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert!(close.maintenance_drained());
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_shutdown_canceled_tasks(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn background_close_drains_required_lifecycle_tasks_and_records_counter() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open_cache()
+        .expect("background cache open")
+        .into_runtime();
+
+    let task = crate::lifecycle::MaintenanceTaskRequest::new(
+        crate::lifecycle::MaintenanceTaskKind::HealthCollection,
+        crate::lifecycle::MaintenanceTaskPriority::Normal,
+        crate::lifecycle::MaintenanceTaskScope::Global,
+        crate::lifecycle::MaintenanceTaskPolicy::drain_before_close(),
+    )
+    .expect("drain-required task request");
+    let queue = runtime
+        .enqueue_lifecycle_maintenance_for_test(task)
+        .expect("enqueue drain-required health task");
+    assert_eq!(queue.pending_tasks(), 1);
+
+    let close = runtime
+        .close()
+        .expect("close drains required lifecycle task");
+
+    assert_eq!(close.state(), StorageRuntimeState::Closed);
+    assert!(close.maintenance_drained());
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_shutdown_drained_tasks(), 1);
+    assert_eq!(perf.lifecycle_background_shutdown_canceled_tasks(), 0);
 }
 
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]

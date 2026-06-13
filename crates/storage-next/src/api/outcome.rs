@@ -128,6 +128,10 @@ pub struct StorageCloseSummary {
     state: StorageRuntimeState,
     idempotent: bool,
     effects: StorageCloseEffects,
+    background_worker_count: usize,
+    background_queue_depth: usize,
+    background_active_tasks: usize,
+    background_tasks_completed: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -142,6 +146,10 @@ impl StorageCloseSummary {
             state,
             idempotent,
             effects: StorageCloseEffects::empty(),
+            background_worker_count: 0,
+            background_queue_depth: 0,
+            background_active_tasks: 0,
+            background_tasks_completed: 0,
         }
     }
 
@@ -155,7 +163,32 @@ impl StorageCloseSummary {
             state,
             idempotent,
             effects,
+            background_worker_count: 0,
+            background_queue_depth: 0,
+            background_active_tasks: 0,
+            background_tasks_completed: 0,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_background_facts(
+        mut self,
+        background_worker_count: usize,
+        background_queue_depth: usize,
+        background_active_tasks: usize,
+        background_tasks_completed: u64,
+    ) -> Self {
+        self.background_worker_count = background_worker_count;
+        self.background_queue_depth = background_queue_depth;
+        self.background_active_tasks = background_active_tasks;
+        self.background_tasks_completed = background_tasks_completed;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_idempotent(mut self, idempotent: bool) -> Self {
+        self.idempotent = idempotent;
+        self
     }
 
     #[must_use]
@@ -188,8 +221,24 @@ impl StorageCloseSummary {
         self.effects.guards_released()
     }
 
-    pub(crate) const fn effects(self) -> StorageCloseEffects {
-        self.effects
+    #[must_use]
+    pub const fn background_worker_count(self) -> usize {
+        self.background_worker_count
+    }
+
+    #[must_use]
+    pub const fn background_queue_depth(self) -> usize {
+        self.background_queue_depth
+    }
+
+    #[must_use]
+    pub const fn background_active_tasks(self) -> usize {
+        self.background_active_tasks
+    }
+
+    #[must_use]
+    pub const fn background_tasks_completed(self) -> u64 {
+        self.background_tasks_completed
     }
 }
 

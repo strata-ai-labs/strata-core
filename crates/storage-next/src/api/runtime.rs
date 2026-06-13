@@ -20,12 +20,12 @@ use crate::lifecycle::{
     LifecycleCacheRuntime, LifecycleCheckpointOutcome, LifecycleCodecId,
     LifecycleCompactionDrainRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
     LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
-    LifecycleMaintenanceSchedulingPolicy, LifecycleRecoveryRuntime, LifecycleRetentionRequest,
-    LifecycleRetentionScope, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
-    LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus,
-    LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus,
-    MaintenanceCheckpointOptions, MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats,
-    MaintenanceExecutorStatus, MaintenanceInstant,
+    LifecycleMaintenanceSchedulingPolicy, LifecycleMaintenanceStats, LifecycleRecoveryRuntime,
+    LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressureReason,
+    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy,
+    LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
+    LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions, MaintenanceClock,
+    MaintenanceExecutor, MaintenanceExecutorStats, MaintenanceExecutorStatus, MaintenanceInstant,
     MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
@@ -88,6 +88,7 @@ const DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE: Duration = Duration::from_millis(
 const DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN: Duration = Duration::from_micros(50);
 const DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN: Duration = Duration::from_millis(5);
 const DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE: Duration = Duration::from_millis(250);
+const DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResolvedReadBound {
@@ -174,6 +175,12 @@ struct BackgroundDrainRound {
 struct BackgroundDrainLimits {
     max_tasks: usize,
     max_runtime: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BackgroundShutdownStats {
+    stats: MaintenanceExecutorStats,
+    first_shutdown: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,10 +278,16 @@ impl<R> RuntimeSlot<R> {
             .map(BackgroundRuntimeController::stats)
     }
 
-    fn shutdown_background(&self) {
-        if let Some(background) = &self.background {
-            background.shutdown();
-        }
+    fn shutdown_background(&self, timeout: Option<Duration>) -> Option<BackgroundShutdownStats> {
+        self.background
+            .as_ref()
+            .map(|background| background.shutdown(timeout))
+    }
+
+    fn request_background_shutdown(&self) -> Option<MaintenanceExecutorStats> {
+        self.background
+            .as_ref()
+            .map(BackgroundRuntimeController::request_shutdown)
     }
 
     #[cfg(test)]
@@ -342,7 +355,7 @@ where
 
 impl<R> Drop for RuntimeSlot<R> {
     fn drop(&mut self) {
-        self.shutdown_background();
+        let _ = self.request_background_shutdown();
     }
 }
 
@@ -447,6 +460,7 @@ impl BackgroundRuntimeController {
 
     fn notify_drain(&self, priority: BackgroundTaskPriority, drain: BackgroundDrainFn) {
         if self.close_requested.load(Ordering::Acquire) {
+            perf_trace::record_lifecycle_background_submit_after_shutdown_rejected();
             perf_trace::record_lifecycle_background_wake_rejected();
             return;
         }
@@ -520,10 +534,22 @@ impl BackgroundRuntimeController {
         }
     }
 
-    fn shutdown(&self) {
-        if !self.close_requested.swap(true, Ordering::AcqRel) {
-            self.executor.shutdown();
+    fn shutdown(&self, timeout: Option<Duration>) -> BackgroundShutdownStats {
+        let first_shutdown = !self.close_requested.swap(true, Ordering::AcqRel);
+        if first_shutdown {
+            self.executor.shutdown(timeout);
         }
+        BackgroundShutdownStats {
+            stats: self.executor.stats(),
+            first_shutdown,
+        }
+    }
+
+    fn request_shutdown(&self) -> MaintenanceExecutorStats {
+        if !self.close_requested.swap(true, Ordering::AcqRel) {
+            let _ = self.executor.request_shutdown();
+        }
+        self.executor.stats()
     }
 
     #[cfg(test)]
@@ -583,15 +609,36 @@ impl CommitTimestampSource for ApiTimestampSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageCloseOptions {
-    _private: (),
+    background_shutdown_timeout: Duration,
 }
 
 impl StorageCloseOptions {
     #[must_use]
     pub const fn graceful() -> Self {
-        Self { _private: () }
+        Self {
+            background_shutdown_timeout: DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_background_shutdown_timeout(
+        mut self,
+        background_shutdown_timeout: Duration,
+    ) -> Self {
+        self.background_shutdown_timeout = background_shutdown_timeout;
+        self
+    }
+
+    const fn background_shutdown_timeout(self) -> Duration {
+        self.background_shutdown_timeout
+    }
+}
+
+impl Default for StorageCloseOptions {
+    fn default() -> Self {
+        Self::graceful()
     }
 }
 
@@ -698,6 +745,38 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    pub(crate) fn submit_panicking_background_task_for_test(
+        &self,
+        ready: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> bool {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot
+                .submit_background(BackgroundTaskPriority::High, move |_runtime| {
+                    ready.wait();
+                    release.wait();
+                    panic!("intentional background close panic test");
+                })
+                .is_ok(),
+            StorageRuntimeInner::Durable(slot) => slot
+                .submit_background(BackgroundTaskPriority::High, move |_runtime| {
+                    ready.wait();
+                    release.wait();
+                    panic!("intentional background close panic test");
+                })
+                .is_ok(),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .submit_background(BackgroundTaskPriority::High, move |_runtime| {
+                    ready.wait();
+                    release.wait();
+                    panic!("intentional background close panic test");
+                })
+                .is_ok(),
+            StorageRuntimeInner::Closed => false,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn background_shutdown_requested_flag_for_test(
         &self,
     ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
@@ -747,9 +826,15 @@ impl StorageRuntime<'static> {
     #[cfg(test)]
     pub(crate) fn shutdown_background_for_test(&self) {
         match &self.inner {
-            StorageRuntimeInner::Cache(slot) => slot.shutdown_background(),
-            StorageRuntimeInner::Durable(slot) => slot.shutdown_background(),
-            StorageRuntimeInner::DurableOwned(slot) => slot.shutdown_background(),
+            StorageRuntimeInner::Cache(slot) => {
+                let _ = slot.shutdown_background(Some(DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let _ = slot.shutdown_background(Some(DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let _ = slot.shutdown_background(Some(DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
+            }
             StorageRuntimeInner::Closed => {}
         }
     }
@@ -966,15 +1051,28 @@ impl<'a> StorageRuntime<'a> {
 
     pub fn close_with_options(
         &mut self,
-        _options: StorageCloseOptions,
+        options: StorageCloseOptions,
     ) -> StorageApiResult<StorageCloseSummary> {
+        let background_shutdown_timeout = Some(options.background_shutdown_timeout());
         match &mut self.inner {
             StorageRuntimeInner::Cache(runtime) => {
-                runtime.shutdown_background();
+                let background_shutdown = runtime.shutdown_background(background_shutdown_timeout);
+                if let Some(error) = background_shutdown_panic_error(background_shutdown.as_ref()) {
+                    return Err(error);
+                }
                 let mut runtime = runtime.lock();
+                let maintenance_before_close = runtime.maintenance_status().stats();
                 let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
                 let close = runtime.close().map_err(map_lifecycle_error)?;
-                let summary = map_close_summary(close, false);
+                let maintenance_after_close = runtime.maintenance_status().stats();
+                record_background_close_maintenance_facts(
+                    maintenance_before_close,
+                    maintenance_after_close,
+                );
+                let summary = with_background_close_facts(
+                    map_close_summary(close, false),
+                    background_shutdown.as_ref().map(|shutdown| &shutdown.stats),
+                );
                 drop(runtime);
                 self.inner = StorageRuntimeInner::Closed;
                 self.last_recovery = Some(recovery);
@@ -982,11 +1080,23 @@ impl<'a> StorageRuntime<'a> {
                 Ok(summary)
             }
             StorageRuntimeInner::Durable(runtime) => {
-                runtime.shutdown_background();
+                let background_shutdown = runtime.shutdown_background(background_shutdown_timeout);
+                if let Some(error) = background_shutdown_panic_error(background_shutdown.as_ref()) {
+                    return Err(error);
+                }
                 let mut runtime = runtime.lock();
+                let maintenance_before_close = runtime.maintenance_status().stats();
                 let close = runtime.close().map_err(map_lifecycle_error)?;
+                let maintenance_after_close = runtime.maintenance_status().stats();
+                record_background_close_maintenance_facts(
+                    maintenance_before_close,
+                    maintenance_after_close,
+                );
                 let recovery = map_diagnostics_recovery(runtime.current_recovery_health());
-                let summary = map_close_summary(close, false);
+                let summary = with_background_close_facts(
+                    map_close_summary(close, false),
+                    background_shutdown.as_ref().map(|shutdown| &shutdown.stats),
+                );
                 drop(runtime);
                 self.inner = StorageRuntimeInner::Closed;
                 self.last_recovery = Some(recovery);
@@ -994,29 +1104,39 @@ impl<'a> StorageRuntime<'a> {
                 Ok(summary)
             }
             StorageRuntimeInner::DurableOwned(runtime) => {
-                runtime.shutdown_background();
+                let background_shutdown = runtime.shutdown_background(background_shutdown_timeout);
+                if let Some(error) = background_shutdown_panic_error(background_shutdown.as_ref()) {
+                    return Err(error);
+                }
                 let mut runtime = runtime.lock();
+                let maintenance_before_close = runtime.maintenance_status().stats();
                 let close = runtime.close().map_err(map_lifecycle_error)?;
+                let maintenance_after_close = runtime.maintenance_status().stats();
+                record_background_close_maintenance_facts(
+                    maintenance_before_close,
+                    maintenance_after_close,
+                );
                 let recovery = map_diagnostics_recovery(runtime.current_recovery_health());
-                let summary = map_close_summary(close, false);
+                let summary = with_background_close_facts(
+                    map_close_summary(close, false),
+                    background_shutdown.as_ref().map(|shutdown| &shutdown.stats),
+                );
                 drop(runtime);
                 self.inner = StorageRuntimeInner::Closed;
                 self.last_recovery = Some(recovery);
                 self.last_close = Some(summary);
                 Ok(summary)
             }
-            StorageRuntimeInner::Closed => {
-                let summary = self.last_close.unwrap_or_else(|| {
+            StorageRuntimeInner::Closed => Ok(self.last_close.map_or_else(
+                || {
                     StorageCloseSummary::with_close_facts(
                         StorageRuntimeState::Closed,
                         true,
                         StorageCloseEffects::empty(),
                     )
-                });
-                let idempotent =
-                    StorageCloseSummary::with_close_facts(summary.state(), true, summary.effects());
-                Ok(idempotent)
-            }
+                },
+                |summary| summary.with_idempotent(true),
+            )),
         }
     }
 
@@ -3480,6 +3600,44 @@ fn map_close_summary(outcome: CloseOutcome, idempotent: bool) -> StorageCloseSum
         idempotent || matches!(outcome.status(), CloseOutcomeStatus::Idempotent),
         map_close_effects(outcome),
     )
+}
+
+fn with_background_close_facts(
+    summary: StorageCloseSummary,
+    background_stats: Option<&MaintenanceExecutorStats>,
+) -> StorageCloseSummary {
+    background_stats.map_or(summary, |stats| {
+        summary.with_background_facts(
+            stats.worker_count,
+            stats.queue_depth,
+            stats.active_tasks,
+            stats.tasks_completed,
+        )
+    })
+}
+
+fn background_shutdown_panic_error(
+    background_shutdown: Option<&BackgroundShutdownStats>,
+) -> Option<StorageApiError> {
+    let shutdown = background_shutdown?;
+    if !shutdown.first_shutdown || shutdown.stats.worker_panics_after_shutdown == 0 {
+        return None;
+    }
+    Some(map_lifecycle_error(LifecycleError::MaintenanceTaskFailed {
+        reason: "background maintenance task panicked during close shutdown",
+    }))
+}
+
+fn record_background_close_maintenance_facts(
+    before: LifecycleMaintenanceStats,
+    after: LifecycleMaintenanceStats,
+) {
+    perf_trace::record_lifecycle_background_shutdown_canceled_tasks(
+        after.canceled().saturating_sub(before.canceled()),
+    );
+    perf_trace::record_lifecycle_background_shutdown_drained_tasks(
+        u64::try_from(after.drained().saturating_sub(before.drained())).unwrap_or(u64::MAX),
+    );
 }
 
 fn map_close_effects(outcome: CloseOutcome) -> StorageCloseEffects {

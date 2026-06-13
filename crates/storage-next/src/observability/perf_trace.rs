@@ -155,6 +155,14 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_stale_wake_noop: u64,
     lifecycle_background_drain_rounds: u64,
     lifecycle_background_tasks_completed: u64,
+    lifecycle_background_shutdowns: u64,
+    lifecycle_background_shutdown_joined_workers: u64,
+    lifecycle_background_shutdown_drained_tasks: u64,
+    lifecycle_background_shutdown_canceled_tasks: u64,
+    lifecycle_background_shutdown_executor_tasks_completed: u64,
+    lifecycle_background_shutdown_detached_workers: u64,
+    lifecycle_background_submit_after_shutdown_rejected: u64,
+    lifecycle_background_worker_panics: u64,
     lifecycle_background_task_snapshot_lock_ns: u64,
     lifecycle_background_task_unlocked_build_ns: u64,
     lifecycle_background_task_publish_lock_ns: u64,
@@ -858,6 +866,46 @@ impl StoragePerfSnapshot {
     /// Lifecycle maintenance tasks completed by background drain rounds.
     pub const fn lifecycle_background_tasks_completed(self) -> u64 {
         self.lifecycle_background_tasks_completed
+    }
+
+    /// Background runtime shutdowns requested.
+    pub const fn lifecycle_background_shutdowns(self) -> u64 {
+        self.lifecycle_background_shutdowns
+    }
+
+    /// Background worker threads joined during shutdown.
+    pub const fn lifecycle_background_shutdown_joined_workers(self) -> u64 {
+        self.lifecycle_background_shutdown_joined_workers
+    }
+
+    /// Close-required lifecycle maintenance tasks drained during close.
+    pub const fn lifecycle_background_shutdown_drained_tasks(self) -> u64 {
+        self.lifecycle_background_shutdown_drained_tasks
+    }
+
+    /// Lifecycle maintenance tasks canceled during background-aware close.
+    pub const fn lifecycle_background_shutdown_canceled_tasks(self) -> u64 {
+        self.lifecycle_background_shutdown_canceled_tasks
+    }
+
+    /// Executor closures completed after shutdown was requested.
+    pub const fn lifecycle_background_shutdown_executor_tasks_completed(self) -> u64 {
+        self.lifecycle_background_shutdown_executor_tasks_completed
+    }
+
+    /// Background worker threads detached because shutdown did not quiesce by deadline.
+    pub const fn lifecycle_background_shutdown_detached_workers(self) -> u64 {
+        self.lifecycle_background_shutdown_detached_workers
+    }
+
+    /// Background wake submissions rejected after shutdown started.
+    pub const fn lifecycle_background_submit_after_shutdown_rejected(self) -> u64 {
+        self.lifecycle_background_submit_after_shutdown_rejected
+    }
+
+    /// Background worker panics caught by the scheduler.
+    pub const fn lifecycle_background_worker_panics(self) -> u64 {
+        self.lifecycle_background_worker_panics
     }
 
     /// Nanoseconds spent holding the runtime lock while snapshotting a background task.
@@ -2239,6 +2287,22 @@ static LIFECYCLE_BACKGROUND_DRAIN_ROUNDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASKS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SHUTDOWNS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SHUTDOWN_JOINED_WORKERS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SHUTDOWN_DRAINED_TASKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SHUTDOWN_CANCELED_TASKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SHUTDOWN_EXECUTOR_TASKS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SHUTDOWN_DETACHED_WORKERS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_SUBMIT_AFTER_SHUTDOWN_REJECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_WORKER_PANICS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS: AtomicU64 = AtomicU64::new(0);
@@ -2882,6 +2946,14 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_STALE_WAKE_NOOP.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_DRAIN_ROUNDS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASKS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SHUTDOWNS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SHUTDOWN_JOINED_WORKERS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SHUTDOWN_DRAINED_TASKS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SHUTDOWN_CANCELED_TASKS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SHUTDOWN_EXECUTOR_TASKS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SHUTDOWN_DETACHED_WORKERS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_SUBMIT_AFTER_SHUTDOWN_REJECTED.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_WORKER_PANICS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.store(0, Ordering::Relaxed);
@@ -3282,6 +3354,21 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_background_drain_rounds: LIFECYCLE_BACKGROUND_DRAIN_ROUNDS
             .load(Ordering::Relaxed),
         lifecycle_background_tasks_completed: LIFECYCLE_BACKGROUND_TASKS_COMPLETED
+            .load(Ordering::Relaxed),
+        lifecycle_background_shutdowns: LIFECYCLE_BACKGROUND_SHUTDOWNS.load(Ordering::Relaxed),
+        lifecycle_background_shutdown_joined_workers: LIFECYCLE_BACKGROUND_SHUTDOWN_JOINED_WORKERS
+            .load(Ordering::Relaxed),
+        lifecycle_background_shutdown_drained_tasks: LIFECYCLE_BACKGROUND_SHUTDOWN_DRAINED_TASKS
+            .load(Ordering::Relaxed),
+        lifecycle_background_shutdown_canceled_tasks: LIFECYCLE_BACKGROUND_SHUTDOWN_CANCELED_TASKS
+            .load(Ordering::Relaxed),
+        lifecycle_background_shutdown_executor_tasks_completed:
+            LIFECYCLE_BACKGROUND_SHUTDOWN_EXECUTOR_TASKS_COMPLETED.load(Ordering::Relaxed),
+        lifecycle_background_shutdown_detached_workers:
+            LIFECYCLE_BACKGROUND_SHUTDOWN_DETACHED_WORKERS.load(Ordering::Relaxed),
+        lifecycle_background_submit_after_shutdown_rejected:
+            LIFECYCLE_BACKGROUND_SUBMIT_AFTER_SHUTDOWN_REJECTED.load(Ordering::Relaxed),
+        lifecycle_background_worker_panics: LIFECYCLE_BACKGROUND_WORKER_PANICS
             .load(Ordering::Relaxed),
         lifecycle_background_task_snapshot_lock_ns: LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS
             .load(Ordering::Relaxed),
@@ -4433,6 +4520,95 @@ pub(crate) fn record_lifecycle_background_drain_round(tasks_completed: usize) {
     if tasks_completed == 0 {
         record_lifecycle_background_stale_wake_noop();
     }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_shutdown() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_shutdown() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SHUTDOWNS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_shutdown_joined_workers(_worker_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_shutdown_joined_workers(worker_count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SHUTDOWN_JOINED_WORKERS.fetch_add(as_u64(worker_count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_shutdown_drained_tasks(_task_count: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_shutdown_drained_tasks(task_count: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SHUTDOWN_DRAINED_TASKS.fetch_add(task_count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_shutdown_canceled_tasks(_task_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_shutdown_canceled_tasks(task_count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SHUTDOWN_CANCELED_TASKS.fetch_add(as_u64(task_count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_shutdown_executor_tasks_completed(_task_count: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_shutdown_executor_tasks_completed(task_count: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SHUTDOWN_EXECUTOR_TASKS_COMPLETED.fetch_add(task_count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_shutdown_detached_workers(_worker_count: usize) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_shutdown_detached_workers(worker_count: usize) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SHUTDOWN_DETACHED_WORKERS
+        .fetch_add(as_u64(worker_count), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_submit_after_shutdown_rejected() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_submit_after_shutdown_rejected() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_SUBMIT_AFTER_SHUTDOWN_REJECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_worker_panic() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_worker_panic() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_WORKER_PANICS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

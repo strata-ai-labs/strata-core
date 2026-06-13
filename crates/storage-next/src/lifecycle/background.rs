@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::observability::perf_trace;
+
 /// Priority levels for background lifecycle work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum BackgroundTaskPriority {
@@ -123,6 +125,12 @@ pub(crate) struct MaintenanceExecutorStats {
     pub(crate) active_tasks: usize,
     /// Total number of tasks completed since scheduler creation.
     pub(crate) tasks_completed: u64,
+    /// Total number of tasks completed after shutdown was requested.
+    pub(crate) tasks_completed_after_shutdown: u64,
+    /// Total number of task panics caught by the executor.
+    pub(crate) worker_panics: u64,
+    /// Total number of task panics caught after shutdown was requested.
+    pub(crate) worker_panics_after_shutdown: u64,
     /// Number of worker threads.
     pub(crate) worker_count: usize,
 }
@@ -138,7 +146,9 @@ pub(crate) trait MaintenanceExecutor: Send + Sync {
 
     fn wait_for_progress(&self, completed_before_wait: u64, timeout: Duration) -> bool;
 
-    fn shutdown(&self);
+    fn request_shutdown(&self) -> bool;
+
+    fn shutdown(&self, timeout: Option<Duration>);
 
     fn stats(&self) -> MaintenanceExecutorStats;
 }
@@ -147,6 +157,7 @@ struct TaskEnvelope {
     priority: BackgroundTaskPriority,
     sequence: u64,
     work: Box<dyn FnOnce() + Send>,
+    capture_enabled: bool,
 }
 
 impl Eq for TaskEnvelope {}
@@ -193,6 +204,9 @@ struct SchedulerInner {
     active_tasks: AtomicUsize,
     max_queue_depth: usize,
     tasks_completed: AtomicU64,
+    tasks_completed_after_shutdown: AtomicU64,
+    worker_panics: AtomicU64,
+    worker_panics_after_shutdown: AtomicU64,
 }
 
 /// Priority scheduler for background lifecycle maintenance work.
@@ -241,6 +255,9 @@ impl BackgroundScheduler {
             active_tasks: AtomicUsize::new(0),
             max_queue_depth,
             tasks_completed: AtomicU64::new(0),
+            tasks_completed_after_shutdown: AtomicU64::new(0),
+            worker_panics: AtomicU64::new(0),
+            worker_panics_after_shutdown: AtomicU64::new(0),
         });
 
         let thread_name_prefix = thread_name_prefix.into();
@@ -272,6 +289,7 @@ impl BackgroundScheduler {
         work: impl FnOnce() + Send + 'static,
     ) -> Result<(), BackgroundBackpressureError> {
         if self.inner.shutdown.load(AtomicOrdering::Acquire) {
+            perf_trace::record_lifecycle_background_submit_after_shutdown_rejected();
             return Err(BackgroundBackpressureError);
         }
 
@@ -279,11 +297,13 @@ impl BackgroundScheduler {
             return Err(BackgroundBackpressureError);
         }
 
+        let capture_enabled = perf_trace::test_capture_enabled_for_current_thread();
         let sequence = self.inner.sequence.fetch_add(1, AtomicOrdering::Relaxed);
         let envelope = TaskEnvelope {
             priority,
             sequence,
             work: Box::new(work),
+            capture_enabled,
         };
 
         {
@@ -292,6 +312,7 @@ impl BackgroundScheduler {
             // same lock before notifying and joining, so accepted work cannot
             // land in a dead queue.
             if self.inner.shutdown.load(AtomicOrdering::Acquire) {
+                perf_trace::record_lifecycle_background_submit_after_shutdown_rejected();
                 return Err(BackgroundBackpressureError);
             }
             // Storage-next preserves the old scheduler's early backpressure
@@ -356,16 +377,55 @@ impl BackgroundScheduler {
         }
     }
 
-    /// Signals workers to drain accepted work and exit.
-    ///
-    /// Repeated shutdown calls are allowed.
-    pub(crate) fn shutdown(&self) {
-        self.inner.shutdown.store(true, AtomicOrdering::Release);
+    fn request_shutdown(&self) -> bool {
+        let first_shutdown = !self.inner.shutdown.swap(true, AtomicOrdering::AcqRel);
+        if first_shutdown {
+            perf_trace::record_lifecycle_background_shutdown();
+        }
 
         {
             let _queue = self.inner.queue.lock();
             self.inner.work_ready.notify_all();
         }
+        first_shutdown
+    }
+
+    fn wait_for_quiescence(&self, timeout: Option<Duration>, active_task_allowance: usize) -> bool {
+        let started = Instant::now();
+        let mut queue = self.inner.queue.lock();
+        loop {
+            if self.inner.queue_depth.load(AtomicOrdering::Acquire) == 0
+                && self.inner.active_tasks.load(AtomicOrdering::Acquire) <= active_task_allowance
+            {
+                return true;
+            }
+            let Some(timeout) = timeout else {
+                self.inner.drain_cond.wait(&mut queue);
+                continue;
+            };
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return false;
+            }
+            let remaining = timeout.saturating_sub(elapsed);
+            if self
+                .inner
+                .drain_cond
+                .wait_for(&mut queue, remaining.min(Duration::from_millis(100)))
+                .timed_out()
+            {
+                continue;
+            }
+        }
+    }
+
+    /// Signals workers to drain accepted work and exit.
+    ///
+    /// Repeated shutdown calls are allowed. When `timeout` is supplied, worker
+    /// threads that do not reach quiescence before the deadline are detached so
+    /// public runtime close/drop paths cannot hang indefinitely.
+    pub(crate) fn shutdown(&self, timeout: Option<Duration>) {
+        let first_shutdown = self.request_shutdown();
 
         let (current_worker, workers_to_join) = {
             let current_thread_id = std::thread::current().id();
@@ -387,12 +447,24 @@ impl BackgroundScheduler {
             (current_worker, workers_to_join)
         };
 
-        for handle in workers_to_join {
-            let _ = handle.join();
-        }
-
         if current_worker {
             drain_ready_tasks_on_current_thread(&self.inner);
+        }
+        let active_task_allowance = usize::from(current_worker);
+        let quiesced = self.wait_for_quiescence(timeout, active_task_allowance);
+        let joined_workers = if quiesced {
+            let joined_workers = workers_to_join.len();
+            for handle in workers_to_join {
+                let _ = handle.join();
+            }
+            joined_workers
+        } else {
+            let detached_workers = workers_to_join.len();
+            perf_trace::record_lifecycle_background_shutdown_detached_workers(detached_workers);
+            0
+        };
+        if first_shutdown {
+            perf_trace::record_lifecycle_background_shutdown_joined_workers(joined_workers);
         }
     }
 
@@ -402,6 +474,15 @@ impl BackgroundScheduler {
             queue_depth: self.inner.queue_depth.load(AtomicOrdering::Relaxed),
             active_tasks: self.inner.active_tasks.load(AtomicOrdering::Relaxed),
             tasks_completed: self.inner.tasks_completed.load(AtomicOrdering::Relaxed),
+            tasks_completed_after_shutdown: self
+                .inner
+                .tasks_completed_after_shutdown
+                .load(AtomicOrdering::Relaxed),
+            worker_panics: self.inner.worker_panics.load(AtomicOrdering::Relaxed),
+            worker_panics_after_shutdown: self
+                .inner
+                .worker_panics_after_shutdown
+                .load(AtomicOrdering::Relaxed),
             worker_count: self.worker_count,
         }
     }
@@ -451,8 +532,12 @@ impl MaintenanceExecutor for ThreadedMaintenanceExecutor {
         )
     }
 
-    fn shutdown(&self) {
-        self.scheduler.shutdown();
+    fn request_shutdown(&self) -> bool {
+        self.scheduler.request_shutdown()
+    }
+
+    fn shutdown(&self, timeout: Option<Duration>) {
+        self.scheduler.shutdown(timeout);
     }
 
     fn stats(&self) -> MaintenanceExecutorStats {
@@ -467,6 +552,9 @@ struct InlineExecutorInner {
     active_tasks: usize,
     max_queue_depth: usize,
     tasks_completed: u64,
+    tasks_completed_after_shutdown: u64,
+    worker_panics: u64,
+    worker_panics_after_shutdown: u64,
 }
 
 /// Single-threaded executor that runs the production maintenance drive path
@@ -495,6 +583,9 @@ impl InlineMaintenanceExecutor {
                 active_tasks: 0,
                 max_queue_depth,
                 tasks_completed: 0,
+                tasks_completed_after_shutdown: 0,
+                worker_panics: 0,
+                worker_panics_after_shutdown: 0,
             }),
             clock,
         }
@@ -510,19 +601,35 @@ impl InlineMaintenanceExecutor {
             task
         };
 
-        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
-            tracing::error!(
-                "inline maintenance task panicked: {:?}",
-                error
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .unwrap_or("(non-string panic)")
-            );
-        }
+        perf_trace::with_test_capture_enabled_for_current_thread(task.capture_enabled, || {
+            let running_after_shutdown = self.inner.lock().shutdown;
+            if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
+                let mut inner = self.inner.lock();
+                inner.worker_panics = inner.worker_panics.saturating_add(1);
+                if running_after_shutdown {
+                    inner.worker_panics_after_shutdown =
+                        inner.worker_panics_after_shutdown.saturating_add(1);
+                }
+                drop(inner);
+                perf_trace::record_lifecycle_background_worker_panic();
+                tracing::error!(
+                    "inline maintenance task panicked: {:?}",
+                    error
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .unwrap_or("(non-string panic)")
+                );
+            }
 
-        let mut inner = self.inner.lock();
-        inner.active_tasks = inner.active_tasks.saturating_sub(1);
-        inner.tasks_completed = inner.tasks_completed.saturating_add(1);
+            let mut inner = self.inner.lock();
+            inner.active_tasks = inner.active_tasks.saturating_sub(1);
+            inner.tasks_completed = inner.tasks_completed.saturating_add(1);
+            if running_after_shutdown {
+                inner.tasks_completed_after_shutdown =
+                    inner.tasks_completed_after_shutdown.saturating_add(1);
+                perf_trace::record_lifecycle_background_shutdown_executor_tasks_completed(1);
+            }
+        });
         true
     }
 
@@ -548,6 +655,7 @@ impl MaintenanceExecutor for InlineMaintenanceExecutor {
             priority,
             sequence,
             work,
+            capture_enabled: perf_trace::test_capture_enabled_for_current_thread(),
         });
         Ok(())
     }
@@ -571,12 +679,24 @@ impl MaintenanceExecutor for InlineMaintenanceExecutor {
         progressed
     }
 
-    fn shutdown(&self) {
+    fn request_shutdown(&self) -> bool {
         {
             let mut inner = self.inner.lock();
+            if inner.shutdown {
+                return false;
+            }
             inner.shutdown = true;
         }
+        perf_trace::record_lifecycle_background_shutdown();
+        true
+    }
+
+    fn shutdown(&self, _timeout: Option<Duration>) {
+        let first_shutdown = self.request_shutdown();
         self.wait_for_idle();
+        if first_shutdown {
+            perf_trace::record_lifecycle_background_shutdown_joined_workers(0);
+        }
     }
 
     fn stats(&self) -> MaintenanceExecutorStats {
@@ -585,6 +705,9 @@ impl MaintenanceExecutor for InlineMaintenanceExecutor {
             queue_depth: inner.queue.len(),
             active_tasks: inner.active_tasks,
             tasks_completed: inner.tasks_completed,
+            tasks_completed_after_shutdown: inner.tasks_completed_after_shutdown,
+            worker_panics: inner.worker_panics,
+            worker_panics_after_shutdown: inner.worker_panics_after_shutdown,
             worker_count: 0,
         }
     }
@@ -600,6 +723,12 @@ impl Drop for ActiveTaskGuard<'_> {
         self.inner
             .tasks_completed
             .fetch_add(1, AtomicOrdering::Relaxed);
+        if self.inner.shutdown.load(AtomicOrdering::Acquire) {
+            self.inner
+                .tasks_completed_after_shutdown
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            perf_trace::record_lifecycle_background_shutdown_executor_tasks_completed(1);
+        }
 
         let _queue = self.inner.queue.lock();
         self.inner.drain_cond.notify_all();
@@ -623,16 +752,19 @@ fn worker_loop(inner: &SchedulerInner) {
             }
         };
 
-        let _guard = ActiveTaskGuard { inner };
-        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
-            tracing::error!(
-                "background maintenance task panicked: {:?}",
-                error
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .unwrap_or("(non-string panic)")
-            );
-        }
+        perf_trace::with_test_capture_enabled_for_current_thread(task.capture_enabled, || {
+            let _guard = ActiveTaskGuard { inner };
+            if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
+                record_worker_panic(inner);
+                tracing::error!(
+                    "background maintenance task panicked: {:?}",
+                    error
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .unwrap_or("(non-string panic)")
+                );
+            }
+        });
     }
 }
 
@@ -650,17 +782,30 @@ fn drain_ready_tasks_on_current_thread(inner: &SchedulerInner) {
             return;
         };
 
-        let _guard = ActiveTaskGuard { inner };
-        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
-            tracing::error!(
-                "background maintenance task panicked: {:?}",
-                error
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .unwrap_or("(non-string panic)")
-            );
-        }
+        perf_trace::with_test_capture_enabled_for_current_thread(task.capture_enabled, || {
+            let _guard = ActiveTaskGuard { inner };
+            if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
+                record_worker_panic(inner);
+                tracing::error!(
+                    "background maintenance task panicked: {:?}",
+                    error
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .unwrap_or("(non-string panic)")
+                );
+            }
+        });
     }
+}
+
+fn record_worker_panic(inner: &SchedulerInner) {
+    inner.worker_panics.fetch_add(1, AtomicOrdering::Relaxed);
+    if inner.shutdown.load(AtomicOrdering::Acquire) {
+        inner
+            .worker_panics_after_shutdown
+            .fetch_add(1, AtomicOrdering::Relaxed);
+    }
+    perf_trace::record_lifecycle_background_worker_panic();
 }
 
 #[cfg(test)]
@@ -686,7 +831,7 @@ mod tests {
 
         scheduler.drain();
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 10);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -729,7 +874,7 @@ mod tests {
         scheduler.drain();
 
         assert_eq!(order.lock().clone(), vec!["high", "normal", "low"]);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -759,7 +904,7 @@ mod tests {
         scheduler.drain();
 
         assert_eq!(order.lock().clone(), vec![0, 1, 2, 3, 4]);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -865,7 +1010,7 @@ mod tests {
         barrier.wait();
         scheduler.drain();
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 2);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -910,7 +1055,7 @@ mod tests {
                 "accepted more queued tasks than max queue depth"
             );
             worker_barrier.wait();
-            scheduler.shutdown();
+            scheduler.shutdown(None);
         }
     }
 
@@ -946,7 +1091,7 @@ mod tests {
         }
 
         barrier.wait();
-        scheduler.shutdown();
+        scheduler.shutdown(None);
 
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 5);
     }
@@ -955,7 +1100,7 @@ mod tests {
     fn background_drain_returns_when_idle() {
         let scheduler = BackgroundScheduler::new(2, 4096);
         scheduler.drain();
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -979,7 +1124,7 @@ mod tests {
         assert_eq!(stats.queue_depth, 0);
         assert_eq!(stats.active_tasks, 0);
         assert_eq!(stats.worker_count, 2);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -999,7 +1144,7 @@ mod tests {
             Instant::now() + std::time::Duration::from_secs(5)
         ));
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 1);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1025,7 +1170,7 @@ mod tests {
 
         worker_release.wait();
         scheduler.drain();
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1064,7 +1209,7 @@ mod tests {
         assert_eq!(drained_stats.active_tasks, 0);
         assert_eq!(drained_stats.queue_depth, 0);
         assert_eq!(drained_stats.tasks_completed, 3);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1088,16 +1233,131 @@ mod tests {
             name.starts_with("strata-storage-maint-bg-"),
             "unexpected background worker thread name: {name}"
         );
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
     fn background_submit_after_shutdown_rejected() {
         let scheduler = BackgroundScheduler::new(2, 4096);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
 
         let result = scheduler.submit(BackgroundTaskPriority::Normal, || {});
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "perf-trace")]
+    #[test]
+    fn background_submit_after_shutdown_records_counter() {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let scheduler = BackgroundScheduler::new(1, 4096);
+        scheduler.shutdown(None);
+
+        let result = scheduler.submit(BackgroundTaskPriority::Normal, || {});
+
+        assert!(result.is_err());
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+        assert_eq!(
+            perf.lifecycle_background_submit_after_shutdown_rejected(),
+            1
+        );
+    }
+
+    #[cfg(feature = "perf-trace")]
+    #[test]
+    fn background_shutdown_records_joined_workers_and_drained_tasks() {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let scheduler = Arc::new(BackgroundScheduler::new(1, 4096));
+        let first_started = Arc::new(Barrier::new(2));
+        let first_release = Arc::new(Barrier::new(2));
+        let completed = Arc::new(AtomicUsize::new(0));
+
+        let started = Arc::clone(&first_started);
+        let release = Arc::clone(&first_release);
+        let observed = Arc::clone(&completed);
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, move || {
+                started.wait();
+                release.wait();
+                observed.fetch_add(1, AtomicOrdering::Relaxed);
+            })
+            .expect("submit blocking task");
+        first_started.wait();
+
+        let observed = Arc::clone(&completed);
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, move || {
+                observed.fetch_add(1, AtomicOrdering::Relaxed);
+            })
+            .expect("submit queued task");
+
+        let closing = Arc::clone(&scheduler);
+        let capture_enabled =
+            crate::observability::perf_trace::test_capture_enabled_for_current_thread();
+        let shutdown = std::thread::spawn(move || {
+            crate::observability::perf_trace::with_test_capture_enabled_for_current_thread(
+                capture_enabled,
+                || closing.shutdown(None),
+            );
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while crate::observability::perf_trace::snapshot().lifecycle_background_shutdowns() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown did not start while first task was blocked"
+            );
+            std::thread::yield_now();
+        }
+        first_release.wait();
+        shutdown.join().expect("shutdown joins cleanly");
+
+        assert_eq!(completed.load(AtomicOrdering::Relaxed), 2);
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+        assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+        assert_eq!(perf.lifecycle_background_shutdown_drained_tasks(), 0);
+        assert_eq!(
+            scheduler.stats().tasks_completed_after_shutdown,
+            2,
+            "all accepted tasks drained by shutdown should be counted after shutdown"
+        );
+        assert_eq!(
+            perf.lifecycle_background_shutdown_executor_tasks_completed(),
+            2
+        );
+    }
+
+    #[cfg(feature = "perf-trace")]
+    #[test]
+    fn background_shutdown_timeout_detaches_active_worker() {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let scheduler = BackgroundScheduler::new(1, 4096);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, move || {
+                started_tx.send(()).expect("signal task start");
+                release_rx.recv().expect("wait for release");
+            })
+            .expect("submit blocking task");
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("task starts");
+
+        scheduler.shutdown(Some(Duration::from_millis(1)));
+
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.lifecycle_background_shutdowns(), 1);
+        assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 0);
+        assert_eq!(perf.lifecycle_background_shutdown_detached_workers(), 1);
+        assert_eq!(
+            perf.lifecycle_background_shutdown_executor_tasks_completed(),
+            0
+        );
+
+        release_tx.send(()).expect("release detached task");
+        scheduler.drain();
     }
 
     #[test]
@@ -1124,7 +1384,75 @@ mod tests {
 
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 5);
         assert_eq!(scheduler.stats().tasks_completed, 6);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
+    }
+
+    #[cfg(feature = "perf-trace")]
+    #[test]
+    fn background_task_panic_records_counter() {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let scheduler = BackgroundScheduler::new(1, 4096);
+
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, || {
+                panic!("intentional background test panic");
+            })
+            .expect("submit panic task");
+        scheduler.drain();
+        scheduler.shutdown(None);
+
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.lifecycle_background_worker_panics(), 1);
+    }
+
+    #[cfg(feature = "perf-trace")]
+    #[test]
+    fn background_task_panic_after_shutdown_is_distinct_in_stats() {
+        let _capture = crate::observability::perf_trace::begin_test_capture();
+        let scheduler = Arc::new(BackgroundScheduler::new(1, 4096));
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let task_started = Arc::clone(&started);
+        let task_release = Arc::clone(&release);
+        scheduler
+            .submit(BackgroundTaskPriority::Normal, move || {
+                task_started.wait();
+                task_release.wait();
+                panic!("intentional post-shutdown background test panic");
+            })
+            .expect("submit blocking panic task");
+        started.wait();
+
+        let closing = Arc::clone(&scheduler);
+        let capture_enabled =
+            crate::observability::perf_trace::test_capture_enabled_for_current_thread();
+        let shutdown = std::thread::spawn(move || {
+            crate::observability::perf_trace::with_test_capture_enabled_for_current_thread(
+                capture_enabled,
+                || closing.shutdown(None),
+            );
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while crate::observability::perf_trace::snapshot().lifecycle_background_shutdowns() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown did not start while panic task was blocked"
+            );
+            std::thread::yield_now();
+        }
+        release.wait();
+        shutdown.join().expect("shutdown joins after caught panic");
+
+        let stats = scheduler.stats();
+        assert_eq!(stats.worker_panics, 1);
+        assert_eq!(stats.worker_panics_after_shutdown, 1);
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.lifecycle_background_worker_panics(), 1);
+        assert_eq!(
+            perf.lifecycle_background_shutdown_executor_tasks_completed(),
+            1
+        );
     }
 
     #[test]
@@ -1155,7 +1483,7 @@ mod tests {
         scheduler.drain();
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 400);
         assert_eq!(scheduler.stats().tasks_completed, 400);
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1166,9 +1494,9 @@ mod tests {
             .expect("submit task");
         scheduler.drain();
 
-        scheduler.shutdown();
-        scheduler.shutdown();
-        scheduler.shutdown();
+        scheduler.shutdown(None);
+        scheduler.shutdown(None);
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1187,7 +1515,7 @@ mod tests {
             .submit(BackgroundTaskPriority::Normal, move || {
                 started.wait();
                 release.wait();
-                task_scheduler.shutdown();
+                task_scheduler.shutdown(None);
                 sender
                     .send(observed.load(AtomicOrdering::Relaxed))
                     .expect("send shutdown completion");
@@ -1214,7 +1542,7 @@ mod tests {
         assert!(scheduler
             .submit(BackgroundTaskPriority::Normal, || {})
             .is_err());
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1231,7 +1559,7 @@ mod tests {
             .submit(BackgroundTaskPriority::Normal, move || {
                 started.wait();
                 release.wait();
-                task_scheduler.shutdown();
+                task_scheduler.shutdown(None);
                 sender.send(()).expect("send shutdown completion");
             })
             .expect("submit shutdown task");
@@ -1250,7 +1578,7 @@ mod tests {
         assert!(scheduler
             .submit(BackgroundTaskPriority::Normal, || {})
             .is_err());
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 
     #[test]
@@ -1284,7 +1612,7 @@ mod tests {
             let shutdown_barrier = Arc::clone(&barrier);
             let shutdowner = std::thread::spawn(move || {
                 shutdown_barrier.wait();
-                shutdown_scheduler.shutdown();
+                shutdown_scheduler.shutdown(None);
             });
 
             submitter.join().expect("submitter joined");
@@ -1322,6 +1650,6 @@ mod tests {
         scheduler.drain();
         assert_eq!(counter.load(AtomicOrdering::Relaxed), 2);
 
-        scheduler.shutdown();
+        scheduler.shutdown(None);
     }
 }

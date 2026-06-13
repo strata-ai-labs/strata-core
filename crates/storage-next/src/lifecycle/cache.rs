@@ -845,6 +845,11 @@ impl<S> LifecycleCacheRuntime<S> {
         self.maintenance.status()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_active_maintenance_for_test(&mut self, task: MaintenanceTask) {
+        self.maintenance.set_active_for_test(task);
+    }
+
     #[allow(
         dead_code,
         reason = "pre-public-boundary policy hook is consumed by lifecycle hardening tests"
@@ -1786,12 +1791,6 @@ impl<S> LifecycleCacheRuntime<S> {
             }
             LifecycleState::Open => {
                 require_admitted(self.state, LifecycleOperationKind::Close)?;
-                if self.maintenance.status().active_task().is_some() {
-                    return Err(LifecycleError::CloseTimeout {
-                        phase: ClosePhase::DrainMaintenance,
-                        reason: "maintenance task is active",
-                    });
-                }
                 self.state
                     .transition(LifecycleTransitionTrigger::CloseRequested)?;
                 // Cache supports its own drain-required path by dispatching
@@ -1865,7 +1864,7 @@ impl<S> LifecycleCacheRuntime<S> {
             .lookup(branch_id)
             .map_err(commit_error)?
             .generation();
-        let drained = {
+        let drained_tasks = {
             let maintenance = &mut self.maintenance;
             let branch = self
                 .branch_catalog
@@ -1874,9 +1873,11 @@ impl<S> LifecycleCacheRuntime<S> {
                 branch,
                 budget: &self.budget,
             };
-            maintenance.drain_for_close(state, &mut runner)?
+            let active = maintenance.drain_active_for_close(state, &mut runner)?;
+            let drain = maintenance.drain_for_close(state, &mut runner)?;
+            drain.drained_tasks() + usize::from(active.is_some())
         };
-        Ok(drained.drained_tasks())
+        Ok(drained_tasks)
     }
 }
 

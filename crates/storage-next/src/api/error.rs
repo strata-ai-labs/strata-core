@@ -121,6 +121,61 @@ impl StorageApiError {
         }
     }
 
+    /// Mechanical, storage-level remediation hint.
+    ///
+    /// This is the storage-owned input to a Stripe-grade "suggested fix". It
+    /// must stay mechanical (a storage operator/engine instruction), never
+    /// product- or end-user phrasing (Hard Rule 30; see
+    /// `docs/architecture/v1-error-and-diagnostics-contract.md`). Engine-next
+    /// and the SDK translate this into user-facing guidance. Adding a new
+    /// variant is a compile error until a remediation arm is supplied.
+    pub const fn remediation(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument { .. } => {
+                "Correct the named argument to satisfy its documented constraint and retry the call."
+            }
+            Self::UnsupportedCapability { .. } => {
+                "Open the database in a storage mode or with a backend that supports the requested capability."
+            }
+            Self::InvalidRuntimeState { .. } => {
+                "Ensure the runtime is open and in a valid state before issuing this operation."
+            }
+            Self::BranchNotFound { .. } => {
+                "Create the branch or target an existing branch id."
+            }
+            Self::BranchAlreadyExists { .. } => {
+                "Target the existing branch or choose a new branch id."
+            }
+            Self::BranchGenerationMismatch { .. } => {
+                "Reload the current branch generation and retry with the expected generation."
+            }
+            Self::Conflict { .. } => {
+                "Re-read the conflicting key and retry the commit against the current version."
+            }
+            Self::RetainedHistoryUnavailable { .. } => {
+                "Request a version within the retained history window."
+            }
+            Self::TimestampHistoryUnavailable { .. } => {
+                "Request a timestamp within the covered timestamp-history window."
+            }
+            Self::DurableUncertain { .. } => {
+                "Re-open the database to recover durable state before assuming the commit outcome."
+            }
+            Self::RecoveryDegraded { .. } => {
+                "Inspect recovery diagnostics and resolve the degradation before resuming writes."
+            }
+            Self::MaintenanceRejected { .. } => {
+                "Retry the maintenance request after the conflicting maintenance completes."
+            }
+            Self::StoragePressure { .. } => {
+                "Allow background maintenance to drain storage pressure, then retry the write."
+            }
+            Self::LowerLayer { .. } => {
+                "Inspect the source error and storage diagnostics for the underlying failure."
+            }
+        }
+    }
+
     pub const fn class(&self) -> StorageApiErrorClass {
         match self {
             Self::InvalidArgument { .. } => StorageApiErrorClass::InvalidArgument,

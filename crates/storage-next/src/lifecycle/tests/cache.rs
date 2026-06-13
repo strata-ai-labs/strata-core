@@ -3615,6 +3615,33 @@ fn cache_close_drains_pending_drain_required_maintenance_before_transitioning() 
 }
 
 #[test]
+fn cache_close_drains_stale_active_maintenance_before_closing() {
+    let branch = branch_id(0x56);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let active = MaintenanceTask::new_for_test(
+        77,
+        MaintenanceTaskRequest::new(
+            MaintenanceTaskKind::HealthCollection,
+            MaintenanceTaskPriority::High,
+            MaintenanceTaskScope::Global,
+            MaintenanceTaskPolicy::drain_before_close(),
+        )
+        .expect("active close-drain task"),
+    )
+    .expect("active task");
+    runtime.set_active_maintenance_for_test(active);
+
+    let close = runtime.close().expect("close drains active task");
+
+    assert_eq!(close.status(), CloseOutcomeStatus::Complete);
+    assert_eq!(runtime.state(), LifecycleState::Closed);
+    assert_eq!(runtime.maintenance_status().active_task(), None);
+    assert_eq!(runtime.maintenance_status().stats().drained(), 1);
+    assert_eq!(close.stats().maintenance_tasks(), 1);
+}
+
+#[test]
 fn cache_close_cancels_cancelable_pending_work() {
     let branch = branch_id(0x51);
     let backend = CountingBackend::new(BackendCapabilities::from_slice(CACHE_MODE_REQUIREMENTS));
