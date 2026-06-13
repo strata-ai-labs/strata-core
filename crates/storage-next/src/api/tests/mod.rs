@@ -1,5 +1,7 @@
 use std::error::Error;
 use std::fmt;
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+use std::path::Path;
 #[cfg(feature = "localfs")]
 use std::path::PathBuf;
 
@@ -45,7 +47,19 @@ fn background_put_batch(name: &[u8], value: Vec<u8>) -> CommitBatch {
     .expect("valid background put batch")
 }
 
+fn default_background_worker_count() -> usize {
+    StorageBackgroundMaintenanceOptions::product_default().worker_count()
+}
+
 fn background_raw_row(name: &[u8], version: u64) -> crate::row::StorageRow {
+    background_raw_row_with_value(name, version, b"value".to_vec())
+}
+
+fn background_raw_row_with_value(
+    name: &[u8],
+    version: u64,
+    value: Vec<u8>,
+) -> crate::row::StorageRow {
     let physical_key = crate::row::PhysicalKey::new(
         StorageRuntime::default_branch_id_for_test(),
         "api",
@@ -58,7 +72,7 @@ fn background_raw_row(name: &[u8], version: u64) -> crate::row::StorageRow {
         CommitVersion::new(version),
         Timestamp::from_micros(version),
         Timestamp::EPOCH,
-        b"value",
+        value,
     )
 }
 
@@ -89,6 +103,21 @@ fn temp_dir_for_api_test(name: &str) -> PathBuf {
         std::fs::remove_dir_all(&path).expect("clear old temp dir");
     }
     path
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+fn wal_segment_file_count(root: &Path) -> usize {
+    std::fs::read_dir(root.join("wal")).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".object@"))
+            })
+            .count()
+    })
 }
 
 #[derive(Debug)]
@@ -546,6 +575,84 @@ fn open_options_rejects_zero_limits() {
 }
 
 #[test]
+fn open_options_reject_invalid_test_wal_segment_size() {
+    let error = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+        .with_wal_segment_size_for_test(1)
+        .validate()
+        .expect_err("invalid test WAL segment size is rejected");
+
+    match error {
+        StorageApiError::InvalidArgument { field, reason } => {
+            assert_eq!(field, "wal_segment_size");
+            assert_eq!(reason, "test WAL segment size is invalid");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn open_options_preserve_background_maintenance_knobs() {
+    let background = StorageBackgroundMaintenanceOptions::product_default()
+        .with_worker_count(2)
+        .with_scheduler_queue_depth(3)
+        .with_max_tasks_per_wake(4)
+        .with_max_runtime_per_wake(std::time::Duration::from_millis(5));
+    let options = StorageOpenOptions::cache()
+        .with_background_maintenance(background)
+        .with_background_worker_count(6)
+        .with_background_scheduler_queue_depth(7)
+        .with_background_max_tasks_per_wake(8)
+        .with_background_max_runtime_per_wake(std::time::Duration::from_millis(9));
+
+    assert_eq!(background.worker_count(), 2);
+    assert_eq!(background.scheduler_queue_depth(), 3);
+    assert_eq!(background.max_tasks_per_wake(), 4);
+    assert_eq!(
+        background.max_runtime_per_wake(),
+        std::time::Duration::from_millis(5)
+    );
+    assert_eq!(options.background_maintenance().worker_count(), 6);
+    assert_eq!(options.background_maintenance().scheduler_queue_depth(), 7);
+    assert_eq!(options.background_maintenance().max_tasks_per_wake(), 8);
+    assert_eq!(
+        options.background_maintenance().max_runtime_per_wake(),
+        std::time::Duration::from_millis(9)
+    );
+    assert!(options.validate().is_ok());
+}
+
+#[test]
+fn open_options_reject_zero_background_maintenance_knobs() {
+    for (options, expected_field) in [
+        (
+            StorageOpenOptions::cache().with_background_worker_count(0),
+            "background_worker_count",
+        ),
+        (
+            StorageOpenOptions::cache().with_background_scheduler_queue_depth(0),
+            "background_scheduler_queue_depth",
+        ),
+        (
+            StorageOpenOptions::cache().with_background_max_tasks_per_wake(0),
+            "background_max_tasks_per_wake",
+        ),
+        (
+            StorageOpenOptions::cache()
+                .with_background_max_runtime_per_wake(std::time::Duration::ZERO),
+            "background_max_runtime_per_wake",
+        ),
+    ] {
+        let error = options
+            .validate()
+            .expect_err("zero background maintenance knob is rejected");
+        match error {
+            StorageApiError::InvalidArgument { field, .. } => assert_eq!(field, expected_field),
+            other => panic!("expected invalid argument for {expected_field}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn open_rejects_zero_limits_before_lifecycle_mapping() {
     let error = StorageRuntime::open(
         StorageOpenOptions::cache()
@@ -981,7 +1088,10 @@ fn open_cache_returns_open_runtime_and_cache_summary() {
         crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
     );
     let queue = runtime.maintenance_status().expect("maintenance status");
-    assert_eq!(queue.background_worker_count(), 1);
+    assert_eq!(
+        queue.background_worker_count(),
+        default_background_worker_count()
+    );
     assert_eq!(queue.background_queue_depth(), 0);
     assert_eq!(queue.background_active_tasks(), 0);
 }
@@ -1010,7 +1120,7 @@ fn open_ephemeral_returns_open_runtime_and_cache_summary() {
             .maintenance_status()
             .expect("maintenance status")
             .background_worker_count(),
-        1
+        default_background_worker_count()
     );
 }
 
@@ -1032,8 +1142,24 @@ fn open_cache_helper_returns_open_runtime_and_cache_summary() {
             .maintenance_status()
             .expect("maintenance status")
             .background_worker_count(),
-        1
+        default_background_worker_count()
     );
+}
+
+#[test]
+fn open_cache_reports_configured_background_worker_count() {
+    let configured_workers = 2;
+    let outcome = StorageRuntime::open(
+        StorageOpenOptions::cache().with_background_worker_count(configured_workers),
+    )
+    .expect("cache open with configured background worker count");
+    let mut runtime = outcome.into_runtime();
+
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.background_worker_count(), configured_workers);
+    assert_eq!(status.background_queue_depth(), 0);
+    assert_eq!(status.background_active_tasks(), 0);
+    runtime.close().expect("close configured-worker runtime");
 }
 
 #[test]
@@ -1393,14 +1519,14 @@ fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
     .expect("deterministic-inline cache open")
     .into_runtime();
 
-    for index in 0..4 {
+    for index in 0..16 {
         let key = format!("inline-block-clock-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
             .expect("seed raw active row before rotation");
         runtime
             .rotate_default_branch_for_test()
-            .expect("create frozen table");
+            .expect("create level-zero table");
     }
     let before = runtime
         .background_now_for_test()
@@ -1442,14 +1568,14 @@ fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progre
         "deterministic-inline background runtime should expose test drain limits"
     );
 
-    for index in 0..4 {
+    for index in 0..16 {
         let key = format!("inline-block-deadline-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
             .expect("seed raw active row before rotation");
         runtime
             .rotate_default_branch_for_test()
-            .expect("create frozen table");
+            .expect("create level-zero table");
     }
     let before = runtime
         .background_now_for_test()
@@ -1647,9 +1773,10 @@ fn background_manual_mode_run_next_maintenance_drains_explicit_work_without_work
 #[test]
 fn background_explicit_enqueue_wakes_and_drains_queue() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open_cache()
-        .expect("background cache open")
-        .into_runtime();
+    let mut runtime =
+        StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
+            .expect("single-worker background cache open")
+            .into_runtime();
     let branch = StorageRuntime::default_branch_id_for_test();
     runtime
         .commit(&background_put_batch(
@@ -1689,9 +1816,10 @@ fn background_explicit_enqueue_wakes_and_drains_queue() {
 #[test]
 fn background_compaction_enqueue_wakes_and_drains_table_rewrite() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open_cache()
-        .expect("background cache open")
-        .into_runtime();
+    let mut runtime =
+        StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
+            .expect("background cache open")
+            .into_runtime();
     let branch = StorageRuntime::default_branch_id_for_test();
 
     for index in 0..2 {
@@ -1746,9 +1874,10 @@ fn background_compaction_enqueue_wakes_and_drains_table_rewrite() {
 #[test]
 fn background_materialization_enqueue_wakes_and_drains_table_rewrite() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open_cache()
-        .expect("background cache open")
-        .into_runtime();
+    let mut runtime =
+        StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
+            .expect("single-worker background cache open")
+            .into_runtime();
     let parent = StorageRuntime::default_branch_id_for_test();
     let child = branch_id(0x91);
 
@@ -1827,9 +1956,10 @@ fn background_duplicate_enqueue_coalesces_wake_while_worker_busy() {
     use std::sync::{Arc, Barrier};
 
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open_cache()
-        .expect("background cache open")
-        .into_runtime();
+    let mut runtime =
+        StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
+            .expect("single-worker background cache open")
+            .into_runtime();
     let ready = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let observed_open = Arc::new(AtomicBool::new(false));
@@ -1952,7 +2082,10 @@ fn background_wake_after_shutdown_records_rejected_without_running_task() {
         1
     );
     assert_eq!(perf.lifecycle_background_shutdowns(), 1);
-    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_joined_workers(),
+        default_background_worker_count() as u64
+    );
     assert_eq!(perf.lifecycle_background_stale_wake_noop(), 0);
 }
 
@@ -1967,13 +2100,19 @@ fn background_close_summary_includes_shutdown_stats() {
     let close = runtime.close().expect("close background runtime");
 
     assert_eq!(close.state(), StorageRuntimeState::Closed);
-    assert_eq!(close.background_worker_count(), 1);
+    assert_eq!(
+        close.background_worker_count(),
+        default_background_worker_count()
+    );
     assert_eq!(close.background_queue_depth(), 0);
     assert_eq!(close.background_active_tasks(), 0);
     assert_eq!(close.background_tasks_completed(), 0);
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_shutdowns(), 1);
-    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_joined_workers(),
+        default_background_worker_count() as u64
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2008,7 +2147,10 @@ fn background_repeated_close_preserves_prior_background_facts() {
     );
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_shutdowns(), 1);
-    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_joined_workers(),
+        default_background_worker_count() as u64
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2046,7 +2188,10 @@ fn background_close_with_active_task_obeys_shutdown_deadline() {
         "close must not hang behind an active background worker"
     );
     assert_eq!(close.state(), StorageRuntimeState::Closed);
-    assert_eq!(close.background_worker_count(), 1);
+    assert_eq!(
+        close.background_worker_count(),
+        default_background_worker_count()
+    );
     assert_eq!(close.background_active_tasks(), 1);
     release.wait();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -2064,7 +2209,10 @@ fn background_close_with_active_task_obeys_shutdown_deadline() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_shutdowns(), 1);
     assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 0);
-    assert_eq!(perf.lifecycle_background_shutdown_detached_workers(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_detached_workers(),
+        default_background_worker_count() as u64
+    );
     assert_eq!(
         perf.lifecycle_background_shutdown_executor_tasks_completed(),
         1
@@ -2110,7 +2258,10 @@ fn background_close_succeeds_after_pre_shutdown_background_panic() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_worker_panics(), 1);
     assert_eq!(perf.lifecycle_background_shutdowns(), 1);
-    assert_eq!(perf.lifecycle_background_shutdown_joined_workers(), 1);
+    assert_eq!(
+        perf.lifecycle_background_shutdown_joined_workers(),
+        default_background_worker_count() as u64
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2376,6 +2527,130 @@ fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn sustained_background_overload_slows_writer_without_permanent_block() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_background_worker_count(1)
+            .with_background_max_tasks_per_wake(1)
+            .with_background_max_runtime_per_wake(std::time::Duration::from_millis(1)),
+    )
+    .expect("single-worker low-memory background cache open")
+    .into_runtime();
+
+    runtime
+        .commit(&background_put_batch(
+            b"sustained-overload-seed",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create initial pressure");
+
+    for index in 0..96 {
+        let key = format!("sustained-overload-commit-{index:04}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), vec![0x61; 256]))
+            .unwrap_or_else(|error| {
+                panic!("sustained overload commit {index} failed permanently: {error}")
+            });
+    }
+
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime
+        .maintenance_status()
+        .expect("sustained overload maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(
+        status.failed(),
+        0,
+        "sustained overload failures: {status:?}"
+    );
+    assert_eq!(
+        status.queue_full(),
+        0,
+        "sustained overload filled lifecycle queue: {status:?}"
+    );
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("sustained overload diagnostics");
+    assert_ne!(
+        report.pressure().severity(),
+        DiagnosticsStoragePressureSeverity::BlockMutatingAdmission,
+        "sustained overload left storage in blocking pressure"
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    let pressure_relief_attempts = perf
+        .lifecycle_write_admission_slowdown_attempts()
+        .saturating_add(perf.lifecycle_write_admission_wait_attempts());
+    assert!(
+        pressure_relief_attempts > 0,
+        "sustained overload did not enter slowdown or block-wait relief"
+    );
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+    assert!(perf.lifecycle_background_tasks_completed() > 0);
+}
+
+#[test]
+fn mutating_commit_projects_incoming_rotation_against_frozen_budget() {
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::Disabled),
+    )
+    .expect("low-memory cache open")
+    .into_runtime();
+
+    for index in 0..12 {
+        let key = format!("projected-frozen-budget-seed-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row_with_value(
+                key.as_bytes(),
+                index + 1,
+                vec![0x44; 900],
+            ))
+            .expect("seed raw active row before rotation");
+    }
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create frozen bytes below the hard limit");
+
+    let error = runtime
+        .commit(&background_put_batch(
+            b"projected-frozen-budget-large-batch",
+            vec![0x55; 7 * 1024],
+        ))
+        .expect_err("incoming rotation should be rejected before lower-layer budget failure");
+
+    match error {
+        StorageApiError::StoragePressure {
+            severity,
+            pressure_reason,
+            retryable,
+            reason,
+            ..
+        } => {
+            assert_eq!(severity, CommitAdmissionPressureSeverity::Blocking);
+            assert_eq!(
+                pressure_reason,
+                CommitAdmissionPressureReason::FrozenBacklog
+            );
+            assert!(retryable);
+            assert_eq!(
+                reason,
+                "incoming commit would exceed frozen mutable storage budget after rotation"
+            );
+        }
+        other => panic!("expected storage pressure rejection, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn background_block_pressure_waits_for_flush_progress_before_retry() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let mut runtime = StorageRuntime::open_cache()
@@ -2427,9 +2702,10 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
     use std::time::{Duration, Instant};
 
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open_cache()
-        .expect("background cache open")
-        .into_runtime();
+    let mut runtime =
+        StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
+            .expect("single-worker background cache open")
+            .into_runtime();
 
     let ready = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
@@ -2444,14 +2720,14 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
     );
     ready.wait();
 
-    for index in 0..4 {
+    for index in 0..16 {
         let key = format!("block-timeout-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
             .expect("seed raw active row before rotation");
         runtime
             .rotate_default_branch_for_test()
-            .expect("create frozen table");
+            .expect("create level-zero table");
     }
 
     let start = Instant::now();
@@ -2483,13 +2759,303 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+fn l8e_scaled_liveness_background_closed_loop_converges_without_public_drain() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_background_max_tasks_per_wake(32)
+            .with_background_max_runtime_per_wake(std::time::Duration::from_millis(250)),
+    )
+    .expect("scaled low-memory background cache open")
+    .into_runtime();
+
+    for index in 0..192 {
+        let key = format!("l8e-scaled-liveness-{index:04}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), vec![0x5A; 256]))
+            .unwrap_or_else(|error| panic!("scaled commit {index} failed permanently: {error}"));
+    }
+
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime
+        .maintenance_status()
+        .expect("scaled liveness maintenance status");
+    assert_eq!(
+        status.pending_tasks(),
+        0,
+        "background closed loop left lifecycle queue debt"
+    );
+    assert_eq!(
+        status.failed(),
+        0,
+        "background closed loop recorded maintenance failures: {status:?}"
+    );
+    assert_eq!(
+        status.queue_full(),
+        0,
+        "background closed loop filled the lifecycle queue: {status:?}"
+    );
+
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("scaled liveness diagnostics");
+    assert_ne!(
+        report.pressure().severity(),
+        DiagnosticsStoragePressureSeverity::BlockMutatingAdmission,
+        "scaled closed loop left storage in blocking pressure"
+    );
+    assert!(
+        report.source_layout().owned_l0_tables() <= 3,
+        "background closed loop left uncompacted L0 pressure: {:?}",
+        report.source_layout()
+    );
+    let max_nonzero_fanout = report
+        .source_layout()
+        .owned_nonzero_level_table_counts()
+        .iter()
+        .map(|count| count.table_count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_nonzero_fanout <= 3,
+        "background closed loop left uncompacted nonzero fanout: {:?}",
+        report.source_layout()
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() > 0);
+    assert!(perf.lifecycle_background_tasks_completed() > 0);
+    assert!(perf.lifecycle_wal_retention_samples() > 0);
+    assert!(perf.lifecycle_wal_checkpoint_enqueue_events() > 0);
+    assert!(perf.lifecycle_checkpoint_executions() > 0);
+    assert!(perf.lifecycle_wal_truncation_deleted_segments() > 0);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn l8e_scaled_liveness_durable_background_bounds_wal_without_public_drain() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let root = temp_dir_for_api_test("l8e-scaled-durable-liveness");
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(8 * 1024, 2, 3))
+            .with_wal_segment_size_for_test(1024)
+            .with_background_max_tasks_per_wake(64)
+            .with_background_max_runtime_per_wake(std::time::Duration::from_millis(250)),
+        backend,
+    )
+    .expect("scaled low-memory durable background open")
+    .into_runtime();
+
+    let mut max_retained_bytes = 0_u64;
+    let mut max_retained_segments = 0_u64;
+    let mut max_segment_files = 0_usize;
+    let mut saw_checkpoint_enqueue = false;
+    for index in 0..96 {
+        let key = format!("l8e-scaled-durable-liveness-{index:04}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), vec![0x6B; 256]))
+            .unwrap_or_else(|error| {
+                panic!("scaled durable commit {index} failed permanently: {error}")
+            });
+        let report = runtime
+            .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+            .expect("scaled durable liveness diagnostics during load");
+        if let Some(retained_bytes) = report.wal_growth().retained_wal_bytes() {
+            max_retained_bytes = max_retained_bytes.max(retained_bytes);
+        }
+        if let Some(retained_segments) = report.wal_growth().retained_wal_segments() {
+            max_retained_segments =
+                max_retained_segments.max(u64::try_from(retained_segments).unwrap_or(u64::MAX));
+        }
+        if let Some(status) = report.wal_growth().last_status() {
+            saw_checkpoint_enqueue |= status.checkpoint_enqueued();
+        }
+        max_segment_files = max_segment_files.max(wal_segment_file_count(&root));
+    }
+
+    runtime.wait_background_idle_for_test();
+
+    let status = runtime
+        .maintenance_status()
+        .expect("scaled durable liveness maintenance status");
+    assert_eq!(
+        status.pending_tasks(),
+        0,
+        "durable background closed loop left lifecycle queue debt"
+    );
+    assert_eq!(
+        status.failed(),
+        0,
+        "durable background closed loop recorded maintenance failures: {status:?}"
+    );
+    assert_eq!(
+        status.queue_full(),
+        0,
+        "durable background closed loop filled the lifecycle queue: {status:?}"
+    );
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("scaled durable liveness final diagnostics");
+    assert_eq!(report.wal_growth().state(), DiagnosticsFactState::Known);
+    assert!(
+        saw_checkpoint_enqueue,
+        "WAL growth never enqueued checkpoint"
+    );
+    assert!(
+        report
+            .checkpoint()
+            .checkpoint_watermark()
+            .is_some_and(|watermark| watermark > CommitVersion::ZERO),
+        "background checkpoint never advanced"
+    );
+    assert!(
+        max_retained_segments <= 16,
+        "retained WAL segments were not bounded during load: {max_retained_segments}"
+    );
+    assert!(
+        max_retained_bytes <= 128 * 1024,
+        "retained WAL bytes were not bounded during load: {max_retained_bytes}"
+    );
+    assert!(
+        max_segment_files <= 16,
+        "local WAL segment files were not bounded during load: {max_segment_files}"
+    );
+    let final_segment_files = wal_segment_file_count(&root);
+    assert!(
+        final_segment_files <= 4,
+        "background WAL retention did not converge covered segments: final_segment_files={final_segment_files}"
+    );
+    assert_ne!(
+        report.pressure().severity(),
+        DiagnosticsStoragePressureSeverity::BlockMutatingAdmission,
+        "durable closed loop left storage in blocking pressure"
+    );
+    assert!(
+        report.source_layout().owned_l0_tables() <= 3,
+        "durable background closed loop left uncompacted L0 pressure: {:?}; maintenance status: {:?}",
+        report.source_layout(),
+        status
+    );
+    let max_nonzero_fanout = report
+        .source_layout()
+        .owned_nonzero_level_table_counts()
+        .iter()
+        .map(|count| count.table_count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_nonzero_fanout <= 3,
+        "durable background closed loop left uncompacted nonzero fanout: {:?}",
+        report.source_layout()
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() > 0);
+    assert!(perf.lifecycle_background_tasks_completed() > 0);
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn l8e_wal_retention_deletes_segments_without_public_drain() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let root = temp_dir_for_api_test("l8e-wal-retention-deletes-segments");
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(2 * 1024, 2, 3))
+            .with_wal_segment_size_for_test(1024)
+            .with_background_max_tasks_per_wake(64)
+            .with_background_max_runtime_per_wake(std::time::Duration::from_millis(250)),
+        backend,
+    )
+    .expect("durable WAL retention open")
+    .into_runtime();
+
+    let mut max_segment_files = wal_segment_file_count(&root);
+    let mut last_segment_files = max_segment_files;
+    let mut saw_segment_file_deletion = false;
+    let mut saw_checkpoint_enqueue = false;
+    for index in 0..160 {
+        let key = format!("l8e-wal-retention-{index:04}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), vec![0x73; 256]))
+            .unwrap_or_else(|error| panic!("WAL retention commit {index} failed: {error}"));
+        let report = runtime
+            .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+            .expect("WAL retention diagnostics during load");
+        if let Some(status) = report.wal_growth().last_status() {
+            saw_checkpoint_enqueue |= status.checkpoint_enqueued();
+        }
+        let segment_files = wal_segment_file_count(&root);
+        saw_segment_file_deletion |= segment_files < last_segment_files;
+        last_segment_files = segment_files;
+        max_segment_files = max_segment_files.max(segment_files);
+    }
+
+    runtime.wait_background_idle_for_test();
+    let final_segment_files = wal_segment_file_count(&root);
+    saw_segment_file_deletion |= final_segment_files < last_segment_files;
+
+    assert!(
+        saw_checkpoint_enqueue,
+        "WAL retention never enqueued checkpoint"
+    );
+    assert!(
+        saw_segment_file_deletion,
+        "background WAL retention did not delete covered segment files: max_segment_files={max_segment_files} final_segment_files={final_segment_files}"
+    );
+    assert!(
+        final_segment_files <= 4,
+        "background WAL retention did not converge covered segments: final_segment_files={final_segment_files}"
+    );
+    let status = runtime
+        .maintenance_status()
+        .expect("WAL retention maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(
+        status.failed(),
+        0,
+        "WAL retention maintenance failed: {status:?}"
+    );
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("WAL retention final diagnostics");
+    assert!(
+        report
+            .checkpoint()
+            .checkpoint_watermark()
+            .is_some_and(|watermark| watermark > CommitVersion::ZERO),
+        "background checkpoint never advanced"
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_background_wake_submitted() > 0);
+    assert!(perf.lifecycle_background_tasks_completed() > 0);
+    assert!(perf.lifecycle_wal_retention_samples() > 0);
+    assert!(perf.lifecycle_wal_checkpoint_enqueue_events() > 0);
+    assert!(perf.lifecycle_checkpoint_executions() > 0);
+    assert!(perf.lifecycle_wal_truncation_deleted_segments() > 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
 fn background_runtime_creation_perf_trace_records_only_background_opens() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
 
     let background = StorageRuntime::open_cache().expect("background cache open");
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_runtimes_created(), 1);
-    assert_eq!(perf.lifecycle_background_runtime_workers_created(), 1);
+    assert_eq!(
+        perf.lifecycle_background_runtime_workers_created(),
+        default_background_worker_count() as u64
+    );
 
     let enqueue = StorageRuntime::open(
         StorageOpenOptions::cache().with_maintenance_scheduling_policy(
@@ -2499,7 +3065,10 @@ fn background_runtime_creation_perf_trace_records_only_background_opens() {
     .expect("explicit enqueue cache open");
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_runtimes_created(), 1);
-    assert_eq!(perf.lifecycle_background_runtime_workers_created(), 1);
+    assert_eq!(
+        perf.lifecycle_background_runtime_workers_created(),
+        default_background_worker_count() as u64
+    );
 
     drop(enqueue);
     drop(background);
@@ -2616,7 +3185,7 @@ fn open_local_returns_durable_standard_runtime() {
             .maintenance_status()
             .expect("maintenance status")
             .background_worker_count(),
-        1
+        default_background_worker_count()
     );
 
     let close = runtime.close().expect("local durable close");
@@ -2923,7 +3492,7 @@ fn open_durable_local_with_backend_returns_open_runtime() {
             .maintenance_status()
             .expect("maintenance status")
             .background_worker_count(),
-        1
+        default_background_worker_count()
     );
 }
 

@@ -57,7 +57,8 @@ pub(crate) use branch_lifecycle::{
     reason = "storage budget exports define the local surface for budget enforcement"
 )]
 pub(crate) use budget::{
-    branch_config_with_storage_budget, require_generated_artifact_budget,
+    branch_config_with_storage_budget, estimate_commit_batch_active_bytes,
+    projected_commit_rotation_would_exceed_frozen_budget, require_generated_artifact_budget,
     require_maintenance_enqueue_budget, require_manifest_catalog_budget, require_rotate_budget,
     require_table_reader_budget, snapshot_with_runtime_usage,
     table_block_cache_from_storage_budget, BudgetedCommitBranch, StorageBudgetLedger,
@@ -98,7 +99,8 @@ pub(crate) use checkpoint::{
     reason = "table rewrite maintenance exports define the local surface for later slices"
 )]
 pub(crate) use compaction::{
-    bind_materialization_task_for_enqueue, collect_storage_pressure, compact_cache_branch,
+    bind_materialization_task_for_enqueue, collect_storage_pressure,
+    collect_storage_pressure_with_budget, compact_cache_branch,
     compact_cache_branch_to_fixed_point, compact_durable_branch,
     compaction_request_from_maintenance_task, materialization_request_from_maintenance_task,
     materialize_cache_branch, materialize_durable_branch, LifecycleCompactionDrainOutcome,

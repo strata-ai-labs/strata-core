@@ -71,8 +71,8 @@ pub use maintenance::{
     MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
 };
 pub use options::{
-    StorageBudgetPolicy, StorageDurabilityPolicy, StorageMaintenanceSchedulingPolicy, StorageMode,
-    StorageOpenOptions, StorageWalGrowthPolicy,
+    StorageBackgroundMaintenanceOptions, StorageBudgetPolicy, StorageDurabilityPolicy,
+    StorageMaintenanceSchedulingPolicy, StorageMode, StorageOpenOptions, StorageWalGrowthPolicy,
 };
 pub use outcome::{
     CommitAdmissionPressureReason, CommitAdmissionPressureSeverity, CommitAdmissionStatus,

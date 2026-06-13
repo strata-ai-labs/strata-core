@@ -40,7 +40,7 @@ thread decision. The background executor is required for L9 scale closeout.
 | L8E-D. Nonblocking Maintenance Execution | Split long flush/compaction/materialization work into snapshot/build/publish phases. | Public commits do not block on full compaction build/merge work except documented close/blocking-pressure cases. |
 | L8E-E. Close And Failure Integration | Shut down workers through lifecycle close, drain required tasks, and surface worker failures. | Close is deterministic; no accepted background task is lost during shutdown. |
 | L8E-F. Diagnostics And Benchmark Gate | Expose background scheduler, WAL, and closed-loop liveness metrics; rerun 100K/1M/5M/10M. | 5M/10M reach point-read measurement with bounded WAL retention, bounded source shape, and no large inline or final fixed-point compaction cliff. |
-| L8E-G. Merge-Cost Fallback | Optimize table-rewrite merge cost if L8E-F proves the single worker cannot keep up after throttling. | Background maintenance drain rate is high enough for the 10M standard gate without adding benchmark shortcuts. |
+| L8E-G. Merge-Cost Fallback | Optimize table-rewrite merge cost if L8E-F proves the serialized compaction chain cannot keep up after throttling. | Background maintenance drain rate is high enough for the 10M standard gate without adding benchmark shortcuts. |
 | L8E-H. Preserve The Simulation Boundary | Land the worker thread and maintenance clock behind swappable abstractions so the production drive path stays runnable single-threaded and deterministic. | Drive logic runs unchanged on threaded and inline executors; no `Instant::now()` in drive logic; deterministic-replay smoke test passes. |
 
 ## Existing Baseline
@@ -98,11 +98,29 @@ continuing.
    - The ported background scheduler executes wake/drain closures; it does not
      replace lifecycle task semantics with a second independent maintenance
      queue.
-5. **Worker count**
-   - V1 uses one lifecycle maintenance worker per runtime.
-   - The ported scheduler may support multiple threads, but lifecycle
-     maintenance runs single-worker until branch/table publication semantics
-     are proven for parallel maintenance.
+5. **Old storage concurrency invariant**
+   - Preserve the old storage engine invariant, not necessarily the old
+     implementation detail.
+   - The old background scheduler was a configurable multi-worker priority
+     executor (`StorageConfig::background_threads`, default
+     `min(4, available CPU cores)`), but storage maintenance constrained the
+     work submitted to it:
+     - at most one compaction chain was in flight;
+     - each compaction task performed one highest-scoring branch/level rewrite,
+       then re-scored before resubmitting;
+     - flush scheduling was coalesced by one in-flight flush drain that drained
+       all currently frozen memtables and handled the final-check/flag-clear
+       TOCTOU case;
+     - write pressure used slowdown-before-stall and a bounded stall deadline
+       instead of depending on benchmark retry loops.
+   - L8E must preserve those invariants. It may improve the scheduler,
+     wake policy, queue accounting, clock abstraction, and fairness mechanics,
+     but it must not rediscover a stricter "one total background worker" rule
+     or allow parallel same-branch/table publication by accident.
+   - Multiple worker threads are allowed for independent lifecycle wake classes
+     once the lifecycle queue, active-task facts, and publication guards prove
+     the old invariants above. Parallel compaction chains remain out of scope
+     until explicitly planned and tested.
 6. **Durable ownership**
    - Owned public durable local opens must use an owned or clonable backend
      handle that can cross a worker thread.
@@ -282,9 +300,16 @@ Tasks:
    - stop immediately when close enters close-required drain;
    - resubmit itself if pending work remains after the round.
 5. Record stale wake no-ops when a wake finds no eligible lifecycle task.
-6. Ensure scheduling remains deterministic under a single worker:
+6. Ensure scheduling remains deterministic under any supported worker count:
    - lifecycle queue order and coalescing remain authoritative;
-   - scheduler priority only decides which wake class runs first.
+   - at most one compaction chain is in flight;
+   - each compaction task performs one selected rewrite, then re-reads facts
+     and re-scores before resubmitting;
+   - flush drain is coalesced and drains all eligible frozen memtables for its
+     scope before lower-priority same-branch table rewrites;
+   - scheduler priority and worker count may decide which independent wake
+     class runs first, but must not create duplicate publication for the same
+     branch/table/scope.
 7. Add closed-loop admission support for sustained overload:
    - maintain moving counters for foreground commit production rate,
      background task completion rate, and queue/source-shape backlog;
@@ -311,9 +336,9 @@ Exit gates:
 4. WAL growth threshold crossings wake checkpoint work and durable WAL
    retention is able to delete covered segments without an explicit benchmark
    drain.
-5. A writer that is permanently faster than the maintenance worker slows down
-   and eventually converges instead of running until a nonzero-level Block
-   rejection.
+5. A writer that is permanently faster than background maintenance drain
+   capacity slows down and eventually converges instead of running until a
+   nonzero-level Block rejection.
 
 ## L8E-D. Split Long Maintenance Work
 
@@ -417,7 +442,8 @@ Tasks:
 3. Add `StorageOpenOptions` or `LifecycleConfig` knobs for:
    - scheduling mode: `Disabled`, `EvaluateAndEnqueue`,
      `DeterministicInline`, `Background`;
-   - background worker count, default 1;
+   - background worker count, defaulted and validated as a product runtime
+     policy, not as a correctness crutch;
    - background scheduler queue depth;
    - max tasks per wake;
    - max runtime per wake.
@@ -472,8 +498,8 @@ Exit gates:
 ## L8E-G. Merge-Cost Fallback
 
 Goal: provide the named, implementation-ready fallback if L8E-F shows that the
-background worker still cannot drain table rewrites fast enough after wake,
-nonblocking, and graduated admission policies are correct.
+serialized compaction chain still cannot drain table rewrites fast enough after
+wake, nonblocking, and graduated admission policies are correct.
 
 Trigger:
 
@@ -504,8 +530,8 @@ Tasks:
 
 Exit gates:
 
-1. Background row-merge cost falls enough for the single worker plus
-   graduated admission to keep source shape bounded at 10M standard scale.
+1. Background row-merge cost falls enough for the serialized compaction chain
+   plus graduated admission to keep source shape bounded at 10M standard scale.
 2. The fallback does not weaken table publication, manifest, watermark, or
    stale-candidate proofs.
 

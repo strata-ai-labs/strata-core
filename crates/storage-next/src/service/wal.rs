@@ -9,7 +9,8 @@
 )]
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
+    with_authorized_wal_repair_mutation, with_authorized_wal_retention_mutation, Backend,
+    BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
     DeleteDurability, DeleteError, DeleteOutcome, PublishError,
 };
 use crate::config::mode::DurabilityPolicy;
@@ -1128,9 +1129,10 @@ impl<'a> WalService<'a> {
             self.codec_id,
             WalOperation::Repair,
         )?;
-        let outcome = match ObjectPublisher::new(&self.backend)
-            .publish_durable_replace(&self.active_object, &prefix)
-        {
+        let outcome = match with_authorized_wal_repair_mutation(|| {
+            ObjectPublisher::new(&self.backend)
+                .publish_durable_replace(&self.active_object, &prefix)
+        }) {
             Ok(outcome) => outcome,
             Err(source) => {
                 self.repair_uncertain = true;
@@ -1190,7 +1192,8 @@ impl<'a> WalService<'a> {
                 .iter()
                 .all(|record| record.commit_version() <= covered_through)
             {
-                match self.backend.delete_object(&object) {
+                match with_authorized_wal_retention_mutation(|| self.backend.delete_object(&object))
+                {
                     Ok(outcome) if durable_cleanup_succeeded(&outcome) => {
                         report.record_deleted(segment_id, outcome);
                         if let Some(sidecar) = self.delete_segment_sidecar_best_effort(segment_id) {
@@ -1233,16 +1236,18 @@ impl<'a> WalService<'a> {
         let Ok(sidecar) = ObjectLayout::wal_segment_metadata(segment_id) else {
             return None;
         };
-        Some(match self.backend.delete_object(&sidecar) {
-            Ok(outcome) => WalSidecarDeleteOutcome::succeeded(segment_id, outcome),
-            Err(error) if error.source_error().kind() == BackendErrorKind::NotFound => {
-                WalSidecarDeleteOutcome::succeeded(
-                    segment_id,
-                    DeleteOutcome::already_missing(sidecar, DeleteDurability::NonDurable),
-                )
-            }
-            Err(error) => WalSidecarDeleteOutcome::failed(segment_id, sidecar, error),
-        })
+        Some(
+            match with_authorized_wal_retention_mutation(|| self.backend.delete_object(&sidecar)) {
+                Ok(outcome) => WalSidecarDeleteOutcome::succeeded(segment_id, outcome),
+                Err(error) if error.source_error().kind() == BackendErrorKind::NotFound => {
+                    WalSidecarDeleteOutcome::succeeded(
+                        segment_id,
+                        DeleteOutcome::already_missing(sidecar, DeleteDurability::NonDurable),
+                    )
+                }
+                Err(error) => WalSidecarDeleteOutcome::failed(segment_id, sidecar, error),
+            },
+        )
     }
 
     fn rotate_segment(&mut self) -> WalServiceResult<()> {

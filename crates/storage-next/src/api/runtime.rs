@@ -12,7 +12,7 @@ use crate::commit::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
-    collect_storage_pressure, BackgroundBackpressureError, BackgroundTaskPriority,
+    collect_storage_pressure_with_budget, BackgroundBackpressureError, BackgroundTaskPriority,
     CacheBackgroundMaintenanceStep, CloseOutcome, CloseOutcomeStatus,
     DurableBackgroundMaintenanceStep, FlushFrozenRequest, FlushTableIdentitySeed,
     FlushTableObjectId, InlineMaintenanceExecutor, LifecycleBranchCatalog,
@@ -41,7 +41,7 @@ use crate::lifecycle::{
 };
 use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
-use crate::service::WalServiceConfig;
+use crate::service::{WalGrowthFacts, WalServiceConfig};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use super::{
@@ -63,12 +63,13 @@ use super::{
     MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
     PointReadOutcome, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
     RecoveryHealthSummary, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiErrorClass,
-    StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBudgetPolicy,
-    StorageCloseSummary, StorageDurabilityPolicy, StorageKey, StorageMaintenanceSchedulingPolicy,
-    StorageMode, StorageOpenDisposition, StorageOpenOptions, StorageOpenOutcome,
-    StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId, StorageValue,
-    StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss,
-    TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
+    StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBackgroundMaintenanceOptions,
+    StorageBudgetPolicy, StorageCloseSummary, StorageDurabilityPolicy, StorageKey,
+    StorageMaintenanceSchedulingPolicy, StorageMode, StorageOpenDisposition, StorageOpenOptions,
+    StorageOpenOutcome, StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId,
+    StorageValue, StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest,
+    TimestampLookupMiss, TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome,
+    VersionLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
@@ -82,9 +83,6 @@ const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_L
 const DEFAULT_BRANCH_GENERATION: u64 = 1;
 const DEFAULT_TIMESTAMP: Timestamp = Timestamp::from_micros(1);
 const API_PHYSICAL_SPACE: &str = "api";
-const DEFAULT_BACKGROUND_WORKERS: usize = 1;
-const DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE: usize = 8;
-const DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE: Duration = Duration::from_millis(25);
 const DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN: Duration = Duration::from_micros(50);
 const DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN: Duration = Duration::from_millis(5);
 const DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE: Duration = Duration::from_millis(250);
@@ -322,6 +320,7 @@ where
     fn new_with_background_arc_drain(
         runtime: R,
         config: LifecycleConfig,
+        background_config: StorageBackgroundMaintenanceOptions,
         executor_mode: BackgroundExecutorMode,
         drain: fn(
             Arc<ParkingMutex<R>>,
@@ -334,7 +333,7 @@ where
             == LifecycleMaintenanceSchedulingPolicy::Background
         {
             Some(BackgroundRuntimeController::new(
-                config.max_maintenance_queue_depth(),
+                background_config,
                 executor_mode,
             ))
         } else {
@@ -360,7 +359,10 @@ impl<R> Drop for RuntimeSlot<R> {
 }
 
 impl BackgroundRuntimeController {
-    fn new(max_queue_depth: usize, executor_mode: BackgroundExecutorMode) -> Self {
+    fn new(
+        background_config: StorageBackgroundMaintenanceOptions,
+        executor_mode: BackgroundExecutorMode,
+    ) -> Self {
         let (executor, clock, worker_count, drain_immediately): (
             Arc<dyn MaintenanceExecutor>,
             Arc<dyn MaintenanceClock>,
@@ -369,18 +371,18 @@ impl BackgroundRuntimeController {
         ) = match executor_mode {
             BackgroundExecutorMode::Threaded => (
                 Arc::new(ThreadedMaintenanceExecutor::new(
-                    DEFAULT_BACKGROUND_WORKERS,
-                    max_queue_depth,
+                    background_config.worker_count(),
+                    background_config.scheduler_queue_depth(),
                 )),
                 Arc::new(RealMaintenanceClock::new()),
-                DEFAULT_BACKGROUND_WORKERS,
+                background_config.worker_count(),
                 false,
             ),
             BackgroundExecutorMode::Inline => {
                 let clock: Arc<dyn MaintenanceClock> = Arc::new(ManualMaintenanceClock::default());
                 (
                     Arc::new(InlineMaintenanceExecutor::new(
-                        max_queue_depth,
+                        background_config.scheduler_queue_depth(),
                         Arc::clone(&clock),
                     )) as Arc<dyn MaintenanceExecutor>,
                     clock,
@@ -399,8 +401,8 @@ impl BackgroundRuntimeController {
             wake_priority: Arc::new(AtomicUsize::new(background_priority_value(
                 BackgroundTaskPriority::Low,
             ))),
-            max_tasks_per_wake: DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE,
-            max_runtime_per_wake: DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE,
+            max_tasks_per_wake: background_config.max_tasks_per_wake(),
+            max_runtime_per_wake: background_config.max_runtime_per_wake(),
             drain_immediately,
         }
     }
@@ -910,6 +912,7 @@ fn assemble_durable_runtime(
     LifecycleConfig,
 )> {
     let plan = lifecycle_plan(options)?;
+    let wal_config = wal_service_config(options)?;
     let request = LifecycleDurableLocalOpenRequest::new(
         plan,
         DEFAULT_DATABASE_ID,
@@ -917,7 +920,7 @@ fn assemble_durable_runtime(
         default_branch_generation()?,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
-        WalServiceConfig::default(),
+        wal_config,
     )
     .map_err(map_lifecycle_error)?;
     let mut shell =
@@ -938,11 +941,25 @@ fn assemble_durable_runtime(
     Ok((runtime, summary, recovery_report, config))
 }
 
+fn wal_service_config(options: StorageOpenOptions) -> StorageApiResult<WalServiceConfig> {
+    let config = options
+        .wal_segment_size_for_test()
+        .map_or_else(WalServiceConfig::default, WalServiceConfig::new);
+    config
+        .validate()
+        .map_err(|_| StorageApiError::InvalidArgument {
+            field: "wal_segment_size",
+            reason: "WAL segment size is invalid",
+        })?;
+    Ok(config)
+}
+
 fn open_durable_with_owned_backend_handle<'runtime>(
     options: StorageOpenOptions,
     backend: BackendHandle<'static>,
 ) -> StorageApiResult<StorageOpenOutcome<'runtime>> {
     let executor_mode = background_executor_mode(options.maintenance_scheduling_policy());
+    let background_config = options.background_maintenance();
     let (runtime, summary, recovery_report, config) = assemble_durable_runtime(options, backend)?;
     Ok(StorageOpenOutcome::new(
         StorageRuntime {
@@ -950,6 +967,7 @@ fn open_durable_with_owned_backend_handle<'runtime>(
                 RuntimeSlot::new_with_background_arc_drain(
                     runtime,
                     config,
+                    background_config,
                     executor_mode,
                     drain_durable_background_round,
                 ),
@@ -1311,6 +1329,7 @@ impl<'a> StorageRuntime<'a> {
                 runtime.branch_catalog(),
                 branch_id,
                 runtime.maintenance_status(),
+                runtime.open_plan().lifecycle_config().storage_budget(),
             ),
             diagnostics_source_layout_report(runtime.branch_catalog(), branch_id),
             DiagnosticsReadActivityReport::unknown(),
@@ -1320,6 +1339,7 @@ impl<'a> StorageRuntime<'a> {
             DiagnosticsCheckpointReport::unsupported(),
             map_wal_growth_report(
                 runtime.open_plan().lifecycle_config().wal_growth_policy(),
+                Some(wal_growth.facts()),
                 Some(map_wal_growth_summary(&wal_growth)),
             ),
             map_branch_catalog_report(&branches),
@@ -1356,6 +1376,7 @@ impl<'a> StorageRuntime<'a> {
                 runtime.branch_catalog(),
                 branch_id,
                 runtime.maintenance_status(),
+                runtime.open_plan().lifecycle_config().storage_budget(),
             ),
             diagnostics_source_layout_report(runtime.branch_catalog(), branch_id),
             DiagnosticsReadActivityReport::unknown(),
@@ -1369,6 +1390,7 @@ impl<'a> StorageRuntime<'a> {
             durable_checkpoint_report(&runtime),
             map_wal_growth_report(
                 runtime.open_plan().lifecycle_config().wal_growth_policy(),
+                runtime.current_wal_growth_facts().ok(),
                 runtime
                     .last_wal_growth_outcome()
                     .map(map_wal_growth_summary),
@@ -2577,6 +2599,7 @@ impl<'a> StorageRuntime<'a> {
         backend: &StorageBackend,
     ) -> StorageApiResult<StorageOpenOutcome<'a>> {
         let executor_mode = background_executor_mode(options.maintenance_scheduling_policy());
+        let background_config = options.background_maintenance();
         let request = LifecycleCacheOpenRequest::new(
             lifecycle_plan(options)?,
             DEFAULT_BRANCH_ID,
@@ -2600,6 +2623,7 @@ impl<'a> StorageRuntime<'a> {
                     RuntimeSlot::new_with_background_arc_drain(
                         runtime,
                         config,
+                        background_config,
                         executor_mode,
                         drain_cache_background_round,
                     ),
@@ -2840,7 +2864,7 @@ impl<'a> StorageRuntime<'a> {
         let runtime_timer = perf_trace::start_timer();
         let mut pressure_wait_deadline = None;
         loop {
-            let (outcome_result, admission, pending_tasks) = match &mut self.inner {
+            let (outcome_result, admission, pending_tasks, wal_growth) = match &mut self.inner {
                 StorageRuntimeInner::Cache(slot) => {
                     let mut runtime = slot.lock();
                     let result =
@@ -2849,6 +2873,7 @@ impl<'a> StorageRuntime<'a> {
                         result,
                         runtime.last_write_admission(),
                         runtime.maintenance_status().pending_tasks(),
+                        None,
                     )
                 }
                 StorageRuntimeInner::Durable(slot) => {
@@ -2859,6 +2884,7 @@ impl<'a> StorageRuntime<'a> {
                         result,
                         runtime.last_write_admission(),
                         runtime.maintenance_status().pending_tasks(),
+                        runtime.last_wal_growth_outcome().cloned(),
                     )
                 }
                 StorageRuntimeInner::DurableOwned(slot) => {
@@ -2869,6 +2895,7 @@ impl<'a> StorageRuntime<'a> {
                         result,
                         runtime.last_write_admission(),
                         runtime.maintenance_status().pending_tasks(),
+                        runtime.last_wal_growth_outcome().cloned(),
                     )
                 }
                 StorageRuntimeInner::Closed => {
@@ -2886,6 +2913,7 @@ impl<'a> StorageRuntime<'a> {
                         self.sleep_background_duration(slowdown);
                         perf_trace::record_lifecycle_write_admission_slowdown(slowdown);
                     }
+                    self.background_wait_after_wal_growth_enqueue(wal_growth.as_ref());
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
                     return map_commit_summary(&outcome, admission);
                 }
@@ -3044,6 +3072,80 @@ impl<'a> StorageRuntime<'a> {
             return false;
         }
         true
+    }
+
+    fn background_wait_after_wal_growth_enqueue(
+        &mut self,
+        wal_growth: Option<&LifecycleWalGrowthOutcome>,
+    ) {
+        if wal_growth.is_none() {
+            return;
+        }
+        if !self.has_background_runtime() {
+            return;
+        }
+        let Some(now) = self.background_now_for_current_runtime() else {
+            return;
+        };
+        let deadline = now.saturating_add(DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE);
+        while self.current_wal_growth_exceeds_policy() {
+            let Some(wait_now) = self.background_now_for_current_runtime() else {
+                return;
+            };
+            if wait_now >= deadline {
+                return;
+            }
+            self.evaluate_wal_growth_policy_for_background_wait();
+            self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+            let Some(stats) = self.background_stats_for_current_runtime() else {
+                return;
+            };
+            if stats.queue_depth.saturating_add(stats.active_tasks) == 0 {
+                return;
+            }
+            let completed_before_wait = stats.tasks_completed;
+            let progressed = match &self.inner {
+                StorageRuntimeInner::Cache(slot) => {
+                    slot.wait_background_progress_until(completed_before_wait, deadline)
+                }
+                StorageRuntimeInner::Durable(slot) => {
+                    slot.wait_background_progress_until(completed_before_wait, deadline)
+                }
+                StorageRuntimeInner::DurableOwned(slot) => {
+                    slot.wait_background_progress_until(completed_before_wait, deadline)
+                }
+                StorageRuntimeInner::Closed => return,
+            };
+            if !progressed {
+                return;
+            }
+        }
+    }
+
+    fn evaluate_wal_growth_policy_for_background_wait(&mut self) {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {}
+            StorageRuntimeInner::Durable(slot) => {
+                slot.lock().evaluate_and_record_wal_growth_policy();
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                slot.lock().evaluate_and_record_wal_growth_policy();
+            }
+        }
+    }
+
+    fn current_wal_growth_exceeds_policy(&self) -> bool {
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
+            StorageRuntimeInner::Durable(slot) => slot
+                .lock()
+                .current_wal_growth_exceeds_policy()
+                .unwrap_or(false),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .lock()
+                .current_wal_growth_exceeds_policy()
+                .unwrap_or(false),
+        }
     }
 
     fn enqueue_pressure_maintenance_for_background_wait(&mut self, branch_id: BranchId) -> usize {
@@ -4039,6 +4141,14 @@ fn drain_cache_background_round(
                 break;
             }
         }) else {
+            let pending_after_coverage = {
+                let mut runtime = runtime.lock();
+                runtime.schedule_background_maintenance_coverage()
+            };
+            if pending_after_coverage > 0 {
+                made_progress = true;
+                continue;
+            }
             break;
         };
         match step {
@@ -4183,6 +4293,14 @@ fn drain_durable_background_round(
                 break;
             }
         }) else {
+            let pending_after_coverage = {
+                let mut runtime = runtime.lock();
+                runtime.schedule_background_maintenance_coverage()
+            };
+            if pending_after_coverage > 0 {
+                made_progress = true;
+                continue;
+            }
             break;
         };
         match step {
@@ -4475,11 +4593,12 @@ fn diagnostics_pressure_report(
     catalog: &LifecycleBranchCatalog,
     branch_id: BranchId,
     maintenance: MaintenanceExecutorStatus,
+    budget: StorageRuntimeBudget,
 ) -> DiagnosticsStoragePressureReport {
     let Ok(branch) = catalog.branch_state(branch_id) else {
         return DiagnosticsStoragePressureReport::unknown();
     };
-    let pressure = collect_storage_pressure(branch, maintenance);
+    let pressure = collect_storage_pressure_with_budget(branch, maintenance, Some(budget));
     DiagnosticsStoragePressureReport::known(
         branch_id,
         map_storage_pressure_severity(pressure.severity()),
@@ -4571,12 +4690,15 @@ const fn map_storage_pressure_reason(
 
 fn map_wal_growth_report(
     policy: LifecycleWalGrowthPolicy,
+    current_facts: Option<WalGrowthFacts>,
     last_status: Option<MaintenanceWalGrowthSummary>,
 ) -> DiagnosticsWalGrowthReport {
-    DiagnosticsWalGrowthReport::known(
+    DiagnosticsWalGrowthReport::known_with_current_retention(
         policy.enabled(),
         Some(policy.max_retained_wal_bytes()),
         Some(policy.max_retained_wal_segments()),
+        current_facts.map(WalGrowthFacts::retained_bytes),
+        current_facts.map(WalGrowthFacts::retained_segments),
         Some(policy.max_commits_since_checkpoint()),
         last_status,
     )

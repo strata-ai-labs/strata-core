@@ -1,6 +1,12 @@
 //! API open options.
 
 use super::{StorageApiError, StorageApiResult};
+use std::time::Duration;
+
+const DEFAULT_BACKGROUND_WORKER_COUNT: usize = 4;
+const DEFAULT_BACKGROUND_QUEUE_DEPTH: usize = 4096;
+const DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE: usize = 8;
+const DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE: Duration = Duration::from_millis(25);
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +66,100 @@ pub struct StorageOpenOptions {
     budget_policy: StorageBudgetPolicy,
     wal_growth_policy: StorageWalGrowthPolicy,
     maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
+    background_maintenance: StorageBackgroundMaintenanceOptions,
+    wal_segment_size_for_test: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorageBackgroundMaintenanceOptions {
+    worker_count: usize,
+    scheduler_queue_depth: usize,
+    max_tasks_per_wake: usize,
+    max_runtime_per_wake: Duration,
+}
+
+impl StorageBackgroundMaintenanceOptions {
+    #[must_use]
+    pub const fn product_default() -> Self {
+        Self {
+            worker_count: DEFAULT_BACKGROUND_WORKER_COUNT,
+            scheduler_queue_depth: DEFAULT_BACKGROUND_QUEUE_DEPTH,
+            max_tasks_per_wake: DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE,
+            max_runtime_per_wake: DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_worker_count(mut self, worker_count: usize) -> Self {
+        self.worker_count = worker_count;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_scheduler_queue_depth(mut self, scheduler_queue_depth: usize) -> Self {
+        self.scheduler_queue_depth = scheduler_queue_depth;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_tasks_per_wake(mut self, max_tasks_per_wake: usize) -> Self {
+        self.max_tasks_per_wake = max_tasks_per_wake;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_runtime_per_wake(mut self, max_runtime_per_wake: Duration) -> Self {
+        self.max_runtime_per_wake = max_runtime_per_wake;
+        self
+    }
+
+    #[must_use]
+    pub const fn worker_count(self) -> usize {
+        self.worker_count
+    }
+
+    #[must_use]
+    pub const fn scheduler_queue_depth(self) -> usize {
+        self.scheduler_queue_depth
+    }
+
+    #[must_use]
+    pub const fn max_tasks_per_wake(self) -> usize {
+        self.max_tasks_per_wake
+    }
+
+    #[must_use]
+    pub const fn max_runtime_per_wake(self) -> Duration {
+        self.max_runtime_per_wake
+    }
+
+    fn validate(self) -> StorageApiResult<()> {
+        if self.worker_count == 0 {
+            return Err(StorageApiError::InvalidArgument {
+                field: "background_worker_count",
+                reason: "background maintenance worker count must be greater than zero",
+            });
+        }
+        if self.scheduler_queue_depth == 0 {
+            return Err(StorageApiError::InvalidArgument {
+                field: "background_scheduler_queue_depth",
+                reason: "background maintenance scheduler queue depth must be greater than zero",
+            });
+        }
+        if self.max_tasks_per_wake == 0 {
+            return Err(StorageApiError::InvalidArgument {
+                field: "background_max_tasks_per_wake",
+                reason: "background maintenance max tasks per wake must be greater than zero",
+            });
+        }
+        if self.max_runtime_per_wake.is_zero() {
+            return Err(StorageApiError::InvalidArgument {
+                field: "background_max_runtime_per_wake",
+                reason: "background maintenance max runtime per wake must be greater than zero",
+            });
+        }
+        Ok(())
+    }
 }
 
 impl StorageOpenOptions {
@@ -75,6 +175,8 @@ impl StorageOpenOptions {
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
+            background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
+            wal_segment_size_for_test: None,
         }
     }
 
@@ -95,6 +197,8 @@ impl StorageOpenOptions {
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
+            background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
+            wal_segment_size_for_test: None,
         }
     }
 
@@ -106,6 +210,8 @@ impl StorageOpenOptions {
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
+            background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
+            wal_segment_size_for_test: None,
         }
     }
 
@@ -117,6 +223,8 @@ impl StorageOpenOptions {
             budget_policy: StorageBudgetPolicy::Default,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
+            background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
+            wal_segment_size_for_test: None,
         }
     }
 
@@ -150,8 +258,69 @@ impl StorageOpenOptions {
         self
     }
 
+    #[must_use]
+    pub const fn with_background_maintenance(
+        mut self,
+        background_maintenance: StorageBackgroundMaintenanceOptions,
+    ) -> Self {
+        self.background_maintenance = background_maintenance;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_background_worker_count(mut self, worker_count: usize) -> Self {
+        self.background_maintenance = self.background_maintenance.with_worker_count(worker_count);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_background_scheduler_queue_depth(
+        mut self,
+        scheduler_queue_depth: usize,
+    ) -> Self {
+        self.background_maintenance = self
+            .background_maintenance
+            .with_scheduler_queue_depth(scheduler_queue_depth);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_background_max_tasks_per_wake(mut self, max_tasks_per_wake: usize) -> Self {
+        self.background_maintenance = self
+            .background_maintenance
+            .with_max_tasks_per_wake(max_tasks_per_wake);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_background_max_runtime_per_wake(
+        mut self,
+        max_runtime_per_wake: Duration,
+    ) -> Self {
+        self.background_maintenance = self
+            .background_maintenance
+            .with_max_runtime_per_wake(max_runtime_per_wake);
+        self
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
+    pub const fn with_wal_segment_size_for_test(mut self, segment_size: u64) -> Self {
+        self.wal_segment_size_for_test = Some(segment_size);
+        self
+    }
+
     pub fn validate(&self) -> StorageApiResult<()> {
         self.wal_growth_policy.validate()?;
+        self.background_maintenance.validate()?;
+        if let Some(segment_size) = self.wal_segment_size_for_test {
+            crate::service::WalServiceConfig::new(segment_size)
+                .validate()
+                .map_err(|_| StorageApiError::InvalidArgument {
+                    field: "wal_segment_size",
+                    reason: "test WAL segment size is invalid",
+                })?;
+        }
         match self.mode {
             StorageMode::Cache if !self.strict_recovery => Err(StorageApiError::InvalidArgument {
                 field: "strict_recovery",
@@ -197,6 +366,15 @@ impl StorageOpenOptions {
     #[must_use]
     pub const fn maintenance_scheduling_policy(&self) -> StorageMaintenanceSchedulingPolicy {
         self.maintenance_scheduling_policy
+    }
+
+    #[must_use]
+    pub const fn background_maintenance(&self) -> StorageBackgroundMaintenanceOptions {
+        self.background_maintenance
+    }
+
+    pub(crate) const fn wal_segment_size_for_test(&self) -> Option<u64> {
+        self.wal_segment_size_for_test
     }
 }
 

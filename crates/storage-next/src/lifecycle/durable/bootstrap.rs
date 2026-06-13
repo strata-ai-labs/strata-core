@@ -17,13 +17,17 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    maintenance_ready_for_recovery_health, BudgetedCommitBranch, LifecycleBranchCatalog,
-    LifecycleDurableTableCatalog, LifecycleError, LifecycleMaintenanceExecutor,
-    LifecycleOperationKind, LifecycleRecoveryOutcome, LifecycleResult, LifecycleState,
-    LifecycleStateMachine, LifecycleStats, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
-    LifecycleWriteAdmissionOutcome, RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger,
-    StorageBudgetSnapshot, StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    estimate_commit_batch_active_bytes, maintenance_ready_for_recovery_health,
+    projected_commit_rotation_would_exceed_frozen_budget, BudgetedCommitBranch,
+    LifecycleBranchCatalog, LifecycleDurableTableCatalog, LifecycleError,
+    LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
+    LifecycleWalGrowthOutcome, LifecycleWalGrowthStatus, LifecycleWriteAdmissionOutcome,
+    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
+    StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
+use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
 use crate::table::TableRuntimeError;
@@ -452,6 +456,30 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.last_wal_growth_outcome.as_ref()
     }
 
+    pub(crate) fn current_wal_growth_facts(&self) -> LifecycleResult<WalGrowthFacts> {
+        self.services.wal().growth_facts().map_err(super::wal_error)
+    }
+
+    pub(crate) fn current_wal_growth_exceeds_policy(&self) -> LifecycleResult<bool> {
+        let policy = self.open_plan.lifecycle_config().wal_growth_policy();
+        let facts = self.current_wal_growth_facts()?;
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(super::manifest_error)?;
+        let checkpoint_watermark = current_manifest
+            .snapshot_watermark()
+            .map(CommitVersion::new);
+        let commits_since_checkpoint = crate::lifecycle::commits_since_checkpoint(
+            self.visible.visible_version(),
+            checkpoint_watermark,
+        );
+        Ok(policy
+            .trigger_for(facts, commits_since_checkpoint)
+            .is_some())
+    }
+
     pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
         self.last_write_admission
     }
@@ -503,11 +531,37 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }
         Err(LifecycleError::StoragePressureRejected {
             branch_id,
-            severity: crate::lifecycle::LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            pressure_reason: crate::lifecycle::LifecycleStoragePressureReason::None,
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::None,
             retryable: false,
             reason: "durable recovery health blocks mutating commit admission",
         })
+    }
+
+    fn require_projected_mutating_commit_budget(
+        &self,
+        branch_id: BranchId,
+        batch: &CommitBatch,
+    ) -> LifecycleResult<()> {
+        let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("commit target branch is present in the catalog");
+        if projected_commit_rotation_would_exceed_frozen_budget(
+            &self.budget,
+            branch,
+            incoming_active_bytes,
+        )? {
+            return Err(LifecycleError::StoragePressureRejected {
+                branch_id,
+                severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+                pressure_reason: LifecycleStoragePressureReason::FrozenBacklog,
+                retryable: branch.frozen_table_count() > 0,
+                reason: "incoming commit would exceed frozen mutable storage budget after rotation",
+            });
+        }
+        Ok(())
     }
 
     #[cfg(any(test, feature = "testkit"))]
@@ -1007,6 +1061,7 @@ where
             self.require_branch_commit_guard_available(branch_id)?;
             self.require_write_admission_recovery_health(branch_id)?;
             self.evaluate_mutating_write_admission_for_branch(branch_id)?;
+            self.require_projected_mutating_commit_budget(branch_id, &batch)?;
         }
         let outcome = {
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
@@ -1028,16 +1083,33 @@ where
             .map_err(commit_error)
         };
         if outcome.is_ok() {
-            match self.evaluate_wal_growth_policy() {
-                Ok(policy_outcome) => self.record_wal_growth_outcome(policy_outcome),
-                Err(error) => self.record_wal_growth_policy_error(error),
-            }
+            self.evaluate_and_record_wal_growth_policy();
             let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
         }
         outcome
     }
 
+    pub(crate) fn evaluate_and_record_wal_growth_policy(&mut self) {
+        match self.evaluate_wal_growth_policy() {
+            Ok(policy_outcome) => self.record_wal_growth_outcome(policy_outcome),
+            Err(error) => self.record_wal_growth_policy_error(error),
+        }
+    }
+
     fn record_wal_growth_outcome(&mut self, outcome: LifecycleWalGrowthOutcome) {
+        let facts = outcome.facts();
+        perf_trace::record_lifecycle_wal_growth_sample(
+            facts.retained_bytes(),
+            facts.retained_segments(),
+            matches!(
+                outcome.status(),
+                LifecycleWalGrowthStatus::CheckpointEnqueued
+            ),
+            matches!(
+                outcome.status(),
+                LifecycleWalGrowthStatus::CheckpointCoalesced
+            ),
+        );
         self.record_recovery_health(outcome.recovery_health());
         self.last_wal_growth_outcome = Some(outcome);
     }

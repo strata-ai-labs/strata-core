@@ -7,14 +7,16 @@ use super::compaction::{
 };
 use super::{
     publish_table_manifest_for_branch_with_budget, require_generated_artifact_budget,
-    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleResult,
-    StorageBudgetLedger,
+    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
+    LifecycleResult, StorageBudgetLedger, StorageBudgetPool,
 };
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
-use crate::branch::state::compaction::{BranchCompactionOutcome, BranchCompactionPlan};
+use crate::branch::state::compaction::{
+    BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
+};
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
     BranchMaterializationRecovery, BranchMaterializationRequest,
@@ -25,7 +27,7 @@ use crate::service::{
     TableManifestService, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
     TableObjectService, TableObjectServiceError,
 };
-use crate::table::{BuiltTableArtifact, TableReaderConfig};
+use crate::table::{BuiltTableArtifact, TableCompactionConfig, TableReaderConfig};
 use strata_core_next::BranchId;
 
 pub(crate) fn compact_durable_branch_manifest_backed(
@@ -41,7 +43,8 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     let request = request
         .clone()
         .with_durability(LifecycleTableRewriteDurability::DurableTableManifestBacked);
-    let branch_request = request.branch_request()?;
+    let branch_request =
+        compaction_request_with_durable_budget_target(request.branch_request()?, budget)?;
     let plan = branch
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
@@ -131,6 +134,47 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         Ok(_) => Ok(outcome),
         Err(error) => Ok(outcome.manifest_debt(error)),
     }
+}
+
+fn compaction_request_with_durable_budget_target(
+    request: BranchCompactionRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<BranchCompactionRequest> {
+    let Some(budget) = budget else {
+        return Ok(request);
+    };
+    let config = table_compaction_config_with_generated_artifact_budget(
+        request.table_compaction_config(),
+        budget,
+    )?;
+    Ok(request.with_table_compaction_config(config))
+}
+
+fn table_compaction_config_with_generated_artifact_budget(
+    config: TableCompactionConfig,
+    budget: &StorageBudgetLedger,
+) -> LifecycleResult<TableCompactionConfig> {
+    let generated_limit = budget
+        .budget()
+        .pool_limit_bytes(StorageBudgetPool::GeneratedArtifact);
+    let reader_limit = budget
+        .budget()
+        .pool_limit_bytes(StorageBudgetPool::TableReader);
+    let limit = generated_limit.min(reader_limit);
+    if limit == 0 {
+        return Ok(config);
+    }
+    let capped_target = config.target_output_bytes().min((limit / 2).max(1));
+    if capped_target == config.target_output_bytes() {
+        return Ok(config);
+    }
+    TableCompactionConfig::new(capped_target, config.max_output_tables()).map_err(|source| {
+        LifecycleError::lower_layer_with(
+            LifecycleLowerLayer::TableRuntime,
+            "table runtime failed",
+            source,
+        )
+    })
 }
 
 fn finish_metadata_promotion_compaction(

@@ -210,6 +210,8 @@ pub struct DiagnosticsWalGrowthReport {
     policy_enabled: bool,
     max_retained_wal_bytes: Option<u64>,
     max_retained_wal_segments: Option<usize>,
+    retained_wal_bytes: Option<u64>,
+    retained_wal_segments: Option<usize>,
     max_commits_since_checkpoint: Option<u64>,
     last_status: Option<MaintenanceWalGrowthSummary>,
 }
@@ -914,11 +916,34 @@ impl DiagnosticsWalGrowthReport {
         max_commits_since_checkpoint: Option<u64>,
         last_status: Option<MaintenanceWalGrowthSummary>,
     ) -> Self {
+        Self::known_with_current_retention(
+            policy_enabled,
+            max_retained_wal_bytes,
+            max_retained_wal_segments,
+            None,
+            None,
+            max_commits_since_checkpoint,
+            last_status,
+        )
+    }
+
+    #[must_use]
+    pub const fn known_with_current_retention(
+        policy_enabled: bool,
+        max_retained_wal_bytes: Option<u64>,
+        max_retained_wal_segments: Option<usize>,
+        retained_wal_bytes: Option<u64>,
+        retained_wal_segments: Option<usize>,
+        max_commits_since_checkpoint: Option<u64>,
+        last_status: Option<MaintenanceWalGrowthSummary>,
+    ) -> Self {
         Self {
             state: DiagnosticsFactState::Known,
             policy_enabled,
             max_retained_wal_bytes,
             max_retained_wal_segments,
+            retained_wal_bytes,
+            retained_wal_segments,
             max_commits_since_checkpoint,
             last_status,
         }
@@ -931,6 +956,8 @@ impl DiagnosticsWalGrowthReport {
             policy_enabled: false,
             max_retained_wal_bytes: None,
             max_retained_wal_segments: None,
+            retained_wal_bytes: None,
+            retained_wal_segments: None,
             max_commits_since_checkpoint: None,
             last_status: None,
         }
@@ -954,6 +981,16 @@ impl DiagnosticsWalGrowthReport {
     #[must_use]
     pub const fn max_retained_wal_segments(self) -> Option<usize> {
         self.max_retained_wal_segments
+    }
+
+    #[must_use]
+    pub const fn retained_wal_bytes(self) -> Option<u64> {
+        self.retained_wal_bytes
+    }
+
+    #[must_use]
+    pub const fn retained_wal_segments(self) -> Option<usize> {
+        self.retained_wal_segments
     }
 
     #[must_use]

@@ -172,6 +172,17 @@ pub struct StoragePerfSnapshot {
     lifecycle_write_admission_slowdown_attempts: u64,
     lifecycle_write_admission_slowdown_ns: u64,
     lifecycle_write_admission_block_wait_ns: u64,
+    lifecycle_wal_retention_samples: u64,
+    lifecycle_wal_retained_bytes_last: u64,
+    lifecycle_wal_retained_bytes_max: u64,
+    lifecycle_wal_retained_segments_last: u64,
+    lifecycle_wal_retained_segments_max: u64,
+    lifecycle_wal_checkpoint_enqueue_events: u64,
+    lifecycle_wal_checkpoint_coalesced_events: u64,
+    lifecycle_checkpoint_executions: u64,
+    lifecycle_wal_truncation_deleted_segments: u64,
+    lifecycle_wal_truncation_protected_segments: u64,
+    lifecycle_wal_truncation_failed_segments: u64,
     lifecycle_flush_drain_frozen_tables_discovered: u64,
     lifecycle_flush_drain_operations_completed: u64,
     lifecycle_flush_drain_freeze_retries: u64,
@@ -951,6 +962,61 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent waiting for background progress under Block pressure.
     pub const fn lifecycle_write_admission_block_wait_ns(self) -> u64 {
         self.lifecycle_write_admission_block_wait_ns
+    }
+
+    /// WAL-growth policy samples taken after durable commits.
+    pub const fn lifecycle_wal_retention_samples(self) -> u64 {
+        self.lifecycle_wal_retention_samples
+    }
+
+    /// Retained WAL bytes observed by the last WAL-growth sample.
+    pub const fn lifecycle_wal_retained_bytes_last(self) -> u64 {
+        self.lifecycle_wal_retained_bytes_last
+    }
+
+    /// Maximum retained WAL bytes observed across WAL-growth samples.
+    pub const fn lifecycle_wal_retained_bytes_max(self) -> u64 {
+        self.lifecycle_wal_retained_bytes_max
+    }
+
+    /// Retained WAL segments observed by the last WAL-growth sample.
+    pub const fn lifecycle_wal_retained_segments_last(self) -> u64 {
+        self.lifecycle_wal_retained_segments_last
+    }
+
+    /// Maximum retained WAL segments observed across WAL-growth samples.
+    pub const fn lifecycle_wal_retained_segments_max(self) -> u64 {
+        self.lifecycle_wal_retained_segments_max
+    }
+
+    /// WAL-growth evaluations that enqueued a checkpoint task.
+    pub const fn lifecycle_wal_checkpoint_enqueue_events(self) -> u64 {
+        self.lifecycle_wal_checkpoint_enqueue_events
+    }
+
+    /// WAL-growth evaluations that coalesced with an existing checkpoint task.
+    pub const fn lifecycle_wal_checkpoint_coalesced_events(self) -> u64 {
+        self.lifecycle_wal_checkpoint_coalesced_events
+    }
+
+    /// Successful checkpoint publications executed by lifecycle maintenance.
+    pub const fn lifecycle_checkpoint_executions(self) -> u64 {
+        self.lifecycle_checkpoint_executions
+    }
+
+    /// Covered WAL segments deleted by WAL truncation.
+    pub const fn lifecycle_wal_truncation_deleted_segments(self) -> u64 {
+        self.lifecycle_wal_truncation_deleted_segments
+    }
+
+    /// WAL segments protected by WAL truncation proof bounds.
+    pub const fn lifecycle_wal_truncation_protected_segments(self) -> u64 {
+        self.lifecycle_wal_truncation_protected_segments
+    }
+
+    /// WAL segment delete attempts that failed during WAL truncation.
+    pub const fn lifecycle_wal_truncation_failed_segments(self) -> u64 {
+        self.lifecycle_wal_truncation_failed_segments
     }
 
     /// Frozen tables observed at flush-drain start.
@@ -2321,6 +2387,28 @@ static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_RETENTION_SAMPLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_RETAINED_BYTES_LAST: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_RETAINED_BYTES_MAX: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_RETAINED_SEGMENTS_LAST: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_RETAINED_SEGMENTS_MAX: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_CHECKPOINT_ENQUEUE_EVENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_CHECKPOINT_COALESCED_EVENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_CHECKPOINT_EXECUTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_TRUNCATION_DELETED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_TRUNCATION_PROTECTED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_WAL_TRUNCATION_FAILED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
@@ -2963,6 +3051,17 @@ pub fn reset() {
     LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETENTION_SAMPLES.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETAINED_BYTES_LAST.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETAINED_BYTES_MAX.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETAINED_SEGMENTS_LAST.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETAINED_SEGMENTS_MAX.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_CHECKPOINT_ENQUEUE_EVENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_CHECKPOINT_COALESCED_EVENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_CHECKPOINT_EXECUTIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_TRUNCATION_DELETED_SEGMENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_TRUNCATION_PROTECTED_SEGMENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WAL_TRUNCATION_FAILED_SEGMENTS.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
     LIFECYCLE_FLUSH_DRAIN_FREEZE_RETRIES.store(0, Ordering::Relaxed);
@@ -3387,6 +3486,25 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_write_admission_slowdown_ns: LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS
             .load(Ordering::Relaxed),
         lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
+            .load(Ordering::Relaxed),
+        lifecycle_wal_retention_samples: LIFECYCLE_WAL_RETENTION_SAMPLES.load(Ordering::Relaxed),
+        lifecycle_wal_retained_bytes_last: LIFECYCLE_WAL_RETAINED_BYTES_LAST
+            .load(Ordering::Relaxed),
+        lifecycle_wal_retained_bytes_max: LIFECYCLE_WAL_RETAINED_BYTES_MAX.load(Ordering::Relaxed),
+        lifecycle_wal_retained_segments_last: LIFECYCLE_WAL_RETAINED_SEGMENTS_LAST
+            .load(Ordering::Relaxed),
+        lifecycle_wal_retained_segments_max: LIFECYCLE_WAL_RETAINED_SEGMENTS_MAX
+            .load(Ordering::Relaxed),
+        lifecycle_wal_checkpoint_enqueue_events: LIFECYCLE_WAL_CHECKPOINT_ENQUEUE_EVENTS
+            .load(Ordering::Relaxed),
+        lifecycle_wal_checkpoint_coalesced_events: LIFECYCLE_WAL_CHECKPOINT_COALESCED_EVENTS
+            .load(Ordering::Relaxed),
+        lifecycle_checkpoint_executions: LIFECYCLE_CHECKPOINT_EXECUTIONS.load(Ordering::Relaxed),
+        lifecycle_wal_truncation_deleted_segments: LIFECYCLE_WAL_TRUNCATION_DELETED_SEGMENTS
+            .load(Ordering::Relaxed),
+        lifecycle_wal_truncation_protected_segments: LIFECYCLE_WAL_TRUNCATION_PROTECTED_SEGMENTS
+            .load(Ordering::Relaxed),
+        lifecycle_wal_truncation_failed_segments: LIFECYCLE_WAL_TRUNCATION_FAILED_SEGMENTS
             .load(Ordering::Relaxed),
         lifecycle_flush_drain_frozen_tables_discovered:
             LIFECYCLE_FLUSH_DRAIN_FROZEN_TABLES_DISCOVERED.load(Ordering::Relaxed),
@@ -4720,6 +4838,74 @@ pub(crate) fn record_lifecycle_write_admission_block_wait(duration: std::time::D
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_wal_growth_sample(
+    _retained_bytes: u64,
+    _retained_segments: usize,
+    _checkpoint_enqueued: bool,
+    _checkpoint_coalesced: bool,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_wal_growth_sample(
+    retained_bytes: u64,
+    retained_segments: usize,
+    checkpoint_enqueued: bool,
+    checkpoint_coalesced: bool,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    let retained_segments = as_u64(retained_segments);
+    LIFECYCLE_WAL_RETENTION_SAMPLES.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETAINED_BYTES_LAST.store(retained_bytes, Ordering::Relaxed);
+    LIFECYCLE_WAL_RETAINED_SEGMENTS_LAST.store(retained_segments, Ordering::Relaxed);
+    record_atomic_max(&LIFECYCLE_WAL_RETAINED_BYTES_MAX, retained_bytes);
+    record_atomic_max(&LIFECYCLE_WAL_RETAINED_SEGMENTS_MAX, retained_segments);
+    if checkpoint_enqueued {
+        LIFECYCLE_WAL_CHECKPOINT_ENQUEUE_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+    if checkpoint_coalesced {
+        LIFECYCLE_WAL_CHECKPOINT_COALESCED_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_checkpoint_execution() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_checkpoint_execution() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_CHECKPOINT_EXECUTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_wal_truncation_report(
+    _deleted_segments: usize,
+    _protected_segments: usize,
+    _failed_segments: usize,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_wal_truncation_report(
+    deleted_segments: usize,
+    protected_segments: usize,
+    failed_segments: usize,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WAL_TRUNCATION_DELETED_SEGMENTS
+        .fetch_add(as_u64(deleted_segments), Ordering::Relaxed);
+    LIFECYCLE_WAL_TRUNCATION_PROTECTED_SEGMENTS
+        .fetch_add(as_u64(protected_segments), Ordering::Relaxed);
+    LIFECYCLE_WAL_TRUNCATION_FAILED_SEGMENTS.fetch_add(as_u64(failed_segments), Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -6251,6 +6437,17 @@ const fn recording_enabled() -> bool {
 #[cfg(feature = "perf-trace")]
 fn as_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "perf-trace")]
+fn record_atomic_max(counter: &AtomicU64, value: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    while value > current {
+        match counter.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 #[cfg(feature = "perf-trace")]

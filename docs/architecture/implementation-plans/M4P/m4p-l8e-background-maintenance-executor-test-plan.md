@@ -185,7 +185,10 @@ Mechanical counter tests:
 
 Generated tests:
 
-1. Random enqueue/coalesce sequences under a single worker.
+1. Random enqueue/coalesce sequences under one-worker and multi-worker
+   scheduler configurations, asserting the old storage invariant: one
+   compaction chain in flight, coalesced flush drain, and no duplicate
+   same-branch/table publication.
 2. Random maintenance queue capacity limits.
 3. Random chain resubmission depth.
 4. Random task priority mixes.

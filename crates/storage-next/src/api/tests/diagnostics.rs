@@ -288,7 +288,10 @@ fn diagnostics_reports_background_scheduler_facts() {
     let queue = report.maintenance().expect("maintenance diagnostics");
 
     assert_eq!(report.maintenance_state(), DiagnosticsFactState::Known);
-    assert_eq!(queue.background_worker_count(), 1);
+    assert_eq!(
+        queue.background_worker_count(),
+        default_background_worker_count()
+    );
     assert_eq!(queue.background_queue_depth(), 0);
     assert_eq!(queue.background_active_tasks(), 0);
 }
@@ -302,7 +305,10 @@ fn diagnostics_reports_durable_background_scheduler_facts() {
     let queue = report.maintenance().expect("maintenance diagnostics");
 
     assert_eq!(report.maintenance_state(), DiagnosticsFactState::Known);
-    assert_eq!(queue.background_worker_count(), 1);
+    assert_eq!(
+        queue.background_worker_count(),
+        default_background_worker_count()
+    );
     assert_eq!(queue.background_queue_depth(), 0);
     assert_eq!(queue.background_active_tasks(), 0);
 }

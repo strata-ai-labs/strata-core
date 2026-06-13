@@ -78,6 +78,7 @@ pub(crate) struct MaintenanceTaskRequest {
 pub(crate) struct MaintenanceCheckpointOptions {
     snapshot_id: Option<u64>,
     truncate_wal_after_checkpoint: bool,
+    retention_critical: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -601,7 +602,13 @@ impl MaintenanceCheckpointOptions {
         Self {
             snapshot_id,
             truncate_wal_after_checkpoint,
+            retention_critical: false,
         }
+    }
+
+    pub(crate) const fn retention_critical(mut self) -> Self {
+        self.retention_critical = true;
+        self
     }
 
     pub(crate) const fn snapshot_id(self) -> Option<u64> {
@@ -610,6 +617,10 @@ impl MaintenanceCheckpointOptions {
 
     pub(crate) const fn truncate_wal_after_checkpoint(self) -> bool {
         self.truncate_wal_after_checkpoint
+    }
+
+    pub(crate) const fn is_retention_critical(self) -> bool {
+        self.retention_critical
     }
 }
 

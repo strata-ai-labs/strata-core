@@ -17,11 +17,11 @@ use strata_benchmarks::schema::{
 use strata_storage_next::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
     CommitOptions, DiagnosticsFactState, DiagnosticsRequest, DiagnosticsScope,
-    DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest, MaintenanceScope,
-    MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask, PointReadRequest,
-    PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome, ScanReadRequest,
-    StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey, StorageOpenOutcome,
-    StorageRuntime, StorageSpaceId, StorageValue,
+    DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest,
+    MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask,
+    PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome,
+    ScanReadRequest, StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey,
+    StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
 };
 use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
@@ -84,10 +84,7 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
         config.branch_samples,
         config.scan_limit
     );
-    eprintln!(
-        "diagnostic_final_drain={}",
-        config.diagnostic_final_drain
-    );
+    eprintln!("diagnostic_final_drain={}", config.diagnostic_final_drain);
     eprintln!();
 
     for &scale in &config.scales {
@@ -903,18 +900,40 @@ fn print_result(result: &RunResult) {
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
-            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={} automatic_maintenance_ns={} automatic_maintenance_attempts={} maintenance_suggested={} maintenance_scheduled={} maintenance_coalesced={} maintenance_deferred={}",
+            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={} diagnostic_poll_ns={} diagnostic_polls={} automatic_maintenance_ns={} automatic_maintenance_attempts={} inline_maintenance_ns={} inline_maintenance_attempts={} background_maintenance_ns={} background_maintenance_tasks={} foreground_wait_background_lock_ns={} admission_slowdown_ns={} admission_slowdown_attempts={} admission_block_wait_ns={} admission_wait_attempts={} admission_wait_timeouts={} maintenance_suggested={} maintenance_scheduled={} maintenance_coalesced={} maintenance_deferred={} wal_retained_bytes_last={} wal_retained_segments_last={} wal_retained_bytes_max={} wal_retained_segments_max={} wal_checkpoint_enqueue_events={} wal_checkpoint_coalesced_events={} checkpoint_executions={} wal_truncation_deleted_segments={} wal_truncation_protected_segments={} wal_truncation_failed_segments={}",
             load_phase.batch_build_ns,
             load_phase.commit_call_ns,
             load_phase.maintenance_call_ns,
             load_phase.maintenance_runs,
             load_phase.maintenance_rows,
+            load_phase.diagnostic_poll_ns,
+            load_phase.diagnostic_polls,
             load_phase.automatic_maintenance_ns,
             load_phase.automatic_maintenance_attempts,
+            load_phase.inline_maintenance_ns,
+            load_phase.inline_maintenance_attempts,
+            load_phase.background_maintenance_ns,
+            load_phase.background_maintenance_tasks,
+            load_phase.foreground_wait_background_lock_ns,
+            load_phase.admission_slowdown_ns,
+            load_phase.admission_slowdown_attempts,
+            load_phase.admission_block_wait_ns,
+            load_phase.admission_wait_attempts,
+            load_phase.admission_wait_timeouts,
             load_phase.maintenance_suggested_tasks,
             load_phase.maintenance_scheduled_tasks,
             load_phase.maintenance_coalesced_tasks,
             load_phase.maintenance_deferred_tasks,
+            optional_u64(load_phase.wal_retained_bytes_last),
+            optional_u64(load_phase.wal_retained_segments_last),
+            optional_u64(load_phase.wal_retained_bytes_max),
+            optional_u64(load_phase.wal_retained_segments_max),
+            load_phase.wal_checkpoint_enqueue_events,
+            load_phase.wal_checkpoint_coalesced_events,
+            load_phase.checkpoint_executions,
+            load_phase.wal_truncation_deleted_segments,
+            load_phase.wal_truncation_protected_segments,
+            load_phase.wal_truncation_failed_segments,
         );
     }
     if let Some(source_shape) = result.source_shape_context.as_ref() {
@@ -1404,12 +1423,37 @@ impl RunResult {
                     "maintenance_call_ns": load_phase.maintenance_call_ns,
                     "maintenance_runs": load_phase.maintenance_runs,
                     "maintenance_rows": load_phase.maintenance_rows,
+                    "diagnostic_poll_ns": load_phase.diagnostic_poll_ns,
+                    "diagnostic_polls": load_phase.diagnostic_polls,
                     "automatic_maintenance_ns": load_phase.automatic_maintenance_ns,
                     "automatic_maintenance_attempts": load_phase.automatic_maintenance_attempts,
+                    "inline_maintenance_ns": load_phase.inline_maintenance_ns,
+                    "inline_maintenance_attempts": load_phase.inline_maintenance_attempts,
+                    "background_maintenance_ns": load_phase.background_maintenance_ns,
+                    "background_maintenance_tasks": load_phase.background_maintenance_tasks,
+                    "foreground_wait_background_lock_ns": load_phase.foreground_wait_background_lock_ns,
+                    "admission_slowdown_ns": load_phase.admission_slowdown_ns,
+                    "admission_slowdown_attempts": load_phase.admission_slowdown_attempts,
+                    "admission_block_wait_ns": load_phase.admission_block_wait_ns,
+                    "admission_wait_attempts": load_phase.admission_wait_attempts,
+                    "admission_wait_timeouts": load_phase.admission_wait_timeouts,
                     "maintenance_suggested_tasks": load_phase.maintenance_suggested_tasks,
                     "maintenance_scheduled_tasks": load_phase.maintenance_scheduled_tasks,
                     "maintenance_coalesced_tasks": load_phase.maintenance_coalesced_tasks,
                     "maintenance_deferred_tasks": load_phase.maintenance_deferred_tasks,
+                    "wal_retained_bytes_last": load_phase.wal_retained_bytes_last,
+                    "wal_retained_segments_last": load_phase.wal_retained_segments_last,
+                    "wal_retained_bytes_max": load_phase.wal_retained_bytes_max,
+                    "wal_retained_segments_max": load_phase.wal_retained_segments_max,
+                    "wal_commits_since_checkpoint_last": load_phase.wal_commits_since_checkpoint_last,
+                    "wal_retention_limit_bytes": load_phase.wal_retention_limit_bytes,
+                    "wal_retention_limit_segments": load_phase.wal_retention_limit_segments,
+                    "wal_checkpoint_enqueue_events": load_phase.wal_checkpoint_enqueue_events,
+                    "wal_checkpoint_coalesced_events": load_phase.wal_checkpoint_coalesced_events,
+                    "checkpoint_executions": load_phase.checkpoint_executions,
+                    "wal_truncation_deleted_segments": load_phase.wal_truncation_deleted_segments,
+                    "wal_truncation_protected_segments": load_phase.wal_truncation_protected_segments,
+                    "wal_truncation_failed_segments": load_phase.wal_truncation_failed_segments,
                 }),
             );
         }
@@ -1595,8 +1639,14 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         "commit_quiesce_attempts",
         perf_trace.commit_quiesce_attempts()
     );
-    field!("commit_quiesce_acquired", perf_trace.commit_quiesce_acquired());
-    field!("commit_quiesce_rejected", perf_trace.commit_quiesce_rejected());
+    field!(
+        "commit_quiesce_acquired",
+        perf_trace.commit_quiesce_acquired()
+    );
+    field!(
+        "commit_quiesce_rejected",
+        perf_trace.commit_quiesce_rejected()
+    );
     field!(
         "commit_conflict_validation_calls",
         perf_trace.commit_conflict_validation_calls()
@@ -1744,6 +1794,126 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "lifecycle_inline_maintenance_ns",
         perf_trace.lifecycle_inline_maintenance_ns()
+    );
+    field!(
+        "lifecycle_background_runtimes_created",
+        perf_trace.lifecycle_background_runtimes_created()
+    );
+    field!(
+        "lifecycle_background_runtime_workers_created",
+        perf_trace.lifecycle_background_runtime_workers_created()
+    );
+    field!(
+        "lifecycle_background_wake_submitted",
+        perf_trace.lifecycle_background_wake_submitted()
+    );
+    field!(
+        "lifecycle_background_wake_coalesced",
+        perf_trace.lifecycle_background_wake_coalesced()
+    );
+    field!(
+        "lifecycle_background_wake_rejected",
+        perf_trace.lifecycle_background_wake_rejected()
+    );
+    field!(
+        "lifecycle_background_stale_wake_noop",
+        perf_trace.lifecycle_background_stale_wake_noop()
+    );
+    field!(
+        "lifecycle_background_drain_rounds",
+        perf_trace.lifecycle_background_drain_rounds()
+    );
+    field!(
+        "lifecycle_background_tasks_completed",
+        perf_trace.lifecycle_background_tasks_completed()
+    );
+    field!(
+        "lifecycle_background_task_snapshot_lock_ns",
+        perf_trace.lifecycle_background_task_snapshot_lock_ns()
+    );
+    field!(
+        "lifecycle_background_task_unlocked_build_ns",
+        perf_trace.lifecycle_background_task_unlocked_build_ns()
+    );
+    field!(
+        "lifecycle_background_task_publish_lock_ns",
+        perf_trace.lifecycle_background_task_publish_lock_ns()
+    );
+    field!(
+        "lifecycle_background_task_total_ns",
+        perf_trace.lifecycle_background_task_total_ns()
+    );
+    field!(
+        "lifecycle_background_candidate_stale_deferred",
+        perf_trace.lifecycle_background_candidate_stale_deferred()
+    );
+    field!(
+        "lifecycle_foreground_wait_background_lock_ns",
+        perf_trace.lifecycle_foreground_wait_background_lock_ns()
+    );
+    field!(
+        "lifecycle_write_admission_slowdown_attempts",
+        perf_trace.lifecycle_write_admission_slowdown_attempts()
+    );
+    field!(
+        "lifecycle_write_admission_slowdown_ns",
+        perf_trace.lifecycle_write_admission_slowdown_ns()
+    );
+    field!(
+        "lifecycle_write_admission_wait_attempts",
+        perf_trace.lifecycle_write_admission_wait_attempts()
+    );
+    field!(
+        "lifecycle_write_admission_wait_timeouts",
+        perf_trace.lifecycle_write_admission_wait_timeouts()
+    );
+    field!(
+        "lifecycle_write_admission_block_wait_ns",
+        perf_trace.lifecycle_write_admission_block_wait_ns()
+    );
+    field!(
+        "lifecycle_wal_retention_samples",
+        perf_trace.lifecycle_wal_retention_samples()
+    );
+    field!(
+        "lifecycle_wal_retained_bytes_last",
+        perf_trace.lifecycle_wal_retained_bytes_last()
+    );
+    field!(
+        "lifecycle_wal_retained_bytes_max",
+        perf_trace.lifecycle_wal_retained_bytes_max()
+    );
+    field!(
+        "lifecycle_wal_retained_segments_last",
+        perf_trace.lifecycle_wal_retained_segments_last()
+    );
+    field!(
+        "lifecycle_wal_retained_segments_max",
+        perf_trace.lifecycle_wal_retained_segments_max()
+    );
+    field!(
+        "lifecycle_wal_checkpoint_enqueue_events",
+        perf_trace.lifecycle_wal_checkpoint_enqueue_events()
+    );
+    field!(
+        "lifecycle_wal_checkpoint_coalesced_events",
+        perf_trace.lifecycle_wal_checkpoint_coalesced_events()
+    );
+    field!(
+        "lifecycle_checkpoint_executions",
+        perf_trace.lifecycle_checkpoint_executions()
+    );
+    field!(
+        "lifecycle_wal_truncation_deleted_segments",
+        perf_trace.lifecycle_wal_truncation_deleted_segments()
+    );
+    field!(
+        "lifecycle_wal_truncation_protected_segments",
+        perf_trace.lifecycle_wal_truncation_protected_segments()
+    );
+    field!(
+        "lifecycle_wal_truncation_failed_segments",
+        perf_trace.lifecycle_wal_truncation_failed_segments()
     );
     field!("append_rows_applied", perf_trace.append_rows_applied());
     field!(
@@ -2282,30 +2452,79 @@ fn source_shape_metrics_json(
         .map_or(serde_json::Value::Null, |context| {
             serde_json::json!(context.compaction_mode.as_str())
         });
-    let maintenance_queue_depth_final =
-        source_shape_context.and_then(|context| context.maintenance_queue.map(|queue| {
-            serde_json::json!(queue.pending_tasks)
-        })).unwrap_or(serde_json::Value::Null);
-    let maintenance_queue_depth_max =
-        source_shape_context.and_then(|context| context.maintenance_queue.map(|queue| {
-            serde_json::json!(queue.max_pending_tasks)
-        })).unwrap_or(serde_json::Value::Null);
-    let maintenance_queue_deferred_outcomes_per_million_rows =
-        source_shape_context.and_then(|context| context.maintenance_queue.map(|queue| {
-            ratio_json((queue.deferred as u64).saturating_mul(1_000_000), scale as u64)
-        })).unwrap_or(serde_json::Value::Null);
-    let load_maintenance_ms_per_million_rows =
-        load_phase_trace.map_or(serde_json::Value::Null, |trace| {
+    let maintenance_queue_depth_final = source_shape_context
+        .and_then(|context| {
+            context
+                .maintenance_queue
+                .map(|queue| serde_json::json!(queue.pending_tasks))
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let maintenance_queue_depth_max = source_shape_context
+        .and_then(|context| {
+            context
+                .maintenance_queue
+                .map(|queue| serde_json::json!(queue.max_pending_tasks))
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let maintenance_queue_deferred_outcomes_per_million_rows = source_shape_context
+        .and_then(|context| {
+            context.maintenance_queue.map(|queue| {
+                ratio_json(
+                    (queue.deferred as u64).saturating_mul(1_000_000),
+                    scale as u64,
+                )
+            })
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let load_maintenance_ms_per_million_rows = load_phase_trace
+        .map_or(serde_json::Value::Null, |trace| {
             ns_per_row_as_ms_per_million_rows_json(trace.maintenance_call_ns, scale as u64)
         });
-    let automatic_maintenance_ns =
-        load_phase_trace.map_or(perf_trace.lifecycle_inline_maintenance_ns(), |trace| {
-            trace.automatic_maintenance_ns
+    let diagnostic_poll_ns = load_phase_trace.map_or(0, |trace| trace.diagnostic_poll_ns);
+    let diagnostic_polls = load_phase_trace.map_or(0, |trace| trace.diagnostic_polls);
+    let inline_maintenance_ns = load_phase_trace
+        .map_or(perf_trace.lifecycle_inline_maintenance_ns(), |trace| {
+            trace.inline_maintenance_ns
         });
+    let inline_maintenance_attempts = load_phase_trace.map_or(
+        perf_trace.lifecycle_inline_maintenance_attempts(),
+        |trace| trace.inline_maintenance_attempts,
+    );
+    let background_maintenance_ns = load_phase_trace
+        .map_or(perf_trace.lifecycle_background_task_total_ns(), |trace| {
+            trace.background_maintenance_ns
+        });
+    let background_maintenance_tasks = load_phase_trace
+        .map_or(perf_trace.lifecycle_background_tasks_completed(), |trace| {
+            trace.background_maintenance_tasks
+        });
+    let automatic_maintenance_ns = inline_maintenance_ns.saturating_add(background_maintenance_ns);
     let automatic_maintenance_attempts =
-        load_phase_trace.map_or(perf_trace.lifecycle_inline_maintenance_attempts(), |trace| {
-            trace.automatic_maintenance_attempts
-        });
+        inline_maintenance_attempts.saturating_add(background_maintenance_tasks);
+    let foreground_wait_background_lock_ns = load_phase_trace.map_or(
+        perf_trace.lifecycle_foreground_wait_background_lock_ns(),
+        |trace| trace.foreground_wait_background_lock_ns,
+    );
+    let admission_slowdown_ns = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_slowdown_ns(),
+        |trace| trace.admission_slowdown_ns,
+    );
+    let admission_slowdown_attempts = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_slowdown_attempts(),
+        |trace| trace.admission_slowdown_attempts,
+    );
+    let admission_block_wait_ns = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_block_wait_ns(),
+        |trace| trace.admission_block_wait_ns,
+    );
+    let admission_wait_attempts = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_wait_attempts(),
+        |trace| trace.admission_wait_attempts,
+    );
+    let admission_wait_timeouts = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_wait_timeouts(),
+        |trace| trace.admission_wait_timeouts,
+    );
     let maintenance_suggested_tasks = load_phase_trace.map_or(
         perf_trace.lifecycle_post_commit_maintenance_tasks_suggested(),
         |trace| trace.maintenance_suggested_tasks,
@@ -2321,6 +2540,67 @@ fn source_shape_metrics_json(
     let maintenance_deferred_tasks = load_phase_trace.map_or(
         perf_trace.lifecycle_post_commit_maintenance_tasks_deferred(),
         |trace| trace.maintenance_deferred_tasks,
+    );
+    let wal_retained_bytes_last = load_phase_trace
+        .and_then(|trace| trace.wal_retained_bytes_last)
+        .or_else(|| {
+            (perf_trace.lifecycle_wal_retention_samples() > 0)
+                .then(|| perf_trace.lifecycle_wal_retained_bytes_last())
+        })
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_retained_segments_last = load_phase_trace
+        .and_then(|trace| trace.wal_retained_segments_last)
+        .or_else(|| {
+            (perf_trace.lifecycle_wal_retention_samples() > 0)
+                .then(|| perf_trace.lifecycle_wal_retained_segments_last())
+        })
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_retained_bytes_max = load_phase_trace
+        .and_then(|trace| trace.wal_retained_bytes_max)
+        .or_else(|| {
+            (perf_trace.lifecycle_wal_retention_samples() > 0)
+                .then(|| perf_trace.lifecycle_wal_retained_bytes_max())
+        })
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_retained_segments_max = load_phase_trace
+        .and_then(|trace| trace.wal_retained_segments_max)
+        .or_else(|| {
+            (perf_trace.lifecycle_wal_retention_samples() > 0)
+                .then(|| perf_trace.lifecycle_wal_retained_segments_max())
+        })
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_commits_since_checkpoint_last = load_phase_trace
+        .and_then(|trace| trace.wal_commits_since_checkpoint_last)
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_retention_limit_bytes = load_phase_trace
+        .and_then(|trace| trace.wal_retention_limit_bytes)
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_retention_limit_segments = load_phase_trace
+        .and_then(|trace| trace.wal_retention_limit_segments)
+        .map_or(serde_json::Value::Null, serde_json::Value::from);
+    let wal_checkpoint_enqueue_events = load_phase_trace.map_or(
+        perf_trace.lifecycle_wal_checkpoint_enqueue_events(),
+        |trace| trace.wal_checkpoint_enqueue_events,
+    );
+    let wal_checkpoint_coalesced_events = load_phase_trace.map_or(
+        perf_trace.lifecycle_wal_checkpoint_coalesced_events(),
+        |trace| trace.wal_checkpoint_coalesced_events,
+    );
+    let checkpoint_executions =
+        load_phase_trace.map_or(perf_trace.lifecycle_checkpoint_executions(), |trace| {
+            trace.checkpoint_executions
+        });
+    let wal_truncation_deleted_segments = load_phase_trace.map_or(
+        perf_trace.lifecycle_wal_truncation_deleted_segments(),
+        |trace| trace.wal_truncation_deleted_segments,
+    );
+    let wal_truncation_protected_segments = load_phase_trace.map_or(
+        perf_trace.lifecycle_wal_truncation_protected_segments(),
+        |trace| trace.wal_truncation_protected_segments,
+    );
+    let wal_truncation_failed_segments = load_phase_trace.map_or(
+        perf_trace.lifecycle_wal_truncation_failed_segments(),
+        |trace| trace.wal_truncation_failed_segments,
     );
     let automatic_maintenance_ms_per_million_rows =
         ns_per_row_as_ms_per_million_rows_json(automatic_maintenance_ns, scale as u64);
@@ -2360,84 +2640,191 @@ fn source_shape_metrics_json(
             }
         });
 
-    serde_json::json!({
-        "point_source_probes_per_read": ratio_json(point_source_probes, operation_count),
-        "point_nonzero_table_probes_per_read": ratio_json(point_nonzero_table_probes, operation_count),
-        "point_owned_l0_table_probes": perf_trace.point_owned_l0_table_probes(),
-        "point_owned_nonzero_level_searches": perf_trace.point_owned_nonzero_level_searches(),
-        "point_owned_nonzero_table_probes": perf_trace.point_owned_nonzero_table_probes(),
-        "point_table_seeks": perf_trace.point_table_seeks(),
-        "point_rows_visited": perf_trace.point_rows_visited(),
-        "scan_source_cursors_per_call": ratio_json(scan_source_cursors, operation_count),
-        "scan_table_cursors_opened_per_call": ratio_json(scan_table_cursors_opened, operation_count),
-        "scan_rows_visited_per_row_returned": ratio_json(
-            perf_trace.scan_rows_visited(),
-            perf_trace.scan_rows_returned(),
+    let lifecycle_compaction = serde_json::json!({
+        "input_bytes": perf_trace.lifecycle_compaction_input_bytes(),
+        "output_bytes": perf_trace.lifecycle_compaction_output_bytes(),
+        "metadata_bytes_avoided": perf_trace.lifecycle_compaction_metadata_bytes_avoided(),
+        "elapsed_ns": perf_trace.lifecycle_compaction_elapsed_ns(),
+        "input_rows": perf_trace.lifecycle_compaction_input_rows(),
+        "rewrite_bytes_per_row": perf_trace.lifecycle_compaction_rewrite_bytes_per_row(),
+        "io_budget_consumed_bytes": perf_trace.lifecycle_compaction_io_budget_consumed_bytes(),
+        "io_budget_deferrals": perf_trace.lifecycle_compaction_io_budget_deferrals(),
+        "io_budget_deferred_bytes": perf_trace.lifecycle_compaction_io_budget_deferred_bytes(),
+        "io_budget_limit_bytes": perf_trace.lifecycle_compaction_io_budget_limit_bytes(),
+        "flush_preemptions": perf_trace.lifecycle_compaction_flush_preemptions(),
+    });
+    let lifecycle_materialization = serde_json::json!({
+        "score_candidates": perf_trace.lifecycle_materialization_score_candidates(),
+        "score_layer_index_sum": perf_trace.lifecycle_materialization_score_layer_index_sum(),
+        "score_table_count": perf_trace.lifecycle_materialization_score_table_count(),
+        "score_byte_count": perf_trace.lifecycle_materialization_score_byte_count(),
+    });
+    let lifecycle_snapshot_pruning = serde_json::json!({
+        "floor_advancements": perf_trace.lifecycle_snapshot_floor_advancements(),
+        "floor_implicit_rejections": perf_trace.lifecycle_snapshot_floor_implicit_rejections(),
+        "with_proof": perf_trace.lifecycle_snapshot_pruning_with_proof(),
+        "deleted": perf_trace.lifecycle_snapshot_pruning_deleted(),
+        "protected": perf_trace.lifecycle_snapshot_pruning_protected(),
+        "failed": perf_trace.lifecycle_snapshot_pruning_failed(),
+    });
+    let point_read_acceleration_gaps = serde_json::json!({
+        "table_data_block_reads": perf_trace.table_data_block_reads(),
+        "table_data_block_decodes": perf_trace.table_data_block_decodes(),
+        "table_rows_decoded": perf_trace.table_rows_decoded(),
+        "table_filter_probes": perf_trace.table_filter_probes(),
+        "table_filter_negative_probes": perf_trace.table_filter_negative_probes(),
+        "table_filter_positive_probes": perf_trace.table_filter_positive_probes(),
+        "table_filter_absent_probes": perf_trace.table_filter_absent_probes(),
+        "table_cache_hits": perf_trace.table_cache_hits(),
+        "table_cache_misses": perf_trace.table_cache_misses(),
+    });
+    let assumptions = serde_json::json!({
+        "operation_count": operation_count,
+        "l0_tables_after_load": source_shape_context.map_or(
+            "source-shape unavailable",
+            |context| context.compaction_mode.layout_assumption(),
         ),
-        "load_maintenance_ms_per_million_rows": load_maintenance_ms_per_million_rows,
-        "automatic_maintenance_ns": automatic_maintenance_ns,
-        "automatic_maintenance_attempts": automatic_maintenance_attempts,
-        "automatic_maintenance_ms_per_million_rows": automatic_maintenance_ms_per_million_rows,
-        "l0_tables_per_million_rows_after_load": l0_tables_per_million_rows_after_load,
-        "scheduled_maintenance_tasks_per_explicit_flush": scheduled_maintenance_tasks_per_explicit_flush,
-        "maintenance_queue_depth_final": maintenance_queue_depth_final,
-        "maintenance_queue_depth_max": maintenance_queue_depth_max,
-        "maintenance_queue_deferred_outcomes_per_million_rows": maintenance_queue_deferred_outcomes_per_million_rows,
-        "maintenance_suggested_tasks": maintenance_suggested_tasks,
-        "maintenance_scheduled_tasks": maintenance_scheduled_tasks,
-        "maintenance_coalesced_tasks": maintenance_coalesced_tasks,
-        "maintenance_deferred_tasks": maintenance_deferred_tasks,
-        "lifecycle_compaction": {
-            "input_bytes": perf_trace.lifecycle_compaction_input_bytes(),
-            "output_bytes": perf_trace.lifecycle_compaction_output_bytes(),
-            "metadata_bytes_avoided": perf_trace.lifecycle_compaction_metadata_bytes_avoided(),
-            "elapsed_ns": perf_trace.lifecycle_compaction_elapsed_ns(),
-            "input_rows": perf_trace.lifecycle_compaction_input_rows(),
-            "rewrite_bytes_per_row": perf_trace.lifecycle_compaction_rewrite_bytes_per_row(),
-            "io_budget_consumed_bytes": perf_trace.lifecycle_compaction_io_budget_consumed_bytes(),
-            "io_budget_deferrals": perf_trace.lifecycle_compaction_io_budget_deferrals(),
-            "io_budget_deferred_bytes": perf_trace.lifecycle_compaction_io_budget_deferred_bytes(),
-            "io_budget_limit_bytes": perf_trace.lifecycle_compaction_io_budget_limit_bytes(),
-            "flush_preemptions": perf_trace.lifecycle_compaction_flush_preemptions(),
-        },
-        "lifecycle_materialization": {
-            "score_candidates": perf_trace.lifecycle_materialization_score_candidates(),
-            "score_layer_index_sum": perf_trace.lifecycle_materialization_score_layer_index_sum(),
-            "score_table_count": perf_trace.lifecycle_materialization_score_table_count(),
-            "score_byte_count": perf_trace.lifecycle_materialization_score_byte_count(),
-        },
-        "lifecycle_snapshot_pruning": {
-            "floor_advancements": perf_trace.lifecycle_snapshot_floor_advancements(),
-            "floor_implicit_rejections": perf_trace.lifecycle_snapshot_floor_implicit_rejections(),
-            "with_proof": perf_trace.lifecycle_snapshot_pruning_with_proof(),
-            "deleted": perf_trace.lifecycle_snapshot_pruning_deleted(),
-            "protected": perf_trace.lifecycle_snapshot_pruning_protected(),
-            "failed": perf_trace.lifecycle_snapshot_pruning_failed(),
-        },
-        "post_load_compaction_mode": post_load_compaction_mode,
-        "post_load_source_shape": source_shape_context.map(source_shape_context_json),
-        "point_probe_shape": point_shape,
-        "throughput_interpretation": throughput_interpretation,
-        "point_read_acceleration_gaps": {
-            "table_data_block_reads": perf_trace.table_data_block_reads(),
-            "table_data_block_decodes": perf_trace.table_data_block_decodes(),
-            "table_rows_decoded": perf_trace.table_rows_decoded(),
-            "table_filter_probes": perf_trace.table_filter_probes(),
-            "table_filter_negative_probes": perf_trace.table_filter_negative_probes(),
-            "table_filter_positive_probes": perf_trace.table_filter_positive_probes(),
-            "table_filter_absent_probes": perf_trace.table_filter_absent_probes(),
-            "table_cache_hits": perf_trace.table_cache_hits(),
-            "table_cache_misses": perf_trace.table_cache_misses(),
-        },
-        "assumptions": {
-            "operation_count": operation_count,
-            "l0_tables_after_load": source_shape_context.map_or(
-                "source-shape unavailable",
-                |context| context.compaction_mode.layout_assumption(),
-            ),
-            "known_compaction_mode_values": source_shape_compaction_modes_json(),
-        },
-    })
+        "known_compaction_mode_values": source_shape_compaction_modes_json(),
+    });
+
+    let mut metrics = serde_json::Map::new();
+    macro_rules! field {
+        ($key:literal, $value:expr) => {
+            metrics.insert($key.to_string(), serde_json::json!($value));
+        };
+    }
+
+    field!(
+        "point_source_probes_per_read",
+        ratio_json(point_source_probes, operation_count)
+    );
+    field!(
+        "point_nonzero_table_probes_per_read",
+        ratio_json(point_nonzero_table_probes, operation_count)
+    );
+    field!(
+        "point_owned_l0_table_probes",
+        perf_trace.point_owned_l0_table_probes()
+    );
+    field!(
+        "point_owned_nonzero_level_searches",
+        perf_trace.point_owned_nonzero_level_searches()
+    );
+    field!(
+        "point_owned_nonzero_table_probes",
+        perf_trace.point_owned_nonzero_table_probes()
+    );
+    field!("point_table_seeks", perf_trace.point_table_seeks());
+    field!("point_rows_visited", perf_trace.point_rows_visited());
+    field!(
+        "scan_source_cursors_per_call",
+        ratio_json(scan_source_cursors, operation_count)
+    );
+    field!(
+        "scan_table_cursors_opened_per_call",
+        ratio_json(scan_table_cursors_opened, operation_count)
+    );
+    field!(
+        "scan_rows_visited_per_row_returned",
+        ratio_json(
+            perf_trace.scan_rows_visited(),
+            perf_trace.scan_rows_returned()
+        )
+    );
+    field!(
+        "load_maintenance_ms_per_million_rows",
+        load_maintenance_ms_per_million_rows
+    );
+    field!("automatic_maintenance_ns", automatic_maintenance_ns);
+    field!(
+        "automatic_maintenance_attempts",
+        automatic_maintenance_attempts
+    );
+    field!("inline_maintenance_ns", inline_maintenance_ns);
+    field!("inline_maintenance_attempts", inline_maintenance_attempts);
+    field!("diagnostic_poll_ns", diagnostic_poll_ns);
+    field!("diagnostic_polls", diagnostic_polls);
+    field!("background_maintenance_ns", background_maintenance_ns);
+    field!("background_maintenance_tasks", background_maintenance_tasks);
+    field!(
+        "foreground_wait_background_lock_ns",
+        foreground_wait_background_lock_ns
+    );
+    field!("admission_slowdown_ns", admission_slowdown_ns);
+    field!("admission_slowdown_attempts", admission_slowdown_attempts);
+    field!("admission_block_wait_ns", admission_block_wait_ns);
+    field!("admission_wait_attempts", admission_wait_attempts);
+    field!("admission_wait_timeouts", admission_wait_timeouts);
+    field!(
+        "automatic_maintenance_ms_per_million_rows",
+        automatic_maintenance_ms_per_million_rows
+    );
+    field!(
+        "l0_tables_per_million_rows_after_load",
+        l0_tables_per_million_rows_after_load
+    );
+    field!(
+        "scheduled_maintenance_tasks_per_explicit_flush",
+        scheduled_maintenance_tasks_per_explicit_flush
+    );
+    field!(
+        "maintenance_queue_depth_final",
+        maintenance_queue_depth_final
+    );
+    field!("maintenance_queue_depth_max", maintenance_queue_depth_max);
+    field!(
+        "maintenance_queue_deferred_outcomes_per_million_rows",
+        maintenance_queue_deferred_outcomes_per_million_rows
+    );
+    field!("maintenance_suggested_tasks", maintenance_suggested_tasks);
+    field!("maintenance_scheduled_tasks", maintenance_scheduled_tasks);
+    field!("maintenance_coalesced_tasks", maintenance_coalesced_tasks);
+    field!("maintenance_deferred_tasks", maintenance_deferred_tasks);
+    field!("wal_retained_bytes_last", wal_retained_bytes_last);
+    field!("wal_retained_segments_last", wal_retained_segments_last);
+    field!("wal_retained_bytes_max", wal_retained_bytes_max);
+    field!("wal_retained_segments_max", wal_retained_segments_max);
+    field!(
+        "wal_commits_since_checkpoint_last",
+        wal_commits_since_checkpoint_last
+    );
+    field!("wal_retention_limit_bytes", wal_retention_limit_bytes);
+    field!("wal_retention_limit_segments", wal_retention_limit_segments);
+    field!(
+        "wal_checkpoint_enqueue_events",
+        wal_checkpoint_enqueue_events
+    );
+    field!(
+        "wal_checkpoint_coalesced_events",
+        wal_checkpoint_coalesced_events
+    );
+    field!("checkpoint_executions", checkpoint_executions);
+    field!(
+        "wal_truncation_deleted_segments",
+        wal_truncation_deleted_segments
+    );
+    field!(
+        "wal_truncation_protected_segments",
+        wal_truncation_protected_segments
+    );
+    field!(
+        "wal_truncation_failed_segments",
+        wal_truncation_failed_segments
+    );
+    field!("lifecycle_compaction", lifecycle_compaction);
+    field!("lifecycle_materialization", lifecycle_materialization);
+    field!("lifecycle_snapshot_pruning", lifecycle_snapshot_pruning);
+    field!("post_load_compaction_mode", post_load_compaction_mode);
+    field!(
+        "post_load_source_shape",
+        source_shape_context.map(source_shape_context_json)
+    );
+    field!("point_probe_shape", point_shape);
+    field!("throughput_interpretation", throughput_interpretation);
+    field!("point_read_acceleration_gaps", point_read_acceleration_gaps);
+    field!("assumptions", assumptions);
+
+    serde_json::Value::Object(metrics)
 }
 
 fn point_probe_shape_json(
@@ -2476,8 +2863,7 @@ fn point_probe_shape_json_from_counts(
     let max_owned_l0_table_probes = operation_count.saturating_mul(owned_l0_table_count);
     let max_owned_nonzero_level_searches =
         operation_count.saturating_mul(owned_nonzero_level_count);
-    let max_inherited_l0_table_probes =
-        operation_count.saturating_mul(inherited_l0_table_count);
+    let max_inherited_l0_table_probes = operation_count.saturating_mul(inherited_l0_table_count);
     let inherited_level_bound =
         inherited_nonzero_level_count.saturating_mul(if inherited_nonzero_level_count == 0 {
             0
@@ -2547,10 +2933,7 @@ fn ratio_json(numerator: u64, denominator: u64) -> serde_json::Value {
     }
 }
 
-fn ns_per_row_as_ms_per_million_rows_json(
-    nanoseconds: u64,
-    rows: u64,
-) -> serde_json::Value {
+fn ns_per_row_as_ms_per_million_rows_json(nanoseconds: u64, rows: u64) -> serde_json::Value {
     ratio_json(nanoseconds, rows)
 }
 
@@ -2914,6 +3297,10 @@ fn format_optional_maintenance_status(status: Option<MaintenanceSummaryStatus>) 
     status.map_or("not-run", format_maintenance_status)
 }
 
+fn optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
+}
+
 fn nanos_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -2925,12 +3312,37 @@ struct LoadPhaseTrace {
     maintenance_call_ns: u64,
     maintenance_runs: u64,
     maintenance_rows: u64,
+    diagnostic_poll_ns: u64,
+    diagnostic_polls: u64,
     automatic_maintenance_ns: u64,
     automatic_maintenance_attempts: u64,
+    inline_maintenance_ns: u64,
+    inline_maintenance_attempts: u64,
+    background_maintenance_ns: u64,
+    background_maintenance_tasks: u64,
+    foreground_wait_background_lock_ns: u64,
+    admission_slowdown_ns: u64,
+    admission_slowdown_attempts: u64,
+    admission_block_wait_ns: u64,
+    admission_wait_attempts: u64,
+    admission_wait_timeouts: u64,
     maintenance_suggested_tasks: u64,
     maintenance_scheduled_tasks: u64,
     maintenance_coalesced_tasks: u64,
     maintenance_deferred_tasks: u64,
+    wal_retained_bytes_last: Option<u64>,
+    wal_retained_segments_last: Option<u64>,
+    wal_retained_bytes_max: Option<u64>,
+    wal_retained_segments_max: Option<u64>,
+    wal_commits_since_checkpoint_last: Option<u64>,
+    wal_retention_limit_bytes: Option<u64>,
+    wal_retention_limit_segments: Option<u64>,
+    wal_checkpoint_enqueue_events: u64,
+    wal_checkpoint_coalesced_events: u64,
+    checkpoint_executions: u64,
+    wal_truncation_deleted_segments: u64,
+    wal_truncation_protected_segments: u64,
+    wal_truncation_failed_segments: u64,
 }
 
 impl LoadPhaseTrace {
@@ -2955,8 +3367,23 @@ impl LoadPhaseTrace {
     }
 
     fn record_automatic_maintenance(&mut self, perf_trace: StoragePerfSnapshot) {
-        self.automatic_maintenance_ns = perf_trace.lifecycle_inline_maintenance_ns();
-        self.automatic_maintenance_attempts = perf_trace.lifecycle_inline_maintenance_attempts();
+        self.inline_maintenance_ns = perf_trace.lifecycle_inline_maintenance_ns();
+        self.inline_maintenance_attempts = perf_trace.lifecycle_inline_maintenance_attempts();
+        self.background_maintenance_ns = perf_trace.lifecycle_background_task_total_ns();
+        self.background_maintenance_tasks = perf_trace.lifecycle_background_tasks_completed();
+        self.automatic_maintenance_ns = self
+            .inline_maintenance_ns
+            .saturating_add(self.background_maintenance_ns);
+        self.automatic_maintenance_attempts = self
+            .inline_maintenance_attempts
+            .saturating_add(self.background_maintenance_tasks);
+        self.foreground_wait_background_lock_ns =
+            perf_trace.lifecycle_foreground_wait_background_lock_ns();
+        self.admission_slowdown_ns = perf_trace.lifecycle_write_admission_slowdown_ns();
+        self.admission_slowdown_attempts = perf_trace.lifecycle_write_admission_slowdown_attempts();
+        self.admission_block_wait_ns = perf_trace.lifecycle_write_admission_block_wait_ns();
+        self.admission_wait_attempts = perf_trace.lifecycle_write_admission_wait_attempts();
+        self.admission_wait_timeouts = perf_trace.lifecycle_write_admission_wait_timeouts();
         self.maintenance_suggested_tasks =
             perf_trace.lifecycle_post_commit_maintenance_tasks_suggested();
         self.maintenance_scheduled_tasks =
@@ -2965,6 +3392,26 @@ impl LoadPhaseTrace {
             perf_trace.lifecycle_post_commit_maintenance_tasks_coalesced();
         self.maintenance_deferred_tasks =
             perf_trace.lifecycle_post_commit_maintenance_tasks_deferred();
+        if perf_trace.lifecycle_wal_retention_samples() > 0 {
+            self.wal_retained_bytes_last =
+                Some(perf_trace.lifecycle_wal_retained_bytes_last());
+            self.wal_retained_segments_last =
+                Some(perf_trace.lifecycle_wal_retained_segments_last());
+            self.wal_retained_bytes_max = Some(perf_trace.lifecycle_wal_retained_bytes_max());
+            self.wal_retained_segments_max =
+                Some(perf_trace.lifecycle_wal_retained_segments_max());
+        }
+        self.wal_checkpoint_enqueue_events =
+            perf_trace.lifecycle_wal_checkpoint_enqueue_events();
+        self.wal_checkpoint_coalesced_events =
+            perf_trace.lifecycle_wal_checkpoint_coalesced_events();
+        self.checkpoint_executions = perf_trace.lifecycle_checkpoint_executions();
+        self.wal_truncation_deleted_segments =
+            perf_trace.lifecycle_wal_truncation_deleted_segments();
+        self.wal_truncation_protected_segments =
+            perf_trace.lifecycle_wal_truncation_protected_segments();
+        self.wal_truncation_failed_segments =
+            perf_trace.lifecycle_wal_truncation_failed_segments();
     }
 }
 
@@ -3265,10 +3712,61 @@ mod tests {
         let default_config = Config::parse(std::iter::empty()).expect("default config");
         assert!(!default_config.diagnostic_final_drain);
 
-        let draining_config =
-            Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
-                .expect("diagnostic drain config");
+        let draining_config = Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
+            .expect("diagnostic drain config");
         assert!(draining_config.diagnostic_final_drain);
+    }
+
+    #[test]
+    fn benchmark_normal_path_uses_automatic_source_shape_observation() {
+        let source = include_str!("storage_next_l9_scale.rs");
+        let prepare_source = source
+            .split("fn prepare_loaded_source_shape")
+            .nth(1)
+            .expect("prepare_loaded_source_shape is present")
+            .split("fn observe_loaded_source_shape")
+            .next()
+            .expect("prepare function precedes observe helper");
+        assert!(
+            prepare_source.contains("if config.diagnostic_final_drain"),
+            "benchmark source-shape preparation must gate explicit drains behind the diagnostic flag"
+        );
+        assert!(
+            prepare_source.contains("return drain_loaded_source_shape"),
+            "diagnostic final drain must stay opt-in and explicit"
+        );
+        assert!(
+            prepare_source.contains("observe_loaded_source_shape(runtime, branch_id, scale)"),
+            "normal benchmark path must observe automatic source shape"
+        );
+
+        let load_source = source
+            .split("fn run_load_seq")
+            .nth(1)
+            .expect("run_load_seq is present")
+            .split("fn prepare_loaded_source_shape")
+            .next()
+            .expect("load path precedes source-shape preparation");
+        assert!(
+            !load_source.contains("drain_loaded_source_shape"),
+            "load path must not call explicit source-shape drain"
+        );
+        assert!(
+            !load_source.contains("MaintenanceTask::Compact"),
+            "load path must not force compaction to make later reads possible"
+        );
+        assert!(
+            !load_source.contains("drain_maintenance"),
+            "load path must not call public fixed-point maintenance drain"
+        );
+        assert!(
+            !load_source.contains("runtime.diagnostics"),
+            "load path must not poll global diagnostics while measuring foreground writes"
+        );
+        assert!(
+            !load_source.contains("DiagnosticsRequest::new(DiagnosticsScope::Global)"),
+            "load path must not collect source-shape/WAL facts by polling global diagnostics"
+        );
     }
 
     #[test]
@@ -3320,6 +3818,19 @@ mod tests {
         );
         assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(0));
         assert_eq!(metrics["automatic_maintenance_attempts"].as_u64(), Some(0));
+        assert_eq!(metrics["inline_maintenance_ns"].as_u64(), Some(0));
+        assert_eq!(metrics["inline_maintenance_attempts"].as_u64(), Some(0));
+        assert_eq!(metrics["background_maintenance_ns"].as_u64(), Some(0));
+        assert_eq!(metrics["background_maintenance_tasks"].as_u64(), Some(0));
+        assert_eq!(
+            metrics["foreground_wait_background_lock_ns"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(metrics["admission_slowdown_ns"].as_u64(), Some(0));
+        assert_eq!(metrics["admission_slowdown_attempts"].as_u64(), Some(0));
+        assert_eq!(metrics["admission_block_wait_ns"].as_u64(), Some(0));
+        assert_eq!(metrics["admission_wait_attempts"].as_u64(), Some(0));
+        assert_eq!(metrics["admission_wait_timeouts"].as_u64(), Some(0));
         assert_eq!(
             metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
             Some(0.0)
@@ -3373,8 +3884,33 @@ mod tests {
             perf_trace::snapshot(),
             Some(LoadPhaseTrace {
                 maintenance_runs: 2,
+                diagnostic_poll_ns: 123,
+                diagnostic_polls: 4,
                 automatic_maintenance_ns: 4_000,
                 automatic_maintenance_attempts: 3,
+                inline_maintenance_ns: 1_000,
+                inline_maintenance_attempts: 1,
+                background_maintenance_ns: 3_000,
+                background_maintenance_tasks: 2,
+                foreground_wait_background_lock_ns: 50,
+                admission_slowdown_ns: 60,
+                admission_slowdown_attempts: 2,
+                admission_block_wait_ns: 70,
+                admission_wait_attempts: 3,
+                admission_wait_timeouts: 1,
+                wal_retained_bytes_last: Some(90),
+                wal_retained_segments_last: Some(4),
+                wal_retained_bytes_max: Some(120),
+                wal_retained_segments_max: Some(5),
+                wal_commits_since_checkpoint_last: Some(6),
+                wal_retention_limit_bytes: Some(1_000),
+                wal_retention_limit_segments: Some(8),
+                wal_checkpoint_enqueue_events: 1,
+                wal_checkpoint_coalesced_events: 2,
+                checkpoint_executions: 3,
+                wal_truncation_deleted_segments: 4,
+                wal_truncation_protected_segments: 5,
+                wal_truncation_failed_segments: 6,
                 maintenance_suggested_tasks: 5,
                 maintenance_scheduled_tasks: 2,
                 maintenance_coalesced_tasks: 1,
@@ -3385,7 +3921,50 @@ mod tests {
         );
 
         assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(4_000));
+        assert_eq!(metrics["diagnostic_poll_ns"].as_u64(), Some(123));
+        assert_eq!(metrics["diagnostic_polls"].as_u64(), Some(4));
         assert_eq!(metrics["automatic_maintenance_attempts"].as_u64(), Some(3));
+        assert_eq!(metrics["inline_maintenance_ns"].as_u64(), Some(1_000));
+        assert_eq!(metrics["inline_maintenance_attempts"].as_u64(), Some(1));
+        assert_eq!(metrics["background_maintenance_ns"].as_u64(), Some(3_000));
+        assert_eq!(metrics["background_maintenance_tasks"].as_u64(), Some(2));
+        assert_eq!(
+            metrics["foreground_wait_background_lock_ns"].as_u64(),
+            Some(50)
+        );
+        assert_eq!(metrics["admission_slowdown_ns"].as_u64(), Some(60));
+        assert_eq!(metrics["admission_slowdown_attempts"].as_u64(), Some(2));
+        assert_eq!(metrics["admission_block_wait_ns"].as_u64(), Some(70));
+        assert_eq!(metrics["admission_wait_attempts"].as_u64(), Some(3));
+        assert_eq!(metrics["admission_wait_timeouts"].as_u64(), Some(1));
+        assert_eq!(metrics["wal_retained_bytes_last"].as_u64(), Some(90));
+        assert_eq!(metrics["wal_retained_segments_last"].as_u64(), Some(4));
+        assert_eq!(metrics["wal_retained_bytes_max"].as_u64(), Some(120));
+        assert_eq!(metrics["wal_retained_segments_max"].as_u64(), Some(5));
+        assert_eq!(
+            metrics["wal_commits_since_checkpoint_last"].as_u64(),
+            Some(6)
+        );
+        assert_eq!(metrics["wal_retention_limit_bytes"].as_u64(), Some(1_000));
+        assert_eq!(metrics["wal_retention_limit_segments"].as_u64(), Some(8));
+        assert_eq!(metrics["wal_checkpoint_enqueue_events"].as_u64(), Some(1));
+        assert_eq!(
+            metrics["wal_checkpoint_coalesced_events"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(metrics["checkpoint_executions"].as_u64(), Some(3));
+        assert_eq!(
+            metrics["wal_truncation_deleted_segments"].as_u64(),
+            Some(4)
+        );
+        assert_eq!(
+            metrics["wal_truncation_protected_segments"].as_u64(),
+            Some(5)
+        );
+        assert_eq!(
+            metrics["wal_truncation_failed_segments"].as_u64(),
+            Some(6)
+        );
         assert_eq!(
             metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
             Some(4.0)
@@ -3394,27 +3973,55 @@ mod tests {
         assert_eq!(metrics["maintenance_scheduled_tasks"].as_u64(), Some(2));
         assert_eq!(metrics["maintenance_coalesced_tasks"].as_u64(), Some(1));
         assert_eq!(metrics["maintenance_deferred_tasks"].as_u64(), Some(1));
-        assert_eq!(metrics["scheduled_maintenance_tasks_per_explicit_flush"].as_f64(), Some(1.5));
+        assert_eq!(
+            metrics["scheduled_maintenance_tasks_per_explicit_flush"].as_f64(),
+            Some(1.5)
+        );
     }
 
     #[test]
     fn benchmark_result_records_diagnostic_drain_and_scheduler_metadata() {
         perf_trace::reset();
-        let config =
-            Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
-                .expect("diagnostic drain config");
+        let config = Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
+            .expect("diagnostic drain config");
         let load_phase = LoadPhaseTrace {
             batch_build_ns: 11,
             commit_call_ns: 22,
             maintenance_call_ns: 33,
             maintenance_runs: 4,
             maintenance_rows: 800,
+            diagnostic_poll_ns: 99,
+            diagnostic_polls: 5,
             automatic_maintenance_ns: 5_000,
             automatic_maintenance_attempts: 6,
+            inline_maintenance_ns: 2_000,
+            inline_maintenance_attempts: 2,
+            background_maintenance_ns: 3_000,
+            background_maintenance_tasks: 4,
+            foreground_wait_background_lock_ns: 44,
+            admission_slowdown_ns: 55,
+            admission_slowdown_attempts: 2,
+            admission_block_wait_ns: 66,
+            admission_wait_attempts: 3,
+            admission_wait_timeouts: 1,
             maintenance_suggested_tasks: 7,
             maintenance_scheduled_tasks: 3,
             maintenance_coalesced_tasks: 2,
             maintenance_deferred_tasks: 1,
+            wal_retained_bytes_last: Some(128),
+            wal_retained_segments_last: Some(2),
+            wal_retained_bytes_max: Some(256),
+            wal_retained_segments_max: Some(3),
+            wal_commits_since_checkpoint_last: Some(9),
+            wal_retention_limit_bytes: Some(512),
+            wal_retention_limit_segments: Some(4),
+            wal_checkpoint_enqueue_events: 2,
+            wal_checkpoint_coalesced_events: 3,
+            checkpoint_executions: 4,
+            wal_truncation_deleted_segments: 5,
+            wal_truncation_protected_segments: 6,
+            wal_truncation_failed_segments: 7,
+            ..LoadPhaseTrace::default()
         };
 
         let result = RunResult::throughput(
@@ -3438,16 +4045,87 @@ mod tests {
         assert_eq!(trace["maintenance_call_ns"].as_u64(), Some(33));
         assert_eq!(trace["maintenance_runs"].as_u64(), Some(4));
         assert_eq!(trace["maintenance_rows"].as_u64(), Some(800));
+        assert_eq!(trace["diagnostic_poll_ns"].as_u64(), Some(99));
+        assert_eq!(trace["diagnostic_polls"].as_u64(), Some(5));
         assert_eq!(trace["automatic_maintenance_ns"].as_u64(), Some(5_000));
         assert_eq!(trace["automatic_maintenance_attempts"].as_u64(), Some(6));
+        assert_eq!(trace["inline_maintenance_ns"].as_u64(), Some(2_000));
+        assert_eq!(trace["inline_maintenance_attempts"].as_u64(), Some(2));
+        assert_eq!(trace["background_maintenance_ns"].as_u64(), Some(3_000));
+        assert_eq!(trace["background_maintenance_tasks"].as_u64(), Some(4));
+        assert_eq!(
+            trace["foreground_wait_background_lock_ns"].as_u64(),
+            Some(44)
+        );
+        assert_eq!(trace["admission_slowdown_ns"].as_u64(), Some(55));
+        assert_eq!(trace["admission_slowdown_attempts"].as_u64(), Some(2));
+        assert_eq!(trace["admission_block_wait_ns"].as_u64(), Some(66));
+        assert_eq!(trace["admission_wait_attempts"].as_u64(), Some(3));
+        assert_eq!(trace["admission_wait_timeouts"].as_u64(), Some(1));
         assert_eq!(trace["maintenance_suggested_tasks"].as_u64(), Some(7));
         assert_eq!(trace["maintenance_scheduled_tasks"].as_u64(), Some(3));
         assert_eq!(trace["maintenance_coalesced_tasks"].as_u64(), Some(2));
         assert_eq!(trace["maintenance_deferred_tasks"].as_u64(), Some(1));
+        assert_eq!(trace["wal_retained_bytes_last"].as_u64(), Some(128));
+        assert_eq!(trace["wal_retained_segments_last"].as_u64(), Some(2));
+        assert_eq!(trace["wal_retained_bytes_max"].as_u64(), Some(256));
+        assert_eq!(trace["wal_retained_segments_max"].as_u64(), Some(3));
+        assert_eq!(trace["wal_commits_since_checkpoint_last"].as_u64(), Some(9));
+        assert_eq!(trace["wal_retention_limit_bytes"].as_u64(), Some(512));
+        assert_eq!(trace["wal_retention_limit_segments"].as_u64(), Some(4));
+        assert_eq!(trace["wal_checkpoint_enqueue_events"].as_u64(), Some(2));
+        assert_eq!(trace["wal_checkpoint_coalesced_events"].as_u64(), Some(3));
+        assert_eq!(trace["checkpoint_executions"].as_u64(), Some(4));
+        assert_eq!(trace["wal_truncation_deleted_segments"].as_u64(), Some(5));
+        assert_eq!(trace["wal_truncation_protected_segments"].as_u64(), Some(6));
+        assert_eq!(trace["wal_truncation_failed_segments"].as_u64(), Some(7));
 
         let metrics = &result.parameters["source_shape_metrics"];
         assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(5_000));
+        assert_eq!(metrics["diagnostic_poll_ns"].as_u64(), Some(99));
+        assert_eq!(metrics["diagnostic_polls"].as_u64(), Some(5));
         assert_eq!(metrics["automatic_maintenance_attempts"].as_u64(), Some(6));
+        assert_eq!(metrics["inline_maintenance_ns"].as_u64(), Some(2_000));
+        assert_eq!(metrics["inline_maintenance_attempts"].as_u64(), Some(2));
+        assert_eq!(metrics["background_maintenance_ns"].as_u64(), Some(3_000));
+        assert_eq!(metrics["background_maintenance_tasks"].as_u64(), Some(4));
+        assert_eq!(
+            metrics["foreground_wait_background_lock_ns"].as_u64(),
+            Some(44)
+        );
+        assert_eq!(metrics["admission_slowdown_ns"].as_u64(), Some(55));
+        assert_eq!(metrics["admission_slowdown_attempts"].as_u64(), Some(2));
+        assert_eq!(metrics["admission_block_wait_ns"].as_u64(), Some(66));
+        assert_eq!(metrics["admission_wait_attempts"].as_u64(), Some(3));
+        assert_eq!(metrics["admission_wait_timeouts"].as_u64(), Some(1));
+        assert_eq!(metrics["wal_retained_bytes_last"].as_u64(), Some(128));
+        assert_eq!(metrics["wal_retained_segments_last"].as_u64(), Some(2));
+        assert_eq!(metrics["wal_retained_bytes_max"].as_u64(), Some(256));
+        assert_eq!(metrics["wal_retained_segments_max"].as_u64(), Some(3));
+        assert_eq!(
+            metrics["wal_commits_since_checkpoint_last"].as_u64(),
+            Some(9)
+        );
+        assert_eq!(metrics["wal_retention_limit_bytes"].as_u64(), Some(512));
+        assert_eq!(metrics["wal_retention_limit_segments"].as_u64(), Some(4));
+        assert_eq!(metrics["wal_checkpoint_enqueue_events"].as_u64(), Some(2));
+        assert_eq!(
+            metrics["wal_checkpoint_coalesced_events"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(metrics["checkpoint_executions"].as_u64(), Some(4));
+        assert_eq!(
+            metrics["wal_truncation_deleted_segments"].as_u64(),
+            Some(5)
+        );
+        assert_eq!(
+            metrics["wal_truncation_protected_segments"].as_u64(),
+            Some(6)
+        );
+        assert_eq!(
+            metrics["wal_truncation_failed_segments"].as_u64(),
+            Some(7)
+        );
         assert_eq!(
             metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
             Some(2.5)
@@ -3523,10 +4201,7 @@ mod tests {
             metrics["post_load_source_shape"]["compact"]["mode"].as_str(),
             Some("explicit-fixed-point-drain")
         );
-        assert_eq!(
-            metrics["maintenance_queue_depth_final"].as_u64(),
-            Some(0)
-        );
+        assert_eq!(metrics["maintenance_queue_depth_final"].as_u64(), Some(0));
         assert_eq!(metrics["maintenance_queue_depth_max"].as_u64(), Some(3));
         assert_eq!(
             metrics["maintenance_queue_deferred_outcomes_per_million_rows"].as_f64(),
@@ -3583,11 +4258,9 @@ mod tests {
             inherited_total_tables: 1,
         };
 
-        assert!(
-            SourceShapeCompactionMode::AutomaticScheduling
-                .source_shape_failures(&layout)
-                .is_empty()
-        );
+        assert!(SourceShapeCompactionMode::AutomaticScheduling
+            .source_shape_failures(&layout)
+            .is_empty());
 
         let explicit_failures =
             SourceShapeCompactionMode::ExplicitFixedPointDrain.source_shape_failures(&layout);
@@ -3692,7 +4365,10 @@ mod tests {
             Some("explicit-fixed-point-drain")
         );
         assert_eq!(drained_json["flush"]["status"].as_str(), Some("completed"));
-        assert_eq!(drained_json["flush"]["rows_processed"].as_u64(), Some(1_000));
+        assert_eq!(
+            drained_json["flush"]["rows_processed"].as_u64(),
+            Some(1_000)
+        );
         assert_eq!(drained_json["flush"]["maintenance_ns"].as_u64(), Some(12));
         assert_eq!(
             drained_json["compact"]["status"].as_str(),
@@ -3808,7 +4484,6 @@ mod tests {
             .as_array()
             .expect("failures")
             .iter()
-            .any(|failure| failure.as_str()
-                == Some("owned_l0_table_probes_exceed_layout_bound")));
+            .any(|failure| failure.as_str() == Some("owned_l0_table_probes_exceed_layout_bound")));
     }
 }

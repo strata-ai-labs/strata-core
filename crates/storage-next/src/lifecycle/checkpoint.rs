@@ -15,6 +15,7 @@ use crate::format::{
 use crate::layout::ObjectLayout;
 use crate::lifecycle::recovery::encode_checkpoint_row_section;
 use crate::object::ObjectName;
+use crate::observability::perf_trace;
 use crate::service::{
     CheckpointRequest, CheckpointServiceError, CheckpointSnapshot, CheckpointWrite,
     DatabaseManifestService, ManifestServiceError, WalDeleteReport, WalRetentionProof,
@@ -31,6 +32,7 @@ pub(crate) struct LifecycleCheckpointRequest {
     extra_sections: Vec<SnapshotSection>,
     persist_flush_watermark_after_checkpoint: bool,
     truncate_wal_after_checkpoint: bool,
+    retention_critical: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -153,6 +155,7 @@ impl LifecycleCheckpointRequest {
             extra_sections: Vec::new(),
             persist_flush_watermark_after_checkpoint: false,
             truncate_wal_after_checkpoint: false,
+            retention_critical: false,
         };
         request.validate()?;
         Ok(request)
@@ -185,6 +188,15 @@ impl LifecycleCheckpointRequest {
         self
     }
 
+    #[allow(
+        dead_code,
+        reason = "WAL-growth maintenance marks checkpoints that must not be blocked by optional artifact budget"
+    )]
+    pub(crate) const fn with_retention_critical(mut self, enabled: bool) -> Self {
+        self.retention_critical = enabled;
+        self
+    }
+
     pub(crate) const fn branch_id(&self) -> BranchId {
         self.branch_id
     }
@@ -207,6 +219,10 @@ impl LifecycleCheckpointRequest {
 
     pub(crate) const fn truncate_wal_after_checkpoint(&self) -> bool {
         self.truncate_wal_after_checkpoint
+    }
+
+    pub(crate) const fn is_retention_critical(&self) -> bool {
+        self.retention_critical
     }
 
     fn validate(&self) -> LifecycleResult<()> {
@@ -1403,7 +1419,7 @@ fn publish_checkpoint_rows(
     let mut sections = Vec::with_capacity(1 + request.extra_sections().len());
     sections.push(encode_checkpoint_row_section(&rows).map_err(format_error)?);
     sections.extend(request.extra_sections().iter().cloned());
-    require_checkpoint_artifact_budget(budget, &sections)?;
+    require_checkpoint_artifact_budget(budget, request, &sections)?;
     let active_wal_segment = services.wal().active_segment_id();
     let service_request = CheckpointRequest::new(
         *services.assembly_facts().database_id(),
@@ -1416,6 +1432,7 @@ fn publish_checkpoint_rows(
     );
     let mut outcome = match services.checkpoint().checkpoint(service_request) {
         Ok(write) => {
+            perf_trace::record_lifecycle_checkpoint_execution();
             LifecycleCheckpointOutcome::completed(request, visible_version, row_count, &write)
         }
         Err(CheckpointServiceError::OrphanSnapshot { snapshot, .. }) => {
@@ -1448,8 +1465,12 @@ fn publish_checkpoint_rows(
 
 fn require_checkpoint_artifact_budget(
     budget: Option<&StorageBudgetLedger>,
+    request: &LifecycleCheckpointRequest,
     sections: &[SnapshotSection],
 ) -> LifecycleResult<()> {
+    if request.is_retention_critical() {
+        return Ok(());
+    }
     let Some(budget) = budget else {
         return Ok(());
     };
@@ -1711,6 +1732,11 @@ pub(crate) fn truncate_wal(
 ) -> LifecycleResult<LifecycleWalTruncationOutcome> {
     let proof = validate_wal_retention_proof(proof)?;
     let report = wal.delete_covered_segments(proof).map_err(wal_error)?;
+    perf_trace::record_lifecycle_wal_truncation_report(
+        report.deleted_segments().len(),
+        report.protected_segments().len(),
+        report.failed_segments().len(),
+    );
     LifecycleWalTruncationOutcome::completed(proof, &report)
 }
 
@@ -1765,6 +1791,10 @@ pub(crate) fn checkpoint_request_from_maintenance_task_with_snapshot_id(
         super::maintenance::MaintenanceCheckpointOptions::truncate_wal_after_checkpoint,
     ) {
         request = request.with_wal_truncation_after_checkpoint(true);
+    }
+    if options.is_some_and(super::maintenance::MaintenanceCheckpointOptions::is_retention_critical)
+    {
+        request = request.with_retention_critical(true);
     }
     Ok(request)
 }

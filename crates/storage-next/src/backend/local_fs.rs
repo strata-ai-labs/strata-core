@@ -9,6 +9,8 @@ use super::{
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
 use fs2::FileExt as _;
+#[cfg(debug_assertions)]
+use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -18,6 +20,68 @@ use std::sync::{Arc, Mutex};
 
 const OBJECT_FILE_SUFFIX: &str = ".object@";
 static TEMP_OBJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static WAL_RETENTION_MUTATION_AUTHORIZATION_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static WAL_REPAIR_MUTATION_AUTHORIZATION_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn with_authorized_wal_retention_mutation<R>(operation: impl FnOnce() -> R) -> R {
+    let previous_depth = WAL_RETENTION_MUTATION_AUTHORIZATION_DEPTH.with(|depth| {
+        let previous = depth.get();
+        depth.set(previous.saturating_add(1));
+        previous
+    });
+    let _guard = WalRetentionMutationAuthorizationGuard { previous_depth };
+    operation()
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn with_authorized_wal_repair_mutation<R>(operation: impl FnOnce() -> R) -> R {
+    let previous_depth = WAL_REPAIR_MUTATION_AUTHORIZATION_DEPTH.with(|depth| {
+        let previous = depth.get();
+        depth.set(previous.saturating_add(1));
+        previous
+    });
+    let _guard = WalRepairMutationAuthorizationGuard { previous_depth };
+    operation()
+}
+
+#[cfg(debug_assertions)]
+struct WalRetentionMutationAuthorizationGuard {
+    previous_depth: u32,
+}
+
+#[cfg(debug_assertions)]
+struct WalRepairMutationAuthorizationGuard {
+    previous_depth: u32,
+}
+
+#[cfg(debug_assertions)]
+impl Drop for WalRetentionMutationAuthorizationGuard {
+    fn drop(&mut self) {
+        WAL_RETENTION_MUTATION_AUTHORIZATION_DEPTH.with(|depth| depth.set(self.previous_depth));
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for WalRepairMutationAuthorizationGuard {
+    fn drop(&mut self) {
+        WAL_REPAIR_MUTATION_AUTHORIZATION_DEPTH.with(|depth| depth.set(self.previous_depth));
+    }
+}
+
+#[cfg(debug_assertions)]
+fn is_wal_retention_object(name: &ObjectName) -> bool {
+    name.as_str().starts_with("wal/") || name.as_str().starts_with("meta/wal/")
+}
+
+#[cfg(debug_assertions)]
+fn is_wal_segment_object(name: &ObjectName) -> bool {
+    name.as_str().starts_with("wal/")
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalFsPublishStep {
@@ -121,6 +185,39 @@ impl LocalFsBackend {
         } else {
             Ok(())
         }
+    }
+
+    #[cfg(debug_assertions)]
+    fn assert_wal_retention_mutation_authorized(
+        name: &ObjectName,
+        operation: &'static str,
+        caller: &'static str,
+    ) {
+        let guarded = match operation {
+            "delete" => is_wal_retention_object(name),
+            "rename" => is_wal_segment_object(name),
+            _ => false,
+        };
+        if !guarded {
+            return;
+        }
+        let authorized = match operation {
+            "delete" => WAL_RETENTION_MUTATION_AUTHORIZATION_DEPTH.with(|depth| depth.get() > 0),
+            "rename" => WAL_REPAIR_MUTATION_AUTHORIZATION_DEPTH.with(|depth| depth.get() > 0),
+            _ => false,
+        };
+        assert!(
+            authorized,
+            "unexpected WAL retention mutation: operation={operation} object={name} caller={caller} outside authorized WAL retention/repair path"
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn assert_wal_retention_mutation_authorized(
+        _name: &ObjectName,
+        _operation: &'static str,
+        _caller: &'static str,
+    ) {
     }
 
     #[cfg(all(test, unix))]
@@ -508,17 +605,24 @@ impl LocalFsBackend {
             }
             Self::cleanup_temporary_path(temp_path);
             Ok(())
-        } else if let Err(error) = fs::rename(temp_path, final_path) {
-            // rename failure for replace is ambiguous across platforms and
-            // filesystems: the caller must not assume either old or new bytes.
-            Self::cleanup_temporary_path(temp_path);
-            Err(Self::publish_error(
-                name,
-                PublishFailureKind::VisibilityUnknown,
-                map_io_error(&error),
-            ))
         } else {
-            Ok(())
+            Self::assert_wal_retention_mutation_authorized(
+                name,
+                "rename",
+                "LocalFsBackend::install_publish_temporary_object",
+            );
+            if let Err(error) = fs::rename(temp_path, final_path) {
+                // rename failure for replace is ambiguous across platforms and
+                // filesystems: the caller must not assume either old or new bytes.
+                Self::cleanup_temporary_path(temp_path);
+                Err(Self::publish_error(
+                    name,
+                    PublishFailureKind::VisibilityUnknown,
+                    map_io_error(&error),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -727,6 +831,11 @@ impl Backend for LocalFsBackend {
     fn delete_object(&self, name: &ObjectName) -> DeleteResult {
         Self::reject_writer_lock_object_mutation(name, "delete")
             .map_err(|error| DeleteError::failed_before_removal(name, error))?;
+        Self::assert_wal_retention_mutation_authorized(
+            name,
+            "delete",
+            "LocalFsBackend::delete_object",
+        );
         let path = self.path_for(name);
         if let Some(parent) = path.parent() {
             match self.ensure_parent_dirs(parent, false) {
@@ -1643,6 +1752,87 @@ mod tests {
                 .expect_err("delete survives reopen")
                 .kind(),
             BackendErrorKind::NotFound
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected WAL retention mutation")]
+    fn localfs_backend_debug_tripwire_rejects_unscoped_wal_segment_delete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectLayout::wal_segment(1).expect("wal segment");
+        backend
+            .write_object(&name, b"segment")
+            .expect("write segment");
+
+        let _ = backend.delete_object(&name);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected WAL retention mutation")]
+    fn localfs_backend_debug_tripwire_rejects_unscoped_wal_sidecar_delete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectLayout::wal_segment_metadata(1).expect("wal sidecar");
+        backend
+            .write_object(&name, b"sidecar")
+            .expect("write sidecar");
+
+        let _ = backend.delete_object(&name);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn localfs_backend_debug_tripwire_allows_authorized_wal_retention_delete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectLayout::wal_segment(1).expect("wal segment");
+        backend
+            .write_object(&name, b"segment")
+            .expect("write segment");
+
+        let outcome =
+            super::with_authorized_wal_retention_mutation(|| backend.delete_object(&name))
+                .expect("authorized delete");
+
+        assert_eq!(outcome.status(), DeleteStatus::Deleted);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected WAL retention mutation")]
+    fn localfs_backend_debug_tripwire_rejects_unscoped_wal_segment_replace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectLayout::wal_segment(1).expect("wal segment");
+        backend
+            .publish_object(&name, b"old", PublishMode::Create)
+            .expect("create segment");
+
+        let _ = backend.publish_object(&name, b"new", PublishMode::Replace);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn localfs_backend_debug_tripwire_allows_authorized_wal_repair_replace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectLayout::wal_segment(1).expect("wal segment");
+        backend
+            .publish_object(&name, b"old", PublishMode::Create)
+            .expect("create segment");
+
+        let outcome = super::with_authorized_wal_repair_mutation(|| {
+            backend.publish_object(&name, b"new", PublishMode::Replace)
+        })
+        .expect("authorized replace");
+
+        assert_eq!(outcome.metadata().size_bytes(), 3);
+        assert_eq!(
+            backend.read_object(&name).expect("read replaced segment"),
+            b"new"
         );
     }
 

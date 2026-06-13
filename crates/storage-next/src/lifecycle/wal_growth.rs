@@ -204,7 +204,9 @@ pub(crate) fn commits_since_checkpoint(
 }
 
 pub(crate) fn checkpoint_task_for_wal_growth() -> MaintenanceTaskRequest {
-    MaintenanceTaskRequest::checkpoint_with_options(MaintenanceCheckpointOptions::new(None, false))
+    MaintenanceTaskRequest::checkpoint_with_options(
+        MaintenanceCheckpointOptions::new(None, true).retention_critical(),
+    )
 }
 
 pub(crate) fn policy_admission_error(state: LifecycleStateMachine) -> Option<LifecycleError> {

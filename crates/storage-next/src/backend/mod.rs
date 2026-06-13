@@ -23,6 +23,21 @@ mod delete;
 pub(crate) mod memory;
 mod publish;
 
+#[cfg(all(debug_assertions, feature = "localfs"))]
+pub(crate) use local_fs::with_authorized_wal_repair_mutation;
+#[cfg(all(debug_assertions, feature = "localfs"))]
+pub(crate) use local_fs::with_authorized_wal_retention_mutation;
+
+#[cfg(not(all(debug_assertions, feature = "localfs")))]
+pub(crate) fn with_authorized_wal_retention_mutation<R>(operation: impl FnOnce() -> R) -> R {
+    operation()
+}
+
+#[cfg(not(all(debug_assertions, feature = "localfs")))]
+pub(crate) fn with_authorized_wal_repair_mutation<R>(operation: impl FnOnce() -> R) -> R {
+    operation()
+}
+
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) use delete::{durable_delete_result, failed_delete_result};
 #[cfg(test)]

@@ -15,7 +15,7 @@ use crate::lifecycle::checkpoint::{
     LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
 };
 use crate::lifecycle::compaction::{
-    bind_materialization_task_for_enqueue, collect_storage_pressure,
+    bind_materialization_task_for_enqueue, collect_storage_pressure_with_budget,
     compact_branch_to_fixed_point_with_resource_policy, compaction_score_key_for_task,
     current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
     materialization_request_from_maintenance_task, record_lifecycle_compaction_outcome,
@@ -361,7 +361,11 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("pressure target branch is present in the catalog");
-        collect_storage_pressure(branch, self.maintenance.status())
+        collect_storage_pressure_with_budget(
+            branch,
+            self.maintenance.status(),
+            Some(self.open_plan.lifecycle_config().storage_budget()),
+        )
     }
 
     pub(super) fn evaluate_mutating_write_admission_for_branch(
@@ -430,6 +434,11 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.schedule_post_commit_maintenance_for_branch(branch_id)
     }
 
+    pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> usize {
+        let _ = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
+        self.maintenance_status().pending_tasks()
+    }
+
     fn schedule_maintenance_coverage_after_branch(
         &mut self,
         source_branch_id: BranchId,
@@ -462,7 +471,11 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     record_lifecycle_maintenance_coverage_stop_failure();
                 return;
             };
-            let pressure = collect_storage_pressure(branch, maintenance_status);
+            let pressure = collect_storage_pressure_with_budget(
+                branch,
+                maintenance_status,
+                Some(self.open_plan.lifecycle_config().storage_budget()),
+            );
             let Some(request) = pressure.suggested_task() else {
                 continue;
             };

@@ -2931,6 +2931,91 @@ fn cache_commit_retry_after_pressure_maintenance_succeeds() {
 }
 
 #[test]
+fn cache_commit_blocks_on_frozen_byte_pressure_before_rotation_budget_rejects() {
+    let branch = branch_id(0x8f);
+    let backend = MemoryBackend::new();
+    let budget = storage_budget_with_active_and_frozen_limit(8 * 1024, 16 * 1024, 4);
+    let config = LifecycleConfig::default()
+        .with_storage_budget(budget)
+        .expect("custom budget config");
+    let mut runtime = open_runtime_with_config(branch, &backend, config);
+
+    for index in 0_u64..2 {
+        let key = format!("frozen-byte-pressure-{index}");
+        runtime
+            .execute_cache_commit(
+                put_batch(
+                    branch,
+                    physical_key(branch, key.as_bytes()),
+                    vec![0x8f; 7 * 1024],
+                    Timestamp::from_micros(80_000 + index),
+                ),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("seed frozen byte pressure");
+    }
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"frozen-byte-active-pressure"),
+                vec![0x8e; 3 * 1024],
+                Timestamp::from_micros(80_010),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("seed active bytes for projected rotation pressure");
+
+    let pressure = runtime.storage_pressure();
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    );
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::FrozenBacklog
+    );
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    ));
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"frozen-byte-blocked"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(80_100),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("frozen byte pressure must reject before budget preflight");
+
+    match error {
+        LifecycleError::StoragePressureRejected {
+            severity,
+            pressure_reason,
+            retryable,
+            ..
+        } => {
+            assert_eq!(
+                severity,
+                LifecycleStoragePressureSeverity::BlockMutatingAdmission
+            );
+            assert_eq!(
+                pressure_reason,
+                LifecycleStoragePressureReason::FrozenBacklog
+            );
+            assert!(retryable);
+        }
+        other => panic!("expected retryable frozen byte storage pressure, got {other:?}"),
+    }
+}
+
+#[test]
 fn cache_commit_branch_guard_rejection_remains_distinct_from_pressure_rejection() {
     let branch = branch_id(0x7a);
     let backend = MemoryBackend::new();
@@ -4264,7 +4349,28 @@ fn storage_budget_with_active_limit(
     StorageRuntimeBudget::from_parts(parts).expect("storage budget")
 }
 
-#[cfg(feature = "perf-trace")]
+fn storage_budget_with_active_and_frozen_limit(
+    active_bytes: u64,
+    frozen_bytes: u64,
+    max_frozen_tables: u32,
+) -> StorageRuntimeBudget {
+    let mut parts = StorageRuntimeBudgetParts {
+        block_cache_bytes: 0,
+        table_reader_bytes: 8 * 1024,
+        active_mutable_bytes: active_bytes,
+        frozen_mutable_bytes: frozen_bytes,
+        maintenance_queue_bytes: 1024,
+        generated_artifact_bytes: 8 * 1024,
+        manifest_catalog_bytes: 1024,
+        max_open_readers: 4,
+        max_frozen_tables,
+        max_pending_maintenance_tasks: 4,
+        ..StorageRuntimeBudgetParts::default()
+    };
+    parts.total_bytes = storage_budget_pool_sum(parts);
+    StorageRuntimeBudget::from_parts(parts).expect("storage budget")
+}
+
 fn storage_budget_pool_sum(parts: StorageRuntimeBudgetParts) -> u64 {
     parts.block_cache_bytes
         + parts.table_reader_bytes

@@ -39,11 +39,13 @@ use super::{LifecycleError, LifecycleLowerLayer, LifecycleResult, MaintenanceExe
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
-    CommitBranchApplyTarget, CommitLowerLayer, CommitRuntimeError, CommitRuntimeResult,
+    CommitBatch, CommitBranchApplyTarget, CommitExpiry, CommitLowerLayer, CommitMutation,
+    CommitRuntimeError, CommitRuntimeResult,
 };
+use crate::row::StorageRow;
 use crate::table::{TableBlockCache, TableCacheConfig, TableRow};
 use std::sync::{Arc, Mutex, MutexGuard};
-use strata_core_next::CommitVersion;
+use strata_core_next::{CommitVersion, Timestamp};
 
 const DEFAULT_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_BLOCK_CACHE_BYTES: u64 = 64 * 1024 * 1024;
@@ -57,6 +59,7 @@ const DEFAULT_MAX_OPEN_READERS: u32 = 1024;
 const DEFAULT_MAX_FROZEN_TABLES: u32 = 1024;
 const DEFAULT_MAX_PENDING_MAINTENANCE_TASKS: u32 = 1024;
 const MAINTENANCE_TASK_METADATA_BYTES: u64 = 256;
+const COMMIT_TIMELINE_ACTIVE_BYTE_RESERVE: u64 = 1024;
 const POOL_COUNT: usize = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -741,6 +744,67 @@ pub(crate) fn require_rotate_budget(
     )
 }
 
+pub(crate) fn estimate_commit_batch_active_bytes(batch: &CommitBatch) -> LifecycleResult<u64> {
+    if batch.mutations().is_empty() {
+        return Ok(0);
+    }
+    let mut total = COMMIT_TIMELINE_ACTIVE_BYTE_RESERVE;
+    for mutation in batch.mutations() {
+        let row = storage_row_for_mutation_estimate(mutation);
+        total = add_estimated_row_bytes(total, &row)?;
+    }
+    Ok(total)
+}
+
+pub(crate) fn projected_commit_rotation_would_exceed_frozen_budget(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+    incoming_active_bytes: u64,
+) -> LifecycleResult<bool> {
+    if incoming_active_bytes == 0 {
+        return Ok(false);
+    }
+    let current_active = branch.active().approximate_size_bytes() as u64;
+    let projected_active = current_active.checked_add(incoming_active_bytes).ok_or(
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::ActiveMutable,
+            requested_bytes: incoming_active_bytes,
+            used_bytes: current_active,
+            limit_bytes: ledger
+                .budget()
+                .pool_limit_bytes(StorageBudgetPool::ActiveMutable),
+            requested_count: 0,
+            used_count: 0,
+            limit_count: None,
+            reason: "active mutable byte accounting overflowed",
+        },
+    )?;
+    if projected_active < branch.config().active_rotation_bytes() as u64
+        || branch.frozen().len() >= branch.config().max_frozen_tables()
+    {
+        return Ok(false);
+    }
+    let frozen_bytes = frozen_bytes(branch)?;
+    let limit = ledger
+        .budget()
+        .pool_limit_bytes(StorageBudgetPool::FrozenMutable);
+    let projected_rotation_bytes = frozen_bytes.checked_add(projected_active).ok_or(
+        LifecycleError::StorageBudgetExceeded {
+            pool: StorageBudgetPool::FrozenMutable,
+            requested_bytes: projected_active,
+            used_bytes: frozen_bytes,
+            limit_bytes: limit,
+            requested_count: 1,
+            used_count: u64::try_from(branch.frozen().len()).unwrap_or(u64::MAX),
+            limit_count: ledger
+                .budget()
+                .pool_limit_count(StorageBudgetPool::FrozenMutable),
+            reason: "rotation after commit would exceed frozen mutable storage budget",
+        },
+    )?;
+    Ok(projected_rotation_bytes > limit)
+}
+
 pub(crate) fn require_maintenance_enqueue_budget(
     ledger: &StorageBudgetLedger,
     maintenance_status: MaintenanceExecutorStatus,
@@ -792,6 +856,35 @@ fn estimate_rows_active_bytes(rows: &[crate::row::StorageRow]) -> LifecycleResul
         total = add_estimated_row_bytes(total, row)?;
     }
     Ok(total)
+}
+
+fn storage_row_for_mutation_estimate(mutation: &CommitMutation) -> StorageRow {
+    let estimate_version = CommitVersion::new(1);
+    let estimate_timestamp = Timestamp::from_micros(1);
+    match mutation {
+        CommitMutation::Put {
+            key,
+            value,
+            expires_at,
+            ..
+        } => StorageRow::put(
+            key.clone(),
+            estimate_version,
+            estimate_timestamp,
+            expiry_timestamp_for_estimate(*expires_at),
+            value.clone(),
+        ),
+        CommitMutation::Delete { key } => {
+            StorageRow::tombstone(key.clone(), estimate_version, estimate_timestamp)
+        }
+    }
+}
+
+const fn expiry_timestamp_for_estimate(expiry: CommitExpiry) -> Timestamp {
+    match expiry {
+        CommitExpiry::None => Timestamp::EPOCH,
+        CommitExpiry::At(timestamp) => timestamp,
+    }
 }
 
 fn add_estimated_row_bytes(total: u64, row: &crate::row::StorageRow) -> LifecycleResult<u64> {

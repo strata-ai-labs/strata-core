@@ -4,7 +4,7 @@ use super::{
     telemetry_health_debt, LifecycleCompactionIoPolicy, LifecycleError, LifecycleLowerLayer,
     LifecycleResult, LifecycleStats, MaintenanceExecutorStatus, MaintenanceOutcome,
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
-    MaintenanceTaskScope, RecoveryHealth,
+    MaintenanceTaskScope, RecoveryHealth, StorageBudgetPool, StorageRuntimeBudget,
 };
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{
@@ -1495,6 +1495,14 @@ pub(crate) fn collect_storage_pressure(
     branch: &BranchLocalState,
     maintenance: MaintenanceExecutorStatus,
 ) -> LifecycleStoragePressure {
+    collect_storage_pressure_with_budget(branch, maintenance, None)
+}
+
+pub(crate) fn collect_storage_pressure_with_budget(
+    branch: &BranchLocalState,
+    maintenance: MaintenanceExecutorStatus,
+    budget: Option<StorageRuntimeBudget>,
+) -> LifecycleStoragePressure {
     let timer = crate::observability::perf_trace::start_timer();
     let branch_id = branch.branch_id();
     let active_rows = branch.active_row_count();
@@ -1511,12 +1519,15 @@ pub(crate) fn collect_storage_pressure(
     let inherited_tables = branch.inherited_table_count();
     let pending_maintenance = maintenance.pending_tasks();
     let active_byte_pressure = active_mutable_byte_pressure(branch, active_bytes);
+    let frozen_byte_pressure =
+        frozen_mutable_byte_pressure(frozen_tables, frozen_bytes, active_bytes, budget);
     let (severity, reason, suggested_task) = storage_pressure_decision(
         branch_id,
         frozen_tables,
         table_rewrite_score,
         pending_maintenance,
         active_byte_pressure,
+        frozen_byte_pressure,
     );
 
     record_active_byte_pressure(active_byte_pressure);
@@ -1552,6 +1563,7 @@ fn storage_pressure_decision(
     table_rewrite_score: Option<LifecycleTableRewriteScore>,
     pending_maintenance: usize,
     active_byte_pressure: Option<LifecycleStoragePressureSeverity>,
+    frozen_byte_pressure: Option<LifecycleStoragePressureSeverity>,
 ) -> (
     LifecycleStoragePressureSeverity,
     LifecycleStoragePressureReason,
@@ -1560,6 +1572,15 @@ fn storage_pressure_decision(
     let active_byte_suggested_task =
         (frozen_tables > 0).then_some(MaintenanceTaskRequest::flush(branch_id));
     if frozen_tables >= FROZEN_BLOCKING_FLUSH_THRESHOLD {
+        return (
+            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureReason::FrozenBacklog,
+            Some(MaintenanceTaskRequest::flush(branch_id)),
+        );
+    }
+    if frozen_byte_pressure.is_some_and(|severity| {
+        severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
+    }) {
         return (
             LifecycleStoragePressureSeverity::BlockMutatingAdmission,
             LifecycleStoragePressureReason::FrozenBacklog,
@@ -1691,6 +1712,36 @@ fn active_mutable_byte_pressure(
     } else if active_bytes >= urgent_threshold {
         Some(LifecycleStoragePressureSeverity::Urgent)
     } else if active_bytes >= background_threshold {
+        Some(LifecycleStoragePressureSeverity::Background)
+    } else {
+        None
+    }
+}
+
+fn frozen_mutable_byte_pressure(
+    frozen_tables: usize,
+    frozen_bytes: u64,
+    active_bytes: u64,
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<LifecycleStoragePressureSeverity> {
+    if frozen_tables == 0 {
+        return None;
+    }
+    let budget = budget?;
+    let limit = budget.pool_limit_bytes(StorageBudgetPool::FrozenMutable);
+    if limit == 0 {
+        return None;
+    }
+    let projected_rotation_bytes = frozen_bytes.saturating_add(active_bytes);
+    let background_threshold = proportional_threshold(limit, 1, 2);
+    let urgent_threshold = proportional_threshold(limit, 3, 4);
+    if frozen_bytes >= limit || projected_rotation_bytes >= limit {
+        Some(LifecycleStoragePressureSeverity::BlockMutatingAdmission)
+    } else if frozen_bytes >= urgent_threshold || projected_rotation_bytes >= urgent_threshold {
+        Some(LifecycleStoragePressureSeverity::Urgent)
+    } else if frozen_bytes >= background_threshold
+        || projected_rotation_bytes >= background_threshold
+    {
         Some(LifecycleStoragePressureSeverity::Background)
     } else {
         None

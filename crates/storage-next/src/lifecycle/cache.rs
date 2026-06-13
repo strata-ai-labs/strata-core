@@ -4,7 +4,7 @@ use super::{
     branch_config_with_storage_budget,
     compaction::{
         begin_cache_materialization_build, bind_materialization_task_for_enqueue,
-        collect_storage_pressure, compact_cache_branch,
+        collect_storage_pressure_with_budget, compact_cache_branch,
         compact_cache_branch_to_fixed_point_with_policy, compaction_score_key_for_task,
         current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
         install_prepared_cache_compaction, install_prepared_cache_materialization,
@@ -17,7 +17,7 @@ use super::{
         CacheMaterializationBuild, LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
         PreparedCacheCompaction, PreparedCacheMaterialization,
     },
-    evaluate_mutating_write_admission,
+    estimate_commit_batch_active_bytes, evaluate_mutating_write_admission,
     flush::{
         flush_branch_drain_with, flush_cache_branch_with_budget,
         flush_drain_maintenance_outcome_for_scope,
@@ -25,24 +25,24 @@ use super::{
         flush_drain_request_from_maintenance_task, install_prepared_cache_flush,
         prepare_cache_flush_with_budget, PreparedCacheFlush,
     },
-    require_maintenance_enqueue_budget, require_rotate_budget, snapshot_with_runtime_usage,
-    validate_backend_capabilities_for_open, BudgetedCommitBranch, CloseOutcome,
-    CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase, FlushFrozenOutcome, FlushFrozenRequest,
-    LifecycleBranchCatalog, LifecycleBranchClearOutcome, LifecycleBranchCreateOutcome,
-    LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
-    LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleCompactionDrainOutcome,
-    LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleError, LifecycleMaintenanceExecutor,
-    LifecycleMaintenanceSchedulingPolicy, LifecycleMaterializationOutcome,
-    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePostCommitMaintenanceOutcome,
-    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
-    LifecycleStoragePressure, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
-    LifecycleWalGrowthOutcome, LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
-    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
-    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, RecoveryHealth,
-    StorageBudgetLedger, StorageBudgetSnapshot, StorageMode, StorageOpenDisposition,
-    StorageOpenOutcome, StorageOpenPlan,
+    projected_commit_rotation_would_exceed_frozen_budget, require_maintenance_enqueue_budget,
+    require_rotate_budget, snapshot_with_runtime_usage, validate_backend_capabilities_for_open,
+    BudgetedCommitBranch, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase,
+    FlushFrozenOutcome, FlushFrozenRequest, LifecycleBranchCatalog, LifecycleBranchClearOutcome,
+    LifecycleBranchCreateOutcome, LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor,
+    LifecycleBranchForkOutcome, LifecycleCapabilityOutcome, LifecycleCloseFact,
+    LifecycleCompactionDrainOutcome, LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy,
+    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
+    LifecycleMaintenanceExecutor, LifecycleMaintenanceSchedulingPolicy,
+    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
+    LifecyclePostCommitMaintenanceOutcome, LifecycleResult, LifecycleState, LifecycleStateMachine,
+    LifecycleStats, LifecycleStoragePressure, LifecycleStoragePressureReason,
+    LifecycleStoragePressureSeverity, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
+    LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
+    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
+    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
@@ -764,7 +764,11 @@ impl<S> LifecycleCacheRuntime<S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("pressure target branch is present in the catalog");
-        collect_storage_pressure(branch, self.maintenance.status())
+        collect_storage_pressure_with_budget(
+            branch,
+            self.maintenance.status(),
+            Some(self.open_plan.lifecycle_config().storage_budget()),
+        )
     }
 
     fn evaluate_mutating_write_admission_for_branch(
@@ -789,6 +793,32 @@ impl<S> LifecycleCacheRuntime<S> {
             outcome = outcome.with_inline_maintenance_driven();
         }
         self.last_write_admission = Some(outcome);
+        Ok(())
+    }
+
+    fn require_projected_mutating_commit_budget(
+        &self,
+        branch_id: BranchId,
+        batch: &CommitBatch,
+    ) -> LifecycleResult<()> {
+        let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("commit target branch is present in the catalog");
+        if projected_commit_rotation_would_exceed_frozen_budget(
+            &self.budget,
+            branch,
+            incoming_active_bytes,
+        )? {
+            return Err(LifecycleError::StoragePressureRejected {
+                branch_id,
+                severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+                pressure_reason: LifecycleStoragePressureReason::FrozenBacklog,
+                retryable: branch.frozen_table_count() > 0,
+                reason: "incoming commit would exceed frozen mutable storage budget after rotation",
+            });
+        }
         Ok(())
     }
 
@@ -898,6 +928,11 @@ impl<S> LifecycleCacheRuntime<S> {
         self.schedule_post_commit_maintenance_for_branch(branch_id)
     }
 
+    pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> usize {
+        let _ = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
+        self.maintenance_status().pending_tasks()
+    }
+
     fn schedule_maintenance_coverage_after_branch(
         &mut self,
         source_branch_id: BranchId,
@@ -930,7 +965,11 @@ impl<S> LifecycleCacheRuntime<S> {
                     record_lifecycle_maintenance_coverage_stop_failure();
                 return;
             };
-            let pressure = collect_storage_pressure(branch, maintenance_status);
+            let pressure = collect_storage_pressure_with_budget(
+                branch,
+                maintenance_status,
+                Some(self.open_plan.lifecycle_config().storage_budget()),
+            );
             let Some(request) = pressure.suggested_task() else {
                 continue;
             };
@@ -2078,6 +2117,7 @@ where
             self.require_no_unresolved_durable_commit()?;
             self.require_branch_commit_guard_available(branch_id)?;
             self.evaluate_mutating_write_admission_for_branch(branch_id)?;
+            self.require_projected_mutating_commit_budget(branch_id, &batch)?;
         }
         let outcome = {
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
