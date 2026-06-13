@@ -924,6 +924,31 @@ impl<'a> ImmutableTableReader<'a> {
         })
     }
 
+    pub(crate) fn from_validated_rows(
+        facts: TableRuntimeFacts,
+        bytes: &[u8],
+        rows: Vec<TableRow>,
+        config: TableReaderConfig,
+    ) -> TableRuntimeResult<ImmutableTableReader<'static>> {
+        require_validate_on_open(config);
+        perf_trace::record_table_reader_open();
+        let fingerprint = table_content_fingerprint_from_bytes(bytes)?;
+        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows)?;
+        let runtime_facts = TableReaderRuntimeFacts::eager(
+            TableReaderOpenMode::EagerBytes,
+            facts.data_block_count(),
+            facts.row_count(),
+        )
+        .with_filter_available(rows.filter.is_available());
+        Ok(ImmutableTableReader {
+            config,
+            facts,
+            fingerprint,
+            runtime_facts,
+            rows: TableReaderRows::Eager(rows),
+        })
+    }
+
     pub(crate) const fn config(&self) -> TableReaderConfig {
         self.config
     }

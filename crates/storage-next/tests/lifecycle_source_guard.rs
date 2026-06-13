@@ -2142,12 +2142,11 @@ fn lifecycle_integration_test_files(root: &Path) -> Vec<PathBuf> {
         let path = entry.expect("read integration test entry").path();
         let stem = path.file_stem().and_then(|name| name.to_str());
         // `lifecycle_hardening_closeout.rs` is intentionally excluded: it
-        // is the Q-Z assurance-closeout test that legitimately references
-        // milestone-named paths (the hardening slice docs and the
-        // porting log) for inventory verification. Excluding it from the
-        // milestone-label scan preserves the scan's intent (no labels in
-        // implementation code) without blocking the closeout test from
-        // asserting on real artifact names.
+        // legitimately references milestone-named paths in the hardening
+        // docs and porting log for inventory verification. Excluding it
+        // from the milestone-label scan preserves the scan's intent (no
+        // labels in implementation code) without blocking the closeout
+        // test from asserting on real artifact names.
         if stem.is_some_and(|name| {
             name.starts_with("lifecycle_") && name != "lifecycle_hardening_closeout"
         }) && path

@@ -64,6 +64,11 @@ impl TableInternalKeyBytes {
         &self.bytes
     }
 
+    pub(crate) fn copy_from(&mut self, other: &Self) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(other.as_slice());
+    }
+
     pub(crate) fn physical_key_bytes(&self) -> &[u8] {
         table_internal_physical_key_bytes(&self.bytes)
     }

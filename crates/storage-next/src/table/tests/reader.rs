@@ -3310,6 +3310,58 @@ fn immutable_reader_one_row_facts_and_runtime_config_are_preserved() {
 }
 
 #[test]
+fn immutable_reader_from_validated_rows_reuses_handoff_rows_and_rejects_mismatch() {
+    let rows = [
+        put_row_for_key(
+            physical_key(8, "reader", 0x25, b"handoff-alpha".to_vec()),
+            7,
+            b"alpha".to_vec(),
+        ),
+        put_row_for_key(
+            physical_key(8, "reader", 0x25, b"handoff-beta".to_vec()),
+            8,
+            b"beta".to_vec(),
+        ),
+    ];
+    let (artifact, expected_rows) = build_artifact(
+        "reader-validated-row-handoff",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let (bytes, facts, handoff_rows) = artifact.into_parts_with_rows();
+    assert_eq!(handoff_rows, expected_rows);
+
+    let reader = ImmutableTableReader::from_validated_rows(
+        facts.clone(),
+        &bytes,
+        handoff_rows,
+        TableReaderConfig::default(),
+    )
+    .expect("validated row handoff reader");
+    assert_eq!(reader.facts(), &facts);
+    assert_eq!(reader.rows(), expected_rows.as_slice());
+    assert_eq!(
+        reader.runtime_facts().open_mode(),
+        TableReaderOpenMode::EagerBytes
+    );
+
+    let error = ImmutableTableReader::from_validated_rows(
+        facts,
+        &bytes,
+        vec![expected_rows[0].clone()],
+        TableReaderConfig::default(),
+    )
+    .expect_err("mismatched handoff rows must be rejected");
+    assert_eq!(
+        error,
+        TableRuntimeError::InvalidRange {
+            field: "table_filter_row_count",
+        }
+    );
+}
+
+#[test]
 fn immutable_reader_rejects_identity_and_partial_or_legacy_table_bytes() {
     assert_eq!(
         TableIdentity::new("table/with/slash"),

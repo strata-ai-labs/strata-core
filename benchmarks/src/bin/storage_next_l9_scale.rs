@@ -884,18 +884,29 @@ fn print_result(result: &RunResult) {
             perf_trace.table_filter_absent_probes(),
         );
         eprintln!(
-            "    table-compaction merge_cursor_opens={} merge_advances={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} boundary_key_allocations={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={}",
+            "    table-compaction merge_cursor_opens={} merge_advances={} merge_ns={} merge_input_rows={} merge_ns_per_input_row={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} boundary_key_allocations={} boundary_key_buffer_allocations={} boundary_key_buffer_reuses={} previous_key_buffer_allocations={} previous_key_buffer_reuses={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={} build_facts_from_streaming_metadata={} redundant_fact_decodes_avoided={} reader_reopens_avoided={} reader_row_vectors_reused={}",
             perf_trace.table_compaction_merge_cursor_opens(),
             perf_trace.table_compaction_merge_advances(),
+            perf_trace.table_compaction_merge_ns(),
+            perf_trace.table_compaction_merge_input_rows(),
+            perf_trace.table_compaction_merge_ns_per_input_row(),
             perf_trace.table_compaction_pre_validation_rows_scanned(),
             perf_trace.table_compaction_row_clones(),
             perf_trace.table_compaction_heap_key_clones(),
             perf_trace.table_compaction_source_order_key_clones(),
             perf_trace.table_compaction_boundary_key_allocations(),
+            perf_trace.table_compaction_boundary_key_buffer_allocations(),
+            perf_trace.table_compaction_boundary_key_buffer_reuses(),
+            perf_trace.table_compaction_previous_key_buffer_allocations(),
+            perf_trace.table_compaction_previous_key_buffer_reuses(),
             perf_trace.table_compaction_kept_rows(),
             perf_trace.table_compaction_dropped_rows(),
             perf_trace.table_compaction_peak_buffered_rows(),
             perf_trace.table_compaction_output_tables_built(),
+            perf_trace.table_build_facts_from_streaming_metadata(),
+            perf_trace.table_rewrite_redundant_fact_decodes_avoided(),
+            perf_trace.table_rewrite_reader_reopens_avoided(),
+            perf_trace.table_rewrite_reader_row_vectors_reused(),
         );
     }
     if let Some(load_phase) = result.load_phase_trace {
@@ -2047,6 +2058,18 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.table_compaction_merge_advances()
     );
     field!(
+        "table_compaction_merge_ns",
+        perf_trace.table_compaction_merge_ns()
+    );
+    field!(
+        "table_compaction_merge_input_rows",
+        perf_trace.table_compaction_merge_input_rows()
+    );
+    field!(
+        "table_compaction_merge_ns_per_input_row",
+        perf_trace.table_compaction_merge_ns_per_input_row()
+    );
+    field!(
         "table_compaction_pre_validation_rows_scanned",
         perf_trace.table_compaction_pre_validation_rows_scanned()
     );
@@ -2067,6 +2090,22 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.table_compaction_boundary_key_allocations()
     );
     field!(
+        "table_compaction_boundary_key_buffer_allocations",
+        perf_trace.table_compaction_boundary_key_buffer_allocations()
+    );
+    field!(
+        "table_compaction_boundary_key_buffer_reuses",
+        perf_trace.table_compaction_boundary_key_buffer_reuses()
+    );
+    field!(
+        "table_compaction_previous_key_buffer_allocations",
+        perf_trace.table_compaction_previous_key_buffer_allocations()
+    );
+    field!(
+        "table_compaction_previous_key_buffer_reuses",
+        perf_trace.table_compaction_previous_key_buffer_reuses()
+    );
+    field!(
         "table_compaction_kept_rows",
         perf_trace.table_compaction_kept_rows()
     );
@@ -2081,6 +2120,22 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "table_compaction_output_tables_built",
         perf_trace.table_compaction_output_tables_built()
+    );
+    field!(
+        "table_build_facts_from_streaming_metadata",
+        perf_trace.table_build_facts_from_streaming_metadata()
+    );
+    field!(
+        "table_rewrite_redundant_fact_decodes_avoided",
+        perf_trace.table_rewrite_redundant_fact_decodes_avoided()
+    );
+    field!(
+        "table_rewrite_reader_reopens_avoided",
+        perf_trace.table_rewrite_reader_reopens_avoided()
+    );
+    field!(
+        "table_rewrite_reader_row_vectors_reused",
+        perf_trace.table_rewrite_reader_row_vectors_reused()
     );
     field!("append_staging_clones", perf_trace.append_staging_clones());
     field!(
@@ -4079,6 +4134,27 @@ mod tests {
         assert_eq!(trace["wal_truncation_deleted_segments"].as_u64(), Some(5));
         assert_eq!(trace["wal_truncation_protected_segments"].as_u64(), Some(6));
         assert_eq!(trace["wal_truncation_failed_segments"].as_u64(), Some(7));
+
+        let perf_trace = &result.parameters["perf_trace"];
+        for field in [
+            "table_compaction_merge_ns",
+            "table_compaction_merge_input_rows",
+            "table_compaction_merge_ns_per_input_row",
+            "table_compaction_boundary_key_buffer_allocations",
+            "table_compaction_boundary_key_buffer_reuses",
+            "table_compaction_previous_key_buffer_allocations",
+            "table_compaction_previous_key_buffer_reuses",
+            "table_build_facts_from_streaming_metadata",
+            "table_rewrite_redundant_fact_decodes_avoided",
+            "table_rewrite_reader_reopens_avoided",
+            "table_rewrite_reader_row_vectors_reused",
+        ] {
+            assert_eq!(
+                perf_trace[field].as_u64(),
+                Some(0),
+                "perf trace must expose merge-cost counter {field}"
+            );
+        }
 
         let metrics = &result.parameters["source_shape_metrics"];
         assert_eq!(metrics["automatic_maintenance_ns"].as_u64(), Some(5_000));

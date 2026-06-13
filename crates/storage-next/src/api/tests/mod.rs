@@ -1007,7 +1007,7 @@ fn source_guard_lifecycle_inline_paths_are_marked_transitional() {
                 .next()
                 .expect("function block precedes next function");
             assert!(
-                function_block.contains("L8E-H deletion condition"),
+                function_block.contains("Simulation-boundary deletion condition"),
                 "{label} {function_name} must be marked as transitional while it exists"
             );
         }
@@ -1027,6 +1027,114 @@ fn lifecycle_simulation_boundary_source_guards_are_registered() {
         assert!(
             api_tests_source.contains(guard_name),
             "lifecycle simulation boundary guard {guard_name} must stay registered"
+        );
+    }
+}
+
+#[test]
+fn source_guard_merge_cost_rewrite_publication_uses_prevalidated_row_handoff() {
+    let rewrite_source = include_str!("../../lifecycle/rewrite_publication.rs");
+    let publish_artifact_source = rewrite_source
+        .split("fn publish_rewrite_artifact")
+        .nth(1)
+        .expect("rewrite artifact publication function is present")
+        .split("fn require_optional_rewrite_generated_budget")
+        .next()
+        .expect("publish artifact precedes budget helpers");
+    let publish_or_load_source = rewrite_source
+        .split("fn publish_or_load_rewrite_output")
+        .nth(1)
+        .expect("rewrite publish-or-load helper is present")
+        .split("fn published_object_names")
+        .next()
+        .expect("publish-or-load helper precedes object-name helper");
+
+    assert!(
+        publish_artifact_source.contains("into_parts_with_rows"),
+        "durable rewrite publication must carry build-time rows forward"
+    );
+    assert!(
+        publish_artifact_source.contains("open_reader_from_validated_rows"),
+        "durable rewrite publication must install readers from validated rows"
+    );
+    assert!(
+        !publish_artifact_source.contains(".open_reader(")
+            && !publish_artifact_source.contains("open_bytes("),
+        "durable rewrite publication must not reopen/reparse table bytes"
+    );
+    assert!(
+        publish_or_load_source.contains("publish_create_prevalidated"),
+        "durable rewrite publication must publish with build-time table facts"
+    );
+    assert!(
+        !publish_or_load_source.contains("publish_create(")
+            && !publish_or_load_source.contains("decode_immutable_table"),
+        "durable rewrite publication must not re-decode table facts"
+    );
+}
+
+#[test]
+fn source_guard_merge_cost_cache_compaction_installs_validated_row_readers() {
+    let compaction_source = include_str!("../../branch/state/compaction.rs");
+    let output_tables_source = compaction_source
+        .split("fn compaction_output_tables")
+        .nth(1)
+        .expect("cache compaction output installation function is present")
+        .split("fn record_lifecycle_compaction_outcome")
+        .next()
+        .expect("output installation precedes lifecycle outcome helper");
+
+    assert!(
+        output_tables_source.contains("into_parts_with_rows"),
+        "cache compaction output installation must carry build-time rows forward"
+    );
+    assert!(
+        output_tables_source.contains("ImmutableTableReader::from_validated_rows"),
+        "cache compaction output installation must use validated-row reader handoff"
+    );
+    assert!(
+        !output_tables_source.contains("ImmutableTableReader::open_bytes"),
+        "cache compaction output installation must not reopen/reparse output bytes"
+    );
+}
+
+#[test]
+fn source_guard_merge_cost_table_build_facts_come_from_streaming_metadata() {
+    let builder_source = include_str!("../../table/builder.rs");
+    let artifact_source = builder_source
+        .split("fn build_table_artifact_from_streaming_output")
+        .nth(1)
+        .expect("streaming artifact build helper is present")
+        .split("fn validate_builder_row_shape")
+        .next()
+        .expect("streaming artifact helper precedes validation helpers");
+
+    assert!(
+        artifact_source.contains("TableRuntimeFacts::new"),
+        "table artifact facts must be constructed from streaming metadata"
+    );
+    assert!(
+        artifact_source.contains("record_table_build_facts_from_streaming_metadata"),
+        "table artifact build must record the streaming-metadata facts path"
+    );
+    assert!(
+        !builder_source.contains("decode_immutable_table")
+            && !builder_source.contains("table_facts_from_decoded"),
+        "table builder must not decode freshly-built table bytes to recover facts"
+    );
+}
+
+#[test]
+fn merge_cost_source_guards_are_registered() {
+    let api_tests_source = include_str!("mod.rs");
+    for guard_name in [
+        "source_guard_merge_cost_rewrite_publication_uses_prevalidated_row_handoff",
+        "source_guard_merge_cost_cache_compaction_installs_validated_row_readers",
+        "source_guard_merge_cost_table_build_facts_come_from_streaming_metadata",
+    ] {
+        assert!(
+            api_tests_source.contains(guard_name),
+            "merge-cost source guard {guard_name} must stay registered"
         );
     }
 }
@@ -2759,7 +2867,7 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn l8e_scaled_liveness_background_closed_loop_converges_without_public_drain() {
+fn scaled_liveness_background_closed_loop_converges_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
@@ -2771,7 +2879,7 @@ fn l8e_scaled_liveness_background_closed_loop_converges_without_public_drain() {
     .into_runtime();
 
     for index in 0..192 {
-        let key = format!("l8e-scaled-liveness-{index:04}");
+        let key = format!("scaled-liveness-{index:04}");
         runtime
             .commit(&background_put_batch(key.as_bytes(), vec![0x5A; 256]))
             .unwrap_or_else(|error| panic!("scaled commit {index} failed permanently: {error}"));
@@ -2836,9 +2944,9 @@ fn l8e_scaled_liveness_background_closed_loop_converges_without_public_drain() {
 
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
 #[test]
-fn l8e_scaled_liveness_durable_background_bounds_wal_without_public_drain() {
+fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let root = temp_dir_for_api_test("l8e-scaled-durable-liveness");
+    let root = temp_dir_for_api_test("scaled-durable-liveness");
     let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
@@ -2857,7 +2965,7 @@ fn l8e_scaled_liveness_durable_background_bounds_wal_without_public_drain() {
     let mut max_segment_files = 0_usize;
     let mut saw_checkpoint_enqueue = false;
     for index in 0..96 {
-        let key = format!("l8e-scaled-durable-liveness-{index:04}");
+        let key = format!("scaled-durable-liveness-{index:04}");
         runtime
             .commit(&background_put_batch(key.as_bytes(), vec![0x6B; 256]))
             .unwrap_or_else(|error| {
@@ -2963,9 +3071,9 @@ fn l8e_scaled_liveness_durable_background_bounds_wal_without_public_drain() {
 
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
 #[test]
-fn l8e_wal_retention_deletes_segments_without_public_drain() {
+fn wal_retention_deletes_segments_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let root = temp_dir_for_api_test("l8e-wal-retention-deletes-segments");
+    let root = temp_dir_for_api_test("wal-retention-deletes-segments");
     let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
@@ -2983,7 +3091,7 @@ fn l8e_wal_retention_deletes_segments_without_public_drain() {
     let mut saw_segment_file_deletion = false;
     let mut saw_checkpoint_enqueue = false;
     for index in 0..160 {
-        let key = format!("l8e-wal-retention-{index:04}");
+        let key = format!("wal-retention-{index:04}");
         runtime
             .commit(&background_put_batch(key.as_bytes(), vec![0x73; 256]))
             .unwrap_or_else(|error| panic!("WAL retention commit {index} failed: {error}"));

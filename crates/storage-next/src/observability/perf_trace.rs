@@ -306,6 +306,17 @@ pub struct StoragePerfSnapshot {
     table_compaction_dropped_rows: u64,
     table_compaction_peak_buffered_rows: u64,
     table_compaction_output_tables_built: u64,
+    table_build_facts_from_streaming_metadata: u64,
+    table_rewrite_redundant_fact_decodes_avoided: u64,
+    table_rewrite_reader_reopens_avoided: u64,
+    table_rewrite_reader_row_vectors_reused: u64,
+    table_compaction_boundary_key_buffer_allocations: u64,
+    table_compaction_boundary_key_buffer_reuses: u64,
+    table_compaction_previous_key_buffer_allocations: u64,
+    table_compaction_previous_key_buffer_reuses: u64,
+    table_compaction_merge_ns: u64,
+    table_compaction_merge_input_rows: u64,
+    table_compaction_merge_ns_per_input_row: u64,
     append_staging_clones: u64,
     append_staging_rows_cloned: u64,
     conflict_sources_built: u64,
@@ -1634,6 +1645,61 @@ impl StoragePerfSnapshot {
         self.table_compaction_output_tables_built
     }
 
+    /// Table facts computed from streaming build metadata rather than table decode.
+    pub const fn table_build_facts_from_streaming_metadata(self) -> u64 {
+        self.table_build_facts_from_streaming_metadata
+    }
+
+    /// Redundant rewrite-output fact decodes avoided by build-time facts.
+    pub const fn table_rewrite_redundant_fact_decodes_avoided(self) -> u64 {
+        self.table_rewrite_redundant_fact_decodes_avoided
+    }
+
+    /// Durable rewrite-output reader reopens avoided by in-memory reader handoff.
+    pub const fn table_rewrite_reader_reopens_avoided(self) -> u64 {
+        self.table_rewrite_reader_reopens_avoided
+    }
+
+    /// Build-time row vectors handed to installed rewrite readers without table reparse.
+    pub const fn table_rewrite_reader_row_vectors_reused(self) -> u64 {
+        self.table_rewrite_reader_row_vectors_reused
+    }
+
+    /// Boundary-key buffers that needed allocation or capacity growth.
+    pub const fn table_compaction_boundary_key_buffer_allocations(self) -> u64 {
+        self.table_compaction_boundary_key_buffer_allocations
+    }
+
+    /// Boundary-key updates that reused existing buffer capacity.
+    pub const fn table_compaction_boundary_key_buffer_reuses(self) -> u64 {
+        self.table_compaction_boundary_key_buffer_reuses
+    }
+
+    /// Previous-kept-key buffers that needed allocation.
+    pub const fn table_compaction_previous_key_buffer_allocations(self) -> u64 {
+        self.table_compaction_previous_key_buffer_allocations
+    }
+
+    /// Previous-kept-key updates that reused existing buffer capacity.
+    pub const fn table_compaction_previous_key_buffer_reuses(self) -> u64 {
+        self.table_compaction_previous_key_buffer_reuses
+    }
+
+    /// Nanoseconds spent in the table-compaction merge loop.
+    pub const fn table_compaction_merge_ns(self) -> u64 {
+        self.table_compaction_merge_ns
+    }
+
+    /// Input rows observed by the timed table-compaction merge loop.
+    pub const fn table_compaction_merge_input_rows(self) -> u64 {
+        self.table_compaction_merge_input_rows
+    }
+
+    /// Average table-compaction merge nanoseconds per input row.
+    pub const fn table_compaction_merge_ns_per_input_row(self) -> u64 {
+        self.table_compaction_merge_ns_per_input_row
+    }
+
     /// Number of whole-branch append staging clones performed.
     pub const fn append_staging_clones(self) -> u64 {
         self.append_staging_clones
@@ -2653,6 +2719,26 @@ static TABLE_COMPACTION_PEAK_BUFFERED_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_OUTPUT_TABLES_BUILT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_BUILD_FACTS_FROM_STREAMING_METADATA: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_REWRITE_READER_REOPENS_AVOIDED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_REWRITE_READER_ROW_VECTORS_REUSED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_REUSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_REUSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_MERGE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_COMPACTION_MERGE_INPUT_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static APPEND_STAGING_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static APPEND_STAGING_ROWS_CLONED: AtomicU64 = AtomicU64::new(0);
@@ -3184,6 +3270,16 @@ pub fn reset() {
     TABLE_COMPACTION_DROPPED_ROWS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_PEAK_BUFFERED_ROWS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_OUTPUT_TABLES_BUILT.store(0, Ordering::Relaxed);
+    TABLE_BUILD_FACTS_FROM_STREAMING_METADATA.store(0, Ordering::Relaxed);
+    TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED.store(0, Ordering::Relaxed);
+    TABLE_REWRITE_READER_REOPENS_AVOIDED.store(0, Ordering::Relaxed);
+    TABLE_REWRITE_READER_ROW_VECTORS_REUSED.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_REUSES.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_REUSES.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_MERGE_NS.store(0, Ordering::Relaxed);
+    TABLE_COMPACTION_MERGE_INPUT_ROWS.store(0, Ordering::Relaxed);
     APPEND_STAGING_CLONES.store(0, Ordering::Relaxed);
     APPEND_STAGING_ROWS_CLONED.store(0, Ordering::Relaxed);
     CONFLICT_SOURCES_BUILT.store(0, Ordering::Relaxed);
@@ -3301,6 +3397,14 @@ pub fn snapshot() -> StoragePerfSnapshot {
         0
     } else {
         lifecycle_compaction_io_budget_consumed_bytes / lifecycle_compaction_input_rows
+    };
+    let table_compaction_merge_input_rows =
+        TABLE_COMPACTION_MERGE_INPUT_ROWS.load(Ordering::Relaxed);
+    let table_compaction_merge_ns = TABLE_COMPACTION_MERGE_NS.load(Ordering::Relaxed);
+    let table_compaction_merge_ns_per_input_row = if table_compaction_merge_input_rows == 0 {
+        0
+    } else {
+        table_compaction_merge_ns / table_compaction_merge_input_rows
     };
     StoragePerfSnapshot {
         api_commit_map_ns: API_COMMIT_MAP_NS.load(Ordering::Relaxed),
@@ -3716,6 +3820,25 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         table_compaction_output_tables_built: TABLE_COMPACTION_OUTPUT_TABLES_BUILT
             .load(Ordering::Relaxed),
+        table_build_facts_from_streaming_metadata: TABLE_BUILD_FACTS_FROM_STREAMING_METADATA
+            .load(Ordering::Relaxed),
+        table_rewrite_redundant_fact_decodes_avoided: TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED
+            .load(Ordering::Relaxed),
+        table_rewrite_reader_reopens_avoided: TABLE_REWRITE_READER_REOPENS_AVOIDED
+            .load(Ordering::Relaxed),
+        table_rewrite_reader_row_vectors_reused: TABLE_REWRITE_READER_ROW_VECTORS_REUSED
+            .load(Ordering::Relaxed),
+        table_compaction_boundary_key_buffer_allocations:
+            TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.load(Ordering::Relaxed),
+        table_compaction_boundary_key_buffer_reuses: TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_REUSES
+            .load(Ordering::Relaxed),
+        table_compaction_previous_key_buffer_allocations:
+            TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_ALLOCATIONS.load(Ordering::Relaxed),
+        table_compaction_previous_key_buffer_reuses: TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_REUSES
+            .load(Ordering::Relaxed),
+        table_compaction_merge_ns,
+        table_compaction_merge_input_rows,
+        table_compaction_merge_ns_per_input_row,
         append_staging_clones: APPEND_STAGING_CLONES.load(Ordering::Relaxed),
         append_staging_rows_cloned: APPEND_STAGING_ROWS_CLONED.load(Ordering::Relaxed),
         conflict_sources_built: CONFLICT_SOURCES_BUILT.load(Ordering::Relaxed),
@@ -5767,6 +5890,113 @@ pub(crate) fn record_table_compaction_output_table_built() {
         return;
     }
     TABLE_COMPACTION_OUTPUT_TABLES_BUILT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_build_facts_from_streaming_metadata() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_build_facts_from_streaming_metadata() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_BUILD_FACTS_FROM_STREAMING_METADATA.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_rewrite_redundant_fact_decode_avoided() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_rewrite_redundant_fact_decode_avoided() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_rewrite_reader_reopen_avoided() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_rewrite_reader_reopen_avoided() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_REWRITE_READER_REOPENS_AVOIDED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_rewrite_reader_rows_reused() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_rewrite_reader_rows_reused() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_REWRITE_READER_ROW_VECTORS_REUSED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_boundary_key_buffer_allocation() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_boundary_key_buffer_allocation() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_boundary_key_buffer_reuse() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_boundary_key_buffer_reuse() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_REUSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_previous_key_buffer_allocation() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_previous_key_buffer_allocation() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_previous_key_buffer_reuse() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_previous_key_buffer_reuse() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_REUSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_compaction_merge_elapsed(
+    _elapsed: std::time::Duration,
+    _input_rows: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_compaction_merge_elapsed(elapsed: std::time::Duration, input_rows: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_COMPACTION_MERGE_NS.fetch_add(
+        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+    TABLE_COMPACTION_MERGE_INPUT_ROWS.fetch_add(input_rows, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

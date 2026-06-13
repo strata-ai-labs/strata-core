@@ -601,6 +601,33 @@ impl<'a> TableObjectService<'a> {
         Ok(facts)
     }
 
+    pub(crate) fn publish_create_prevalidated(
+        &self,
+        branch_id: &str,
+        level: u32,
+        table_id: &str,
+        bytes: &[u8],
+        table_facts: &crate::table::TableRuntimeFacts,
+    ) -> TableObjectServiceResult<TableObjectFacts> {
+        let object = table_object(branch_id, level, table_id)?;
+        require_durable_publish_capabilities(&self.backend, &object)?;
+        let facts = TableObjectFacts::from_runtime_facts(object.clone(), table_facts);
+        validate_prevalidated_publish_facts(&object, bytes, &facts)?;
+        let outcome = ObjectPublisher::new(&self.backend)
+            .publish_durable_create(&object, bytes)
+            .map_err(|source| TableObjectServiceError::Publish {
+                object: object.clone(),
+                source,
+            })?;
+        validate_publish_outcome(&object, facts.byte_count(), &outcome).map_err(|mismatch| {
+            TableObjectServiceError::InvalidPublishMetadata {
+                object: mismatch.object().clone(),
+                field: mismatch.field(),
+            }
+        })?;
+        Ok(facts)
+    }
+
     pub(crate) fn facts_for_table(
         branch_id: &str,
         level: u32,
@@ -644,6 +671,26 @@ impl<'a> TableObjectService<'a> {
     ) -> Result<ImmutableTableReader<'a>, TableObjectReadError> {
         self.open_reader_with_diagnostics(identity, object_facts, config)
             .map(TableObjectReaderOpen::into_reader)
+    }
+
+    pub(crate) fn open_reader_from_validated_rows(
+        &self,
+        object_facts: &TableObjectFacts,
+        table_facts: crate::table::TableRuntimeFacts,
+        bytes: &[u8],
+        rows: Vec<crate::table::TableRow>,
+        config: TableReaderConfig,
+    ) -> Result<ImmutableTableReader<'static>, TableObjectReadError> {
+        let mut reader =
+            ImmutableTableReader::from_validated_rows(table_facts, bytes, rows, config)
+                .map_err(|source| table_object_open_error(object_facts.object(), source))?;
+        if let Some(cache) = &self.block_cache {
+            reader = reader
+                .with_block_cache(Arc::clone(cache))
+                .map_err(|source| table_object_open_error(object_facts.object(), source))?;
+        }
+        validate_reader_facts(object_facts, &reader)?;
+        Ok(reader)
     }
 
     #[cfg_attr(
@@ -770,6 +817,26 @@ fn validate_reader_facts(
     Ok(())
 }
 
+fn validate_prevalidated_publish_facts(
+    object: &ObjectName,
+    bytes: &[u8],
+    facts: &TableObjectFacts,
+) -> TableObjectServiceResult<()> {
+    let byte_count = u64::try_from(bytes.len()).map_err(|_| {
+        TableObjectServiceError::InvalidPublishMetadata {
+            object: object.clone(),
+            field: "byte_count",
+        }
+    })?;
+    if facts.byte_count() != byte_count {
+        return Err(TableObjectServiceError::InvalidPublishMetadata {
+            object: object.clone(),
+            field: "byte_count",
+        });
+    }
+    Ok(())
+}
+
 fn table_object(
     branch_id: &str,
     level: u32,
@@ -825,10 +892,10 @@ mod tests {
     use crate::object::{ObjectName, ObjectPrefix};
     use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
     use crate::table::{
-        sort_table_rows_by_key, BytesTableSource, ImmutableTableBuilder, ImmutableTableReader,
-        TableBlockCache, TableBuilderConfig, TableByteSource, TableCacheConfig, TableCursor,
-        TableIdentity, TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBytes,
-        TableReaderConfig, TableRow, TableRuntimeError,
+        sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
+        ImmutableTableReader, TableBlockCache, TableBuilderConfig, TableByteSource,
+        TableCacheConfig, TableCursor, TableIdentity, TableInternalKeyBytes, TableKeyBounds,
+        TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
     };
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -1133,6 +1200,209 @@ mod tests {
         assert_eq!(facts.commit_max(), CommitVersion::new(9));
         assert_eq!(backend.read_stored(&object), bytes);
         assert_eq!(backend.operations(), vec![(object, PublishMode::Create)]);
+    }
+
+    #[test]
+    fn table_object_publish_create_prevalidated_writes_validated_table_to_layout_object() {
+        let backend = RecordingBackend::durable();
+        let artifact = valid_table_artifact("prevalidated-table");
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 2, "table0001").expect("table object");
+
+        let facts = TableObjectService::new(&backend)
+            .publish_create_prevalidated(
+                &branch,
+                2,
+                "table0001",
+                artifact.bytes(),
+                artifact.facts(),
+            )
+            .expect("publish prevalidated table object");
+
+        assert_eq!(facts.object(), &object);
+        assert_eq!(facts.byte_count(), artifact.byte_count());
+        assert_eq!(facts.row_count(), artifact.facts().row_count());
+        assert_eq!(
+            facts.data_block_count(),
+            artifact.facts().data_block_count()
+        );
+        assert_eq!(facts.commit_min(), artifact.facts().commit_range().min());
+        assert_eq!(facts.commit_max(), artifact.facts().commit_range().max());
+        assert_eq!(backend.read_stored(&object), artifact.bytes());
+        assert_eq!(backend.operations(), vec![(object, PublishMode::Create)]);
+    }
+
+    #[test]
+    fn table_object_publish_create_prevalidated_rejects_bad_layout_before_publish() {
+        let backend = RecordingBackend::durable();
+        let artifact = valid_table_artifact("prevalidated-bad-layout");
+
+        assert!(matches!(
+            TableObjectService::new(&backend).publish_create_prevalidated(
+                "bad/branch",
+                0,
+                "table0001",
+                artifact.bytes(),
+                artifact.facts(),
+            ),
+            Err(TableObjectServiceError::Layout {
+                source: LayoutError::ComponentContainsSeparator { role: "branch" }
+            })
+        ));
+        assert!(backend.operations().is_empty());
+    }
+
+    #[test]
+    fn table_object_publish_create_prevalidated_requires_durable_capabilities_before_publish() {
+        for capability in [
+            BackendCapability::DurablePublish,
+            BackendCapability::DurableSync,
+        ] {
+            let backend = RecordingBackend::durable().without_capability(capability);
+            let artifact = valid_table_artifact("prevalidated-capability");
+            let branch = branch_id().to_string();
+            let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
+
+            let error = TableObjectService::new(&backend)
+                .publish_create_prevalidated(
+                    &branch,
+                    0,
+                    "table0001",
+                    artifact.bytes(),
+                    artifact.facts(),
+                )
+                .expect_err("missing durable capability should fail before publish");
+
+            match error {
+                TableObjectServiceError::Publish {
+                    object: actual,
+                    source,
+                } => {
+                    assert_eq!(actual, object);
+                    assert_eq!(source.kind(), PublishFailureKind::Unsupported);
+                    assert!(
+                        source
+                            .source_error()
+                            .to_string()
+                            .contains(capability.name()),
+                        "publish error did not name missing capability {capability:?}: {source}"
+                    );
+                }
+                other => panic!("expected capability publish error, got {other:?}"),
+            }
+            assert!(backend.operations().is_empty());
+        }
+    }
+
+    #[test]
+    fn table_object_publish_create_prevalidated_rejects_byte_count_mismatch_before_publish() {
+        let backend = RecordingBackend::durable();
+        let artifact = valid_table_artifact("prevalidated-byte-count");
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
+        let mut wrong_bytes = artifact.bytes().to_vec();
+        wrong_bytes.push(0xff);
+
+        assert_eq!(
+            TableObjectService::new(&backend).publish_create_prevalidated(
+                &branch,
+                0,
+                "table0001",
+                &wrong_bytes,
+                artifact.facts(),
+            ),
+            Err(TableObjectServiceError::InvalidPublishMetadata {
+                object,
+                field: "byte_count"
+            })
+        );
+        assert!(backend.operations().is_empty());
+    }
+
+    #[test]
+    fn table_object_publish_create_prevalidated_refuses_existing_object_and_preserves_bytes() {
+        let backend = RecordingBackend::durable();
+        let artifact = valid_table_artifact("prevalidated-existing");
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
+        backend.seed(object.clone(), b"old table bytes");
+
+        let error = TableObjectService::new(&backend)
+            .publish_create_prevalidated(
+                &branch,
+                0,
+                "table0001",
+                artifact.bytes(),
+                artifact.facts(),
+            )
+            .expect_err("create must not replace immutable table object");
+
+        match error {
+            TableObjectServiceError::Publish {
+                object: actual,
+                source,
+            } => {
+                assert_eq!(actual, object);
+                assert_eq!(source.kind(), PublishFailureKind::PreconditionFailed);
+            }
+            other => panic!("expected publish error, got {other:?}"),
+        }
+        assert_eq!(backend.read_stored(&object), b"old table bytes");
+    }
+
+    #[test]
+    fn table_object_publish_create_prevalidated_rejects_wrong_publish_metadata() {
+        let branch = branch_id().to_string();
+        let artifact = valid_table_artifact("prevalidated-metadata");
+        let object = ObjectLayout::table_object(&branch, 0, "table0001").expect("table object");
+        let wrong_object = ObjectLayout::table_object(&branch, 0, "table0002").expect("table two");
+        let backend =
+            RecordingBackend::durable().with_outcome_object_override(wrong_object.clone());
+
+        assert_eq!(
+            TableObjectService::new(&backend).publish_create_prevalidated(
+                &branch,
+                0,
+                "table0001",
+                artifact.bytes(),
+                artifact.facts(),
+            ),
+            Err(TableObjectServiceError::InvalidPublishMetadata {
+                object: object.clone(),
+                field: "object"
+            })
+        );
+
+        let backend = RecordingBackend::durable().with_metadata_size_override(1);
+        assert_eq!(
+            TableObjectService::new(&backend).publish_create_prevalidated(
+                &branch,
+                0,
+                "table0001",
+                artifact.bytes(),
+                artifact.facts(),
+            ),
+            Err(TableObjectServiceError::InvalidPublishMetadata {
+                object: object.clone(),
+                field: "size_bytes"
+            })
+        );
+
+        let backend =
+            RecordingBackend::durable().with_durability_override(PublishDurability::NonDurable);
+        assert_eq!(
+            TableObjectService::new(&backend).publish_create_prevalidated(
+                &branch,
+                0,
+                "table0001",
+                artifact.bytes(),
+                artifact.facts(),
+            ),
+            Err(TableObjectServiceError::InvalidPublishMetadata {
+                object,
+                field: "durability"
+            })
+        );
     }
 
     #[test]
@@ -2837,6 +3107,17 @@ mod tests {
         let rows = vec![row(b"alpha".to_vec(), 9), row(b"beta".to_vec(), 7)];
         encode_immutable_table(&rows, 4096, 8, TableCompression::Uncompressed)
             .expect("encode immutable table")
+    }
+
+    fn valid_table_artifact(identity_text: &'static str) -> BuiltTableArtifact {
+        let rows = vec![
+            TableRow::new(row(b"alpha".to_vec(), 9)),
+            TableRow::new(row(b"beta".to_vec(), 7)),
+        ];
+        ImmutableTableBuilder::new(TableBuilderConfig::default())
+            .expect("builder")
+            .build_from_rows(TableIdentity::new(identity_text).expect("identity"), &rows)
+            .expect("build artifact")
     }
 
     fn open_lazy_byte_reader(

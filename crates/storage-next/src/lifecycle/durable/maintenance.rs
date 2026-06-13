@@ -532,7 +532,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         &mut self,
         outcome: LifecyclePostCommitMaintenanceOutcome,
     ) -> LifecyclePostCommitMaintenanceOutcome {
-        // L8E-H deletion condition: remove this lifecycle-local
+        // Simulation-boundary deletion condition: remove this lifecycle-local
         // deterministic-inline path once lower-level lifecycle tests migrate to
         // the API Background + InlineMaintenanceExecutor path.
         let (Some(request), Some(enqueue)) = (outcome.suggested_task(), outcome.enqueue()) else {
@@ -579,7 +579,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     }
 
     fn run_inline_admission_maintenance(&mut self, pressure: LifecycleStoragePressure) -> bool {
-        // L8E-H deletion condition: remove this lifecycle-local
+        // Simulation-boundary deletion condition: remove this lifecycle-local
         // deterministic-inline path once lower-level lifecycle tests migrate to
         // the API Background + InlineMaintenanceExecutor path.
         let Some(request) = pressure.suggested_task() else {

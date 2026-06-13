@@ -213,7 +213,7 @@ impl<R> RuntimeSlot<R> {
 
     #[allow(
         dead_code,
-        reason = "L8E-C submits lifecycle drain work through this handle"
+        reason = "background lifecycle drains submit work through this handle"
     )]
     fn runtime_handle(&self) -> Arc<ParkingMutex<R>> {
         Arc::clone(&self.runtime)
@@ -221,7 +221,7 @@ impl<R> RuntimeSlot<R> {
 
     #[allow(
         dead_code,
-        reason = "L8E-C wires lifecycle queue wakeups through this hook"
+        reason = "background lifecycle queue wakeups are wired through this hook"
     )]
     fn submit_background(
         &self,

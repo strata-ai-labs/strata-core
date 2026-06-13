@@ -1662,6 +1662,47 @@ fn durable_rewrite_completion_does_not_persist_flush_watermark_or_truncate_wal()
         .any(|event| matches!(event, CheckpointBackendEvent::ObjectDelete)));
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_rewrite_uses_build_facts_and_in_memory_reader_handoff() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xaf);
+    let mut runtime = open_runtime(branch, &backend);
+    install_l0_table(
+        runtime.branch_state_mut(),
+        branch,
+        "fast-publish-left",
+        vec![put_row(branch, b"left", 1, 1_000, b"left")],
+    );
+    install_l0_table(
+        runtime.branch_state_mut(),
+        branch,
+        "fast-publish-right",
+        vec![put_row(branch, b"right", 2, 2_000, b"right")],
+    );
+    crate::observability::perf_trace::reset();
+
+    runtime
+        .compact_branch_tables(
+            &LifecycleCompactionRequest::new(
+                branch,
+                BranchCompactionKind::CompactL0,
+                "fast-publish",
+            )
+            .expect("request"),
+        )
+        .expect("durable compaction");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.table_compaction_output_tables_built(), 1);
+    assert_eq!(perf.table_build_facts_from_streaming_metadata(), 1);
+    assert_eq!(perf.table_rewrite_redundant_fact_decodes_avoided(), 1);
+    assert_eq!(perf.table_rewrite_reader_reopens_avoided(), 1);
+    assert_eq!(perf.table_rewrite_reader_row_vectors_reused(), 1);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
+}
+
 #[test]
 fn durable_rewrite_manifest_success_can_build_flush_coverage_candidate() {
     let backend = CheckpointTestBackend::new();

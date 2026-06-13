@@ -23,6 +23,7 @@ use crate::branch::state::materialization::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::TableManifestTableProvenance;
+use crate::observability::perf_trace;
 use crate::service::{
     TableManifestService, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
     TableObjectService, TableObjectServiceError,
@@ -88,7 +89,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         plan.materialization_source(),
         table_service,
         reader_service,
-        &artifacts,
+        artifacts,
         budget,
     )?;
     let mut next_catalog = catalog.clone();
@@ -350,13 +351,18 @@ type PublishedRewriteTable = (
     TableManifestTableProvenance,
 );
 
+struct PublishedRewriteObject {
+    facts: TableObjectFacts,
+    exact_bytes_validated: bool,
+}
+
 fn publish_compaction_outputs(
     branch_id: BranchId,
     output_level: BranchLevel,
     materialization_source: Option<BranchMaterializationSource>,
     table_service: &TableObjectService<'_>,
     reader_service: &TableObjectReaderService<'_>,
-    artifacts: &[BuiltTableArtifact],
+    artifacts: Vec<BuiltTableArtifact>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
     let mut published = Vec::new();
@@ -391,7 +397,7 @@ fn publish_materialization_outputs(
             BranchLevel::ZERO,
             table_service,
             reader_service,
-            artifact,
+            artifact.clone(),
             Some(prepared.materialization_source()),
             budget,
         ) {
@@ -407,36 +413,53 @@ fn publish_rewrite_artifact(
     level: BranchLevel,
     table_service: &TableObjectService<'_>,
     reader_service: &TableObjectReaderService<'_>,
-    artifact: &BuiltTableArtifact,
+    artifact: BuiltTableArtifact,
     materialization_source: Option<BranchMaterializationSource>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PublishedRewriteTable> {
-    require_optional_rewrite_generated_budget(budget, artifact.byte_count())?;
-    require_optional_rewrite_reader_budget(budget, artifact.byte_count())?;
-    let identity = artifact.facts().identity().clone();
+    let (bytes, table_facts, rows) = artifact.into_parts_with_rows();
+    require_optional_rewrite_generated_budget(budget, table_facts.byte_count())?;
+    require_optional_rewrite_reader_budget(budget, table_facts.byte_count())?;
+    let identity = table_facts.identity().clone();
     let branch_component = branch_id.to_string();
-    let object_facts = publish_or_load_rewrite_output(
+    let object = publish_or_load_rewrite_output(
         table_service,
         reader_service,
         &branch_component,
         u32::from(level.raw()),
         identity.as_str(),
-        artifact.bytes(),
-        artifact.facts(),
+        &bytes,
+        &table_facts,
     )?;
+    let object_facts = object.facts;
+    if !object.exact_bytes_validated {
+        reader_service
+            .require_exact_bytes(&object_facts, &bytes)
+            .map_err(|source| {
+                orphaned_published_object_error(
+                    &object_facts,
+                    "table rewrite published output before byte-exact validation failed",
+                    source,
+                )
+            })?;
+    }
     let reader = reader_service
-        .open_reader(
-            identity.clone(),
+        .open_reader_from_validated_rows(
             &object_facts,
+            table_facts,
+            &bytes,
+            rows,
             TableReaderConfig::default(),
         )
         .map_err(|source| {
             orphaned_published_object_error(
                 &object_facts,
-                "table rewrite published output before reopen failed",
+                "table rewrite published output before in-memory reader handoff failed",
                 source,
             )
         })?;
+    perf_trace::record_table_rewrite_reader_reopen_avoided();
+    perf_trace::record_table_rewrite_reader_rows_reused();
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).map_err(|source| {
             orphaned_published_object_error(
@@ -516,12 +539,25 @@ fn publish_or_load_rewrite_output(
     object_id: &str,
     bytes: &[u8],
     table_facts: &crate::table::TableRuntimeFacts,
-) -> LifecycleResult<TableObjectFacts> {
-    match table_service.publish_create(branch_component, level, object_id, bytes) {
-        Ok(facts) => Ok(facts),
+) -> LifecycleResult<PublishedRewriteObject> {
+    match table_service.publish_create_prevalidated(
+        branch_component,
+        level,
+        object_id,
+        bytes,
+        table_facts,
+    ) {
+        Ok(facts) => {
+            perf_trace::record_table_rewrite_redundant_fact_decode_avoided();
+            Ok(PublishedRewriteObject {
+                facts,
+                exact_bytes_validated: false,
+            })
+        }
         Err(TableObjectServiceError::Publish { source, .. })
             if source.kind() == PublishFailureKind::PreconditionFailed =>
         {
+            perf_trace::record_table_rewrite_redundant_fact_decode_avoided();
             let object_facts = TableObjectService::facts_for_table(
                 branch_component,
                 level,
@@ -532,7 +568,10 @@ fn publish_or_load_rewrite_output(
             reader_service
                 .require_exact_bytes(&object_facts, bytes)
                 .map_err(rewrite_existing_table_error)?;
-            Ok(object_facts)
+            Ok(PublishedRewriteObject {
+                facts: object_facts,
+                exact_bytes_validated: true,
+            })
         }
         Err(error) => Err(rewrite_table_service_error(error)),
     }

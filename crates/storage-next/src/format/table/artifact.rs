@@ -99,6 +99,51 @@ pub(crate) struct ImmutableTableStreamingEncoder {
     peak_buffered_rows: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ImmutableTableStreamingOutput {
+    bytes: Vec<u8>,
+    row_count: u64,
+    data_block_count: u32,
+    min_key_bytes: Vec<u8>,
+    max_key_bytes: Vec<u8>,
+    commit_min: CommitVersion,
+    commit_max: CommitVersion,
+}
+
+impl ImmutableTableStreamingOutput {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) const fn row_count(&self) -> u64 {
+        self.row_count
+    }
+
+    pub(crate) const fn data_block_count(&self) -> u32 {
+        self.data_block_count
+    }
+
+    pub(crate) fn min_key_bytes(&self) -> &[u8] {
+        &self.min_key_bytes
+    }
+
+    pub(crate) fn max_key_bytes(&self) -> &[u8] {
+        &self.max_key_bytes
+    }
+
+    pub(crate) const fn commit_min(&self) -> CommitVersion {
+        self.commit_min
+    }
+
+    pub(crate) const fn commit_max(&self) -> CommitVersion {
+        self.commit_max
+    }
+}
+
 impl ImmutableTableStreamingEncoder {
     pub(crate) fn new(
         target_data_block_size: u32,
@@ -173,7 +218,9 @@ impl ImmutableTableStreamingEncoder {
         self.peak_buffered_rows
     }
 
-    pub(crate) fn finish(mut self) -> Result<Vec<u8>, FormatError> {
+    pub(crate) fn finish_with_metadata(
+        mut self,
+    ) -> Result<ImmutableTableStreamingOutput, FormatError> {
         self.flush_current_block()?;
         let data_block_count = self.index_entries.len();
         validate_build_counts(
@@ -263,7 +310,15 @@ impl ImmutableTableStreamingEncoder {
         )?;
         self.table_bytes
             .extend_from_slice(&encode_table_footer(&footer, &self.table_bytes)?);
-        Ok(self.table_bytes)
+        Ok(ImmutableTableStreamingOutput {
+            bytes: self.table_bytes,
+            row_count: properties.row_count(),
+            data_block_count: properties.data_block_count(),
+            min_key_bytes: properties.min_key_bytes().to_vec(),
+            max_key_bytes: properties.max_key_bytes().to_vec(),
+            commit_min: properties.commit_min(),
+            commit_max: properties.commit_max(),
+        })
     }
 
     fn flush_current_block(&mut self) -> Result<(), FormatError> {

@@ -1,26 +1,27 @@
 //! Immutable table builder.
 
 use super::{
-    FrozenTable, MutableTable, TableBuilderConfig, TableIdentity, TableInternalKeyBytes, TableRow,
-    TableRuntimeConfig, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    FrozenTable, MutableTable, TableBuilderConfig, TableCommitRange, TableIdentity,
+    TableInternalKeyBytes, TableKeyRange, TableRow, TableRuntimeConfig, TableRuntimeError,
+    TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
-    decode_immutable_table, ImmutableTableStreamingEncoder, MAX_TABLE_BLOCK_DECODED_BYTES,
+    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, MAX_TABLE_BLOCK_DECODED_BYTES,
     MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROW_BYTES,
 };
+use crate::observability::perf_trace;
 use crate::row::StorageRow;
-
-use super::facts::table_facts_from_decoded;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BuiltTableArtifact {
     bytes: Vec<u8>,
     facts: TableRuntimeFacts,
+    rows: Vec<TableRow>,
 }
 
 impl BuiltTableArtifact {
-    fn new(bytes: Vec<u8>, facts: TableRuntimeFacts) -> Self {
-        Self { bytes, facts }
+    fn new(bytes: Vec<u8>, facts: TableRuntimeFacts, rows: Vec<TableRow>) -> Self {
+        Self { bytes, facts, rows }
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -41,6 +42,10 @@ impl BuiltTableArtifact {
 
     pub(crate) fn into_parts(self) -> (Vec<u8>, TableRuntimeFacts) {
         (self.bytes, self.facts)
+    }
+
+    pub(crate) fn into_parts_with_rows(self) -> (Vec<u8>, TableRuntimeFacts, Vec<TableRow>) {
+        (self.bytes, self.facts, self.rows)
     }
 }
 
@@ -123,6 +128,7 @@ pub(crate) struct ImmutableTableStreamingBuilder {
     previous_key: Option<TableInternalKeyBytes>,
     current_block_entries: usize,
     current_block_decoded_len: usize,
+    materialized_rows: Vec<TableRow>,
 }
 
 impl ImmutableTableStreamingBuilder {
@@ -141,6 +147,7 @@ impl ImmutableTableStreamingBuilder {
             previous_key: None,
             current_block_entries: 0,
             current_block_decoded_len: 4,
+            materialized_rows: Vec::new(),
         })
     }
 
@@ -149,6 +156,7 @@ impl ImmutableTableStreamingBuilder {
         self.encoder
             .append(row.row())
             .map_err(|source| TableRuntimeError::BuildFormat { source })?;
+        self.materialized_rows.push(row.clone());
         self.previous_key = Some(row.key().clone());
         Ok(())
     }
@@ -165,11 +173,12 @@ impl ImmutableTableStreamingBuilder {
         if self.previous_key.is_none() {
             return Err(TableRuntimeError::InvalidRange { field: "row_count" });
         }
-        let bytes = self
+        let materialized_rows = self.materialized_rows;
+        let output = self
             .encoder
-            .finish()
+            .finish_with_metadata()
             .map_err(|source| TableRuntimeError::BuildFormat { source })?;
-        build_table_artifact_from_bytes(self.identity, bytes)
+        build_table_artifact_from_streaming_output(self.identity, output, materialized_rows)
     }
 
     fn validate_next_row(&mut self, row: &TableRow) -> TableRuntimeResult<()> {
@@ -204,14 +213,28 @@ impl ImmutableTableStreamingBuilder {
     }
 }
 
-fn build_table_artifact_from_bytes(
+fn build_table_artifact_from_streaming_output(
     identity: TableIdentity,
-    bytes: Vec<u8>,
+    output: ImmutableTableStreamingOutput,
+    rows: Vec<TableRow>,
 ) -> TableRuntimeResult<BuiltTableArtifact> {
-    let decoded = decode_immutable_table(&bytes)
-        .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
-    let facts = table_facts_from_decoded(identity, &bytes, &decoded)?;
-    Ok(BuiltTableArtifact::new(bytes, facts))
+    let byte_count =
+        u64::try_from(output.bytes().len()).map_err(|_| TableRuntimeError::InvalidRange {
+            field: "byte_count",
+        })?;
+    let facts = TableRuntimeFacts::new(
+        identity,
+        output.row_count(),
+        output.data_block_count(),
+        TableKeyRange::new(
+            output.min_key_bytes().to_vec(),
+            output.max_key_bytes().to_vec(),
+        )?,
+        TableCommitRange::new(output.commit_min(), output.commit_max())?,
+        byte_count,
+    )?;
+    perf_trace::record_table_build_facts_from_streaming_metadata();
+    Ok(BuiltTableArtifact::new(output.into_bytes(), facts, rows))
 }
 
 fn validate_builder_row_shape(row: &TableRow) -> TableRuntimeResult<()> {

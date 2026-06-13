@@ -592,6 +592,7 @@ fn compact_table_inputs(
         compactor.config.max_output_tables(),
     );
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
+    let merge_timer = perf_trace::start_timer();
 
     while let Some(current) = merged.current() {
         report.input_rows = report.input_rows.saturating_add(1);
@@ -617,7 +618,6 @@ fn compact_table_inputs(
                 ) {
                     pending_output.finish_current(&mut artifacts, &mut report)?;
                 }
-                let kept_key = current.row.key().clone();
                 pending_output.push_row(
                     &artifacts,
                     &mut report,
@@ -625,7 +625,7 @@ fn compact_table_inputs(
                     row_approximate_bytes,
                     current_physical_key,
                 )?;
-                previous_kept_key = Some(kept_key);
+                update_previous_kept_key(&mut previous_kept_key, current.row.key());
                 report.record_keep();
                 perf_trace::record_table_compaction_keep();
             }
@@ -636,6 +636,10 @@ fn compact_table_inputs(
         }
         merged.advance()?;
     }
+    perf_trace::record_table_compaction_merge_elapsed(
+        perf_trace::timer_elapsed(merge_timer),
+        report.input_rows,
+    );
 
     pending_output.finish_current(&mut artifacts, &mut report)?;
 
@@ -1141,7 +1145,31 @@ fn update_pending_last_physical_key(
         return;
     }
     perf_trace::record_table_compaction_boundary_key_allocation();
-    *pending_last_physical_key = Some(row_physical_key.to_vec());
+    if let Some(buffer) = pending_last_physical_key.as_mut() {
+        if buffer.capacity() < row_physical_key.len() {
+            perf_trace::record_table_compaction_boundary_key_buffer_allocation();
+        } else {
+            perf_trace::record_table_compaction_boundary_key_buffer_reuse();
+        }
+        buffer.clear();
+        buffer.extend_from_slice(row_physical_key);
+    } else {
+        perf_trace::record_table_compaction_boundary_key_buffer_allocation();
+        *pending_last_physical_key = Some(row_physical_key.to_vec());
+    }
+}
+
+fn update_previous_kept_key(
+    previous_kept_key: &mut Option<TableInternalKeyBytes>,
+    current_key: &TableInternalKeyBytes,
+) {
+    if let Some(previous) = previous_kept_key.as_mut() {
+        perf_trace::record_table_compaction_previous_key_buffer_reuse();
+        previous.copy_from(current_key);
+    } else {
+        perf_trace::record_table_compaction_previous_key_buffer_allocation();
+        *previous_kept_key = Some(current_key.clone());
+    }
 }
 
 fn build_table_artifact_from_rows(

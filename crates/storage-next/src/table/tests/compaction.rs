@@ -426,10 +426,18 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(zero.table_compaction_heap_key_clones(), 0);
     assert_eq!(zero.table_compaction_source_order_key_clones(), 0);
     assert_eq!(zero.table_compaction_boundary_key_allocations(), 0);
+    assert_eq!(zero.table_compaction_boundary_key_buffer_allocations(), 0);
+    assert_eq!(zero.table_compaction_boundary_key_buffer_reuses(), 0);
+    assert_eq!(zero.table_compaction_previous_key_buffer_allocations(), 0);
+    assert_eq!(zero.table_compaction_previous_key_buffer_reuses(), 0);
     assert_eq!(zero.table_compaction_kept_rows(), 0);
     assert_eq!(zero.table_compaction_dropped_rows(), 0);
     assert_eq!(zero.table_compaction_peak_buffered_rows(), 0);
     assert_eq!(zero.table_compaction_output_tables_built(), 0);
+    assert_eq!(zero.table_build_facts_from_streaming_metadata(), 0);
+    assert_eq!(zero.table_compaction_merge_ns(), 0);
+    assert_eq!(zero.table_compaction_merge_input_rows(), 0);
+    assert_eq!(zero.table_compaction_merge_ns_per_input_row(), 0);
 
     let rows = [
         put_row(b"alpha".to_vec(), 1),
@@ -466,8 +474,16 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(perf.table_compaction_kept_rows(), 3);
     assert_eq!(perf.table_compaction_dropped_rows(), 1);
     assert_eq!(perf.table_compaction_boundary_key_allocations(), 3);
+    assert_eq!(perf.table_compaction_boundary_key_buffer_allocations(), 1);
+    assert_eq!(perf.table_compaction_boundary_key_buffer_reuses(), 2);
+    assert_eq!(perf.table_compaction_previous_key_buffer_allocations(), 1);
+    assert_eq!(perf.table_compaction_previous_key_buffer_reuses(), 2);
     assert_eq!(perf.table_compaction_peak_buffered_rows(), 2);
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
+    assert_eq!(perf.table_build_facts_from_streaming_metadata(), 1);
+    assert_eq!(perf.table_compaction_merge_input_rows(), 4);
+    assert!(perf.table_compaction_merge_ns() > 0);
+    assert!(perf.table_compaction_merge_ns_per_input_row() > 0);
     assert_eq!(perf.table_compaction_merge_advances(), 4);
     assert_eq!(perf.table_compaction_heap_key_clones(), 0);
     assert_eq!(perf.table_compaction_source_order_key_clones(), 0);
@@ -481,10 +497,18 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(reset.table_compaction_heap_key_clones(), 0);
     assert_eq!(reset.table_compaction_source_order_key_clones(), 0);
     assert_eq!(reset.table_compaction_boundary_key_allocations(), 0);
+    assert_eq!(reset.table_compaction_boundary_key_buffer_allocations(), 0);
+    assert_eq!(reset.table_compaction_boundary_key_buffer_reuses(), 0);
+    assert_eq!(reset.table_compaction_previous_key_buffer_allocations(), 0);
+    assert_eq!(reset.table_compaction_previous_key_buffer_reuses(), 0);
     assert_eq!(reset.table_compaction_kept_rows(), 0);
     assert_eq!(reset.table_compaction_dropped_rows(), 0);
     assert_eq!(reset.table_compaction_peak_buffered_rows(), 0);
     assert_eq!(reset.table_compaction_output_tables_built(), 0);
+    assert_eq!(reset.table_build_facts_from_streaming_metadata(), 0);
+    assert_eq!(reset.table_compaction_merge_ns(), 0);
+    assert_eq!(reset.table_compaction_merge_input_rows(), 0);
+    assert_eq!(reset.table_compaction_merge_ns_per_input_row(), 0);
 
     let strict_left = source("counter-strict-left", &[rows[0].clone(), rows[2].clone()]);
     let strict_right = source("counter-strict-right", &[rows[1].clone(), rows[3].clone()]);
@@ -515,8 +539,16 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(strict.table_compaction_kept_rows(), 3);
     assert_eq!(strict.table_compaction_dropped_rows(), 1);
     assert_eq!(strict.table_compaction_boundary_key_allocations(), 3);
+    assert_eq!(strict.table_compaction_boundary_key_buffer_allocations(), 1);
+    assert_eq!(strict.table_compaction_boundary_key_buffer_reuses(), 2);
+    assert_eq!(strict.table_compaction_previous_key_buffer_allocations(), 1);
+    assert_eq!(strict.table_compaction_previous_key_buffer_reuses(), 2);
     assert_eq!(strict.table_compaction_peak_buffered_rows(), 2);
     assert_eq!(strict.table_compaction_output_tables_built(), 1);
+    assert_eq!(strict.table_build_facts_from_streaming_metadata(), 1);
+    assert_eq!(strict.table_compaction_merge_input_rows(), 4);
+    assert!(strict.table_compaction_merge_ns() > 0);
+    assert!(strict.table_compaction_merge_ns_per_input_row() > 0);
     assert_eq!(strict.table_compaction_merge_advances(), 8);
     assert_eq!(strict.table_compaction_heap_key_clones(), 0);
     assert_eq!(strict.table_compaction_source_order_key_clones(), 0);
@@ -542,6 +574,22 @@ fn table_compaction_mechanical_counters_capture_hot_path_work() {
     assert_eq!(version_chain_output.report().output_tables(), 1);
     let version_chain = crate::observability::perf_trace::snapshot();
     assert_eq!(version_chain.table_compaction_boundary_key_allocations(), 1);
+    assert_eq!(
+        version_chain.table_compaction_boundary_key_buffer_allocations(),
+        1
+    );
+    assert_eq!(
+        version_chain.table_compaction_boundary_key_buffer_reuses(),
+        0
+    );
+    assert_eq!(
+        version_chain.table_compaction_previous_key_buffer_allocations(),
+        1
+    );
+    assert_eq!(
+        version_chain.table_compaction_previous_key_buffer_reuses(),
+        2
+    );
     assert!(
         version_chain.table_compaction_boundary_key_allocations()
             < version_chain.table_compaction_kept_rows()

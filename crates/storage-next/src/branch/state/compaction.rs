@@ -1096,16 +1096,17 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
         let mut tables = Vec::with_capacity(artifacts.len());
         for artifact in artifacts {
-            let (bytes, facts) = artifact.into_parts();
+            let (bytes, facts, rows) = artifact.into_parts_with_rows();
             let identity = facts.identity().clone();
-            let reader = ImmutableTableReader::open_bytes(
-                identity.clone(),
-                bytes,
+            let reader = ImmutableTableReader::from_validated_rows(
+                facts,
+                &bytes,
+                rows,
                 TableReaderConfig::default(),
             )
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             let descriptor =
-                BranchTableDescriptor::new(identity, reader.facts().clone(), output_level)?;
+                BranchTableDescriptor::new(identity.clone(), reader.facts().clone(), output_level)?;
             let table = if let Some(source) = materialization_source {
                 BranchOwnedTable::new_materialization_replacement(
                     self.branch_id,
