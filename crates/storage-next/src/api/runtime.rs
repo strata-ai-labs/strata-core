@@ -4429,8 +4429,14 @@ fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPl
         )
         .map_err(map_lifecycle_error)?;
     }
+    #[cfg(test)]
+    let storage_budget = options
+        .storage_budget_for_test()
+        .unwrap_or_else(|| map_budget_policy(options.budget_policy()));
+    #[cfg(not(test))]
+    let storage_budget = map_budget_policy(options.budget_policy());
     config = config
-        .with_storage_budget(map_budget_policy(options.budget_policy()))
+        .with_storage_budget(storage_budget)
         .map_err(map_lifecycle_error)?;
     config = config
         .with_wal_growth_policy(map_wal_growth_policy(options.wal_growth_policy()))

@@ -384,9 +384,7 @@ pub(crate) fn table_compaction_config_with_storage_budget(
     let Some(budget) = budget else {
         return Ok(config);
     };
-    let generated_limit = budget.pool_limit_bytes(StorageBudgetPool::GeneratedArtifact);
-    let reader_limit = budget.pool_limit_bytes(StorageBudgetPool::TableReader);
-    let limit = generated_limit.min(reader_limit);
+    let limit = budget.pool_limit_bytes(StorageBudgetPool::GeneratedArtifact);
     if limit == 0 {
         return Ok(config);
     }
@@ -915,11 +913,16 @@ impl LifecycleCompactionIoFacts {
         } else {
             0
         };
+        let input_rows = if candidate.requires_table_rewrite() {
+            candidate.input_row_count()
+        } else {
+            0
+        };
         Self {
             input_bytes,
             estimated_output_bytes,
             metadata_bytes_avoided,
-            input_rows: candidate.input_row_count(),
+            input_rows,
         }
     }
 
@@ -1259,7 +1262,15 @@ pub(crate) fn compact_cache_branch(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionRequest,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
-    compact_branch(branch, request)
+    compact_cache_branch_with_budget(branch, request, None)
+}
+
+pub(crate) fn compact_cache_branch_with_budget(
+    branch: &mut BranchLocalState,
+    request: &LifecycleCompactionRequest,
+    budget: Option<StorageRuntimeBudget>,
+) -> LifecycleResult<LifecycleCompactionOutcome> {
+    compact_branch(branch, request, budget)
 }
 
 pub(crate) fn compact_cache_branch_to_fixed_point(
@@ -1278,7 +1289,12 @@ pub(crate) fn compact_cache_branch_to_fixed_point_with_policy(
     request: &LifecycleCompactionDrainRequest,
     policy: LifecycleCompactionIoPolicy,
 ) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
-    compact_branch_to_fixed_point_with_resource_policy(branch, request, policy, compact_branch)
+    compact_branch_to_fixed_point_with_resource_policy(
+        branch,
+        request,
+        policy,
+        |branch, request| compact_branch(branch, request, None),
+    )
 }
 
 pub(crate) fn compact_durable_branch(
@@ -1288,7 +1304,7 @@ pub(crate) fn compact_durable_branch(
     let request = request
         .clone()
         .with_durability(LifecycleTableRewriteDurability::CheckpointRequiredAfterRewrite);
-    compact_branch(branch, &request)
+    compact_branch(branch, &request, None)
 }
 
 pub(crate) fn defer_compaction_for_resource_policy(
@@ -1541,6 +1557,9 @@ fn direct_compaction_kind_for_task(
     if is_final_configured_level(branch, level_index) {
         let target_output_bytes =
             bottommost_compaction_output_target(BranchLevel::new(level), budget)?;
+        if budget.is_some() && level_byte_count(tables) < target_output_bytes {
+            return None;
+        }
         let (start_table_index, table_count) =
             selected_bottommost_compaction_run_with_target(tables, target_output_bytes)?;
         record_selected_bottommost_input_policy(
@@ -2576,9 +2595,10 @@ fn table_physical_key_bounds(
 fn compact_branch(
     branch: &mut BranchLocalState,
     request: &LifecycleCompactionRequest,
+    budget: Option<StorageRuntimeBudget>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
     let started = std::time::Instant::now();
-    let branch_request = request.branch_request()?;
+    let branch_request = cache_compaction_branch_request(request, budget)?;
     let plan = branch
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
@@ -2604,11 +2624,12 @@ pub(crate) struct PreparedCacheCompaction {
     prepared_output: Option<(Vec<BranchOwnedTable>, TableCompactionReport)>,
 }
 
-pub(crate) fn prepare_cache_compaction(
+pub(crate) fn prepare_cache_compaction_with_budget(
     branch: &BranchLocalState,
     request: &LifecycleCompactionRequest,
+    budget: Option<StorageRuntimeBudget>,
 ) -> LifecycleResult<PreparedCacheCompaction> {
-    let branch_request = request.branch_request()?;
+    let branch_request = cache_compaction_branch_request(request, budget)?;
     let plan = branch
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
@@ -2637,6 +2658,18 @@ pub(crate) fn prepare_cache_compaction(
         io_facts,
         prepared_output,
     })
+}
+
+fn cache_compaction_branch_request(
+    request: &LifecycleCompactionRequest,
+    budget: Option<StorageRuntimeBudget>,
+) -> LifecycleResult<BranchCompactionRequest> {
+    let branch_request = request.branch_request()?;
+    let config = table_compaction_config_with_storage_budget(
+        branch_request.table_compaction_config(),
+        budget,
+    )?;
+    Ok(branch_request.with_table_compaction_config(config))
 }
 
 pub(crate) fn install_prepared_cache_compaction(

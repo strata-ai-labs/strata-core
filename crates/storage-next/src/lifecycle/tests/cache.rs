@@ -10,6 +10,8 @@ use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
 #[cfg(feature = "perf-trace")]
 use crate::branch::read::BranchScanBounds;
+#[cfg(feature = "perf-trace")]
+use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionRequest};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
@@ -1344,31 +1346,9 @@ fn compaction_chain_resubmits_highest_scored_branch() {
             .expect("high branch")
             .owned_levels()[0]
             .len(),
-        4
-    );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-
-    let third = runtime
-        .run_next_compaction_maintenance()
-        .expect("run follow-up compaction")
-        .expect("follow-up compaction outcome");
-    assert_eq!(
-        third.task_scope(),
-        Some(MaintenanceTaskScope::TableLevel {
-            branch_id: branch_high,
-            level: 0,
-        })
-    );
-    assert_eq!(third.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(
-        runtime
-            .branch_catalog()
-            .branch_state(branch_high)
-            .expect("high branch")
-            .owned_levels()[0]
-            .len(),
         0
     );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
 #[test]
@@ -1907,20 +1887,31 @@ fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
                 ),
             )
             .expect("branch state");
-        install_owned_table_for_cache_test(
-            state,
+        let concurrent_request = BranchCompactionRequest::new(
             branch,
-            BranchLevel::ZERO,
-            "background-stale-front",
-            vec![active_pressure_put_row(
+            BranchCompactionKind::CompactL0ToLevelOne,
+            "background-stale-concurrent-output",
+        )
+        .expect("concurrent compaction request");
+        state
+            .compact_branch_owned_tables(&concurrent_request)
+            .expect("concurrent compaction consumes planned inputs");
+        for index in 0..4 {
+            install_owned_table_for_cache_test(
+                state,
                 branch,
-                b"a-background-stale-front",
-                99,
-                99_000,
-                256,
-                0x72,
-            )],
-        );
+                BranchLevel::ZERO,
+                &format!("background-stale-fresh-{index}"),
+                vec![active_pressure_put_row(
+                    branch,
+                    format!("background-stale-fresh-{index}").as_bytes(),
+                    99 + index,
+                    (99 + index) * 1_000,
+                    256,
+                    0x72,
+                )],
+            );
+        }
     }
 
     let outcome = runtime
@@ -1947,8 +1938,8 @@ fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
         .source_layout();
     assert_eq!(
         layout.owned_l0_tables(),
-        5,
-        "stale output must not be published over newer L0 state"
+        4,
+        "stale output must not be published over fresh L0 pressure"
     );
     assert_eq!(
         layout
@@ -1956,7 +1947,7 @@ fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
             .iter()
             .find(|count| count.level() == BranchLevel::new(1))
             .map_or(0, |count| count.table_count()),
-        0
+        1
     );
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_candidate_stale_deferred(), 1);

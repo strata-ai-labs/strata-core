@@ -801,7 +801,7 @@ impl BranchLocalState {
             .table_ref_row_count(&input_refs)?
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
         let no_promotion_reason =
-            metadata_promotion_blocker(request, input_refs.len(), overlap_refs.len(), None);
+            metadata_promotion_blocker(request, input_refs.len(), overlap_refs.len(), None, None);
         if no_promotion_reason.is_none() {
             let candidate = BranchCompactionCandidate::metadata_promotion(
                 self.branch_id,
@@ -885,7 +885,8 @@ impl BranchLocalState {
                 ),
             });
         }
-        let input_refs = self.table_refs_at_level(level_index, table_index..table_index + 1)?;
+        let input_refs =
+            self.nonzero_input_refs_for_compaction(level_index, table_index, output_level_index)?;
         let overlap_refs =
             self.overlapping_refs_for_input_range(&input_refs, output_level_index)?;
         let input_row_count = self
@@ -900,11 +901,13 @@ impl BranchLocalState {
         })?);
         let deeper_overlap_bytes =
             self.overlapping_table_bytes_for_input_range(&input_refs, level_index + 2);
+        let input_byte_count = self.table_ref_byte_count(&input_refs)?;
         let no_promotion_reason = metadata_promotion_blocker(
             request,
             input_refs.len(),
             overlap_refs.len(),
             Some(deeper_overlap_bytes),
+            Some(input_byte_count),
         );
         if no_promotion_reason.is_none() {
             let candidate = BranchCompactionCandidate::metadata_promotion(
@@ -934,6 +937,44 @@ impl BranchLocalState {
             kind,
             candidate,
         ))
+    }
+
+    fn nonzero_input_refs_for_compaction(
+        &self,
+        level_index: usize,
+        table_index: usize,
+        output_level_index: usize,
+    ) -> BranchRuntimeResult<Vec<BranchTableRef>> {
+        let mut start = table_index;
+        let mut end = table_index
+            .checked_add(1)
+            .ok_or(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic("compaction input range overflowed"),
+            })?;
+        loop {
+            let input_refs = self.table_refs_at_level(level_index, start..end)?;
+            let overlap_refs =
+                self.overlapping_refs_for_input_range(&input_refs, output_level_index)?;
+            if overlap_refs.is_empty() {
+                return Ok(input_refs);
+            }
+            let (overlap_first, overlap_last) = self.table_refs_physical_key_span(&overlap_refs)?;
+            let Some((expanded_start, expanded_end)) = self.table_run_overlapping_physical_span(
+                level_index,
+                &overlap_first,
+                &overlap_last,
+            )?
+            else {
+                return Ok(input_refs);
+            };
+            let next_start = start.min(expanded_start);
+            let next_end = end.max(expanded_end);
+            if next_start == start && next_end == end {
+                return Ok(input_refs);
+            }
+            start = next_start;
+            end = next_end;
+        }
     }
 
     fn plan_bottommost_level_compaction(
@@ -1129,6 +1170,32 @@ impl BranchLocalState {
         })
     }
 
+    fn table_run_overlapping_physical_span(
+        &self,
+        level_index: usize,
+        span_first: &TablePhysicalKeyBytes,
+        span_last: &TablePhysicalKeyBytes,
+    ) -> BranchRuntimeResult<Option<(usize, usize)>> {
+        let Some(level) = self.owned_levels.get(level_index) else {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic("compaction source level must exist"),
+            });
+        };
+        let mut run = None::<(usize, usize)>;
+        for (table_index, table) in level.iter().enumerate() {
+            let (table_first, table_last) = compaction_table_physical_key_bounds(table)?;
+            if table_first.as_slice() <= span_last.as_slice()
+                && span_first.as_slice() <= table_last.as_slice()
+            {
+                run = Some(match run {
+                    None => (table_index, table_index + 1),
+                    Some((start, _)) => (start, table_index + 1),
+                });
+            }
+        }
+        Ok(run)
+    }
+
     fn overlapping_table_bytes_for_input_range(
         &self,
         input_refs: &[BranchTableRef],
@@ -1166,6 +1233,21 @@ impl BranchLocalState {
                     ),
                 }
             })?);
+        }
+        Ok(count)
+    }
+
+    fn table_ref_byte_count(&self, refs: &[BranchTableRef]) -> BranchRuntimeResult<u64> {
+        let mut count = 0u64;
+        for table_ref in refs {
+            let table =
+                self.table_for_ref(table_ref)
+                    .ok_or(BranchRuntimeError::InvalidCompaction {
+                        reason: BranchCompactionInvalidity::Generic(
+                            "compaction table ref must exist",
+                        ),
+                    })?;
+            count = count.saturating_add(table.facts().byte_count());
         }
         Ok(count)
     }
@@ -1414,7 +1496,11 @@ impl BranchLocalState {
         let BranchCompactionKind::CompactLevel { level, .. } = kind else {
             return None;
         };
-        let input_ref = candidate.input_refs().first()?;
+        let input_ref = candidate
+            .input_refs()
+            .iter()
+            .rev()
+            .find(|input_ref| input_ref.level() == level)?;
         if input_ref.level() != level {
             return None;
         }
@@ -1712,25 +1798,24 @@ fn metadata_promotion_blocker(
     input_table_count: usize,
     overlap_table_count: usize,
     deeper_level_overlap_bytes: Option<u64>,
+    input_byte_count: Option<u64>,
 ) -> Option<BranchCompactionNoPromotionReason> {
     if request.retention_policy() != BranchCompactionRetentionPolicy::KeepAll
         || request.pruning_proof().is_some()
     {
         return Some(BranchCompactionNoPromotionReason::RowPruningRequested);
     }
-    if input_table_count != 1 {
-        return Some(BranchCompactionNoPromotionReason::MultipleInputTables);
-    }
     if overlap_table_count != 0 {
         return Some(BranchCompactionNoPromotionReason::TargetLevelOverlap);
     }
-    if deeper_level_overlap_bytes.is_some_and(|bytes| {
-        bytes
-            > request
-                .table_compaction_config()
-                .target_output_bytes()
-                .saturating_mul(10)
-    }) {
+    if input_table_count != 1 {
+        return Some(BranchCompactionNoPromotionReason::MultipleInputTables);
+    }
+    let target_output_bytes = request.table_compaction_config().target_output_bytes();
+    if input_byte_count.is_some_and(|bytes| bytes > target_output_bytes)
+        && deeper_level_overlap_bytes
+            .is_some_and(|bytes| bytes > target_output_bytes.saturating_mul(10))
+    {
         return Some(BranchCompactionNoPromotionReason::DeeperLevelOverlapBudgetExceeded);
     }
     None
@@ -1754,6 +1839,17 @@ fn validate_metadata_promotion_candidate(
         });
     }
     let input_level = usize::from(candidate.input_refs()[0].level().raw());
+    if candidate
+        .input_refs()
+        .iter()
+        .any(|input_ref| usize::from(input_ref.level().raw()) != input_level)
+    {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "metadata promotion input tables must come from one level",
+            ),
+        });
+    }
     let output_level = usize::from(candidate.output_level().raw());
     if output_level != input_level + 1 {
         return Err(BranchRuntimeError::InvalidCompaction {

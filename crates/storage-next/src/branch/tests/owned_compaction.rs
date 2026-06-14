@@ -1654,6 +1654,7 @@ fn branch_compaction_l0_to_l1_selects_all_snapshot_inputs() {
         candidate.operation(),
         BranchCompactionOperation::TableRewrite
     );
+    assert!(candidate.requires_table_rewrite());
     assert_eq!(
         candidate.no_promotion_reason(),
         Some(BranchCompactionNoPromotionReason::MultipleInputTables)
@@ -2031,7 +2032,7 @@ fn branch_compaction_l0_to_l1_prepared_plan_publishes_around_concurrent_flush() 
     for index in 0..5 {
         let row = storage_row_with(
             branch,
-            format!("compact-l0-stale-wide-key-{index}").into_bytes(),
+            b"compact-l0-stale-wide-key".to_vec(),
             u64::try_from(index + 1).expect("index fits in u64"),
             u64::try_from(index + 1).expect("index fits in u64"),
             Timestamp::EPOCH,
@@ -2111,19 +2112,47 @@ fn branch_compaction_l0_to_l1_prepared_plan_publishes_around_concurrent_flush() 
             table_index: 0,
         },
     );
-    for row in planned_rows {
-        let visible = after
-            .latest(row.physical_key())
-            .expect("planned latest")
-            .expect("planned row remains visible");
-        assert_eq!(visible.row(), &row);
-        match visible.source() {
-            BranchRowSource::OwnedTable { level, .. } => {
-                assert_eq!(level, BranchLevel::new(1));
-            }
-            other => panic!("planned row should be served from level one, got {other:?}"),
-        }
+    let planned_key = physical_key(branch, b"compact-l0-stale-wide-key".to_vec());
+    assert_visible_row(
+        after.latest(&planned_key).expect("planned latest").as_ref(),
+        planned_rows.last().expect("planned latest row"),
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+    );
+    for row in &planned_rows {
+        assert_visible_row(
+            after
+                .at_version(&planned_key, row.commit_version())
+                .expect("planned version")
+                .as_ref(),
+            row,
+            BranchRowSource::OwnedTable {
+                level: BranchLevel::new(1),
+                table_index: 0,
+            },
+        );
     }
+    assert_eq!(
+        history_versions(
+            &after
+                .history(&planned_key, BranchHistoryOptions::all())
+                .expect("planned history")
+        ),
+        vec![5, 4, 3, 2, 1]
+    );
+    assert_eq!(
+        scan_user_keys(
+            &after
+                .scan_prefix(
+                    &BranchScanBounds::prefix(&planned_key),
+                    BranchReadBound::latest(),
+                )
+                .expect("planned scan")
+        ),
+        vec![b"compact-l0-stale-wide-key".to_vec()]
+    );
 }
 
 #[test]
@@ -2220,7 +2249,7 @@ fn branch_compaction_l0_to_l1_multi_table_rewrite_includes_overlapping_target() 
     );
     assert_eq!(
         candidate.no_promotion_reason(),
-        Some(BranchCompactionNoPromotionReason::MultipleInputTables)
+        Some(BranchCompactionNoPromotionReason::TargetLevelOverlap)
     );
     assert_eq!(candidate.input_refs().len(), 2);
     assert_eq!(candidate.overlap_refs().len(), 1);
@@ -2539,6 +2568,158 @@ fn branch_compaction_nonzero_level_promotes_overlapping_tables_only() {
         BranchRowSource::OwnedTable {
             level: BranchLevel::new(2),
             table_index: 1,
+        },
+    );
+}
+
+#[test]
+fn branch_compaction_nonzero_level_expands_source_run_for_target_overlap() {
+    let branch = branch_id(0x7d);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let first_key = physical_key(branch, b"connected-overlap-a".to_vec());
+    let second_key = physical_key(branch, b"connected-overlap-b".to_vec());
+    let preserved_key = physical_key(branch, b"connected-overlap-z".to_vec());
+    let first_newer = storage_row_with(
+        branch,
+        b"connected-overlap-a".to_vec(),
+        10,
+        10_000,
+        Timestamp::EPOCH,
+        b"first-newer".to_vec(),
+    );
+    let second_newer = storage_row_with(
+        branch,
+        b"connected-overlap-b".to_vec(),
+        11,
+        11_000,
+        Timestamp::EPOCH,
+        b"second-newer".to_vec(),
+    );
+    let preserved = storage_row_with(
+        branch,
+        b"connected-overlap-z".to_vec(),
+        12,
+        12_000,
+        Timestamp::EPOCH,
+        b"preserved".to_vec(),
+    );
+    let first_older = storage_row_with(
+        branch,
+        b"connected-overlap-a".to_vec(),
+        1,
+        1_000,
+        Timestamp::EPOCH,
+        b"first-older".to_vec(),
+    );
+    let second_older = storage_row_with(
+        branch,
+        b"connected-overlap-b".to_vec(),
+        2,
+        2_000,
+        Timestamp::EPOCH,
+        b"second-older".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "connected-overlap-source-a",
+                vec![first_newer.clone()],
+            ),
+        )
+        .expect("install first source");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "connected-overlap-source-b",
+                vec![second_newer.clone()],
+            ),
+        )
+        .expect("install second source");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "connected-overlap-source-z",
+                vec![preserved.clone()],
+            ),
+        )
+        .expect("install preserved source");
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(2),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(2),
+                "connected-overlap-target",
+                vec![first_older, second_older],
+            ),
+        )
+        .expect("install target");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "connected-overlap-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 2);
+    assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(candidate.source_count(), 3);
+    assert_eq!(
+        candidate.no_promotion_reason(),
+        Some(BranchCompactionNoPromotionReason::TargetLevelOverlap)
+    );
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact connected overlap");
+    assert_eq!(outcome.removed_refs().len(), 3);
+    assert_eq!(state.owned_levels()[1].len(), 1);
+    assert_eq!(state.owned_levels()[2].len(), 1);
+
+    let after = state.capture_read_view().expect("after view");
+    assert_visible_row(
+        after.latest(&first_key).expect("first latest").as_ref(),
+        &first_newer,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after.latest(&second_key).expect("second latest").as_ref(),
+        &second_newer,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(2),
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after
+            .latest(&preserved_key)
+            .expect("preserved latest")
+            .as_ref(),
+        &preserved,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
         },
     );
 }

@@ -2121,7 +2121,7 @@ fn storage_pressure_skips_unclearable_bottommost_table_count_under_output_budget
     let terminal_level =
         BranchLevel::new(u8::try_from(state.owned_levels().len() - 1).expect("level fits in u8"));
     for index in 0..4 {
-        let value = vec![0x55; 4096];
+        let value = vec![0x55; 16 * 1024];
         install_owned_table(
             &mut state,
             branch,
@@ -3633,6 +3633,7 @@ fn metadata_promotion_compaction_records_avoided_rewrite_bytes() {
     assert_eq!(perf.lifecycle_compaction_io_budget_deferrals(), 0);
     assert_eq!(perf.lifecycle_compaction_output_bytes(), 0);
     assert_eq!(perf.lifecycle_compaction_input_bytes(), 0);
+    assert_eq!(perf.lifecycle_compaction_input_rows(), 0);
     assert!(perf.lifecycle_compaction_metadata_bytes_avoided() > 0);
 }
 

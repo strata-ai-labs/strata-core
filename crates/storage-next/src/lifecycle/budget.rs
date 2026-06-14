@@ -212,6 +212,24 @@ impl StorageRuntimeBudget {
         .expect("low-memory storage budget profile is valid")
     }
 
+    #[cfg(test)]
+    pub(crate) fn scaled_closed_loop_test_profile() -> Self {
+        Self::from_parts(StorageRuntimeBudgetParts {
+            total_bytes: 4 * 1024 * 1024,
+            block_cache_bytes: 0,
+            table_reader_bytes: 512 * 1024,
+            active_mutable_bytes: 256 * 1024,
+            frozen_mutable_bytes: 768 * 1024,
+            maintenance_queue_bytes: 64 * 1024,
+            generated_artifact_bytes: 2 * 1024 * 1024,
+            manifest_catalog_bytes: 256 * 1024,
+            max_open_readers: 32,
+            max_frozen_tables: 8,
+            max_pending_maintenance_tasks: 64,
+        })
+        .expect("scaled closed-loop storage budget profile is valid")
+    }
+
     pub(crate) fn validate(self) -> LifecycleResult<()> {
         require_nonzero("storage_budget.total_bytes", self.total_bytes)?;
         require_nonzero("storage_budget.table_reader_bytes", self.table_reader_bytes)?;

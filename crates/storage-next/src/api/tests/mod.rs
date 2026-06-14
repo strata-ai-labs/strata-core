@@ -52,6 +52,31 @@ fn background_put_batch(name: &[u8], value: Vec<u8>) -> CommitBatch {
     .expect("valid background put batch")
 }
 
+#[cfg(feature = "perf-trace")]
+fn background_put_batch_range(
+    key_prefix: &str,
+    start: usize,
+    end: usize,
+    value: &[u8],
+) -> CommitBatch {
+    let mut mutations = Vec::with_capacity(end.saturating_sub(start));
+    for index in start..end {
+        let key_string = format!("{key_prefix}{index:08}");
+        mutations.push(CommitMutation::Put {
+            storage_space: background_space(),
+            key: key(key_string.as_bytes()),
+            value: StorageValue::new(value.to_vec()),
+            ttl: None,
+        });
+    }
+    CommitBatch::new(
+        StorageRuntime::default_branch_id_for_test(),
+        mutations,
+        CommitOptions::default().require_conflict_check(false),
+    )
+    .expect("valid background put batch range")
+}
+
 fn default_background_worker_count() -> usize {
     StorageBackgroundMaintenanceOptions::product_default().worker_count()
 }
@@ -59,6 +84,137 @@ fn default_background_worker_count() -> usize {
 fn default_terminal_nonzero_level() -> u8 {
     let max_level_count = crate::branch::config::BranchRuntimeConfig::default().max_level_count();
     u8::try_from(max_level_count.saturating_sub(1)).expect("configured level fits in u8")
+}
+
+#[cfg(feature = "perf-trace")]
+const SCALED_COMPACTION_AMPLIFICATION_GATE: u128 = 4;
+
+#[cfg(feature = "perf-trace")]
+fn assert_scaled_compaction_amplification_below_gate(
+    perf: crate::observability::perf_trace::StoragePerfSnapshot,
+    logical_rows: u64,
+    logical_bytes: u64,
+    context: &str,
+) {
+    let input_rows = u128::from(perf.lifecycle_compaction_input_rows());
+    let input_bytes = u128::from(perf.lifecycle_compaction_input_bytes());
+    let logical_rows = u128::from(logical_rows);
+    let logical_bytes = u128::from(logical_bytes);
+    let row_limit = logical_rows.saturating_mul(SCALED_COMPACTION_AMPLIFICATION_GATE);
+    let byte_limit = logical_bytes.saturating_mul(SCALED_COMPACTION_AMPLIFICATION_GATE);
+    let row_amp_millix = if logical_rows == 0 {
+        0
+    } else {
+        input_rows.saturating_mul(1_000) / logical_rows
+    };
+    let byte_amp_millix = if logical_bytes == 0 {
+        0
+    } else {
+        input_bytes.saturating_mul(1_000) / logical_bytes
+    };
+
+    assert!(
+        input_rows <= row_limit,
+        "{context} exceeded scaled row rewrite amplification gate: input_rows={input_rows}, logical_rows={logical_rows}, amp_millix={row_amp_millix}, gate={}x, operations={}, l0_ops={}, l0_to_l1_ops={}, nonzero_ops={}, bottommost_ops={}, input_tables={}, overlap_tables={}, output_tables={}, nonzero_input_rows={}, nonzero_input_bytes={}, metadata_bytes_avoided={}, selected={}, resubmits={}",
+        SCALED_COMPACTION_AMPLIFICATION_GATE,
+        perf.lifecycle_compaction_operations_completed(),
+        perf.lifecycle_compaction_l0_operations(),
+        perf.lifecycle_compaction_l0_to_level_one_operations(),
+        perf.lifecycle_compaction_nonzero_operations(),
+        perf.lifecycle_compaction_bottommost_operations(),
+        perf.lifecycle_compaction_input_tables(),
+        perf.lifecycle_compaction_overlap_tables(),
+        perf.lifecycle_compaction_output_tables(),
+        perf.lifecycle_compaction_nonzero_input_rows(),
+        perf.lifecycle_compaction_nonzero_input_bytes(),
+        perf.lifecycle_compaction_metadata_bytes_avoided(),
+        perf.lifecycle_compaction_selected(),
+        perf.lifecycle_compaction_resubmits()
+    );
+    assert!(
+        input_bytes <= byte_limit,
+        "{context} exceeded scaled byte rewrite amplification gate: input_bytes={input_bytes}, logical_bytes={logical_bytes}, amp_millix={byte_amp_millix}, gate={}x, operations={}, l0_ops={}, l0_to_l1_ops={}, nonzero_ops={}, bottommost_ops={}, input_tables={}, overlap_tables={}, output_tables={}, nonzero_input_rows={}, nonzero_input_bytes={}, metadata_bytes_avoided={}, selected={}, resubmits={}",
+        SCALED_COMPACTION_AMPLIFICATION_GATE,
+        perf.lifecycle_compaction_operations_completed(),
+        perf.lifecycle_compaction_l0_operations(),
+        perf.lifecycle_compaction_l0_to_level_one_operations(),
+        perf.lifecycle_compaction_nonzero_operations(),
+        perf.lifecycle_compaction_bottommost_operations(),
+        perf.lifecycle_compaction_input_tables(),
+        perf.lifecycle_compaction_overlap_tables(),
+        perf.lifecycle_compaction_output_tables(),
+        perf.lifecycle_compaction_nonzero_input_rows(),
+        perf.lifecycle_compaction_nonzero_input_bytes(),
+        perf.lifecycle_compaction_metadata_bytes_avoided(),
+        perf.lifecycle_compaction_selected(),
+        perf.lifecycle_compaction_resubmits()
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+fn assert_background_closed_loop_reads(
+    runtime: &StorageRuntime<'_>,
+    key_prefix: &str,
+    expected_rows: usize,
+    expected_value: &[u8],
+) {
+    for index in [
+        0,
+        expected_rows / 3,
+        (expected_rows * 2) / 3,
+        expected_rows - 1,
+    ] {
+        let key_string = format!("{key_prefix}{index:08}");
+        let point = runtime
+            .read_point(&PointReadRequest::new(
+                StorageRuntime::default_branch_id_for_test(),
+                background_space(),
+                key(key_string.as_bytes()),
+                ReadBound::Latest,
+            ))
+            .unwrap_or_else(|error| {
+                panic!("background closed-loop point read {key_string} failed: {error}")
+            });
+        let row = point
+            .row()
+            .unwrap_or_else(|| panic!("background closed-loop point read {key_string} missed"));
+        assert_eq!(
+            row.value().map(StorageValue::as_bytes),
+            Some(expected_value),
+            "background closed-loop point read {key_string} returned the wrong value"
+        );
+    }
+
+    let scan = runtime
+        .scan_prefix(&PrefixScanReadRequest::new(
+            StorageRuntime::default_branch_id_for_test(),
+            background_space(),
+            key(key_prefix.as_bytes()),
+            ReadBound::Latest,
+            None,
+        ))
+        .expect("background closed-loop prefix scan");
+    assert_eq!(
+        scan.rows().len(),
+        expected_rows,
+        "background closed-loop prefix scan returned the wrong row count"
+    );
+    let mut previous_key = None;
+    for row in scan.rows() {
+        assert_eq!(
+            row.value().map(StorageValue::as_bytes),
+            Some(expected_value),
+            "background closed-loop prefix scan returned the wrong value for {:?}",
+            row.key()
+        );
+        if let Some(previous) = previous_key {
+            assert!(
+                previous < row.key().as_bytes(),
+                "background closed-loop prefix scan returned unsorted rows"
+            );
+        }
+        previous_key = Some(row.key().as_bytes());
+    }
 }
 
 fn background_raw_row(name: &[u8], version: u64) -> crate::row::StorageRow {
@@ -2907,6 +3063,10 @@ fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
     )
     .expect("low-memory background cache open")
     .into_runtime();
+    assert!(
+        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
+        "background runtime should expose test drain limits"
+    );
 
     runtime
         .commit(&background_put_batch(b"urgent-seed", b"value".to_vec()))
@@ -2914,23 +3074,30 @@ fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
     runtime
         .rotate_default_branch_for_test()
         .expect("create frozen pressure");
+    for index in 0..3 {
+        let key = format!("urgent-followup-{index}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
+            .expect("urgent commit should be accepted");
+    }
+    assert!(
+        runtime.set_background_drain_limits_for_test(usize::MAX, std::time::Duration::from_secs(1)),
+        "background runtime should restore drain limits"
+    );
     runtime
-        .commit(&background_put_batch(b"urgent-followup", b"value".to_vec()))
-        .expect("urgent commit should be accepted");
+        .enqueue_lifecycle_maintenance_for_test(crate::lifecycle::MaintenanceTaskRequest::flush(
+            StorageRuntime::default_branch_id_for_test(),
+        ))
+        .expect("restored background runtime should accept explicit flush enqueue");
     runtime.wait_background_idle_for_test();
 
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_write_admission_slowdown_attempts() >= 1);
     assert!(perf.lifecycle_write_admission_slowdown_ns() > 0);
     assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
-    assert!(perf.lifecycle_background_tasks_completed() >= 1);
-    assert_eq!(
-        runtime
-            .maintenance_status()
-            .expect("maintenance status")
-            .pending_tasks(),
-        0
-    );
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert!(status.background_tasks_completed() >= 1);
+    assert_eq!(status.pending_tasks(), 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -3181,22 +3348,37 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn scaled_liveness_background_closed_loop_converges_without_public_drain() {
+fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
+    const ROWS: usize = 50_000;
+    const BATCH_SIZE: usize = 1_000;
+    const VALUE_BYTES: usize = 150;
+    let value = vec![0x5A; VALUE_BYTES];
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_storage_budget_for_test(
+                crate::lifecycle::StorageRuntimeBudget::scaled_closed_loop_test_profile(),
+            )
             .with_background_max_tasks_per_wake(32)
             .with_background_max_runtime_per_wake(std::time::Duration::from_millis(250)),
     )
     .expect("scaled low-memory background cache open")
     .into_runtime();
 
-    for index in 0..192 {
-        let key = format!("scaled-liveness-{index:04}");
+    let mut written = 0usize;
+    while written < ROWS {
+        let end = written.saturating_add(BATCH_SIZE).min(ROWS);
         runtime
-            .commit(&background_put_batch(key.as_bytes(), vec![0x5A; 256]))
-            .unwrap_or_else(|error| panic!("scaled commit {index} failed permanently: {error}"));
+            .commit(&background_put_batch_range(
+                "scaled-liveness-",
+                written,
+                end,
+                &value,
+            ))
+            .unwrap_or_else(|error| {
+                panic!("scaled commit {written}..{end} failed permanently: {error}")
+            });
+        written = end;
     }
 
     runtime.wait_background_idle_for_test();
@@ -3258,6 +3440,8 @@ fn scaled_liveness_background_closed_loop_converges_without_public_drain() {
         ),
     }
 
+    assert_background_closed_loop_reads(&runtime, "scaled-liveness-", ROWS, &value);
+
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_background_wake_submitted() > 0);
     assert!(perf.lifecycle_background_tasks_completed() > 0);
@@ -3266,6 +3450,16 @@ fn scaled_liveness_background_closed_loop_converges_without_public_drain() {
     assert_eq!(perf.lifecycle_checkpoint_executions(), 0);
     assert_eq!(perf.lifecycle_wal_truncation_deleted_segments(), 0);
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
+    assert_scaled_compaction_amplification_below_gate(
+        perf,
+        ROWS as u64,
+        (ROWS * VALUE_BYTES) as u64,
+        &format!(
+            "cache background closed-loop final_layout={:?} final_pressure={:?}",
+            report.source_layout(),
+            report.pressure()
+        ),
+    );
 }
 
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
@@ -3274,13 +3468,18 @@ fn scaled_liveness_background_closed_loop_converges_without_public_drain() {
     clippy::too_many_lines,
     reason = "closed-loop liveness test intentionally asserts all bounded-resource invariants"
 )]
-fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
+fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
+    const ROWS: usize = 160;
+    const VALUE_BYTES: usize = 256;
+    let value = vec![0x6B; VALUE_BYTES];
     let root = temp_dir_for_api_test("scaled-durable-liveness");
     let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_storage_budget_for_test(
+                crate::lifecycle::StorageRuntimeBudget::scaled_closed_loop_test_profile(),
+            )
             .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(8 * 1024, 2, 3))
             .with_wal_segment_size_for_test(1024)
             .with_background_max_tasks_per_wake(64)
@@ -3294,12 +3493,35 @@ fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
     let mut max_retained_segments = 0_u64;
     let mut max_segment_files = 0_usize;
     let mut saw_maintenance_enqueue = false;
-    for index in 0..96 {
-        let key = format!("scaled-durable-liveness-{index:04}");
+    for index in 0..ROWS {
+        let key = format!("scaled-durable-liveness-{index:08}");
         runtime
-            .commit(&background_put_batch(key.as_bytes(), vec![0x6B; 256]))
+            .commit(&background_put_batch(key.as_bytes(), value.clone()))
             .unwrap_or_else(|error| {
-                panic!("scaled durable commit {index} failed permanently: {error}")
+                let report = runtime
+                    .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+                    .expect("scaled durable liveness failure diagnostics");
+                let status = runtime
+                    .maintenance_status()
+                    .expect("scaled durable liveness failure maintenance status");
+                let pending_kinds = runtime.pending_lifecycle_maintenance_kinds_for_test();
+                let perf = crate::observability::perf_trace::snapshot();
+                panic!(
+                    "scaled durable commit {index} failed permanently: {error}; status={status:?}; pending_kinds={pending_kinds:?}; layout={:?}; pressure={:?}; checkpoint={:?}; wal={:?}; compactions={}; checkpoints={}; truncations={}; flushes={}; background_completed={}; background_wakes={}; wait_attempts={}; wait_timeouts={}; block_wait_ns={}",
+                    report.source_layout(),
+                    report.pressure(),
+                    report.checkpoint(),
+                    report.wal_growth(),
+                    perf.lifecycle_compaction_operations_completed(),
+                    perf.lifecycle_checkpoint_executions(),
+                    perf.lifecycle_wal_truncation_deleted_segments(),
+                    perf.lifecycle_flush_drain_operations_completed(),
+                    perf.lifecycle_background_tasks_completed(),
+                    perf.lifecycle_background_wake_submitted(),
+                    perf.lifecycle_write_admission_wait_attempts(),
+                    perf.lifecycle_write_admission_wait_timeouts(),
+                    perf.lifecycle_write_admission_block_wait_ns()
+                )
             });
         let report = runtime
             .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
@@ -3412,6 +3634,7 @@ fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
         "durable background closed loop left storage pressure after maintenance reached a fixed point: {:?}",
         report.pressure()
     );
+    assert_background_closed_loop_reads(&runtime, "scaled-durable-liveness-", ROWS, &value);
     assert!(perf.lifecycle_background_wake_submitted() > 0);
     assert!(perf.lifecycle_background_tasks_completed() > 0);
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);

@@ -436,6 +436,34 @@ fn compaction_resource_semantic_decisions_and_benchmark_fields_are_recorded() {
 }
 
 #[test]
+fn background_closed_loop_ci_guard_is_named_and_gated() {
+    let root = common::crate_root();
+    let api_tests = root.join("src/api/tests/mod.rs");
+    let source = fs::read_to_string(&api_tests).expect("read API test module");
+
+    for required in [
+        "fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain",
+        "fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_drain",
+        "scaled_closed_loop_test_profile()",
+        "with_storage_budget_for_test",
+        "assert_scaled_compaction_amplification_below_gate",
+        "lifecycle_write_admission_wait_timeouts()",
+        "max_retained_segments <= 16",
+        "max_retained_bytes <= 128 * 1024",
+        "report.source_layout().owned_l0_tables() <= 3",
+        "max_clearable_nonzero_fanout <= 3",
+        "assert_background_closed_loop_reads",
+        ".read_point(&PointReadRequest::new(",
+        ".scan_prefix(&PrefixScanReadRequest::new(",
+    ] {
+        assert!(
+            source.contains(required),
+            "background closed-loop CI guard is missing required invariant: {required}"
+        );
+    }
+}
+
+#[test]
 fn snapshot_pruning_ownership_semantic_decisions_are_recorded() {
     let root = common::crate_root();
     let repo = root

@@ -1,6 +1,8 @@
 //! API open options.
 
 use super::{StorageApiError, StorageApiResult};
+#[cfg(test)]
+use crate::lifecycle::StorageRuntimeBudget;
 use std::time::Duration;
 
 const DEFAULT_BACKGROUND_WORKER_COUNT: usize = 4;
@@ -68,6 +70,8 @@ pub struct StorageOpenOptions {
     maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
     background_maintenance: StorageBackgroundMaintenanceOptions,
     wal_segment_size_for_test: Option<u64>,
+    #[cfg(test)]
+    storage_budget_for_test: Option<StorageRuntimeBudget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,6 +181,8 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            #[cfg(test)]
+            storage_budget_for_test: None,
         }
     }
 
@@ -199,6 +205,8 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            #[cfg(test)]
+            storage_budget_for_test: None,
         }
     }
 
@@ -212,6 +220,8 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            #[cfg(test)]
+            storage_budget_for_test: None,
         }
     }
 
@@ -225,6 +235,8 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            #[cfg(test)]
+            storage_budget_for_test: None,
         }
     }
 
@@ -310,6 +322,16 @@ impl StorageOpenOptions {
         self
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn with_storage_budget_for_test(
+        mut self,
+        storage_budget: StorageRuntimeBudget,
+    ) -> Self {
+        self.storage_budget_for_test = Some(storage_budget);
+        self
+    }
+
     pub fn validate(&self) -> StorageApiResult<()> {
         self.wal_growth_policy.validate()?;
         self.background_maintenance.validate()?;
@@ -375,6 +397,11 @@ impl StorageOpenOptions {
 
     pub(crate) const fn wal_segment_size_for_test(&self) -> Option<u64> {
         self.wal_segment_size_for_test
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn storage_budget_for_test(&self) -> Option<StorageRuntimeBudget> {
+        self.storage_budget_for_test
     }
 }
 

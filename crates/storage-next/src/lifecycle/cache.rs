@@ -4,12 +4,13 @@ use super::{
     branch_config_with_storage_budget,
     compaction::{
         begin_cache_materialization_build, bind_materialization_task_for_enqueue,
-        collect_storage_pressure_with_budget, compact_cache_branch,
-        compact_cache_branch_to_fixed_point_with_policy, compaction_score_key_for_task,
+        collect_storage_pressure_with_budget, compact_cache_branch_to_fixed_point_with_policy,
+        compact_cache_branch_with_budget, compaction_score_key_for_task,
         current_compaction_request_from_maintenance_task_with_budget,
         defer_compaction_for_resource_policy, install_prepared_cache_compaction,
         install_prepared_cache_materialization, materialization_request_from_maintenance_task,
-        materialize_cache_branch, prepare_cache_compaction, record_lifecycle_compaction_outcome,
+        materialize_cache_branch, prepare_cache_compaction_with_budget,
+        record_lifecycle_compaction_outcome,
         record_lifecycle_table_rewrite_post_operation_score_with_budget,
         stale_compaction_maintenance_outcome, table_rewrite_outcome_allows_chain_resubmit,
         table_rewrite_outcome_was_flush_preempted, table_rewrite_score_key_for_branch_with_budget,
@@ -120,6 +121,7 @@ pub(crate) enum CacheBackgroundMaintenanceBuild {
         branch_id: BranchId,
         request: LifecycleCompactionRequest,
         branch_snapshot: BranchLocalState,
+        storage_budget: StorageRuntimeBudget,
         started_at: std::time::Instant,
     },
     Materialization {
@@ -290,6 +292,7 @@ impl CacheBackgroundMaintenanceBuild {
                 branch_id,
                 request,
                 branch_snapshot,
+                storage_budget,
                 started_at,
             } => {
                 #[cfg(all(test, feature = "perf-trace"))]
@@ -297,7 +300,11 @@ impl CacheBackgroundMaintenanceBuild {
                 Ok(CacheBackgroundMaintenanceBuilt::Compaction {
                     task,
                     branch_id,
-                    prepared: prepare_cache_compaction(&branch_snapshot, &request)?,
+                    prepared: prepare_cache_compaction_with_budget(
+                        &branch_snapshot,
+                        &request,
+                        Some(storage_budget),
+                    )?,
                     elapsed: started_at.elapsed(),
                 })
             }
@@ -713,7 +720,11 @@ impl<S> LifecycleCacheRuntime<S> {
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-            compact_cache_branch(branch, request)
+            compact_cache_branch_with_budget(
+                branch,
+                request,
+                Some(self.open_plan.lifecycle_config().storage_budget()),
+            )
         };
         if let Ok(compaction) = &outcome {
             record_lifecycle_compaction_outcome(compaction);
@@ -1407,6 +1418,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 branch_id,
                 request,
                 branch_snapshot: branch.clone(),
+                storage_budget: budget,
                 started_at: std::time::Instant::now(),
             },
         ))))
@@ -2030,7 +2042,11 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
                 else {
                     return Ok(stale_compaction_maintenance_outcome());
                 };
-                let compaction = compact_cache_branch(self.branch, &request)?;
+                let compaction = compact_cache_branch_with_budget(
+                    self.branch,
+                    &request,
+                    Some(self.budget.budget()),
+                )?;
                 record_lifecycle_compaction_outcome(&compaction);
                 Ok(compaction.maintenance_outcome())
             }
@@ -2150,7 +2166,8 @@ impl MaintenanceTaskRunner for CacheCompactionMaintenanceRunner<'_> {
         {
             return Ok(outcome);
         }
-        let compaction = compact_cache_branch(self.branch, &request)?;
+        let compaction =
+            compact_cache_branch_with_budget(self.branch, &request, Some(self.storage_budget))?;
         record_lifecycle_compaction_outcome(&compaction);
         Ok(compaction.maintenance_outcome())
     }
