@@ -34,7 +34,8 @@ const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
-const NONZERO_LEVEL_BASE_TARGET_BYTES: u64 = 64 * 1024 * 1024;
+const NONZERO_LEVEL_MIN_BASE_TARGET_BYTES: u64 = 1024 * 1024;
+const NONZERO_LEVEL_MAX_BASE_TARGET_BYTES: u64 = 256 * 1024 * 1024;
 const NONZERO_LEVEL_TARGET_GROWTH_FACTOR: u64 = 10;
 const NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER: u64 = 2;
 const NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER: u64 = 4;
@@ -355,31 +356,34 @@ impl LifecycleCompactionRequest {
 fn table_compaction_config_for_kind(
     kind: BranchCompactionKind,
 ) -> LifecycleResult<TableCompactionConfig> {
-    let output_level = match kind {
-        BranchCompactionKind::CompactL0 => BranchLevel::ZERO,
-        BranchCompactionKind::CompactL0ToLevelOne => BranchLevel::new(1),
-        BranchCompactionKind::CompactLevel { level, .. } => {
-            BranchLevel::new(level.raw().checked_add(1).ok_or(
-                LifecycleError::MaintenanceTaskFailed {
-                    reason: "compaction output level overflow",
-                },
-            )?)
-        }
-        BranchCompactionKind::CompactBottommostLevel { level, .. } => level,
-    };
+    validate_compaction_output_level_for_kind(kind)?;
     let default = TableCompactionConfig::default();
-    let target_output_bytes = if output_level == BranchLevel::ZERO {
-        default.target_output_bytes()
-    } else {
-        nonzero_level_target_bytes(output_level)
-    };
-    TableCompactionConfig::new(target_output_bytes, default.max_output_tables()).map_err(|source| {
-        LifecycleError::lower_layer_with(
-            LifecycleLowerLayer::TableRuntime,
-            "table runtime failed",
-            source,
-        )
-    })
+    TableCompactionConfig::new(default.target_output_bytes(), default.max_output_tables()).map_err(
+        |source| {
+            LifecycleError::lower_layer_with(
+                LifecycleLowerLayer::TableRuntime,
+                "table runtime failed",
+                source,
+            )
+        },
+    )
+}
+
+fn validate_compaction_output_level_for_kind(kind: BranchCompactionKind) -> LifecycleResult<()> {
+    match kind {
+        BranchCompactionKind::CompactLevel { level, .. } => {
+            level
+                .raw()
+                .checked_add(1)
+                .ok_or(LifecycleError::MaintenanceTaskFailed {
+                    reason: "compaction output level overflow",
+                })?;
+        }
+        BranchCompactionKind::CompactL0
+        | BranchCompactionKind::CompactL0ToLevelOne
+        | BranchCompactionKind::CompactBottommostLevel { .. } => {}
+    }
+    Ok(())
 }
 
 pub(crate) fn table_compaction_config_with_storage_budget(
@@ -484,18 +488,93 @@ pub(crate) fn nonzero_level_target_bytes(level: BranchLevel) -> u64 {
         level.raw() >= 1,
         "nonzero level target bytes requires a nonzero level"
     );
-    let growth_steps = level.raw().saturating_sub(1);
-    (0..growth_steps).fold(NONZERO_LEVEL_BASE_TARGET_BYTES, |target, _| {
+    (1..level.raw()).fold(NONZERO_LEVEL_MIN_BASE_TARGET_BYTES, |target, _| {
         target.saturating_mul(NONZERO_LEVEL_TARGET_GROWTH_FACTOR)
     })
 }
 
-fn nonzero_level_urgent_bytes(level: BranchLevel) -> u64 {
-    nonzero_level_target_bytes(level).saturating_mul(NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER)
+pub(super) fn nonzero_level_targets_from_level_bytes(level_bytes: &[u64]) -> Vec<u64> {
+    let mut max_bytes = vec![0u64; level_bytes.len().max(1)];
+    if max_bytes.len() == 1 {
+        return max_bytes;
+    }
+    let max_base = NONZERO_LEVEL_MAX_BASE_TARGET_BYTES.max(NONZERO_LEVEL_MIN_BASE_TARGET_BYTES);
+    let mut bottom_level = 0usize;
+    let mut bottom_bytes = 0u64;
+    for (level, &bytes) in level_bytes.iter().enumerate().skip(1) {
+        if bytes > bottom_bytes {
+            bottom_level = level;
+            bottom_bytes = bytes;
+        }
+    }
+
+    if bottom_level == 0 {
+        let mut target = NONZERO_LEVEL_MIN_BASE_TARGET_BYTES;
+        for slot in max_bytes.iter_mut().skip(1) {
+            *slot = target;
+            target = target.saturating_mul(NONZERO_LEVEL_TARGET_GROWTH_FACTOR);
+        }
+        return max_bytes;
+    }
+
+    let mut unclamped_base = bottom_bytes;
+    for _ in 1..bottom_level {
+        unclamped_base /= NONZERO_LEVEL_TARGET_GROWTH_FACTOR;
+    }
+
+    let (base_level, base) = if unclamped_base >= NONZERO_LEVEL_MIN_BASE_TARGET_BYTES {
+        (
+            1,
+            unclamped_base.clamp(NONZERO_LEVEL_MIN_BASE_TARGET_BYTES, max_base),
+        )
+    } else {
+        let mut base_level = 1;
+        let mut base = unclamped_base;
+        while base < NONZERO_LEVEL_MIN_BASE_TARGET_BYTES && base_level < bottom_level {
+            base = base.saturating_mul(NONZERO_LEVEL_TARGET_GROWTH_FACTOR);
+            base_level += 1;
+        }
+        (
+            base_level,
+            base.clamp(NONZERO_LEVEL_MIN_BASE_TARGET_BYTES, max_base),
+        )
+    };
+
+    for slot in max_bytes.iter_mut().take(base_level).skip(1) {
+        *slot = max_base;
+    }
+    let mut target = base;
+    for slot in max_bytes.iter_mut().skip(base_level) {
+        *slot = target;
+        target = target.saturating_mul(NONZERO_LEVEL_TARGET_GROWTH_FACTOR);
+    }
+    max_bytes
 }
 
-fn nonzero_level_blocking_bytes(level: BranchLevel) -> u64 {
-    nonzero_level_target_bytes(level).saturating_mul(NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER)
+fn nonzero_level_targets_for_branch(branch: &BranchLocalState) -> Vec<u64> {
+    let level_bytes = branch
+        .owned_levels()
+        .iter()
+        .map(|tables| level_byte_count(tables))
+        .collect::<Vec<_>>();
+    nonzero_level_targets_from_level_bytes(&level_bytes)
+}
+
+fn nonzero_level_target_bytes_for_branch(
+    branch: &BranchLocalState,
+    level: BranchLevel,
+) -> Option<u64> {
+    nonzero_level_targets_for_branch(branch)
+        .get(usize::from(level.raw()))
+        .copied()
+}
+
+fn nonzero_level_urgent_bytes(target_bytes: u64) -> u64 {
+    target_bytes.saturating_mul(NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER)
+}
+
+fn nonzero_level_blocking_bytes(target_bytes: u64) -> u64 {
+    target_bytes.saturating_mul(NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER)
 }
 
 impl LifecycleCompactionDrainOutcome {
@@ -1925,11 +2004,13 @@ fn selected_compaction_score_for_task(
     if level_index >= branch.owned_levels().len() {
         return None;
     }
+    let target_bytes = nonzero_level_target_bytes_for_branch(branch, BranchLevel::new(level))?;
     nonzero_compaction_score_for_branch(
         branch,
         level_index,
         branch.owned_levels().get(level_index)?,
         budget,
+        target_bytes,
     )
 }
 
@@ -1985,14 +2066,18 @@ fn selected_compaction_score(
     budget: Option<StorageRuntimeBudget>,
 ) -> Option<LifecycleCompactionScore> {
     let mut best = level_zero_compaction_score(branch);
+    let level_targets = nonzero_level_targets_for_branch(branch);
     for (level_index, tables) in branch
         .owned_levels()
         .iter()
         .enumerate()
         .skip(usize::from(BranchLevel::ZERO.raw()) + 1)
     {
+        let Some(target_bytes) = level_targets.get(level_index).copied() else {
+            continue;
+        };
         if let Some(score) =
-            nonzero_compaction_score_for_branch(branch, level_index, tables, budget)
+            nonzero_compaction_score_for_branch(branch, level_index, tables, budget, target_bytes)
         {
             best = Some(match best {
                 Some(current) if compaction_score_key(current) >= compaction_score_key(score) => {
@@ -2043,15 +2128,14 @@ fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCom
 fn nonzero_compaction_score(
     level_index: usize,
     tables: &[crate::branch::read::BranchOwnedTable],
+    target_bytes: u64,
 ) -> Option<LifecycleCompactionScore> {
     let level = u8::try_from(level_index).ok()?;
-    let branch_level = BranchLevel::new(level);
-    let target_bytes = nonzero_level_target_bytes(branch_level);
     crate::observability::perf_trace::record_lifecycle_compaction_level_target(level, target_bytes);
     let table_count = tables.len();
     let byte_count = level_byte_count(tables);
     let (severity, score, target_bytes) =
-        nonzero_compaction_pressure(branch_level, table_count, byte_count)?;
+        nonzero_compaction_pressure_for_target(table_count, byte_count, target_bytes)?;
     crate::observability::perf_trace::record_lifecycle_compaction_score_candidate(
         level,
         score,
@@ -2075,8 +2159,9 @@ fn nonzero_compaction_score_for_branch(
     level_index: usize,
     tables: &[crate::branch::read::BranchOwnedTable],
     budget: Option<StorageRuntimeBudget>,
+    target_bytes: u64,
 ) -> Option<LifecycleCompactionScore> {
-    let mut score = nonzero_compaction_score(level_index, tables)?;
+    let mut score = nonzero_compaction_score(level_index, tables, target_bytes)?;
     if is_final_configured_level(branch, level_index) {
         let level = BranchLevel::new(u8::try_from(level_index).ok()?);
         let target_output_bytes = bottommost_compaction_output_target(level, budget)?;
@@ -2100,15 +2185,23 @@ pub(super) fn nonzero_compaction_pressure(
     byte_count: u64,
 ) -> Option<(LifecycleStoragePressureSeverity, u64, u64)> {
     let target_bytes = nonzero_level_target_bytes(level);
+    nonzero_compaction_pressure_for_target(table_count, byte_count, target_bytes)
+}
+
+fn nonzero_compaction_pressure_for_target(
+    table_count: usize,
+    byte_count: u64,
+    target_bytes: u64,
+) -> Option<(LifecycleStoragePressureSeverity, u64, u64)> {
     if table_count < NONZERO_LEVEL_COMPACTION_THRESHOLD && byte_count < target_bytes {
         return None;
     }
     let severity = if table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
-        || byte_count >= nonzero_level_blocking_bytes(level)
+        || byte_count >= nonzero_level_blocking_bytes(target_bytes)
     {
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
     } else if table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
-        || byte_count >= nonzero_level_urgent_bytes(level)
+        || byte_count >= nonzero_level_urgent_bytes(target_bytes)
     {
         LifecycleStoragePressureSeverity::Urgent
     } else {
@@ -2292,7 +2385,7 @@ fn selected_nonzero_compaction_candidate_for_branch(
     let tables = branch.owned_levels().get(level_index)?;
     let next_level_tables = branch.owned_levels().get(level_index.checked_add(1)?)?;
     let level = BranchLevel::new(u8::try_from(level_index).ok()?);
-    let soft_budget_bytes = nonzero_compaction_soft_input_budget(level, budget)?;
+    let soft_budget_bytes = nonzero_compaction_soft_input_budget(branch, level, budget)?;
     tables
         .iter()
         .enumerate()
@@ -2376,10 +2469,11 @@ fn nonzero_compaction_efficiency_score(candidate: &NonzeroCompactionInputChoice)
 }
 
 fn nonzero_compaction_soft_input_budget(
+    branch: &BranchLocalState,
     level: BranchLevel,
     budget: Option<StorageRuntimeBudget>,
 ) -> Option<u64> {
-    let base = nonzero_level_blocking_bytes(level);
+    let base = nonzero_level_blocking_bytes(nonzero_level_target_bytes_for_branch(branch, level)?);
     let kind = BranchCompactionKind::CompactLevel {
         level,
         table_index: 0,

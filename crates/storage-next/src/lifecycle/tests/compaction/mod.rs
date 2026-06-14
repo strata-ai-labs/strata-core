@@ -19,12 +19,37 @@ use crate::lifecycle::compaction::{
     compact_cache_branch_to_fixed_point, current_compaction_request_from_maintenance_task,
     current_compaction_request_from_maintenance_task_with_budget,
     defer_compaction_for_resource_policy, nonzero_compaction_pressure, nonzero_level_target_bytes,
-    LifecycleCompactionDrainRequest,
+    nonzero_level_targets_from_level_bytes, LifecycleCompactionDrainRequest,
 };
 use crate::lifecycle::flush::{
     flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
 };
 use strata_core_next::{BranchId, Timestamp};
+
+const fn mib(value: u64) -> u64 {
+    value * 1024 * 1024
+}
+
+const fn gib(value: u64) -> u64 {
+    value * 1024 * 1024 * 1024
+}
+
+const fn tib(value: u64) -> u64 {
+    value * 1024 * 1024 * 1024 * 1024
+}
+
+fn target_bytes_for_state(state: &BranchLocalState) -> Vec<u64> {
+    let level_bytes = state
+        .owned_levels()
+        .iter()
+        .map(|tables| {
+            tables.iter().fold(0u64, |total, table| {
+                total.saturating_add(table.facts().byte_count())
+            })
+        })
+        .collect::<Vec<_>>();
+    nonzero_level_targets_from_level_bytes(&level_bytes)
+}
 
 #[test]
 fn table_rewrite_requests_validate_opaque_identity_components() {
@@ -94,20 +119,97 @@ fn maintenance_tasks_map_to_table_rewrite_requests() {
 }
 
 #[test]
-fn nonzero_compaction_level_targets_form_static_pyramid() {
-    let level_one = nonzero_level_target_bytes(BranchLevel::new(1));
-    let level_two = nonzero_level_target_bytes(BranchLevel::new(2));
-    let level_three = nonzero_level_target_bytes(BranchLevel::new(3));
+fn nonzero_compaction_level_targets_match_segmented_empty_fixture() {
+    let targets = nonzero_level_targets_from_level_bytes(&[0, 0, 0, 0, 0, 0, 0]);
 
-    assert_eq!(level_one, 64 * 1024 * 1024);
-    assert_eq!(level_two, level_one * 10);
-    assert_eq!(level_three, level_two * 10);
-    assert_eq!(nonzero_level_target_bytes(BranchLevel::new(2)), level_two);
+    assert_eq!(
+        targets,
+        vec![
+            0,
+            mib(1),
+            mib(10),
+            mib(100),
+            mib(1_000),
+            mib(10_000),
+            mib(100_000)
+        ]
+    );
 }
 
 #[test]
-fn compaction_requests_use_output_level_target_bytes() {
+fn nonzero_compaction_level_targets_match_segmented_shallow_fixture() {
+    let targets = nonzero_level_targets_from_level_bytes(&[0, mib(100), 0, 0, 0, 0, 0]);
+
+    assert_eq!(
+        targets,
+        vec![
+            0,
+            mib(100),
+            mib(1_000),
+            mib(10_000),
+            mib(100_000),
+            mib(1_000_000),
+            mib(10_000_000),
+        ]
+    );
+}
+
+#[test]
+fn nonzero_compaction_level_targets_match_segmented_deep_fixture() {
+    let deep_bytes = 10 * tib(1);
+    let targets = nonzero_level_targets_from_level_bytes(&[0, 0, 0, 0, 0, 0, deep_bytes]);
+    let expected_base = deep_bytes / 100_000;
+
+    assert_eq!(targets[1], expected_base);
+    assert_eq!(targets[2], expected_base * 10);
+    assert_eq!(targets[6], expected_base * 100_000);
+}
+
+#[test]
+fn nonzero_compaction_level_targets_match_segmented_clamped_fixture() {
+    let targets = nonzero_level_targets_from_level_bytes(&[0, 0, 0, 30 * gib(1), 0, 0, 0]);
+
+    assert_eq!(
+        targets,
+        vec![
+            0,
+            mib(256),
+            mib(2_560),
+            mib(25_600),
+            mib(256_000),
+            mib(2_560_000),
+            mib(25_600_000)
+        ]
+    );
+}
+
+#[test]
+fn nonzero_compaction_level_targets_match_segmented_raised_base_fixture() {
+    let targets = nonzero_level_targets_from_level_bytes(&[0, 0, 0, 0, mib(5), 0, 0]);
+    let expected_base = {
+        let mut base = mib(5);
+        for _ in 1..4 {
+            base /= 10;
+        }
+        for _ in 1..4 {
+            base *= 10;
+        }
+        base
+    };
+
+    assert_eq!(targets[1], mib(256));
+    assert_eq!(targets[2], mib(256));
+    assert_eq!(targets[3], mib(256));
+    assert_eq!(targets[4], expected_base);
+    assert_eq!(targets[5], expected_base * 10);
+    assert_eq!(targets[6], expected_base * 100);
+}
+
+#[test]
+fn compaction_requests_use_table_output_target_bytes() {
     let branch = branch_id(0x5a);
+    let default_output_target =
+        crate::table::TableCompactionConfig::default().target_output_bytes();
 
     let l0_rewrite =
         LifecycleCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "target-l0")
@@ -116,7 +218,7 @@ fn compaction_requests_use_output_level_target_bytes() {
             .expect("l0 branch request");
     assert_eq!(
         l0_rewrite.table_compaction_config().target_output_bytes(),
-        crate::table::TableCompactionConfig::default().target_output_bytes()
+        default_output_target
     );
 
     let l0_to_l1 = LifecycleCompactionRequest::new(
@@ -129,7 +231,7 @@ fn compaction_requests_use_output_level_target_bytes() {
     .expect("l0 to l1 branch request");
     assert_eq!(
         l0_to_l1.table_compaction_config().target_output_bytes(),
-        nonzero_level_target_bytes(BranchLevel::new(1))
+        default_output_target
     );
 
     let l1_to_l2 = LifecycleCompactionRequest::new(
@@ -145,12 +247,16 @@ fn compaction_requests_use_output_level_target_bytes() {
     .expect("l1 to l2 branch request");
     assert_eq!(
         l1_to_l2.table_compaction_config().target_output_bytes(),
-        nonzero_level_target_bytes(BranchLevel::new(2))
+        default_output_target
+    );
+    assert_ne!(
+        default_output_target,
+        nonzero_level_target_bytes(BranchLevel::new(1))
     );
 }
 
 #[test]
-fn generated_nonzero_level_target_sweep_is_static_and_monotonic() {
+fn generated_nonzero_level_target_sweep_matches_empty_layout_pyramid() {
     let sampled_levels = [1, 2, 3, 4, 8, 16, 32, 64, 128, 255];
     let mut previous = 0;
     for raw_level in sampled_levels {
@@ -162,7 +268,7 @@ fn generated_nonzero_level_target_sweep_is_static_and_monotonic() {
             "target for level {raw_level} regressed below prior sampled level"
         );
         if raw_level == 1 {
-            assert_eq!(target, 64 * 1024 * 1024);
+            assert_eq!(target, mib(1));
         }
         if previous != 0 && previous <= u64::MAX / 10 {
             assert!(target >= previous.saturating_mul(10));
@@ -3027,26 +3133,20 @@ fn queued_table_rewrite_runs_compaction_when_it_has_higher_score() {
     assert_eq!(first.task_id(), Some(compaction.task_id()));
     assert_eq!(first.task_kind(), MaintenanceTaskKind::Compaction);
     assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 4);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
-
-    let second = runtime
-        .run_next_table_rewrite_maintenance()
-        .expect("run follow-up table rewrite")
-        .expect("follow-up rewrite outcome");
-    assert_eq!(second.task_kind(), MaintenanceTaskKind::Compaction);
-    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(runtime.branch_state().owned_levels()[0].len(), 0);
     assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
 
-    let third = runtime
+    let second = runtime
         .run_next_materialization_maintenance()
         .expect("run materialization")
         .expect("materialization outcome");
-    assert_eq!(third.task_id(), Some(materialization.task_id()));
-    assert_eq!(third.task_kind(), MaintenanceTaskKind::Materialization);
+    assert_eq!(second.task_id(), Some(materialization.task_id()));
+    assert_eq!(second.task_kind(), MaintenanceTaskKind::Materialization);
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
 #[test]
@@ -3864,6 +3964,7 @@ fn compaction_shape_perf_trace_records_targets_and_input_policy() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(0x5d);
     let mut runtime = cache_runtime(branch);
+    let expected_selected_target;
     {
         let state = runtime
             .branch_catalog_mut_for_test()
@@ -3912,6 +4013,12 @@ fn compaction_shape_perf_trace_records_targets_and_input_policy() {
                 b"deeper",
             )],
         );
+        let expected_targets = target_bytes_for_state(state);
+        assert!(
+            expected_targets.len() > usize::from(BranchLevel::new(1).raw()),
+            "fixture should include level one target"
+        );
+        expected_selected_target = expected_targets[usize::from(BranchLevel::new(1).raw())];
     }
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
@@ -3926,10 +4033,7 @@ fn compaction_shape_perf_trace_records_targets_and_input_policy() {
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert!(perf.lifecycle_compaction_level_target_evaluations() >= 1);
-    assert!(
-        perf.lifecycle_compaction_level_target_bytes()
-            >= nonzero_level_target_bytes(BranchLevel::new(1))
-    );
+    assert!(perf.lifecycle_compaction_level_target_bytes() >= expected_selected_target);
     assert_eq!(perf.lifecycle_compaction_nonzero_input_selections(), 1);
     assert_eq!(perf.lifecycle_compaction_largest_input_selections(), 1);
     assert_eq!(perf.lifecycle_compaction_nonzero_input_table_index_sum(), 2);
@@ -3945,7 +4049,7 @@ fn compaction_shape_perf_trace_records_targets_and_input_policy() {
     );
     assert_eq!(
         perf.lifecycle_compaction_selected_target_bytes(),
-        nonzero_level_target_bytes(BranchLevel::new(1))
+        expected_selected_target
     );
 }
 
@@ -4089,6 +4193,7 @@ fn storage_pressure_perf_trace_records_level_specific_targets() {
             )],
         );
     }
+    let expected_targets = target_bytes_for_state(&state);
     crate::observability::perf_trace::reset();
 
     let pressure = collect_storage_pressure(&state, empty_maintenance_status());
@@ -4105,15 +4210,9 @@ fn storage_pressure_perf_trace_records_level_specific_targets() {
     );
     assert_eq!(
         perf.lifecycle_compaction_level_target_bytes(),
-        nonzero_level_target_bytes(BranchLevel::new(1))
-            + nonzero_level_target_bytes(BranchLevel::new(2))
-            + nonzero_level_target_bytes(BranchLevel::new(3))
-            + nonzero_level_target_bytes(BranchLevel::new(4))
+        expected_targets[1] + expected_targets[2] + expected_targets[3] + expected_targets[4]
     );
-    assert_ne!(
-        nonzero_level_target_bytes(BranchLevel::new(1)),
-        nonzero_level_target_bytes(BranchLevel::new(2))
-    );
+    assert_ne!(expected_targets[1], expected_targets[2]);
 }
 
 #[cfg(feature = "perf-trace")]

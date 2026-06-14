@@ -70,10 +70,14 @@ L8 should make those operations observable and testable storage internals.
 
 ### Compaction Shape Policy
 
-Storage-next uses a deterministic nonzero-level target pyramid for lifecycle
-compaction pressure: L1 starts at 64 MiB and each deeper nonzero level multiplies
-the previous target by 10. Adaptive target recalculation is deferred until
-benchmark data shows the static pyramid is not sufficient.
+Storage-next uses the segmented level-target calculation for lifecycle
+compaction pressure. Empty layouts start L1 at 1 MiB, and each deeper nonzero
+level multiplies the previous target by 10. Non-empty layouts derive the base
+target from the largest populated nonzero level, clamp the base between 1 MiB
+and 256 MiB, and raise the base level when the unclamped base would be too
+small. Table compaction output target bytes are separate from level pressure
+target bytes; table output sizing remains owned by the table runtime compaction
+configuration.
 
 Queued nonzero compaction selects the deterministic largest current input table
 for the requested level. The tie-breaker is byte count descending, row count

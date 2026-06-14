@@ -368,9 +368,11 @@ fn compaction_shape_semantic_decisions_are_recorded() {
     let normalized_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
     for required in [
-        "deterministic nonzero-level target pyramid",
-        "L1 starts at 64 MiB",
+        "segmented level-target calculation",
+        "Empty layouts start L1 at 1 MiB",
         "multiplies the previous target by 10",
+        "clamp the base between 1 MiB and 256 MiB",
+        "Table compaction output target bytes are separate from level pressure target bytes",
         "deterministic largest current input table",
         "byte count descending, row count descending, then lower table index first",
         "lower branch and table compaction layers",
