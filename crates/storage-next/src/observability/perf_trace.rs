@@ -232,6 +232,10 @@ pub struct StoragePerfSnapshot {
     lifecycle_compaction_output_split_budget_deferred: u64,
     lifecycle_compaction_output_split_budget_deferred_bytes: u64,
     lifecycle_compaction_operations_completed: u64,
+    lifecycle_compaction_l0_operations: u64,
+    lifecycle_compaction_l0_to_level_one_operations: u64,
+    lifecycle_compaction_nonzero_operations: u64,
+    lifecycle_compaction_bottommost_operations: u64,
     lifecycle_compaction_input_tables: u64,
     lifecycle_compaction_overlap_tables: u64,
     lifecycle_compaction_output_tables: u64,
@@ -1276,6 +1280,26 @@ impl StoragePerfSnapshot {
     /// Completed compaction operations recorded by lifecycle maintenance.
     pub const fn lifecycle_compaction_operations_completed(self) -> u64 {
         self.lifecycle_compaction_operations_completed
+    }
+
+    /// Completed lifecycle compactions that merged level-zero tables in place.
+    pub const fn lifecycle_compaction_l0_operations(self) -> u64 {
+        self.lifecycle_compaction_l0_operations
+    }
+
+    /// Completed lifecycle compactions that promoted level-zero tables to level one.
+    pub const fn lifecycle_compaction_l0_to_level_one_operations(self) -> u64 {
+        self.lifecycle_compaction_l0_to_level_one_operations
+    }
+
+    /// Completed lifecycle compactions that selected one nonzero-level input table.
+    pub const fn lifecycle_compaction_nonzero_operations(self) -> u64 {
+        self.lifecycle_compaction_nonzero_operations
+    }
+
+    /// Completed lifecycle compactions that compacted a bottommost nonzero-level run.
+    pub const fn lifecycle_compaction_bottommost_operations(self) -> u64 {
+        self.lifecycle_compaction_bottommost_operations
     }
 
     /// Input tables selected by completed lifecycle compactions.
@@ -2591,6 +2615,14 @@ static LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES: AtomicU64 = Atom
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_L0_OPERATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_L0_TO_LEVEL_ONE_OPERATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_NONZERO_OPERATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_COMPACTION_BOTTOMMOST_OPERATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_INPUT_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_COMPACTION_OVERLAP_TABLES: AtomicU64 = AtomicU64::new(0);
@@ -3221,6 +3253,10 @@ pub fn reset() {
     LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_L0_OPERATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_L0_TO_LEVEL_ONE_OPERATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_NONZERO_OPERATIONS.store(0, Ordering::Relaxed);
+    LIFECYCLE_COMPACTION_BOTTOMMOST_OPERATIONS.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_INPUT_TABLES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OVERLAP_TABLES.store(0, Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_TABLES.store(0, Ordering::Relaxed);
@@ -3732,6 +3768,14 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_compaction_output_split_budget_deferred_bytes:
             LIFECYCLE_COMPACTION_OUTPUT_SPLIT_BUDGET_DEFERRED_BYTES.load(Ordering::Relaxed),
         lifecycle_compaction_operations_completed: LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_l0_operations: LIFECYCLE_COMPACTION_L0_OPERATIONS
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_l0_to_level_one_operations:
+            LIFECYCLE_COMPACTION_L0_TO_LEVEL_ONE_OPERATIONS.load(Ordering::Relaxed),
+        lifecycle_compaction_nonzero_operations: LIFECYCLE_COMPACTION_NONZERO_OPERATIONS
+            .load(Ordering::Relaxed),
+        lifecycle_compaction_bottommost_operations: LIFECYCLE_COMPACTION_BOTTOMMOST_OPERATIONS
             .load(Ordering::Relaxed),
         lifecycle_compaction_input_tables: LIFECYCLE_COMPACTION_INPUT_TABLES
             .load(Ordering::Relaxed),
@@ -5352,9 +5396,18 @@ pub(crate) fn record_lifecycle_compaction_output_split_budget_deferred(byte_coun
         .fetch_add(byte_count, Ordering::Relaxed);
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleCompactionOperationKind {
+    L0,
+    L0ToLevelOne,
+    Nonzero,
+    Bottommost,
+}
+
 #[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_lifecycle_compaction_operation(
     _level: u8,
+    _kind: LifecycleCompactionOperationKind,
     _input_tables: usize,
     _overlap_tables: usize,
     _output_tables: usize,
@@ -5370,6 +5423,7 @@ pub(crate) fn record_lifecycle_compaction_operation(
 #[cfg(feature = "perf-trace")]
 pub(crate) fn record_lifecycle_compaction_operation(
     _level: u8,
+    kind: LifecycleCompactionOperationKind,
     input_tables: usize,
     overlap_tables: usize,
     output_tables: usize,
@@ -5385,6 +5439,20 @@ pub(crate) fn record_lifecycle_compaction_operation(
     }
     let budget_consumed = input_bytes.saturating_add(output_bytes);
     LIFECYCLE_COMPACTION_OPERATIONS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+    match kind {
+        LifecycleCompactionOperationKind::L0 => {
+            LIFECYCLE_COMPACTION_L0_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        LifecycleCompactionOperationKind::L0ToLevelOne => {
+            LIFECYCLE_COMPACTION_L0_TO_LEVEL_ONE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        LifecycleCompactionOperationKind::Nonzero => {
+            LIFECYCLE_COMPACTION_NONZERO_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        LifecycleCompactionOperationKind::Bottommost => {
+            LIFECYCLE_COMPACTION_BOTTOMMOST_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     LIFECYCLE_COMPACTION_INPUT_TABLES.fetch_add(as_u64(input_tables), Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OVERLAP_TABLES.fetch_add(as_u64(overlap_tables), Ordering::Relaxed);
     LIFECYCLE_COMPACTION_OUTPUT_TABLES.fetch_add(as_u64(output_tables), Ordering::Relaxed);

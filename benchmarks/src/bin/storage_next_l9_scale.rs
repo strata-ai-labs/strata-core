@@ -84,7 +84,10 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
         config.branch_samples,
         config.scan_limit
     );
-    eprintln!("diagnostic_final_drain={}", config.diagnostic_final_drain);
+    eprintln!(
+        "diagnostic_source_shape={} diagnostic_final_drain={}",
+        config.diagnostic_source_shape, config.diagnostic_final_drain
+    );
     eprintln!();
 
     for &scale in &config.scales {
@@ -96,23 +99,29 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
             let mut loaded = false;
             let mut load_phase_context = None;
             let mut source_shape_context = None;
+            let mut load_result = None;
             if config.workloads.contains(&Workload::LoadSeq) || config.needs_loaded_data() {
                 let result = run_load_seq(&mut open.runtime, branch_id, scale, engine, &config)?;
                 loaded = true;
                 load_phase_context = result.load_phase_trace;
-                print_result(&result);
-                if config.workloads.contains(&Workload::LoadSeq) {
-                    results.push(result.into_benchmark_result(&config));
-                }
+                load_result = Some(result);
             }
 
-            if loaded && config.needs_loaded_data() {
+            if loaded && config.should_prepare_loaded_source_shape() {
                 source_shape_context = Some(prepare_loaded_source_shape(
                     &mut open.runtime,
                     branch_id,
                     scale,
                     &config,
                 )?);
+            }
+
+            if let Some(result) = load_result {
+                let result = result.with_source_shape_context(source_shape_context.clone());
+                print_result(&result);
+                if config.workloads.contains(&Workload::LoadSeq) {
+                    results.push(result.into_benchmark_result(&config));
+                }
             }
 
             if config.workloads.contains(&Workload::PointLatest) {
@@ -1022,6 +1031,8 @@ Options:
   --seed N               Deterministic sampling seed.
   --root PATH            Benchmark scratch root. Default: benchmarks/.benchmark/storage-next-l9
   --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-next-l9
+  --diagnostic-source-shape
+                         Observe source layout after load-only runs without explicit maintenance.
   --diagnostic-final-drain
                          Run final Flush+Compact before read workloads and report it separately.
   --keep-dir             Keep durable scratch directories after the run.
@@ -1049,6 +1060,7 @@ struct Config {
     seed: u64,
     root: PathBuf,
     results_dir: Option<PathBuf>,
+    diagnostic_source_shape: bool,
     diagnostic_final_drain: bool,
     keep_dir: bool,
     progress: bool,
@@ -1071,6 +1083,7 @@ impl Config {
                 .join(".benchmark")
                 .join("storage-next-l9"),
             results_dir: None,
+            diagnostic_source_shape: false,
             diagnostic_final_drain: false,
             keep_dir: false,
             progress: false,
@@ -1130,6 +1143,7 @@ impl Config {
                     config.results_dir =
                         Some(PathBuf::from(value(args.get(index), "--results-dir")?));
                 }
+                "--diagnostic-source-shape" => config.diagnostic_source_shape = true,
                 "--diagnostic-final-drain" => config.diagnostic_final_drain = true,
                 "--keep-dir" => config.keep_dir = true,
                 "--progress" => config.progress = true,
@@ -1177,6 +1191,10 @@ impl Config {
         self.workloads
             .iter()
             .any(|workload| workload.requires_loaded_data())
+    }
+
+    fn should_prepare_loaded_source_shape(&self) -> bool {
+        self.needs_loaded_data() || self.diagnostic_source_shape || self.diagnostic_final_drain
     }
 }
 
@@ -1422,6 +1440,10 @@ impl RunResult {
         );
         parameters.insert("seed".to_string(), serde_json::json!(config.seed));
         parameters.insert(
+            "diagnostic_source_shape".to_string(),
+            serde_json::json!(config.diagnostic_source_shape),
+        );
+        parameters.insert(
             "diagnostic_final_drain".to_string(),
             serde_json::json!(config.diagnostic_final_drain),
         );
@@ -1475,6 +1497,7 @@ impl RunResult {
                 source_shape_metrics_json(
                     self.scale,
                     operation_count,
+                    config.value_bytes as u64,
                     perf_trace,
                     load_phase_trace,
                     source_shape_context.as_ref(),
@@ -1954,6 +1977,38 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.branch_compaction_peak_buffered_rows()
     );
     field!(
+        "lifecycle_compaction_operations_completed",
+        perf_trace.lifecycle_compaction_operations_completed()
+    );
+    field!(
+        "lifecycle_compaction_l0_operations",
+        perf_trace.lifecycle_compaction_l0_operations()
+    );
+    field!(
+        "lifecycle_compaction_l0_to_level_one_operations",
+        perf_trace.lifecycle_compaction_l0_to_level_one_operations()
+    );
+    field!(
+        "lifecycle_compaction_nonzero_operations",
+        perf_trace.lifecycle_compaction_nonzero_operations()
+    );
+    field!(
+        "lifecycle_compaction_bottommost_operations",
+        perf_trace.lifecycle_compaction_bottommost_operations()
+    );
+    field!(
+        "lifecycle_compaction_input_tables",
+        perf_trace.lifecycle_compaction_input_tables()
+    );
+    field!(
+        "lifecycle_compaction_overlap_tables",
+        perf_trace.lifecycle_compaction_overlap_tables()
+    );
+    field!(
+        "lifecycle_compaction_output_tables",
+        perf_trace.lifecycle_compaction_output_tables()
+    );
+    field!(
         "lifecycle_compaction_input_bytes",
         perf_trace.lifecycle_compaction_input_bytes()
     );
@@ -1996,6 +2051,58 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "lifecycle_compaction_flush_preemptions",
         perf_trace.lifecycle_compaction_flush_preemptions()
+    );
+    field!(
+        "lifecycle_compaction_trivial_moves",
+        perf_trace.lifecycle_compaction_trivial_moves()
+    );
+    field!(
+        "lifecycle_compaction_selected",
+        perf_trace.lifecycle_compaction_selected()
+    );
+    field!(
+        "lifecycle_compaction_selected_level_sum",
+        perf_trace.lifecycle_compaction_selected_level_sum()
+    );
+    field!(
+        "lifecycle_compaction_selected_score_sum",
+        perf_trace.lifecycle_compaction_selected_score_sum()
+    );
+    field!(
+        "lifecycle_compaction_selected_table_count",
+        perf_trace.lifecycle_compaction_selected_table_count()
+    );
+    field!(
+        "lifecycle_compaction_selected_byte_count",
+        perf_trace.lifecycle_compaction_selected_byte_count()
+    );
+    field!(
+        "lifecycle_compaction_selected_target_bytes",
+        perf_trace.lifecycle_compaction_selected_target_bytes()
+    );
+    field!(
+        "lifecycle_compaction_nonzero_input_selections",
+        perf_trace.lifecycle_compaction_nonzero_input_selections()
+    );
+    field!(
+        "lifecycle_compaction_nonzero_input_level_sum",
+        perf_trace.lifecycle_compaction_nonzero_input_level_sum()
+    );
+    field!(
+        "lifecycle_compaction_nonzero_input_table_index_sum",
+        perf_trace.lifecycle_compaction_nonzero_input_table_index_sum()
+    );
+    field!(
+        "lifecycle_compaction_nonzero_input_bytes",
+        perf_trace.lifecycle_compaction_nonzero_input_bytes()
+    );
+    field!(
+        "lifecycle_compaction_nonzero_input_rows",
+        perf_trace.lifecycle_compaction_nonzero_input_rows()
+    );
+    field!(
+        "lifecycle_compaction_largest_input_selections",
+        perf_trace.lifecycle_compaction_largest_input_selections()
     );
     field!(
         "lifecycle_materialization_score_candidates",
@@ -2469,10 +2576,17 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
 fn source_shape_metrics_json(
     scale: usize,
     operation_count: u64,
+    value_bytes: u64,
     perf_trace: StoragePerfSnapshot,
     load_phase_trace: Option<LoadPhaseTrace>,
     source_shape_context: Option<&SourceShapeContext>,
 ) -> serde_json::Value {
+    let logical_write_rows = scale as u64;
+    let logical_write_bytes = logical_write_rows.saturating_mul(value_bytes);
+    let compaction_row_amplification =
+        ratio_json(perf_trace.lifecycle_compaction_input_rows(), logical_write_rows);
+    let compaction_byte_amplification =
+        ratio_json(perf_trace.lifecycle_compaction_input_bytes(), logical_write_bytes);
     let point_source_probes = perf_trace
         .point_active_probes()
         .saturating_add(perf_trace.point_frozen_probes())
@@ -2696,6 +2810,10 @@ fn source_shape_metrics_json(
         });
 
     let lifecycle_compaction = serde_json::json!({
+        "operations_completed": perf_trace.lifecycle_compaction_operations_completed(),
+        "input_tables": perf_trace.lifecycle_compaction_input_tables(),
+        "overlap_tables": perf_trace.lifecycle_compaction_overlap_tables(),
+        "output_tables": perf_trace.lifecycle_compaction_output_tables(),
         "input_bytes": perf_trace.lifecycle_compaction_input_bytes(),
         "output_bytes": perf_trace.lifecycle_compaction_output_bytes(),
         "metadata_bytes_avoided": perf_trace.lifecycle_compaction_metadata_bytes_avoided(),
@@ -2707,6 +2825,29 @@ fn source_shape_metrics_json(
         "io_budget_deferred_bytes": perf_trace.lifecycle_compaction_io_budget_deferred_bytes(),
         "io_budget_limit_bytes": perf_trace.lifecycle_compaction_io_budget_limit_bytes(),
         "flush_preemptions": perf_trace.lifecycle_compaction_flush_preemptions(),
+        "trivial_moves": perf_trace.lifecycle_compaction_trivial_moves(),
+        "selected": {
+            "candidates": perf_trace.lifecycle_compaction_selected(),
+            "level_sum": perf_trace.lifecycle_compaction_selected_level_sum(),
+            "score_sum": perf_trace.lifecycle_compaction_selected_score_sum(),
+            "table_count": perf_trace.lifecycle_compaction_selected_table_count(),
+            "byte_count": perf_trace.lifecycle_compaction_selected_byte_count(),
+            "target_bytes": perf_trace.lifecycle_compaction_selected_target_bytes(),
+        },
+        "selected_nonzero_input": {
+            "selections": perf_trace.lifecycle_compaction_nonzero_input_selections(),
+            "level_sum": perf_trace.lifecycle_compaction_nonzero_input_level_sum(),
+            "table_index_sum": perf_trace.lifecycle_compaction_nonzero_input_table_index_sum(),
+            "bytes": perf_trace.lifecycle_compaction_nonzero_input_bytes(),
+            "rows": perf_trace.lifecycle_compaction_nonzero_input_rows(),
+            "largest_input_selections": perf_trace.lifecycle_compaction_largest_input_selections(),
+        },
+        "operation_kinds": {
+            "l0": perf_trace.lifecycle_compaction_l0_operations(),
+            "l0_to_level_one": perf_trace.lifecycle_compaction_l0_to_level_one_operations(),
+            "nonzero": perf_trace.lifecycle_compaction_nonzero_operations(),
+            "bottommost": perf_trace.lifecycle_compaction_bottommost_operations(),
+        },
     });
     let lifecycle_materialization = serde_json::json!({
         "score_candidates": perf_trace.lifecycle_materialization_score_candidates(),
@@ -2799,6 +2940,16 @@ fn source_shape_metrics_json(
     field!("inline_maintenance_attempts", inline_maintenance_attempts);
     field!("diagnostic_poll_ns", diagnostic_poll_ns);
     field!("diagnostic_polls", diagnostic_polls);
+    field!("logical_write_rows", logical_write_rows);
+    field!("logical_write_bytes", logical_write_bytes);
+    field!(
+        "compaction_row_amplification",
+        compaction_row_amplification
+    );
+    field!(
+        "compaction_byte_amplification",
+        compaction_byte_amplification
+    );
     field!("background_maintenance_ns", background_maintenance_ns);
     field!("background_maintenance_tasks", background_maintenance_tasks);
     field!(
@@ -3765,11 +3916,40 @@ mod tests {
     #[test]
     fn diagnostic_final_drain_is_opt_in() {
         let default_config = Config::parse(std::iter::empty()).expect("default config");
+        assert!(!default_config.diagnostic_source_shape);
         assert!(!default_config.diagnostic_final_drain);
 
-        let draining_config = Config::parse(["--diagnostic-final-drain".to_string()].into_iter())
-            .expect("diagnostic drain config");
+        let load_only_config = Config::parse(
+            ["--workloads".to_string(), "load-seq".to_string()].into_iter(),
+        )
+        .expect("load-only config");
+        assert!(!load_only_config.diagnostic_source_shape);
+        assert!(!load_only_config.diagnostic_final_drain);
+        assert!(!load_only_config.should_prepare_loaded_source_shape());
+
+        let observing_config = Config::parse(
+            [
+                "--workloads".to_string(),
+                "load-seq".to_string(),
+                "--diagnostic-source-shape".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("diagnostic source-shape config");
+        assert!(observing_config.diagnostic_source_shape);
+        assert!(observing_config.should_prepare_loaded_source_shape());
+
+        let draining_config = Config::parse(
+            [
+                "--workloads".to_string(),
+                "load-seq".to_string(),
+                "--diagnostic-final-drain".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("diagnostic drain config");
         assert!(draining_config.diagnostic_final_drain);
+        assert!(draining_config.should_prepare_loaded_source_shape());
     }
 
     #[test]
@@ -3821,6 +4001,31 @@ mod tests {
         assert!(
             !load_source.contains("DiagnosticsRequest::new(DiagnosticsScope::Global)"),
             "load path must not collect source-shape/WAL facts by polling global diagnostics"
+        );
+
+        let run_source = source
+            .split("fn run(config: Config)")
+            .nth(1)
+            .expect("run function is present")
+            .split("fn run_load_seq")
+            .next()
+            .expect("run orchestration precedes load helper");
+        assert!(
+            run_source.contains("let mut load_result = None"),
+            "load result must be held until post-load diagnostics can be attached"
+        );
+        let load_index = run_source
+            .find("run_load_seq")
+            .expect("run orchestration calls load helper");
+        let source_shape_index = run_source
+            .find("config.should_prepare_loaded_source_shape()")
+            .expect("run orchestration checks post-load source-shape opt-in");
+        let print_index = run_source
+            .find("print_result(&result)")
+            .expect("run orchestration prints the load result");
+        assert!(
+            load_index < source_shape_index && source_shape_index < print_index,
+            "load-only source-shape diagnostics must run after timed load and before result serialization"
         );
     }
 
@@ -3894,6 +4099,13 @@ mod tests {
         assert!(metrics["maintenance_queue_depth_final"].is_null());
         assert!(metrics["maintenance_queue_depth_max"].is_null());
         assert!(metrics["post_load_compaction_mode"].is_null());
+        assert_eq!(metrics["logical_write_rows"].as_u64(), Some(1_000));
+        assert_eq!(metrics["logical_write_bytes"].as_u64(), Some(64_000));
+        assert_eq!(metrics["compaction_row_amplification"].as_f64(), Some(0.0));
+        assert_eq!(
+            metrics["compaction_byte_amplification"].as_f64(),
+            Some(0.0)
+        );
         assert_eq!(metrics["assumptions"]["operation_count"].as_u64(), Some(5));
         assert_eq!(
             metrics["assumptions"]["known_compaction_mode_values"]
@@ -3907,7 +4119,7 @@ mod tests {
     #[test]
     fn source_shape_metrics_use_null_for_unavailable_denominators() {
         perf_trace::reset();
-        let metrics = source_shape_metrics_json(0, 0, perf_trace::snapshot(), None, None);
+        let metrics = source_shape_metrics_json(0, 0, 64, perf_trace::snapshot(), None, None);
 
         assert!(metrics["point_source_probes_per_read"].is_null());
         assert!(metrics["point_nonzero_table_probes_per_read"].is_null());
@@ -3920,6 +4132,7 @@ mod tests {
         let load_metrics = source_shape_metrics_json(
             0,
             0,
+            64,
             perf_trace::snapshot(),
             Some(LoadPhaseTrace {
                 maintenance_runs: 1,
@@ -3936,6 +4149,7 @@ mod tests {
         let metrics = source_shape_metrics_json(
             1_000,
             10,
+            64,
             perf_trace::snapshot(),
             Some(LoadPhaseTrace {
                 maintenance_runs: 2,
@@ -4091,6 +4305,10 @@ mod tests {
         .into_benchmark_result(&config);
 
         assert_eq!(
+            result.parameters["diagnostic_source_shape"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
             result.parameters["diagnostic_final_drain"].as_bool(),
             Some(true)
         );
@@ -4137,6 +4355,26 @@ mod tests {
 
         let perf_trace = &result.parameters["perf_trace"];
         for field in [
+            "lifecycle_compaction_operations_completed",
+            "lifecycle_compaction_l0_operations",
+            "lifecycle_compaction_l0_to_level_one_operations",
+            "lifecycle_compaction_nonzero_operations",
+            "lifecycle_compaction_bottommost_operations",
+            "lifecycle_compaction_input_tables",
+            "lifecycle_compaction_overlap_tables",
+            "lifecycle_compaction_output_tables",
+            "lifecycle_compaction_selected",
+            "lifecycle_compaction_selected_level_sum",
+            "lifecycle_compaction_selected_score_sum",
+            "lifecycle_compaction_selected_table_count",
+            "lifecycle_compaction_selected_byte_count",
+            "lifecycle_compaction_selected_target_bytes",
+            "lifecycle_compaction_nonzero_input_selections",
+            "lifecycle_compaction_nonzero_input_level_sum",
+            "lifecycle_compaction_nonzero_input_table_index_sum",
+            "lifecycle_compaction_nonzero_input_bytes",
+            "lifecycle_compaction_nonzero_input_rows",
+            "lifecycle_compaction_largest_input_selections",
             "table_compaction_merge_ns",
             "table_compaction_merge_input_rows",
             "table_compaction_merge_ns_per_input_row",
@@ -4258,8 +4496,14 @@ mod tests {
             failures: vec!["owned_l0_tables_nonzero".to_string()],
         };
 
-        let metrics =
-            source_shape_metrics_json(1_000, 1, perf_trace::snapshot(), None, Some(&source_shape));
+        let metrics = source_shape_metrics_json(
+            1_000,
+            1,
+            64,
+            perf_trace::snapshot(),
+            None,
+            Some(&source_shape),
+        );
 
         assert_eq!(
             metrics["l0_tables_per_million_rows_after_load"].as_f64(),

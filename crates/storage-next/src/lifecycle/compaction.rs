@@ -1256,8 +1256,23 @@ pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionO
         .branch_outcome()
         .table_report()
         .map_or(0, crate::table::TableCompactionReport::output_bytes);
+    let operation_kind = match outcome.plan().kind() {
+        BranchCompactionKind::CompactL0 => {
+            crate::observability::perf_trace::LifecycleCompactionOperationKind::L0
+        }
+        BranchCompactionKind::CompactL0ToLevelOne => {
+            crate::observability::perf_trace::LifecycleCompactionOperationKind::L0ToLevelOne
+        }
+        BranchCompactionKind::CompactLevel { .. } => {
+            crate::observability::perf_trace::LifecycleCompactionOperationKind::Nonzero
+        }
+        BranchCompactionKind::CompactBottommostLevel { .. } => {
+            crate::observability::perf_trace::LifecycleCompactionOperationKind::Bottommost
+        }
+    };
     crate::observability::perf_trace::record_lifecycle_compaction_operation(
         candidate.output_level().raw(),
+        operation_kind,
         candidate.input_refs().len(),
         candidate.overlap_refs().len(),
         outcome.branch_outcome().output_refs().len(),

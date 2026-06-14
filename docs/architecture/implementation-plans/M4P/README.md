@@ -86,6 +86,8 @@ reason, and replacement proof or later slice that will close it.
 28. `m4p-l8c-lifecycle-recovery-close-parity-test-plan.md`
 29. `m4p-l8d-durable-table-manifest-row-pruning-parity-implementation-plan.md`
 30. `m4p-l8d-durable-table-manifest-row-pruning-parity-test-plan.md`
+31. `m4p-l8f-load-performance-stabilization-implementation-plan.md`
+32. `m4p-l8f-load-performance-stabilization-test-plan.md`
 
 ## Initial Slice Queue
 

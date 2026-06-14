@@ -17,6 +17,7 @@ Cargo.lock
 *.o
 *.so
 *.dylib
+.benchmark/
 
 # Working documents (superseded by final docs)
 AGENT_MENTAL_MODEL.md
