@@ -920,7 +920,7 @@ fn print_result(result: &RunResult) {
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
-            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={} diagnostic_poll_ns={} diagnostic_polls={} automatic_maintenance_ns={} automatic_maintenance_attempts={} inline_maintenance_ns={} inline_maintenance_attempts={} background_maintenance_ns={} background_maintenance_tasks={} foreground_wait_background_lock_ns={} admission_slowdown_ns={} admission_slowdown_attempts={} admission_block_wait_ns={} admission_wait_attempts={} admission_wait_timeouts={} maintenance_suggested={} maintenance_scheduled={} maintenance_coalesced={} maintenance_deferred={} wal_retained_bytes_last={} wal_retained_segments_last={} wal_retained_bytes_max={} wal_retained_segments_max={} wal_checkpoint_enqueue_events={} wal_checkpoint_coalesced_events={} checkpoint_executions={} wal_truncation_deleted_segments={} wal_truncation_protected_segments={} wal_truncation_failed_segments={}",
+            "    load-phase batch_build_ns={} commit_call_ns={} maintenance_call_ns={} maintenance_runs={} maintenance_rows={} diagnostic_poll_ns={} diagnostic_polls={} automatic_maintenance_ns={} automatic_maintenance_attempts={} inline_maintenance_ns={} inline_maintenance_attempts={} background_maintenance_ns={} background_maintenance_tasks={} foreground_wait_background_lock_ns={} admission_slowdown_ns={} admission_slowdown_attempts={} admission_throttle_no_relief_escalations={} admission_throttle_relief_resets={} admission_block_wait_ns={} admission_wait_attempts={} admission_wait_timeouts={} maintenance_suggested={} maintenance_scheduled={} maintenance_coalesced={} maintenance_deferred={} wal_retained_bytes_last={} wal_retained_segments_last={} wal_retained_bytes_max={} wal_retained_segments_max={} wal_checkpoint_enqueue_events={} wal_checkpoint_coalesced_events={} checkpoint_executions={} wal_truncation_deleted_segments={} wal_truncation_protected_segments={} wal_truncation_failed_segments={}",
             load_phase.batch_build_ns,
             load_phase.commit_call_ns,
             load_phase.maintenance_call_ns,
@@ -937,6 +937,8 @@ fn print_result(result: &RunResult) {
             load_phase.foreground_wait_background_lock_ns,
             load_phase.admission_slowdown_ns,
             load_phase.admission_slowdown_attempts,
+            load_phase.admission_throttle_no_relief_escalations,
+            load_phase.admission_throttle_relief_resets,
             load_phase.admission_block_wait_ns,
             load_phase.admission_wait_attempts,
             load_phase.admission_wait_timeouts,
@@ -1467,6 +1469,8 @@ impl RunResult {
                     "foreground_wait_background_lock_ns": load_phase.foreground_wait_background_lock_ns,
                     "admission_slowdown_ns": load_phase.admission_slowdown_ns,
                     "admission_slowdown_attempts": load_phase.admission_slowdown_attempts,
+                    "admission_throttle_no_relief_escalations": load_phase.admission_throttle_no_relief_escalations,
+                    "admission_throttle_relief_resets": load_phase.admission_throttle_relief_resets,
                     "admission_block_wait_ns": load_phase.admission_block_wait_ns,
                     "admission_wait_attempts": load_phase.admission_wait_attempts,
                     "admission_wait_timeouts": load_phase.admission_wait_timeouts,
@@ -1892,6 +1896,14 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "lifecycle_write_admission_slowdown_ns",
         perf_trace.lifecycle_write_admission_slowdown_ns()
+    );
+    field!(
+        "lifecycle_write_admission_throttle_no_relief_escalations",
+        perf_trace.lifecycle_write_admission_throttle_no_relief_escalations()
+    );
+    field!(
+        "lifecycle_write_admission_throttle_relief_resets",
+        perf_trace.lifecycle_write_admission_throttle_relief_resets()
     );
     field!(
         "lifecycle_write_admission_wait_attempts",
@@ -2682,6 +2694,14 @@ fn source_shape_metrics_json(
         perf_trace.lifecycle_write_admission_slowdown_attempts(),
         |trace| trace.admission_slowdown_attempts,
     );
+    let admission_throttle_no_relief_escalations = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_throttle_no_relief_escalations(),
+        |trace| trace.admission_throttle_no_relief_escalations,
+    );
+    let admission_throttle_relief_resets = load_phase_trace.map_or(
+        perf_trace.lifecycle_write_admission_throttle_relief_resets(),
+        |trace| trace.admission_throttle_relief_resets,
+    );
     let admission_block_wait_ns = load_phase_trace.map_or(
         perf_trace.lifecycle_write_admission_block_wait_ns(),
         |trace| trace.admission_block_wait_ns,
@@ -2958,6 +2978,14 @@ fn source_shape_metrics_json(
     );
     field!("admission_slowdown_ns", admission_slowdown_ns);
     field!("admission_slowdown_attempts", admission_slowdown_attempts);
+    field!(
+        "admission_throttle_no_relief_escalations",
+        admission_throttle_no_relief_escalations
+    );
+    field!(
+        "admission_throttle_relief_resets",
+        admission_throttle_relief_resets
+    );
     field!("admission_block_wait_ns", admission_block_wait_ns);
     field!("admission_wait_attempts", admission_wait_attempts);
     field!("admission_wait_timeouts", admission_wait_timeouts);
@@ -3529,6 +3557,8 @@ struct LoadPhaseTrace {
     foreground_wait_background_lock_ns: u64,
     admission_slowdown_ns: u64,
     admission_slowdown_attempts: u64,
+    admission_throttle_no_relief_escalations: u64,
+    admission_throttle_relief_resets: u64,
     admission_block_wait_ns: u64,
     admission_wait_attempts: u64,
     admission_wait_timeouts: u64,
@@ -3587,6 +3617,10 @@ impl LoadPhaseTrace {
             perf_trace.lifecycle_foreground_wait_background_lock_ns();
         self.admission_slowdown_ns = perf_trace.lifecycle_write_admission_slowdown_ns();
         self.admission_slowdown_attempts = perf_trace.lifecycle_write_admission_slowdown_attempts();
+        self.admission_throttle_no_relief_escalations =
+            perf_trace.lifecycle_write_admission_throttle_no_relief_escalations();
+        self.admission_throttle_relief_resets =
+            perf_trace.lifecycle_write_admission_throttle_relief_resets();
         self.admission_block_wait_ns = perf_trace.lifecycle_write_admission_block_wait_ns();
         self.admission_wait_attempts = perf_trace.lifecycle_write_admission_wait_attempts();
         self.admission_wait_timeouts = perf_trace.lifecycle_write_admission_wait_timeouts();
@@ -4088,6 +4122,14 @@ mod tests {
         );
         assert_eq!(metrics["admission_slowdown_ns"].as_u64(), Some(0));
         assert_eq!(metrics["admission_slowdown_attempts"].as_u64(), Some(0));
+        assert_eq!(
+            metrics["admission_throttle_no_relief_escalations"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            metrics["admission_throttle_relief_resets"].as_u64(),
+            Some(0)
+        );
         assert_eq!(metrics["admission_block_wait_ns"].as_u64(), Some(0));
         assert_eq!(metrics["admission_wait_attempts"].as_u64(), Some(0));
         assert_eq!(metrics["admission_wait_timeouts"].as_u64(), Some(0));
@@ -4164,6 +4206,8 @@ mod tests {
                 foreground_wait_background_lock_ns: 50,
                 admission_slowdown_ns: 60,
                 admission_slowdown_attempts: 2,
+                admission_throttle_no_relief_escalations: 1,
+                admission_throttle_relief_resets: 2,
                 admission_block_wait_ns: 70,
                 admission_wait_attempts: 3,
                 admission_wait_timeouts: 1,
@@ -4203,6 +4247,14 @@ mod tests {
         );
         assert_eq!(metrics["admission_slowdown_ns"].as_u64(), Some(60));
         assert_eq!(metrics["admission_slowdown_attempts"].as_u64(), Some(2));
+        assert_eq!(
+            metrics["admission_throttle_no_relief_escalations"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            metrics["admission_throttle_relief_resets"].as_u64(),
+            Some(2)
+        );
         assert_eq!(metrics["admission_block_wait_ns"].as_u64(), Some(70));
         assert_eq!(metrics["admission_wait_attempts"].as_u64(), Some(3));
         assert_eq!(metrics["admission_wait_timeouts"].as_u64(), Some(1));
@@ -4270,6 +4322,8 @@ mod tests {
             foreground_wait_background_lock_ns: 44,
             admission_slowdown_ns: 55,
             admission_slowdown_attempts: 2,
+            admission_throttle_no_relief_escalations: 3,
+            admission_throttle_relief_resets: 4,
             admission_block_wait_ns: 66,
             admission_wait_attempts: 3,
             admission_wait_timeouts: 1,
@@ -4332,6 +4386,14 @@ mod tests {
         );
         assert_eq!(trace["admission_slowdown_ns"].as_u64(), Some(55));
         assert_eq!(trace["admission_slowdown_attempts"].as_u64(), Some(2));
+        assert_eq!(
+            trace["admission_throttle_no_relief_escalations"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            trace["admission_throttle_relief_resets"].as_u64(),
+            Some(4)
+        );
         assert_eq!(trace["admission_block_wait_ns"].as_u64(), Some(66));
         assert_eq!(trace["admission_wait_attempts"].as_u64(), Some(3));
         assert_eq!(trace["admission_wait_timeouts"].as_u64(), Some(1));
@@ -4409,6 +4471,14 @@ mod tests {
         );
         assert_eq!(metrics["admission_slowdown_ns"].as_u64(), Some(55));
         assert_eq!(metrics["admission_slowdown_attempts"].as_u64(), Some(2));
+        assert_eq!(
+            metrics["admission_throttle_no_relief_escalations"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            metrics["admission_throttle_relief_resets"].as_u64(),
+            Some(4)
+        );
         assert_eq!(metrics["admission_block_wait_ns"].as_u64(), Some(66));
         assert_eq!(metrics["admission_wait_attempts"].as_u64(), Some(3));
         assert_eq!(metrics["admission_wait_timeouts"].as_u64(), Some(1));

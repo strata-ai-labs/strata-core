@@ -7,10 +7,8 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::api::runtime::{
-    background_batch_slowdown_duration, background_level_zero_pressure_units,
-    BACKGROUND_LEVEL_ZERO_BLOCK_TABLES, BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES,
-    BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER, BACKGROUND_URGENT_MUTATION_SCALE_LIMIT,
-    BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN,
+    background_level_zero_pressure_units, BACKGROUND_LEVEL_ZERO_BLOCK_TABLES,
+    BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES, BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER,
 };
 use crate::lifecycle::LifecycleStoragePressureReason;
 
@@ -1653,7 +1651,7 @@ fn run_background_compaction_parity_scenario(
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn deterministic_inline_urgent_pressure_advances_manual_clock_for_slowdown() {
+fn deterministic_inline_urgent_pressure_with_progress_does_not_sleep() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
@@ -1682,7 +1680,62 @@ fn deterministic_inline_urgent_pressure_advances_manual_clock_for_slowdown() {
             b"inline-urgent-clock-followup",
             b"value".to_vec(),
         ))
-        .expect("urgent commit should be accepted with bounded slowdown");
+        .expect("urgent commit should be accepted after background progress");
+    let after = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_slowdown_ns(), 0);
+    assert_eq!(
+        after.saturating_duration_since(before),
+        std::time::Duration::ZERO,
+        "background progress must not advance the manual clock through urgent slowdown"
+    );
+    assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert!(status.background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_urgent_pressure_without_relief_escalates_slowdown() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::DeterministicInline,
+            ),
+    )
+    .expect("low-memory deterministic-inline cache open")
+    .into_runtime();
+    assert!(
+        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
+        "deterministic-inline background runtime should expose test drain limits"
+    );
+
+    runtime
+        .commit(&background_put_batch(
+            b"inline-urgent-no-relief-seed",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create frozen urgent pressure");
+    let before = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+    for index in 0..3 {
+        let key = format!("inline-urgent-no-relief-followup-{index}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
+            .expect("urgent no-relief commit should remain accepted");
+    }
     let after = runtime
         .background_now_for_test()
         .expect("inline background runtime exposes manual clock");
@@ -1691,14 +1744,94 @@ fn deterministic_inline_urgent_pressure_advances_manual_clock_for_slowdown() {
     assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 1);
     assert!(perf.lifecycle_write_admission_slowdown_ns() > 0);
     assert_eq!(
+        perf.lifecycle_write_admission_throttle_no_relief_escalations(),
+        1
+    );
+    assert_eq!(
         after.saturating_duration_since(before),
         std::time::Duration::from_nanos(perf.lifecycle_write_admission_slowdown_ns())
     );
     assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
-    let status = runtime.maintenance_status().expect("maintenance status");
-    assert_eq!(status.pending_tasks(), 0);
-    assert_eq!(status.background_worker_count(), 0);
-    assert!(status.background_tasks_completed() >= 1);
+    assert!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .pending_tasks()
+            > 0,
+        "no-relief fixture must leave maintenance debt queued"
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn deterministic_inline_urgent_pressure_relief_resets_slowdown() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::DeterministicInline,
+            ),
+    )
+    .expect("low-memory deterministic-inline cache open")
+    .into_runtime();
+    assert!(
+        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
+        "deterministic-inline background runtime should expose test drain limits"
+    );
+
+    runtime
+        .commit(&background_put_batch(
+            b"inline-urgent-relief-seed",
+            b"value".to_vec(),
+        ))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("create frozen urgent pressure");
+    for index in 0..3 {
+        let key = format!("inline-urgent-relief-no-progress-{index}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
+            .expect("urgent no-relief commit should remain accepted");
+    }
+    let after_no_relief = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+    assert!(
+        runtime.set_background_drain_limits_for_test(usize::MAX, std::time::Duration::from_secs(1)),
+        "deterministic-inline background runtime should restore drain limits"
+    );
+    runtime
+        .commit(&background_put_batch(
+            b"inline-urgent-relief-followup",
+            b"value".to_vec(),
+        ))
+        .expect("urgent commit should observe background relief");
+    let after_relief = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 1);
+    assert_eq!(
+        perf.lifecycle_write_admission_throttle_no_relief_escalations(),
+        1
+    );
+    assert_eq!(perf.lifecycle_write_admission_throttle_relief_resets(), 1);
+    assert_eq!(
+        after_relief.saturating_duration_since(after_no_relief),
+        std::time::Duration::ZERO,
+        "relief should clear throttle state without an additional slowdown sleep"
+    );
+    assert!(
+        runtime
+            .maintenance_status()
+            .expect("maintenance status")
+            .background_tasks_completed()
+            > 0,
+        "relief fixture should complete lifecycle maintenance"
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2741,28 +2874,27 @@ fn level_zero_urgent_slowdown_ramps_before_blocking_pressure() {
 }
 
 #[test]
-fn background_urgent_slowdown_scales_with_commit_mutation_count() {
-    let pressure_slowdown = std::time::Duration::from_micros(400);
+fn source_guard_background_urgent_slowdown_is_not_mutation_scaled() {
+    let runtime_source = include_str!("../runtime.rs");
+    let slowdown_source = runtime_source
+        .split("fn background_admission_slowdown")
+        .nth(1)
+        .expect("background admission slowdown function is present")
+        .split("fn has_background_runtime")
+        .next()
+        .expect("slowdown helper precedes background runtime helper");
 
-    assert_eq!(
-        background_batch_slowdown_duration(pressure_slowdown, 0),
-        pressure_slowdown.saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN)
+    assert!(
+        !runtime_source.contains("BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN"),
+        "urgent admission must not restore the per-mutation slowdown constant"
     );
-    assert_eq!(
-        background_batch_slowdown_duration(pressure_slowdown, 1),
-        pressure_slowdown.saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN)
+    assert!(
+        !runtime_source.contains("BACKGROUND_URGENT_MUTATION_SCALE_LIMIT"),
+        "urgent admission must not restore the mutation-count slowdown cap"
     );
-    assert_eq!(
-        background_batch_slowdown_duration(pressure_slowdown, 10),
-        pressure_slowdown
-            .saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN.saturating_mul(10))
-    );
-    assert_eq!(
-        background_batch_slowdown_duration(
-            std::time::Duration::from_millis(25),
-            BACKGROUND_URGENT_MUTATION_SCALE_LIMIT.saturating_mul(2),
-        ),
-        std::time::Duration::from_millis(50) + std::time::Duration::from_micros(600)
+    assert!(
+        !slowdown_source.contains("mutation_count"),
+        "urgent slowdown must not depend on commit mutation count"
     );
 }
 
