@@ -23,7 +23,6 @@ use strata_core_next::BranchId;
 
 const BRANCH_COMPACTION_SOURCE_METADATA_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const BRANCH_COMPACTION_SOURCE_METADATA_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
-const LEVEL_ZERO_COMPACTION_INPUT_LIMIT: usize = 4;
 
 fn keep_all_policy() -> impl TableCompactionPolicy {
     |_: &TableCompactionRowContext<'_>, _: &TableRow| Ok(TableCompactionDecision::Keep)
@@ -792,9 +791,8 @@ impl BranchLocalState {
                 BranchCompactionNoopReason::EmptyInputLevel,
             ));
         }
-        let input_start = input_count.saturating_sub(LEVEL_ZERO_COMPACTION_INPUT_LIMIT);
-        let input_refs = self.table_refs_at_level(0, input_start..input_count)?;
-        let overlap_refs = self.overlapping_refs_for_input_range(&input_refs, 1)?;
+        let input_refs = self.table_refs_at_level(0, 0..input_count)?;
+        let overlap_refs = self.overlapping_refs_for_output_range(&input_refs, 1)?;
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
@@ -1066,6 +1064,67 @@ impl BranchLocalState {
         Ok(refs)
     }
 
+    fn overlapping_refs_for_output_range(
+        &self,
+        input_refs: &[BranchTableRef],
+        target_level_index: usize,
+    ) -> BranchRuntimeResult<Vec<BranchTableRef>> {
+        let target_level = BranchLevel::new(u8::try_from(target_level_index).map_err(|_| {
+            BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "compaction target level must fit in BranchLevel",
+                ),
+            }
+        })?);
+        let Some(target_tables) = self.owned_levels.get(target_level_index) else {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic("compaction target level must exist"),
+            });
+        };
+        let (input_first, input_last) = self.table_refs_physical_key_span(input_refs)?;
+        let mut refs = Vec::new();
+        for (table_index, table) in target_tables.iter().enumerate() {
+            let (table_first, table_last) = compaction_table_physical_key_bounds(table)?;
+            if input_first <= table_last && table_first <= input_last {
+                refs.push(branch_table_ref_for_owned(
+                    self.branch_id,
+                    target_level,
+                    table_index,
+                    table,
+                )?);
+            }
+        }
+        Ok(refs)
+    }
+
+    fn table_refs_physical_key_span(
+        &self,
+        refs: &[BranchTableRef],
+    ) -> BranchRuntimeResult<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
+        let mut span = None::<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)>;
+        for table_ref in refs {
+            let table =
+                self.table_for_ref(table_ref)
+                    .ok_or(BranchRuntimeError::InvalidCompaction {
+                        reason: BranchCompactionInvalidity::Generic(
+                            "compaction table ref must exist",
+                        ),
+                    })?;
+            let (first, last) = compaction_table_physical_key_bounds(table)?;
+            span = Some(match span {
+                None => (first, last),
+                Some((current_first, current_last)) => {
+                    (current_first.min(first), current_last.max(last))
+                }
+            });
+        }
+        span.ok_or(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "compaction input range must contain at least one table",
+            ),
+        })
+    }
+
     fn overlapping_table_bytes_for_input_range(
         &self,
         input_refs: &[BranchTableRef],
@@ -1118,6 +1177,26 @@ impl BranchLocalState {
             })
     }
 
+    fn table_for_candidate_ref(
+        &self,
+        candidate: &BranchCompactionCandidate,
+        table_ref: &BranchTableRef,
+    ) -> Option<&BranchOwnedTable> {
+        if let Some(table) = self
+            .table_for_ref(table_ref)
+            .filter(|table| table_matches_ref_kind(table, table_ref))
+        {
+            return Some(table);
+        }
+        if !candidate_ref_allows_l0_index_rebase(candidate, table_ref) {
+            return None;
+        }
+        self.owned_levels
+            .first()?
+            .iter()
+            .find(|table| table_matches_ref(table, candidate.branch_id(), table_ref))
+    }
+
     fn is_bottommost_output_level(&self, output_level_index: usize) -> bool {
         self.owned_levels
             .iter()
@@ -1142,7 +1221,7 @@ impl BranchLocalState {
             .iter()
             .chain(candidate.overlap_refs().iter())
         {
-            let Some(table) = self.table_for_ref(table_ref) else {
+            let Some(table) = self.table_for_candidate_ref(candidate, table_ref) else {
                 return Err(BranchRuntimeError::InvalidCompaction {
                     reason: BranchCompactionInvalidity::Generic("compaction candidate is stale"),
                 });
@@ -1179,13 +1258,13 @@ impl BranchLocalState {
             .chain(candidate.overlap_refs().iter())
             .enumerate()
             .map(|(source_index, table_ref)| {
-                let table =
-                    self.table_for_ref(table_ref)
-                        .ok_or(BranchRuntimeError::InvalidCompaction {
-                            reason: BranchCompactionInvalidity::Generic(
-                                "compaction candidate source table must exist",
-                            ),
-                        })?;
+                let table = self.table_for_candidate_ref(candidate, table_ref).ok_or(
+                    BranchRuntimeError::InvalidCompaction {
+                        reason: BranchCompactionInvalidity::Generic(
+                            "compaction candidate source table must exist",
+                        ),
+                    },
+                )?;
                 let source_hash = table_source_metadata_hash(table_ref, table.facts());
                 let source_id =
                     TableCompactionSourceId::new(format!("s{source_index}-h{source_hash:016x}",))
@@ -1243,13 +1322,13 @@ impl BranchLocalState {
                         "metadata promotion requires one input table",
                     ),
                 })?;
-        let table = self
-            .table_for_ref(input_ref)
-            .ok_or(BranchRuntimeError::InvalidCompaction {
+        let table = self.table_for_candidate_ref(candidate, input_ref).ok_or(
+            BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "metadata promotion input table must exist",
                 ),
-            })?;
+            },
+        )?;
         let descriptor = BranchTableDescriptor::new(
             table.descriptor().identity().clone(),
             table.facts().clone(),
@@ -1382,19 +1461,102 @@ fn branch_table_ref_for_owned(
     }
 }
 
+fn candidate_ref_allows_l0_index_rebase(
+    candidate: &BranchCompactionCandidate,
+    table_ref: &BranchTableRef,
+) -> bool {
+    table_ref.level() == BranchLevel::ZERO
+        && candidate.output_level() == BranchLevel::new(1)
+        && candidate
+            .input_refs()
+            .iter()
+            .any(|input_ref| input_ref == table_ref)
+}
+
+fn table_matches_ref_kind(table: &BranchOwnedTable, table_ref: &BranchTableRef) -> bool {
+    match table_ref.reference_kind() {
+        BranchTableReferenceKind::Owned => table.materialization_source().is_none(),
+        BranchTableReferenceKind::Replacement {
+            source_branch_id,
+            fork_version,
+        } => {
+            table.materialization_source()
+                == Some(BranchMaterializationSource::new(
+                    source_branch_id,
+                    fork_version,
+                ))
+        }
+        BranchTableReferenceKind::Inherited { .. }
+        | BranchTableReferenceKind::MaterializingSource { .. } => false,
+    }
+}
+
+fn table_matches_ref(
+    table: &BranchOwnedTable,
+    branch_id: BranchId,
+    table_ref: &BranchTableRef,
+) -> bool {
+    table.descriptor().identity() == table_ref.table_identity()
+        && table.branch_id() == branch_id
+        && table.level() == table_ref.level()
+        && table_matches_ref_kind(table, table_ref)
+}
+
+fn compacted_table_removal_index(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    candidate: &BranchCompactionCandidate,
+    table_ref: &BranchTableRef,
+) -> BranchRuntimeResult<(usize, usize)> {
+    let level_index = usize::from(table_ref.level().raw());
+    let level = owned_levels
+        .get(level_index)
+        .ok_or(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic("compaction removal level must exist"),
+        })?;
+    if let Some(table) = level.get(table_ref.table_index()) {
+        if table_matches_ref(table, candidate.branch_id(), table_ref) {
+            return Ok((level_index, table_ref.table_index()));
+        }
+    }
+    if candidate_ref_allows_l0_index_rebase(candidate, table_ref) {
+        let table_index = level
+            .iter()
+            .position(|table| table_matches_ref(table, candidate.branch_id(), table_ref))
+            .ok_or(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "compaction removal table identity is stale",
+                ),
+            })?;
+        return Ok((level_index, table_index));
+    }
+    if level.get(table_ref.table_index()).is_some() {
+        Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "compaction removal table identity is stale",
+            ),
+        })
+    } else {
+        Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "compaction removal table index must exist",
+            ),
+        })
+    }
+}
+
 fn remove_compacted_tables(
     owned_levels: &mut [Vec<BranchOwnedTable>],
     candidate: &BranchCompactionCandidate,
 ) -> BranchRuntimeResult<()> {
-    let mut refs = candidate.removed_refs();
-    refs.sort_by(|left, right| {
-        usize::from(right.level().raw())
-            .cmp(&usize::from(left.level().raw()))
-            .then_with(|| right.table_index().cmp(&left.table_index()))
-    });
+    let mut removals = Vec::new();
+    for table_ref in candidate.removed_refs() {
+        let (level_index, table_index) =
+            compacted_table_removal_index(owned_levels, candidate, &table_ref)?;
+        removals.push((level_index, table_index, table_ref));
+    }
+    removals.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
 
-    for table_ref in refs {
-        let level_index = usize::from(table_ref.level().raw());
+    for (level_index, table_index, table_ref) in removals {
         let level =
             owned_levels
                 .get_mut(level_index)
@@ -1403,22 +1565,21 @@ fn remove_compacted_tables(
                         "compaction removal level must exist",
                     ),
                 })?;
-        let table =
-            level
-                .get(table_ref.table_index())
-                .ok_or(BranchRuntimeError::InvalidCompaction {
-                    reason: BranchCompactionInvalidity::Generic(
-                        "compaction removal table index must exist",
-                    ),
-                })?;
-        if table.descriptor().identity() != table_ref.table_identity() {
+        let table = level
+            .get(table_index)
+            .ok_or(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "compaction removal table index must exist",
+                ),
+            })?;
+        if !table_matches_ref(table, candidate.branch_id(), &table_ref) {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "compaction removal table identity is stale",
                 ),
             });
         }
-        level.remove(table_ref.table_index());
+        level.remove(table_index);
     }
     Ok(())
 }

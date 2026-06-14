@@ -1598,7 +1598,7 @@ fn branch_compaction_l0_to_l1_multi_table_rewrite_preserves_newest_row() {
 }
 
 #[test]
-fn branch_compaction_l0_to_l1_limits_rewrite_to_oldest_input_run() {
+fn branch_compaction_l0_to_l1_selects_all_snapshot_inputs() {
     let branch = branch_id(247);
     let mut state = BranchLocalState::new(
         branch,
@@ -1658,14 +1658,14 @@ fn branch_compaction_l0_to_l1_limits_rewrite_to_oldest_input_run() {
         candidate.no_promotion_reason(),
         Some(BranchCompactionNoPromotionReason::MultipleInputTables)
     );
-    assert_eq!(candidate.input_refs().len(), 4);
+    assert_eq!(candidate.input_refs().len(), 6);
     assert_eq!(
         candidate
             .input_refs()
             .iter()
             .map(BranchTableRef::table_index)
             .collect::<Vec<_>>(),
-        vec![2, 3, 4, 5]
+        vec![0, 1, 2, 3, 4, 5]
     );
     assert_eq!(
         candidate
@@ -1674,6 +1674,8 @@ fn branch_compaction_l0_to_l1_limits_rewrite_to_oldest_input_run() {
             .map(|table_ref| table_ref.table_identity().as_str())
             .collect::<Vec<_>>(),
         vec![
+            "compact-l0-bounded-5",
+            "compact-l0-bounded-4",
             "compact-l0-bounded-3",
             "compact-l0-bounded-2",
             "compact-l0-bounded-1",
@@ -1683,16 +1685,10 @@ fn branch_compaction_l0_to_l1_limits_rewrite_to_oldest_input_run() {
 
     let outcome = state
         .compact_branch_owned_tables(&request)
-        .expect("compact oldest run");
-    assert_eq!(outcome.removed_refs().len(), 4);
-    assert_eq!(state.owned_levels()[0].len(), 2);
-    assert_eq!(
-        state.owned_levels()[0]
-            .iter()
-            .map(|table| table.descriptor().identity().as_str())
-            .collect::<Vec<_>>(),
-        vec!["compact-l0-bounded-5", "compact-l0-bounded-4"]
-    );
+        .expect("compact full snapshot");
+    assert_eq!(outcome.removed_refs().len(), 6);
+    assert_eq!(outcome.table_report().expect("report").input_sources(), 6);
+    assert_eq!(state.owned_levels()[0].len(), 0);
     assert_eq!(state.owned_levels()[1].len(), 1);
 
     let after = state.capture_read_view().expect("after view");
@@ -1702,6 +1698,431 @@ fn branch_compaction_l0_to_l1_limits_rewrite_to_oldest_input_run() {
             format!("compact-l0-bounded-key-{index}").into_bytes(),
         );
         assert!(after.latest(&key).expect("latest").is_some());
+    }
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_includes_target_tables_inside_snapshot_span() {
+    let branch = branch_id(248);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let low = storage_row_with(
+        branch,
+        b"compact-l0-span-a".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"low".to_vec(),
+    );
+    let high = storage_row_with(
+        branch,
+        b"compact-l0-span-z".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"high".to_vec(),
+    );
+    let gap = storage_row_with(
+        branch,
+        b"compact-l0-span-m".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"gap".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "compact-l0-span-gap",
+                vec![gap.clone()],
+            ),
+        )
+        .expect("install target gap");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-span-high",
+            vec![high.clone()],
+        ))
+        .expect("install high input");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-span-low",
+            vec![low.clone()],
+        ))
+        .expect("install low input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-span-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 2);
+    assert_eq!(candidate.overlap_refs().len(), 1);
+    assert_eq!(
+        candidate.overlap_refs()[0].table_identity().as_str(),
+        "compact-l0-span-gap"
+    );
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact full span");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), 3);
+    assert_eq!(outcome.removed_refs().len(), 3);
+    assert_eq!(state.owned_levels()[0].len(), 0);
+    assert_eq!(state.owned_levels()[1].len(), 1);
+
+    let after = state.capture_read_view().expect("after view");
+    for row in [&low, &gap, &high] {
+        assert_visible_row(
+            after.latest(row.physical_key()).expect("latest").as_ref(),
+            row,
+            BranchRowSource::OwnedTable {
+                level: BranchLevel::new(1),
+                table_index: 0,
+            },
+        );
+    }
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_preserves_point_scan_history_and_timestamp_reads() {
+    let branch = branch_id(249);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let live_key = physical_key(branch, b"compact-l0-wide-live".to_vec());
+    let delete_key = physical_key(branch, b"compact-l0-wide-delete".to_vec());
+    let prefix_key = physical_key(branch, b"compact-l0-wide-".to_vec());
+    let gap = storage_row_with(
+        branch,
+        b"compact-l0-wide-gap".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"gap".to_vec(),
+    );
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "compact-l0-wide-gap",
+                vec![gap],
+            ),
+        )
+        .expect("install gap table");
+
+    let l0_rows = [
+        (
+            "compact-l0-wide-live-new",
+            storage_row_with(
+                branch,
+                b"compact-l0-wide-live".to_vec(),
+                8,
+                80,
+                Timestamp::EPOCH,
+                b"live-new".to_vec(),
+            ),
+        ),
+        (
+            "compact-l0-wide-live-old",
+            storage_row_with(
+                branch,
+                b"compact-l0-wide-live".to_vec(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                b"live-old".to_vec(),
+            ),
+        ),
+        (
+            "compact-l0-wide-delete-tombstone",
+            tombstone_row(branch, b"compact-l0-wide-delete".to_vec(), 7, 70),
+        ),
+        (
+            "compact-l0-wide-delete-old",
+            storage_row_with(
+                branch,
+                b"compact-l0-wide-delete".to_vec(),
+                2,
+                20,
+                Timestamp::EPOCH,
+                b"delete-old".to_vec(),
+            ),
+        ),
+        (
+            "compact-l0-wide-scan-a",
+            storage_row_with(
+                branch,
+                b"compact-l0-wide-scan-a".to_vec(),
+                4,
+                40,
+                Timestamp::EPOCH,
+                b"scan-a".to_vec(),
+            ),
+        ),
+        (
+            "compact-l0-wide-scan-z",
+            storage_row_with(
+                branch,
+                b"compact-l0-wide-scan-z".to_vec(),
+                5,
+                50,
+                Timestamp::EPOCH,
+                b"scan-z".to_vec(),
+            ),
+        ),
+    ];
+    for (identity, row) in l0_rows {
+        state
+            .install_l0_table(branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                identity,
+                vec![row],
+            ))
+            .expect("install l0 input");
+    }
+
+    let before = state.capture_read_view().expect("before view");
+    let before_latest = visible_storage_row(before.latest(&live_key).expect("before latest"));
+    let before_version = visible_storage_row(
+        before
+            .at_version(&live_key, CommitVersion::new(3))
+            .expect("before version"),
+    );
+    let before_timestamp = visible_storage_row(
+        before
+            .read_point(
+                &live_key,
+                BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+            )
+            .expect("before timestamp"),
+    );
+    let before_delete_latest =
+        visible_storage_row(before.latest(&delete_key).expect("before delete latest"));
+    let before_delete_history = history_versions(
+        &before
+            .history(&delete_key, BranchHistoryOptions::all())
+            .expect("before delete history"),
+    );
+    let before_latest_scan = scan_user_keys(
+        &before
+            .scan_prefix(
+                &BranchScanBounds::prefix(&prefix_key),
+                BranchReadBound::latest(),
+            )
+            .expect("before latest scan"),
+    );
+    let before_timestamp_scan = scan_user_keys(
+        &before
+            .scan_prefix(
+                &BranchScanBounds::prefix(&prefix_key),
+                BranchReadBound::at_timestamp(Timestamp::from_micros(45)),
+            )
+            .expect("before timestamp scan"),
+    );
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-wide-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 6);
+    assert_eq!(candidate.overlap_refs().len(), 1);
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("compact wide l0 episode");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(report.input_sources(), 7);
+    assert_eq!(outcome.removed_refs().len(), 7);
+    assert_eq!(state.owned_levels()[0].len(), 0);
+
+    let after = state.capture_read_view().expect("after view");
+    assert_eq!(
+        visible_storage_row(after.latest(&live_key).expect("after latest")),
+        before_latest
+    );
+    assert_eq!(
+        visible_storage_row(
+            after
+                .at_version(&live_key, CommitVersion::new(3))
+                .expect("after version")
+        ),
+        before_version
+    );
+    assert_eq!(
+        visible_storage_row(
+            after
+                .read_point(
+                    &live_key,
+                    BranchReadBound::at_timestamp(Timestamp::from_micros(30)),
+                )
+                .expect("after timestamp")
+        ),
+        before_timestamp
+    );
+    assert_eq!(
+        visible_storage_row(after.latest(&delete_key).expect("after delete latest")),
+        before_delete_latest
+    );
+    assert_eq!(
+        history_versions(
+            &after
+                .history(&delete_key, BranchHistoryOptions::all())
+                .expect("after delete history")
+        ),
+        before_delete_history
+    );
+    assert_eq!(
+        scan_user_keys(
+            &after
+                .scan_prefix(
+                    &BranchScanBounds::prefix(&prefix_key),
+                    BranchReadBound::latest(),
+                )
+                .expect("after latest scan")
+        ),
+        before_latest_scan
+    );
+    assert_eq!(
+        scan_user_keys(
+            &after
+                .scan_prefix(
+                    &BranchScanBounds::prefix(&prefix_key),
+                    BranchReadBound::at_timestamp(Timestamp::from_micros(45)),
+                )
+                .expect("after timestamp scan")
+        ),
+        before_timestamp_scan
+    );
+}
+
+#[test]
+fn branch_compaction_l0_to_l1_prepared_plan_publishes_around_concurrent_flush() {
+    let branch = branch_id(253);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    let mut planned_rows = Vec::new();
+    for index in 0..5 {
+        let row = storage_row_with(
+            branch,
+            format!("compact-l0-stale-wide-key-{index}").into_bytes(),
+            u64::try_from(index + 1).expect("index fits in u64"),
+            u64::try_from(index + 1).expect("index fits in u64"),
+            Timestamp::EPOCH,
+            format!("value-{index}").into_bytes(),
+        );
+        planned_rows.push(row.clone());
+        state
+            .install_l0_table(branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                &format!("compact-l0-stale-wide-{index}"),
+                vec![row],
+            ))
+            .expect("install input");
+    }
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "compact-l0-stale-wide-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 5);
+    let (artifacts, report) = state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("prepare")
+        .expect("prepared output");
+    let output_tables = state
+        .compaction_output_tables(candidate.output_level(), artifacts, None)
+        .expect("output tables");
+
+    let new_row = storage_row_with(
+        branch,
+        b"compact-l0-stale-wide-new".to_vec(),
+        99,
+        99,
+        Timestamp::EPOCH,
+        b"new".to_vec(),
+    );
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "compact-l0-stale-wide-new",
+            vec![new_row.clone()],
+        ))
+        .expect("install concurrent flush");
+
+    let outcome = state
+        .install_branch_compaction_prepared_plan(&request, &plan, output_tables, report)
+        .expect("prepared plan publishes around concurrent flush");
+    assert_eq!(outcome.removed_refs().len(), 5);
+    assert_eq!(
+        outcome
+            .table_report()
+            .expect("table report")
+            .input_sources(),
+        5
+    );
+    assert_eq!(state.owned_levels()[0].len(), 1);
+    assert_eq!(
+        state.owned_levels()[0][0].descriptor().identity().as_str(),
+        "compact-l0-stale-wide-new"
+    );
+    assert!(!state.owned_levels()[1].is_empty());
+
+    let after = state.capture_read_view().expect("after view");
+    assert_visible_row(
+        after
+            .latest(&physical_key(branch, b"compact-l0-stale-wide-new".to_vec()))
+            .expect("new latest")
+            .as_ref(),
+        &new_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    for row in planned_rows {
+        let visible = after
+            .latest(row.physical_key())
+            .expect("planned latest")
+            .expect("planned row remains visible");
+        assert_eq!(visible.row(), &row);
+        match visible.source() {
+            BranchRowSource::OwnedTable { level, .. } => {
+                assert_eq!(level, BranchLevel::new(1));
+            }
+            other => panic!("planned row should be served from level one, got {other:?}"),
+        }
     }
 }
 
@@ -1906,7 +2327,7 @@ fn branch_compaction_l0_to_l1_multi_table_rewrite_preserves_newest_tombstone() {
 }
 
 #[test]
-fn branch_compaction_l0_to_l1_stale_promotion_plan_preserves_l0_tables() {
+fn branch_compaction_l0_to_l1_promotion_plan_publishes_around_concurrent_flush() {
     let branch = branch_id(174);
     let mut state = BranchLocalState::new(
         branch,
@@ -1934,7 +2355,7 @@ fn branch_compaction_l0_to_l1_stale_promotion_plan_preserves_l0_tables() {
             branch,
             BranchLevel::ZERO,
             "compact-l0-planned",
-            vec![planned_row],
+            vec![planned_row.clone()],
         ))
         .expect("install planned input");
     let request = BranchCompactionRequest::new(
@@ -1951,25 +2372,52 @@ fn branch_compaction_l0_to_l1_stale_promotion_plan_preserves_l0_tables() {
             branch,
             BranchLevel::ZERO,
             "compact-l0-new",
-            vec![new_row],
+            vec![new_row.clone()],
         ))
         .expect("install new input");
-    let before_install = state.clone();
 
-    let error = state
+    let outcome = state
         .install_branch_compaction_plan(&request, &plan)
-        .expect_err("stale plan rejected");
-    assert!(matches!(
-        error,
-        BranchRuntimeError::InvalidCompaction { .. }
-    ));
-    assert_eq!(state, before_install);
+        .expect("promotion publishes around concurrent flush");
+    assert_eq!(outcome.table_report(), None);
+    assert_eq!(outcome.removed_refs().len(), 1);
     assert_eq!(
         state.owned_levels()[0]
             .iter()
             .map(|table| table.descriptor().identity().as_str())
             .collect::<Vec<_>>(),
-        vec!["compact-l0-new", "compact-l0-planned"]
+        vec!["compact-l0-new"]
+    );
+    assert_eq!(
+        state.owned_levels()[1]
+            .iter()
+            .map(|table| table.descriptor().identity().as_str())
+            .collect::<Vec<_>>(),
+        vec!["compact-l0-planned"]
+    );
+
+    let after = state.capture_read_view().expect("after view");
+    assert_visible_row(
+        after
+            .latest(&physical_key(branch, b"compact-l0-new".to_vec()))
+            .expect("new latest")
+            .as_ref(),
+        &new_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::ZERO,
+            table_index: 0,
+        },
+    );
+    assert_visible_row(
+        after
+            .latest(&physical_key(branch, b"compact-l0-planned".to_vec()))
+            .expect("planned latest")
+            .as_ref(),
+        &planned_row,
+        BranchRowSource::OwnedTable {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
     );
 }
 
